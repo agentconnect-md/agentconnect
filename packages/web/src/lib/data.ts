@@ -1130,6 +1130,9 @@ export interface SessionStep {
   elicit?: {
     requestId: string
     options: { value: string; label: string }[]
+    /** Present ⇒ the card picks SEVERAL options and confirms, and answers with the list.
+     *  Absent ⇒ one option, answered on the tap. */
+    multi?: { minItems?: number; maxItems?: number }
     outcome?: 'accepted' | 'dismissed' | 'cancelled'
     answerLabel?: string
   }

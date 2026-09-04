@@ -167,11 +167,20 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     kind: z.literal('elicitation'),
     requestId: z.string().min(1).max(200),
     message: z.string(),
-    options: z.array(z.object({ value: z.string(), label: z.string() })).min(1)
+    options: z.array(z.object({ value: z.string(), label: z.string() })).min(1),
+    // Absent ⇒ pick exactly ONE option, the original card. Present ⇒ pick several of the same
+    // options and confirm, and the answer is a list. An added OPTIONAL field rather than a new
+    // event kind on purpose: a relay or browser predating it decodes the event unchanged
+    // (zod strips what it does not know) instead of dropping the frame the way an unknown
+    // kind would, and a daemon predating it simply never sets it.
+    multi: z
+      .object({ minItems: z.number().int().min(0).optional(), maxItems: z.number().int().min(0).optional() })
+      .optional()
   }),
   // The same card, settled. Slack rewrites its message in place; this stream is
   // append-only, so the collapse is a second event keyed by the same `requestId`.
-  // `label` is the chosen option's label and is present only on 'accepted'.
+  // `label` is the chosen option's label — the chosen labels joined, for a multi-select —
+  // and is present only on 'accepted'.
   z.object({
     kind: z.literal('elicitation_resolved'),
     requestId: z.string().min(1).max(200),

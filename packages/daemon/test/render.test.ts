@@ -13,6 +13,9 @@ import {
   buildElicitationResolvedCard,
   buildAttributionBlocks,
   elicitTarget,
+  SLACK_ELICIT_KINDS,
+  WEBCHAT_ELICIT_KINDS,
+  multiSelectAccepts,
   encodePermValue,
   decodePermValue,
   PERMISSION_ACTION_PREFIX,
@@ -1378,6 +1381,69 @@ describe('elicitation card', () => {
   const form = (properties: Record<string, unknown>, message = 'Pick a language'): CreateElicitationRequest =>
     ({ mode: 'form', sessionId: 's1', message, requestedSchema: { type: 'object', properties } }) as any
 
+  // A candidate that cannot satisfy `required` must not end the scan: before multi-select
+  // existed the array was skipped and the boolean rendered, so returning here would have
+  // regressed a form this surface can answer.
+  it('keeps scanning past a candidate that cannot satisfy required', () => {
+    const req = {
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Ship it?',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          colors: { type: 'array', items: { type: 'string', enum: ['red', 'green'] } },
+          ok: { type: 'boolean' }
+        },
+        required: ['ok']
+      }
+    } as any
+    expect(elicitTarget(req, WEBCHAT_ELICIT_KINDS)).toMatchObject({ propName: 'ok', kind: 'boolean' })
+    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toMatchObject({ propName: 'ok', kind: 'boolean' })
+  })
+
+  it('reaches a later enum when an earlier optional one is not the required field', () => {
+    const req = {
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Pick',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          hint: { type: 'string', enum: ['a', 'b'] },
+          branch: { type: 'string', enum: ['main', 'dev'] }
+        },
+        required: ['branch']
+      }
+    } as any
+    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toMatchObject({ propName: 'branch' })
+  })
+
+  it('declines when two properties are required, since one card answers one field', () => {
+    const req = {
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Pick',
+      requestedSchema: {
+        type: 'object',
+        properties: { a: { type: 'string', enum: ['x'] }, b: { type: 'boolean' } },
+        required: ['a', 'b']
+      }
+    } as any
+    expect(elicitTarget(req, WEBCHAT_ELICIT_KINDS)).toBeNull()
+  })
+
+  // maxItems 0 admits only the empty selection, so it is not a question — and emitting it
+  // would fail the wire schema, dropping the card while the ACP request stayed live.
+  it('skips a multi-select whose bounds admit nothing to choose', () => {
+    const zero = form({ tags: { type: 'array', maxItems: 0, items: { type: 'string', enum: ['a', 'b'] } } })
+    expect(elicitTarget(zero, WEBCHAT_ELICIT_KINDS)).toBeNull()
+    const inverted = form({
+      tags: { type: 'array', minItems: 2, maxItems: 1, items: { type: 'string', enum: ['a', 'b'] } }
+    })
+    expect(elicitTarget(inverted, WEBCHAT_ELICIT_KINDS)).toBeNull()
+  })
+
   it('renders titled enum (oneOf) as buttons carrying requestId|const, plus Dismiss', () => {
     const req = form({
       lang: {
@@ -1400,7 +1466,7 @@ describe('elicitation card', () => {
   })
 
   it('renders bare string enum with value == label', () => {
-    const t = elicitTarget(form({ color: { type: 'string', enum: ['red', 'green'] } }))
+    const t = elicitTarget(form({ color: { type: 'string', enum: ['red', 'green'] } }), SLACK_ELICIT_KINDS)
     expect(t).toEqual({
       propName: 'color',
       kind: 'enum',
@@ -1412,7 +1478,7 @@ describe('elicitation card', () => {
   })
 
   it('renders boolean as Yes/No', () => {
-    const t = elicitTarget(form({ ok: { type: 'boolean' } }))
+    const t = elicitTarget(form({ ok: { type: 'boolean' } }), SLACK_ELICIT_KINDS)
     expect(t).toEqual({
       propName: 'ok',
       kind: 'boolean',
@@ -1430,7 +1496,7 @@ describe('elicitation card', () => {
       message: 'Pick a language',
       requestedSchema: { type: 'object', properties: { color: { type: 'string', enum: ['red'] } }, required: ['color'] }
     } as any
-    expect(elicitTarget(req)?.propName).toBe('color')
+    expect(elicitTarget(req, SLACK_ELICIT_KINDS)?.propName).toBe('color')
   })
 
   it('renders when extra non-required properties ride along', () => {
@@ -1448,7 +1514,7 @@ describe('elicitation card', () => {
         required: ['color']
       }
     } as any
-    expect(elicitTarget(req)?.propName).toBe('color')
+    expect(elicitTarget(req, SLACK_ELICIT_KINDS)?.propName).toBe('color')
   })
 
   it('returns null when the schema requires a property the card cannot answer', () => {
@@ -1462,7 +1528,7 @@ describe('elicitation card', () => {
         required: ['color', 'note']
       }
     } as any
-    expect(elicitTarget(req)).toBeNull()
+    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toBeNull()
     expect(buildElicitationCard('e', req)).toBeNull()
   })
 
@@ -1477,17 +1543,110 @@ describe('elicitation card', () => {
         required: ['ok', 'reason']
       }
     } as any
-    expect(elicitTarget(req)).toBeNull()
+    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toBeNull()
   })
 
   it('renders when required is absent', () => {
-    expect(elicitTarget(form({ ok: { type: 'boolean' } }))?.propName).toBe('ok')
+    expect(elicitTarget(form({ ok: { type: 'boolean' } }), SLACK_ELICIT_KINDS)?.propName).toBe('ok')
   })
 
   it('returns null (→ caller declines) for free-text-only forms and url mode', () => {
-    expect(elicitTarget(form({ name: { type: 'string' } }))).toBeNull()
+    expect(elicitTarget(form({ name: { type: 'string' } }), SLACK_ELICIT_KINDS)).toBeNull()
     expect(buildElicitationCard('e', form({ name: { type: 'string' } }))).toBeNull()
-    expect(elicitTarget({ mode: 'url', sessionId: 's1', message: 'go', url: 'https://x' } as any)).toBeNull()
+    expect(
+      elicitTarget({ mode: 'url', sessionId: 's1', message: 'go', url: 'https://x' } as any, SLACK_ELICIT_KINDS)
+    ).toBeNull()
+  })
+
+  // ── multi-select (issue #1794 gap 2): webchat renders it, a Slack button row cannot ──
+
+  it('reads both array shapes as one multi-enum target, with the schema bounds', () => {
+    const bare = elicitTarget(
+      form({ colors: { type: 'array', items: { type: 'string', enum: ['Red', 'Green'] }, minItems: 1, maxItems: 2 } }),
+      WEBCHAT_ELICIT_KINDS
+    )
+    expect(bare).toEqual({
+      propName: 'colors',
+      kind: 'multi-enum',
+      options: [
+        { value: 'Red', label: 'Red' },
+        { value: 'Green', label: 'Green' }
+      ],
+      minItems: 1,
+      maxItems: 2
+    })
+    const titled = elicitTarget(
+      form({
+        colors: {
+          type: 'array',
+          items: {
+            anyOf: [
+              { const: '#FF0000', title: 'Red' },
+              { const: '#00FF00', title: 'Green' }
+            ]
+          }
+        }
+      }),
+      WEBCHAT_ELICIT_KINDS
+    )
+    // Unbounded: no minItems/maxItems invented where the schema states none.
+    expect(titled).toEqual({
+      propName: 'colors',
+      kind: 'multi-enum',
+      options: [
+        { value: '#FF0000', label: 'Red' },
+        { value: '#00FF00', label: 'Green' }
+      ]
+    })
+  })
+
+  it('leaves multi-select unrenderable on Slack, whose card would have to decline it', () => {
+    const req = form({ colors: { type: 'array', items: { type: 'string', enum: ['Red', 'Green'] } } })
+    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toBeNull()
+    expect(buildElicitationCard('elicit-1', req)).toBeNull()
+  })
+
+  it('skips a field the surface cannot render and takes the next one it can', () => {
+    // Slack passes over the array and cards the boolean, exactly as it did before the kind existed.
+    const req = form({ colors: { type: 'array', items: { type: 'string', enum: ['Red'] } }, ok: { type: 'boolean' } })
+    expect(elicitTarget(req, SLACK_ELICIT_KINDS)?.propName).toBe('ok')
+    expect(elicitTarget(req, WEBCHAT_ELICIT_KINDS)?.propName).toBe('colors')
+  })
+
+  it('declines an array the card cannot honestly answer', () => {
+    // Non-string item consts would make the accepted list lie about the schema's item type,
+    // an untyped/free-form array has nothing to offer, and a required peer is still fatal.
+    const anyOfNumbers = form({ n: { type: 'array', items: { anyOf: [{ const: 1, title: 'One' }] } } })
+    expect(elicitTarget(anyOfNumbers, WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(form({ tags: { type: 'array', items: { type: 'string' } } }), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    const required = {
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Pick colors',
+      requestedSchema: {
+        type: 'object',
+        properties: { colors: { type: 'array', items: { type: 'string', enum: ['Red'] } }, note: { type: 'string' } },
+        required: ['colors', 'note']
+      }
+    } as any
+    expect(elicitTarget(required, WEBCHAT_ELICIT_KINDS)).toBeNull()
+  })
+
+  it('accepts only a submitted list the card offered, without repeats and inside its bounds', () => {
+    const target = elicitTarget(
+      form({
+        colors: { type: 'array', items: { type: 'string', enum: ['Red', 'Green', 'Blue'] }, minItems: 1, maxItems: 2 }
+      }),
+      WEBCHAT_ELICIT_KINDS
+    )!
+    expect(multiSelectAccepts(target, ['Red'])).toBe(true)
+    expect(multiSelectAccepts(target, ['Red', 'Blue'])).toBe(true)
+    expect(multiSelectAccepts(target, [])).toBe(false) // below minItems
+    expect(multiSelectAccepts(target, ['Red', 'Green', 'Blue'])).toBe(false) // above maxItems
+    expect(multiSelectAccepts(target, ['Red', 'Red'])).toBe(false) // a repeat is not two picks
+    expect(multiSelectAccepts(target, ['rm -rf /'])).toBe(false) // never offered
+    const single = elicitTarget(form({ color: { type: 'string', enum: ['Red'] } }), WEBCHAT_ELICIT_KINDS)!
+    expect(multiSelectAccepts(single, ['Red'])).toBe(false) // not a multi-select card at all
   })
 
   it('resolved card is a single section with the decision', () => {

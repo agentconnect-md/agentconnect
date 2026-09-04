@@ -210,11 +210,14 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
   // The answer to an in-band elicitation card (the `elicitation` WebchatEvent). `value`
   // is the chosen option's wire value and `null` is Dismiss — the same shape as the Slack
   // `elicitation-choice` action below, so the two wires stay recognizably one design.
+  // A multi-select card answers with the LIST of chosen values: widening this field rather
+  // than adding a second one keeps the failure closed, since a daemon predating multi-select
+  // rejects the whole op (the card stays live) instead of reading a stripped list as Dismiss.
   // `agentId` names the participant whose card this is; absent ⇒ the sole agent.
   z.object({
     op: z.literal('elicitation_choice'),
     requestId: z.string().min(1).max(200),
-    value: z.string().nullable(),
+    value: z.union([z.string(), z.array(z.string()).max(100), z.null()]),
     agentId: z.string().uuid().optional()
   }),
   z.object({ op: z.literal('close') })

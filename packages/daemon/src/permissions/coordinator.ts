@@ -30,8 +30,12 @@ import {
   buildElicitationResolvedCard,
   buildPermissionCard,
   buildPermissionResolvedCard,
-  elicitTarget
+  elicitTarget,
+  multiSelectAccepts,
+  SLACK_ELICIT_KINDS,
+  WEBCHAT_ELICIT_KINDS
 } from '../slack/render.js'
+import type { ElicitKind, ElicitSurfaceKinds, ElicitTarget } from '../slack/render.js'
 import { slackThreadUrl } from '../platforms/slack/permalink.js'
 import { slackAgentIdentityOptions } from '../platforms/slack/turn-output.js'
 import { turnChromeFor } from '../platforms/turn-chrome.js'
@@ -87,6 +91,21 @@ type PendingElicitSurface =
   | { surface: 'slack'; conn: SlackConnection; channel: string; ts?: string }
   | { surface: 'webchat'; wc: NonNullable<Pending['webchat']> }
 
+/** The kinds the surface a card was posted to renders — re-deriving its target has to ask the
+ *  same question the post did, or a card could be read back as a field its surface never showed. */
+function surfaceKinds(rec: PendingElicitSurface): ElicitSurfaceKinds {
+  return rec.surface === 'webchat' ? WEBCHAT_ELICIT_KINDS : SLACK_ELICIT_KINDS
+}
+
+/** How a settled card names the answer: the chosen option's LABEL, or every chosen label for a
+ *  multi-select — what the reader picked, in the words the card used, never the wire values.
+ *  An accepted empty list (a `minItems: 0` form) still says something rather than nothing. */
+function chosenLabel(target: ElicitTarget | null, value: string | string[]): string {
+  const label = (v: string) => target?.options.find((o) => o.value === v)?.label ?? v
+  if (!Array.isArray(value)) return label(value)
+  return value.length ? value.map(label).join(', ') : 'Nothing selected'
+}
+
 /** One outstanding `elicitation/create` awaiting a human answer. */
 type PendingElicit = PendingElicitSurface & {
   owner: HostKey
@@ -94,7 +113,7 @@ type PendingElicit = PendingElicitSurface & {
   sessionId: string
   params: CreateElicitationRequest
   propName: string
-  kind: 'enum' | 'boolean'
+  kind: ElicitKind
   approval: boolean
   resolve: (res: CreateElicitationResponse) => void
 }
@@ -141,7 +160,7 @@ interface DmNotice {
    *  rewrite prepends it — a resolved card must not lose the links (issue feedback). */
   intro: unknown[]
   propName?: string
-  valueKind?: 'enum' | 'boolean'
+  valueKind?: ElicitKind
 }
 
 interface EditorPermissionEntry {
@@ -589,7 +608,7 @@ export class PermissionCoordinator {
           .catch(() => {})
       return
     }
-    const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params) : null
+    const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params, SLACK_ELICIT_KINDS) : null
     live.notify = {
       target,
       conn,
@@ -1238,7 +1257,7 @@ export class PermissionCoordinator {
     }
     const conn = p.conn
     if (!turnChromeFor(p.plan.platform).chatInputCards || !(conn instanceof SlackConnection)) return undefined
-    const target = elicitTarget(params)
+    const target = elicitTarget(params, SLACK_ELICIT_KINDS)
     if (!target) return undefined
     const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
     const blocks = buildElicitationCard(requestId, params, this.host.httpSlackSessionTarget(p))
@@ -1322,7 +1341,7 @@ export class PermissionCoordinator {
     p: Pending,
     wc: NonNullable<Pending['webchat']>
   ): Promise<CreateElicitationResponse | undefined> {
-    const target = elicitTarget(params)
+    const target = elicitTarget(params, WEBCHAT_ELICIT_KINDS)
     if (!target) return undefined
     const requestId = `elicit-${++this.elicitSeq}`
     const message = (params as { message?: string }).message?.trim() || 'The agent needs your input'
@@ -1346,7 +1365,22 @@ export class PermissionCoordinator {
         conversationId: wc.conversationId,
         turnId: wc.turnId,
         index: wc.index++,
-        event: { kind: 'elicitation', requestId, message, options: target.options }
+        event: {
+          kind: 'elicitation',
+          requestId,
+          message,
+          options: target.options,
+          // Present only for a multi-select: it is what tells the card to offer toggles and a
+          // confirm rather than one-tap buttons, and the bounds the confirm enforces.
+          ...(target.kind === 'multi-enum'
+            ? {
+                multi: {
+                  ...(target.minItems !== undefined ? { minItems: target.minItems } : {}),
+                  ...(target.maxItems !== undefined ? { maxItems: target.maxItems } : {})
+                }
+              }
+            : {})
+        }
       })
     } catch (err) {
       // An undelivered card can never be answered — drop the resolver and decline now
@@ -1380,11 +1414,12 @@ export class PermissionCoordinator {
   }
 
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
-   *  request — `accept` with the chosen value (under the field name), or `decline` for the
-   *  Dismiss button (value === null) — and edit the card in place. No-op if already gone. */
+   *  request — `accept` with the chosen value (a LIST of them for a multi-select, under the
+   *  field name), or `decline` for the Dismiss button (value === null) — and edit the card in
+   *  place. No-op if already gone. */
   async handleElicitChoice(a: {
     requestId: string
-    value: string | null
+    value: string | string[] | null
     actor?: InteractionActor
     /** Set only by the webchat ingress: the answering browser's conversation. It confines
      *  the answer to a card THIS conversation was shown — a webchat client can neither
@@ -1395,16 +1430,25 @@ export class PermissionCoordinator {
     // A DM elicitation card's request lives on the editor path (§2/§6.4).
     const editor = this.pendingEditorPermissions.get(a.requestId)
     if (editor?.kind === 'elicitation' && editor.notify) {
-      if (a.webchatConversationId !== undefined) return
+      // A DM card is a Slack button row, so it is never answered by a list or a browser.
+      if (a.webchatConversationId !== undefined || Array.isArray(a.value)) return
       return await this.handleDmElicitChoice(a.requestId, editor, a.value, a.actor)
     }
     const rec = this.pendingElicits.get(a.requestId)
     if (!rec) return
+    // A list answers a multi-select card and only that; a scalar answers the single-choice
+    // kinds. Dismiss (null) settles either.
+    if (a.value !== null && Array.isArray(a.value) !== (rec.kind === 'multi-enum')) return
+    const target = elicitTarget(rec.params, surfaceKinds(rec))
     if (a.webchatConversationId !== undefined) {
       if (rec.surface !== 'webchat' || rec.wc.conversationId !== a.webchatConversationId) return
       // The card names every answer it accepts; anything else would inject an unoffered
-      // value into the agent's content, so it is dropped and the card stays live.
-      if (a.value !== null && !elicitTarget(rec.params)?.options.some((o) => o.value === a.value)) return
+      // value into the agent's content, so it is dropped and the card stays live. A
+      // multi-select adds its own terms: no repeats, and a count its bounds allow.
+      const offered = Array.isArray(a.value)
+        ? !!target && multiSelectAccepts(target, a.value)
+        : !!target?.options.some((o) => o.value === a.value)
+      if (a.value !== null && !offered) return
       // A card settles only from its own surface: both share one `elicit-<n>` counter, so
       // without this a Slack tap could answer a live webchat card.
     } else if (rec.surface === 'webchat') return
@@ -1427,6 +1471,10 @@ export class PermissionCoordinator {
     if (a.value === null) {
       res = { action: 'decline' }
       decision = ':no_entry_sign: Dismissed'
+    } else if (Array.isArray(a.value)) {
+      // The array property's accepted content is the chosen list itself.
+      res = { action: 'accept', content: { [rec.propName]: a.value } }
+      decision = `:white_check_mark: ${chosenLabel(target, a.value)}`
     } else {
       const value = rec.kind === 'boolean' ? a.value === 'true' : a.value
       res = { action: 'accept', content: { [rec.propName]: value } }
@@ -1451,10 +1499,7 @@ export class PermissionCoordinator {
     this.pendingElicits.delete(a.requestId)
     this.syncApprovalActivity(rec.owner, rec.sessionId, { id: a.requestId, allowed: a.value !== null })
     if (rec.surface === 'webchat') {
-      const label =
-        a.value === null
-          ? undefined
-          : (elicitTarget(rec.params)?.options.find((o) => o.value === a.value)?.label ?? a.value)
+      const label = a.value === null ? undefined : chosenLabel(target, a.value)
       this.emitWebchatElicitResolved(rec, a.requestId, a.value === null ? 'dismissed' : 'accepted', label)
     } else if (rec.ts)
       void rec.conn

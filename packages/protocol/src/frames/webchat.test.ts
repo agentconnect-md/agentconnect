@@ -86,6 +86,31 @@ describe('WebchatOutput — event / status framing', () => {
     }
   })
 
+  it('marks a multi-select card with its bounds, and leaves the single-choice card untouched', () => {
+    const card = (event: Record<string, unknown>) =>
+      WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 4, event })
+    const base = {
+      kind: 'elicitation',
+      requestId: 'elicit-1',
+      message: 'Which checks should I run?',
+      options: [
+        { value: 'lint', label: 'lint' },
+        { value: 'test', label: 'test' }
+      ]
+    }
+    const multi = card({ ...base, multi: { minItems: 1, maxItems: 2 } })
+    expect(multi.success).toBe(true)
+    if (multi.success && multi.data.event?.kind === 'elicitation') expect(multi.data.event.multi?.maxItems).toBe(2)
+    // Unbounded, and the original single-choice card — `multi` absent means "pick exactly one",
+    // so every payload written before this field keeps decoding to what it always meant.
+    expect(card({ ...base, multi: {} }).success).toBe(true)
+    const single = card(base)
+    expect(single.success).toBe(true)
+    if (single.success && single.data.event?.kind === 'elicitation') expect(single.data.event.multi).toBeUndefined()
+    expect(card({ ...base, multi: { minItems: -1 } }).success).toBe(false)
+    expect(card({ ...base, multi: { maxItems: 1.5 } }).success).toBe(false)
+  })
+
   it('rejects an unrenderable elicitation frame rather than streaming a dead card', () => {
     const bad = (event: unknown) =>
       WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 6, event }).success

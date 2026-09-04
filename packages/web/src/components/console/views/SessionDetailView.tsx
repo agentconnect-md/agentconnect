@@ -646,11 +646,26 @@ const ELICIT_OUTCOME: Record<string, { icon: string; color: string; label: (answ
   cancelled: { icon: 'clock', color: 'var(--text-tertiary)', label: () => 'Cancelled' }
 }
 
+/** What a multi-select card asks of the reader, from the schema's bounds. */
+function selectionHint(min: number, max?: number): string {
+  if (min > 0 && max !== undefined) return min === max ? `Select exactly ${min}` : `Select ${min}–${max}`
+  if (min > 0) return `Select at least ${min}`
+  return max !== undefined ? `Select up to ${max}` : 'Select any that apply'
+}
+
 /** The agent's in-band question: its options while it is live, its outcome once settled.
+ *  A multi-select (`elicit.multi`) toggles its options and answers with the list on Confirm —
+ *  one tap can't express a set — while a single-choice card still answers on the tap itself.
  *  Without `onAnswer` — a reader with no live socket to answer over — the same card renders
  *  as a plain record of the ask, controls inert rather than missing. */
-function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: string | null) => void }) {
+function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: string | string[] | null) => void }) {
+  const [picked, setPicked] = useState<string[]>([])
   const elicit = step.elicit
+  const multi = elicit?.multi
+  const min = multi?.minItems ?? 0
+  const max = multi?.maxItems
+  // The same bounds the daemon re-checks: a browser frame is not what makes an answer valid.
+  const complete = picked.length >= min && (max === undefined || picked.length <= max)
   if (!elicit) return null
   const settled = elicit.outcome ? ELICIT_OUTCOME[elicit.outcome] : undefined
   return (
@@ -671,17 +686,47 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
           </span>
         ) : (
           <>
-            {elicit.options.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className="chip max-w-full truncate disabled:cursor-default disabled:opacity-55"
-                disabled={!onAnswer}
-                onClick={() => onAnswer?.(option.value)}
-              >
-                {option.label}
-              </button>
-            ))}
+            {elicit.options.map((option) => {
+              const on = picked.includes(option.value)
+              // At the cap, the options still unpicked stop taking a tap — an answer the card
+              // would have to refuse should not look available in the first place.
+              const capped = !!multi && !on && max !== undefined && picked.length >= max
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  {...(multi ? { 'aria-pressed': on } : {})}
+                  className={
+                    on
+                      ? 'chip max-w-full truncate border-(--brand) bg-(--brand-soft) text-(--brand-soft-text) disabled:cursor-default disabled:opacity-55'
+                      : 'chip max-w-full truncate disabled:cursor-default disabled:opacity-55'
+                  }
+                  disabled={!onAnswer || capped}
+                  onClick={() =>
+                    multi
+                      ? setPicked((prev) => (on ? prev.filter((v) => v !== option.value) : [...prev, option.value]))
+                      : onAnswer?.(option.value)
+                  }
+                >
+                  {option.label}
+                </button>
+              )
+            })}
+            {multi && (
+              <>
+                <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                  {selectionHint(min, max)}
+                </span>
+                <button
+                  type="button"
+                  className="dsbtn dsbtn-primary xs"
+                  disabled={!onAnswer || !complete}
+                  onClick={() => onAnswer?.(picked)}
+                >
+                  Confirm
+                </button>
+              </>
+            )}
             <button
               type="button"
               className="chip disabled:cursor-default disabled:opacity-55"
@@ -2910,7 +2955,7 @@ export default function SessionDetailView() {
   // the card renders inert rather than offering buttons that would go nowhere.
   const answerElicitation =
     isLive && (isPg || isWebchat)
-      ? (agentId: string | undefined, requestId: string | undefined, value: string | null): void => {
+      ? (agentId: string | undefined, requestId: string | undefined, value: string | string[] | null): void => {
           if (!requestId) return
           pgAnswerElicitation(session.id, agentId ?? session.agentId ?? '', requestId, value, webchatConversationId)
         }
@@ -4312,7 +4357,7 @@ export default function SessionDetailView() {
                                           step={st}
                                           {...(answerElicitation
                                             ? {
-                                                onAnswer: (value: string | null) =>
+                                                onAnswer: (value: string | string[] | null) =>
                                                   answerElicitation(turn.agentId, st.elicit?.requestId, value)
                                               }
                                             : {})}

@@ -175,6 +175,14 @@ describe('parseBrowserFrame', () => {
     expect(
       parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: null, agentId: AGENT }, USER)
     ).toEqual({ op: { op: 'elicitation_choice', requestId: 'elicit-1', value: null, agentId: AGENT } })
+    // A multi-select answers with the chosen list; anything else in it is not an answer.
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: ['a', 'b'] }, USER)).toEqual({
+      op: { op: 'elicitation_choice', requestId: 'elicit-1', value: ['a', 'b'] }
+    })
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: [] }, USER)).toEqual({
+      op: { op: 'elicitation_choice', requestId: 'elicit-1', value: [] }
+    })
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: ['a', 7] }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1' }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'elicitation_choice', value: 'yes' }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: '', value: 'yes' }, USER)).toBeNull()

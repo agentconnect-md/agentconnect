@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalStore } from '../src/store/local-store.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
+import { SlackConnection } from '../src/slack/connection.js'
+import { elicitTarget, WEBCHAT_ELICIT_KINDS } from '../src/slack/render.js'
 
 /**
  * Auto-approve policy for the daemon's OWN built-in MCP tools (UX fix): a human should
@@ -599,5 +601,141 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     pending.webchat.continuation = true
     await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())).resolves.toBeUndefined()
     expect(sink.output).not.toHaveBeenCalled()
+  })
+})
+
+// ── multi-select on webchat only (issue #1794 gap 2) ─────────────────────────
+// A Slack card is a row of buttons and cannot express "pick several, then confirm", so the
+// kind is one webchat renders and Slack still declines — the surfaces declare what they can
+// render (`SLACK_ELICIT_KINDS` / `WEBCHAT_ELICIT_KINDS`) rather than each kind excluding Slack.
+
+/** A multi-select form: an array of enum items, bounded unless `schema` says otherwise. */
+function multiElicitation(items: Record<string, unknown> = {}): CreateElicitationRequest {
+  return formElicitation({
+    message: 'Which checks should I run?',
+    requestedSchema: {
+      type: 'object',
+      properties: {
+        checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test', 'build'] }, ...items }
+      },
+      required: ['checks']
+    }
+  })
+}
+
+describe('webchat answers a multi-select elicitation with a list', () => {
+  it('cards the options with their bounds, and accepts the confirmed list', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      multiElicitation({ minItems: 1, maxItems: 2 })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    expect(cardEvents(sink)[0]).toEqual({
+      kind: 'elicitation',
+      requestId: expect.any(String),
+      message: 'Which checks should I run?',
+      options: [
+        { value: 'lint', label: 'lint' },
+        { value: 'test', label: 'test' },
+        { value: 'build', label: 'build' }
+      ],
+      // `multi` is what makes this card toggles + a confirm rather than one-tap buttons.
+      multi: { minItems: 1, maxItems: 2 }
+    })
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: ['lint', 'build'],
+      webchatConversationId: 'conv-1'
+    })
+    // The accepted content is the LIST, under the array property's name.
+    await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint', 'build'] } })
+    expect(cardEvents(sink)[1]).toEqual({
+      kind: 'elicitation_resolved',
+      requestId,
+      outcome: 'accepted',
+      // Every chosen label, in the words the card used — the single-select reading, extended.
+      label: 'lint, build'
+    })
+  })
+
+  it('re-checks the browser’s list: bounds, repeats, unoffered values, and the wrong shape', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      multiElicitation({ minItems: 2, maxItems: 2 })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const answer = (value: unknown, conversationId = 'conv-1') =>
+      (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: conversationId })
+
+    await answer(['lint']) // below minItems
+    await answer(['lint', 'test', 'build']) // above maxItems
+    await answer(['lint', 'lint']) // a repeat is not two picks
+    await answer(['lint', 'rm -rf /']) // one unoffered value rejects the WHOLE answer
+    await answer('lint') // a scalar cannot answer a multi-select card
+    await answer(['lint', 'test'], 'conv-other') // another conversation was never shown this card
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
+
+    await answer(['lint', 'test'])
+    await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint', 'test'] } })
+  })
+
+  it('takes an unbounded empty confirm and a Dismiss apart', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    expect(cardEvents(sink)[0].multi).toEqual({})
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    // "None of them" is an ANSWER when the schema sets no minimum — not a refusal to answer.
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: [], webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { checks: [] } })
+    expect(cardEvents(sink)[1]).toEqual({
+      kind: 'elicitation_resolved',
+      requestId,
+      outcome: 'accepted',
+      label: 'Nothing selected'
+    })
+
+    const dismissed = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [secondId] = (daemon as any).permissions.pendingElicits.keys()
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId: secondId,
+      value: null,
+      webchatConversationId: 'conv-1'
+    })
+    await expect(dismissed).resolves.toEqual({ action: 'decline' })
+  })
+
+  it('still declines a multi-select on a Slack turn, whose card cannot express it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    // A Slack turn: chat input cards, and a connection the elicitation path recognizes.
+    pending.plan.platform = 'slack'
+    pending.conn = Object.create(SlackConnection.prototype)
+
+    await expect(
+      (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation({ minItems: 1 }))
+    ).resolves.toBeUndefined()
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    // The same form IS renderable — just not here: webchat cards it.
+    expect(elicitTarget(multiElicitation({ minItems: 1 }), WEBCHAT_ELICIT_KINDS)?.kind).toBe('multi-enum')
   })
 })
