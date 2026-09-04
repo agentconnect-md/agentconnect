@@ -378,6 +378,63 @@ describe('probeAllRuntimes', () => {
     expect(results.every((r) => r.ok)).toBe(true)
   })
 
+  // A vendor archive installs on demand inside the sweep. It must occupy one probe slot, not the
+  // whole batch: the runtimes that need no install answer while the download is still running.
+  it('resolves each runtime inside its own slot, so an on-demand install delays only itself', async () => {
+    let releaseInstall = (): void => {}
+    const install = new Promise<void>((resolve) => {
+      releaseInstall = resolve
+    })
+    const reported: string[] = []
+    const sweep = probeAllRuntimes(
+      { fast: rt, installing: rt },
+      {
+        concurrency: 2,
+        hostFactory: () => fakeHost({}),
+        onResult: (result) => reported.push(result.runtime),
+        resolveRuntime: async (id, runtime) => {
+          if (id !== 'installing') return runtime
+          await install
+          return { ...runtime, command: '/store/installing/bin' }
+        }
+      }
+    )
+    await vi.waitFor(() => expect(reported).toEqual(['fast']))
+    releaseInstall()
+    const results = await sweep
+    expect(reported).toEqual(['fast', 'installing'])
+    expect(results.every((r) => r.ok)).toBe(true)
+  })
+
+  it('gives no probe at all to a runtime whose on-demand install left it unlaunchable', async () => {
+    const results = await probeAllRuntimes(
+      { a: rt, gone: rt },
+      {
+        concurrency: 1,
+        hostFactory: () => fakeHost({}),
+        resolveRuntime: async (id, runtime) => (id === 'gone' ? undefined : runtime)
+      }
+    )
+    // Not a failed result: the install path already reported why, and a dropped catalog entry
+    // must not come back as a probe error against a runtime the daemon no longer offers.
+    expect(results.map((r) => r.runtime)).toEqual(['a'])
+  })
+
+  it('probes the def the resolver returns, not the one the sweep was handed', async () => {
+    const seen: string[] = []
+    await probeAllRuntimes(
+      { a: rt },
+      {
+        hostFactory: (runtime) => {
+          seen.push(runtime.command)
+          return fakeHost({})
+        },
+        resolveRuntime: async (_id, runtime) => ({ ...runtime, command: '/store/a@1.0.0/agent' })
+      }
+    )
+    expect(seen).toEqual(['/store/a@1.0.0/agent'])
+  })
+
   it('keeps probing when a result callback throws', async () => {
     const warn = vi.fn()
     const results = await probeAllRuntimes(

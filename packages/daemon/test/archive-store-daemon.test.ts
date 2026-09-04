@@ -117,11 +117,16 @@ describe('daemon-owned vendor archive store', () => {
           return stored
         }
       },
-      probeRuntimes: async (runtimes) =>
-        Object.entries(runtimes).map(([id, rt]) => {
-          probed[id] = rt.command
-          return { runtime: id, ok: true, models: ['gemini-3-pro'] }
-        })
+      // Mirrors probeAllRuntimes: each runtime is resolved in its own slot just before spawning.
+      probeRuntimes: async (runtimes, opts) => {
+        const results = []
+        for (const [id, rt] of Object.entries(runtimes)) {
+          const resolved = (await opts.resolveRuntime?.(id, rt)) ?? rt
+          probed[id] = resolved.command
+          results.push({ runtime: id, ok: true, models: ['gemini-3-pro'] })
+        }
+        return results
+      }
     })
     await daemon.start()
     expect(calls).toBe(0) // nothing at start — no agent uses it
