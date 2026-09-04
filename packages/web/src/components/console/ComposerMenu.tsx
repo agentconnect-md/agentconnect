@@ -99,6 +99,10 @@ export function ComposerMenu({
   }
 
   const moveFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    // An IME candidate window owns Enter / arrows / Escape while composing — confirm,
+    // navigate, cancel. Acting on them would pick an agent or close the menu before a
+    // CJK term is committed, so leave the whole handler to the IME.
+    if (event.nativeEvent.isComposing) return
     if (event.key === 'Escape') {
       event.preventDefault()
       event.stopPropagation()

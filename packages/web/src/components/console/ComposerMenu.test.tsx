@@ -129,4 +129,36 @@ describe('ComposerMenu', () => {
     await act(async () => trigger.click())
     expect(labels(container.querySelector('[role="menu"]')!)).toHaveLength(3)
   })
+
+  it('leaves Enter and Escape to the IME while a CJK term is still composing', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root?.render(<SearchHarness />))
+
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!
+    await act(async () => trigger.click())
+    const search = container.querySelector<HTMLInputElement>('[role="searchbox"]')!
+
+    // A candidate-confirming Enter must not pick an option...
+    await act(async () => setInput(search, 'move'))
+    await act(async () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }))
+    })
+    expect(container.querySelector('[role="menu"]')).not.toBeNull()
+    expect(trigger.textContent).toContain('sentio-reviewer')
+
+    // ...nor may a candidate-cancelling Escape close the menu.
+    await act(async () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true }))
+    })
+    expect(container.querySelector('[role="menu"]')).not.toBeNull()
+
+    // Once composition ends the same keys work as before.
+    await act(async () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(trigger.textContent).toContain('Move Builder')
+    expect(container.querySelector('[role="menu"]')).toBeNull()
+  })
 })
