@@ -19,6 +19,7 @@ import { runtimeSandboxReadRoots } from '../launch/compose.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './config-caps.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { catalogFingerprint } from './model-catalog.js'
+import { parseArchiveLaunch } from './archive-store.js'
 import { mcpSocketPath } from '../paths.js'
 import { formatErr } from '../daemon/text.js'
 
@@ -68,6 +69,8 @@ export interface RuntimeFactsHost {
   updateCapabilities(): void
   mcpServerFacts(): FactsMcpServer[]
   noteCatalogProbe(input: { runtimeId: string; rt: RuntimeDef; probedVersion?: string; models: string[] }): void
+  /** Install a runtime's daemon-owned adapter, so the sweep probes what a session would launch. */
+  localizeRuntime(runtimeId: string): Promise<void>
   launch(): RuntimeProbeLaunchContext
 }
 
@@ -358,11 +361,27 @@ export class RuntimeFactsRegistry {
       return
     }
 
+    // A vendor-archive runtime is not launchable until the store extracts it, and this sweep is
+    // exactly what needs its model list — so install it here rather than at start-up, and probe the
+    // localized command a session would launch. `parseArchiveLaunch` answers only for an entry the
+    // store has not rewritten yet, and the store memoizes, so a concurrent sweep installs once.
+    // A failed install drops the id from the catalog, reported where the install happened.
+    let entries = catalog.entries
+    if (includeOrdinary && !fresh) {
+      const pending = Object.entries(entries)
+        .filter(([id, entry]) => entry.source !== 'curated' && parseArchiveLaunch(id, entry))
+        .map(([id]) => id)
+      if (pending.length > 0) {
+        log.info(`probe: installing vendor archive(s) before probing: ${pending.join(', ')}`)
+        for (const id of pending) await this.host.localizeRuntime(id)
+        entries = this.host.catalog().entries
+      }
+    }
     const ordinaryRuntimes =
       !includeOrdinary || fresh
         ? {}
         : Object.fromEntries(
-            Object.entries(catalog.entries)
+            Object.entries(entries)
               .filter(([, entry]) => entry.source !== 'curated')
               .map(([id, entry]) => [id, entry.runtime])
           )

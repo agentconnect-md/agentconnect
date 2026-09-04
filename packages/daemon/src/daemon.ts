@@ -17822,6 +17822,7 @@ export class Daemon {
       updateCapabilities: () => this.cpClient?.updateCapabilities?.(),
       mcpServerFacts: () => this.mcpServerFactsFromDefs(),
       noteCatalogProbe: (input) => void this.modelCatalogSvc?.noteProbe(input),
+      localizeRuntime: (runtimeId) => this.ensureRuntimeInstalled(runtimeId),
       launch: () => ({
         k8s: this.k8s,
         fakeHosts: this.opts.hostFactory !== undefined,
