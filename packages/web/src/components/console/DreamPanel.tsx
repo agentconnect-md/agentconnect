@@ -129,6 +129,13 @@ export function DreamPanel({
   const [reviewing, setReviewing] = useState<string | null>(null)
   const [confirmStart, setConfirmStart] = useState(false)
   const [confirmAdopt, setConfirmAdopt] = useState<{ dreamId: string; reviewToken?: string } | null>(null)
+  // The snapshot fence tripped: the live store moved under this dream. Adopting anyway is a
+  // whole-directory swap, so it drops live files not in the staged proposal (#1792).
+  const [forceAdopt, setForceAdopt] = useState<{
+    dreamId: string
+    reviewToken?: string
+    droppedFiles: string[]
+  } | null>(null)
   const listRequest = useRef(0)
 
   const refresh = useCallback(async () => {
@@ -208,6 +215,61 @@ export function DreamPanel({
       // A conflict usually means our view is stale (someone else started or
       // adopted something) — resync so the row and its actions are correct.
       if (e instanceof ApiError && e.status === 409) await refresh()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // The live files a forced adopt would drop: present in the live store, absent from
+  // the staged proposal. Recomputed fresh at fence time (not reused from review load),
+  // because the fence tripped precisely because live moved. Provenance is unknowable
+  // without the snapshot, so these are "not in the staged version", not "added since".
+  const droppedOnForce = async (dreamId: string): Promise<string[]> => {
+    try {
+      const [stagedPage, livePage] = await Promise.all([listDreamFiles(agentId, dreamId), listAgentMemory(agentId)])
+      const stagedNames = new Set(stagedPage.files.map((f: MemoryFileEntry) => f.name))
+      const liveNames = livePage.exists ? livePage.files.map((f: MemoryFileEntry) => f.name) : []
+      return liveNames.filter((name: string) => !stagedNames.has(name)).sort((a, b) => a.localeCompare(b))
+    } catch {
+      // The warning degrades to the generic wording rather than blocking the force path.
+      return []
+    }
+  }
+
+  // Adopt is its own handler, not `run`, because the snapshot-fence 409 is not a
+  // dead end: it opens the "adopt anyway" (force) path instead of surfacing a bare
+  // error the operator cannot act on (#1792). Every other failure behaves like `run`.
+  const adopt = async (dreamId: string, reviewToken: string | undefined, force: boolean) => {
+    if (busy) return
+    setBusy(true)
+    setActionError(null)
+    try {
+      await adoptDream(agentId, dreamId, force, reviewToken)
+      setReviewing(null)
+      setActionNotice('Memory adopted. Outdated proposals were moved to History.')
+      await refresh()
+    } catch (e) {
+      const fence =
+        !force &&
+        e instanceof ApiError &&
+        e.status === 409 &&
+        /changed since this dream was snapshotted/.test(e.message)
+      if (fence) {
+        // Recompute the live-only set NOW, so the warning names what is actually live
+        // at the moment of the destructive swap, not what the review panel saw earlier.
+        const droppedFiles = await droppedOnForce(dreamId)
+        await refresh()
+        setForceAdopt({ dreamId, reviewToken, droppedFiles })
+      } else {
+        setActionError(
+          e instanceof ApiError && e.status === 503
+            ? 'This agent’s daemon is offline.'
+            : e instanceof Error
+              ? e.message
+              : 'That did not work.'
+        )
+        if (e instanceof ApiError && e.status === 409) await refresh()
+      }
     } finally {
       setBusy(false)
     }
@@ -451,15 +513,32 @@ export function DreamPanel({
             onConfirm={() => {
               const { dreamId, reviewToken } = confirmAdopt
               setConfirmAdopt(null)
-              void run(async () => {
-                await adoptDream(agentId, dreamId, false, reviewToken)
-                setReviewing(null)
-                setActionNotice('Memory adopted. Outdated proposals were moved to History.')
-              })
+              void adopt(dreamId, reviewToken, false)
             }}
           >
             This replaces the agent’s live memory with the staged version. The current store is kept as a backup, and
             adopting is refused if memory changed underneath this dream.
+          </ConfirmationDialog>
+        ) : null}
+
+        {forceAdopt ? (
+          <ConfirmationDialog
+            title="Adopt anyway?"
+            confirmLabel="Adopt anyway"
+            onClose={() => setForceAdopt(null)}
+            onConfirm={() => {
+              const { dreamId, reviewToken } = forceAdopt
+              setForceAdopt(null)
+              void adopt(dreamId, reviewToken, true)
+            }}
+          >
+            {`Memory changed underneath this dream since it was snapshotted. Adopting replaces the whole store with the staged version` +
+              (forceAdopt.droppedFiles.length
+                ? ` and drops ${forceAdopt.droppedFiles.length} live file${
+                    forceAdopt.droppedFiles.length === 1 ? '' : 's'
+                  } not in the staged version: ${forceAdopt.droppedFiles.join(', ')}.`
+                : `. Any live file not in the staged version is dropped.`) +
+              ` The current store is kept as a backup. To keep the newer changes instead, re-run the dream.`}
           </ConfirmationDialog>
         ) : null}
       </div>

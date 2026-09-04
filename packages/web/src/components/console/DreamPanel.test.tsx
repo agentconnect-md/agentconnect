@@ -351,13 +351,13 @@ describe('DreamPanel', () => {
     }
   })
 
-  it('keeps the server message for an adoption fence conflict', async () => {
-    // adopt's 409 is the snapshot fence, NOT the one-in-flight rule — telling
-    // the user to "wait for the running dream" would be actively wrong.
+  it('offers "Adopt anyway" (force) when adoption hits the snapshot fence, instead of dead-ending (#1792)', async () => {
+    // adopt's 409 is the snapshot fence, NOT the one-in-flight rule. Rather than
+    // surfacing a bare error the operator cannot act on, the fence opens the force path.
     api.listDreams.mockResolvedValue([dream()])
     const fence = new FakeApiError(409)
     fence.message = 'the live store changed since this dream was snapshotted; rerun the dream or force'
-    api.adoptDream.mockRejectedValue(fence)
+    api.adoptDream.mockRejectedValueOnce(fence).mockResolvedValue(dream({ status: 'adopted' }))
 
     const host = await render()
     await act(async () => button(host, 'Review')?.click())
@@ -367,8 +367,49 @@ describe('DreamPanel', () => {
     )
     await act(async () => confirm.at(-1)?.click())
 
-    expect(host.textContent).toContain('rerun the dream')
+    // The first (unforced) adopt tried and was fenced; the console now offers force.
+    expect(api.adoptDream).toHaveBeenLastCalledWith(AGENT, 'drm-1', false, 'sha256:store')
+    expect(document.body.textContent).toContain('Adopt anyway')
     expect(host.textContent).not.toContain('already running')
+
+    await act(async () => button(document.body, 'Adopt anyway')?.click())
+    // The same reviewed store bytes are adopted, now with force=true.
+    expect(api.adoptDream).toHaveBeenLastCalledWith(AGENT, 'drm-1', true, 'sha256:store')
+  })
+
+  it('names the live-only files a forced adopt would drop, recomputed at fence time (#1792)', async () => {
+    // The review panel loaded with no live-only topics; another session then added
+    // new.md, which is what trips the fence. The warning must name new.md — so the
+    // dropped set is recomputed when the fence fires, not reused from review load.
+    api.listDreams.mockResolvedValue([dream()])
+    api.listAgentMemory
+      .mockResolvedValueOnce({ exists: true, files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }] })
+      .mockResolvedValue({
+        exists: true,
+        files: [
+          { name: 'MEMORY.md', size: 10, mtime: 'x' },
+          { name: 'new.md', size: 10, mtime: 'x' }
+        ]
+      })
+    const fence = new FakeApiError(409)
+    fence.message = 'the live store changed since this dream was snapshotted; rerun the dream or force'
+    api.adoptDream.mockRejectedValueOnce(fence).mockResolvedValue(dream({ status: 'adopted' }))
+
+    const host = await render()
+    await act(async () => button(host, 'Review')?.click())
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // The review panel, loaded before new.md existed, shows no deletions.
+    expect(host.textContent).not.toContain('Adopting removes')
+    await act(async () => button(host, 'Adopt')?.click())
+    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')].filter(
+      (b) => b.textContent?.trim() === 'Adopt'
+    )
+    await act(async () => confirm.at(-1)?.click())
+
+    // Provenance is unknowable, so the copy says "not in the staged version", not "added since".
+    expect(document.body.textContent).toContain('drops 1 live file not in the staged version: new.md')
   })
 
   it('recommends mined skills and never installs one without an explicit click', async () => {
