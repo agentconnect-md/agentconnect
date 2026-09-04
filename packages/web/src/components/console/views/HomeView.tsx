@@ -642,6 +642,8 @@ export default function HomeView() {
                     title="Agent"
                     value={agent.id}
                     options={agentOptions}
+                    searchable
+                    searchPlaceholder="Search agents…"
                     open={menu === 'agent'}
                     align="left"
                     placement="down"
@@ -660,6 +662,8 @@ export default function HomeView() {
                     title="Add agents"
                     value=""
                     options={addOptions}
+                    searchable
+                    searchPlaceholder="Search agents…"
                     iconOnly
                     open={menu === 'add'}
                     align="left"

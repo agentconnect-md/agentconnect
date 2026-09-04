@@ -28,6 +28,37 @@ function Harness() {
   )
 }
 
+function SearchHarness() {
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState('a1')
+  return (
+    <ComposerMenu
+      title="Agent"
+      value={value}
+      options={[
+        { value: 'a1', label: 'sentio-reviewer' },
+        { value: 'a2', label: 'Processor Doctor' },
+        { value: 'a3', label: 'Move Builder' }
+      ]}
+      searchable
+      searchPlaceholder="Search agents…"
+      open={open}
+      onOpenChange={setOpen}
+      onChange={setValue}
+    />
+  )
+}
+
+const labels = (scope: ParentNode) =>
+  Array.from(scope.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).map((o) => o.textContent)
+
+function setInput(input: HTMLInputElement, text: string) {
+  // React's controlled input needs the native value setter bypassed, then an `input` event.
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+  setter.call(input, text)
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
 afterEach(async () => {
   if (root) await act(async () => root?.unmount())
   container?.remove()
@@ -59,5 +90,38 @@ describe('ComposerMenu', () => {
     expect(trigger.textContent).toContain('High')
     expect(trigger.title).toBe('Effort: High')
     expect(container.querySelector('[role="menu"]')).toBeNull()
+  })
+
+  it('filters options by keyword when searchable, and Enter picks the first match', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root?.render(<SearchHarness />))
+
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!
+    await act(async () => trigger.click())
+
+    const menu = container.querySelector<HTMLElement>('[role="menu"]')!
+    const search = menu.querySelector<HTMLInputElement>('[role="searchbox"]')!
+    expect(search.placeholder).toBe('Search agents…')
+    expect(labels(menu)).toEqual(['sentio-reviewer', 'Processor Doctor', 'Move Builder'])
+
+    await act(async () => setInput(search, 'DOC'))
+    expect(labels(menu)).toEqual(['Processor Doctor'])
+
+    await act(async () => setInput(search, 'zzz'))
+    expect(labels(menu)).toEqual([])
+    expect(menu.textContent).toContain('No matches')
+
+    await act(async () => setInput(search, 'move'))
+    await act(async () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(trigger.textContent).toContain('Move Builder')
+    expect(container.querySelector('[role="menu"]')).toBeNull()
+
+    // Reopening starts unfiltered — the old query must not hide the list.
+    await act(async () => trigger.click())
+    expect(labels(container.querySelector('[role="menu"]')!)).toHaveLength(3)
   })
 })
