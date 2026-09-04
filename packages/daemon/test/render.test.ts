@@ -1423,6 +1423,67 @@ describe('elicitation card', () => {
     })
   })
 
+  it('renders when the only required property is the rendered one', () => {
+    const req = {
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Pick a language',
+      requestedSchema: { type: 'object', properties: { color: { type: 'string', enum: ['red'] } }, required: ['color'] }
+    } as any
+    expect(elicitTarget(req)?.propName).toBe('color')
+  })
+
+  it('renders when extra non-required properties ride along', () => {
+    const req = {
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Pick a language',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          color: { type: 'string', enum: ['red'] },
+          note: { type: 'string' },
+          count: { type: 'number' }
+        },
+        required: ['color']
+      }
+    } as any
+    expect(elicitTarget(req)?.propName).toBe('color')
+  })
+
+  it('returns null when the schema requires a property the card cannot answer', () => {
+    const req = {
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Pick a language',
+      requestedSchema: {
+        type: 'object',
+        properties: { color: { type: 'string', enum: ['red'] }, note: { type: 'string' } },
+        required: ['color', 'note']
+      }
+    } as any
+    expect(elicitTarget(req)).toBeNull()
+    expect(buildElicitationCard('e', req)).toBeNull()
+  })
+
+  it('returns null for a boolean target with an extra required property', () => {
+    const req = {
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Proceed?',
+      requestedSchema: {
+        type: 'object',
+        properties: { ok: { type: 'boolean' }, reason: { type: 'string' } },
+        required: ['ok', 'reason']
+      }
+    } as any
+    expect(elicitTarget(req)).toBeNull()
+  })
+
+  it('renders when required is absent', () => {
+    expect(elicitTarget(form({ ok: { type: 'boolean' } }))?.propName).toBe('ok')
+  })
+
   it('returns null (→ caller declines) for free-text-only forms and url mode', () => {
     expect(elicitTarget(form({ name: { type: 'string' } }))).toBeNull()
     expect(buildElicitationCard('e', form({ name: { type: 'string' } }))).toBeNull()

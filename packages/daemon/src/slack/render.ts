@@ -612,18 +612,22 @@ export interface ElicitTarget {
 /**
  * Resolve the single form field an elicitation card renders (v1): the FIRST string-enum
  * (`oneOf` titled options or bare `enum`) or boolean property in the requested schema.
- * Returns null for URL-mode, an empty/absent schema, or a form whose fields we can't
- * render inline (free text, numbers, multi-field) — the daemon then declines. Pure, and
+ * Returns null for URL-mode, an empty/absent schema, a form whose fields we can't render
+ * inline (free text, numbers), or one that requires a property other than the rendered
+ * target — the daemon then declines rather than accepting a partial answer. Pure, and
  * shared by {@link buildElicitationCard} and the daemon's click handler so the button
  * values and their interpretation can't drift.
  */
 export function elicitTarget(params: CreateElicitationRequest): ElicitTarget | null {
   const p = params as {
     mode?: string
-    requestedSchema?: { properties?: Record<string, Record<string, unknown>> }
+    requestedSchema?: { properties?: Record<string, Record<string, unknown>>; required?: unknown }
   }
   if (p.mode !== 'form') return null
   const props = p.requestedSchema?.properties ?? {}
+  const required = Array.isArray(p.requestedSchema?.required) ? (p.requestedSchema.required as unknown[]) : []
+  // A required field we can't render is unanswerable: accepting without it would assert a lie.
+  const answerable = (t: ElicitTarget) => (required.every((r) => r === t.propName) ? t : null)
   for (const [name, prop] of Object.entries(props)) {
     if (prop?.type === 'string') {
       const oneOf = prop.oneOf as { const?: unknown; title?: unknown }[] | undefined
@@ -633,17 +637,17 @@ export function elicitTarget(params: CreateElicitationRequest): ElicitTarget | n
         : Array.isArray(en)
           ? en.map((v) => ({ value: String(v), label: clampTo(String(v), 75) }))
           : []
-      if (options.length) return { propName: name, kind: 'enum', options }
+      if (options.length) return answerable({ propName: name, kind: 'enum', options })
     }
     if (prop?.type === 'boolean') {
-      return {
+      return answerable({
         propName: name,
         kind: 'boolean',
         options: [
           { value: 'true', label: 'Yes' },
           { value: 'false', label: 'No' }
         ]
-      }
+      })
     }
   }
   return null
