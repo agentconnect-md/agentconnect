@@ -21,6 +21,8 @@ export interface CodexPermissionProfileOptions {
   sessionGitMetadataRoots?: readonly string[]
   /** A confined session's private HOME (§11) — a SIBLING of the cwd, so `:workspace` never reaches it. */
   sessionHomeRoot?: string
+  /** Operator-declared `security.sandboxWriteRoots` the outer boundary already opened: a shared package store, outside the cwd. */
+  sharedWriteRoots?: readonly string[]
   allowModelToolUnixSockets?: boolean
   disableUnifiedExec?: boolean
 }
@@ -62,11 +64,13 @@ export function codexPermissionProfileConfig(
   const writableGitMetadataRoots = [...new Set((opts.writableGitMetadataRoots ?? []).map((root) => normalize(root)))]
   const sessionGitMetadataRoots = [...new Set((opts.sessionGitMetadataRoots ?? []).map((root) => normalize(root)))]
   const sessionHomeRoot = opts.sessionHomeRoot === undefined ? undefined : normalize(opts.sessionHomeRoot)
+  const sharedWriteRoots = [...new Set((opts.sharedWriteRoots ?? []).map((root) => normalize(root)))]
   const policyRoots = [
     ...protectedRoots,
     ...writableGitMetadataRoots,
     ...sessionGitMetadataRoots,
-    ...(sessionHomeRoot === undefined ? [] : [sessionHomeRoot])
+    ...(sessionHomeRoot === undefined ? [] : [sessionHomeRoot]),
+    ...sharedWriteRoots
   ]
   if (policyRoots.length === 0 && !opts.allowModelToolUnixSockets && !opts.disableUnifiedExec) return undefined
   if (policyRoots.some((root) => !isAbsolute(root))) {
@@ -101,6 +105,8 @@ export function codexPermissionProfileConfig(
           [sessionHomeRoot, 'write'],
           [join(sessionHomeRoot, '.codex'), 'deny']
         ] as Array<[string, string]>)),
+    // A shared store sits outside the cwd, so `:workspace` alone would refuse the very install it exists for; the read-only mode keeps refusing it.
+    ...sharedWriteRoots.map((root): [string, string] => [root, 'write']),
     ...protectedRoots.map((root): [string, string] => [root, 'deny'])
   ]
   const agentFilesystem =
@@ -112,6 +118,7 @@ export function codexPermissionProfileConfig(
     ['/.git', 'write'],
     ['/.agents', 'write'],
     ['/.codex', 'write'],
+    ...sharedWriteRoots.map((root): [string, string] => [root, 'write']),
     ...protectedRoots.map((root): [string, string] => [root, 'deny'])
   ])
   // On Linux Codex's restricted network seccomp permits AF_UNIX socket()

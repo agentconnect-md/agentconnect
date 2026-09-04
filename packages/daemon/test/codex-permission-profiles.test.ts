@@ -120,6 +120,29 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     ).not.toContain('/agent/sessions')
   })
 
+  it('opens an operator-declared shared store for writes in the agent and full-access profiles, never in read-only', () => {
+    const store = '/host/.local/share/pnpm/store'
+    const config = codexPermissionProfileConfig({ protectedRoots: ['/host/.codex'], sharedWriteRoots: [store] })!
+
+    const agent = config.configOverrides.find((value) =>
+      value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
+    )!
+    expect(agent).toContain(`"${store}" = "write"`)
+    expect(agent).toContain('"/host/.codex" = "deny"')
+    expect(
+      config.configOverrides.find((value) =>
+        value.startsWith('permissions.agentconnect-protected-full-access.filesystem=')
+      )
+    ).toContain(`"${store}" = "write"`)
+    expect(
+      config.configOverrides.find((value) =>
+        value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
+      )
+    ).not.toContain(store)
+    // The store alone is a policy: nothing else needs to be protected for it to be emitted.
+    expect(codexPermissionProfileConfig({ protectedRoots: [], sharedWriteRoots: [store] })).toBeDefined()
+  })
+
   // §11: the per-session HOME is a SIBLING of the cwd, so `:workspace` never reaches it and pnpm/corepack cannot write their caches.
   it('opens a confined session HOME for writes and denies its .codex whole', () => {
     const home = '/agent/sessions/session-1/home'

@@ -52,6 +52,11 @@ export function sandboxReadRoots(paths: readonly string[], env: NodeJS.ProcessEn
   return paths.map((path) => existingRoot(path, env, 'security.sandboxReadRoots entry'))
 }
 
+/** `security.sandboxWriteRoots`, normalized exactly like the read roots; the launch decides whether each may be reopened writable. */
+export function sandboxWriteRoots(paths: readonly string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  return paths.map((path) => existingRoot(path, env, 'security.sandboxWriteRoots entry'))
+}
+
 /** Resolve the existing prefix too, so a missing socket/file below a symlink is
  * still expressed against the path the kernel will see later. */
 function canonicalPath(path: string, env: NodeJS.ProcessEnv): string {
