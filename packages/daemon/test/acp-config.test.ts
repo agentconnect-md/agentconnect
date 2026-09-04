@@ -339,6 +339,11 @@ describe('claudeSessionMeta', () => {
       })
     )
     expect(claudeSessionMeta(undefined, true)).toEqual(cc({ thinking: THINKING }))
+    // An operator-declared shared store is reopened for model-authored Bash too; the credential roots stay denied.
+    expect(
+      claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot], undefined, false, [], ['/host/store'])
+        ?.claudeCode.options.sandbox?.filesystem
+    ).toEqual({ allowWrite: ['/host/store'], denyRead: [credentialRoot], denyWrite: [credentialRoot] })
   })
 
   it('returns undefined off a Claude runtime (the _meta is claude-acp-specific)', () => {

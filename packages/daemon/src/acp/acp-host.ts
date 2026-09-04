@@ -385,7 +385,8 @@ export function claudeSessionMeta(
   protectedCredentialRoots?: readonly string[],
   protectedSettings?: ClaudeProtectedSettings,
   allowModelToolUnixSockets = false,
-  extraDisallowedTools: readonly string[] = []
+  extraDisallowedTools: readonly string[] = [],
+  sharedWriteRoots: readonly string[] = []
 ):
   | {
       claudeCode: {
@@ -417,7 +418,9 @@ export function claudeSessionMeta(
         // adapters spread this into SDK query() options (older ones ignore it).
         disallowedTools: [...CLAUDE_DISALLOWED_BUILTIN_TOOLS, ...extraDisallowedTools],
         ...(protectedCredentialRoots
-          ? { sandbox: claudeInnerSandboxSettings(protectedCredentialRoots, allowModelToolUnixSockets) }
+          ? {
+              sandbox: claudeInnerSandboxSettings(protectedCredentialRoots, allowModelToolUnixSockets, sharedWriteRoots)
+            }
           : {}),
         ...(protectedSettings || ultracode ? { settings } : {})
       },
@@ -842,7 +845,8 @@ export class AcpHost {
       this.opts.sandbox ? (this.opts.sandbox.protectedCredentialRoots ?? []) : undefined,
       this.opts.sandbox?.claudeProtectedSettings,
       this.opts.sandbox?.allowModelToolUnixSockets,
-      extraDisallowedTools
+      extraDisallowedTools,
+      this.opts.sandbox?.sharedWriteRoots
     )
     const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
     const res = await this.conn!.agent.request(methods.agent.session.new, {
@@ -1077,7 +1081,9 @@ export class AcpHost {
         undefined,
         this.opts.sandbox ? (this.opts.sandbox.protectedCredentialRoots ?? []) : undefined,
         this.opts.sandbox?.claudeProtectedSettings,
-        this.opts.sandbox?.allowModelToolUnixSockets
+        this.opts.sandbox?.allowModelToolUnixSockets,
+        [],
+        this.opts.sandbox?.sharedWriteRoots
       )
       const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
       const res = await this.conn!.agent.request(methods.agent.session.load, {

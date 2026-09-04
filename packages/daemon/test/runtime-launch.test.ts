@@ -379,6 +379,9 @@ describe('prepareRuntimeLaunch', () => {
     const launch = prepareRuntimeLaunch({ ...base, trustedOperatorWriteRoots: [store] })
     expect(launch.sandbox!.writable).toContain(realpathSync(store))
     expect(launch.sandbox!.allowReadRoots).toContain(realpathSync(store))
+    // The runtime-native tool sandboxes must reopen it too, or the install this exists for still fails inside them.
+    expect(launch.sandbox!.sharedWriteRoots).toEqual([realpathSync(store)])
+    expect(prepareRuntimeLaunch(base).sandbox!.sharedWriteRoots).toBeUndefined()
     // The host HOME stays hidden around it: only the store is reopened.
     expect(coveredBy(launch.sandbox!.denyReadRoots, realpathSync(hostHome))).toBe(true)
 
@@ -489,6 +492,8 @@ describe('prepareRuntimeLaunch', () => {
 
   it('grants a confined session its own clones exactly, and never the primary checkout .git', () => {
     const { scopeDir, hostHome, key, sessionDir, cwd, primaryGit, cloneGit, secondaryGit } = sessionCloneFixture()
+    const store = join(hostHome, '.local', 'share', 'pnpm', 'store')
+    mkdirSync(store, { recursive: true })
 
     const launch = prepareRuntimeLaunch({
       runtimeId: 'codex-acp',
@@ -502,6 +507,7 @@ describe('prepareRuntimeLaunch', () => {
       credentialPlatform: 'linux',
       // What the daemon hands a session host: the session directory alone (workspace-manager.ts).
       trustedWorkspaceWriteRoots: [sessionDir],
+      trustedOperatorWriteRoots: [store],
       trustedPrimaryCheckout: join(scopeDir, 'workspace'),
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
@@ -526,6 +532,9 @@ describe('prepareRuntimeLaunch', () => {
     }
     expect(table).not.toContain('worktrees')
     expect(table).not.toContain(realpathSync(primaryGit))
+    // An operator-declared shared store is reopened at both layers: the outer boundary and the inner Codex profile.
+    expect(coveredBy(policy.filesystem.allowWrite, realpathSync(store))).toBe(true)
+    expect(table).toContain(`"${realpathSync(store)}" = "write"`)
   })
 
   // §11: the session's HOME lives under its leaf, so runtime state, temp and package caches are the session's alone and go with it.

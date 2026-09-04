@@ -114,6 +114,8 @@ export interface ClaudeInnerSandboxSettings {
     allowAllUnixSockets: boolean
   }
   filesystem: {
+    /** Operator-declared `security.sandboxWriteRoots`; absent when there are none, so the policy stays byte-identical. */
+    allowWrite?: string[]
     denyRead: string[]
     denyWrite: string[]
   }
@@ -129,9 +131,11 @@ export interface ClaudeInnerSandboxSettings {
  * while the parent Claude process retains shared-login access. */
 export function claudeInnerSandboxSettings(
   protectedCredentialRoots: readonly string[],
-  allowAllUnixSockets = false
+  allowAllUnixSockets = false,
+  sharedWriteRoots: readonly string[] = []
 ): ClaudeInnerSandboxSettings {
   const roots = [...new Set(protectedCredentialRoots)]
+  const allowWrite = [...new Set(sharedWriteRoots)]
   return {
     enabled: true,
     failIfUnavailable: true,
@@ -144,6 +148,7 @@ export function claudeInnerSandboxSettings(
       allowAllUnixSockets
     },
     filesystem: {
+      ...(allowWrite.length > 0 ? { allowWrite } : {}),
       denyRead: roots,
       denyWrite: roots
     },

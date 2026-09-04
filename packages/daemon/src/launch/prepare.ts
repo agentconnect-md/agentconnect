@@ -195,6 +195,8 @@ export interface PreparedRuntimeLaunch {
     /** Highest-precedence Claude settings that keep project/local settings from
      * redirecting the trusted parent to an attacker-selected credential profile. */
     claudeProtectedSettings?: ClaudeProtectedSettings
+    /** Operator-declared `security.sandboxWriteRoots`, canonical: the runtime-native tool sandboxes reopen them too. */
+    sharedWriteRoots?: string[]
   }
 }
 
@@ -577,6 +579,7 @@ export function prepareRuntimeLaunch(opts: {
         ? { writableGitMetadataRoots }
         : { sessionGitMetadataRoots: writableGitMetadataRoots }),
       ...(sessionHomeRoot !== undefined && outerWritable(sessionHomeRoot) ? { sessionHomeRoot } : {}),
+      sharedWriteRoots: operatorWriteRoots.filter(outerWritable),
       allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true,
       disableUnifiedExec: true
     })
@@ -595,7 +598,8 @@ export function prepareRuntimeLaunch(opts: {
       allowReadRoots: boundary.allowRead,
       protectedCredentialRoots,
       ...(opts.allowModelToolUnixSockets ? { allowModelToolUnixSockets: true } : {}),
-      ...(protectedClaudeSettings ? { claudeProtectedSettings: protectedClaudeSettings } : {})
+      ...(protectedClaudeSettings ? { claudeProtectedSettings: protectedClaudeSettings } : {}),
+      ...(operatorWriteRoots.length > 0 ? { sharedWriteRoots: operatorWriteRoots } : {})
     }
   }
 }
