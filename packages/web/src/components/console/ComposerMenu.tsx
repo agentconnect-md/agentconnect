@@ -1,6 +1,6 @@
 'use client'
 
-import { useId, useRef, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Icon } from '@/components/ui'
 
 // Default trigger look — the minimal inline chip used by the session composer.
@@ -18,6 +18,12 @@ type ComposerMenuChoice = {
   dimmed?: boolean
 }
 
+// Case-insensitive substring match on the label (what the user sees) and the value.
+const matches = (choice: ComposerMenuChoice, query: string) => {
+  const q = query.trim().toLowerCase()
+  return q === '' || choice.label.toLowerCase().includes(q) || choice.value.toLowerCase().includes(q)
+}
+
 export function ComposerMenu({
   title,
   value,
@@ -31,6 +37,8 @@ export function ComposerMenu({
   triggerClassName,
   iconOnly = false,
   tooltips = true,
+  searchable = false,
+  searchPlaceholder = 'Search…',
   onOpenChange,
   onChange
 }: {
@@ -57,13 +65,24 @@ export function ComposerMenu({
    *  off for self-explanatory menus (model / effort / permission) where that reads as
    *  noise; a choice's own `description` is shown either way. */
   tooltips?: boolean
+  /** Render a keyword filter above the options — for unbounded lists (agents), not
+   *  the fixed three-or-four-choice menus. The filter takes focus when the menu opens;
+   *  Enter picks the first match, ArrowDown steps into the list. */
+  searchable?: boolean
+  searchPlaceholder?: string
   onOpenChange: (open: boolean) => void
   onChange: (value: string) => void
 }) {
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuId = useId()
   const headingId = useId()
+  const [query, setQuery] = useState('')
+  // A fresh open always starts unfiltered — a stale query would hide the list.
+  useEffect(() => {
+    if (!open) setQuery('')
+  }, [open])
   const selected = options.find((choice) => choice.value === value) ?? options[0]
+  const visible = searchable ? options.filter((choice) => matches(choice, query)) : options
   // A choice's own description always shows: `tooltips` only governs the generic
   // "<title>: <label>" fallback, which is the part that reads as noise.
   const tooltipFor = (choice: ComposerMenuChoice | undefined) =>
@@ -80,23 +99,39 @@ export function ComposerMenu({
   }
 
   const moveFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    // An IME candidate window owns Enter / arrows / Escape while composing — confirm,
+    // navigate, cancel. Acting on them would pick an agent or close the menu before a
+    // CJK term is committed, so leave the whole handler to the IME.
+    if (event.nativeEvent.isComposing) return
     if (event.key === 'Escape') {
       event.preventDefault()
       event.stopPropagation()
       closeAndFocus()
       return
     }
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    const inSearch = event.target instanceof HTMLInputElement
+    if (inSearch && event.key === 'Enter') {
+      event.preventDefault()
+      if (visible[0]) pick(visible[0].value)
+      return
+    }
+    // Home/End move the caret inside the search box; only the arrows leave it.
+    if (!['ArrowDown', 'ArrowUp', ...(inSearch ? [] : ['Home', 'End'])].includes(event.key)) return
     event.preventDefault()
     const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
     if (options.length === 0) return
-    const current = Math.max(0, options.indexOf(document.activeElement as HTMLButtonElement))
+    const current = options.indexOf(document.activeElement as HTMLButtonElement)
+    // From the search box (not in the list) ArrowDown enters at the top, ArrowUp at the bottom.
     const next =
       event.key === 'Home'
         ? 0
         : event.key === 'End'
           ? options.length - 1
-          : (current + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length
+          : current === -1
+            ? event.key === 'ArrowDown'
+              ? 0
+              : options.length - 1
+            : (current + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length
     options[next]?.focus()
   }
 
@@ -132,22 +167,45 @@ export function ComposerMenu({
           <div
             id={menuId}
             role="menu"
-            aria-labelledby={headingId}
-            className={`absolute z-50 min-w-[148px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg) ${
-              placement === 'down' ? 'top-[calc(100%+8px)]' : 'bottom-[calc(100%+8px)]'
-            } ${align === 'left' ? 'left-0' : 'right-0'}`}
+            // The search box's own placeholder names the list, so a searchable menu
+            // drops the heading row rather than stacking two labels; the menu keeps
+            // the same accessible name via aria-label.
+            {...(searchable ? { 'aria-label': title } : { 'aria-labelledby': headingId })}
+            className={`absolute z-50 rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg) ${
+              searchable ? 'min-w-[220px]' : 'min-w-[148px]'
+            } ${placement === 'down' ? 'top-[calc(100%+8px)]' : 'bottom-[calc(100%+8px)]'} ${
+              align === 'left' ? 'left-0' : 'right-0'
+            }`}
             onKeyDown={moveFocus}
           >
-            <div
-              id={headingId}
-              className="px-2 pt-[5px] pb-1 font-sans text-[10.5px] font-semibold leading-normal text-(--text-tertiary)"
-            >
-              {title}
-            </div>
+            {!searchable && (
+              <div
+                id={headingId}
+                className="px-2 pt-[5px] pb-1 font-sans text-[10.5px] font-semibold leading-normal text-(--text-tertiary)"
+              >
+                {title}
+              </div>
+            )}
+            {searchable && (
+              // px-2 matches the options' own inset, so the field's border lines up
+              // with the option icons below instead of running wider than the list.
+              <div className="px-2 pt-[3px]">
+                <input
+                  type="search"
+                  role="searchbox"
+                  aria-label={`Filter ${title.toLowerCase()}`}
+                  className="fsearch"
+                  value={query}
+                  placeholder={searchPlaceholder}
+                  autoFocus
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </div>
+            )}
             {/* Options scroll within a capped height so a long list (e.g. dozens of
                 models) never runs off-screen; the heading above stays put. */}
             <div className="max-h-[300px] overflow-y-auto overflow-x-hidden">
-              {options.map((choice) => {
+              {visible.map((choice) => {
                 const selectedChoice = choice.value === selected?.value
                 return (
                   <button
@@ -155,7 +213,7 @@ export function ComposerMenu({
                     type="button"
                     role="menuitemradio"
                     aria-checked={selectedChoice}
-                    autoFocus={selectedChoice}
+                    autoFocus={selectedChoice && !searchable}
                     title={tooltipFor(choice)}
                     className={`fopt min-h-8 gap-2 rounded-md px-2 py-[5px] text-[12px] ${
                       selectedChoice ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)' : ''
@@ -168,6 +226,7 @@ export function ComposerMenu({
                   </button>
                 )
               })}
+              {searchable && visible.length === 0 && <div className="fnohit">No matches</div>}
             </div>
             {footer && <div className="mt-1 border-t border-(--border-subtle)">{footer}</div>}
           </div>

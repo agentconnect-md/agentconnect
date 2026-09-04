@@ -4741,6 +4741,8 @@ export default function SessionDetailView() {
                                 title="Add agents"
                                 value=""
                                 options={addAgentOptions}
+                                searchable
+                                searchPlaceholder="Search agents…"
                                 iconOnly
                                 open={composerMenuOpen === 'addAgent'}
                                 align="left"
