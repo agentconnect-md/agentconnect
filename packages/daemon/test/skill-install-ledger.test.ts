@@ -361,7 +361,7 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     const first = await reconcile('v1')
     expect(first.installed).toEqual([BUNDLE])
 
-    // What `git clean -ffdx` does to a resumed session clone: the bundles go, the ledger naming them stays.
+    // A resumed session clone whose bundles vanished from disk while the ledger naming them stays.
     await rm(join(cwd, '.claude'), { recursive: true, force: true })
     const second = await reconcile('v1')
 

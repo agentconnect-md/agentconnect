@@ -388,17 +388,24 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(existsSync(join(cwd, 'feature.md'))).toBe(true)
     expect(() => git(agent.workspace.path, ['rev-parse', '--verify', '--quiet', headRef])).toThrow()
 
-    // A later delivery re-fetches the exact revision and resets the clone, dirt and all.
+    // A later delivery re-fetches the exact revision and resets every tracked file, while what the
+    // session built in between — untracked or ignored — stays, so it need not install or build again.
     const second = publishPullRequest(primary!.seed, 'pr v2\n')
-    writeFileSync(join(cwd, 'scratch.txt'), 'dropped\n')
+    writeFileSync(join(cwd, 'feature.md'), 'edited locally\n')
+    writeFileSync(join(cwd, 'scratch.txt'), 'kept\n')
+    mkdirSync(join(cwd, 'node_modules', '.pnpm'), { recursive: true })
+    writeFileSync(join(cwd, 'node_modules', '.pnpm', 'lock.yaml'), 'kept\n')
+    writeFileSync(join(cwd, '.git', 'info', 'exclude'), 'node_modules/\n')
     const again = await workspaces.prepareSessionWorkspace(
       agent,
       confined({ review: { pullNumber: 7, baseSha: second.base, headSha: second.head } })
     )
     expect(again).toBe(cwd)
     expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(second.head)
-    expect(existsSync(join(cwd, 'scratch.txt'))).toBe(false)
-    expect(git(cwd, ['status', '--porcelain'])).toBe('')
+    expect(readFileSync(join(cwd, 'feature.md'), 'utf8')).toBe('pr v2\n')
+    expect(existsSync(join(cwd, 'scratch.txt'))).toBe(true)
+    expect(existsSync(join(cwd, 'node_modules', '.pnpm', 'lock.yaml'))).toBe(true)
+    expect(git(cwd, ['status', '--porcelain'])).toBe('?? scratch.txt')
   })
 
   // A blobless clone has to resolve a fetched pack against objects it filtered out, which is a promisor
