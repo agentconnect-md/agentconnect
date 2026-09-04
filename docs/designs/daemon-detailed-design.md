@@ -332,9 +332,9 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
 
     // Host directories carved WRITABLE into EVERY sandbox, so sessions share one
     // package-manager store instead of each downloading its own (pnpm's store,
-    // corepack's cache; point the runtime at them with the agent's env: pnpm 10+
-    // reads pnpm_config_store_dir, not the npm_config_ prefix; corepack reads
-    // COREPACK_HOME). Same expansion and existence rule as
+    // corepack's cache; point the runtime at them with the agent's env: pnpm 11
+    // reads pnpm_config_store_dir and ignores the npm_config_ prefix, pnpm 10 the
+    // reverse; corepack reads COREPACK_HOME). Same expansion and existence rule as
     // sandboxReadRoots. This is a deliberate hole in per-session isolation: what one
     // session's install writes, the next session runs. Name the store itself, never
     // HOME or a parent holding credentials.
