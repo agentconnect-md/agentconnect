@@ -90,7 +90,10 @@ source machine is in fact still running, and label the commit action as a force
 reassign rather than a plain move.
 
 Both paths preserve the Agent identity and its centrally managed settings. Neither
-copies daemon-local workspace, memory, transcripts, or attachments. A source that later
+copies daemon-local workspace, transcripts, or attachments. Managed memory follows the
+agent only when its home is the Control Plane (`memory.home: control-plane`); a
+daemon-home tree stays in the source archive, and a move onto the managed pool is
+refused until the home is switched. A source that later
 reconnects after a force reassign is told to detach the stale local copy during
 placement reconciliation.
 
