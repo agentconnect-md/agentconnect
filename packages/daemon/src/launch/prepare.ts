@@ -243,6 +243,8 @@ export function prepareRuntimeLaunch(opts: {
    * Every entry is revalidated as a strict descendant of scopeDir. */
   trustedWorkspaceWriteRoots?: string[]
   trustedPrimaryCheckout?: string
+  /** Operator-declared host dirs (`security.sandboxWriteRoots`) reopened writable: a shared package store, never the daemon's own. */
+  trustedOperatorWriteRoots?: string[]
   /** Test seam. Shared login remains Linux-only with the sandbox rollout. */
   credentialPlatform?: NodeJS.Platform
   sandboxMechanism?: SandboxMechanism
@@ -452,6 +454,10 @@ export function prepareRuntimeLaunch(opts: {
       return trusted
     })
   )
+  // An operator write root follows the exception rule: it may sit below the hidden host HOME (a pnpm store does), never equal or contain HOME, daemon state, an agent root, or shared temp.
+  const operatorWriteRoots = compactReadRoots(
+    (opts.trustedOperatorWriteRoots ?? []).map((path) => validateException(path, 'security.sandboxWriteRoots entry'))
+  )
   const agentRoot = safeRoot(opts.scopeDir, 'agent root')
   const trustedWorkspaceWriteRoots = compactReadRoots(
     (opts.trustedWorkspaceWriteRoots ?? []).map((path) => {
@@ -521,6 +527,7 @@ export function prepareRuntimeLaunch(opts: {
       ...credentialWritableRoots,
       ...trustedWorkspaceWriteRoots,
       ...packageCacheWriteRoots,
+      ...operatorWriteRoots,
       ...gitMetadataWriteRoots,
       // Inside the agent dir like every other writable root, so the agent-dir rule needs no exemption for it.
       ...(sandboxTempDir === undefined ? [] : [sandboxTempDir])

@@ -361,6 +361,38 @@ describe('prepareRuntimeLaunch', () => {
     expect(coveredBy(agent.sandbox!.writable, join(hostHome, '.npm'))).toBe(false)
   })
 
+  it('reopens an operator write root below the hidden host HOME writable, but never HOME itself', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const store = join(hostHome, '.local', 'share', 'pnpm', 'store')
+    mkdirSync(store, { recursive: true })
+    const base = {
+      runtimeId: 'dsh-acp',
+      runtime: { command: process.execPath, args: [], env: [] } as RuntimeDef,
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap' as const,
+      hostEnv: { HOME: hostHome, PATH: dirname(process.execPath) }
+    }
+
+    const launch = prepareRuntimeLaunch({ ...base, trustedOperatorWriteRoots: [store] })
+    expect(launch.sandbox!.writable).toContain(realpathSync(store))
+    expect(launch.sandbox!.allowReadRoots).toContain(realpathSync(store))
+    // The host HOME stays hidden around it: only the store is reopened.
+    expect(coveredBy(launch.sandbox!.denyReadRoots, realpathSync(hostHome))).toBe(true)
+
+    // The same rule as every other exception: a root that IS a protected boundary reopens it wholesale.
+    expect(() => prepareRuntimeLaunch({ ...base, trustedOperatorWriteRoots: [hostHome] })).toThrow(
+      /security\.sandboxWriteRoots entry .* would reopen protected path/
+    )
+    expect(() => prepareRuntimeLaunch({ ...base, trustedOperatorWriteRoots: [dirname(scopeDir)] })).toThrow(
+      /would reopen protected path/
+    )
+    // Without the declaration nothing below the host HOME is writable.
+    expect(coveredBy(prepareRuntimeLaunch(base).sandbox!.writable, store)).toBe(false)
+  })
+
   // multi-repository-workspaces.md decision 8: the secondary roots live under the agent dir, which
   // the boundary denies wholesale — without this carve-back a sandboxed runtime cannot see them.
   it('carves back the secondary-roots parent and every existing secondary .git for Codex', () => {

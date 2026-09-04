@@ -171,6 +171,8 @@ export const ConfigSchema = z.object({
       requireSandbox: z.boolean().default(false),
       // Operator-owned host dirs (toolchains such as nvm's node or a rustup toolchain) carved read-only into every sandbox.
       sandboxReadRoots: z.array(z.string()).default([]),
+      // Operator-owned host dirs carved WRITABLE into every sandbox: package-manager stores (pnpm's store, corepack's cache) every session shares, so a PR's install lands in one place. Nothing here is verified by the daemon — whatever a sandboxed turn writes, the next session reads.
+      sandboxWriteRoots: z.array(z.string()).default([]),
       // Operator-owned remote-origin policy for daemon-managed workspace clone/pull. Default
       // ['*'] admits any https/ssh origin; exact scheme+host+port entries tighten it, and []
       // disables remote Git workspaces entirely.
@@ -180,6 +182,7 @@ export const ConfigSchema = z.object({
       isolateAccountApps: true,
       requireSandbox: false,
       sandboxReadRoots: [],
+      sandboxWriteRoots: [],
       workspaceGitAllowedOrigins: [...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS]
     }),
   // Relay roster the CP last published (shared-bot-relay.md §5). Persisted whole so

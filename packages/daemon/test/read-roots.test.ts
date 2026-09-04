@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { resolveTrustedExecutable, sandboxReadRoots, trustedRuntimeReadRoots } from '../src/runtimes/read-roots.js'
+import {
+  resolveTrustedExecutable,
+  sandboxReadRoots,
+  sandboxWriteRoots,
+  trustedRuntimeReadRoots
+} from '../src/runtimes/read-roots.js'
 
 const temporaryRoots: string[] = []
 
@@ -70,6 +75,22 @@ describe('trusted runtime read roots', () => {
     ).toThrow(/security\.sandboxReadRoots entry does not exist/)
     expect(() => sandboxReadRoots(['relative/toolchain'], { HOME: tmpdir() })).toThrow(
       /security\.sandboxReadRoots entry must be absolute/
+    )
+  })
+
+  it('normalizes security.sandboxWriteRoots like the read roots, and rejects a missing or relative one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-daemon-write-roots-'))
+    temporaryRoots.push(root)
+    const home = join(root, 'host-home')
+    const store = join(home, '.local', 'share', 'pnpm', 'store')
+    mkdirSync(store, { recursive: true })
+
+    expect(sandboxWriteRoots(['~/.local/share/pnpm/store'], { HOME: home })).toEqual([realpathSync(store)])
+    expect(() => sandboxWriteRoots([join(root, 'no-such-store')], { HOME: home })).toThrow(
+      /security\.sandboxWriteRoots entry does not exist/
+    )
+    expect(() => sandboxWriteRoots(['relative/store'], { HOME: home })).toThrow(
+      /security\.sandboxWriteRoots entry must be absolute/
     )
   })
 

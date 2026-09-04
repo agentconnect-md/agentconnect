@@ -136,6 +136,7 @@ The daemon does not implement these, but interacts with them through the section
 | `--max-agents <n>`               | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
 | `--require-sandbox`              | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
 | n/a (config only)                | `security.sandboxReadRoots`    | Host toolchain dirs carved read-only into every sandbox; see the config example below.                                                             |
+| n/a (config only)                | `security.sandboxWriteRoots`   | Host package-manager stores carved writable into every sandbox, shared by every session; see the config example below.                             |
 | `--k8s`                          | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
 | `--key-server <url>`             | `KEY_SERVER`                   | Cloud-only service for session-scoped model credentials, http or https as the deployment chooses; see [key-server.md](key-server.md).              |
 | `--key-server-token-path <path>` | `KEY_SERVER_TOKEN_PATH`        | File re-read as the key-server bearer token on every request.                                                                                      |
@@ -329,6 +330,15 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
     // that also holds credentials (~/.cargo/credentials.toml, ~/.npmrc).
     "sandboxReadRoots": [],
 
+    // Host directories carved WRITABLE into EVERY sandbox, so sessions share one
+    // package-manager store instead of each downloading its own (pnpm's store,
+    // corepack's cache; point the runtime at them with the agent's env, e.g.
+    // npm_config_store_dir / COREPACK_HOME). Same expansion and existence rule as
+    // sandboxReadRoots. This is a deliberate hole in per-session isolation: what one
+    // session's install writes, the next session runs. Name the store itself, never
+    // HOME or a parent holding credentials.
+    "sandboxWriteRoots": [],
+
     // Origins that daemon-managed workspace clone/pull may target. Default ["*"]
     // admits any valid https/ssh origin; exact entries (scheme and non-default
     // port are part of the match, no partial wildcards or paths) tighten it, and
@@ -389,8 +399,9 @@ re-allows reads only for the workspace, private HOME, managed memory,
 roots, any operator-declared `security.sandboxReadRoots` (host toolchains such as
 nvm's node or a rustup toolchain, carved read-only into every sandbox regardless
 of runtime), and the runtime's selected host credential path. Writes are limited to
-the workspace, private HOME, managed memory, SRT temporary storage, and that
-credential path. Outbound
+the workspace, private HOME, managed memory, SRT temporary storage, that
+credential path, and any operator-declared `security.sandboxWriteRoots` (a shared
+package-manager store, reopened by the same exception rule as a read root). Outbound
 domains are approved by a provider callback and Unix sockets remain
 compatibility-open during this rollout. Proxy-aware HTTP(S) clients retain web
 egress, and the provider sets `NODE_USE_ENV_PROXY=1` so Node's built-in `fetch`

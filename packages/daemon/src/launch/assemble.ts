@@ -41,6 +41,8 @@ export interface AssembleRuntimeLaunchOptions {
   finalizeLaunchEnv?: (launchEnv: Record<string, string>) => void
   /** Daemon-owned code/socket/config carve-backs; a function receives the final launch env. */
   runtimeReadRoots?: string[] | ((launchEnv: Record<string, string>) => string[] | undefined)
+  /** Operator-declared `security.sandboxWriteRoots`, already normalized. */
+  runtimeWriteRoots?: string[]
   trustedWorkspaceWriteRoots?: string[]
   trustedPrimaryCheckout?: string
   sandboxMechanism?: SandboxMechanism
@@ -93,6 +95,7 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
     agentsRoot: opts.agentsRoot,
     explicitEnv: launchEnv,
     runtimeReadRoots,
+    runtimeWriteRoots: opts.runtimeWriteRoots,
     trustedWorkspaceWriteRoots: opts.trustedWorkspaceWriteRoots,
     trustedPrimaryCheckout: opts.trustedPrimaryCheckout,
     sandboxMechanism: opts.sandboxMechanism,
