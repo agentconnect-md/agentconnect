@@ -8231,6 +8231,14 @@ export class Daemon {
       case 'cancel':
         await this.webchatTransport.handleWebchatCancel(msg.chatId, op.agentId ?? msg.agentId)
         return { msgId: msg.msgId, accepted: true }
+      case 'elicitation_choice':
+        // The conversation confines the answer to a card this browser was actually shown.
+        await this.permissions.handleElicitChoice({
+          requestId: op.requestId,
+          value: op.value,
+          webchatConversationId: msg.chatId
+        })
+        return { msgId: msg.msgId, accepted: true }
       case 'close':
         this.webchatTransport.handleWebchatClose(msg.chatId)
         return { msgId: msg.msgId, accepted: true }

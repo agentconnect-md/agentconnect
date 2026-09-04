@@ -1,0 +1,251 @@
+// @vitest-environment happy-dom
+
+// The agent's in-band elicitation card on the real session page (#1794 gap 5). What matters is
+// that the question stands in the conversation with answerable buttons, that the answer goes out
+// on the webchat socket, and that a settled card collapses to its outcome for every reader.
+
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Agent, Session } from '@/lib/data'
+
+const wire = vi.hoisted(() => ({ messages: [] as unknown[] }))
+const live = vi.hoisted(() => ({ steps: [] as unknown[], answered: [] as unknown[] }))
+
+vi.mock('next/navigation', () => ({
+  useParams: () => ({ id: 'session-1' }),
+  usePathname: () => '/acme/sessions/session-1',
+  useSearchParams: () => new URLSearchParams(''),
+  useRouter: () => ({
+    replace: () => {},
+    push: () => {},
+    prefetch: () => {},
+    back: () => {},
+    forward: () => {},
+    refresh: () => {}
+  })
+}))
+
+vi.mock('next/link', () => ({
+  default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>
+}))
+
+vi.mock('@/lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api')>()
+  return {
+    ...actual,
+    fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: wire.messages, nextCursor: null })),
+    fetchSessionDetail: vi.fn(() => Promise.reject(new Error('no detail'))),
+    fetchMySessionIdentity: vi.fn(() => Promise.reject(new Error('no identity'))),
+    fetchConversationByKey: vi.fn(() => Promise.reject(new Error('no conversation'))),
+    fetchAgentTasks: vi.fn(() =>
+      Promise.resolve({ sessionId: 'session-1', tracked: true, tasks: [], truncated: false })
+    ),
+    fetchSessionPullRequest: vi.fn(() => Promise.reject(new actual.ApiError('pull request not found', 404))),
+    fetchWorkspaceFiles: vi.fn((_agentId: string, opts: { path: string }) =>
+      Promise.resolve({ path: opts.path, exists: true, entries: [], nextCursor: null })
+    ),
+    fetchWorkspaceGitStatus: vi.fn(() => Promise.resolve({ isRepo: false })),
+    fetchWorkspaceGitLog: vi.fn(() => Promise.resolve({ isRepo: false, commits: [], truncated: false, tracking: null }))
+  }
+})
+
+const agent = {
+  id: 'agent-1',
+  name: 'Ops bot',
+  runtime: 'claude',
+  model: 'sonnet',
+  status: 'online',
+  statusLabel: 'online',
+  icon: 'bot',
+  daemon: 'daemon-1',
+  workdir: './services/api',
+  workspace: { mode: 'scratch' },
+  canEdit: false
+} as unknown as Agent
+
+const session = {
+  id: 'session-1',
+  title: 'Upgrade the node',
+  status: 'idle',
+  statusLabel: 'completed',
+  platform: 'webchat',
+  channel: 'Playground',
+  channelId: 'conv-1',
+  user: 'sam',
+  agentId: 'agent-1',
+  agentName: 'Ops bot',
+  // Empty, which is what puts the page on the REAL transcript (`wantTranscript`) instead of
+  // the mock step list a list-only session carries.
+  steps: []
+} as unknown as Session
+
+vi.mock('@/lib/data-context', () => ({
+  useConsoleData: () => ({
+    agents: [agent],
+    allSessions: [session],
+    getSessions: () => [session],
+    sessionsLoading: false,
+    crons: [],
+    daemons: [],
+    members: [],
+    sessionActivityVersionById: {},
+    sessionStreamGeneration: 0,
+    revalidateSessionLists: () => {}
+  })
+}))
+
+vi.mock('@/lib/org-context', () => ({
+  useOrgs: () => ({
+    activeOrg: { id: 'org-1', slug: 'acme' },
+    myRole: 'collaborator',
+    orgPath: (p: string) => `/acme${p}`
+  })
+}))
+
+vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: { name: 'Sam' }, me: null }) }))
+vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
+vi.mock('@/lib/stick-to-bottom', () => ({ useStickToBottom: () => () => {} }))
+vi.mock('@/lib/auth', () => ({ isAuthConfigured: () => false }))
+vi.mock('@/lib/use-session-list', () => ({
+  useSessionList: () => ({ sessions: [], total: 0, isLoading: false, nextCursor: null, loadingMore: false })
+}))
+
+vi.mock('@/components/console/Shell', () => ({
+  useCrumbSlot: () => ({ register: () => {} }),
+  useMobileActionSlot: () => ({ action: null, register: () => {} })
+}))
+
+// One frozen object, not a fresh one per render: the transcript effect keys on
+// `reconcileLiveSteps` by identity, so a new closure each render refetches, re-renders, and
+// spins forever. (The viewer suite never sees this — its session carries mock steps, which
+// turns the real transcript off.)
+vi.mock('@/components/console/PlaygroundProvider', () => {
+  const playground = {
+    getPgSession: () => undefined,
+    getLiveSteps: () => live.steps,
+    getBusyLaneAgentIds: () => [],
+    reconcileLiveSteps: () => {},
+    getPgImage: () => null,
+    getPgWorktree: () => false,
+    isPgBusy: () => false,
+    setPgImage: () => {},
+    openPlayground: () => 'pg_new',
+    pgSend: () => {},
+    pgAttach: () => {},
+    getPgQueue: () => [],
+    pgCancelQueued: () => {},
+    pgAddAgent: () => {},
+    pgSetModel: () => {},
+    pgSetEffort: () => {},
+    pgSetPermissionPreset: () => {},
+    pgSetFast: () => {},
+    pgSetWorktree: () => {},
+    pgCancel: () => {},
+    pgAnswerElicitation: (...args: unknown[]) => live.answered.push(args),
+    setPgInput: () => {}
+  }
+  return { usePlayground: () => playground, usePgDraft: () => '', usePgDraftHasText: () => false }
+})
+
+import SessionDetailView from './SessionDetailView'
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+
+let container: HTMLDivElement | undefined
+let root: ReturnType<typeof createRoot> | undefined
+
+const CARD = {
+  kind: 'elicit',
+  turnId: 'turn-1',
+  agentId: 'agent-1',
+  boundary: true,
+  text: 'Which branch should I cut from?',
+  elicit: {
+    requestId: 'elicit-1',
+    options: [
+      { value: 'main', label: 'main' },
+      { value: 'develop', label: 'develop' }
+    ]
+  }
+}
+
+async function render() {
+  await act(async () => {
+    root?.render(<SessionDetailView />)
+    await Promise.resolve()
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+}
+
+const text = () => container?.textContent ?? ''
+const buttonNamed = (label: string) =>
+  [...(container?.querySelectorAll('button') ?? [])].find((b) => b.textContent === label)
+
+beforeEach(() => {
+  wire.messages = []
+  live.steps = [CARD]
+  live.answered = []
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    onchange: null,
+    dispatchEvent: () => false
+  })) as unknown as typeof window.matchMedia
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+})
+
+afterEach(() => {
+  act(() => root?.unmount())
+  container?.remove()
+  container = undefined
+  root = undefined
+})
+
+describe('the agent’s elicitation card on the session page', () => {
+  it('asks its question with every option answerable, and sends the tapped choice', async () => {
+    await render()
+
+    expect(text()).toContain('Which branch should I cut from?')
+    for (const label of ['main', 'develop', 'Dismiss']) expect(buttonNamed(label)?.disabled).toBe(false)
+
+    await act(async () => {
+      buttonNamed('develop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // The card's own agent answers, over this conversation's socket.
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', 'develop', 'conv-1']])
+
+    await act(async () => {
+      buttonNamed('Dismiss')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // Dismiss is an explicit null, never an absent value.
+    expect(live.answered[1]).toEqual(['session-1', 'agent-1', 'elicit-1', null, 'conv-1'])
+  })
+
+  it('collapses to its outcome once settled, leaving nothing left to answer', async () => {
+    live.steps = [{ ...CARD, elicit: { ...CARD.elicit, outcome: 'accepted', answerLabel: 'develop' } }]
+    await render()
+
+    expect(text()).toContain('Which branch should I cut from?')
+    expect(text()).toContain('develop')
+    expect(buttonNamed('main')).toBeUndefined()
+    expect(buttonNamed('Dismiss')).toBeUndefined()
+    expect(live.answered).toEqual([])
+  })
+
+  it('names a turn-end cancellation rather than showing a card nobody can answer', async () => {
+    live.steps = [{ ...CARD, elicit: { ...CARD.elicit, outcome: 'cancelled' } }]
+    await render()
+
+    expect(text()).toContain('Cancelled')
+    expect(buttonNamed('main')).toBeUndefined()
+  })
+})

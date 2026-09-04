@@ -16,6 +16,11 @@ export const NOTICE_LANE = 'NOTICE'
  *  deliberately not `'PLAN'` — that one is a WORK lane, the playground's live re-tag. */
 export const PLAN_LANE = 'PLAN_BLOCK'
 
+/** An in-band elicitation card — the agent's question, awaiting or carrying an answer. Also
+ *  NOT a work lane: it is addressed to the reader, so it stands in the conversation instead
+ *  of collapsing behind the work toggle where nobody would see it in time to answer. */
+export const ELICIT_LANE = 'ELICIT'
+
 export type PlanEntry = PlanBody['entries'][number]
 
 /** The plan block's one-line label. Computed from the entries wherever they are present —

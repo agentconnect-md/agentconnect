@@ -207,6 +207,16 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
   // `agentId` cancels one participant's live turn; absent ⇒ every live turn in
   // the conversation (and the sole agent's, in a single-agent conversation).
   z.object({ op: z.literal('cancel'), agentId: z.string().uuid().optional() }),
+  // The answer to an in-band elicitation card (the `elicitation` WebchatEvent). `value`
+  // is the chosen option's wire value and `null` is Dismiss — the same shape as the Slack
+  // `elicitation-choice` action below, so the two wires stay recognizably one design.
+  // `agentId` names the participant whose card this is; absent ⇒ the sole agent.
+  z.object({
+    op: z.literal('elicitation_choice'),
+    requestId: z.string().min(1).max(200),
+    value: z.string().nullable(),
+    agentId: z.string().uuid().optional()
+  }),
   z.object({ op: z.literal('close') })
 ])
 export type RelayWebchatOp = z.infer<typeof RelayWebchatOp>

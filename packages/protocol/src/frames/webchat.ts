@@ -155,7 +155,29 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   // connection, so every other chunk still flows and the turn degrades to showing its plan
   // only after the fact. There is no relay capability echo to gate on (`rd/hello/ok` carries
   // only `relayId`), so this is the tradeoff rather than an oversight.
-  z.object({ kind: z.literal('plan'), entries: z.array(PlanEntry) })
+  z.object({ kind: z.literal('plan'), entries: z.array(PlanEntry) }),
+  // The agent asked for a choice (ACP `elicitation/create`, form mode) — webchat's own
+  // in-band card, the peer of the Slack Block Kit one. Deliberately NOT the raw
+  // `requestedSchema`: the daemon has already reduced the form to the one renderable
+  // field, and its options are the only answers the browser may send back (as the
+  // `elicitation_choice` op keyed by this `requestId`). `message` is agent-authored text,
+  // masked before it reaches here. Options are UNCAPPED — the Slack 5-button cap is a
+  // Slack surface limit and does not follow the choice onto this surface.
+  z.object({
+    kind: z.literal('elicitation'),
+    requestId: z.string().min(1).max(200),
+    message: z.string(),
+    options: z.array(z.object({ value: z.string(), label: z.string() })).min(1)
+  }),
+  // The same card, settled. Slack rewrites its message in place; this stream is
+  // append-only, so the collapse is a second event keyed by the same `requestId`.
+  // `label` is the chosen option's label and is present only on 'accepted'.
+  z.object({
+    kind: z.literal('elicitation_resolved'),
+    requestId: z.string().min(1).max(200),
+    outcome: z.enum(['accepted', 'dismissed', 'cancelled']),
+    label: z.string().optional()
+  })
 ])
 export type WebchatEvent = z.infer<typeof WebchatEvent>
 

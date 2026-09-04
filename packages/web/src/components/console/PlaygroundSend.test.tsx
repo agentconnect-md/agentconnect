@@ -54,6 +54,7 @@ let getPgQueue: ReturnType<typeof usePlayground>['getPgQueue']
 let pgCancelQueued: ReturnType<typeof usePlayground>['pgCancelQueued']
 let getLiveSteps: ReturnType<typeof usePlayground>['getLiveSteps']
 let pgAttach: ReturnType<typeof usePlayground>['pgAttach']
+let pgAnswerElicitation: ReturnType<typeof usePlayground>['pgAnswerElicitation']
 
 function Probe() {
   const pg = usePlayground()
@@ -63,6 +64,7 @@ function Probe() {
   pgCancelQueued = pg.pgCancelQueued
   getLiveSteps = pg.getLiveSteps
   pgAttach = pg.pgAttach
+  pgAnswerElicitation = pg.pgAnswerElicitation
   return null
 }
 
@@ -858,5 +860,112 @@ describe('cold-attach retirement anchor', () => {
     const replayed = getLiveSteps('s-cold').filter((s) => s.turnId === 'turn-late')
     expect(replayed.length).toBeGreaterThan(0)
     expect(replayed.every((s) => s.postId === 'post-late')).toBe(true)
+  })
+})
+
+// #1794 gap 5: the agent's in-band elicitation card is a stream event, and its answer a
+// webchat op on the same socket — no CP resource, and the card lives in the transcript.
+describe('in-band elicitation cards', () => {
+  class ElicitSocket extends StubSocket {
+    // The answer rides the SAME socket the card arrived on, so this stub carries the
+    // readyState constants `connect`'s reuse check reads.
+    static OPEN = 1
+    static CLOSED = 3
+    static instances: ElicitSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      ElicitSocket.instances.push(this)
+    }
+  }
+
+  async function openStream() {
+    ElicitSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', ElicitSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello', 'c1')
+    })
+    const socket = ElicitSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
+    return { socket, turnId: turn.turnId }
+  }
+
+  function feed(socket: ElicitSocket, turnId: string, index: number, event: unknown) {
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'output', output: { turnId, agentId: 'agent-1', index, event } })
+      })
+    })
+  }
+
+  const card = (requestId: string) => ({
+    kind: 'elicitation',
+    requestId,
+    message: 'Which branch should I cut from?',
+    options: [
+      { value: 'main', label: 'main' },
+      { value: 'develop', label: 'develop' }
+    ]
+  })
+
+  it('lands the card as its own live transcript step', async () => {
+    const { socket, turnId } = await openStream()
+    feed(socket, turnId, 0, card('elicit-1'))
+    expect(getLiveSteps('s1').filter((s) => s.kind === 'elicit')).toMatchObject([
+      {
+        kind: 'elicit',
+        text: 'Which branch should I cut from?',
+        boundary: true,
+        elicit: { requestId: 'elicit-1', options: [{ value: 'main' }, { value: 'develop' }] }
+      }
+    ])
+  })
+
+  it('settles the card in place on the resolved event, keeping its position', async () => {
+    const { socket, turnId } = await openStream()
+    feed(socket, turnId, 0, card('elicit-1'))
+    feed(socket, turnId, 1, { kind: 'tool_call', toolCallId: 't1', title: 'Read', status: 'pending' })
+    feed(socket, turnId, 2, { kind: 'elicitation_resolved', requestId: 'elicit-1', outcome: 'accepted', label: 'main' })
+    const steps = getLiveSteps('s1').filter((s) => s.kind === 'elicit' || s.kind === 'tool')
+    expect(steps.map((s) => s.kind)).toEqual(['elicit', 'tool']) // settled where it stood
+    expect(steps[0]!.elicit).toMatchObject({ outcome: 'accepted', answerLabel: 'main' })
+
+    // A settlement for a card this stream never carried changes nothing.
+    feed(socket, turnId, 3, { kind: 'elicitation_resolved', requestId: 'elicit-9', outcome: 'cancelled' })
+    expect(getLiveSteps('s1').filter((s) => s.kind === 'elicit')).toHaveLength(1)
+  })
+
+  it('records a turn-end cancellation on the card rather than leaving it live', async () => {
+    const { socket, turnId } = await openStream()
+    feed(socket, turnId, 0, card('elicit-2'))
+    feed(socket, turnId, 1, { kind: 'elicitation_resolved', requestId: 'elicit-2', outcome: 'cancelled' })
+    expect(getLiveSteps('s1').find((s) => s.kind === 'elicit')?.elicit).toMatchObject({
+      outcome: 'cancelled'
+    })
+  })
+
+  it('answers over the same socket — a chosen value and an explicit Dismiss', async () => {
+    const { socket, turnId } = await openStream()
+    feed(socket, turnId, 0, card('elicit-1'))
+    act(() => pgAnswerElicitation('s1', 'agent-1', 'elicit-1', 'develop', 'c1'))
+    act(() => pgAnswerElicitation('s1', 'agent-1', 'elicit-1', null, 'c1'))
+    await act(async () => {})
+    const frames = socket.send.mock.calls.map((call) => JSON.parse(String(call[0])))
+    expect(frames.filter((f) => f.type === 'elicitation_choice')).toEqual([
+      { type: 'elicitation_choice', requestId: 'elicit-1', value: 'develop', agentId: 'agent-1' },
+      { type: 'elicitation_choice', requestId: 'elicit-1', value: null, agentId: 'agent-1' }
+    ])
+    // The daemon owns the outcome: nothing settles locally on the send alone.
+    expect(getLiveSteps('s1').find((s) => s.kind === 'elicit')?.elicit?.outcome).toBeUndefined()
+    expect(ElicitSocket.instances).toHaveLength(1) // one socket, card in and answer out
   })
 })

@@ -127,6 +127,14 @@ interface PlaygroundData {
   pgSetFast: (id: string, agentId: string, fastMode: boolean, conversationId?: string) => void
   /** Interrupt the running turn without ending the session. */
   pgCancel: (id: string, agentId: string, conversationId?: string) => void
+  /** Answer the agent's in-band elicitation card; `value: null` is Dismiss. */
+  pgAnswerElicitation: (
+    id: string,
+    agentId: string,
+    requestId: string,
+    value: string | null,
+    conversationId?: string
+  ) => void
   getPgSession: (id: string) => Session | undefined
   pgSessionList: Session[]
   /** Live tail (this-visit) steps for an ADOPTED webchat session, keyed by its CP session
@@ -237,6 +245,13 @@ type WebchatEvent =
   | { kind: 'superseded'; generation: number }
   | { kind: 'notice'; text: string }
   | { kind: 'plan'; entries: { content: string; status: string; priority?: string }[] }
+  | { kind: 'elicitation'; requestId: string; message: string; options: { value: string; label: string }[] }
+  | {
+      kind: 'elicitation_resolved'
+      requestId: string
+      outcome: 'accepted' | 'dismissed' | 'cancelled'
+      label?: string
+    }
 
 /** The session status snapshot carried in a relay `rd/chat` WebchatOutput payload
  *  (mirrors protocol WebchatStatus). Partial: context/cost stream live, token
@@ -569,6 +584,38 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             if (step.kind === 'planblock') return replaceAt(i, { ...step, plan: ev.entries, observedAtMs })
           }
           return [...steps, lane({ kind: 'planblock', text: '', plan: ev.entries })]
+        }
+        if (ev.kind === 'elicitation') {
+          // The agent's question, standing in the conversation until it is answered.
+          // `boundary` keeps the reply chunks that follow from accumulating into it.
+          return [
+            ...steps,
+            lane({
+              kind: 'elicit',
+              text: ev.message,
+              elicit: { requestId: ev.requestId, options: ev.options },
+              boundary: true
+            })
+          ]
+        }
+        if (ev.kind === 'elicitation_resolved') {
+          // Settle the card in place — the append-only stream's equivalent of Slack
+          // rewriting its message. Matched by requestId across the whole transcript: a
+          // card can outlive the lane fences the chunk accumulator scans within.
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i]!
+            if (step.kind !== 'elicit' || step.elicit?.requestId !== ev.requestId) continue
+            return replaceAt(i, {
+              ...step,
+              elicit: {
+                ...step.elicit,
+                outcome: ev.outcome,
+                ...(ev.label !== undefined ? { answerLabel: ev.label } : {})
+              },
+              observedAtMs
+            })
+          }
+          return steps
         }
         if (ev.kind === 'notice') {
           // Daemon chrome for a wait with nothing else to show (a sandbox pod coming up).
@@ -1634,6 +1681,20 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect, stageRuntimeChange]
   )
 
+  /** Answer an in-band elicitation card (fire-and-forget) — `value: null` is Dismiss.
+   *  Deliberately NOT optimistic: the daemon owns the card's outcome and settles it with
+   *  the `elicitation_resolved` event, so a refused answer leaves the card answerable. */
+  const pgAnswerElicitation = useCallback(
+    (id: string, agentForId: string, requestId: string, value: string | null, conversationId?: string) => {
+      connect(id, agentForId, conversationId)
+        .ready.then((ws) =>
+          ws.send(JSON.stringify({ type: 'elicitation_choice', requestId, value, agentId: agentForId }))
+        )
+        .catch(() => {})
+    },
+    [connect]
+  )
+
   /** Interrupt the running turn (fire-and-forget). The daemon ends the turn with a
    *  relay `done` item, which clears pgBusy via the socket's done handler. */
   const pgCancel = useCallback(
@@ -1708,6 +1769,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgSetEffort,
       pgSetPermissionPreset,
       pgSetFast,
+      pgAnswerElicitation,
       pgCancel,
       getPgSession,
       pgSessionList,
@@ -1735,6 +1797,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgSetEffort,
       pgSetPermissionPreset,
       pgSetFast,
+      pgAnswerElicitation,
       pgCancel,
       getPgSession,
       pgSessionList,

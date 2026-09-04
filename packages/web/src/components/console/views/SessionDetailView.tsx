@@ -99,6 +99,7 @@ import { useCommandAutocomplete } from '@/components/console/useCommandAutocompl
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
+  ELICIT_LANE,
   NOTICE_LANE,
   PLAN_LANE,
   WORK_LANES,
@@ -483,6 +484,8 @@ interface FmtStep {
   // The turn's task list — present only on a PLAN_LANE step, and empty when the row
   // arrived without a readable body.
   plan?: PlanEntry[]
+  // The agent's in-band question — present only on an ELICIT_LANE step.
+  elicit?: NonNullable<SessionStep['elicit']>
   // A superseded answer collapsed into this lane — carried so the summary can skip it.
   demoted?: boolean
   // A peer participant's message attachment (rendered like the user bubble's).
@@ -631,6 +634,65 @@ function PlanBlock({ step }: { step: FmtStep }) {
             </div>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+// How a settled elicitation card reads once its buttons are gone.
+const ELICIT_OUTCOME: Record<string, { icon: string; color: string; label: (answer?: string) => string }> = {
+  accepted: { icon: 'check', color: 'var(--green-500)', label: (answer) => answer ?? 'Answered' },
+  dismissed: { icon: 'x', color: 'var(--text-tertiary)', label: () => 'Dismissed' },
+  cancelled: { icon: 'clock', color: 'var(--text-tertiary)', label: () => 'Cancelled' }
+}
+
+/** The agent's in-band question: its options while it is live, its outcome once settled.
+ *  Without `onAnswer` — a reader with no live socket to answer over — the same card renders
+ *  as a plain record of the ask, controls inert rather than missing. */
+function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: string | null) => void }) {
+  const elicit = step.elicit
+  if (!elicit) return null
+  const settled = elicit.outcome ? ELICIT_OUTCOME[elicit.outcome] : undefined
+  return (
+    <div className="overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
+      <div className="flex min-w-0 items-start gap-[8px] px-[14px] py-[10px]">
+        <span className="mt-[2px] flex-none">
+          <Icon name="message-circle-question-mark" size={13} color="var(--text-tertiary)" />
+        </span>
+        <span className="min-w-0 whitespace-pre-wrap font-sans text-[13px] leading-[1.5] text-(--text-primary)">
+          {step.text}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-[6px] border-t border-(--border-subtle) px-[14px] py-[10px]">
+        {settled ? (
+          <span className="inline-flex min-w-0 items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            <Icon name={settled.icon} size={13} color={settled.color} />
+            <span className="min-w-0 truncate">{settled.label(elicit.answerLabel)}</span>
+          </span>
+        ) : (
+          <>
+            {elicit.options.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className="chip max-w-full truncate disabled:cursor-default disabled:opacity-55"
+                disabled={!onAnswer}
+                onClick={() => onAnswer?.(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="chip disabled:cursor-default disabled:opacity-55"
+              disabled={!onAnswer}
+              onClick={() => onAnswer?.(null)}
+              title="Dismiss without answering"
+            >
+              Dismiss
+            </button>
+          </>
+        )}
       </div>
     </div>
   )
@@ -802,6 +864,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     files: (stp.files ?? []).map((f) => ({ tag: f.tag, path: f.path, color: fileColor(f.tag) })),
     time: stp.time ?? '',
     ...(stp.kind === 'planblock' ? { plan: stp.plan ?? [] } : {}),
+    ...(stp.kind === 'elicit' && stp.elicit ? { elicit: stp.elicit } : {}),
     ...(stp.demoted ? { demoted: true } : {}),
     ...(platform ? { platform } : {}),
     // The live wire frame carries no body (kept off the hot path); attach just
@@ -1633,6 +1696,7 @@ export default function SessionDetailView() {
     pgSetPermissionPreset,
     pgSetFast,
     pgSetWorktree,
+    pgAnswerElicitation,
     pgCancel
   } = usePlayground()
   const { user: viewer, me } = useProfile()
@@ -2841,6 +2905,16 @@ export default function SessionDetailView() {
   // Continuations excluded: their channelId is a platform coordinate, not a
   // webchat conversation id, and a targeted conversation has no remote MCP.
   const webchatConversationId = isPg || isWebchat ? session.channelId : undefined
+  // An in-band elicitation card is answerable only where this reader can reach the session
+  // over the live webchat socket — the same gate the composer rides. Absent otherwise, and
+  // the card renders inert rather than offering buttons that would go nowhere.
+  const answerElicitation =
+    isLive && (isPg || isWebchat)
+      ? (agentId: string | undefined, requestId: string | undefined, value: string | null): void => {
+          if (!requestId) return
+          pgAnswerElicitation(session.id, agentId ?? session.agentId ?? '', requestId, value, webchatConversationId)
+        }
+      : undefined
   // Mid-conversation join (webchat-multi-agents.md §3.1): a live playground
   // conversation may GROW its roster; removal stays unsupported. The join is
   // still playground-only — `pgAddAgent` mutates provider-side session state that
@@ -4108,8 +4182,15 @@ export default function SessionDetailView() {
                             // collapsed work. A turn carries at most one (the row is upserted), but
                             // a merged conversation interleaves turns from several sources.
                             const planSteps = turn.steps.filter((s) => s.lane === PLAN_LANE)
+                            // The agent's in-band questions — their own block, above the answer,
+                            // because they are addressed to the reader rather than spoken at them.
+                            const elicitSteps = turn.steps.filter((s) => s.lane === ELICIT_LANE)
                             const textSteps = turn.steps.filter(
-                              (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE
+                              (s) =>
+                                !WORK_LANES.has(s.lane) &&
+                                s.lane !== NOTICE_LANE &&
+                                s.lane !== PLAN_LANE &&
+                                s.lane !== ELICIT_LANE
                             )
                             const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
                             // Reasoning steps / tool commands / edited FILES (distinct paths across
@@ -4218,6 +4299,24 @@ export default function SessionDetailView() {
                                     >
                                       {planSteps.map((st, si) => (
                                         <PlanBlock key={`p:${si}`} step={st} />
+                                      ))}
+                                    </div>
+                                  )}
+                                  {elicitSteps.length > 0 && (
+                                    <div
+                                      className={`flex min-w-0 flex-col gap-2 ${textSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
+                                    >
+                                      {elicitSteps.map((st, si) => (
+                                        <ElicitationCard
+                                          key={`e:${st.elicit?.requestId ?? si}`}
+                                          step={st}
+                                          {...(answerElicitation
+                                            ? {
+                                                onAnswer: (value: string | null) =>
+                                                  answerElicitation(turn.agentId, st.elicit?.requestId, value)
+                                              }
+                                            : {})}
+                                        />
                                       ))}
                                     </div>
                                   )}
