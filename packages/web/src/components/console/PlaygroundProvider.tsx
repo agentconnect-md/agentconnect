@@ -19,7 +19,16 @@ import {
   useSyncExternalStore,
   type ReactNode
 } from 'react'
-import { agentLabel, isGitWorkspace, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
+import {
+  agentLabel,
+  isGitWorkspace,
+  type Agent,
+  type ElicitAnswerValue,
+  type ElicitFieldSpec,
+  type Session,
+  type SessionImage,
+  type SessionStep
+} from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import {
   webchatWsUrl,
@@ -128,12 +137,12 @@ interface PlaygroundData {
   /** Interrupt the running turn without ending the session. */
   pgCancel: (id: string, agentId: string, conversationId?: string) => void
   /** Answer the agent's in-band elicitation card; a list answers a multi-select, a number a
-   *  numeric field, `null` is Dismiss. */
+   *  numeric field, a record of value-per-field a multi-field form, `null` is Dismiss. */
   pgAnswerElicitation: (
     id: string,
     agentId: string,
     requestId: string,
-    value: string | string[] | number | null,
+    value: ElicitAnswerValue,
     conversationId?: string
   ) => void
   getPgSession: (id: string) => Session | undefined
@@ -255,6 +264,7 @@ type WebchatEvent =
       text?: { minLength?: number; maxLength?: number; pattern?: string; format?: string }
       number?: { integer?: boolean; minimum?: number; maximum?: number }
       defaultValue?: string | number | boolean | string[]
+      fields?: ElicitFieldSpec[]
     }
   | {
       kind: 'elicitation_resolved'
@@ -628,7 +638,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 ...(ev.multi ? { multi: ev.multi } : {}),
                 ...(ev.text ? { text: ev.text } : {}),
                 ...(ev.number ? { number: ev.number } : {}),
-                ...(ev.defaultValue !== undefined ? { defaultValue: ev.defaultValue } : {})
+                ...(ev.defaultValue !== undefined ? { defaultValue: ev.defaultValue } : {}),
+                // A multi-field form: the fields ARE the card, and the descriptors above are
+                // absent, so a build that does not know them shows nothing to answer with.
+                ...(ev.fields ? { fields: ev.fields } : {})
               },
               boundary: true
             })
@@ -1726,13 +1739,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  Deliberately NOT optimistic: the daemon owns the card's outcome and settles it with
    *  the `elicitation_resolved` event, so a refused answer leaves the card answerable. */
   const pgAnswerElicitation = useCallback(
-    (
-      id: string,
-      agentForId: string,
-      requestId: string,
-      value: string | string[] | number | null,
-      conversationId?: string
-    ) => {
+    (id: string, agentForId: string, requestId: string, value: ElicitAnswerValue, conversationId?: string) => {
       connect(id, agentForId, conversationId)
         .ready.then((ws) =>
           ws.send(JSON.stringify({ type: 'elicitation_choice', requestId, value, agentId: agentForId }))

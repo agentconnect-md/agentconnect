@@ -2,6 +2,7 @@ import type { CreateElicitationRequest, RequestPermissionRequest, SessionUpdate 
 import {
   ELICIT_ACTION_PREFIX,
   ELICIT_DISMISS_ACTION,
+  ELICIT_FORM_FIELD_CAP,
   PERMISSION_ACTION_PREFIX,
   SLACK_STATUS_ACTION,
   encodePermValue,
@@ -832,29 +833,41 @@ function withDefault(target: ElicitTarget, raw: unknown): ElicitTarget {
   return ok ? { ...target, defaultValue: raw as ElicitTarget['defaultValue'] } : target
 }
 
+/** The form's `required` property names, as the schema spells them — anything that is not a
+ *  string is dropped, since it cannot name a property this scan produced. */
+export function elicitRequiredProps(params: CreateElicitationRequest): string[] {
+  const req = (params as { requestedSchema?: { required?: unknown } }).requestedSchema?.required
+  return Array.isArray(req) ? req.filter((r): r is string => typeof r === 'string') : []
+}
+
+/** How a form card names one field: the schema's own `title` when it has one, else the property
+ *  name. A control stacked with others and labelled by neither is not answerable. */
+export function elicitFieldLabel(params: CreateElicitationRequest, propName: string): string {
+  const props = (params as { requestedSchema?: { properties?: Record<string, Record<string, unknown>> } })
+    .requestedSchema?.properties
+  const title = props?.[propName]?.title
+  return clampTo((typeof title === 'string' && title.trim()) || propName, 75)
+}
+
 /**
- * Resolve the single form field an elicitation card renders: the FIRST string-enum (`oneOf`
+ * Every property of the form this surface can render, in schema order: string-enum (`oneOf`
  * titled options or bare `enum`), boolean, string-array multi-select (`items.enum` or
- * `items.anyOf`), free-text string or number/integer property the CALLING SURFACE declares it
- * can render. Returns null for URL-mode, an empty/absent schema, a form whose fields this
- * surface can't render, or one that requires a property other than the rendered target — the
- * daemon then declines rather than accepting a partial answer. Pure, and shared by every
- * surface so the option values and their interpretation can't drift.
+ * `items.anyOf`), free-text string, and number/integer — each only where the CALLING SURFACE
+ * declares that kind. At most one target per property, since a property's `type` picks its
+ * kind. The shared scan behind {@link elicitTarget} and {@link elicitForm}, so the two can
+ * never disagree about what is renderable. Empty for URL-mode and an empty/absent schema.
  */
-export function elicitTarget(params: CreateElicitationRequest, renderable: ElicitSurfaceKinds): ElicitTarget | null {
+function elicitCandidates(params: CreateElicitationRequest, renderable: ElicitSurfaceKinds): ElicitTarget[] {
   const p = params as {
     mode?: string
-    requestedSchema?: { properties?: Record<string, Record<string, unknown>>; required?: unknown }
+    requestedSchema?: { properties?: Record<string, Record<string, unknown>> }
   }
-  if (p.mode !== 'form') return null
-  const props = p.requestedSchema?.properties ?? {}
-  const required = Array.isArray(p.requestedSchema?.required) ? (p.requestedSchema.required as unknown[]) : []
-  // A required field we can't render is unanswerable: accepting without it would assert a lie.
-  // A candidate that fails this does NOT end the scan — a later property may be the sole
-  // required one, and returning here would decline a form this surface can in fact answer.
-  const answerable = (t: ElicitTarget | null) => (t && required.every((r) => r === t.propName) ? t : null)
-  for (const [name, prop] of Object.entries(props)) {
-    const seeded = (t: ElicitTarget | null) => (t ? withDefault(t, prop.default) : null)
+  if (p.mode !== 'form') return []
+  const found: ElicitTarget[] = []
+  for (const [name, prop] of Object.entries(p.requestedSchema?.properties ?? {})) {
+    const keep = (t: ElicitTarget | null) => {
+      if (t) found.push(withDefault(t, prop.default))
+    }
     if (prop?.type === 'string') {
       const oneOf = prop.oneOf as { const?: unknown; title?: unknown }[] | undefined
       const en = prop.enum as unknown[] | undefined
@@ -863,55 +876,112 @@ export function elicitTarget(params: CreateElicitationRequest, renderable: Elici
         : Array.isArray(en)
           ? en.map((v) => ({ value: String(v), label: clampTo(String(v), 75) }))
           : []
-      if (options.length && renderable.has('enum')) {
-        const t = answerable(seeded({ propName: name, kind: 'enum', options }))
-        if (t) return t
-      }
+      if (options.length && renderable.has('enum')) keep({ propName: name, kind: 'enum', options })
       // Free text is the string with nothing to choose from — an enumerated one is a pick,
       // and typing into it would let an unoffered value through.
-      if (!options.length && renderable.has('text')) {
-        const t = answerable(seeded(textTarget(name, prop)))
-        if (t) return t
-      }
+      if (!options.length && renderable.has('text')) keep(textTarget(name, prop))
     }
-    if ((prop?.type === 'number' || prop?.type === 'integer') && renderable.has('number')) {
-      const t = answerable(seeded(numberTarget(name, prop)))
-      if (t) return t
-    }
+    if ((prop?.type === 'number' || prop?.type === 'integer') && renderable.has('number'))
+      keep(numberTarget(name, prop))
     if (prop?.type === 'array' && renderable.has('multi-enum')) {
       const options = arrayOptions(prop)
       const min = itemBound(prop.minItems)
       const max = itemBound(prop.maxItems)
       // Bounds that admit only the empty selection, or none at all, are not a question.
       const askable = max === undefined || (max > 0 && max >= (min ?? 0))
-      if (options.length && askable) {
-        const t = answerable(
-          seeded({
-            propName: name,
-            kind: 'multi-enum',
-            options,
-            ...(min !== undefined ? { minItems: min } : {}),
-            ...(max !== undefined ? { maxItems: max } : {})
-          })
-        )
-        if (t) return t
-      }
-    }
-    if (prop?.type === 'boolean' && renderable.has('boolean')) {
-      const t = answerable(
-        seeded({
+      if (options.length && askable)
+        keep({
           propName: name,
-          kind: 'boolean',
-          options: [
-            { value: 'true', label: 'Yes' },
-            { value: 'false', label: 'No' }
-          ]
+          kind: 'multi-enum',
+          options,
+          ...(min !== undefined ? { minItems: min } : {}),
+          ...(max !== undefined ? { maxItems: max } : {})
         })
-      )
-      if (t) return t
     }
+    if (prop?.type === 'boolean' && renderable.has('boolean'))
+      keep({
+        propName: name,
+        kind: 'boolean',
+        options: [
+          { value: 'true', label: 'Yes' },
+          { value: 'false', label: 'No' }
+        ]
+      })
   }
-  return null
+  return found
+}
+
+/**
+ * Resolve the single form field an elicitation card renders: the FIRST renderable property
+ * that ALONE satisfies the schema's `required`. Returns null for URL-mode, an empty/absent
+ * schema, a form whose fields this surface can't render, or one that requires a property other
+ * than the rendered target — the daemon then declines rather than accepting a partial answer.
+ * A candidate that fails that check does NOT end the scan: a later property may be the sole
+ * required one, and stopping here would decline a form this surface can in fact answer. Pure,
+ * and shared by every surface so the option values and their interpretation can't drift.
+ */
+export function elicitTarget(params: CreateElicitationRequest, renderable: ElicitSurfaceKinds): ElicitTarget | null {
+  const required = elicitRequiredProps(params)
+  // A required field we can't render is unanswerable: accepting without it would assert a lie.
+  return elicitCandidates(params, renderable).find((t) => required.every((r) => r === t.propName)) ?? null
+}
+
+/**
+ * Resolve the WHOLE form a card renders one control per: every renderable property, in schema
+ * order. Returns null when the surface can render nothing, when a `required` property is not
+ * among the rendered set — {@link elicitTarget}'s rule (#1795) generalised from the one
+ * rendered field to the rendered set, and still the difference between an honest `accept` and
+ * a lie — or when the form is longer than {@link ELICIT_FORM_FIELD_CAP}. A one-field result is
+ * exactly what {@link elicitTarget} would return, which is what keeps a single-field card's
+ * wire payload unchanged.
+ */
+export function elicitForm(params: CreateElicitationRequest, renderable: ElicitSurfaceKinds): ElicitTarget[] | null {
+  const targets = elicitCandidates(params, renderable)
+  if (!targets.length || targets.length > ELICIT_FORM_FIELD_CAP) return null
+  const rendered = new Set(targets.map((t) => t.propName))
+  return elicitRequiredProps(params).every((r) => rendered.has(r)) ? targets : null
+}
+
+/** Whether one value answers one field: the arity its kind is answered with, then that kind's
+ *  own accept check. The single-field card's gate, per field, so a form re-checks every one. */
+export function fieldAccepts(target: ElicitTarget, value: string | number | string[]): boolean {
+  if (Array.isArray(value)) return multiSelectAccepts(target, value)
+  if (typeof value === 'number') return numberAccepts(target, value)
+  if (target.kind === 'text') return textAccepts(target, value)
+  // An enum or boolean answers with one of the values the card itself offered.
+  return (target.kind === 'enum' || target.kind === 'boolean') && target.options.some((o) => o.value === value)
+}
+
+/** Whether a form answer is one the card it was posted for can accept: EXACTLY the fields that
+ *  card rendered (an extra or misspelled key would inject a property the agent never asked
+ *  for), every `required` one present, and each value valid for its own field. An optional
+ *  field may simply be absent — legal per the schema, and the reason #1795's rule was narrow.
+ *  One bad field refuses the whole answer; the card stays live to be answered again. */
+export function elicitFormAccepts(
+  targets: readonly ElicitTarget[],
+  required: readonly string[],
+  answer: Record<string, string | number | string[]>
+): boolean {
+  const byName = new Map(targets.map((t) => [t.propName, t]))
+  for (const name of required) if (!Object.hasOwn(answer, name)) return false
+  for (const [name, value] of Object.entries(answer)) {
+    const target = byName.get(name)
+    if (!target || !fieldAccepts(target, value)) return false
+  }
+  return true
+}
+
+/** The accept content for a form answer: every answered field under its own property name,
+ *  each carrying the schema's own type — a boolean field's wire value is its option string,
+ *  which becomes a real boolean here for the same reason the single-field card converts it. */
+export function elicitFormContent(
+  targets: readonly ElicitTarget[],
+  answer: Record<string, string | number | string[]>
+): Record<string, string | number | boolean | string[]> {
+  const boolean = new Set(targets.filter((t) => t.kind === 'boolean').map((t) => t.propName))
+  return Object.fromEntries(
+    Object.entries(answer).map(([name, value]) => [name, boolean.has(name) ? value === 'true' : value])
+  )
 }
 
 /** Whether a submitted list is an answer this multi-select target actually offered: every value

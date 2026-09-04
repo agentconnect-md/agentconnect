@@ -8,7 +8,7 @@ import {
 } from '../normalized-message.js'
 import { frameSchema } from '../envelope.js'
 import { ErrorFrame } from './error.js'
-import { WebchatDone, WebchatImageAttachment, WebchatOutput, WebchatPost } from './webchat.js'
+import { ELICIT_FORM_FIELD_CAP, WebchatDone, WebchatImageAttachment, WebchatOutput, WebchatPost } from './webchat.js'
 import { GitlabHookMetadata, GithubHookMetadata, HookContext, OptionalHookConfigSnapshot } from './hook.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
@@ -215,11 +215,24 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
   // rejects the whole op (the card stays live) instead of reading a stripped list as Dismiss.
   // A number card answers with a real number for the same reason it is one on the wire: the
   // accepted content must be the schema's type, and a numeric string would be a different one.
+  // A multi-field FORM card answers with a value per field, keyed by property name — widening
+  // this same field again for the same reason: a daemon predating forms rejects the record
+  // outright (its card stays live) instead of reading a stripped sibling field as Dismiss.
   // `agentId` names the participant whose card this is; absent ⇒ the sole agent.
   z.object({
     op: z.literal('elicitation_choice'),
     requestId: z.string().min(1).max(200),
-    value: z.union([z.string(), z.number(), z.array(z.string()).max(100), z.null()]),
+    value: z.union([
+      z.string(),
+      z.number(),
+      z.array(z.string()).max(100),
+      z
+        .record(z.string().min(1).max(200), z.union([z.string(), z.number(), z.array(z.string()).max(100)]))
+        // EMPTY is a real answer: a form of nothing but optional fields, all left alone, is
+        // schema-valid content and the daemon's own accept check already takes it.
+        .refine((v) => Object.keys(v).length <= ELICIT_FORM_FIELD_CAP),
+      z.null()
+    ]),
     agentId: z.string().uuid().optional()
   }),
   z.object({ op: z.literal('close') })

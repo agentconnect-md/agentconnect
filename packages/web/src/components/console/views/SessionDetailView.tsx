@@ -39,6 +39,8 @@ import {
   speaker,
   status,
   type Agent,
+  type ElicitAnswerValue,
+  type ElicitFieldSpec,
   type Session,
   type SessionImage,
   type SessionStep
@@ -685,7 +687,7 @@ const FORMAT_HINT: Record<string, { test: (v: string) => boolean; why: string }>
 
 /** Why a typed draft is not yet answerable, or undefined once it is — the same constraints the
  *  daemon re-checks, said in words the reader can act on rather than as a silent dead control. */
-function typedInvalidReason(elicit: NonNullable<FmtStep['elicit']>, draft: string): string | undefined {
+function typedInvalidReason(elicit: Pick<ElicitFieldSpec, 'text' | 'number'>, draft: string): string | undefined {
   const num = elicit.number
   if (num) {
     if (!draft.trim()) return 'Enter a number'
@@ -717,38 +719,97 @@ function typedInvalidReason(elicit: NonNullable<FmtStep['elicit']>, draft: strin
 }
 
 /** What a typed card's control starts out holding: the schema's `default`, or nothing. */
-function typedDraft(elicit: FmtStep['elicit']): string {
+function typedDraft(elicit: Pick<ElicitFieldSpec, 'defaultValue'> | undefined): string {
   const value = elicit?.defaultValue
   return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
 }
 
 /** The options a card starts out holding — a multi-select's default list, or the single default
  *  pick, which stays marked so the reader sees what the agent suggested before tapping. */
-function pickedDefaults(elicit: FmtStep['elicit']): string[] {
+function pickedDefaults(elicit: Pick<ElicitFieldSpec, 'defaultValue'> | undefined): string[] {
   const value = elicit?.defaultValue
   if (Array.isArray(value)) return value
   return typeof value === 'string' || typeof value === 'boolean' ? [String(value)] : []
+}
+
+/** What each field of a form card starts out holding — its own schema default, per kind. */
+function formDrafts(fields: ElicitFieldSpec[] | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const f of fields ?? []) if (f.kind === 'text' || f.kind === 'number') out[f.propName] = typedDraft(f)
+  return out
+}
+
+function formPicks(fields: ElicitFieldSpec[] | undefined): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const f of fields ?? []) if (f.kind !== 'text' && f.kind !== 'number') out[f.propName] = pickedDefaults(f)
+  return out
+}
+
+/** Why one form field is not yet answerable, or undefined once it is — the same per-kind rules
+ *  the daemon re-checks. A field the schema does not require may be left untouched: the answer
+ *  then leaves it out, which is legal and is why the whole form can be answered at all. */
+function fieldInvalidReason(
+  f: ElicitFieldSpec,
+  drafts: Record<string, string>,
+  picks: Record<string, string[]>
+): string | undefined {
+  if (f.kind === 'text' || f.kind === 'number') {
+    const draft = drafts[f.propName] ?? ''
+    if (!draft.trim() && !f.required) return undefined
+    return typedInvalidReason(f, draft)
+  }
+  const picked = picks[f.propName] ?? []
+  if (f.kind === 'multi-enum') {
+    const min = f.multi?.minItems ?? 0
+    const max = f.multi?.maxItems
+    if (!picked.length && !f.required) return undefined
+    return picked.length < min || (max !== undefined && picked.length > max) ? selectionHint(min, max) : undefined
+  }
+  return picked.length === 1 || (!picked.length && !f.required) ? undefined : 'Choose one'
+}
+
+/** The record a form card answers with: every answered field under its property name, in the
+ *  schema's own type. An untouched OPTIONAL field is left out entirely rather than sent empty —
+ *  the daemon accepts that, and it keeps the agent's content to what the reader actually said. */
+function formAnswer(
+  fields: ElicitFieldSpec[],
+  drafts: Record<string, string>,
+  picks: Record<string, string[]>
+): Record<string, string | number | string[]> {
+  const out: Record<string, string | number | string[]> = {}
+  for (const f of fields) {
+    if (f.kind === 'text' || f.kind === 'number') {
+      const draft = drafts[f.propName] ?? ''
+      if (draft.trim()) out[f.propName] = f.kind === 'number' ? Number(draft) : draft
+      continue
+    }
+    const picked = picks[f.propName] ?? []
+    // A required multi-select carries even the empty set: "none of them" is its answer.
+    if (f.kind === 'multi-enum') {
+      if (f.required || picked.length) out[f.propName] = picked
+    } else if (picked.length === 1) out[f.propName] = picked[0]!
+  }
+  return out
 }
 
 /** The agent's in-band question: its options while it is live, its outcome once settled.
  *  A multi-select (`elicit.multi`) toggles its options and answers with the list on Confirm —
  *  one tap can't express a set — while a single-choice card still answers on the tap itself.
  *  A typed field (`elicit.text` / `elicit.number`) has no options at all: it submits what the
- *  reader wrote, once the schema's own constraints are met.
+ *  reader wrote, once the schema's own constraints are met. A multi-field form (`elicit.fields`)
+ *  stacks one labelled control per field behind a single Submit that stays disabled until every
+ *  one of them is answerable, and sends a value per field.
  *  Without `onAnswer` — a reader with no live socket to answer over — the same card renders
  *  as a plain record of the ask, controls inert rather than missing. */
-function ElicitationCard({
-  step,
-  onAnswer
-}: {
-  step: FmtStep
-  onAnswer?: (value: string | string[] | number | null) => void
-}) {
+function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: ElicitAnswerValue) => void }) {
   const [picked, setPicked] = useState<string[]>(() => pickedDefaults(step.elicit))
   const [draft, setDraft] = useState<string>(() => typedDraft(step.elicit))
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => formDrafts(step.elicit?.fields))
+  const [picks, setPicks] = useState<Record<string, string[]>>(() => formPicks(step.elicit?.fields))
   const elicit = step.elicit
   const multi = elicit?.multi
-  const typed = elicit && (elicit.text || elicit.number) ? elicit : undefined
+  const fields = elicit?.fields?.length ? elicit.fields : undefined
+  const typed = !fields && elicit && (elicit.text || elicit.number) ? elicit : undefined
   const min = multi?.minItems ?? 0
   const max = multi?.maxItems
   // The same bounds the daemon re-checks: a browser frame is not what makes an answer valid.
@@ -772,6 +833,100 @@ function ElicitationCard({
             <Icon name={settled.icon} size={13} color={settled.color} />
             <span className="min-w-0 truncate">{settled.label(elicit.answerLabel)}</span>
           </span>
+        ) : fields ? (
+          <div className="flex w-full min-w-0 flex-col gap-[10px]">
+            {fields.map((f) => {
+              const reason = fieldInvalidReason(f, drafts, picks)
+              const note =
+                reason ??
+                (f.kind === 'multi-enum' ? selectionHint(f.multi?.minItems ?? 0, f.multi?.maxItems) : undefined)
+              return (
+                <div key={f.propName} className="flex min-w-0 flex-col gap-[6px]">
+                  <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+                    {f.label}
+                    {!f.required && <span className="text-(--text-tertiary)">&#32;(optional)</span>}
+                  </span>
+                  {f.kind === 'text' || f.kind === 'number' ? (
+                    <input
+                      className="inp w-full min-w-0 desktop:max-w-[320px] disabled:cursor-default disabled:opacity-55"
+                      type={f.kind === 'number' ? 'number' : 'text'}
+                      value={drafts[f.propName] ?? ''}
+                      disabled={!onAnswer}
+                      aria-label={f.label}
+                      {...(f.number?.minimum !== undefined ? { min: f.number.minimum } : {})}
+                      {...(f.number?.maximum !== undefined ? { max: f.number.maximum } : {})}
+                      {...(f.number?.integer ? { step: 1 } : {})}
+                      {...(f.text?.maxLength !== undefined ? { maxLength: f.text.maxLength } : {})}
+                      onChange={(e) => setDrafts((prev) => ({ ...prev, [f.propName]: e.target.value }))}
+                    />
+                  ) : (
+                    <div className="flex min-w-0 flex-wrap items-center gap-[6px]">
+                      {f.options.map((option) => {
+                        const held = picks[f.propName] ?? []
+                        const on = held.includes(option.value)
+                        // At the cap, an unpicked option stops taking a tap — an answer the
+                        // card would have to refuse must not look available.
+                        const cap = f.kind === 'multi-enum' ? f.multi?.maxItems : undefined
+                        const capped = !on && cap !== undefined && held.length >= cap
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            aria-pressed={on}
+                            className={
+                              on
+                                ? 'chip max-w-full truncate border-(--brand) bg-(--brand-soft) text-(--brand-soft-text) disabled:cursor-default disabled:opacity-55'
+                                : 'chip max-w-full truncate disabled:cursor-default disabled:opacity-55'
+                            }
+                            disabled={!onAnswer || capped}
+                            onClick={() =>
+                              setPicks((prev) => {
+                                const was = prev[f.propName] ?? []
+                                if (was.includes(option.value))
+                                  return { ...prev, [f.propName]: was.filter((v) => v !== option.value) }
+                                // One choice replaces the last for a single-pick field; a
+                                // multi-select adds to the set.
+                                return {
+                                  ...prev,
+                                  [f.propName]: f.kind === 'multi-enum' ? [...was, option.value] : [option.value]
+                                }
+                              })
+                            }
+                          >
+                            {option.label}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {note && (
+                    <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                      {note}
+                    </span>
+                  )}
+                </div>
+              )
+            })}
+            <div className="flex flex-wrap items-center gap-[6px]">
+              <button
+                type="button"
+                className="dsbtn dsbtn-primary xs"
+                disabled={!onAnswer || fields.some((f) => !!fieldInvalidReason(f, drafts, picks))}
+                onClick={() => onAnswer?.(formAnswer(fields, drafts, picks))}
+              >
+                Submit
+              </button>
+              <button
+                type="button"
+                className="chip disabled:cursor-default disabled:opacity-55"
+                disabled={!onAnswer}
+                onClick={() => onAnswer?.(null)}
+                title="Dismiss without answering"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
         ) : typed ? (
           <>
             <input
@@ -3083,11 +3238,7 @@ export default function SessionDetailView() {
   // the card renders inert rather than offering buttons that would go nowhere.
   const answerElicitation =
     isLive && (isPg || isWebchat)
-      ? (
-          agentId: string | undefined,
-          requestId: string | undefined,
-          value: string | string[] | number | null
-        ): void => {
+      ? (agentId: string | undefined, requestId: string | undefined, value: ElicitAnswerValue): void => {
           if (!requestId) return
           pgAnswerElicitation(session.id, agentId ?? session.agentId ?? '', requestId, value, webchatConversationId)
         }
@@ -4489,7 +4640,7 @@ export default function SessionDetailView() {
                                           step={st}
                                           {...(answerElicitation
                                             ? {
-                                                onAnswer: (value: string | string[] | number | null) =>
+                                                onAnswer: (value: ElicitAnswerValue) =>
                                                   answerElicitation(turn.agentId, st.elicit?.requestId, value)
                                               }
                                             : {})}

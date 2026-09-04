@@ -14,7 +14,8 @@ import type {
   AgentApprovalRoute,
   AgentApprovalRouted,
   AgentPermissionDecision,
-  ApprovalRouteTarget
+  ApprovalRouteTarget,
+  ElicitField
 } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
@@ -31,6 +32,11 @@ import {
   buildPermissionCard,
   buildPermissionResolvedCard,
   clampTo,
+  elicitFieldLabel,
+  elicitForm,
+  elicitFormAccepts,
+  elicitFormContent,
+  elicitRequiredProps,
   elicitTarget,
   multiSelectAccepts,
   numberAccepts,
@@ -121,6 +127,80 @@ function answerFitsKind(kind: ElicitKind, value: string | string[] | number): bo
   return typeof value === 'string'
 }
 
+/** A multi-field form card's answer: one value per answered field, keyed by property name. */
+type ElicitFormAnswer = Record<string, string | number | string[]>
+
+/** The answer shapes a card settles with — a record only ever answers a FORM card. */
+type ElicitAnswer = string | string[] | number | ElicitFormAnswer | null
+
+function isFormAnswer(value: ElicitAnswer): value is ElicitFormAnswer {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** How a settled FORM card names its answer: every answered field as `label: answer`, in the
+ *  card's own words, clamped as ONE line. Naming the fields is what keeps the thread of what
+ *  was agreed; the clamp is what stops a long form pasting a wall of values into a transcript. */
+function formAnswerLabel(
+  params: CreateElicitationRequest,
+  form: readonly ElicitTarget[],
+  answer: ElicitFormAnswer
+): string {
+  const parts: string[] = []
+  for (const t of form) {
+    const value = answer[t.propName]
+    if (value !== undefined) parts.push(`${elicitFieldLabel(params, t.propName)}: ${chosenLabel(t, value)}`)
+  }
+  // An all-optional form left alone is still an answer — settling it as nothing would read
+  // as a card that never resolved, the same reason a `minItems: 0` selection says so too.
+  return parts.length ? clampTo(parts.join(' · '), 200) : 'Nothing filled in'
+}
+
+/** The card-side descriptors of ONE field — the wire's own shape, minus what only a form
+ *  entry names (property, label, kind, requiredness). */
+type ElicitCardDescriptors = Pick<ElicitField, 'options' | 'multi' | 'text' | 'number' | 'defaultValue'>
+
+/** The per-kind descriptors a webchat elicitation card carries for one field: its options plus
+ *  whichever constraint block its kind brings. Shared by the single-field card and each entry
+ *  of a form, so a one-field form's payload stays exactly the single-field card's. */
+function elicitCardDescriptors(t: ElicitTarget): ElicitCardDescriptors {
+  return {
+    options: t.options,
+    // Present only for a multi-select: it is what tells the card to offer toggles and a
+    // confirm rather than one-tap buttons, and the bounds the confirm enforces.
+    ...(t.kind === 'multi-enum'
+      ? {
+          multi: {
+            ...(t.minItems !== undefined ? { minItems: t.minItems } : {}),
+            ...(t.maxItems !== undefined ? { maxItems: t.maxItems } : {})
+          }
+        }
+      : {}),
+    // Present only for a typed field, and likewise what makes the card an input rather than a
+    // row of options. The constraints ride along so the control can refuse an answer the
+    // daemon would reject anyway.
+    ...(t.kind === 'text'
+      ? {
+          text: {
+            ...(t.minLength !== undefined ? { minLength: t.minLength } : {}),
+            ...(t.maxLength !== undefined ? { maxLength: t.maxLength } : {}),
+            ...(t.pattern !== undefined ? { pattern: t.pattern } : {}),
+            ...(t.format !== undefined ? { format: t.format } : {})
+          }
+        }
+      : {}),
+    ...(t.kind === 'number'
+      ? {
+          number: {
+            ...(t.integer ? { integer: true } : {}),
+            ...(t.minimum !== undefined ? { minimum: t.minimum } : {}),
+            ...(t.maximum !== undefined ? { maximum: t.maximum } : {})
+          }
+        }
+      : {}),
+    ...(t.defaultValue !== undefined ? { defaultValue: t.defaultValue } : {})
+  }
+}
+
 /** One outstanding `elicitation/create` awaiting a human answer. */
 type PendingElicit = PendingElicitSurface & {
   owner: HostKey
@@ -129,6 +209,9 @@ type PendingElicit = PendingElicitSurface & {
   params: CreateElicitationRequest
   propName: string
   kind: ElicitKind
+  /** Set only for a MULTI-field webchat form card — the fields it rendered, in schema order.
+   *  Absent ⇒ the single-field card, answered by a scalar or a list as it always was. */
+  form?: ElicitTarget[]
   approval: boolean
   resolve: (res: CreateElicitationResponse) => void
 }
@@ -1347,8 +1430,11 @@ export class PermissionCoordinator {
   }
 
   /** Webchat's peer of the Slack elicitation card: stream the card as an in-band event and
-   *  park the same resolver. Returns `undefined` (⇒ decline) when the form has no field this
-   *  surface can render — the identical verdict Slack reaches, via the same `elicitTarget`. */
+   *  park the same resolver. Takes the WHOLE form (`elicitForm`) rather than Slack's one field,
+   *  so a multi-field ask renders one control per field and answers with a record; a one-field
+   *  form takes the single-field path and its payload is unchanged. Returns `undefined`
+   *  (⇒ decline) when the surface cannot render the form — including a `required` property it
+   *  has no control for, which is the same verdict Slack reaches by the same rule. */
   private async awaitWebchatElicitation(
     agentId: string,
     sessionId: string,
@@ -1356,8 +1442,10 @@ export class PermissionCoordinator {
     p: Pending,
     wc: NonNullable<Pending['webchat']>
   ): Promise<CreateElicitationResponse | undefined> {
-    const target = elicitTarget(params, WEBCHAT_ELICIT_KINDS)
-    if (!target) return undefined
+    const form = elicitForm(params, WEBCHAT_ELICIT_KINDS)
+    if (!form) return undefined
+    const target = form[0]!
+    const required = new Set(elicitRequiredProps(params))
     const requestId = `elicit-${++this.elicitSeq}`
     const message = (params as { message?: string }).message?.trim() || 'The agent needs your input'
     let resolveResult!: (res: CreateElicitationResponse) => void
@@ -1369,6 +1457,7 @@ export class PermissionCoordinator {
       params,
       propName: target.propName,
       kind: target.kind,
+      ...(form.length > 1 ? { form } : {}),
       approval: false,
       surface: 'webchat',
       wc,
@@ -1384,40 +1473,21 @@ export class PermissionCoordinator {
           kind: 'elicitation',
           requestId,
           message,
-          options: target.options,
-          // Present only for a multi-select: it is what tells the card to offer toggles and a
-          // confirm rather than one-tap buttons, and the bounds the confirm enforces.
-          ...(target.kind === 'multi-enum'
+          // A multi-field form carries its fields as a LIST and NONE of the single-field
+          // descriptors: an old reader then gets an optionless card it can only dismiss,
+          // rather than one it could half-fill with an answer the daemon would refuse.
+          ...(form.length > 1
             ? {
-                multi: {
-                  ...(target.minItems !== undefined ? { minItems: target.minItems } : {}),
-                  ...(target.maxItems !== undefined ? { maxItems: target.maxItems } : {})
-                }
+                options: [],
+                fields: form.map((t) => ({
+                  propName: t.propName,
+                  label: elicitFieldLabel(params, t.propName),
+                  kind: t.kind,
+                  ...(required.has(t.propName) ? { required: true } : {}),
+                  ...elicitCardDescriptors(t)
+                }))
               }
-            : {}),
-          // Present only for a typed field, and likewise what makes the card an input rather
-          // than a row of options. The constraints ride along so the control can refuse an
-          // answer the daemon would reject anyway.
-          ...(target.kind === 'text'
-            ? {
-                text: {
-                  ...(target.minLength !== undefined ? { minLength: target.minLength } : {}),
-                  ...(target.maxLength !== undefined ? { maxLength: target.maxLength } : {}),
-                  ...(target.pattern !== undefined ? { pattern: target.pattern } : {}),
-                  ...(target.format !== undefined ? { format: target.format } : {})
-                }
-              }
-            : {}),
-          ...(target.kind === 'number'
-            ? {
-                number: {
-                  ...(target.integer ? { integer: true } : {}),
-                  ...(target.minimum !== undefined ? { minimum: target.minimum } : {}),
-                  ...(target.maximum !== undefined ? { maximum: target.maximum } : {})
-                }
-              }
-            : {}),
-          ...(target.defaultValue !== undefined ? { defaultValue: target.defaultValue } : {})
+            : elicitCardDescriptors(target))
         }
       })
     } catch (err) {
@@ -1453,11 +1523,12 @@ export class PermissionCoordinator {
 
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
    *  request — `accept` with the chosen value (a LIST of them for a multi-select, a real number
-   *  for a numeric field, under the field name), or `decline` for the Dismiss button
-   *  (value === null) — and edit the card in place. No-op if already gone. */
+   *  for a numeric field, a RECORD of value-per-field for a form, under the field name(s)), or
+   *  `decline` for the Dismiss button (value === null) — and edit the card in place. No-op if
+   *  already gone. */
   async handleElicitChoice(a: {
     requestId: string
-    value: string | string[] | number | null
+    value: ElicitAnswer
     actor?: InteractionActor
     /** Set only by the webchat ingress: the answering browser's conversation. It confines
      *  the answer to a card THIS conversation was shown — a webchat client can neither
@@ -1468,15 +1539,27 @@ export class PermissionCoordinator {
     // A DM elicitation card's request lives on the editor path (§2/§6.4).
     const editor = this.pendingEditorPermissions.get(a.requestId)
     if (editor?.kind === 'elicitation' && editor.notify) {
-      // A DM card is a Slack button row: never answered by a list, a number, or a browser.
-      if (a.webchatConversationId !== undefined || Array.isArray(a.value) || typeof a.value === 'number') return
+      // A DM card is a Slack button row: never answered by a list, a number, a form record,
+      // or a browser.
+      if (
+        a.webchatConversationId !== undefined ||
+        Array.isArray(a.value) ||
+        typeof a.value === 'number' ||
+        isFormAnswer(a.value)
+      )
+        return
       return await this.handleDmElicitChoice(a.requestId, editor, a.value, a.actor)
     }
     const rec = this.pendingElicits.get(a.requestId)
     if (!rec) return
+    // A FORM card is answered by a record and nothing else, and every other card by a scalar
+    // or a list — re-derived from the card's own params, exactly as `target` is below.
+    const form = rec.form ? elicitForm(rec.params, surfaceKinds(rec)) : null
+    if (rec.form && !form) return
+    if (a.value !== null && isFormAnswer(a.value) !== !!form) return
     // Each kind takes one shape of answer and no other: a list for a multi-select, a number
     // for a numeric field, a string for the rest. Dismiss (null) settles any of them.
-    if (a.value !== null && !answerFitsKind(rec.kind, a.value)) return
+    if (a.value !== null && !isFormAnswer(a.value) && !answerFitsKind(rec.kind, a.value)) return
     const target = elicitTarget(rec.params, surfaceKinds(rec))
     if (a.webchatConversationId !== undefined) {
       if (rec.surface !== 'webchat' || rec.wc.conversationId !== a.webchatConversationId) return
@@ -1484,16 +1567,20 @@ export class PermissionCoordinator {
       // into the agent's content, so it is dropped and the card stays live. A multi-select adds
       // no repeats and a count its bounds allow; a typed field, the schema constraints the
       // control was shown — a browser frame is never what makes an answer valid.
+      // A form's record answers exactly the fields the card rendered, each value valid for its
+      // own field: one bad or unexpected field refuses the whole answer, card still live.
       const offered =
         a.value === null ||
-        (!!target &&
-          (Array.isArray(a.value)
-            ? multiSelectAccepts(target, a.value)
-            : typeof a.value === 'number'
-              ? numberAccepts(target, a.value)
-              : target.kind === 'text'
-                ? textAccepts(target, a.value)
-                : target.options.some((o) => o.value === a.value)))
+        (isFormAnswer(a.value)
+          ? !!form && elicitFormAccepts(form, elicitRequiredProps(rec.params), a.value)
+          : !!target &&
+            (Array.isArray(a.value)
+              ? multiSelectAccepts(target, a.value)
+              : typeof a.value === 'number'
+                ? numberAccepts(target, a.value)
+                : target.kind === 'text'
+                  ? textAccepts(target, a.value)
+                  : target.options.some((o) => o.value === a.value)))
       if (!offered) return
       // A card settles only from its own surface: both share one `elicit-<n>` counter, so
       // without this a Slack tap could answer a live webchat card.
@@ -1514,18 +1601,28 @@ export class PermissionCoordinator {
     }
     let res: CreateElicitationResponse
     let decision: string
+    // What the settled card says the answer WAS — the webchat label, and the Slack decision's tail.
+    let answered: string | undefined
     if (a.value === null) {
       res = { action: 'decline' }
       decision = ':no_entry_sign: Dismissed'
+    } else if (isFormAnswer(a.value)) {
+      if (!form) return
+      // A form's accepted content is the whole record: every answered field under its own name.
+      res = { action: 'accept', content: elicitFormContent(form, a.value) }
+      answered = formAnswerLabel(rec.params, form, a.value)
+      decision = `:white_check_mark: ${answered}`
     } else if (Array.isArray(a.value)) {
       // The array property's accepted content is the chosen list itself.
       res = { action: 'accept', content: { [rec.propName]: a.value } }
-      decision = `:white_check_mark: ${chosenLabel(target, a.value)}`
+      answered = chosenLabel(target, a.value)
+      decision = `:white_check_mark: ${answered}`
     } else {
       // The accepted content carries the schema's own type: a boolean for a boolean field and a
       // real number for a numeric one, never the string the wire happened to spell it with.
       const value = rec.kind === 'boolean' ? a.value === 'true' : a.value
       res = { action: 'accept', content: { [rec.propName]: value } }
+      answered = chosenLabel(target, a.value)
       decision = `:white_check_mark: ${rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : String(a.value)}`
     }
     if (rec.approval) {
@@ -1547,8 +1644,7 @@ export class PermissionCoordinator {
     this.pendingElicits.delete(a.requestId)
     this.syncApprovalActivity(rec.owner, rec.sessionId, { id: a.requestId, allowed: a.value !== null })
     if (rec.surface === 'webchat') {
-      const label = a.value === null ? undefined : chosenLabel(target, a.value)
-      this.emitWebchatElicitResolved(rec, a.requestId, a.value === null ? 'dismissed' : 'accepted', label)
+      this.emitWebchatElicitResolved(rec, a.requestId, a.value === null ? 'dismissed' : 'accepted', answered)
     } else if (rec.ts)
       void rec.conn
         .updateBlocks(rec.channel, rec.ts, buildElicitationResolvedCard(rec.params, decision), 'Input received', true)

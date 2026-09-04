@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  ELICIT_FORM_FIELD_CAP,
   WireFeishuCardActionEvent,
   RdMsg,
   RdMsgWebchat,
@@ -178,6 +179,13 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(RdAck.safeParse({ msgId: 'm-1' }).success).toBe(false) // verdict is required
   })
 
+  // A form of nothing but optional fields, all left alone, answers with an EMPTY record — a
+  // real answer, not a malformed frame, and the daemon's accept check already takes it.
+  it('carries an empty elicitation answer record', () => {
+    const ok = RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'elicit-1', value: {} })
+    expect(ok.success).toBe(true)
+  })
+
   it('carries every webchat control op and rejects unknown ops', () => {
     const ops = [
       {
@@ -203,6 +211,8 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       // A typed field answers with the schema's own type — a real number, never its spelling.
       { op: 'elicitation_choice', requestId: 'elicit-1', value: 42 },
       { op: 'elicitation_choice', requestId: 'elicit-1', value: -1.5 },
+      // A multi-field form answers with one value per field, each in the schema's own type.
+      { op: 'elicitation_choice', requestId: 'elicit-1', value: { branch: 'main', retries: 3, checks: ['lint'] } },
       { op: 'close' }
     ]
     for (const payload of ops) {
@@ -231,6 +241,16 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'elicit-1', value: ['ok', 3] }).success
     ).toBe(false)
     expect(RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: '', value: 'y' }).success).toBe(false)
+    // No form is longer than the card cap (an EMPTY record IS an answer — see the case below).
+    const wide = Object.fromEntries(Array.from({ length: ELICIT_FORM_FIELD_CAP + 1 }, (_, i) => [`f${i}`, 'x']))
+    expect(RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'e-1', value: wide }).success).toBe(false)
+    // A field's value is a scalar or a list of them — never a nested object or a non-number.
+    expect(
+      RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'e-1', value: { a: { b: 1 } } }).success
+    ).toBe(false)
+    expect(
+      RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'e-1', value: { a: Number.NaN } }).success
+    ).toBe(false)
     expect(
       RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'elicit-1', value: 'y', agentId: 'nope' }).success
     ).toBe(false)

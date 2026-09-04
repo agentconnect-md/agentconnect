@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { LocalStore } from '../src/store/local-store.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
 import { SlackConnection } from '../src/slack/connection.js'
-import { elicitTarget, WEBCHAT_ELICIT_KINDS } from '../src/slack/render.js'
+import { elicitForm, elicitTarget, SLACK_ELICIT_KINDS, WEBCHAT_ELICIT_KINDS } from '../src/slack/render.js'
 
 /**
  * Auto-approve policy for the daemon's OWN built-in MCP tools (UX fix): a human should
@@ -564,7 +564,8 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     const pending: any = installPending(daemon)
     const sink = installWebchat(pending)
 
-    // A required field the card cannot answer (#1795) stays unanswerable on webchat too.
+    // A required field NO control can answer (#1795) stays unanswerable on webchat too — a
+    // second RENDERABLE field is now a form, so the unanswerable one has to be the nested object.
     await expect(
       (daemon as any).permissions.onAcpElicit(
         'agent-1',
@@ -572,8 +573,8 @@ describe('webchat renders and answers ACP elicitation cards', () => {
         formElicitation({
           requestedSchema: {
             type: 'object',
-            properties: { branch: { type: 'string', enum: ['main'] }, note: { type: 'string' } },
-            required: ['branch', 'note']
+            properties: { branch: { type: 'string', enum: ['main'] }, extra: { type: 'object' } },
+            required: ['branch', 'extra']
           }
         })
       )
@@ -920,5 +921,238 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
       (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation({ pattern: '^(a+)+$' }))
     ).resolves.toBeUndefined()
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+  })
+})
+
+// ── multi-field forms, webchat only (issue #1794 gap 1) ──────────────────────
+// A Slack card answers ONE field, so `elicitTarget` still requires one property to satisfy
+// `required` alone and a multi-field ask declines there. Webchat reads the whole form
+// (`elicitForm`) and answers it with a value per field — the first thing that can honestly
+// accept a form whose `required` names more than one property.
+
+/** A two-field form: a required pick plus an optional typed note. */
+function twoFieldElicitation(required = ['branch']): CreateElicitationRequest {
+  return formElicitation({
+    message: 'Cut a branch',
+    requestedSchema: {
+      type: 'object',
+      properties: {
+        branch: { type: 'string', enum: ['main', 'develop'], title: 'Base branch' },
+        note: { type: 'string', maxLength: 20 }
+      },
+      required
+    }
+  })
+}
+
+describe('webchat answers a multi-field elicitation form with a record', () => {
+  it('cards one field per property and accepts the whole record, in the schema’s own types', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      formElicitation({
+        message: 'Cut a branch',
+        requestedSchema: {
+          type: 'object',
+          properties: {
+            branch: { type: 'string', enum: ['main', 'develop'], title: 'Base branch' },
+            force: { type: 'boolean' },
+            retries: { type: 'integer', minimum: 1, maximum: 5, default: 2 }
+          },
+          required: ['branch', 'force']
+        }
+      })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    expect(cardEvents(sink)[0]).toEqual({
+      kind: 'elicitation',
+      requestId: expect.any(String),
+      message: 'Cut a branch',
+      // The single-field descriptors are ALL absent: an old reader gets a card with nothing
+      // to pick and only Dismiss, never one it could half-fill.
+      options: [],
+      fields: [
+        {
+          propName: 'branch',
+          label: 'Base branch',
+          kind: 'enum',
+          required: true,
+          options: [
+            { value: 'main', label: 'main' },
+            { value: 'develop', label: 'develop' }
+          ]
+        },
+        {
+          propName: 'force',
+          label: 'force',
+          kind: 'boolean',
+          required: true,
+          options: [
+            { value: 'true', label: 'Yes' },
+            { value: 'false', label: 'No' }
+          ]
+        },
+        {
+          propName: 'retries',
+          label: 'retries',
+          kind: 'number',
+          options: [],
+          number: { integer: true, minimum: 1, maximum: 5 },
+          defaultValue: 2
+        }
+      ]
+    })
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: { branch: 'develop', force: 'false', retries: 4 },
+      webchatConversationId: 'conv-1'
+    })
+    // Each value carries its own schema type — the boolean is a boolean, not its spelling.
+    await expect(result).resolves.toEqual({
+      action: 'accept',
+      content: { branch: 'develop', force: false, retries: 4 }
+    })
+    // The settled card names each field and what it was answered with, in the card's own words.
+    expect(cardEvents(sink)[1]).toEqual({
+      kind: 'elicitation_resolved',
+      requestId,
+      outcome: 'accepted',
+      label: 'Base branch: develop · force: No · retries: 4'
+    })
+  })
+
+  it('lets an OPTIONAL field be left out, and still refuses a missing required one', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const answer = (value: unknown) =>
+      (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: 'conv-1' })
+
+    await answer({ note: 'no branch' }) // the required field is missing
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(cardEvents(sink)).toHaveLength(1) // still live
+
+    // The optional `note` is simply absent — legal per the schema, and the accept says only
+    // what the reader actually answered.
+    await answer({ branch: 'main' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
+    expect(cardEvents(sink)[1]).toEqual({
+      kind: 'elicitation_resolved',
+      requestId,
+      outcome: 'accepted',
+      label: 'Base branch: main'
+    })
+  })
+
+  // A form of nothing but optional fields, submitted untouched, is a real answer: schema-valid
+  // empty content. The wire used to refuse the frame, so an enabled Submit did nothing.
+  it('accepts an all-optional form submitted with nothing filled in', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation([]))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: {}, webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: {} })
+    // Settled as an answer, not left looking like a card that never resolved.
+    expect(cardEvents(sink)[1]).toMatchObject({ outcome: 'accepted', label: 'Nothing filled in' })
+  })
+
+  it('refuses the WHOLE record for one bad, extra, or misspelled field', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation(['branch', 'note']))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const answer = (value: unknown, conversationId = 'conv-1') =>
+      (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: conversationId })
+
+    await answer({ branch: 'trunk', note: 'ok' }) // an option the card never offered
+    await answer({ branch: 'main', note: 'far too long to be accepted' }) // past maxLength
+    await answer({ branch: 'main', note: 'ok', nope: 'x' }) // a field the agent never asked for
+    await answer({ branch: 'main', Note: 'ok' }) // misspelled: the required one is missing too
+    await answer({ branch: ['main'], note: 'ok' }) // the wrong shape for that field
+    await answer('main') // a scalar cannot answer a form card
+    await answer(['main']) // nor can a list
+    await answer({ branch: 'main', note: 'ok' }, 'conv-other') // another conversation, never shown this card
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
+
+    await answer({ branch: 'main', note: 'ok' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main', note: 'ok' } })
+  })
+
+  it('settles a form card on Dismiss, which is still an explicit refusal to answer', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: null, webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'decline' })
+    expect(cardEvents(sink)[1]).toEqual({ kind: 'elicitation_resolved', requestId, outcome: 'dismissed' })
+  })
+
+  it('still declines a multi-field form on a Slack turn, whose card answers one field', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    pending.plan.platform = 'slack'
+    pending.conn = Object.create(SlackConnection.prototype)
+
+    await expect(
+      (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation(['branch', 'note']))
+    ).resolves.toBeUndefined()
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    // Unchanged where it matters: one card, one field that satisfies `required` alone.
+    expect(elicitTarget(twoFieldElicitation(['branch', 'note']), SLACK_ELICIT_KINDS)).toBeNull()
+    // The same form IS renderable — just not here: webchat asks every field.
+    expect(elicitForm(twoFieldElicitation(['branch', 'note']), WEBCHAT_ELICIT_KINDS)).toHaveLength(2)
+  })
+
+  it('keeps a one-field form on the single-field card, byte for byte', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    // Exactly the payload the single-field card always carried: no `fields`, options intact.
+    expect(cardEvents(sink)[0]).toEqual({
+      kind: 'elicitation',
+      requestId: expect.any(String),
+      message: 'Which branch should I cut from?',
+      options: [
+        { value: 'main', label: 'main' },
+        { value: 'develop', label: 'develop' },
+        { value: 'release', label: 'release' }
+      ]
+    })
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    // And it still answers with the scalar, not a record — a form record is refused here.
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: { branch: 'main' },
+      webchatConversationId: 'conv-1'
+    })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main', webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
   })
 })

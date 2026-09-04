@@ -406,6 +406,145 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(live.answered.at(-1)).toEqual(['session-1', 'agent-1', 'elicit-3', ['main'], 'conv-1'])
   })
 
+  // ── multi-field forms (#1794 gap 1): one control per field, one submit ──
+
+  const inputNamed = (label: string) =>
+    container?.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement | null
+  const typeInto = async (field: HTMLInputElement, value: string) => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(field, value)
+      field.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  const FORM_FIELDS = [
+    {
+      propName: 'branch',
+      label: 'Base branch',
+      kind: 'enum',
+      required: true,
+      options: [
+        { value: 'main', label: 'main' },
+        { value: 'develop', label: 'develop' }
+      ]
+    },
+    { propName: 'note', label: 'Note', kind: 'text', options: [], text: { maxLength: 6 } },
+    {
+      propName: 'force',
+      label: 'Force push',
+      kind: 'boolean',
+      required: true,
+      options: [
+        { value: 'true', label: 'Yes' },
+        { value: 'false', label: 'No' }
+      ]
+    }
+  ]
+
+  it('asks every field, labelled, behind one submit that waits for all of them', async () => {
+    live.steps = [
+      { ...CARD, text: 'Cut a branch', elicit: { requestId: 'elicit-1', options: [], fields: FORM_FIELDS } }
+    ]
+    await render()
+
+    // Every field is named, and the one the schema does not require says so.
+    for (const label of ['Base branch', 'Note', 'Force push']) expect(text()).toContain(label)
+    expect(text()).toContain('(optional)')
+    // Two required fields unanswered, so there is nothing valid to submit yet.
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(text()).toContain('Choose one')
+
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // A pick is held, not sent: a form answers once, on Submit.
+    expect(live.answered).toEqual([])
+    expect(buttonNamed('main')?.getAttribute('aria-pressed')).toBe('true')
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+
+    await act(async () => {
+      buttonNamed('No')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(buttonNamed('Submit')?.disabled).toBe(false)
+
+    // One bad OPTIONAL field is still enough to hold the whole answer, with its own reason.
+    await typeInto(inputNamed('Note')!, 'far too long')
+    expect(text()).toContain('Enter at most 6 characters')
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+
+    await typeInto(inputNamed('Note')!, 'ok')
+    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    await act(async () => {
+      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // One value per field, each in the shape its own kind answers with.
+    expect(live.answered).toEqual([
+      ['session-1', 'agent-1', 'elicit-1', { branch: 'main', note: 'ok', force: 'false' }, 'conv-1']
+    ])
+  })
+
+  it('leaves an untouched optional field out of the record entirely', async () => {
+    live.steps = [
+      {
+        ...CARD,
+        text: 'Cut a branch',
+        elicit: {
+          requestId: 'elicit-1',
+          options: [],
+          fields: [
+            FORM_FIELDS[0],
+            FORM_FIELDS[1],
+            { propName: 'checks', label: 'Checks', kind: 'multi-enum', options: [{ value: 'lint', label: 'lint' }] }
+          ]
+        }
+      }
+    ]
+    await render()
+
+    // Nothing required but the pick, so the form is answerable with the rest left alone.
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    await act(async () => {
+      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', { branch: 'main' }, 'conv-1']])
+
+    // Dismiss stays an explicit refusal, not an empty record.
+    await act(async () => {
+      buttonNamed('Dismiss')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered[1]).toEqual(['session-1', 'agent-1', 'elicit-1', null, 'conv-1'])
+  })
+
+  it('pre-populates each field of a form from its own schema default', async () => {
+    live.steps = [
+      {
+        ...CARD,
+        elicit: {
+          requestId: 'elicit-1',
+          options: [],
+          fields: [
+            { ...FORM_FIELDS[0], defaultValue: 'develop' },
+            { ...FORM_FIELDS[1], required: true, defaultValue: 'seed' }
+          ]
+        }
+      }
+    ]
+    await render()
+
+    expect(inputNamed('Note')?.value).toBe('seed')
+    expect(buttonNamed('develop')?.getAttribute('aria-pressed')).toBe('true')
+    // Seeded AND already valid, so the reader can simply accept what the agent suggested.
+    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    await act(async () => {
+      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', { branch: 'develop', note: 'seed' }, 'conv-1']])
+  })
+
   it('collapses to its outcome once settled, leaving nothing left to answer', async () => {
     live.steps = [{ ...CARD, elicit: { ...CARD.elicit, outcome: 'accepted', answerLabel: 'develop' } }]
     await render()

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
-import { SHARED_CONFIG_ACTION_ID, SLACK_STATUS_ACTION, decodeSlackStatusOverflowValue } from '@agentconnect.md/protocol'
+import {
+  ELICIT_FORM_FIELD_CAP,
+  SHARED_CONFIG_ACTION_ID,
+  SLACK_STATUS_ACTION,
+  decodeSlackStatusOverflowValue
+} from '@agentconnect.md/protocol'
 import {
   OutputConverger,
   renderStatusBar,
@@ -12,6 +17,11 @@ import {
   buildElicitationCard,
   buildElicitationResolvedCard,
   buildAttributionBlocks,
+  elicitFieldLabel,
+  elicitForm,
+  elicitFormAccepts,
+  elicitFormContent,
+  elicitRequiredProps,
   elicitTarget,
   SLACK_ELICIT_KINDS,
   WEBCHAT_ELICIT_KINDS,
@@ -1837,6 +1847,133 @@ describe('elicitation card', () => {
     expect(seed({ type: 'string', minLength: 3, default: 'ab' })).toBeUndefined()
     expect(seed({ type: 'boolean', default: 'yes' })).toBeUndefined()
     expect(seed({ type: 'array', items: { type: 'string', enum: ['a'] }, default: ['z'] })).toBeUndefined()
+  })
+
+  // ── multi-field forms, webchat only (issue #1794 gap 1) ────────────────────
+  // `elicitTarget` stays the per-FIELD reduction every surface reads; `elicitForm` is the
+  // second entry point beside it, and the only thing that can honestly answer a form whose
+  // `required` names more than one property.
+
+  const req = (properties: Record<string, unknown>, required: string[]) =>
+    ({
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Cut a branch',
+      requestedSchema: { type: 'object', properties, required }
+    }) as CreateElicitationRequest
+
+  const TWO = { branch: { type: 'string', enum: ['main', 'dev'] }, note: { type: 'string', maxLength: 40 } }
+
+  it('renders a two-field form on webchat and still declines it on Slack', () => {
+    const two = req(TWO, ['branch', 'note'])
+    expect(elicitForm(two, WEBCHAT_ELICIT_KINDS)?.map((t) => [t.propName, t.kind])).toEqual([
+      ['branch', 'enum'],
+      ['note', 'text']
+    ])
+    // One card answers one field there, and Slack has nothing to type into either — both
+    // reasons still hold, so the form declines rather than half-answering.
+    expect(elicitTarget(two, WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(two, SLACK_ELICIT_KINDS)).toBeNull()
+    expect(elicitForm(two, SLACK_ELICIT_KINDS)).toBeNull()
+    expect(buildElicitationCard('elicit-1', two)).toBeNull()
+  })
+
+  it('answers a form whose required set is fully rendered, and declines one that is not', () => {
+    // Every required property is among the rendered fields — the #1795 rule, generalised.
+    expect(elicitForm(req(TWO, ['branch']), WEBCHAT_ELICIT_KINDS)).toHaveLength(2)
+    expect(elicitForm(req(TWO, []), WEBCHAT_ELICIT_KINDS)).toHaveLength(2)
+    // A required property NO surface can render leaves the form unanswerable, exactly as one
+    // required field the single-field card could not show always did.
+    const nested = { branch: { type: 'string', enum: ['main'] }, extra: { type: 'object' } }
+    expect(elicitForm(req(nested, ['branch', 'extra']), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    // Unrenderable because of its own constraints, not its type: same verdict.
+    const bad = { branch: { type: 'string', enum: ['main'] }, name: { type: 'string', pattern: '^(a+)+$' } }
+    expect(elicitForm(req(bad, ['branch', 'name']), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    // Nothing renderable at all is not a form.
+    expect(elicitForm(req({ extra: { type: 'object' } }, []), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitForm({ mode: 'url', sessionId: 's1', url: 'https://x' } as any, WEBCHAT_ELICIT_KINDS)).toBeNull()
+  })
+
+  it('declines a form longer than one card can ask', () => {
+    const props = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`f${i}`, { type: 'boolean' }]))
+    expect(elicitForm(req(props(ELICIT_FORM_FIELD_CAP), []), WEBCHAT_ELICIT_KINDS)).toHaveLength(ELICIT_FORM_FIELD_CAP)
+    expect(elicitForm(req(props(ELICIT_FORM_FIELD_CAP + 1), []), WEBCHAT_ELICIT_KINDS)).toBeNull()
+  })
+
+  it('reduces a one-field form to exactly what the single-field card renders', () => {
+    for (const prop of [
+      { type: 'string', enum: ['main', 'dev'], default: 'dev' },
+      { type: 'boolean' },
+      { type: 'string', minLength: 3, pattern: '^[a-z]+$' },
+      { type: 'number', minimum: 1, maximum: 5 },
+      { type: 'array', items: { type: 'string', enum: ['a', 'b'] }, minItems: 1 }
+    ]) {
+      const one = req({ v: prop }, ['v'])
+      expect(elicitForm(one, WEBCHAT_ELICIT_KINDS)).toEqual([elicitTarget(one, WEBCHAT_ELICIT_KINDS)])
+    }
+  })
+
+  it('labels a field by its schema title, falling back to the property name', () => {
+    const titled = req({ branch: { type: 'string', enum: ['main'], title: 'Base branch' }, note: TWO.note }, [])
+    expect(elicitFieldLabel(titled, 'branch')).toBe('Base branch')
+    expect(elicitFieldLabel(titled, 'note')).toBe('note')
+    expect(elicitFieldLabel(req({ v: { type: 'boolean', title: '   ' } }, []), 'v')).toBe('v')
+  })
+
+  it('accepts a form answer only when EVERY field is one its own card would take', () => {
+    const props = {
+      branch: { type: 'string', enum: ['main', 'dev'] },
+      note: { type: 'string', maxLength: 5 },
+      retries: { type: 'integer', minimum: 1, maximum: 3 },
+      checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test'] } },
+      force: { type: 'boolean' }
+    }
+    const params = req(props, ['branch'])
+    const form = elicitForm(params, WEBCHAT_ELICIT_KINDS)!
+    const accepts = (answer: Record<string, string | number | string[]>) =>
+      elicitFormAccepts(form, elicitRequiredProps(params), answer)
+
+    expect(accepts({ branch: 'main', note: 'ok', retries: 2, checks: ['lint'], force: 'true' })).toBe(true)
+    // An OPTIONAL field may simply be absent — that is legal per the schema, and the whole
+    // reason the single-field rule had to stay narrow.
+    expect(accepts({ branch: 'main' })).toBe(true)
+    // A required one may not.
+    expect(accepts({ note: 'ok' })).toBe(false)
+    // An extra or misspelled property would inject something the agent never asked for.
+    expect(accepts({ branch: 'main', nope: 'x' })).toBe(false)
+    expect(accepts({ branch: 'main', Note: 'ok' })).toBe(false)
+    // One bad field refuses the WHOLE answer, whichever field it is.
+    expect(accepts({ branch: 'trunk' })).toBe(false)
+    expect(accepts({ branch: 'main', note: 'far too long' })).toBe(false)
+    expect(accepts({ branch: 'main', retries: 9 })).toBe(false)
+    expect(accepts({ branch: 'main', retries: 1.5 })).toBe(false)
+    expect(accepts({ branch: 'main', checks: ['lint', 'lint'] })).toBe(false)
+    expect(accepts({ branch: 'main', checks: ['deploy'] })).toBe(false)
+    expect(accepts({ branch: 'main', force: 'maybe' })).toBe(false)
+    // And a field answered in the wrong shape is no more acceptable than an unoffered value.
+    expect(accepts({ branch: ['main'] })).toBe(false)
+    expect(accepts({ branch: 'main', retries: 'two' })).toBe(false)
+  })
+
+  it('builds the accepted content in the schema’s own types', () => {
+    const params = req(
+      {
+        branch: { type: 'string', enum: ['main'] },
+        retries: { type: 'integer' },
+        checks: { type: 'array', items: { type: 'string', enum: ['lint'] } },
+        force: { type: 'boolean' }
+      },
+      ['branch']
+    )
+    const form = elicitForm(params, WEBCHAT_ELICIT_KINDS)!
+    // A boolean's wire value is its option string; the content carries a real boolean.
+    expect(elicitFormContent(form, { branch: 'main', retries: 2, checks: ['lint'], force: 'false' })).toEqual({
+      branch: 'main',
+      retries: 2,
+      checks: ['lint'],
+      force: false
+    })
+    expect(elicitFormContent(form, { branch: 'main', force: 'true' })).toEqual({ branch: 'main', force: true })
   })
 
   it('resolved card is a single section with the decision', () => {
