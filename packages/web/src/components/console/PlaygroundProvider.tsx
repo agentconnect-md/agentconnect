@@ -127,12 +127,13 @@ interface PlaygroundData {
   pgSetFast: (id: string, agentId: string, fastMode: boolean, conversationId?: string) => void
   /** Interrupt the running turn without ending the session. */
   pgCancel: (id: string, agentId: string, conversationId?: string) => void
-  /** Answer the agent's in-band elicitation card; a list answers a multi-select, `null` is Dismiss. */
+  /** Answer the agent's in-band elicitation card; a list answers a multi-select, a number a
+   *  numeric field, `null` is Dismiss. */
   pgAnswerElicitation: (
     id: string,
     agentId: string,
     requestId: string,
-    value: string | string[] | null,
+    value: string | string[] | number | null,
     conversationId?: string
   ) => void
   getPgSession: (id: string) => Session | undefined
@@ -251,6 +252,9 @@ type WebchatEvent =
       message: string
       options: { value: string; label: string }[]
       multi?: { minItems?: number; maxItems?: number }
+      text?: { minLength?: number; maxLength?: number; pattern?: string; format?: string }
+      number?: { integer?: boolean; minimum?: number; maximum?: number }
+      defaultValue?: string | number | boolean | string[]
     }
   | {
       kind: 'elicitation_resolved'
@@ -618,7 +622,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             lane({
               kind: 'elicit',
               text: ev.message,
-              elicit: { requestId: ev.requestId, options: ev.options, ...(ev.multi ? { multi: ev.multi } : {}) },
+              elicit: {
+                requestId: ev.requestId,
+                options: ev.options,
+                ...(ev.multi ? { multi: ev.multi } : {}),
+                ...(ev.text ? { text: ev.text } : {}),
+                ...(ev.number ? { number: ev.number } : {}),
+                ...(ev.defaultValue !== undefined ? { defaultValue: ev.defaultValue } : {})
+              },
               boundary: true
             })
           ]
@@ -1715,7 +1726,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  Deliberately NOT optimistic: the daemon owns the card's outcome and settles it with
    *  the `elicitation_resolved` event, so a refused answer leaves the card answerable. */
   const pgAnswerElicitation = useCallback(
-    (id: string, agentForId: string, requestId: string, value: string | string[] | null, conversationId?: string) => {
+    (
+      id: string,
+      agentForId: string,
+      requestId: string,
+      value: string | string[] | number | null,
+      conversationId?: string
+    ) => {
       connect(id, agentForId, conversationId)
         .ready.then((ws) =>
           ws.send(JSON.stringify({ type: 'elicitation_choice', requestId, value, agentId: agentForId }))

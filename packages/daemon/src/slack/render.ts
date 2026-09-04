@@ -175,7 +175,7 @@ const STREAM_PLAN_FAILED = 'Failed'
  *  and no shortcodes, so plain text is the entire palette. */
 const FAILED_PREFIX = '(failed) '
 
-function clampTo(s: string, max: number): string {
+export function clampTo(s: string, max: number): string {
   const t = s.trim()
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
 }
@@ -600,8 +600,8 @@ export function buildPermissionUpdateCard(updateUrl: string): unknown[] {
 // ── Elicitation (ACP elicitation/create — structured questions) ──────────────
 
 /** The field shapes an elicitation card can reduce a form to. `multi-enum` answers with a
- *  LIST of the chosen values, the other two with one scalar. */
-export type ElicitKind = 'enum' | 'boolean' | 'multi-enum'
+ *  LIST of the chosen values, `number` with a real JS number, the rest with one scalar. */
+export type ElicitKind = 'enum' | 'boolean' | 'multi-enum' | 'text' | 'number'
 
 /** What a surface declares it is able to render. {@link elicitTarget} skips every property
  *  whose kind is absent here, so a kind reaches a surface only once that surface claims it —
@@ -609,11 +609,21 @@ export type ElicitKind = 'enum' | 'boolean' | 'multi-enum'
 export type ElicitSurfaceKinds = ReadonlySet<ElicitKind>
 
 /** Slack's card is a row of buttons: it can express "pick one", not "pick several, then
- *  confirm", so multi-select is not renderable there and the form is declined instead. */
+ *  confirm", and it has no field to type into, so those forms are declined there instead. */
 export const SLACK_ELICIT_KINDS: ElicitSurfaceKinds = new Set<ElicitKind>(['enum', 'boolean'])
 
-/** Webchat's card renders options as toggles with a confirm control, so it takes all three. */
-export const WEBCHAT_ELICIT_KINDS: ElicitSurfaceKinds = new Set<ElicitKind>(['enum', 'boolean', 'multi-enum'])
+/** Webchat's card has toggles, a confirm control and a typed input, so it takes every kind. */
+export const WEBCHAT_ELICIT_KINDS: ElicitSurfaceKinds = new Set<ElicitKind>([
+  'enum',
+  'boolean',
+  'multi-enum',
+  'text',
+  'number'
+])
+
+/** The `format` values MCP `2025-11-25` defines for an elicited string — exactly these four. */
+export type ElicitFormat = 'email' | 'uri' | 'date' | 'date-time'
+const ELICIT_FORMATS: readonly ElicitFormat[] = ['email', 'uri', 'date', 'date-time']
 
 /** The one form field an elicitation card renders as buttons. */
 export interface ElicitTarget {
@@ -621,11 +631,96 @@ export interface ElicitTarget {
   propName: string
   kind: ElicitKind
   /** Selectable options: `value` is the wire value returned in the accept content,
-   *  `label` is the human button text. */
+   *  `label` is the human button text. Empty for `text`/`number`, which offer none. */
   options: { value: string; label: string }[]
   /** Selection bounds from the array schema — `multi-enum` only, absent when unbounded. */
   minItems?: number
   maxItems?: number
+  /** String bounds — `text` only. `pattern` is present only when {@link safeElicitPattern} cleared it. */
+  minLength?: number
+  maxLength?: number
+  pattern?: string
+  format?: ElicitFormat
+  /** Numeric bounds — `number` only; `integer` marks the schema's `integer` type. */
+  minimum?: number
+  maximum?: number
+  integer?: boolean
+  /** The schema's `default`, kept only when it satisfies this target's own constraints —
+   *  the card seeds its control with it, and the reader may still answer something else. */
+  defaultValue?: string | number | boolean | string[]
+}
+
+/** The longest answer a card accepts: an elicitation asks a question, not for a file. */
+const ELICIT_TEXT_CAP = 4096
+
+/**
+ * Compile a schema `pattern` only when a linear-time match is assured, since the expression is
+ * agent-authored and JS regexes backtrack: over-long sources and every quantified group whose
+ * body itself quantifies or alternates ((a+)+, (a|a)*) are refused. A refused pattern makes the
+ * property unrenderable, so the form declines rather than accepting an unchecked answer.
+ */
+export function safeElicitPattern(src: string): RegExp | null {
+  if (src.length > 200) return null
+  // Riskiness of the body being scanned, and of every enclosing group, innermost last.
+  const enclosing: boolean[] = []
+  let risky: boolean = false
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]!
+    if (c === '\\') i++
+    else if (c === '[') {
+      while (i < src.length && src[i] !== ']') i += src[i] === '\\' ? 2 : 1
+    } else if (c === '(') {
+      enclosing.push(risky)
+      risky = false
+      // A group modifier ((?:, (?=, (?!, (?<=, (?<name>) is syntax, not a quantifier.
+      if (src[i + 1] === '?') {
+        i++
+        const kind = src[i + 1]
+        if (kind === ':' || kind === '=' || kind === '!') i++
+        else if (kind === '<') while (i + 1 < src.length && !'>=!'.includes(src[++i] ?? '')) {}
+      }
+    } else if (c === ')') {
+      const body: boolean = risky
+      const parent = enclosing.pop()
+      if (parent === undefined) return null
+      const quantified = i + 1 < src.length && '*+?{'.includes(src[i + 1]!)
+      if (quantified && body) return null
+      risky = parent || body || quantified
+    } else if (c === '|' || '*+?{'.includes(c)) risky = true
+  }
+  if (enclosing.length) return null
+  try {
+    return new RegExp(src)
+  } catch {
+    return null
+  }
+}
+
+/** A schema bound kept only when it is a real finite number. */
+function numBound(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+/** A string-length bound kept only when it is a sane non-negative integer inside the answer cap. */
+function lengthBound(value: unknown): number | undefined {
+  const n = itemBound(value)
+  return n !== undefined && n <= ELICIT_TEXT_CAP ? n : undefined
+}
+
+/** The four `format` checks, each strict enough that a value passing it is one the agent asked for. */
+const FORMAT_CHECK: Record<ElicitFormat, (value: string) => boolean> = {
+  // Deliberately narrow: one @, no spaces, a dotted host — not a full RFC 5322 grammar.
+  email: (v) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(v),
+  uri: (v) => {
+    try {
+      return !!new URL(v).protocol
+    } catch {
+      return false
+    }
+  },
+  date: (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && v === new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10),
+  'date-time': (v) =>
+    /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(v) && !isNaN(Date.parse(v))
 }
 
 /** The options an array property's `items` offers, plus the `anyOf`/`oneOf` titled form. */
@@ -648,14 +743,72 @@ function itemBound(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined
 }
 
+/** Build the `text` target for a bare string property, or null when a constraint makes it
+ *  unrenderable: an unsupported `format`, a pattern we refuse to run, an impossible length. */
+function textTarget(name: string, prop: Record<string, unknown>): ElicitTarget | null {
+  const format = prop.format
+  if (format !== undefined && !ELICIT_FORMATS.includes(format as ElicitFormat)) return null
+  const pattern = prop.pattern
+  if (pattern !== undefined && (typeof pattern !== 'string' || !safeElicitPattern(pattern))) return null
+  const min = lengthBound(prop.minLength)
+  const max = lengthBound(prop.maxLength)
+  if (min !== undefined && max !== undefined && min > max) return null
+  if (max === 0) return null
+  return {
+    propName: name,
+    kind: 'text',
+    options: [],
+    ...(min !== undefined ? { minLength: min } : {}),
+    ...(max !== undefined ? { maxLength: max } : {}),
+    ...(typeof pattern === 'string' ? { pattern } : {}),
+    ...(format !== undefined ? { format: format as ElicitFormat } : {})
+  }
+}
+
+/** Build the `number` target for a numeric property, or null when its bounds admit nothing. */
+function numberTarget(name: string, prop: Record<string, unknown>): ElicitTarget | null {
+  const integer = prop.type === 'integer'
+  const min = numBound(prop.minimum)
+  const max = numBound(prop.maximum)
+  if (min !== undefined && max !== undefined && min > max) return null
+  // An integer range spanning no integer at all (0.2 … 0.8) is not a question either.
+  if (integer && min !== undefined && max !== undefined && Math.ceil(min) > Math.floor(max)) return null
+  return {
+    propName: name,
+    kind: 'number',
+    options: [],
+    ...(min !== undefined ? { minimum: min } : {}),
+    ...(max !== undefined ? { maximum: max } : {}),
+    ...(integer ? { integer: true } : {})
+  }
+}
+
+/** Carry the schema's `default` onto a target, but only where the target itself would accept it —
+ *  the spec asks the card to pre-populate, and pre-populating an answer we would then refuse
+ *  hands the reader a control that cannot be submitted. */
+function withDefault(target: ElicitTarget, raw: unknown): ElicitTarget {
+  if (raw === undefined) return target
+  const ok =
+    target.kind === 'boolean'
+      ? typeof raw === 'boolean'
+      : target.kind === 'multi-enum'
+        ? Array.isArray(raw) && raw.every((v) => typeof v === 'string') && multiSelectAccepts(target, raw)
+        : target.kind === 'number'
+          ? typeof raw === 'number' && numberAccepts(target, raw)
+          : target.kind === 'text'
+            ? typeof raw === 'string' && textAccepts(target, raw)
+            : typeof raw === 'string' && target.options.some((o) => o.value === raw)
+  return ok ? { ...target, defaultValue: raw as ElicitTarget['defaultValue'] } : target
+}
+
 /**
  * Resolve the single form field an elicitation card renders: the FIRST string-enum (`oneOf`
- * titled options or bare `enum`), boolean, or string-array multi-select (`items.enum` or
- * `items.anyOf`) property the CALLING SURFACE declares it can render. Returns null for
- * URL-mode, an empty/absent schema, a form whose fields we can't render inline (free text,
- * numbers), or one that requires a property other than the rendered target — the daemon then
- * declines rather than accepting a partial answer. Pure, and shared by every surface so the
- * option values and their interpretation can't drift.
+ * titled options or bare `enum`), boolean, string-array multi-select (`items.enum` or
+ * `items.anyOf`), free-text string or number/integer property the CALLING SURFACE declares it
+ * can render. Returns null for URL-mode, an empty/absent schema, a form whose fields this
+ * surface can't render, or one that requires a property other than the rendered target — the
+ * daemon then declines rather than accepting a partial answer. Pure, and shared by every
+ * surface so the option values and their interpretation can't drift.
  */
 export function elicitTarget(params: CreateElicitationRequest, renderable: ElicitSurfaceKinds): ElicitTarget | null {
   const p = params as {
@@ -668,9 +821,10 @@ export function elicitTarget(params: CreateElicitationRequest, renderable: Elici
   // A required field we can't render is unanswerable: accepting without it would assert a lie.
   // A candidate that fails this does NOT end the scan — a later property may be the sole
   // required one, and returning here would decline a form this surface can in fact answer.
-  const answerable = (t: ElicitTarget) => (required.every((r) => r === t.propName) ? t : null)
+  const answerable = (t: ElicitTarget | null) => (t && required.every((r) => r === t.propName) ? t : null)
   for (const [name, prop] of Object.entries(props)) {
-    if (prop?.type === 'string' && renderable.has('enum')) {
+    const seeded = (t: ElicitTarget | null) => (t ? withDefault(t, prop.default) : null)
+    if (prop?.type === 'string') {
       const oneOf = prop.oneOf as { const?: unknown; title?: unknown }[] | undefined
       const en = prop.enum as unknown[] | undefined
       const options = Array.isArray(oneOf)
@@ -678,10 +832,20 @@ export function elicitTarget(params: CreateElicitationRequest, renderable: Elici
         : Array.isArray(en)
           ? en.map((v) => ({ value: String(v), label: clampTo(String(v), 75) }))
           : []
-      if (options.length) {
-        const t = answerable({ propName: name, kind: 'enum', options })
+      if (options.length && renderable.has('enum')) {
+        const t = answerable(seeded({ propName: name, kind: 'enum', options }))
         if (t) return t
       }
+      // Free text is the string with nothing to choose from — an enumerated one is a pick,
+      // and typing into it would let an unoffered value through.
+      if (!options.length && renderable.has('text')) {
+        const t = answerable(seeded(textTarget(name, prop)))
+        if (t) return t
+      }
+    }
+    if ((prop?.type === 'number' || prop?.type === 'integer') && renderable.has('number')) {
+      const t = answerable(seeded(numberTarget(name, prop)))
+      if (t) return t
     }
     if (prop?.type === 'array' && renderable.has('multi-enum')) {
       const options = arrayOptions(prop)
@@ -690,25 +854,29 @@ export function elicitTarget(params: CreateElicitationRequest, renderable: Elici
       // Bounds that admit only the empty selection, or none at all, are not a question.
       const askable = max === undefined || (max > 0 && max >= (min ?? 0))
       if (options.length && askable) {
-        const t = answerable({
-          propName: name,
-          kind: 'multi-enum',
-          options,
-          ...(min !== undefined ? { minItems: min } : {}),
-          ...(max !== undefined ? { maxItems: max } : {})
-        })
+        const t = answerable(
+          seeded({
+            propName: name,
+            kind: 'multi-enum',
+            options,
+            ...(min !== undefined ? { minItems: min } : {}),
+            ...(max !== undefined ? { maxItems: max } : {})
+          })
+        )
         if (t) return t
       }
     }
     if (prop?.type === 'boolean' && renderable.has('boolean')) {
-      const t = answerable({
-        propName: name,
-        kind: 'boolean',
-        options: [
-          { value: 'true', label: 'Yes' },
-          { value: 'false', label: 'No' }
-        ]
-      })
+      const t = answerable(
+        seeded({
+          propName: name,
+          kind: 'boolean',
+          options: [
+            { value: 'true', label: 'Yes' },
+            { value: 'false', label: 'No' }
+          ]
+        })
+      )
       if (t) return t
     }
   }
@@ -723,6 +891,30 @@ export function multiSelectAccepts(target: ElicitTarget, values: string[]): bool
   if (values.length < (target.minItems ?? 0)) return false
   if (target.maxItems !== undefined && values.length > target.maxItems) return false
   return values.every((v) => target.options.some((o) => o.value === v))
+}
+
+/** Whether a typed string is an answer this text target's own schema allows: inside the answer
+ *  cap and `minLength`/`maxLength`, matching `pattern`, and of the declared `format`. The
+ *  browser enforces the same rules to keep the control honest; this is what makes them binding. */
+export function textAccepts(target: ElicitTarget, value: string): boolean {
+  if (target.kind !== 'text') return false
+  if (value.length > ELICIT_TEXT_CAP) return false
+  if (value.length < (target.minLength ?? 0)) return false
+  if (target.maxLength !== undefined && value.length > target.maxLength) return false
+  if (target.format && !FORMAT_CHECK[target.format](value)) return false
+  if (target.pattern === undefined) return true
+  const re = safeElicitPattern(target.pattern)
+  return !!re && re.test(value)
+}
+
+/** Whether a typed number is an answer this number target allows: real and finite, inside
+ *  `minimum`/`maximum`, and a whole number where the schema said `integer`. */
+export function numberAccepts(target: ElicitTarget, value: number): boolean {
+  if (target.kind !== 'number') return false
+  if (!Number.isFinite(value)) return false
+  if (target.integer && !Number.isInteger(value)) return false
+  if (target.minimum !== undefined && value < target.minimum) return false
+  return target.maximum === undefined || value <= target.maximum
 }
 
 /**

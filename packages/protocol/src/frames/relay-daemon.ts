@@ -213,11 +213,13 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
   // A multi-select card answers with the LIST of chosen values: widening this field rather
   // than adding a second one keeps the failure closed, since a daemon predating multi-select
   // rejects the whole op (the card stays live) instead of reading a stripped list as Dismiss.
+  // A number card answers with a real number for the same reason it is one on the wire: the
+  // accepted content must be the schema's type, and a numeric string would be a different one.
   // `agentId` names the participant whose card this is; absent ⇒ the sole agent.
   z.object({
     op: z.literal('elicitation_choice'),
     requestId: z.string().min(1).max(200),
-    value: z.union([z.string(), z.array(z.string()).max(100), z.null()]),
+    value: z.union([z.string(), z.number(), z.array(z.string()).max(100), z.null()]),
     agentId: z.string().uuid().optional()
   }),
   z.object({ op: z.literal('close') })

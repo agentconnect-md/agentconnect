@@ -162,12 +162,13 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   // field, and its options are the only answers the browser may send back (as the
   // `elicitation_choice` op keyed by this `requestId`). `message` is agent-authored text,
   // masked before it reaches here. Options are UNCAPPED — the Slack 5-button cap is a
-  // Slack surface limit and does not follow the choice onto this surface.
+  // Slack surface limit and does not follow the choice onto this surface. They are also
+  // EMPTY for a typed field (`text`/`number`), whose card offers nothing to pick.
   z.object({
     kind: z.literal('elicitation'),
     requestId: z.string().min(1).max(200),
     message: z.string(),
-    options: z.array(z.object({ value: z.string(), label: z.string() })).min(1),
+    options: z.array(z.object({ value: z.string(), label: z.string() })),
     // Absent ⇒ pick exactly ONE option, the original card. Present ⇒ pick several of the same
     // options and confirm, and the answer is a list. An added OPTIONAL field rather than a new
     // event kind on purpose: a relay or browser predating it decodes the event unchanged
@@ -175,7 +176,31 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     // kind would, and a daemon predating it simply never sets it.
     multi: z
       .object({ minItems: z.number().int().min(0).optional(), maxItems: z.number().int().min(0).optional() })
-      .optional()
+      .optional(),
+    // Present ⇒ the card is a free-text input carrying the schema's own constraints, which the
+    // daemon re-checks on the way back in. Same optional-field reasoning as `multi`, with one
+    // added skew note: an old reader keeps `options` (now empty) and shows a card with nothing
+    // but Dismiss — unanswerable, never wrongly answered. `pattern` reaches here only once the
+    // daemon has cleared it as safe to run.
+    text: z
+      .object({
+        minLength: z.number().int().min(0).optional(),
+        maxLength: z.number().int().min(0).optional(),
+        pattern: z.string().max(200).optional(),
+        format: z.enum(['email', 'uri', 'date', 'date-time']).optional()
+      })
+      .optional(),
+    // Present ⇒ a numeric input; `integer` is the schema's `integer` type, not just a bound.
+    number: z
+      .object({
+        integer: z.boolean().optional(),
+        minimum: z.number().optional(),
+        maximum: z.number().optional()
+      })
+      .optional(),
+    // The schema's `default`, already checked against the constraints above: the card
+    // pre-populates its control with it (MCP `2025-11-25`), and the reader may answer otherwise.
+    defaultValue: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]).optional()
   }),
   // The same card, settled. Slack rewrites its message in place; this stream is
   // append-only, so the collapse is a second event keyed by the same `requestId`.

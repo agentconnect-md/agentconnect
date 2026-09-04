@@ -30,9 +30,12 @@ import {
   buildElicitationResolvedCard,
   buildPermissionCard,
   buildPermissionResolvedCard,
+  clampTo,
   elicitTarget,
   multiSelectAccepts,
+  numberAccepts,
   SLACK_ELICIT_KINDS,
+  textAccepts,
   WEBCHAT_ELICIT_KINDS
 } from '../slack/render.js'
 import type { ElicitKind, ElicitSurfaceKinds, ElicitTarget } from '../slack/render.js'
@@ -99,11 +102,23 @@ function surfaceKinds(rec: PendingElicitSurface): ElicitSurfaceKinds {
 
 /** How a settled card names the answer: the chosen option's LABEL, or every chosen label for a
  *  multi-select — what the reader picked, in the words the card used, never the wire values.
- *  An accepted empty list (a `minItems: 0` form) still says something rather than nothing. */
-function chosenLabel(target: ElicitTarget | null, value: string | string[]): string {
+ *  An accepted empty list (a `minItems: 0` form) still says something rather than nothing.
+ *  A typed answer has no label but itself, so it is echoed (clamped): the card is the reader's
+ *  own words back, and MCP forbids eliciting secrets, so there is nothing here to withhold. */
+function chosenLabel(target: ElicitTarget | null, value: string | string[] | number): string {
   const label = (v: string) => target?.options.find((o) => o.value === v)?.label ?? v
-  if (!Array.isArray(value)) return label(value)
+  if (typeof value === 'number') return String(value)
+  if (!Array.isArray(value)) return clampTo(label(value), 200)
   return value.length ? value.map(label).join(', ') : 'Nothing selected'
+}
+
+/** Whether a submitted answer has the SHAPE this kind is answered with — the arity check a card
+ *  applies before it looks at the value at all. The string kinds are indistinguishable here;
+ *  each one's own accept check is what separates them. */
+function answerFitsKind(kind: ElicitKind, value: string | string[] | number): boolean {
+  if (kind === 'multi-enum') return Array.isArray(value)
+  if (kind === 'number') return typeof value === 'number'
+  return typeof value === 'string'
 }
 
 /** One outstanding `elicitation/create` awaiting a human answer. */
@@ -1379,7 +1394,30 @@ export class PermissionCoordinator {
                   ...(target.maxItems !== undefined ? { maxItems: target.maxItems } : {})
                 }
               }
-            : {})
+            : {}),
+          // Present only for a typed field, and likewise what makes the card an input rather
+          // than a row of options. The constraints ride along so the control can refuse an
+          // answer the daemon would reject anyway.
+          ...(target.kind === 'text'
+            ? {
+                text: {
+                  ...(target.minLength !== undefined ? { minLength: target.minLength } : {}),
+                  ...(target.maxLength !== undefined ? { maxLength: target.maxLength } : {}),
+                  ...(target.pattern !== undefined ? { pattern: target.pattern } : {}),
+                  ...(target.format !== undefined ? { format: target.format } : {})
+                }
+              }
+            : {}),
+          ...(target.kind === 'number'
+            ? {
+                number: {
+                  ...(target.integer ? { integer: true } : {}),
+                  ...(target.minimum !== undefined ? { minimum: target.minimum } : {}),
+                  ...(target.maximum !== undefined ? { maximum: target.maximum } : {})
+                }
+              }
+            : {}),
+          ...(target.defaultValue !== undefined ? { defaultValue: target.defaultValue } : {})
         }
       })
     } catch (err) {
@@ -1414,12 +1452,12 @@ export class PermissionCoordinator {
   }
 
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
-   *  request — `accept` with the chosen value (a LIST of them for a multi-select, under the
-   *  field name), or `decline` for the Dismiss button (value === null) — and edit the card in
-   *  place. No-op if already gone. */
+   *  request — `accept` with the chosen value (a LIST of them for a multi-select, a real number
+   *  for a numeric field, under the field name), or `decline` for the Dismiss button
+   *  (value === null) — and edit the card in place. No-op if already gone. */
   async handleElicitChoice(a: {
     requestId: string
-    value: string | string[] | null
+    value: string | string[] | number | null
     actor?: InteractionActor
     /** Set only by the webchat ingress: the answering browser's conversation. It confines
      *  the answer to a card THIS conversation was shown — a webchat client can neither
@@ -1430,25 +1468,33 @@ export class PermissionCoordinator {
     // A DM elicitation card's request lives on the editor path (§2/§6.4).
     const editor = this.pendingEditorPermissions.get(a.requestId)
     if (editor?.kind === 'elicitation' && editor.notify) {
-      // A DM card is a Slack button row, so it is never answered by a list or a browser.
-      if (a.webchatConversationId !== undefined || Array.isArray(a.value)) return
+      // A DM card is a Slack button row: never answered by a list, a number, or a browser.
+      if (a.webchatConversationId !== undefined || Array.isArray(a.value) || typeof a.value === 'number') return
       return await this.handleDmElicitChoice(a.requestId, editor, a.value, a.actor)
     }
     const rec = this.pendingElicits.get(a.requestId)
     if (!rec) return
-    // A list answers a multi-select card and only that; a scalar answers the single-choice
-    // kinds. Dismiss (null) settles either.
-    if (a.value !== null && Array.isArray(a.value) !== (rec.kind === 'multi-enum')) return
+    // Each kind takes one shape of answer and no other: a list for a multi-select, a number
+    // for a numeric field, a string for the rest. Dismiss (null) settles any of them.
+    if (a.value !== null && !answerFitsKind(rec.kind, a.value)) return
     const target = elicitTarget(rec.params, surfaceKinds(rec))
     if (a.webchatConversationId !== undefined) {
       if (rec.surface !== 'webchat' || rec.wc.conversationId !== a.webchatConversationId) return
-      // The card names every answer it accepts; anything else would inject an unoffered
-      // value into the agent's content, so it is dropped and the card stays live. A
-      // multi-select adds its own terms: no repeats, and a count its bounds allow.
-      const offered = Array.isArray(a.value)
-        ? !!target && multiSelectAccepts(target, a.value)
-        : !!target?.options.some((o) => o.value === a.value)
-      if (a.value !== null && !offered) return
+      // The card names every answer it accepts; anything else would inject an unoffered value
+      // into the agent's content, so it is dropped and the card stays live. A multi-select adds
+      // no repeats and a count its bounds allow; a typed field, the schema constraints the
+      // control was shown — a browser frame is never what makes an answer valid.
+      const offered =
+        a.value === null ||
+        (!!target &&
+          (Array.isArray(a.value)
+            ? multiSelectAccepts(target, a.value)
+            : typeof a.value === 'number'
+              ? numberAccepts(target, a.value)
+              : target.kind === 'text'
+                ? textAccepts(target, a.value)
+                : target.options.some((o) => o.value === a.value)))
+      if (!offered) return
       // A card settles only from its own surface: both share one `elicit-<n>` counter, so
       // without this a Slack tap could answer a live webchat card.
     } else if (rec.surface === 'webchat') return
@@ -1476,9 +1522,11 @@ export class PermissionCoordinator {
       res = { action: 'accept', content: { [rec.propName]: a.value } }
       decision = `:white_check_mark: ${chosenLabel(target, a.value)}`
     } else {
+      // The accepted content carries the schema's own type: a boolean for a boolean field and a
+      // real number for a numeric one, never the string the wire happened to spell it with.
       const value = rec.kind === 'boolean' ? a.value === 'true' : a.value
       res = { action: 'accept', content: { [rec.propName]: value } }
-      decision = `:white_check_mark: ${rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : a.value}`
+      decision = `:white_check_mark: ${rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : String(a.value)}`
     }
     if (rec.approval) {
       // Approval elicitations only ever take the Slack card path (chat approval requires it).

@@ -111,6 +111,41 @@ describe('WebchatOutput — event / status framing', () => {
     expect(card({ ...base, multi: { maxItems: 1.5 } }).success).toBe(false)
   })
 
+  it('marks a typed card with its constraints and its default, leaving the option cards alone', () => {
+    const card = (event: Record<string, unknown>) =>
+      WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 4, event })
+    const base = { kind: 'elicitation', requestId: 'elicit-1', message: 'Name the branch?', options: [] }
+    const text = card({
+      ...base,
+      text: { minLength: 3, maxLength: 50, pattern: '^[a-z-]+$', format: 'email' },
+      defaultValue: 'user@example.com'
+    })
+    expect(text.success).toBe(true)
+    if (text.success && text.data.event?.kind === 'elicitation') {
+      // A typed card offers nothing to pick, which is exactly why `options` may now be empty.
+      expect(text.data.event.options).toEqual([])
+      expect(text.data.event.text?.format).toBe('email')
+      expect(text.data.event.defaultValue).toBe('user@example.com')
+    }
+    expect(card({ ...base, number: { integer: true, minimum: 0, maximum: 100 }, defaultValue: 50 }).success).toBe(true)
+    // Only the four formats MCP defines, and a pattern short enough to have been screened.
+    expect(card({ ...base, text: { format: 'hostname' } }).success).toBe(false)
+    expect(card({ ...base, text: { pattern: 'a'.repeat(201) } }).success).toBe(false)
+    // The option cards keep decoding to exactly what they always meant: no typed fields at all.
+    const single = card({
+      kind: 'elicitation',
+      requestId: 'elicit-1',
+      message: 'Which branch?',
+      options: [{ value: 'main', label: 'main' }]
+    })
+    expect(single.success).toBe(true)
+    if (single.success && single.data.event?.kind === 'elicitation') {
+      expect(single.data.event.text).toBeUndefined()
+      expect(single.data.event.number).toBeUndefined()
+      expect(single.data.event.defaultValue).toBeUndefined()
+    }
+  })
+
   it('rejects an unrenderable elicitation frame rather than streaming a dead card', () => {
     const bad = (event: unknown) =>
       WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 6, event }).success

@@ -739,3 +739,186 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     expect(elicitTarget(multiElicitation({ minItems: 1 }), WEBCHAT_ELICIT_KINDS)?.kind).toBe('multi-enum')
   })
 })
+
+// ── free text and numbers (issue #1794 gap 3) ────────────────────────────────
+
+/** A free-text form, optionally constrained. */
+function textElicitation(prop: Record<string, unknown> = {}): CreateElicitationRequest {
+  return formElicitation({
+    message: 'What should I name the branch?',
+    requestedSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', ...prop } },
+      required: ['name']
+    }
+  })
+}
+
+/** A numeric form, optionally constrained. */
+function numberElicitation(prop: Record<string, unknown> = {}): CreateElicitationRequest {
+  return formElicitation({
+    message: 'How many retries?',
+    requestedSchema: {
+      type: 'object',
+      properties: { retries: { type: 'number', ...prop } },
+      required: ['retries']
+    }
+  })
+}
+
+describe('webchat answers a typed elicitation with the schema’s own type', () => {
+  it('cards a text field with its constraints and default, and accepts the typed string', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      textElicitation({ minLength: 3, maxLength: 50, pattern: '^[a-z-]+$', default: 'fix-login' })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    expect(cardEvents(sink)[0]).toEqual({
+      kind: 'elicitation',
+      requestId: expect.any(String),
+      message: 'What should I name the branch?',
+      // A typed field offers nothing to pick; `text` is what makes the card an input.
+      options: [],
+      text: { minLength: 3, maxLength: 50, pattern: '^[a-z-]+$' },
+      defaultValue: 'fix-login'
+    })
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'add-retries',
+      webchatConversationId: 'conv-1'
+    })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { name: 'add-retries' } })
+    // A typed answer has no label but itself — the reader's own words, back in the transcript.
+    expect(cardEvents(sink)[1]).toEqual({
+      kind: 'elicitation_resolved',
+      requestId,
+      outcome: 'accepted',
+      label: 'add-retries'
+    })
+  })
+
+  it('cards a number field and accepts a real number, never the string that spelled it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      numberElicitation({ minimum: 0, maximum: 100, default: 50 })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    expect(cardEvents(sink)[0]).toEqual({
+      kind: 'elicitation',
+      requestId: expect.any(String),
+      message: 'How many retries?',
+      options: [],
+      number: { minimum: 0, maximum: 100 },
+      defaultValue: 50
+    })
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 7, webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { retries: 7 } })
+    expect(cardEvents(sink)[1]).toEqual({
+      kind: 'elicitation_resolved',
+      requestId,
+      outcome: 'accepted',
+      label: '7'
+    })
+  })
+
+  it('re-checks the browser’s typed answer: bounds, pattern, format, and the wrong shape', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      textElicitation({ minLength: 3, maxLength: 8, format: 'email' })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const answer = (value: unknown) =>
+      (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: 'conv-1' })
+
+    await answer('ab') // below minLength
+    await answer('a@example.com') // above maxLength
+    await answer('abcdef') // not an email at all
+    await answer(7) // a number cannot answer a text card
+    await answer(['a@b.co']) // nor can a list
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
+
+    await answer('a@b.co')
+    await expect(result).resolves.toEqual({ action: 'accept', content: { name: 'a@b.co' } })
+  })
+
+  it('re-checks the browser’s number: its bounds, its integer-ness, and a string spelling it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      formElicitation({
+        message: 'How many retries?',
+        requestedSchema: {
+          type: 'object',
+          properties: { retries: { type: 'integer', minimum: 1, maximum: 5 } },
+          required: ['retries']
+        }
+      })
+    )
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const answer = (value: unknown) =>
+      (daemon as any).permissions.handleElicitChoice({ requestId, value, webchatConversationId: 'conv-1' })
+
+    await answer(0) // below minimum
+    await answer(6) // above maximum
+    await answer(2.5) // not a whole number
+    await answer('3') // the string is a different type than the schema asked for
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(cardEvents(sink)).toHaveLength(1)
+
+    await answer(3)
+    await expect(result).resolves.toEqual({ action: 'accept', content: { retries: 3 } })
+  })
+
+  it('declines a typed form on a Slack turn, whose card has no field to type into', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    pending.plan.platform = 'slack'
+    pending.conn = Object.create(SlackConnection.prototype)
+
+    await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation())).resolves.toBeUndefined()
+    await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', numberElicitation())).resolves.toBeUndefined()
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    // The same forms ARE renderable — just not here: webchat types into them.
+    expect(elicitTarget(textElicitation(), WEBCHAT_ELICIT_KINDS)?.kind).toBe('text')
+    expect(elicitTarget(numberElicitation(), WEBCHAT_ELICIT_KINDS)?.kind).toBe('number')
+  })
+
+  it('declines a form whose pattern could hang the daemon, rather than run it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    installWebchat(pending)
+
+    // (a+)+$ against a long non-matching string is the textbook catastrophic backtrack: the
+    // card never exists, so the daemon never gets the chance to run it.
+    await expect(
+      (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation({ pattern: '^(a+)+$' }))
+    ).resolves.toBeUndefined()
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+  })
+})

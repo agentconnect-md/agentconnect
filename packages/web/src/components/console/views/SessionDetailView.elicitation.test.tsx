@@ -288,6 +288,103 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(buttonNamed('Confirm')).toBeUndefined()
   })
 
+  // ── free text and numbers (#1794 gap 3): a typed field has no options to offer ──
+
+  const input = () => container?.querySelector('input[aria-label="Your answer"]') as HTMLInputElement | null
+  const type = async (value: string) => {
+    const field = input()!
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(field, value)
+      field.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  it('types a free-text answer and sends it only once its constraints are met', async () => {
+    live.steps = [
+      {
+        ...CARD,
+        text: 'What should I name the branch?',
+        elicit: { requestId: 'elicit-1', options: [], text: { minLength: 3, pattern: '^[a-z-]+$' } }
+      }
+    ]
+    await render()
+
+    // Nothing typed yet, so there is nothing valid to submit — and the reason says why.
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(text()).toContain('Enter at least 3 characters')
+    // A typed field offers nothing to pick.
+    expect(buttonNamed('main')).toBeUndefined()
+
+    await type('ab')
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    await type('ADD')
+    // Long enough now, but the schema's own pattern still refuses it.
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(text()).toContain('^[a-z-]+$')
+    expect(live.answered).toEqual([])
+
+    await type('add-retries')
+    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    await act(async () => {
+      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', 'add-retries', 'conv-1']])
+  })
+
+  it('sends a numeric answer as a real number, and holds one outside the schema’s bounds', async () => {
+    live.steps = [
+      {
+        ...CARD,
+        text: 'How many retries?',
+        elicit: { requestId: 'elicit-1', options: [], number: { integer: true, minimum: 1, maximum: 5 } }
+      }
+    ]
+    await render()
+
+    await type('9')
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(text()).toContain('Enter 5 or less')
+    await type('2.5')
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(text()).toContain('Enter a whole number')
+
+    await type('3')
+    await act(async () => {
+      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // A number, not the string that spelled it — the accepted content carries the schema's type.
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', 3, 'conv-1']])
+  })
+
+  it('pre-populates every kind from the schema default', async () => {
+    live.steps = [
+      { ...CARD, elicit: { requestId: 'elicit-1', options: [], text: { format: 'email' }, defaultValue: 'a@b.co' } }
+    ]
+    await render()
+    // Pre-populated AND already valid, so the reader can simply accept the suggestion.
+    expect(input()?.value).toBe('a@b.co')
+    expect(buttonNamed('Submit')?.disabled).toBe(false)
+
+    // A distinct card each time: a card's control is seeded when it arrives, not re-seeded.
+    live.steps = [{ ...CARD, elicit: { ...CARD.elicit, requestId: 'elicit-2', defaultValue: 'develop' } }]
+    await render()
+    // A single-choice default stays marked, so the reader sees what the agent suggested.
+    expect(buttonNamed('develop')?.getAttribute('aria-pressed')).toBe(null)
+    expect(buttonNamed('develop')?.className).toContain('--brand')
+
+    live.steps = [
+      { ...CARD, elicit: { ...CARD.elicit, requestId: 'elicit-3', multi: { minItems: 1 }, defaultValue: ['main'] } }
+    ]
+    await render()
+    expect(buttonNamed('main')?.getAttribute('aria-pressed')).toBe('true')
+    expect(buttonNamed('Confirm')?.disabled).toBe(false)
+    await act(async () => {
+      buttonNamed('Confirm')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered.at(-1)).toEqual(['session-1', 'agent-1', 'elicit-3', ['main'], 'conv-1'])
+  })
+
   it('collapses to its outcome once settled, leaving nothing left to answer', async () => {
     live.steps = [{ ...CARD, elicit: { ...CARD.elicit, outcome: 'accepted', answerLabel: 'develop' } }]
     await render()
