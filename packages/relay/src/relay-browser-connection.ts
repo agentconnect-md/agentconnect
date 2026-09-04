@@ -193,9 +193,11 @@ export function parseBrowserFrame(
         ? { op: { op: 'cancel', ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {}) } }
         : null
     case 'elicitation_choice': {
-      // The answer to an in-band elicitation card. `value: null` is Dismiss; the daemon
-      // matches the requestId against its own pending card and rejects anything else.
-      if (typeof m.requestId !== 'string' || (typeof m.value !== 'string' && m.value !== null)) return null
+      // The answer to an in-band elicitation card. `value: null` is Dismiss and an array is a
+      // multi-select's chosen list; the daemon matches the requestId against its own pending
+      // card, and re-checks every value against the options that card offered.
+      const listed = Array.isArray(m.value) && m.value.every((v) => typeof v === 'string')
+      if (typeof m.requestId !== 'string' || (typeof m.value !== 'string' && m.value !== null && !listed)) return null
       if (m.agentId !== undefined && !(typeof m.agentId === 'string' && UUID_RE.test(m.agentId))) return null
       const parsed = RelayWebchatOp.safeParse({
         op: 'elicitation_choice',

@@ -127,12 +127,12 @@ interface PlaygroundData {
   pgSetFast: (id: string, agentId: string, fastMode: boolean, conversationId?: string) => void
   /** Interrupt the running turn without ending the session. */
   pgCancel: (id: string, agentId: string, conversationId?: string) => void
-  /** Answer the agent's in-band elicitation card; `value: null` is Dismiss. */
+  /** Answer the agent's in-band elicitation card; a list answers a multi-select, `null` is Dismiss. */
   pgAnswerElicitation: (
     id: string,
     agentId: string,
     requestId: string,
-    value: string | null,
+    value: string | string[] | null,
     conversationId?: string
   ) => void
   getPgSession: (id: string) => Session | undefined
@@ -245,7 +245,13 @@ type WebchatEvent =
   | { kind: 'superseded'; generation: number }
   | { kind: 'notice'; text: string }
   | { kind: 'plan'; entries: { content: string; status: string; priority?: string }[] }
-  | { kind: 'elicitation'; requestId: string; message: string; options: { value: string; label: string }[] }
+  | {
+      kind: 'elicitation'
+      requestId: string
+      message: string
+      options: { value: string; label: string }[]
+      multi?: { minItems?: number; maxItems?: number }
+    }
   | {
       kind: 'elicitation_resolved'
       requestId: string
@@ -612,7 +618,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             lane({
               kind: 'elicit',
               text: ev.message,
-              elicit: { requestId: ev.requestId, options: ev.options },
+              elicit: { requestId: ev.requestId, options: ev.options, ...(ev.multi ? { multi: ev.multi } : {}) },
               boundary: true
             })
           ]
@@ -1709,7 +1715,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  Deliberately NOT optimistic: the daemon owns the card's outcome and settles it with
    *  the `elicitation_resolved` event, so a refused answer leaves the card answerable. */
   const pgAnswerElicitation = useCallback(
-    (id: string, agentForId: string, requestId: string, value: string | null, conversationId?: string) => {
+    (id: string, agentForId: string, requestId: string, value: string | string[] | null, conversationId?: string) => {
       connect(id, agentForId, conversationId)
         .ready.then((ws) =>
           ws.send(JSON.stringify({ type: 'elicitation_choice', requestId, value, agentId: agentForId }))

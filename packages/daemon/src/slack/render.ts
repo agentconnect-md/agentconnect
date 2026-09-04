@@ -599,26 +599,65 @@ export function buildPermissionUpdateCard(updateUrl: string): unknown[] {
 
 // ── Elicitation (ACP elicitation/create — structured questions) ──────────────
 
+/** The field shapes an elicitation card can reduce a form to. `multi-enum` answers with a
+ *  LIST of the chosen values, the other two with one scalar. */
+export type ElicitKind = 'enum' | 'boolean' | 'multi-enum'
+
+/** What a surface declares it is able to render. {@link elicitTarget} skips every property
+ *  whose kind is absent here, so a kind reaches a surface only once that surface claims it —
+ *  a new kind is invisible to every other surface without anyone remembering to exclude it. */
+export type ElicitSurfaceKinds = ReadonlySet<ElicitKind>
+
+/** Slack's card is a row of buttons: it can express "pick one", not "pick several, then
+ *  confirm", so multi-select is not renderable there and the form is declined instead. */
+export const SLACK_ELICIT_KINDS: ElicitSurfaceKinds = new Set<ElicitKind>(['enum', 'boolean'])
+
+/** Webchat's card renders options as toggles with a confirm control, so it takes all three. */
+export const WEBCHAT_ELICIT_KINDS: ElicitSurfaceKinds = new Set<ElicitKind>(['enum', 'boolean', 'multi-enum'])
+
 /** The one form field an elicitation card renders as buttons. */
 export interface ElicitTarget {
   /** Property name in the form schema — the key the accepted value is returned under. */
   propName: string
-  kind: 'enum' | 'boolean'
+  kind: ElicitKind
   /** Selectable options: `value` is the wire value returned in the accept content,
    *  `label` is the human button text. */
   options: { value: string; label: string }[]
+  /** Selection bounds from the array schema — `multi-enum` only, absent when unbounded. */
+  minItems?: number
+  maxItems?: number
+}
+
+/** The options an array property's `items` offers, plus the `anyOf`/`oneOf` titled form. */
+function arrayOptions(prop: Record<string, unknown>): { value: string; label: string }[] {
+  const items = prop.items as Record<string, unknown> | undefined
+  const choices = (items?.anyOf ?? items?.oneOf) as { const?: unknown; title?: unknown }[] | undefined
+  if (Array.isArray(choices))
+    // A non-string const would make the accepted list lie about the schema's item type.
+    return choices.every((o) => typeof o?.const === 'string')
+      ? choices.map((o) => ({ value: String(o.const), label: clampTo(String(o.title ?? o.const), 75) }))
+      : []
+  const en = items?.enum
+  return items?.type === 'string' && Array.isArray(en)
+    ? en.map((v) => ({ value: String(v), label: clampTo(String(v), 75) }))
+    : []
+}
+
+/** A schema bound, kept only when it is a sane non-negative integer. */
+function itemBound(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined
 }
 
 /**
- * Resolve the single form field an elicitation card renders (v1): the FIRST string-enum
- * (`oneOf` titled options or bare `enum`) or boolean property in the requested schema.
- * Returns null for URL-mode, an empty/absent schema, a form whose fields we can't render
- * inline (free text, numbers), or one that requires a property other than the rendered
- * target — the daemon then declines rather than accepting a partial answer. Pure, and
- * shared by {@link buildElicitationCard} and the daemon's click handler so the button
- * values and their interpretation can't drift.
+ * Resolve the single form field an elicitation card renders: the FIRST string-enum (`oneOf`
+ * titled options or bare `enum`), boolean, or string-array multi-select (`items.enum` or
+ * `items.anyOf`) property the CALLING SURFACE declares it can render. Returns null for
+ * URL-mode, an empty/absent schema, a form whose fields we can't render inline (free text,
+ * numbers), or one that requires a property other than the rendered target — the daemon then
+ * declines rather than accepting a partial answer. Pure, and shared by every surface so the
+ * option values and their interpretation can't drift.
  */
-export function elicitTarget(params: CreateElicitationRequest): ElicitTarget | null {
+export function elicitTarget(params: CreateElicitationRequest, renderable: ElicitSurfaceKinds): ElicitTarget | null {
   const p = params as {
     mode?: string
     requestedSchema?: { properties?: Record<string, Record<string, unknown>>; required?: unknown }
@@ -629,7 +668,7 @@ export function elicitTarget(params: CreateElicitationRequest): ElicitTarget | n
   // A required field we can't render is unanswerable: accepting without it would assert a lie.
   const answerable = (t: ElicitTarget) => (required.every((r) => r === t.propName) ? t : null)
   for (const [name, prop] of Object.entries(props)) {
-    if (prop?.type === 'string') {
+    if (prop?.type === 'string' && renderable.has('enum')) {
       const oneOf = prop.oneOf as { const?: unknown; title?: unknown }[] | undefined
       const en = prop.enum as unknown[] | undefined
       const options = Array.isArray(oneOf)
@@ -639,7 +678,20 @@ export function elicitTarget(params: CreateElicitationRequest): ElicitTarget | n
           : []
       if (options.length) return answerable({ propName: name, kind: 'enum', options })
     }
-    if (prop?.type === 'boolean') {
+    if (prop?.type === 'array' && renderable.has('multi-enum')) {
+      const options = arrayOptions(prop)
+      const min = itemBound(prop.minItems)
+      const max = itemBound(prop.maxItems)
+      if (options.length)
+        return answerable({
+          propName: name,
+          kind: 'multi-enum',
+          options,
+          ...(min !== undefined ? { minItems: min } : {}),
+          ...(max !== undefined ? { maxItems: max } : {})
+        })
+    }
+    if (prop?.type === 'boolean' && renderable.has('boolean')) {
       return answerable({
         propName: name,
         kind: 'boolean',
@@ -653,18 +705,29 @@ export function elicitTarget(params: CreateElicitationRequest): ElicitTarget | n
   return null
 }
 
+/** Whether a submitted list is an answer this multi-select target actually offered: every value
+ *  is one of its options, no repeats, and the count inside `minItems`/`maxItems`. */
+export function multiSelectAccepts(target: ElicitTarget, values: string[]): boolean {
+  if (target.kind !== 'multi-enum') return false
+  if (new Set(values).size !== values.length) return false
+  if (values.length < (target.minItems ?? 0)) return false
+  if (target.maxItems !== undefined && values.length > target.maxItems) return false
+  return values.every((v) => target.options.some((o) => o.value === v))
+}
+
 /**
  * Build the interactive elicitation card: the agent's `message`, an optional field title,
  * and an actions row of option buttons (one per {@link elicitTarget} option, capped at 5)
  * plus a Dismiss button. The choice rides each button `value` (`<requestId>|<optionValue>`).
- * Returns null when the form can't be rendered inline (caller declines). Pure.
+ * Returns null when the form can't be rendered inline (caller declines) — including a
+ * multi-select, which {@link SLACK_ELICIT_KINDS} withholds from this surface. Pure.
  */
 export function buildElicitationCard(
   requestId: string,
   params: CreateElicitationRequest,
   sessionTarget?: string
 ): unknown[] | null {
-  const target = elicitTarget(params)
+  const target = elicitTarget(params, SLACK_ELICIT_KINDS)
   if (!target) return null
   const message = (params as { message?: string }).message?.trim() || 'The agent needs your input'
   const buttons = target.options.slice(0, 5).map((o, i) => ({

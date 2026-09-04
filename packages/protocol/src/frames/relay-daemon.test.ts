@@ -197,6 +197,9 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       { op: 'cancel' },
       { op: 'elicitation_choice', requestId: 'elicit-1', value: 'yes' },
       { op: 'elicitation_choice', requestId: 'elicit-1', value: null, agentId: AGENT_ID },
+      // A multi-select answers with the chosen LIST — same op, widened value.
+      { op: 'elicitation_choice', requestId: 'elicit-1', value: ['lint', 'build'] },
+      { op: 'elicitation_choice', requestId: 'elicit-1', value: [] },
       { op: 'close' }
     ]
     for (const payload of ops) {
@@ -221,6 +224,9 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     // The elicitation answer is a value or an explicit Dismiss — never an absent field,
     // which would let a malformed frame read as a decline the user never made.
     expect(RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'elicit-1' }).success).toBe(false)
+    expect(
+      RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'elicit-1', value: ['ok', 3] }).success
+    ).toBe(false)
     expect(RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: '', value: 'y' }).success).toBe(false)
     expect(
       RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'elicit-1', value: 'y', agentId: 'nope' }).success

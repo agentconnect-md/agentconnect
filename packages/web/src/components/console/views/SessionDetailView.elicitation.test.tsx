@@ -230,6 +230,64 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(live.answered[1]).toEqual(['session-1', 'agent-1', 'elicit-1', null, 'conv-1'])
   })
 
+  it('toggles a multi-select and answers with the list only on Confirm', async () => {
+    live.steps = [
+      { ...CARD, text: 'Which checks should I run?', elicit: { ...CARD.elicit, multi: { minItems: 1, maxItems: 2 } } }
+    ]
+    await render()
+
+    // Nothing picked yet, so there is nothing valid to confirm.
+    expect(text()).toContain('Select 1–2')
+    expect(buttonNamed('Confirm')?.disabled).toBe(true)
+
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // A toggle is not an answer: the option is held, not sent.
+    expect(live.answered).toEqual([])
+    expect(buttonNamed('main')?.getAttribute('aria-pressed')).toBe('true')
+    expect(buttonNamed('Confirm')?.disabled).toBe(false)
+
+    await act(async () => {
+      buttonNamed('develop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(buttonNamed('main')?.getAttribute('aria-pressed')).toBe('false')
+
+    await act(async () => {
+      buttonNamed('Confirm')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', ['develop'], 'conv-1']])
+  })
+
+  it('stops offering picks the card would have to refuse, and confirms an empty unbounded set', async () => {
+    live.steps = [{ ...CARD, elicit: { ...CARD.elicit, multi: { maxItems: 1 } } }]
+    await render()
+
+    // No minimum: "none of them" is an answer this card accepts from the start.
+    expect(text()).toContain('Select up to 1')
+    expect(buttonNamed('Confirm')?.disabled).toBe(false)
+
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // At the cap the unpicked option goes inert; the picked one still un-picks.
+    expect(buttonNamed('develop')?.disabled).toBe(true)
+    expect(buttonNamed('main')?.disabled).toBe(false)
+
+    await act(async () => {
+      buttonNamed('Confirm')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', ['main'], 'conv-1']])
+  })
+
+  it('keeps a single-choice card answering on the tap, with no confirm to press', async () => {
+    await render()
+    expect(buttonNamed('Confirm')).toBeUndefined()
+  })
+
   it('collapses to its outcome once settled, leaving nothing left to answer', async () => {
     live.steps = [{ ...CARD, elicit: { ...CARD.elicit, outcome: 'accepted', answerLabel: 'develop' } }]
     await render()
