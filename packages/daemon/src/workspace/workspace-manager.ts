@@ -1551,8 +1551,8 @@ export class WorkspaceManager {
       }
       const worktreeGit = this.runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
       // Fetched review refs mark this root's worktree as a daemon-owned review snapshot: every
-      // delivery re-fetches the exact revision and resets the tree (`reset --hard` + `clean -ffdx`),
-      // so dirty state and local commits alike are disposable by construction and retaining on them
+      // delivery re-fetches the exact revision and resets every tracked file (`reset --hard`), so
+      // dirty state and local commits alike are disposable by construction and retaining on them
       // protects nothing. Probed lazily — only when a protection would otherwise keep the worktree —
       // and at most once; a probe failure conservatively reads as "not a snapshot".
       let snapshot: boolean | undefined
@@ -1958,9 +1958,8 @@ export class WorkspaceManager {
       // Re-audit at the checkout boundary rather than relying on the earlier
       // network fetch audit; repository config may have changed while fetching.
       await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, root.path))
-      const worktreeGit = this.runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
-      await worktreeGit.raw(['reset', '--hard', target])
-      await worktreeGit.raw(['clean', '-ffdx'])
+      // Tracked files alone follow the revision; untracked and ignored files (node_modules, a cargo target, build output) are the session's own intermediates and stay, so a re-review does not rebuild them.
+      await this.runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv()).raw(['reset', '--hard', target])
     }
     if (review && (await this.revParse(agent.id, cwd, 'HEAD')).toLowerCase() !== review.checkout) {
       throw new Error('github review worktree HEAD does not match the verified revision')
@@ -2032,9 +2031,10 @@ export class WorkspaceManager {
     if (!attached) {
       await this.checkoutSessionBranch(agent.id, root, cwd, target, request.initiatedBy)
     } else if (review) {
-      const git = this.runnerFor(agent.id, cwd).withEnv(this.sessionCloneGitEnv(agent.id, root))
-      await git.raw(['reset', '--hard', target])
-      await git.raw(['clean', '-ffdx'])
+      // Tracked files alone follow the revision, as on the worktree tier: the session keeps its untracked and ignored intermediates across deliveries.
+      await this.runnerFor(agent.id, cwd)
+        .withEnv(this.sessionCloneGitEnv(agent.id, root))
+        .raw(['reset', '--hard', target])
     }
     if (review && (await this.revParse(agent.id, cwd, 'HEAD')).toLowerCase() !== review.checkout) {
       throw new Error('github review clone HEAD does not match the verified revision')

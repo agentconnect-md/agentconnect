@@ -342,7 +342,11 @@ describe('prepareSessionWorkspace', () => {
           args.includes(`+refs/pull/461/head:refs/agentconnect/reviews/${basename(cwd)}/head`)
       )
     ).toBe(true)
-    expect(rawMock.mock.calls.some(([args]) => args[0] === 'clean' && args[1] === '-ffdx')).toBe(true)
+    // The second delivery resets tracked files only; nothing cleans the session's untracked intermediates.
+    expect(
+      rawMock.mock.calls.some(([args, baseDir]) => baseDir === cwd && args[0] === 'reset' && args[1] === '--hard')
+    ).toBe(true)
+    expect(rawMock.mock.calls.some(([args]) => args[0] === 'clean')).toBe(false)
   })
 
   it('replaces a stale review checkout with an empty revision-only cwd', async () => {
