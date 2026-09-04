@@ -148,6 +148,59 @@ describe('born-final terminal posts (§5.5)', () => {
     expect(conn.postMessage).not.toHaveBeenCalled()
     expect(turn.reply.finalStamped).toBeUndefined()
   })
+
+  it('final-live-reply: a rejected settle edit posts the answer fresh instead of dropping it (#1793)', async () => {
+    // The one way minimal mode drops a turn: the single in-place edit fails and nothing
+    // else delivers. The terminal settle must fall back to a new message.
+    const { apply, turn, conn, posts } = fixture(
+      { responseId: 'resp-1', finalRouting: ROUTING },
+      { updateMessage: vi.fn(async () => false) }
+    )
+    turn.chrome.liveReplyTs = 'ts-live'
+    turn.chrome.liveReplyText = 'partial'
+    await apply({ kind: 'final-live-reply', text: 'the complete answer' })
+    expect(conn.updateMessage).toHaveBeenCalled()
+    expect(posts).toHaveLength(1)
+    expect(posts[0]?.text).toBe('the complete answer')
+    // A single-section answer posted on the fallback is still the terminal section.
+    expect(posts[0]?.options?.response).toMatchObject({ deliveryState: 'final' })
+    expect(turn.chrome.liveReplyText).toBe('the complete answer')
+  })
+
+  it('final-live-reply: verbatim text already confirmed on the live message is not re-posted', async () => {
+    const { apply, turn, conn } = fixture({ responseId: 'resp-1', finalRouting: ROUTING })
+    turn.chrome.liveReplyTs = 'ts-live'
+    turn.chrome.liveReplyText = 'the answer'
+    await apply({ kind: 'final-live-reply', text: 'the answer' })
+    expect(conn.updateMessage).not.toHaveBeenCalled()
+    expect(conn.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('live-reply: a dropped streaming edit does not advance liveReplyText (so the settle still delivers)', async () => {
+    // Path 1 of #1793: liveReplyText was set BEFORE the send, so a failed edit made the
+    // next terminal settle de-dupe against text that never reached Slack. Now the text
+    // only advances on a confirmed edit.
+    const { apply, turn, conn } = fixture(
+      { responseId: 'resp-1', finalRouting: ROUTING },
+      { updateMessage: vi.fn(async () => false) }
+    )
+    turn.chrome.liveReplyTs = 'ts-live'
+    turn.chrome.liveReplyText = 'old'
+    await apply({ kind: 'live-reply', text: 'streamed answer' })
+    expect(conn.updateMessage).toHaveBeenCalled()
+    expect(turn.chrome.liveReplyText).toBe('old')
+  })
+
+  it('live-reply: a failed first post does not advance liveReplyText', async () => {
+    const { apply, turn, conn } = fixture(
+      { responseId: 'resp-1', finalRouting: ROUTING },
+      { postMessage: vi.fn(async () => undefined) }
+    )
+    await apply({ kind: 'live-reply', text: 'answer' })
+    expect(conn.postMessage).toHaveBeenCalled()
+    expect(turn.chrome.liveReplyText).toBeUndefined()
+    expect(turn.chrome.liveReplyAttempted).toBe(true)
+  })
 })
 
 describe('finalizeSlackResponse skips a response already closed at post time', () => {

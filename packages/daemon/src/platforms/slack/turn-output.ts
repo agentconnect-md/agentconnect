@@ -455,35 +455,35 @@ async function applySlackProgress(
   }
 }
 
-/** Update minimal mode's live body without dropping its born-in footer. Only record a
- *  footer-key transition after Slack accepts the edit so finalization can retry a failed
- *  metadata refresh. */
-async function updateSlackLiveReply(conn: SlackConnection, p: SlackTurn, text: string): Promise<void> {
-  if (!p.chrome.liveReplyTs) return
-  // minimal mode edits ONE message as the answer streams, so the text finalization must
-  // re-send is the latest edit, not the text this message was born with (§5.5).
-  if (p.reply.lastResponse?.ts === p.chrome.liveReplyTs) p.reply.lastResponse.text = text
+/** Update minimal mode's live body without dropping its born-in footer. Returns whether
+ *  Slack accepted the edit — the caller relies on that to know the body actually landed,
+ *  since a failed in-place edit is the one way minimal mode can drop a turn's answer.
+ *  Only records a footer-key transition after the edit is accepted so finalization can
+ *  retry a failed metadata refresh. */
+async function updateSlackLiveReply(conn: SlackConnection, p: SlackTurn, text: string): Promise<boolean> {
+  if (!p.chrome.liveReplyTs) return false
   const attribution = p.attribution
-  if (!attribution) {
-    await conn.updateMessage(p.plan.channel, p.chrome.liveReplyTs, text, false, p.plan.agentId)
-    if (p.reply.lastReply?.ts === p.chrome.liveReplyTs) {
-      p.reply.lastReply.text = text
-      delete p.reply.lastReply.footerKey
-    }
-    return
-  }
-  const updated = await conn.updateBlocks(
-    p.plan.channel,
-    p.chrome.liveReplyTs,
-    [{ type: 'markdown', text }, ...attribution.blocks],
-    text,
-    false,
-    p.plan.agentId
-  )
-  if (updated !== false && p.reply.lastReply?.ts === p.chrome.liveReplyTs) {
+  const ok = !attribution
+    ? await conn.updateMessage(p.plan.channel, p.chrome.liveReplyTs, text, false, p.plan.agentId)
+    : await conn.updateBlocks(
+        p.plan.channel,
+        p.chrome.liveReplyTs,
+        [{ type: 'markdown', text }, ...attribution.blocks],
+        text,
+        false,
+        p.plan.agentId
+      )
+  if (!ok) return false
+  // minimal mode edits ONE message as the answer streams, so the text finalization must
+  // re-send is the latest edit, not the text this message was born with (§5.5). Advance
+  // it only after the edit lands, so a dropped edit never masquerades as delivered.
+  if (p.reply.lastResponse?.ts === p.chrome.liveReplyTs) p.reply.lastResponse.text = text
+  if (p.reply.lastReply?.ts === p.chrome.liveReplyTs) {
     p.reply.lastReply.text = text
-    p.reply.lastReply.footerKey = attribution.key
+    if (attribution) p.reply.lastReply.footerKey = attribution.key
+    else delete p.reply.lastReply.footerKey
   }
+  return true
 }
 
 /** Apply one converger action against the turn's Slack connection.
@@ -687,11 +687,15 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         p.chrome.liveReplyText = undefined
       }
       if (p.chrome.liveReplyText === action.text) return
-      p.chrome.liveReplyText = action.text
-      if (p.chrome.liveReplyTs) await updateSlackLiveReply(conn, p, action.text)
-      else if (!p.chrome.liveReplyAttempted) {
+      // Advance liveReplyText only after the send is CONFIRMED. Setting it up front makes a
+      // dropped edit look delivered, and the terminal `final-live-reply` then de-dupes
+      // against text that never reached Slack — the silent-drop path (#1793).
+      if (p.chrome.liveReplyTs) {
+        if (await updateSlackLiveReply(conn, p, action.text)) p.chrome.liveReplyText = action.text
+      } else if (!p.chrome.liveReplyAttempted) {
         p.chrome.liveReplyAttempted = true
         p.chrome.liveReplyTs = await postSlackReply(host, conn, p, state, action.text)
+        if (p.chrome.liveReplyTs) p.chrome.liveReplyText = action.text
       }
       return
     }
@@ -710,14 +714,26 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         p.chrome.liveReplyAttempted = false
         p.chrome.liveReplyText = undefined
       }
-      if (p.chrome.liveReplyText !== first) {
-        p.chrome.liveReplyText = first
-        if (p.chrome.liveReplyTs) await updateSlackLiveReply(conn, p, first)
-        else if (!p.chrome.liveReplyAttempted) {
-          p.chrome.liveReplyAttempted = true
-          // A single-section answer whose FIRST post happens here is the terminal
-          // section: the complete response is known, so it is born `final` (§5.5).
-          p.chrome.liveReplyTs = await postSlackReply(host, conn, p, state, first, true, rest.length === 0)
+      // This is the turn's LAST delivery opportunity, so it must not end in silence
+      // (#1793). Only skip when the exact text is already CONFIRMED on the live message;
+      // otherwise attempt the in-place edit, and if there is no live message or the edit
+      // is rejected, post the answer as a fresh message rather than dropping it.
+      if (p.chrome.liveReplyTs && p.chrome.liveReplyText === first) {
+        // Already delivered verbatim by a prior confirmed edit — nothing to do.
+      } else {
+        const edited = p.chrome.liveReplyTs ? await updateSlackLiveReply(conn, p, first) : false
+        if (edited) p.chrome.liveReplyText = first
+        else {
+          // No live message, or the edit was rejected: post the final section fresh. A
+          // single-section answer posted here is terminal, so it is born `final` (§5.5).
+          if (!p.chrome.liveReplyTs && p.chrome.liveReplyAttempted && rest.length === 0)
+            host.debug('slack: final-live-reply had no live message to settle; posting the answer as a new message')
+          const ts = await postSlackReply(host, conn, p, state, first, true, rest.length === 0)
+          if (ts) {
+            p.chrome.liveReplyTs = ts
+            p.chrome.liveReplyText = first
+            p.chrome.liveReplyAttempted = true
+          } else host.debug('slack: final-live-reply delivery failed; the turn answer was not posted')
         }
       }
       for (const [index, section] of rest.entries()) {

@@ -1430,8 +1430,8 @@ export class SlackConnection implements PlatformConnection {
     text: string,
     chrome = false,
     agentAuthorId?: string
-  ): Promise<void> {
-    await this.queue.enqueue(async () => {
+  ): Promise<boolean> {
+    return this.queue.enqueue(async () => {
       try {
         await this.app.client.chat.update({
           channel,
@@ -1439,8 +1439,10 @@ export class SlackConnection implements PlatformConnection {
           ...markdownBlock(text),
           ...slackMessageMetadata({ chrome, agentAuthorId })
         })
+        return true
       } catch (err) {
         this.deps.log?.debug(`slack: chat.update failed (ch=${channel} ts=${ts}): ${(err as Error).message}`)
+        return false
       }
     })
   }
