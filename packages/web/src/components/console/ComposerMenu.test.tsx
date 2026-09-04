@@ -104,6 +104,11 @@ describe('ComposerMenu', () => {
     const menu = container.querySelector<HTMLElement>('[role="menu"]')!
     const search = menu.querySelector<HTMLInputElement>('[role="searchbox"]')!
     expect(search.placeholder).toBe('Search agents…')
+    // The placeholder names the list, so the heading row is dropped — but the menu
+    // keeps its accessible name.
+    expect(menu.textContent).not.toContain('Agent')
+    expect(menu.getAttribute('aria-label')).toBe('Agent')
+    expect(menu.getAttribute('aria-labelledby')).toBeNull()
     expect(labels(menu)).toEqual(['sentio-reviewer', 'Processor Doctor', 'Move Builder'])
 
     await act(async () => setInput(search, 'DOC'))

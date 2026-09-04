@@ -163,7 +163,10 @@ export function ComposerMenu({
           <div
             id={menuId}
             role="menu"
-            aria-labelledby={headingId}
+            // The search box's own placeholder names the list, so a searchable menu
+            // drops the heading row rather than stacking two labels; the menu keeps
+            // the same accessible name via aria-label.
+            {...(searchable ? { 'aria-label': title } : { 'aria-labelledby': headingId })}
             className={`absolute z-50 rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg) ${
               searchable ? 'min-w-[220px]' : 'min-w-[148px]'
             } ${placement === 'down' ? 'top-[calc(100%+8px)]' : 'bottom-[calc(100%+8px)]'} ${
@@ -171,23 +174,29 @@ export function ComposerMenu({
             }`}
             onKeyDown={moveFocus}
           >
-            <div
-              id={headingId}
-              className="px-2 pt-[5px] pb-1 font-sans text-[10.5px] font-semibold leading-normal text-(--text-tertiary)"
-            >
-              {title}
-            </div>
+            {!searchable && (
+              <div
+                id={headingId}
+                className="px-2 pt-[5px] pb-1 font-sans text-[10.5px] font-semibold leading-normal text-(--text-tertiary)"
+              >
+                {title}
+              </div>
+            )}
             {searchable && (
-              <input
-                type="search"
-                role="searchbox"
-                aria-label={`Filter ${title.toLowerCase()}`}
-                className="fsearch"
-                value={query}
-                placeholder={searchPlaceholder}
-                autoFocus
-                onChange={(event) => setQuery(event.target.value)}
-              />
+              // px-2 matches the options' own inset, so the field's border lines up
+              // with the option icons below instead of running wider than the list.
+              <div className="px-2 pt-[3px]">
+                <input
+                  type="search"
+                  role="searchbox"
+                  aria-label={`Filter ${title.toLowerCase()}`}
+                  className="fsearch"
+                  value={query}
+                  placeholder={searchPlaceholder}
+                  autoFocus
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </div>
             )}
             {/* Options scroll within a capped height so a long list (e.g. dozens of
                 models) never runs off-screen; the heading above stays put. */}
