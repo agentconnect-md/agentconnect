@@ -332,6 +332,27 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', 'add-retries', 'conv-1']])
   })
 
+  // The validator runs during render, so a draft that merely LOOKS like a date used to take
+  // the whole session view down with a RangeError instead of showing the correction hint.
+  it('holds an impossible calendar draft without taking the view down with it', async () => {
+    live.steps = [
+      {
+        ...CARD,
+        text: 'When should I schedule it?',
+        elicit: { requestId: 'elicit-1', options: [], text: { format: 'date' } }
+      }
+    ]
+    await render()
+
+    await type('2025-13-01')
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(text()).toContain('Enter a date as YYYY-MM-DD')
+    expect(live.answered).toEqual([])
+
+    await type('2025-01-31')
+    expect(buttonNamed('Submit')?.disabled).toBe(false)
+  })
+
   it('sends a numeric answer as a real number, and holds one outside the schema’s bounds', async () => {
     live.steps = [
       {

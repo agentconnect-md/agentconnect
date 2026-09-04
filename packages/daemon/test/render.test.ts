@@ -1791,6 +1791,36 @@ describe('elicitation card', () => {
     expect(textAccepts(t, 'a'.repeat(257))).toBe(false)
   })
 
+  // Dropping a bound we cannot enforce would accept an answer the schema forbids — the same
+  // class of lie as answering a form whose required field the card never showed.
+  it('declines a text field whose minimum exceeds the length it can enforce', () => {
+    expect(elicitTarget(form({ n: { type: 'string', minLength: 5000 } }), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(
+      elicitTarget(form({ n: { type: 'string', pattern: '^[a-z]+$', minLength: 300 } }), WEBCHAT_ELICIT_KINDS)
+    ).toBeNull()
+  })
+
+  it('carries the effective maximum, clamping a declared one down to what it can enforce', () => {
+    const plain = elicitTarget(form({ n: { type: 'string' } }), WEBCHAT_ELICIT_KINDS)!
+    expect(plain.maxLength).toBe(4096)
+    const declared = elicitTarget(form({ n: { type: 'string', maxLength: 50 } }), WEBCHAT_ELICIT_KINDS)!
+    expect(declared.maxLength).toBe(50)
+    // A patterned field's ceiling is the pattern cap, so the browser bounds its draft by it.
+    const patterned = elicitTarget(
+      form({ n: { type: 'string', pattern: '^[a-z]+$', maxLength: 4000 } }),
+      WEBCHAT_ELICIT_KINDS
+    )!
+    expect(patterned.maxLength).toBe(256)
+  })
+
+  it('fails an impossible calendar value instead of throwing out of the check', () => {
+    const d = elicitTarget(form({ n: { type: 'string', format: 'date' } }), WEBCHAT_ELICIT_KINDS)!
+    expect(() => textAccepts(d, '2025-13-01')).not.toThrow()
+    expect(textAccepts(d, '2025-13-01')).toBe(false)
+    expect(textAccepts(d, '2025-02-30')).toBe(false)
+    expect(textAccepts(d, '2025-01-31')).toBe(true)
+  })
+
   it('pre-populates every kind from the schema default, and drops one it would refuse', () => {
     const seed = (prop: Record<string, unknown>) => elicitTarget(form({ v: prop }), WEBCHAT_ELICIT_KINDS)?.defaultValue
     expect(seed({ type: 'string', enum: ['red', 'green'], default: 'green' })).toBe('green')

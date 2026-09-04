@@ -667,11 +667,18 @@ const FORMAT_HINT: Record<string, { test: (v: string) => boolean; why: string }>
     why: 'Enter a URL, including its scheme'
   },
   date: {
-    test: (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && v === new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10),
+    // `2025-13-01` matches the shape but is not a date, and toISOString THROWS on it — this
+    // runs during render, so an ordinary invalid draft would crash the view, not fail a check.
+    test: (v) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
+      const d = new Date(`${v}T00:00:00Z`)
+      return !Number.isNaN(d.getTime()) && v === d.toISOString().slice(0, 10)
+    },
     why: 'Enter a date as YYYY-MM-DD'
   },
   'date-time': {
-    test: (v) => /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(v),
+    test: (v) =>
+      /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(v) && !isNaN(Date.parse(v)),
     why: 'Enter a date and time, e.g. 2025-01-31T09:00:00Z'
   }
 }
@@ -694,6 +701,8 @@ function typedInvalidReason(elicit: NonNullable<FmtStep['elicit']>, draft: strin
   if (text.minLength !== undefined && draft.length < text.minLength)
     return `Enter at least ${text.minLength} character${text.minLength === 1 ? '' : 's'}`
   if (!draft.length) return 'Enter an answer'
+  // Also what keeps the pattern below cheap: the daemon sizes maxLength down to the pattern
+  // cap, so a long draft is refused here rather than matched on every keystroke.
   if (text.maxLength !== undefined && draft.length > text.maxLength) return `Enter at most ${text.maxLength} characters`
   const format = text.format ? FORMAT_HINT[text.format] : undefined
   if (format && !format.test(draft)) return format.why

@@ -715,10 +715,17 @@ function numBound(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-/** A string-length bound kept only when it is a sane non-negative integer inside the answer cap. */
+/** A string-length bound, kept whenever it is a sane non-negative integer. A bound ABOVE the
+ *  cap is never dropped: silently losing a minimum would let an answer the schema forbids
+ *  through, so the caller compares it against the effective cap and declines instead. */
 function lengthBound(value: unknown): number | undefined {
-  const n = itemBound(value)
-  return n !== undefined && n <= ELICIT_TEXT_CAP ? n : undefined
+  return itemBound(value)
+}
+
+/** The longest answer a text target can actually take: a pattern is only cheap over a short
+ *  input, so a patterned field's ceiling is the pattern cap rather than the answer cap. */
+function effectiveTextMax(pattern: string | undefined): number {
+  return pattern === undefined ? ELICIT_TEXT_CAP : ELICIT_PATTERN_INPUT_CAP
 }
 
 /** The four `format` checks, each strict enough that a value passing it is one the agent asked for. */
@@ -732,7 +739,12 @@ const FORMAT_CHECK: Record<ElicitFormat, (value: string) => boolean> = {
       return false
     }
   },
-  date: (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && v === new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10),
+  date: (v) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
+    // `2025-13-01` matches the shape but is not a date: toISOString would THROW on it.
+    const d = new Date(`${v}T00:00:00Z`)
+    return !Number.isNaN(d.getTime()) && v === d.toISOString().slice(0, 10)
+  },
   'date-time': (v) =>
     /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(v) && !isNaN(Date.parse(v))
 }
@@ -765,15 +777,20 @@ function textTarget(name: string, prop: Record<string, unknown>): ElicitTarget |
   const pattern = prop.pattern
   if (pattern !== undefined && (typeof pattern !== 'string' || !safeElicitPattern(pattern))) return null
   const min = lengthBound(prop.minLength)
-  const max = lengthBound(prop.maxLength)
-  if (min !== undefined && max !== undefined && min > max) return null
+  const declared = lengthBound(prop.maxLength)
+  // The ceiling this surface can actually enforce. A declared minimum above it is
+  // unanswerable — dropping it would accept a short answer the schema forbids — and the
+  // effective maximum is carried on the target so the browser bounds its own draft by it.
+  const ceiling = effectiveTextMax(typeof pattern === 'string' ? pattern : undefined)
+  const max = declared === undefined ? ceiling : Math.min(declared, ceiling)
+  if (min !== undefined && min > max) return null
   if (max === 0) return null
   return {
     propName: name,
     kind: 'text',
     options: [],
     ...(min !== undefined ? { minLength: min } : {}),
-    ...(max !== undefined ? { maxLength: max } : {}),
+    maxLength: max,
     ...(typeof pattern === 'string' ? { pattern } : {}),
     ...(format !== undefined ? { format: format as ElicitFormat } : {})
   }
@@ -917,7 +934,8 @@ export function textAccepts(target: ElicitTarget, value: string): boolean {
   if (target.maxLength !== undefined && value.length > target.maxLength) return false
   if (target.format && !FORMAT_CHECK[target.format](value)) return false
   if (target.pattern === undefined) return true
-  // The screen bounds a pattern's degree; this bounds the input it is spent on.
+  // maxLength already carries the pattern ceiling, so the expression only ever runs over a
+  // short input; this is the belt to that braces, since the target arrives from a caller.
   if (value.length > ELICIT_PATTERN_INPUT_CAP) return false
   const re = safeElicitPattern(target.pattern)
   return !!re && re.test(value)
