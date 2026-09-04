@@ -442,7 +442,7 @@ function installWebchat(pending: any, conversationId = 'conv-1'): { output: Retu
 }
 
 const cardEvents = (sink: { output: ReturnType<typeof vi.fn> }): any[] =>
-  sink.output.mock.calls.map(([o]: [any]) => o.event)
+  sink.output.mock.calls.map(([o]: any[]) => o.event)
 
 describe('webchat renders and answers ACP elicitation cards', () => {
   it('streams the card, then accepts the tapped option and settles it in place', async () => {
@@ -534,6 +534,24 @@ describe('webchat renders and answers ACP elicitation cards', () => {
     })
     expect((daemon as any).permissions.pendingElicits.size).toBe(1)
     expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
+
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main', webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
+  })
+
+  it('refuses a Slack-surface answer for a webchat card, though both share one id counter', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    // No webchatConversationId ⇒ the answer came off a Slack card, which cannot settle this one.
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main' })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(cardEvents(sink)).toHaveLength(1)
 
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main', webchatConversationId: 'conv-1' })
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })

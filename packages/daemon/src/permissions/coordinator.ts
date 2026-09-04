@@ -1405,7 +1405,9 @@ export class PermissionCoordinator {
       // The card names every answer it accepts; anything else would inject an unoffered
       // value into the agent's content, so it is dropped and the card stays live.
       if (a.value !== null && !elicitTarget(rec.params)?.options.some((o) => o.value === a.value)) return
-    }
+      // A card settles only from its own surface: both share one `elicit-<n>` counter, so
+      // without this a Slack tap could answer a live webchat card.
+    } else if (rec.surface === 'webchat') return
     if (rec.approval && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
       if (rec.surface === 'slack' && rec.ts) {
         void rec.conn
