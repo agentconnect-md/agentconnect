@@ -1774,6 +1774,23 @@ describe('elicitation card', () => {
     expect(target).toBeNull()
   })
 
+  // Nested quantifiers are not the only shape that backtracks: adjacent ones are polynomial
+  // with no group at all, and degree is what the input cap is budgeted against.
+  it('refuses a pattern whose adjacent quantifiers backtrack without any group', () => {
+    expect(safeElicitPattern('^a*a*a*a*b$')).toBeNull()
+    // Degree is budgeted against the input cap, so ordinary multi-quantifier patterns stand.
+    expect(safeElicitPattern('^\\d{3}-\\d{2}-\\d{4}$')).toBeInstanceOf(RegExp)
+    const target = elicitTarget(form({ n: { type: 'string', pattern: '^a*a*a*a*b$' } }), WEBCHAT_ELICIT_KINDS)
+    expect(target).toBeNull()
+  })
+
+  it('spends a pattern only on a short answer, however long the field allows', () => {
+    const t = elicitTarget(form({ n: { type: 'string', pattern: '^[a-z]+$', maxLength: 4000 } }), WEBCHAT_ELICIT_KINDS)!
+    expect(textAccepts(t, 'abc')).toBe(true)
+    expect(textAccepts(t, 'a'.repeat(256))).toBe(true)
+    expect(textAccepts(t, 'a'.repeat(257))).toBe(false)
+  })
+
   it('pre-populates every kind from the schema default, and drops one it would refuse', () => {
     const seed = (prop: Record<string, unknown>) => elicitTarget(form({ v: prop }), WEBCHAT_ELICIT_KINDS)?.defaultValue
     expect(seed({ type: 'string', enum: ['red', 'green'], default: 'green' })).toBe('green')

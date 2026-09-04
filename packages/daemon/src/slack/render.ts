@@ -653,6 +653,16 @@ export interface ElicitTarget {
 /** The longest answer a card accepts: an elicitation asks a question, not for a file. */
 const ELICIT_TEXT_CAP = 4096
 
+/** The longest answer a PATTERN is matched against. Backtracking cost grows with the input,
+ *  so a screened pattern is only cheap over a short one — and a patterned field asks for a
+ *  name or an id, not prose. A longer answer is rejected rather than matched. */
+const ELICIT_PATTERN_INPUT_CAP = 256
+
+/** The most quantifiers a screened pattern may carry. The group rule below stops nested
+ *  blow-up, but ADJACENT quantifiers backtrack polynomially with no group at all (`a*a*a*b`),
+ *  and degree is what the input cap is budgeted against. */
+const ELICIT_PATTERN_QUANTIFIER_CAP = 3
+
 /**
  * Compile a schema `pattern` only when a linear-time match is assured, since the expression is
  * agent-authored and JS regexes backtrack: over-long sources and every quantified group whose
@@ -664,6 +674,7 @@ export function safeElicitPattern(src: string): RegExp | null {
   // Riskiness of the body being scanned, and of every enclosing group, innermost last.
   const enclosing: boolean[] = []
   let risky: boolean = false
+  let quantifiers = 0
   for (let i = 0; i < src.length; i++) {
     const c = src[i]!
     if (c === '\\') i++
@@ -686,7 +697,10 @@ export function safeElicitPattern(src: string): RegExp | null {
       const quantified = i + 1 < src.length && '*+?{'.includes(src[i + 1]!)
       if (quantified && body) return null
       risky = parent || body || quantified
-    } else if (c === '|' || '*+?{'.includes(c)) risky = true
+    } else if (c === '|' || '*+?{'.includes(c)) {
+      if (c !== '|' && ++quantifiers > ELICIT_PATTERN_QUANTIFIER_CAP) return null
+      risky = true
+    }
   }
   if (enclosing.length) return null
   try {
@@ -903,6 +917,8 @@ export function textAccepts(target: ElicitTarget, value: string): boolean {
   if (target.maxLength !== undefined && value.length > target.maxLength) return false
   if (target.format && !FORMAT_CHECK[target.format](value)) return false
   if (target.pattern === undefined) return true
+  // The screen bounds a pattern's degree; this bounds the input it is spent on.
+  if (value.length > ELICIT_PATTERN_INPUT_CAP) return false
   const re = safeElicitPattern(target.pattern)
   return !!re && re.test(value)
 }
