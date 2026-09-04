@@ -525,8 +525,13 @@ architecture invariant:
   the daemon is offline.
 - **Console** — the Background memory section (§3) plus, per dream: a review
   screen showing a current-to-staged line diff for each store file (reusing the
-  managed-memory history diff and file browser components) with Adopt / Discard,
-  and a "Recommended skills" list rendering
+  managed-memory history diff and file browser components) with Adopt / Discard.
+  When Adopt hits the §6 snapshot fence (the live store moved under the dream),
+  the console does not dead-end on the error: it offers "Adopt anyway" (the
+  `force` flag), warning that adoption is a whole-directory swap and naming the
+  live-only files it would drop, with re-running the dream as the alternative
+  that keeps the newer changes. The review screen also has a
+  "Recommended skills" list rendering
   each candidate's `SKILL.md` and scripts with Accept / Dismiss. Accepted
   skills also surface on the Tools & Skills page alongside imported sources.
   Both branches of the mobile/desktop split follow the existing

@@ -128,7 +128,18 @@ export function DreamPanel({
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [reviewing, setReviewing] = useState<string | null>(null)
   const [confirmStart, setConfirmStart] = useState(false)
-  const [confirmAdopt, setConfirmAdopt] = useState<{ dreamId: string; reviewToken?: string } | null>(null)
+  const [confirmAdopt, setConfirmAdopt] = useState<{
+    dreamId: string
+    reviewToken?: string
+    droppedFiles: string[]
+  } | null>(null)
+  // The snapshot fence tripped: the live store moved under this dream. Adopting anyway is a
+  // whole-directory swap, so it drops any topic added since the snapshot (#1792).
+  const [forceAdopt, setForceAdopt] = useState<{
+    dreamId: string
+    reviewToken?: string
+    droppedFiles: string[]
+  } | null>(null)
   const listRequest = useRef(0)
 
   const refresh = useCallback(async () => {
@@ -208,6 +219,44 @@ export function DreamPanel({
       // A conflict usually means our view is stale (someone else started or
       // adopted something) — resync so the row and its actions are correct.
       if (e instanceof ApiError && e.status === 409) await refresh()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Adopt is its own handler, not `run`, because the snapshot-fence 409 is not a
+  // dead end: it opens the "adopt anyway" (force) path instead of surfacing a bare
+  // error the operator cannot act on (#1792). Every other failure behaves like `run`.
+  const adopt = async (dreamId: string, reviewToken: string | undefined, droppedFiles: string[], force: boolean) => {
+    if (busy) return
+    setBusy(true)
+    setActionError(null)
+    try {
+      await adoptDream(agentId, dreamId, force, reviewToken)
+      setReviewing(null)
+      setActionNotice('Memory adopted. Outdated proposals were moved to History.')
+      await refresh()
+    } catch (e) {
+      const fence =
+        !force &&
+        e instanceof ApiError &&
+        e.status === 409 &&
+        /changed since this dream was snapshotted/.test(e.message)
+      if (fence) {
+        // Offer the force path with the live view refreshed, so the drop warning
+        // names what is actually live now, not what the review panel saw earlier.
+        await refresh()
+        setForceAdopt({ dreamId, reviewToken, droppedFiles })
+      } else {
+        setActionError(
+          e instanceof ApiError && e.status === 503
+            ? 'This agent’s daemon is offline.'
+            : e instanceof Error
+              ? e.message
+              : 'That did not work.'
+        )
+        if (e instanceof ApiError && e.status === 409) await refresh()
+      }
     } finally {
       setBusy(false)
     }
@@ -379,7 +428,7 @@ export function DreamPanel({
             dreamId={reviewing}
             canEdit={canEdit}
             busy={busy}
-            onAdopt={(reviewToken) => setConfirmAdopt({ dreamId: reviewing, reviewToken })}
+            onAdopt={(reviewToken, droppedFiles) => setConfirmAdopt({ dreamId: reviewing, reviewToken, droppedFiles })}
             onDiscard={() => discard(reviewing)}
           />
         ) : null}
@@ -449,17 +498,34 @@ export function DreamPanel({
             confirmLabel="Adopt"
             onClose={() => setConfirmAdopt(null)}
             onConfirm={() => {
-              const { dreamId, reviewToken } = confirmAdopt
+              const { dreamId, reviewToken, droppedFiles } = confirmAdopt
               setConfirmAdopt(null)
-              void run(async () => {
-                await adoptDream(agentId, dreamId, false, reviewToken)
-                setReviewing(null)
-                setActionNotice('Memory adopted. Outdated proposals were moved to History.')
-              })
+              void adopt(dreamId, reviewToken, droppedFiles, false)
             }}
           >
             This replaces the agent’s live memory with the staged version. The current store is kept as a backup, and
             adopting is refused if memory changed underneath this dream.
+          </ConfirmationDialog>
+        ) : null}
+
+        {forceAdopt ? (
+          <ConfirmationDialog
+            title="Adopt anyway?"
+            confirmLabel="Adopt anyway"
+            onClose={() => setForceAdopt(null)}
+            onConfirm={() => {
+              const { dreamId, reviewToken, droppedFiles } = forceAdopt
+              setForceAdopt(null)
+              void adopt(dreamId, reviewToken, droppedFiles, true)
+            }}
+          >
+            {`Memory changed underneath this dream since it was snapshotted. Adopting replaces the whole store with the staged version` +
+              (forceAdopt.droppedFiles.length
+                ? ` and drops ${forceAdopt.droppedFiles.length} file${
+                    forceAdopt.droppedFiles.length === 1 ? '' : 's'
+                  } added since: ${forceAdopt.droppedFiles.join(', ')}.`
+                : `. Any file added since the snapshot is dropped.`) +
+              ` The current store is kept as a backup. To keep the newer changes instead, re-run the dream.`}
           </ConfirmationDialog>
         ) : null}
       </div>
@@ -480,7 +546,7 @@ function DreamReview({
   dreamId: string
   canEdit: boolean
   busy: boolean
-  onAdopt: (reviewToken?: string) => void
+  onAdopt: (reviewToken: string | undefined, droppedFiles: string[]) => void
   onDiscard: () => void
 }) {
   // The UNION of live and staged paths, not just the staged tree. Adoption swaps
@@ -581,7 +647,15 @@ function DreamReview({
             <Button variant="secondary" disabled={busy} onClick={onDiscard}>
               Discard
             </Button>
-            <Button disabled={busy || !paths?.some((p) => p.staged)} onClick={() => onAdopt(reviewToken)}>
+            <Button
+              disabled={busy || !paths?.some((p) => p.staged)}
+              onClick={() =>
+                onAdopt(
+                  reviewToken,
+                  deleting.map((p) => p.name)
+                )
+              }
+            >
               <Icon name="check" size={13} /> Adopt
             </Button>
           </span>
