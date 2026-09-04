@@ -199,7 +199,11 @@ export function parseBrowserFrame(
       // re-checks the value against the constraints that card carried.
       const listed = Array.isArray(m.value) && m.value.every((v) => typeof v === 'string')
       const scalar = typeof m.value === 'string' || (typeof m.value === 'number' && Number.isFinite(m.value))
-      if (typeof m.requestId !== 'string' || (!scalar && m.value !== null && !listed)) return null
+      // A multi-field form card answers with one value per field, keyed by property name; the
+      // daemon checks the keys against the card it posted, and each value against that field.
+      const record =
+        !!m.value && typeof m.value === 'object' && !Array.isArray(m.value) && Object.keys(m.value).length > 0
+      if (typeof m.requestId !== 'string' || (!scalar && !record && m.value !== null && !listed)) return null
       if (m.agentId !== undefined && !(typeof m.agentId === 'string' && UUID_RE.test(m.agentId))) return null
       const parsed = RelayWebchatOp.safeParse({
         op: 'elicitation_choice',

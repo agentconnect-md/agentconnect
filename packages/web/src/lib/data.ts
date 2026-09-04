@@ -1076,6 +1076,25 @@ export interface SessionImage {
   data: string
 }
 
+/** One field of a multi-field elicitation form card (protocol `ElicitField`): the control to
+ *  render, the label to render it beside, and the constraints the daemon re-checks on the way
+ *  back in. `required` absent ⇒ the schema allows the answer to leave this field out. */
+export interface ElicitFieldSpec {
+  propName: string
+  label: string
+  kind: 'enum' | 'boolean' | 'multi-enum' | 'text' | 'number'
+  required?: boolean
+  options: { value: string; label: string }[]
+  multi?: { minItems?: number; maxItems?: number }
+  text?: { minLength?: number; maxLength?: number; pattern?: string; format?: string }
+  number?: { integer?: boolean; minimum?: number; maximum?: number }
+  defaultValue?: string | number | boolean | string[]
+}
+
+/** What answers an elicitation card: one picked option, a multi-select's list, a number, a
+ *  form's value-per-field record, or `null` for Dismiss. */
+export type ElicitAnswerValue = string | string[] | number | Record<string, string | number | string[]> | null
+
 export interface SessionStep {
   kind: LaneKind
   who?: string
@@ -1140,6 +1159,11 @@ export interface SessionStep {
     number?: { integer?: boolean; minimum?: number; maximum?: number }
     /** The schema's `default` — what the control starts out holding. */
     defaultValue?: string | number | boolean | string[]
+    /** Present ⇒ the card is a multi-field FORM: one labelled control per field and one
+     *  submit, answered with a value per field keyed by property name. Every single-field
+     *  descriptor above is then absent, so a reader that does not know `fields` has nothing
+     *  to answer with rather than half an answer. */
+    fields?: ElicitFieldSpec[]
     outcome?: 'accepted' | 'dismissed' | 'cancelled'
     answerLabel?: string
   }

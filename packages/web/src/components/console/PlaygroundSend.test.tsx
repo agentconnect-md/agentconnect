@@ -936,6 +936,40 @@ describe('in-band elicitation cards', () => {
     ])
   })
 
+  it('carries a multi-field form card onto the step, fields and all', async () => {
+    const { socket, turnId } = await openStream()
+    const fields = [
+      {
+        propName: 'branch',
+        label: 'Base branch',
+        kind: 'enum',
+        required: true,
+        options: [{ value: 'main', label: 'main' }]
+      },
+      { propName: 'note', label: 'Note', kind: 'text', options: [] }
+    ]
+    feed(socket, turnId, 0, { ...card('elicit-1'), options: [], fields })
+    expect(getLiveSteps('s1').filter((s) => s.kind === 'elicit')).toMatchObject([
+      { elicit: { requestId: 'elicit-1', options: [], fields } }
+    ])
+  })
+
+  it('answers a form card with the whole record over the same socket', async () => {
+    const { socket, turnId } = await openStream()
+    feed(socket, turnId, 0, card('elicit-1'))
+    act(() => pgAnswerElicitation('s1', 'agent-1', 'elicit-1', { branch: 'main', note: 'ok' }, 'c1'))
+    await act(async () => {})
+    const frames = socket.send.mock.calls.map((call) => JSON.parse(String(call[0])))
+    expect(frames.filter((f) => f.type === 'elicitation_choice')).toEqual([
+      {
+        type: 'elicitation_choice',
+        requestId: 'elicit-1',
+        value: { branch: 'main', note: 'ok' },
+        agentId: 'agent-1'
+      }
+    ])
+  })
+
   it('settles a card another participant cannot claim: `elicit-<n>` is unique per daemon only', async () => {
     const { socket, turnId } = await openStream()
     feed(socket, turnId, 0, card('elicit-1'))

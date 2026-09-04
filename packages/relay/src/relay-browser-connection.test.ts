@@ -186,6 +186,18 @@ describe('parseBrowserFrame', () => {
     expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: 42 }, USER)).toEqual({
       op: { op: 'elicitation_choice', requestId: 'elicit-1', value: 42 }
     })
+    // A multi-field form answers with one value per field, keyed by property name.
+    expect(
+      parseBrowserFrame(
+        { type: 'elicitation_choice', requestId: 'elicit-1', value: { branch: 'main', checks: ['lint'], retries: 3 } },
+        USER
+      )
+    ).toEqual({
+      op: { op: 'elicitation_choice', requestId: 'elicit-1', value: { branch: 'main', checks: ['lint'], retries: 3 } }
+    })
+    // An empty record answers nothing, and a nested one is not a field value.
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: {} }, USER)).toBeNull()
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'e-1', value: { a: { b: 1 } } }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: Number.NaN }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: ['a', 7] }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1' }, USER)).toBeNull()

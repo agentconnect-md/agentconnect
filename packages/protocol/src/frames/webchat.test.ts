@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { WebchatOutput, WebchatStatus } from '../index.js'
+import { ELICIT_FORM_FIELD_CAP, WebchatOutput, WebchatStatus } from '../index.js'
 
 const CONV = '11111111-1111-4111-8111-111111111111'
 const TURN = '22222222-2222-4222-8222-222222222222'
@@ -144,6 +144,58 @@ describe('WebchatOutput — event / status framing', () => {
       expect(single.data.event.number).toBeUndefined()
       expect(single.data.event.defaultValue).toBeUndefined()
     }
+  })
+
+  it('carries a multi-field form card, its fields bounded and the single-field descriptors left off', () => {
+    const card = (event: Record<string, unknown>) =>
+      WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 4, event })
+    const field = (propName: string, over: Record<string, unknown> = {}) => ({
+      propName,
+      label: propName,
+      kind: 'text',
+      options: [],
+      ...over
+    })
+    const form = card({
+      kind: 'elicitation',
+      requestId: 'elicit-1',
+      message: 'Cut the branch',
+      // Empty, and NO multi/text/number/defaultValue: a reader that does not know `fields`
+      // gets a card with nothing to pick rather than one it could half-answer.
+      options: [],
+      fields: [
+        field('branch', { kind: 'enum', required: true, options: [{ value: 'main', label: 'main' }] }),
+        field('note', { text: { maxLength: 40 } }),
+        field('retries', { kind: 'number', number: { integer: true }, defaultValue: 3 })
+      ]
+    })
+    expect(form.success).toBe(true)
+    if (form.success && form.data.event?.kind === 'elicitation') {
+      expect(form.data.event.fields?.map((f) => f.propName)).toEqual(['branch', 'note', 'retries'])
+      expect(form.data.event.fields?.[0]?.required).toBe(true)
+      expect(form.data.event.fields?.[1]?.required).toBeUndefined()
+      expect(form.data.event.multi).toBeUndefined()
+      expect(form.data.event.text).toBeUndefined()
+    }
+    // One field is the single-field card, not a form; and no card is longer than the cap.
+    expect(card({ kind: 'elicitation', requestId: 'e', message: 'm', options: [], fields: [field('a')] }).success).toBe(
+      false
+    )
+    const wide = Array.from({ length: ELICIT_FORM_FIELD_CAP + 1 }, (_, i) => field(`f${i}`))
+    expect(card({ kind: 'elicitation', requestId: 'e', message: 'm', options: [], fields: wide }).success).toBe(false)
+    // A field with no property to answer under, or a kind no surface renders, is not a field.
+    expect(
+      card({ kind: 'elicitation', requestId: 'e', message: 'm', options: [], fields: [field(''), field('b')] }).success
+    ).toBe(false)
+    expect(
+      card({
+        kind: 'elicitation',
+        requestId: 'e',
+        message: 'm',
+        options: [],
+        fields: [field('a', { kind: 'slider' }), field('b')]
+      }).success
+    ).toBe(false)
   })
 
   it('rejects an unrenderable elicitation frame rather than streaming a dead card', () => {

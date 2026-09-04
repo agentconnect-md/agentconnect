@@ -115,6 +115,49 @@ export const PlanEntry = z.object({
 })
 export type PlanEntry = z.infer<typeof PlanEntry>
 
+/** The most fields one elicitation card renders. A card is a question standing in a
+ *  transcript, not a settings page: past ten controls the reader cannot take the ask in, and
+ *  the daemon must hold and re-validate every field of the record that answers it. A longer
+ *  form is declined, which is honest — the agent can ask again in smaller pieces. */
+export const ELICIT_FORM_FIELD_CAP = 10
+
+/** The per-kind field descriptors of an elicitation card. Shared by the single-field card and
+ *  by each entry of a multi-field form, so the two can never describe one field differently. */
+const ElicitOptions = z.array(z.object({ value: z.string(), label: z.string() }))
+const ElicitMulti = z.object({
+  minItems: z.number().int().min(0).optional(),
+  maxItems: z.number().int().min(0).optional()
+})
+const ElicitText = z.object({
+  minLength: z.number().int().min(0).optional(),
+  maxLength: z.number().int().min(0).optional(),
+  pattern: z.string().max(200).optional(),
+  format: z.enum(['email', 'uri', 'date', 'date-time']).optional()
+})
+const ElicitNumber = z.object({
+  integer: z.boolean().optional(),
+  minimum: z.number().optional(),
+  maximum: z.number().optional()
+})
+const ElicitDefault = z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])
+
+/** One field of a multi-field form card: the descriptors above plus what only a form needs —
+ *  the schema key the answer is returned under, a label to render it beside, its kind (a
+ *  boolean's two options are indistinguishable from an enum's otherwise), and whether the
+ *  schema requires it, since an optional field may be left out of the answer entirely. */
+export const ElicitField = z.object({
+  propName: z.string().min(1).max(200),
+  label: z.string(),
+  kind: z.enum(['enum', 'boolean', 'multi-enum', 'text', 'number']),
+  required: z.boolean().optional(),
+  options: ElicitOptions,
+  multi: ElicitMulti.optional(),
+  text: ElicitText.optional(),
+  number: ElicitNumber.optional(),
+  defaultValue: ElicitDefault.optional()
+})
+export type ElicitField = z.infer<typeof ElicitField>
+
 export const WebchatEvent = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('message'), text: z.string() }), // from agent_message_chunk
   z.object({ kind: z.literal('thinking'), text: z.string() }), // from agent_thought_chunk
@@ -158,8 +201,8 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('plan'), entries: z.array(PlanEntry) }),
   // The agent asked for a choice (ACP `elicitation/create`, form mode) — webchat's own
   // in-band card, the peer of the Slack Block Kit one. Deliberately NOT the raw
-  // `requestedSchema`: the daemon has already reduced the form to the one renderable
-  // field, and its options are the only answers the browser may send back (as the
+  // `requestedSchema`: the daemon has already reduced the form to its renderable
+  // field(s), and its options are the only answers the browser may send back (as the
   // `elicitation_choice` op keyed by this `requestId`). `message` is agent-authored text,
   // masked before it reaches here. Options are UNCAPPED — the Slack 5-button cap is a
   // Slack surface limit and does not follow the choice onto this surface. They are also
@@ -168,39 +211,30 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     kind: z.literal('elicitation'),
     requestId: z.string().min(1).max(200),
     message: z.string(),
-    options: z.array(z.object({ value: z.string(), label: z.string() })),
+    options: ElicitOptions,
     // Absent ⇒ pick exactly ONE option, the original card. Present ⇒ pick several of the same
     // options and confirm, and the answer is a list. An added OPTIONAL field rather than a new
     // event kind on purpose: a relay or browser predating it decodes the event unchanged
     // (zod strips what it does not know) instead of dropping the frame the way an unknown
     // kind would, and a daemon predating it simply never sets it.
-    multi: z
-      .object({ minItems: z.number().int().min(0).optional(), maxItems: z.number().int().min(0).optional() })
-      .optional(),
+    multi: ElicitMulti.optional(),
     // Present ⇒ the card is a free-text input carrying the schema's own constraints, which the
     // daemon re-checks on the way back in. Same optional-field reasoning as `multi`, with one
     // added skew note: an old reader keeps `options` (now empty) and shows a card with nothing
     // but Dismiss — unanswerable, never wrongly answered. `pattern` reaches here only once the
     // daemon has cleared it as safe to run.
-    text: z
-      .object({
-        minLength: z.number().int().min(0).optional(),
-        maxLength: z.number().int().min(0).optional(),
-        pattern: z.string().max(200).optional(),
-        format: z.enum(['email', 'uri', 'date', 'date-time']).optional()
-      })
-      .optional(),
+    text: ElicitText.optional(),
     // Present ⇒ a numeric input; `integer` is the schema's `integer` type, not just a bound.
-    number: z
-      .object({
-        integer: z.boolean().optional(),
-        minimum: z.number().optional(),
-        maximum: z.number().optional()
-      })
-      .optional(),
+    number: ElicitNumber.optional(),
     // The schema's `default`, already checked against the constraints above: the card
     // pre-populates its control with it (MCP `2025-11-25`), and the reader may answer otherwise.
-    defaultValue: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]).optional()
+    defaultValue: ElicitDefault.optional(),
+    // Present ⇒ the card is a multi-field FORM: one control per field, one submit, and the
+    // answer is a record of value-per-field. The single-field descriptors above are then all
+    // absent — deliberately, and the same closed-failure trade `text` records: an old reader
+    // sees an optionless card it can only Dismiss, rather than a card it could half-fill with
+    // one field's answer that the daemon would then refuse.
+    fields: z.array(ElicitField).min(2).max(ELICIT_FORM_FIELD_CAP).optional()
   }),
   // The same card, settled. Slack rewrites its message in place; this stream is
   // append-only, so the collapse is a second event keyed by the same `requestId`.
