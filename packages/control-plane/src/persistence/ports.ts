@@ -2134,8 +2134,8 @@ export interface CronRepo {
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<CronRecord>
-  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
-  remove(orgId: OrgId, cronId: CronId): Promise<void>
+  /** Org-fenced CAS delete; false means the agent binding changed concurrently. */
+  remove(orgId: OrgId, cronId: CronId, expectedAgentId: AgentId | null): Promise<boolean>
   /** Console list (org-wide, orphans included). Every supplied human principal
    *  is resource-filtered; undefined is reserved for unfiltered internal reads
    *  (authorization/policy.ts#visibilityWhere). */

@@ -400,11 +400,31 @@ export function cronRoutes(deps: HttpDeps) {
         if (!canEdit(existing, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this cron' })
         }
+        const removePersistedCron = async (): Promise<boolean> => {
+          const removed = await deps.repos.cron.remove(orgId, existing.id, existing.agentId)
+          if (!removed) return false
+          deps.recomputeDuties?.(orgId)
+          void deps.repos.audit
+            .append({
+              kind: 'cron_change',
+              orgId,
+              ...(existing.agentId ? { agentId: existing.agentId } : {}),
+              ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+              frameType: 'cron/remove',
+              message: `cron ${existing.id} removed`,
+              details: { cronId: existing.id }
+            })
+            .catch(() => {})
+          return true
+        }
         const existingAgentId = existing.agentId
         if (!existingAgentId) {
-          return reply
-            .code(409)
-            .send({ error: 'Conflict', statusCode: 409, message: 'cron has no agent; refresh and retry' })
+          if (!(await removePersistedCron())) {
+            return reply
+              .code(409)
+              .send({ error: 'Conflict', statusCode: 409, message: 'cron changed; refresh and retry the delete' })
+          }
+          return reply.code(204).send(null)
         }
         let agent = await deps.repos.agent.get(orgOf(req), existingAgentId)
         if (!agent) {
@@ -428,21 +448,12 @@ export function cronRoutes(deps: HttpDeps) {
             })
           }
           agent = current
-          await deps.repos.cron.remove(orgId, existing.id)
-          deps.recomputeDuties?.(orgId)
-          void deps.repos.audit
-            .append({
-              kind: 'cron_change',
-              orgId,
-              ...(existing.agentId ? { agentId: existing.agentId } : {}),
-              ...(req.principal ? { actorUserId: req.principal.userId } : {}),
-              frameType: 'cron/remove',
-              message: `cron ${existing.id} removed`,
-              details: { cronId: existing.id }
-            })
-            .catch(() => {})
-          // The row's own org rides the send: `cron/remove` carries only a cronId,
-          // so a holder that never registered this cron has nothing to resolve.
+          if (!(await removePersistedCron())) {
+            return reply
+              .code(409)
+              .send({ error: 'Conflict', statusCode: 409, message: 'cron changed; refresh and retry the delete' })
+          }
+          // The row's own org scopes cron/remove when a holder never registered this cron.
           await deps.agentDelivery.cronRemove(agent, existing.id, existing.orgId, cronPushFailed('cron/remove'))
           return reply.code(204).send(null)
         } finally {

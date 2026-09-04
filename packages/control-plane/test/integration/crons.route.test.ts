@@ -309,6 +309,22 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
     expect((await app.app.inject({ method: 'DELETE', url: `${ORG}/crons/${cronId}` })).statusCode).toBe(404)
   })
 
+  it('deletes a cron whose agent was deleted without pushing cron/remove', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const cronId = randomUUID()
+    const { app, spy } = withSpy()
+
+    await app.app.inject({ method: 'PUT', url: `${ORG}/crons/${cronId}`, payload: body(agentId) })
+    await prisma.agent.delete({ where: { id: agentId } })
+    expect((await prisma.cronDef.findUnique({ where: { id: cronId } }))?.agentId).toBeNull()
+
+    const del = await app.app.inject({ method: 'DELETE', url: `${ORG}/crons/${cronId}` })
+    expect(del.statusCode).toBe(204)
+    expect(await prisma.cronDef.findUnique({ where: { id: cronId } })).toBeNull()
+    expect(spy.removes).toHaveLength(0)
+  })
+
   it('an UNPLACED agent (no daemonId) pushes nothing — reconcile is the backstop', async () => {
     const agentId = randomUUID()
     await seedAgent(prisma, agentId) // unplaced
