@@ -19,6 +19,7 @@ import { runtimeSandboxReadRoots } from '../launch/compose.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './config-caps.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { catalogFingerprint } from './model-catalog.js'
+import { parseArchiveLaunch } from './archive-store.js'
 import { mcpSocketPath } from '../paths.js'
 import { formatErr } from '../daemon/text.js'
 
@@ -68,6 +69,8 @@ export interface RuntimeFactsHost {
   updateCapabilities(): void
   mcpServerFacts(): FactsMcpServer[]
   noteCatalogProbe(input: { runtimeId: string; rt: RuntimeDef; probedVersion?: string; models: string[] }): void
+  /** Install a runtime's daemon-owned adapter, so the sweep probes what a session would launch. */
+  localizeRuntime(runtimeId: string): Promise<void>
   launch(): RuntimeProbeLaunchContext
 }
 
@@ -397,6 +400,18 @@ export class RuntimeFactsRegistry {
             log,
             hostFactory: probeHostFactory,
             onResult,
+            // A vendor-archive runtime is not launchable until the store extracts it, and this sweep
+            // is exactly what needs its model list — so install it inside its own probe slot rather
+            // than at start-up or ahead of the batch. `parseArchiveLaunch` answers only for an entry
+            // the store has not rewritten yet; a failed install drops the id from the catalog and is
+            // reported where the install happened, so that runtime simply gets no probe.
+            resolveRuntime: async (id, rt) => {
+              const entry = catalog.entries[id]
+              if (!entry || !parseArchiveLaunch(id, entry)) return rt
+              log.info(`probe: installing the vendor archive for "${id}" before probing it`)
+              await this.host.localizeRuntime(id)
+              return this.host.catalog().entries[id]?.runtime
+            },
             launchFor: (id, runtime, scopeDir, cwd) => {
               const runInSandbox = effectiveRunInSandbox(
                 launch.requireSandbox ?? false,

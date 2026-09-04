@@ -99,6 +99,51 @@ describe('daemon-owned vendor archive store', () => {
     await daemon.stop()
   })
 
+  it('installs the archive for the probe sweep, so its model list is read from the extracted binary', async () => {
+    // The sweep is what fills the model catalog the console offers, and it launches every admitted
+    // runtime — including one no agent uses yet. Without the install it would spawn the registry's
+    // relative `./cmd` and report a bogus "executable is not available" against a live runtime.
+    const root = scaffold()
+    const stored = installed(root)
+    let calls = 0
+    const probed: Record<string, string> = {}
+    const daemon = new Daemon({
+      root,
+      resolveCatalog: async () => catalog(),
+      installed: (runtimes) => runtimes,
+      archiveStore: {
+        ensure: async () => {
+          calls += 1
+          return stored
+        }
+      },
+      // Mirrors probeAllRuntimes: each runtime is resolved in its own slot just before spawning.
+      probeRuntimes: async (runtimes, opts) => {
+        const results = []
+        for (const [id, rt] of Object.entries(runtimes)) {
+          const resolved = (await opts.resolveRuntime?.(id, rt)) ?? rt
+          probed[id] = resolved.command
+          results.push({ runtime: id, ok: true, models: ['gemini-3-pro'] })
+        }
+        return results
+      }
+    })
+    await daemon.start()
+    expect(calls).toBe(0) // nothing at start — no agent uses it
+    await (
+      daemon as unknown as { runtimeFacts: { probeAndEmit(o: boolean): Promise<void> } }
+    ).runtimeFacts.probeAndEmit(true)
+
+    expect(calls).toBe(1)
+    expect(probed[ID]).toBe(stored.bin)
+    expect(
+      (
+        daemon as unknown as { runtimeFacts: { offeredModels(id: string): string[] | undefined } }
+      ).runtimeFacts.offeredModels(ID)
+    ).toEqual(['gemini-3-pro'])
+    await daemon.stop()
+  })
+
   it('refuses to launch when the archive install failed, in one path-free line', async () => {
     const root = scaffold(ID)
     const daemon = daemonWith(root, async () => {

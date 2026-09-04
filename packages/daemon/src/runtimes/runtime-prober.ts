@@ -181,6 +181,9 @@ export interface ProbeOptions {
   agentsRoot?: string
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
+  /** Resolve the def to probe, just before spawning — an archive-distributed runtime installs here.
+   *  Undefined means the runtime is no longer launchable and gets no probe at all. */
+  resolveRuntime?: (id: string, rt: RuntimeDef) => Promise<RuntimeDef | undefined>
   /** Prepare the same sandbox/private-HOME or inherited-host launch used by a real agent. */
   launchFor?: (
     id: string,
@@ -631,10 +634,14 @@ export async function probeAllRuntimes(
   const worker = async (): Promise<void> => {
     for (let i = next++; i < ids.length; i = next++) {
       const id = ids[i]!
+      // Resolved inside this worker: a vendor archive installing on demand occupies one probe slot
+      // instead of the whole sweep, and sits outside the per-runtime deadline probeRuntime applies.
+      const rt = opts.resolveRuntime ? await opts.resolveRuntime(id, runtimes[id]!) : runtimes[id]!
+      if (!rt) continue
       const runtimeDir = join(cwd, Buffer.from(id).toString('base64url'))
       const runtimeCwd = join(runtimeDir, 'workspace')
       mkdirSync(runtimeCwd, { recursive: true })
-      const result = await probeRuntime(id, runtimes[id]!, runtimeCwd, opts)
+      const result = await probeRuntime(id, rt, runtimeCwd, opts)
       results.push(result)
       try {
         opts.onResult?.(result)
