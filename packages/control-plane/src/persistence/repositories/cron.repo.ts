@@ -17,17 +17,8 @@ import { AgentId, CronId, IntegrationId, OrgId, type DaemonId } from '../../doma
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { CronMissing } from '../errors.js'
 
-/**
- * Serialize every `upsert` of ONE cron id, whichever organization claims it.
- *
- * The tenancy fence in `upsert` is a read-before-write whose critical case is a
- * row that does not exist yet, so a row-level lock cannot cover it (there is no
- * row to lock) and READ COMMITTED would let a concurrent insert for another org
- * slip between the read and the write. Keying the advisory scope on the id ALONE
- * — not on (org, id) — is the point: the two racing writers must contend, and
- * they only do so if their keys match.
- */
-async function lockCronUpsertScope(tx: Prisma.TransactionClient, cronId: CronId): Promise<void> {
+/** Serialize every mutation of one client-minted cron id, including an absent row. */
+async function lockCronMutationScope(tx: Prisma.TransactionClient, cronId: CronId): Promise<void> {
   const key = JSON.stringify(['cron-upsert', cronId])
   await tx.$queryRaw(Prisma.sql`
     SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0)) IS NULL AS "locked"
@@ -84,19 +75,8 @@ export class PgCronRepo implements CronRepo {
       enabled: input.enabled ?? true
     }
     return withAmbientTx(this.db, async (tx) => {
-      // Tenancy fence (org-scoped-data-layer.md §3). `cronId` is client-minted
-      // and this is a create-or-edit, so an id that already names a row in
-      // another organization must NOT fall through to the update branch — that
-      // branch rewrites `orgId` along with the definition, which would be a
-      // takeover rather than a leak.
-      //
-      // The check is a read-before-write, and the case it must cover is the one
-      // no row lock can: the id does not exist yet. Under READ COMMITTED a
-      // concurrent transaction could insert it for another org between this read
-      // and the upsert below, whose update branch would then take it over. The
-      // advisory scope closes that window — it is keyed on the id alone, so
-      // every upsert of this cron serializes here whatever org it claims.
-      await lockCronUpsertScope(tx, input.cronId)
+      // Serialize on the client-minted id before the org fence so concurrent creation cannot take over the row.
+      await lockCronMutationScope(tx, input.cronId)
       const owner = await tx.cronDef.findUnique({ where: { id: input.cronId }, select: { orgId: true } })
       if (owner && owner.orgId !== input.orgId) throw new CronMissing(input.cronId)
       const memberships = await lockResourceWriteMemberships(tx, {
@@ -167,9 +147,14 @@ export class PgCronRepo implements CronRepo {
     })
   }
 
-  async remove(orgId: OrgId, cronId: CronId): Promise<void> {
-    // Org-fenced delete: a cross-org id throws the same P2025 as an absent row.
-    await this.db.cronDef.delete({ where: { id: cronId, orgId } })
+  async remove(orgId: OrgId, cronId: CronId, expectedAgentId: AgentId | null): Promise<boolean> {
+    return withAmbientTx(this.db, async (tx) => {
+      await lockCronMutationScope(tx, cronId)
+      const current = await tx.cronDef.findUnique({ where: { id: cronId, orgId }, select: { agentId: true } })
+      if (current && current.agentId !== expectedAgentId) return false
+      await tx.cronDef.delete({ where: { id: cronId, orgId } })
+      return true
+    })
   }
 
   async listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<CronRecord[]> {

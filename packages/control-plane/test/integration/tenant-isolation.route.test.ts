@@ -905,7 +905,7 @@ describe('tenant isolation — IntegrationRepo and CronRepo fences under the rou
     await expect(
       repo.setSharing(CALLER_ORG, CronId(foreignCronId), { visibility: 'restricted', sharedWith: [] })
     ).rejects.toThrow()
-    await expect(repo.remove(CALLER_ORG, CronId(foreignCronId))).rejects.toThrow()
+    await expect(repo.remove(CALLER_ORG, CronId(foreignCronId), AgentId(foreignAgentId))).rejects.toThrow()
 
     // Run rows carry their own org, so the history reads empty rather than another
     // organization's schedule.

@@ -73,7 +73,7 @@ describe('CronRepo — cron definitions (real Postgres)', () => {
     const repo = new PgCronRepo(prisma)
     await repo.upsert(upsertInput())
 
-    await repo.remove(OrgId(DEFAULT_ORG_ID), CronId(CRON))
+    expect(await repo.remove(OrgId(DEFAULT_ORG_ID), CronId(CRON), AgentId(AGENT))).toBe(true)
     expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(CRON))).toBeNull()
     expect(await repo.listForOrg(OrgId(DEFAULT_ORG_ID))).toHaveLength(0)
   })
