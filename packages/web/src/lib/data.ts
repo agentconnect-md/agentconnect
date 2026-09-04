@@ -276,7 +276,7 @@ export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime' | 'placeme
 // `plan` is REASONING, for historical reasons — the ACP task list is `planblock`, which is
 // not a work lane at all. Renaming `plan` to `think` would be the honest fix; it is left
 // alone here so this change stays about the task list.
-export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice' | 'planblock'
+export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice' | 'planblock' | 'elicit'
 
 export interface LaneInfo {
   lane: string
@@ -342,6 +342,18 @@ const LANE_MAP: Record<LaneKind, LaneInfo> = {
     dot: 'var(--text-disabled)',
     weight: 400,
     textColor: 'var(--text-secondary)',
+    codeColor: 'var(--text-secondary)'
+  },
+  // The agent's in-band question (ACP elicitation). Like `notice` and `planblock`, NOT a work
+  // lane: it is a thing asked of the reader, so it stands in the conversation rather than
+  // collapsing into "Thought through N steps". The row colors are unused — ElicitationCard
+  // paints its own surface.
+  elicit: {
+    lane: 'ELICIT',
+    laneColor: 'var(--text-tertiary)',
+    dot: 'var(--text-disabled)',
+    weight: 400,
+    textColor: 'var(--text-primary)',
     codeColor: 'var(--text-secondary)'
   },
   // An assistant's completed reply — rendered neutrally, identical to a real transcript
@@ -1112,6 +1124,15 @@ export interface SessionStep {
    *  drops the step outright once a persisted row carries the same `postId`, from
    *  ANY conversation participant's session — not just this step's own author. */
   postId?: string
+  /** The agent's in-band question — present only on an `elicit` step. `outcome` is absent
+   *  while the card is live and set once the daemon settles it (answered, dismissed, or
+   *  cancelled with the turn), which is what collapses the card in place. */
+  elicit?: {
+    requestId: string
+    options: { value: string; label: string }[]
+    outcome?: 'accepted' | 'dismissed' | 'cancelled'
+    answerLabel?: string
+  }
 }
 
 // Per-session token accounting (protocol `SessionUsage`), metered by the daemon.

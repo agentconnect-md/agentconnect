@@ -195,6 +195,8 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       { op: 'set_permission_mode', permissionMode: 'plan' },
       { op: 'set_fast', fastMode: true },
       { op: 'cancel' },
+      { op: 'elicitation_choice', requestId: 'elicit-1', value: 'yes' },
+      { op: 'elicitation_choice', requestId: 'elicit-1', value: null, agentId: AGENT_ID },
       { op: 'close' }
     ]
     for (const payload of ops) {
@@ -216,6 +218,13 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       false
     )
     expect(RelayWebchatOp.safeParse({ op: 'attach', agentId: 'not-a-uuid' }).success).toBe(false)
+    // The elicitation answer is a value or an explicit Dismiss — never an absent field,
+    // which would let a malformed frame read as a decline the user never made.
+    expect(RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'elicit-1' }).success).toBe(false)
+    expect(RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: '', value: 'y' }).success).toBe(false)
+    expect(
+      RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'elicit-1', value: 'y', agentId: 'nope' }).success
+    ).toBe(false)
   })
 
   it('rd/ack carries the attach probe verdict (turnId + resume generation)', () => {

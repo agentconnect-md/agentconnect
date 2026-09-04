@@ -54,6 +54,47 @@ describe('WebchatOutput — event / status framing', () => {
     expect(r.success).toBe(true)
   })
 
+  it('carries an elicitation card and its settled twin, uncapped in options', () => {
+    const card = WebchatOutput.safeParse({
+      conversationId: CONV,
+      turnId: TURN,
+      index: 4,
+      event: {
+        kind: 'elicitation',
+        requestId: 'elicit-1',
+        message: 'Which branch should I cut from?',
+        // Well past Slack's five-button cap — that limit belongs to Slack's card, not here.
+        options: Array.from({ length: 12 }, (_, i) => ({ value: `b${i}`, label: `branch ${i}` }))
+      }
+    })
+    expect(card.success).toBe(true)
+    if (card.success && card.data.event?.kind === 'elicitation') expect(card.data.event.options).toHaveLength(12)
+    for (const outcome of ['accepted', 'dismissed', 'cancelled']) {
+      expect(
+        WebchatOutput.safeParse({
+          conversationId: CONV,
+          turnId: TURN,
+          index: 5,
+          event: {
+            kind: 'elicitation_resolved',
+            requestId: 'elicit-1',
+            outcome,
+            ...(outcome === 'accepted' ? { label: 'branch 3' } : {})
+          }
+        }).success
+      ).toBe(true)
+    }
+  })
+
+  it('rejects an unrenderable elicitation frame rather than streaming a dead card', () => {
+    const bad = (event: unknown) =>
+      WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 6, event }).success
+    expect(bad({ kind: 'elicitation', requestId: '', message: 'm', options: [] })).toBe(false)
+    expect(bad({ kind: 'elicitation', requestId: 'e', message: 'm' })).toBe(false) // options required
+    expect(bad({ kind: 'elicitation', requestId: 'e', message: 'm', options: [{ value: 'v' }] })).toBe(false)
+    expect(bad({ kind: 'elicitation_resolved', requestId: 'e', outcome: 'expired' })).toBe(false)
+  })
+
   it('rejects an empty frame carrying neither event nor status', () => {
     const r = WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 3 })
     expect(r.success).toBe(false)

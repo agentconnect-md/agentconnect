@@ -81,6 +81,24 @@ interface ClosedGate {
   allowed?: boolean
 }
 
+/** Which surface an interactive elicitation card was posted to, and what it takes to settle it
+ *  there: Slack rewrites its message in place; webchat appends a second stream event. */
+type PendingElicitSurface =
+  | { surface: 'slack'; conn: SlackConnection; channel: string; ts?: string }
+  | { surface: 'webchat'; wc: NonNullable<Pending['webchat']> }
+
+/** One outstanding `elicitation/create` awaiting a human answer. */
+type PendingElicit = PendingElicitSurface & {
+  owner: HostKey
+  agentId: string
+  sessionId: string
+  params: CreateElicitationRequest
+  propName: string
+  kind: 'enum' | 'boolean'
+  approval: boolean
+  resolve: (res: CreateElicitationResponse) => void
+}
+
 /** The turn's platform surfaces a permission or elicitation card renders through. */
 export interface PermissionSurfaceHost {
   enqueueApply(p: Pending, action: DaemonRenderAction): void
@@ -175,22 +193,7 @@ export class PermissionCoordinator {
 
   // ── Interactive elicitations (ACP elicitation/create, form mode) ─────────────
   private elicitSeq = 0
-  private pendingElicits = new Map<
-    string,
-    {
-      owner: HostKey
-      agentId: string
-      sessionId: string
-      params: CreateElicitationRequest
-      propName: string
-      kind: 'enum' | 'boolean'
-      approval: boolean
-      conn: SlackConnection
-      channel: string
-      ts?: string
-      resolve: (res: CreateElicitationResponse) => void
-    }
-  >()
+  private pendingElicits = new Map<string, PendingElicit>()
 
   /** Sessions the CP currently believes are waiting, keyed by `pendingTurnKey` — emit only on a change. */
   private readonly awaitingApproval = new Map<string, { owner: HostKey; agentId: string; sessionId: string }>()
@@ -796,7 +799,9 @@ export class PermissionCoordinator {
           id: req.requestId,
           allowed: decidedAllow
         })
-        if (elicitation.ts) {
+        // Only a Slack card is rewritten here: an editor decision settles approvals, and
+        // an approval elicitation never lands on the webchat surface.
+        if (elicitation.surface === 'slack' && elicitation.ts) {
           const decision =
             req.decision === 'allow'
               ? ':white_check_mark: Allowed by Agent editor'
@@ -992,7 +997,7 @@ export class PermissionCoordinator {
         .catch(() => {})
     }
     for (const pending of this.pendingElicits.values()) {
-      if (pending.agentId !== agentId || !pending.approval || !pending.ts) continue
+      if (pending.agentId !== agentId || !pending.approval || pending.surface !== 'slack' || !pending.ts) continue
       void pending.conn
         .updateBlocks(
           pending.channel,
@@ -1223,6 +1228,14 @@ export class PermissionCoordinator {
     }
     // A `none` Slack turn has no generic human-input card to answer this request.
     if (p.plan.approvalSurfaceSuppressed) return { action: 'cancel' }
+    // Webchat is a core-owned surface, not a chat-platform module, so it is answered here
+    // rather than through turn-chrome's per-platform table. An MCP approval never reaches
+    // this line — it took the editor queue above, since chat approval needs Slack — and the
+    // `!isApproval` guard keeps that true if the branches above ever move. A continuation
+    // mirrors an origin platform, so it keeps falling through to the Slack path.
+    if (p.webchat && !p.webchat.continuation && !isApproval) {
+      return await this.awaitWebchatElicitation(agentId, sessionId, params, p, p.webchat)
+    }
     const conn = p.conn
     if (!turnChromeFor(p.plan.platform).chatInputCards || !(conn instanceof SlackConnection)) return undefined
     const target = elicitTarget(params)
@@ -1241,6 +1254,7 @@ export class PermissionCoordinator {
       propName: target.propName,
       kind: target.kind,
       approval: isApproval,
+      surface: 'slack',
       conn,
       channel: p.plan.channel,
       resolve: resolveResult
@@ -1294,23 +1308,108 @@ export class PermissionCoordinator {
       live.resolve({ action: 'cancel' })
       return await result
     }
-    live.ts = ts
+    if (live.surface === 'slack') live.ts = ts
     return isApproval ? await this.trackHumanApprovalWait(p, result) : await result
+  }
+
+  /** Webchat's peer of the Slack elicitation card: stream the card as an in-band event and
+   *  park the same resolver. Returns `undefined` (⇒ decline) when the form has no field this
+   *  surface can render — the identical verdict Slack reaches, via the same `elicitTarget`. */
+  private async awaitWebchatElicitation(
+    agentId: string,
+    sessionId: string,
+    params: CreateElicitationRequest,
+    p: Pending,
+    wc: NonNullable<Pending['webchat']>
+  ): Promise<CreateElicitationResponse | undefined> {
+    const target = elicitTarget(params)
+    if (!target) return undefined
+    const requestId = `elicit-${++this.elicitSeq}`
+    const message = (params as { message?: string }).message?.trim() || 'The agent needs your input'
+    let resolveResult!: (res: CreateElicitationResponse) => void
+    const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
+    this.pendingElicits.set(requestId, {
+      owner: p.hostKey,
+      agentId,
+      sessionId,
+      params,
+      propName: target.propName,
+      kind: target.kind,
+      approval: false,
+      surface: 'webchat',
+      wc,
+      resolve: resolveResult
+    })
+    this.syncApprovalActivity(p.hostKey, sessionId)
+    try {
+      wc.sink.output({
+        conversationId: wc.conversationId,
+        turnId: wc.turnId,
+        index: wc.index++,
+        event: { kind: 'elicitation', requestId, message, options: target.options }
+      })
+    } catch (err) {
+      // An undelivered card can never be answered — drop the resolver and decline now
+      // rather than stall the runtime until the turn ends.
+      this.pendingElicits.delete(requestId)
+      this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
+      this.host.log().warn(`webchat elicitation card not delivered for "${p.plan.sessionKey}": ${formatErr(err)}`)
+      return undefined
+    }
+    return await result
+  }
+
+  /** Append the settled card to a webchat stream — the append-only equivalent of Slack
+   *  rewriting its message. Best effort: the ACP resolution never depends on it. */
+  private emitWebchatElicitResolved(
+    rec: Extract<PendingElicit, { surface: 'webchat' }>,
+    requestId: string,
+    outcome: 'accepted' | 'dismissed' | 'cancelled',
+    label?: string
+  ): void {
+    try {
+      rec.wc.sink.output({
+        conversationId: rec.wc.conversationId,
+        turnId: rec.wc.turnId,
+        index: rec.wc.index++,
+        event: { kind: 'elicitation_resolved', requestId, outcome, ...(label !== undefined ? { label } : {}) }
+      })
+    } catch (err) {
+      this.host.log().warn(`webchat elicitation card not settled for ${requestId}: ${formatErr(err)}`)
+    }
   }
 
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
    *  request — `accept` with the chosen value (under the field name), or `decline` for the
    *  Dismiss button (value === null) — and edit the card in place. No-op if already gone. */
-  async handleElicitChoice(a: { requestId: string; value: string | null; actor?: InteractionActor }): Promise<void> {
+  async handleElicitChoice(a: {
+    requestId: string
+    value: string | null
+    actor?: InteractionActor
+    /** Set only by the webchat ingress: the answering browser's conversation. It confines
+     *  the answer to a card THIS conversation was shown — a webchat client can neither
+     *  answer a Slack card nor another conversation's, both of which the guessable
+     *  `elicit-<n>` id would otherwise allow. */
+    webchatConversationId?: string
+  }): Promise<void> {
     // A DM elicitation card's request lives on the editor path (§2/§6.4).
     const editor = this.pendingEditorPermissions.get(a.requestId)
     if (editor?.kind === 'elicitation' && editor.notify) {
+      if (a.webchatConversationId !== undefined) return
       return await this.handleDmElicitChoice(a.requestId, editor, a.value, a.actor)
     }
     const rec = this.pendingElicits.get(a.requestId)
     if (!rec) return
+    if (a.webchatConversationId !== undefined) {
+      if (rec.surface !== 'webchat' || rec.wc.conversationId !== a.webchatConversationId) return
+      // The card names every answer it accepts; anything else would inject an unoffered
+      // value into the agent's content, so it is dropped and the card stays live.
+      if (a.value !== null && !elicitTarget(rec.params)?.options.some((o) => o.value === a.value)) return
+      // A card settles only from its own surface: both share one `elicit-<n>` counter, so
+      // without this a Slack tap could answer a live webchat card.
+    } else if (rec.surface === 'webchat') return
     if (rec.approval && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
-      if (rec.ts) {
+      if (rec.surface === 'slack' && rec.ts) {
         void rec.conn
           .updateBlocks(
             rec.channel,
@@ -1334,7 +1433,8 @@ export class PermissionCoordinator {
       decision = `:white_check_mark: ${rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : a.value}`
     }
     if (rec.approval) {
-      const team = rec.conn.workspaceId()
+      // Approval elicitations only ever take the Slack card path (chat approval requires it).
+      const team = rec.surface === 'slack' ? rec.conn.workspaceId() : undefined
       const by = a.actor
         ? { resolvedBy: team ? `slack:${team}:${a.actor.userId}` : null, resolvedByName: a.actor.name ?? null }
         : undefined
@@ -1350,7 +1450,13 @@ export class PermissionCoordinator {
     }
     this.pendingElicits.delete(a.requestId)
     this.syncApprovalActivity(rec.owner, rec.sessionId, { id: a.requestId, allowed: a.value !== null })
-    if (rec.ts)
+    if (rec.surface === 'webchat') {
+      const label =
+        a.value === null
+          ? undefined
+          : (elicitTarget(rec.params)?.options.find((o) => o.value === a.value)?.label ?? a.value)
+      this.emitWebchatElicitResolved(rec, a.requestId, a.value === null ? 'dismissed' : 'accepted', label)
+    } else if (rec.ts)
       void rec.conn
         .updateBlocks(rec.channel, rec.ts, buildElicitationResolvedCard(rec.params, decision), 'Input received', true)
         .catch(() => {})
@@ -1366,7 +1472,8 @@ export class PermissionCoordinator {
       this.pendingElicits.delete(id)
       this.syncApprovalActivity(owner, sessionId, { id })
       if (rec.approval) await this.resolveStoredPermissionRequest(agentId, id, 'expired')
-      if (rec.ts)
+      if (rec.surface === 'webchat') this.emitWebchatElicitResolved(rec, id, 'cancelled')
+      else if (rec.ts)
         void rec.conn
           .updateBlocks(
             rec.channel,

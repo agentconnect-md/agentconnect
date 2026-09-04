@@ -167,6 +167,21 @@ describe('parseBrowserFrame', () => {
     })
     expect(parseBrowserFrame({ type: 'attach', agentId: 'not-a-uuid' }, USER)).toBeNull()
   })
+  it('maps the elicitation answer, Dismiss included, and rejects a malformed one', () => {
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: 'yes' }, USER)).toEqual({
+      op: { op: 'elicitation_choice', requestId: 'elicit-1', value: 'yes' }
+    })
+    // null is Dismiss and must survive parsing as null — not be dropped into an absent field.
+    expect(
+      parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: null, agentId: AGENT }, USER)
+    ).toEqual({ op: { op: 'elicitation_choice', requestId: 'elicit-1', value: null, agentId: AGENT } })
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1' }, USER)).toBeNull()
+    expect(parseBrowserFrame({ type: 'elicitation_choice', value: 'yes' }, USER)).toBeNull()
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: '', value: 'yes' }, USER)).toBeNull()
+    expect(
+      parseBrowserFrame({ type: 'elicitation_choice', requestId: 'e', value: 'yes', agentId: 'not-a-uuid' }, USER)
+    ).toBeNull()
+  })
   it('preserves structured mentions on the turn op and surfaces targets separately', () => {
     const PEER = '22222222-2222-4222-8222-222222222222'
     expect(parseBrowserFrame({ text: 'hi', mentions: [AGENT, PEER], targets: [AGENT, PEER] }, USER)).toEqual({
@@ -267,6 +282,30 @@ describe('RelayBrowserConnection', () => {
       Array.from({ length: operations.length + 1 }, () => ENTITLEMENT)
     )
     expect(sent.at(-1)?.payload).toEqual({ op: 'close' })
+  })
+
+  it('routes an elicitation answer to the participant whose card it is', async () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    const { transport, sent } = build({
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true },
+        { agentId: PEER, daemonId: DAEMON }
+      ]
+    })
+    transport.feed({ type: 'elicitation_choice', requestId: 'elicit-3', value: 'yes', agentId: PEER })
+    transport.feed({ type: 'elicitation_choice', requestId: 'elicit-4', value: null })
+    await tick()
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toMatchObject({
+      agentId: PEER,
+      chatId: CHAT,
+      payload: { op: 'elicitation_choice', requestId: 'elicit-3', value: 'yes' }
+    })
+    // No agentId named ⇒ the conversation's primary, exactly like `cancel`.
+    expect(sent[1]).toMatchObject({
+      agentId: AGENT,
+      payload: { op: 'elicitation_choice', requestId: 'elicit-4', value: null }
+    })
   })
 
   it('keeps ordinary browser connections entitlement-free', async () => {

@@ -404,3 +404,200 @@ describe('the approval list names its session the way the console asked for it',
     await store.close()
   })
 })
+
+// ── webchat's in-band elicitation card (issue #1794 gap 5) ────────────────────
+// Webchat is a core-owned surface, so its card is a stream event and its answer a
+// webchat inbound op — the same `elicitTarget` reduction Slack renders, never a
+// second opinion about what is answerable.
+
+/** A plain (non-approval) form elicitation — no `codex_approval_kind`, so it cards. */
+function formElicitation(overrides: Record<string, unknown> = {}): CreateElicitationRequest {
+  return {
+    sessionId: 's1',
+    mode: 'form',
+    message: 'Which branch should I cut from?',
+    requestedSchema: {
+      type: 'object',
+      properties: { branch: { type: 'string', enum: ['main', 'develop', 'release'] } },
+      required: ['branch']
+    },
+    ...overrides
+  } as CreateElicitationRequest
+}
+
+/** Attach a webchat turn context to the installed pending turn and hand back its sink spy. */
+function installWebchat(pending: any, conversationId = 'conv-1'): { output: ReturnType<typeof vi.fn> } {
+  const sink = { output: vi.fn(), done: vi.fn() }
+  pending.plan.platform = 'webchat'
+  pending.webchat = {
+    conversationId,
+    turnId: 'turn-1',
+    sink,
+    index: 0,
+    replyText: '',
+    heldText: '',
+    messageEmitted: false
+  }
+  return sink
+}
+
+const cardEvents = (sink: { output: ReturnType<typeof vi.fn> }): any[] =>
+  sink.output.mock.calls.map(([o]: any[]) => o.event)
+
+describe('webchat renders and answers ACP elicitation cards', () => {
+  it('streams the card, then accepts the tapped option and settles it in place', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    expect(sink.output).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', turnId: 'turn-1', index: 0 })
+    )
+    expect(cardEvents(sink)[0]).toEqual({
+      kind: 'elicitation',
+      requestId: expect.any(String),
+      message: 'Which branch should I cut from?',
+      // Uncapped and unabridged — every option the form offers reaches this surface.
+      options: [
+        { value: 'main', label: 'main' },
+        { value: 'develop', label: 'develop' },
+        { value: 'release', label: 'release' }
+      ]
+    })
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'develop',
+      webchatConversationId: 'conv-1'
+    })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
+    expect(cardEvents(sink)[1]).toEqual({
+      kind: 'elicitation_resolved',
+      requestId,
+      outcome: 'accepted',
+      label: 'develop'
+    })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+  })
+
+  it('declines on Dismiss and cancels on turn release, settling the card either way', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const dismissed = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [firstId] = (daemon as any).permissions.pendingElicits.keys()
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId: firstId,
+      value: null,
+      webchatConversationId: 'conv-1'
+    })
+    await expect(dismissed).resolves.toEqual({ action: 'decline' })
+    expect(cardEvents(sink)[1]).toEqual({ kind: 'elicitation_resolved', requestId: firstId, outcome: 'dismissed' })
+
+    const abandoned = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [secondId] = (daemon as any).permissions.pendingElicits.keys()
+    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await expect(abandoned).resolves.toEqual({ action: 'cancel' })
+    expect(cardEvents(sink).at(-1)).toEqual({
+      kind: 'elicitation_resolved',
+      requestId: secondId,
+      outcome: 'cancelled'
+    })
+  })
+
+  it('answers only cards this conversation was shown, with values the card offered', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    // A value the card never offered would inject an unoffered answer into the agent's content.
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'rm -rf /',
+      webchatConversationId: 'conv-1'
+    })
+    // Another conversation must not reach this card, even knowing its `elicit-<n>` id.
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'main',
+      webchatConversationId: 'conv-other'
+    })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
+
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main', webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
+  })
+
+  it('refuses a Slack-surface answer for a webchat card, though both share one id counter', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    // No webchatConversationId ⇒ the answer came off a Slack card, which cannot settle this one.
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main' })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(cardEvents(sink)).toHaveLength(1)
+
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main', webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
+  })
+
+  it('declines a form no surface can render, exactly as Slack does', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    // A required field the card cannot answer (#1795) stays unanswerable on webchat too.
+    await expect(
+      (daemon as any).permissions.onAcpElicit(
+        'agent-1',
+        's1',
+        formElicitation({
+          requestedSchema: {
+            type: 'object',
+            properties: { branch: { type: 'string', enum: ['main'] }, note: { type: 'string' } },
+            required: ['branch', 'note']
+          }
+        })
+      )
+    ).resolves.toBeUndefined()
+    expect(sink.output).not.toHaveBeenCalled()
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+  })
+
+  it('keeps MCP approvals on the editor queue and continuations on the platform path', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    // An approval never becomes a webchat card — it is a durable editor decision, and the
+    // only thing that reaches the stream is today's neutral "ask an editor" notice.
+    void (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('tc-approval'))
+    await vi.waitFor(() => expect(sink.output).toHaveBeenCalled())
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1)
+    expect(cardEvents(sink).map((e) => e.kind)).toEqual(['message'])
+    await (daemon as any).permissions.releaseEditorPermissions('agent-1', 's1')
+    sink.output.mockClear()
+
+    // A continuation mirrors an origin platform, so it keeps falling through to the Slack
+    // path — which, with no Slack connection on this turn, declines as it does today.
+    pending.webchat.continuation = true
+    await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())).resolves.toBeUndefined()
+    expect(sink.output).not.toHaveBeenCalled()
+  })
+})
