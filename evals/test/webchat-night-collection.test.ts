@@ -33,6 +33,15 @@ import { callDaemonTool } from '../games/mcp-client.js'
 
 const ALIASES = NIGHT_ALIASES
 
+async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`condition not reached within ${timeoutMs}ms`)
+}
+
 interface NightRun {
   arena: WebchatArena
   seats: WebchatSeat[]
@@ -49,14 +58,27 @@ interface NightRun {
  * force a child reply to land while the referee's turn is still in flight
  * (the coalesce cell).
  */
-async function startNightRun(options: { refereeGate?: (promptText: string) => Promise<void> } = {}): Promise<NightRun> {
+async function startNightRun(
+  options: {
+    refereeGate?: (promptText: string) => Promise<void>
+    /** #800 deadline the referee attaches to every night call. */
+    deadlineMs?: number
+    /** Aliases whose delegation turn NEVER ends — the shape no turn-final inference reaches. */
+    silent?: string[]
+  } = {}
+): Promise<NightRun> {
   const seats = mintSeats([...ALIASES])
   const seat = (alias: (typeof ALIASES)[number]) => seats.find((candidate) => candidate.alias === alias)!
   const referee = new NightCollectionReferee({
     wolfA: seat('wolf-a'),
     wolfB: seat('wolf-b'),
     seer: seat('seer'),
-    doctor: seat('doctor')
+    doctor: seat('doctor'),
+    ...(options.deadlineMs !== undefined ? { deadlineMs: options.deadlineMs } : {})
+  })
+  let releaseSilent: () => void = () => undefined
+  const silentGate = new Promise<void>((resolve) => {
+    releaseSilent = resolve
   })
   const log: PromptLogEntry[] = []
   const handlers = new Map<string, ScriptedSessionHandler>()
@@ -90,6 +112,13 @@ async function startNightRun(options: { refereeGate?: (promptText: string) => Pr
     return undefined
   })
   handlers.set(seat('villager').agentId, ({ text }) => (text.includes('NIGHT 1 begins') ? 'Waiting.' : undefined))
+  for (const alias of options.silent ?? []) {
+    handlers.set(seat(alias as (typeof ALIASES)[number]).agentId, async ({ text }) => {
+      if (text.includes('NIGHT 1 begins')) return 'Waiting.'
+      await silentGate
+      return undefined
+    })
+  }
 
   const { root } = prepareScriptedWebchatRoot(seats)
   const arena = new WebchatArena({
@@ -119,7 +148,10 @@ async function startNightRun(options: { refereeGate?: (promptText: string) => Pr
           { alias: 'wolf-b', marker: 'verdict' }
         ]
       }),
-    stop: () => arena.stop()
+    stop: async () => {
+      releaseSilent()
+      await arena.stop()
+    }
   }
 }
 
@@ -220,6 +252,38 @@ describe('webchat night collection (scripted)', () => {
       expect(doctor.mode).not.toBe('lost')
       expect(doctor.ownTurnStarts).toBeLessThanOrEqual(1)
       expect(doctor.deliveredPromptSightings + doctor.contextRowSightings).toBeGreaterThanOrEqual(1)
+    } finally {
+      await run.stop()
+    }
+  }, 120_000)
+
+  it('#800 deadline: a child that never reports wakes the referee anyway, and it re-prompts unaided', async () => {
+    // The seer's delegation turn never ends, so nothing turn-final can infer a reply for it.
+    // Before the deadline this referee had no event to act on at all — the live game needed a
+    // human to say "the vote has gone quiet".
+    const run = await startNightRun({ deadlineMs: 2_000, silent: ['seer'] })
+    try {
+      await run.arena.postHost(NIGHT_START_TEXT)
+      // The silent child's turn never ends, so the arena never goes idle — poll for the
+      // recovery instead of waiting for a quiet that cannot come.
+      await waitUntil(() => run.referee.rePrompted.has('seer'), 60_000)
+
+      const refereeInput = run.refereePrompts().join('\n')
+      expect(refereeInput).toContain('[needsReply deadline]')
+      expect(refereeInput).toContain('No report arrived')
+      // The notice is not an answer: the seer's marker never appears through it.
+      expect(refereeInput).toContain('this notice is NOT its answer')
+      expect(run.referee.deadlineNotices).toBeGreaterThanOrEqual(1)
+
+      // …and the referee acted on it by itself — the lever a quiet child previously blocked.
+      expect(run.referee.rePrompted.has('seer')).toBe(true)
+      expect(run.referee.issued.filter((call) => call.purpose === 'seer')).toHaveLength(2)
+
+      // The children that DID report are unaffected.
+      const score = run.score()
+      for (const child of ['wolf-a', 'doctor']) {
+        expect(score.replies.find((reply) => reply.child === child)!.mode).not.toBe('lost')
+      }
     } finally {
       await run.stop()
     }

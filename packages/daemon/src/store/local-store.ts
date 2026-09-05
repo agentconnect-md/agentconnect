@@ -280,6 +280,29 @@ export interface SessionRecord {
   platformStanding?: string | null
 }
 
+/**
+ * One armed `needsReply` deadline (#800). Keyed by the CHILD session key and kept in its own
+ * table rather than on `sessions`, because the wake is armed at CALL time — when a cold child
+ * has no session row yet, and may never get one. That case (a child that never starts) is
+ * exactly what the deadline exists to surface.
+ */
+export interface ParentReplyDeadlineRecord {
+  childSessionKey: string
+  parentSessionId: string
+  /** The AWAITING agent. The wake dispatches into ITS session, so its duty holder owns the timer. */
+  parentAgentId: string
+  childAgentId: string
+  /** Child coordinates, captured at arm time: the wake must work even when the child never
+   *  started, so they cannot be read back off a `sessions` row that may not exist. */
+  platform: string
+  channel: string
+  thread: string
+  transportScope?: string | null
+  deliveryId?: string | null
+  deadline: number
+  createdAt: number
+}
+
 export type PermissionRequestStatus = 'pending' | 'allowed' | 'denied' | 'expired'
 
 /** Secret-masked editor approval metadata. The live ACP resolver stays in memory;
@@ -1193,6 +1216,21 @@ export class LocalStore {
       -- daemon restart and is applied when the session row is eventually created.
       CREATE TABLE IF NOT EXISTS session_mutes (
         key TEXT PRIMARY KEY
+      );
+      -- #800 needsReply deadlines. Stands alone for the same reason as session_mutes: it is
+      -- armed at CALL time, when the child's sessions row may not exist and may never exist.
+      CREATE TABLE IF NOT EXISTS parent_reply_deadline (
+        childSessionKey TEXT PRIMARY KEY,
+        parentSessionId TEXT NOT NULL,
+        parentAgentId TEXT NOT NULL,
+        childAgentId TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        thread TEXT NOT NULL,
+        transportScope TEXT,
+        deliveryId TEXT,
+        deadline INTEGER NOT NULL,
+        createdAt INTEGER NOT NULL
       );
       -- Per-session memory-capture gate (session-visibility.md §5.1). Keyed by
       -- (agentId, acpSessionId), NOT the logical session key: the CP addresses
@@ -6353,6 +6391,59 @@ export class LocalStore {
     await this.db
       .prepare('UPDATE orchestration SET deadline=?, updatedAt=? WHERE orchestrationId=?')
       .run(deadline, updatedAt, orchestrationId)
+  }
+
+  /** Arm (or re-arm) one child's parent-reply deadline. */
+  async upsertParentReplyDeadline(record: ParentReplyDeadlineRecord): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO parent_reply_deadline
+           (childSessionKey, parentSessionId, parentAgentId, childAgentId, platform, channel, thread, transportScope,
+            deliveryId, deadline, createdAt)
+         VALUES (@childSessionKey, @parentSessionId, @parentAgentId, @childAgentId, @platform, @channel, @thread, @transportScope,
+                 @deliveryId, @deadline, @createdAt)
+         ON CONFLICT(childSessionKey) DO UPDATE SET
+           parentSessionId=excluded.parentSessionId, parentAgentId=excluded.parentAgentId,
+           childAgentId=excluded.childAgentId,
+           platform=excluded.platform, channel=excluded.channel, thread=excluded.thread,
+           transportScope=excluded.transportScope,
+           deliveryId=excluded.deliveryId, deadline=excluded.deadline, createdAt=excluded.createdAt`
+      )
+      .run({
+        ...record,
+        transportScope: record.transportScope ?? null,
+        deliveryId: record.deliveryId ?? null
+      } as unknown as SqlParams)
+  }
+
+  /** Disarm — the report arrived, or the obligation is gone. Idempotent. */
+  async deleteParentReplyDeadline(childSessionKey: string): Promise<void> {
+    await this.db.prepare('DELETE FROM parent_reply_deadline WHERE childSessionKey = ?').run(childSessionKey)
+  }
+
+  async getParentReplyDeadline(childSessionKey: string): Promise<ParentReplyDeadlineRecord | undefined> {
+    return (await this.db
+      .prepare('SELECT * FROM parent_reply_deadline WHERE childSessionKey = ?')
+      .get(childSessionKey)) as ParentReplyDeadlineRecord | undefined
+  }
+
+  /** Every armed deadline — the startup / duty-change re-arm set. */
+  async listParentReplyDeadlines(): Promise<ParentReplyDeadlineRecord[]> {
+    return (await this.db
+      .prepare('SELECT * FROM parent_reply_deadline ORDER BY deadline ASC')
+      .all()) as unknown as ParentReplyDeadlineRecord[]
+  }
+
+  /** CAS fire claim, mirroring {@link claimOrchestrationDeadline}: delete the row iff it is still
+   *  the armed one, so an arriving report and the timer can never both wake the parent. */
+  async claimParentReplyDeadline(childSessionKey: string, deadline: number): Promise<boolean> {
+    return (
+      (
+        await this.db
+          .prepare('DELETE FROM parent_reply_deadline WHERE childSessionKey = ? AND deadline = ?')
+          .run(childSessionKey, deadline)
+      ).changes === 1
+    )
   }
 
   /** CAS fire claim: clear the deadline iff it is still the armed one — every member sharing the

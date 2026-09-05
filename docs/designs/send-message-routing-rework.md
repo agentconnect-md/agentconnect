@@ -73,6 +73,7 @@ type AgentTarget = {
     | {
         agentId: string
         needsReply?: boolean
+        deadlineMs?: number
       }
   channel?: string
   message: string
@@ -196,6 +197,58 @@ Its child session is headless. The daemon derives its delivery coordinates from
 the trusted caller session instead of treating a platform channel supplied by the
 model as authorization. The child retains origin lineage, hop count, optional
 correlation, `needsReply`, and `viewSessionStatus` support.
+
+### 3.1a `needsReply` deadlines — making silence an event
+
+`needsReply` has no timeout, so a child that simply never answers produces no
+event anywhere. The parent ended its turn expecting a report; nothing wakes it
+again, and `viewSessionStatus` is poll-only, which requires already being awake.
+Measured in the webchat Werewolf arena: after the referee announced a vote and
+ended its turn, votes only ever arrived after a **human** posted "the vote has
+gone quiet" — 2–4 times in every completed game. A referee could not run its own
+non-voter re-prompt lever, because nothing told it that anything was missing.
+
+The #800 inferred reply covers the adjacent case — a child whose turn _ends_
+without a report has its final output delivered to the parent. It cannot cover a
+child that never starts, never finishes, or whose wake is gated: there is no turn
+end to hang an inference on.
+
+`toAgent.deadlineMs` (only with `needsReply: true`, 1s–24h) arms a one-shot,
+child-anchored deadline. On expiry the daemon wakes the parent session with a
+notice naming the target, the delivery ID, and the child's last known state. The
+notice explicitly states it is not the child's answer — the daemon never
+fabricates a reply. The parent decides: re-prompt, escalate, or proceed.
+
+The mechanism reuses the retained orchestration-deadline machinery (§3.4/§6.8) —
+a durable epoch, a live one-shot timer, a CAS claim, duty gating, and re-arm from
+the store on startup and on every duty change — but keeps its own record, keyed
+by child session:
+
+- the durable row is written at **call** time, so it exists even when the child
+  has no session row and never gets one (the case the deadline exists for). It
+  also carries the child's coordinates for the same reason;
+- a report arriving first disarms it (`markChildParentReply`), so a normal
+  delegation never pays for it;
+- exactly-once between an arriving report and the firing timer is the CAS delete:
+  whichever runs first is the only one that acts, and on a shared store only one
+  pool member wins;
+- the wake carries the parent as a trusted internal origin, because the ordinary
+  authorization reads the child's session row, which may not exist.
+
+**Only where this member can actually fire it.** Every disarm path runs on the daemon that OWNS the
+child, so a deadline armed on the caller for a cross-daemon target would never be
+cancelled by an accepted remote report and would later fire a false "no report
+arrived". Arming it on the child's daemon instead requires carrying the deadline and
+durable parent routing through the relay — a wire change. Until then a `deadlineMs` on
+a remote target is refused loudly, not silently ignored: the daemon logs it and the
+tool result carries `deadlineIgnored`, so the caller falls back to
+`viewSessionStatus` rather than waiting for a wake that will never come.
+
+The deadline is **parent-owned**: the wake dispatches into the CALLER's session, so the
+caller's duty holder is the member that must arm and fire it, and the durable row carries
+`parentAgentId` for exactly that gate. Where the CHILD runs is irrelevant to ownership. If
+this member does not hold the caller's duty, the same loud refusal applies
+(`caller_duty_elsewhere`) rather than arming a timer nothing will fire.
 
 ### 3.2 Channel-root form
 

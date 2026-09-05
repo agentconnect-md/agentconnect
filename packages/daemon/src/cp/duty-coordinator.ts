@@ -93,6 +93,7 @@ export interface DutyConvergeHost {
   reclaimInterruptedWork(agentIds: readonly string[]): Promise<void>
   syncAgentSchedules(agent: LoadedAgent): Promise<void>
   syncOrchestrationDeadlines(): Promise<void>
+  syncParentReplyDeadlines(): Promise<void>
   catchUpMissedSchedules(agentIds: string[]): Promise<void>
   drainSessionPurges(): Promise<void>
   replayGainedSessionMetadata(agentIds: readonly string[]): Promise<void>
@@ -670,6 +671,7 @@ export class DutyCoordinator {
     this.convergeDutyConnections()
     for (const agent of this.host.agents().values()) await this.host.syncAgentSchedules(agent)
     await this.host.syncOrchestrationDeadlines()
+    await this.host.syncParentReplyDeadlines()
   }
 
   /** Reconcile until the duty-driven convergence has actually run. A pass that throws (a workspace

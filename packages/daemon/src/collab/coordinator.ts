@@ -24,6 +24,7 @@ import {
   sessionKey,
   type LocalStore,
   type OrchestrationRow,
+  type ParentReplyDeadlineRecord,
   type SessionRecord,
   type SubtaskRow
 } from '../store/local-store.js'
@@ -163,6 +164,11 @@ export class CollabCoordinator {
   // SoT is the `orchestration.deadline` epoch; this map is just the live in-process timer,
   // re-armed from the store on startup. cancelOrchestration clears the timer idempotently.
   readonly orchestrationDeadlines = new Map<string, TimerHandle>()
+
+  // #800 needsReply deadline timers, keyed by CHILD session key. Same shape as the orchestration
+  // deadlines above: durable SoT in `parent_reply_deadline`, this map is only the live one-shot,
+  // re-armed from the store on startup and on every duty change.
+  readonly parentReplyDeadlines = new Map<string, TimerHandle>()
 
   /** An agent's channel-directory display name, used to name the caller in the
    *  text delivered to a messaged agent. Resolution order:
@@ -508,6 +514,20 @@ export class CollabCoordinator {
           remote: true
         })
       }
+      // A cross-daemon child is NOT covered: every cancel path (`markChildParentReply`) runs on
+      // the daemon that OWNS the child, so a row armed here would never be disarmed by an
+      // accepted remote report and would later fire a false "no report arrived". Arming it on
+      // the child's daemon instead needs the deadline and durable parent routing carried through
+      // the relay — a wire change. Refused LOUDLY rather than silently ignored.
+      if (req.needsReply === true && req.replyDeadlineMs !== undefined) {
+        this.host
+          .log()
+          .warn(
+            `messageAgent: deadlineMs ignored for ${req.toAgentId} — the target is served by another daemon ` +
+              `and cross-daemon reply deadlines are not supported yet`
+          )
+        return record({ ...remote, deadlineIgnored: 'target_on_another_daemon' })
+      }
       return record(remote)
     }
 
@@ -577,6 +597,9 @@ export class CollabCoordinator {
     // the peer's reply. dispatch() drops the turn (returns null) if the target is paused/
     // draining; that still counts as admitted for P1 (a reason-typed NAK on those gates is
     // P2's admission protocol, §6.4).
+    // Set when a requested deadline could not be armed, so the caller is told rather than left
+    // waiting on a wake that will never come.
+    let deadlineIgnored: string | undefined
     // Record the lineage BEFORE the fire-and-forget dispatch, so a parent that polls
     // `viewSessionStatus` the instant sendMessage returns is already authorized.
     if (originSessionId !== undefined) {
@@ -590,6 +613,34 @@ export class CollabCoordinator {
         replyRequested: req.needsReply === true,
         replyState: 'awaiting'
       })
+      if (req.needsReply === true && req.replyDeadlineMs !== undefined) {
+        // The deadline is PARENT-owned: the wake dispatches into the caller's session, so the
+        // caller's duty holder is the member that must fire it. If this member does not serve
+        // the caller, arming here would be a silent no-op — refuse loudly instead, exactly as
+        // the cross-daemon case does.
+        if (!this.host.servesAgent(req.callerAgentId)) {
+          this.host
+            .log()
+            .warn(
+              `messageAgent: deadlineMs ignored — the caller ${req.callerAgentId}'s duty is held elsewhere, ` +
+                `so this member cannot fire the wake`
+            )
+          deadlineIgnored = 'caller_duty_elsewhere'
+        } else {
+          await this.armParentReplyDeadline({
+            childSessionKey: targetSession,
+            parentSessionId: originSessionId,
+            parentAgentId: req.callerAgentId,
+            childAgentId: req.toAgentId,
+            platform,
+            channel: coordChannel,
+            thread: event.thread ?? '',
+            ...(targetTransportScope !== undefined ? { transportScope: targetTransportScope } : {}),
+            deliveryId,
+            deadlineMs: req.replyDeadlineMs
+          })
+        }
+      }
     }
     // send-message-routing-rework.md §3.2/§8.6 — the "internal wake first" arrival order
     // of a PAIRED `toAgent + channel` call. The wake is the SEMANTIC AUTHORITY (it alone
@@ -616,7 +667,11 @@ export class CollabCoordinator {
           .info(
             `messageAgent: paired delivery ${req.agentCallDeliveryId ?? deliveryId} already claimed — reusing the existing child`
           )
-        return record({ delivered: true, targetSession: claimed.record.childSessionId ?? targetSession })
+        return record({
+          delivered: true,
+          targetSession: claimed.record.childSessionId ?? targetSession,
+          ...(deadlineIgnored !== undefined ? { deadlineIgnored } : {})
+        })
       }
       this.host
         .log()
@@ -644,7 +699,7 @@ export class CollabCoordinator {
     this.host
       .log()
       .info(`messageAgent: ${req.callerAgentId} → ${req.toAgentId} (${targetSession}) delivery=${deliveryId}`)
-    return record({ delivered: true, targetSession })
+    return record({ delivered: true, targetSession, ...(deadlineIgnored !== undefined ? { deadlineIgnored } : {}) })
   }
 
   /**
@@ -767,6 +822,164 @@ export class CollabCoordinator {
       replyState: state,
       ...(existing?.remote ? { remote: true } : {})
     })
+    // Only a QUEUED report disarms: a report that FAILED to deliver never reached the parent,
+    // so disarming would recreate exactly the silence the deadline exists to break.
+    if (state === 'queued-for-parent') await this.cancelParentReplyDeadline(childSessionKey)
+  }
+
+  /**
+   * Arm the #800 needsReply deadline for one child: if no report reaches `parentSessionId`
+   * within `deadlineMs`, wake the parent so it can re-prompt, escalate, or move on. Silence is
+   * otherwise not an event, so an awaiting parent has nothing to act on.
+   */
+  private async armParentReplyDeadline(args: {
+    childSessionKey: string
+    parentSessionId: string
+    parentAgentId: string
+    childAgentId: string
+    platform: string
+    channel: string
+    thread: string
+    transportScope?: string
+    deliveryId?: string
+    deadlineMs: number
+  }): Promise<void> {
+    const now = this.host.clock().now()
+    const deadline = now + args.deadlineMs
+    try {
+      await this.host.store().upsertParentReplyDeadline({
+        childSessionKey: args.childSessionKey,
+        parentSessionId: args.parentSessionId,
+        parentAgentId: args.parentAgentId,
+        childAgentId: args.childAgentId,
+        platform: args.platform,
+        channel: args.channel,
+        thread: args.thread,
+        ...(args.transportScope !== undefined ? { transportScope: args.transportScope } : {}),
+        ...(args.deliveryId !== undefined ? { deliveryId: args.deliveryId } : {}),
+        deadline,
+        createdAt: now
+      })
+    } catch (err) {
+      this.host.log().warn(`parent-reply deadline: durable arm failed for ${args.childSessionKey}: ${formatErr(err)}`)
+      return
+    }
+    this.scheduleParentReplyDeadline(args.childSessionKey, deadline)
+  }
+
+  private scheduleParentReplyDeadline(childSessionKey: string, deadline: number): void {
+    const existing = this.parentReplyDeadlines.get(childSessionKey)
+    if (existing !== undefined) this.host.clock().clearTimeout(existing)
+    const delay = Math.min(Math.max(0, deadline - this.host.clock().now()), 2_147_483_647)
+    const handle = this.host.clock().setTimeout(async () => {
+      this.parentReplyDeadlines.delete(childSessionKey)
+      await this.fireParentReplyDeadline(childSessionKey)
+    }, delay)
+    this.parentReplyDeadlines.set(childSessionKey, handle)
+  }
+
+  /** Disarm — the report arrived. Idempotent. */
+  async cancelParentReplyDeadline(childSessionKey: string): Promise<void> {
+    const handle = this.parentReplyDeadlines.get(childSessionKey)
+    if (handle !== undefined) {
+      this.host.clock().clearTimeout(handle)
+      this.parentReplyDeadlines.delete(childSessionKey)
+    }
+    try {
+      await this.host.store().deleteParentReplyDeadline(childSessionKey)
+    } catch (err) {
+      this.host.log().warn(`parent-reply deadline: disarm failed for ${childSessionKey}: ${formatErr(err)}`)
+    }
+  }
+
+  /**
+   * The deadline expired with the report still outstanding: wake the parent with a notice that
+   * names what did NOT arrive. It never fabricates a reply — the parent is told only that
+   * nothing came back, and decides what to do.
+   *
+   * Exactly-once against a report landing in the same moment: the store DELETE is the claim, so
+   * whichever of {@link cancelParentReplyDeadline} and this runs first is the only one to act
+   * (and on a shared store, only one pool member wins).
+   */
+  async fireParentReplyDeadline(childSessionKey: string): Promise<void> {
+    if (this.host.draining()) return
+    let row: ParentReplyDeadlineRecord | undefined
+    try {
+      row = await this.host.store().getParentReplyDeadline(childSessionKey)
+    } catch (err) {
+      this.host.log().warn(`parent-reply deadline: read failed for ${childSessionKey}: ${formatErr(err)}`)
+      return
+    }
+    if (!row) return
+    // The wake dispatches into the PARENT session, so the PARENT's duty holder must be the one
+    // to fire it — a child-based gate would dispatch for an agent this member does not serve.
+    if (!this.host.servesAgent(row.parentAgentId)) return
+    // `failed` still fires: the report never reached the parent, so the silence is real.
+    const link = this.childSessionLinks.get(childSessionKey)
+    if (link && (link.parentSessionId !== row.parentSessionId || link.replyState === 'queued-for-parent')) {
+      await this.cancelParentReplyDeadline(childSessionKey)
+      return
+    }
+    if (!(await this.host.store().claimParentReplyDeadline(childSessionKey, row.deadline))) return
+
+    const child = await this.host.store().getSession(childSessionKey)
+    const waited = Math.max(0, this.host.clock().now() - row.createdAt)
+    const state =
+      child?.acpSessionId !== undefined && child.acpSessionId !== null
+        ? `started, last turn ${child.lastTurnOutcome ?? 'still running'}`
+        : 'never started (no session was ever created)'
+    const text =
+      `[needsReply deadline] No report arrived from \`${row.childAgentId}\` within ${waited}ms` +
+      `${row.deliveryId ? ` (delivery ${row.deliveryId})` : ''}. Last known state of that session: ${state}. ` +
+      `Nothing was received — this notice is NOT its answer, and no answer may be assumed. ` +
+      `Re-prompt it, escalate, or proceed without it.`
+    this.host
+      .log()
+      .info(`parent-reply deadline fired: ${row.childAgentId} (${childSessionKey}) → session ${row.parentSessionId}`)
+    // Coordinates come from the deadline row, not the child's session: replyToSession authorizes
+    // off the child's DURABLE origin, so this works even for a child that never started.
+    const result = await this.replyToSession({
+      callerAgentId: row.childAgentId,
+      platform: row.platform,
+      ...(row.transportScope ? { callerTransportScope: row.transportScope } : {}),
+      callerChannel: row.channel,
+      callerThread: row.thread,
+      sessionId: row.parentSessionId,
+      trustedOriginSessionId: row.parentSessionId,
+      text
+    })
+    if (!result.delivered) {
+      this.host
+        .log()
+        .warn(`parent-reply deadline wake not delivered for ${childSessionKey}: ${result.reason ?? 'unknown'}`)
+    }
+  }
+
+  /** Re-arm the armed deadlines this member serves — startup and every duty change. A deadline
+   *  already in the past fires ~immediately; the fire re-checks duty and claims through the store. */
+  async syncParentReplyDeadlines(): Promise<void> {
+    let rows: ParentReplyDeadlineRecord[]
+    try {
+      rows = await this.host.store().listParentReplyDeadlines()
+    } catch (err) {
+      this.host.log().warn(`parent-reply deadline: re-arm read failed: ${formatErr(err)}`)
+      return
+    }
+    let armed = 0
+    let disarmed = 0
+    for (const row of rows) {
+      const held = this.host.servesAgent(row.parentAgentId)
+      const handle = this.parentReplyDeadlines.get(row.childSessionKey)
+      if (held && handle === undefined) {
+        this.scheduleParentReplyDeadline(row.childSessionKey, row.deadline)
+        armed++
+      } else if (!held && handle !== undefined) {
+        this.host.clock().clearTimeout(handle)
+        this.parentReplyDeadlines.delete(row.childSessionKey)
+        disarmed++
+      }
+    }
+    if (armed || disarmed) this.host.log().info(`parent-reply deadline: armed ${armed} and disarmed ${disarmed}`)
   }
 
   async replyToSession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
@@ -785,7 +998,8 @@ export class CollabCoordinator {
     // origin (present on the wake turn), else the origin PERSISTED on the caller session (set once
     // at spawn). A human-triggered follow-up turn carries no CallMeta, so without the persisted
     // fallback the reply would be wrongly refused (`not_authorized`) after the first turn.
-    const authorizedOrigin = inbound?.originSessionId ?? callerRec?.originSessionId ?? undefined
+    const authorizedOrigin =
+      req.trustedOriginSessionId ?? inbound?.originSessionId ?? callerRec?.originSessionId ?? undefined
     if (!authorizedOrigin || req.sessionId !== authorizedOrigin) {
       return { delivered: false, reason: 'not_authorized' }
     }

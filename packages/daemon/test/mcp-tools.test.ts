@@ -357,7 +357,7 @@ describe('toolsForIntegrations', () => {
     // published example teaches, and the object form only layers delivery options onto it.
     expect(branches).toHaveLength(2)
     expect(branches[0]!.type).toBe('string')
-    expect(Object.keys(branches[1]!.properties!)).toEqual(['agentId', 'needsReply'])
+    expect(Object.keys(branches[1]!.properties!)).toEqual(['agentId', 'needsReply', 'deadlineMs'])
     expect(branches[1]!.required).toEqual(['agentId'])
     expect(branches[1]!.additionalProperties).toBe(false)
   })
