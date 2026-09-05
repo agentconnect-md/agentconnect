@@ -557,13 +557,19 @@ export class AcpHost {
        *  immutable snapshots; failures/mutation attempts cannot change the policy. */
       onPermissionEvent?: (sessionId: string, params: RequestPermissionRequest, event: AcpPermissionPolicyEvent) => void
       /**
-       * Structured-input policy for ACP `elicitation/create` (form mode). When set, the
+       * Structured-input policy for ACP `elicitation/create` (form and url mode). When set, the
        * daemon renders the form to the user (e.g. a Slack select/buttons card) and
        * resolves with their choice. Omitted / throwing / returning undefined falls back
        * to declining the elicitation — the spec has agents handle `decline` — so a
        * platform with no interactive surface, or an unrenderable form, never hangs.
        */
       onElicit?: (sessionId: string, params: CreateElicitationRequest) => Promise<CreateElicitationResponse | undefined>
+      /**
+       * ACP `elicitation/complete` — the agent reporting that a URL-mode flow finished. It
+       * carries only an `elicitationId` (no sessionId), so the consumer keys off that alone,
+       * and it is advisory: it may never arrive, and one for an unknown id is ignored.
+       */
+      onElicitComplete?: (elicitationId: string) => void
       /**
        * Raw Claude SDK lifecycle messages, forwarded by claude-agent-acp ≥ 0.59.0 as
        * the `_claude/sdkMessage` ext-notification (opt-in via `emitRawSDKMessages`, see
@@ -744,6 +750,18 @@ export class AcpHost {
         }
         return { action: 'decline' }
       })
+      .onNotification(methods.client.elicitation.complete, (ctx) => {
+        // Advisory settlement for a URL-mode elicitation the user already consented to; the
+        // ACP request resolved at consent, so nothing is waiting on this.
+        const id = ctx.params?.elicitationId
+        if (typeof id === 'string' && id && self.opts.onElicitComplete) {
+          try {
+            self.opts.onElicitComplete(id)
+          } catch (err) {
+            self.opts.log?.debug(`acp: onElicitComplete failed: ${(err as Error).message}`)
+          }
+        }
+      })
       // Claude SDK lifecycle feed (claude-agent-acp ≥ 0.59.0). Params are
       // `{ sessionId, message }`; the message is passed through untyped and parsed
       // defensively by the consumer. Parser is a passthrough — validation lives in
@@ -763,9 +781,11 @@ export class AcpHost {
       clientCapabilities: {
         fs: { readTextFile: false, writeTextFile: false },
         // Advertise form-based elicitation so runtimes may ask structured questions
-        // (choice/boolean). Unrenderable forms / non-interactive platforms are declined
-        // gracefully by the onElicit fallback above.
-        elicitation: { form: {} }
+        // (choice/boolean), and URL-based so credential/OAuth/payment flows take the seam the
+        // spec reserves for them instead of a form that would carry the secret through chat.
+        // Unrenderable forms and surfaces without a consent card are declined gracefully by
+        // the onElicit fallback above.
+        elicitation: { form: {}, url: {} }
       }
     })
     this.negotiatedProtocolVersion = init.protocolVersion

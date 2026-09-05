@@ -38,6 +38,7 @@ import {
   elicitFormContent,
   elicitRequiredProps,
   elicitTarget,
+  elicitUrl,
   multiSelectAccepts,
   numberAccepts,
   SLACK_ELICIT_KINDS,
@@ -201,6 +202,15 @@ function elicitCardDescriptors(t: ElicitTarget): ElicitCardDescriptors {
   }
 }
 
+/** How many consented URL elicitations wait for an `elicitation/complete` that may never come. */
+const CONSENTED_URL_ELICIT_CAP = 64
+
+/** `elicitation/complete` carries no session, so a consented card is keyed by its ACP id within
+ *  the agent host that raised it — two agents may hold the same id concurrently. */
+function consentedUrlKey(owner: HostKey, elicitationId: string): string {
+  return `${owner} ${elicitationId}`
+}
+
 /** One outstanding `elicitation/create` awaiting a human answer. */
 type PendingElicit = PendingElicitSurface & {
   owner: HostKey
@@ -212,6 +222,10 @@ type PendingElicit = PendingElicitSurface & {
   /** Set only for a MULTI-field webchat form card — the fields it rendered, in schema order.
    *  Absent ⇒ the single-field card, answered by a scalar or a list as it always was. */
   form?: ElicitTarget[]
+  /** Set only for a URL-mode consent card: the ACP `elicitationId` and the exact URL shown.
+   *  Present ⇒ `propName`/`kind`/`form` mean nothing — the card has no field, and its only
+   *  answers are consent (this same URL back) or Dismiss. */
+  url?: { elicitationId: string; url: string }
   approval: boolean
   resolve: (res: CreateElicitationResponse) => void
 }
@@ -308,9 +322,17 @@ export class PermissionCoordinator {
    * single terminal event emitted by AcpHost's policy observer. */
   private readonly permissionEvaluationDetails = new WeakMap<RequestPermissionRequest, Record<string, unknown>>()
 
-  // ── Interactive elicitations (ACP elicitation/create, form mode) ─────────────
+  // ── Interactive elicitations (ACP elicitation/create, form + url mode) ──────
   private elicitSeq = 0
   private pendingElicits = new Map<string, PendingElicit>()
+  /** URL-mode cards already consented to, keyed by `<owner> <elicitationId>` and awaiting
+   *  an `elicitation/complete` that may never come — their ACP request resolved at consent, so
+   *  these hold only the webchat coordinates the "Completed" re-label is emitted on. Bounded:
+   *  an agent that never completes its flows must not grow this without limit. */
+  private readonly consentedUrlElicits = new Map<
+    string,
+    { requestId: string; rec: Extract<PendingElicit, { surface: 'webchat' }> }
+  >()
 
   /** Sessions the CP currently believes are waiting, keyed by `pendingTurnKey` — emit only on a change. */
   private readonly awaitingApproval = new Map<string, { owner: HostKey; agentId: string; sessionId: string }>()
@@ -1350,9 +1372,16 @@ export class PermissionCoordinator {
     // this line — it took the editor queue above, since chat approval needs Slack — and the
     // `!isApproval` guard keeps that true if the branches above ever move. A continuation
     // mirrors an origin platform, so it keeps falling through to the Slack path.
+    // URL mode is the seam the spec reserves for credentials, OAuth and payment — the page must
+    // stay out of the model's context and off every card, so only a surface that can render the
+    // consent card takes it and every other one declines (elicitTarget is null for it anyway).
+    const url = elicitUrl(params)
     if (p.webchat && !p.webchat.continuation && !isApproval) {
-      return await this.awaitWebchatElicitation(agentId, sessionId, params, p, p.webchat)
+      return url
+        ? await this.awaitWebchatUrlElicitation(agentId, sessionId, params, p, p.webchat, url)
+        : await this.awaitWebchatElicitation(agentId, sessionId, params, p, p.webchat)
     }
+    if (params.mode === 'url') return undefined
     const conn = p.conn
     if (!turnChromeFor(p.plan.platform).chatInputCards || !(conn instanceof SlackConnection)) return undefined
     const target = elicitTarget(params, SLACK_ELICIT_KINDS)
@@ -1501,12 +1530,116 @@ export class PermissionCoordinator {
     return await result
   }
 
+  /** URL mode's peer of {@link awaitWebchatElicitation}: stream a CONSENT card carrying the
+   *  exact URL and park the resolver until the reader consents or dismisses. The daemon never
+   *  fetches the URL and never sees the page — the browser opens it in a tab of its own — so
+   *  the only thing this seam decides is whether the user agreed to go there. */
+  private async awaitWebchatUrlElicitation(
+    agentId: string,
+    sessionId: string,
+    params: CreateElicitationRequest,
+    p: Pending,
+    wc: NonNullable<Pending['webchat']>,
+    url: { elicitationId: string; url: string }
+  ): Promise<CreateElicitationResponse | undefined> {
+    const requestId = `elicit-${++this.elicitSeq}`
+    const message = (params as { message?: string }).message?.trim() || 'The agent needs you to open a link'
+    let resolveResult!: (res: CreateElicitationResponse) => void
+    const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
+    this.pendingElicits.set(requestId, {
+      owner: p.hostKey,
+      agentId,
+      sessionId,
+      params,
+      // A URL card has no field; these are the record's unused shape, never read on this path.
+      propName: '',
+      kind: 'text',
+      url,
+      approval: false,
+      surface: 'webchat',
+      wc,
+      resolve: resolveResult
+    })
+    this.syncApprovalActivity(p.hostKey, sessionId)
+    try {
+      wc.sink.output({
+        conversationId: wc.conversationId,
+        turnId: wc.turnId,
+        index: wc.index++,
+        // No options and no field descriptors: a reader that does not know `url` gets a card it
+        // can only Dismiss, which is the spec's `decline` — never an accidental consent.
+        event: { kind: 'elicitation', requestId, message, options: [], url: url.url }
+      })
+    } catch (err) {
+      this.pendingElicits.delete(requestId)
+      this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
+      this.host.log().warn(`webchat consent card not delivered for "${p.plan.sessionKey}": ${formatErr(err)}`)
+      return undefined
+    }
+    return await result
+  }
+
+  /** Settle a URL-mode consent card. `accept` means only that the user agreed to OPEN the URL —
+   *  not that whatever happens on that page finished — so the ACP request resolves right here
+   *  and any later `elicitation/complete` is a re-label, not a second resolution. Dismiss is the
+   *  spec's explicit `decline`; the turn ending is `cancel`, via releaseElicits. */
+  private async handleUrlElicitConsent(
+    requestId: string,
+    rec: PendingElicit & { url: NonNullable<PendingElicit['url']> },
+    a: { value: ElicitAnswer; webchatConversationId?: string }
+  ): Promise<void> {
+    // A consent card lives only on webchat, and only the conversation it was shown in answers it.
+    if (rec.surface !== 'webchat') return
+    if (a.webchatConversationId === undefined || rec.wc.conversationId !== a.webchatConversationId) return
+    // Consent echoes the card's own URL back: the only value this card offers, checked the way
+    // every other card checks that an answer was one it actually rendered.
+    const consented = a.value === rec.url.url
+    if (!consented && a.value !== null) return
+    this.pendingElicits.delete(requestId)
+    this.syncApprovalActivity(rec.owner, rec.sessionId, { id: requestId, allowed: consented })
+    this.emitWebchatElicitResolved(
+      rec,
+      requestId,
+      consented ? 'accepted' : 'dismissed',
+      consented ? 'Opened' : undefined
+    )
+    if (consented) this.rememberConsentedUrlElicit(requestId, rec)
+    rec.resolve({ action: consented ? 'accept' : 'decline' })
+  }
+
+  /** Park a consented card's coordinates so a later `elicitation/complete` can find it. Oldest
+   *  out at the cap — a flow that never completes must not pin this map open forever. */
+  private rememberConsentedUrlElicit(
+    requestId: string,
+    rec: Extract<PendingElicit, { surface: 'webchat' }> & { url: NonNullable<PendingElicit['url']> }
+  ): void {
+    while (this.consentedUrlElicits.size >= CONSENTED_URL_ELICIT_CAP) {
+      const oldest = this.consentedUrlElicits.keys().next().value
+      if (oldest === undefined) break
+      this.consentedUrlElicits.delete(oldest)
+    }
+    this.consentedUrlElicits.set(consentedUrlKey(rec.owner, rec.url.elicitationId), { requestId, rec })
+  }
+
+  /** ACP `elicitation/complete` (wired as AcpHost.onElicitComplete): re-label the already
+   *  settled consent card as Completed. The notification carries no session, so it is keyed by
+   *  `elicitationId` within the agent host that sent it. An unknown id — never consented, from
+   *  another agent, or already completed — is ignored, which is also what makes this safe to
+   *  never receive at all. */
+  onAcpElicitComplete(owner: HostKey, elicitationId: string): void {
+    const key = consentedUrlKey(owner, elicitationId)
+    const hit = this.consentedUrlElicits.get(key)
+    if (!hit) return
+    this.consentedUrlElicits.delete(key)
+    this.emitWebchatElicitResolved(hit.rec, hit.requestId, 'completed')
+  }
+
   /** Append the settled card to a webchat stream — the append-only equivalent of Slack
    *  rewriting its message. Best effort: the ACP resolution never depends on it. */
   private emitWebchatElicitResolved(
     rec: Extract<PendingElicit, { surface: 'webchat' }>,
     requestId: string,
-    outcome: 'accepted' | 'dismissed' | 'cancelled',
+    outcome: 'accepted' | 'dismissed' | 'cancelled' | 'completed',
     label?: string
   ): void {
     try {
@@ -1552,6 +1685,8 @@ export class PermissionCoordinator {
     }
     const rec = this.pendingElicits.get(a.requestId)
     if (!rec) return
+    // A URL consent card has no field to validate — it takes its own URL back, or Dismiss.
+    if (rec.url) return await this.handleUrlElicitConsent(a.requestId, { ...rec, url: rec.url }, a)
     // A FORM card is answered by a record and nothing else, and every other card by a scalar
     // or a list — re-derived from the card's own params, exactly as `target` is below.
     const form = rec.form ? elicitForm(rec.params, surfaceKinds(rec)) : null

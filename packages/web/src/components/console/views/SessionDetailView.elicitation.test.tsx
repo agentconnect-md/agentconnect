@@ -564,3 +564,119 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(buttonNamed('main')).toBeUndefined()
   })
 })
+
+// URL mode (#1794 gap 4). Credentials, OAuth and payment take this seam precisely so the page
+// never reaches the model, the card, or the Control Plane — so what is asserted here is as much
+// about what the console does NOT do as about what it renders.
+describe('the agent’s URL-mode consent card', () => {
+  const URL_CARD = {
+    ...CARD,
+    text: 'Sign in to the billing provider to continue',
+    elicit: { requestId: 'elicit-9', options: [] as { value: string; label: string }[], url: '' }
+  }
+  const urlCard = (url: string) => [{ ...URL_CARD, elicit: { ...URL_CARD.elicit, url } }]
+  const linkNamed = (label: string) =>
+    [...(container?.querySelectorAll('a') ?? [])].find((a) => a.textContent === label)
+
+  it('shows the full URL and opens it in a new tab only on an explicit click', async () => {
+    const url = 'https://billing.example.com/oauth/authorize?client_id=abc123&scope=read+write'
+    live.steps = urlCard(url)
+    await render()
+
+    // The whole URL, unshortened and unelided — there is nothing to examine otherwise.
+    expect(text()).toContain(url)
+    const open = linkNamed('Open link')
+    expect(open?.getAttribute('href')).toBe(url)
+    // A real browser tab: never an iframe or an in-app webview, and no referrer carried over.
+    expect(open?.getAttribute('target')).toBe('_blank')
+    expect(open?.getAttribute('rel')).toBe('noopener noreferrer')
+    expect(container?.querySelector('iframe')).toBeNull()
+    // Nothing has been consented to until the reader acts.
+    expect(live.answered).toEqual([])
+
+    // Cancel the default so the test runner does not actually open the tab; React's own
+    // handler still runs, which is the consent this asserts.
+    const stop = (e: Event) => e.preventDefault()
+    document.addEventListener('click', stop)
+    await act(async () => {
+      open?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+    document.removeEventListener('click', stop)
+    // Consent is the card's own URL back — the one value this card offers.
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-9', url, 'conv-1']])
+  })
+
+  it('never fetches the URL or any metadata about it', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    live.steps = urlCard('https://billing.example.com/oauth/authorize')
+    await render()
+
+    // No page fetch, no favicon, no title lookup, no preview.
+    for (const call of fetchSpy.mock.calls) expect(String(call[0])).not.toContain('billing.example.com')
+    // And no markup that would make the browser reach for it on our behalf.
+    expect(container?.querySelector('link[rel~="prefetch"], link[rel~="preload"], link[rel~="preconnect"]')).toBeNull()
+    for (const el of container?.querySelectorAll('img, script, iframe') ?? [])
+      expect(el.getAttribute('src') ?? '').not.toContain('billing.example.com')
+    fetchSpy.mockRestore()
+  })
+
+  it('flags a Punycode host, which is how a lookalike domain spells itself', async () => {
+    live.steps = urlCard('https://xn--80ak6aa92e.example-login.com/authorize')
+    await render()
+
+    expect(text()).toContain('Punycode')
+    // The full URL is still shown, and the card is still answerable — the warning is advisory.
+    expect(text()).toContain('xn--80ak6aa92e.example-login.com')
+    expect(linkNamed('Open link')).toBeDefined()
+  })
+
+  it('calls out a link that is not encrypted', async () => {
+    live.steps = urlCard('http://billing.example.com/pay')
+    await render()
+
+    expect(text()).toContain('Not encrypted (http)')
+  })
+
+  it('leaves an https host unflagged', async () => {
+    live.steps = urlCard('https://billing.example.com/pay')
+    await render()
+
+    expect(text()).not.toContain('Punycode')
+    expect(text()).not.toContain('Not encrypted')
+  })
+
+  it('offers nothing to open for a scheme a browser tab must never be handed', async () => {
+    live.steps = urlCard('javascript:alert(1)')
+    await render()
+
+    // The daemon already refuses these; the card refuses again rather than trust the wire.
+    expect(linkNamed('Open link')).toBeUndefined()
+    expect(container?.querySelector('a[href^="javascript:"]')).toBeNull()
+  })
+
+  it('reads Declined at refusal and Completed once the agent reports the flow finished', async () => {
+    live.steps = urlCard('https://billing.example.com/pay')
+    await render()
+
+    await act(async () => {
+      buttonNamed('Decline')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // An explicit refusal is a null answer, the same shape every other card dismisses with.
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-9', null, 'conv-1']])
+
+    live.steps = [{ ...URL_CARD, elicit: { ...URL_CARD.elicit, url: 'https://x.test/a', outcome: 'completed' } }]
+    await render()
+    expect(text()).toContain('Completed')
+    expect(linkNamed('Open link')).toBeUndefined()
+  })
+
+  it('renders no clickable URL for a FORM-mode elicitation that mentions one', async () => {
+    live.steps = [{ ...CARD, text: 'Paste the token from https://billing.example.com/tokens' }]
+    await render()
+
+    // Only URL mode may send the reader anywhere — a form's message is text, and stays text.
+    expect(text()).toContain('https://billing.example.com/tokens')
+    for (const a of container?.querySelectorAll('a') ?? [])
+      expect(a.getAttribute('href') ?? '').not.toContain('billing.example.com')
+  })
+})

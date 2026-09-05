@@ -1156,3 +1156,159 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
   })
 })
+
+// ── URL-mode elicitation (issue #1794 gap 4) ─────────────────────────────────
+// The seam the spec reserves for credentials, OAuth and payment: `accept` means only that the
+// user consented to OPEN the URL, never that the flow behind it finished, and the page itself
+// never reaches the daemon, the card, or the model.
+
+/** A URL-mode elicitation (ACP `ElicitationUrlMode`). */
+function urlElicitation(overrides: Record<string, unknown> = {}): CreateElicitationRequest {
+  return {
+    sessionId: 's1',
+    mode: 'url',
+    elicitationId: 'el-1',
+    url: 'https://billing.example.com/oauth/authorize?state=xyz',
+    message: 'Sign in to the billing provider to continue',
+    ...overrides
+  } as CreateElicitationRequest
+}
+
+describe('webchat renders and settles a URL-mode consent card', () => {
+  it('streams the exact URL, resolves accept on consent, and never carries a form field', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    // No options and no field descriptors: a reader that does not know `url` can only Dismiss.
+    expect(cardEvents(sink)[0]).toEqual({
+      kind: 'elicitation',
+      requestId: expect.any(String),
+      message: 'Sign in to the billing provider to continue',
+      options: [],
+      url: 'https://billing.example.com/oauth/authorize?state=xyz'
+    })
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'https://billing.example.com/oauth/authorize?state=xyz',
+      webchatConversationId: 'conv-1'
+    })
+    // Consent resolves the ACP request — with no `content`, since nothing was answered here.
+    await expect(result).resolves.toEqual({ action: 'accept' })
+    expect(cardEvents(sink)[1]).toEqual({
+      kind: 'elicitation_resolved',
+      requestId,
+      outcome: 'accepted',
+      label: 'Opened'
+    })
+  })
+
+  it('refuses a value the card never offered, and declines only on an explicit dismissal', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    // A browser frame is not what makes consent valid: only the card's own URL is consent.
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'https://billing.example.com.evil.test/oauth/authorize?state=xyz',
+      webchatConversationId: 'conv-1'
+    })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    // And another conversation cannot consent on this one's behalf.
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'https://billing.example.com/oauth/authorize?state=xyz',
+      webchatConversationId: 'conv-2'
+    })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: null, webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'decline' })
+  })
+
+  it('cancels rather than declines when the turn ends under a live consent card', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await expect(result).resolves.toEqual({ action: 'cancel' })
+    expect(cardEvents(sink).at(-1)).toEqual(expect.objectContaining({ outcome: 'cancelled' }))
+  })
+
+  it('settles the consented card on elicitation/complete, and ignores an id it does not hold', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    void (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'https://billing.example.com/oauth/authorize?state=xyz',
+      webchatConversationId: 'conv-1'
+    })
+
+    // An id never consented to — and one from another agent host — settles nothing.
+    ;(daemon as any).permissions.onAcpElicitComplete('agent-1', 'el-nope')
+    ;(daemon as any).permissions.onAcpElicitComplete('agent-2', 'el-1')
+    expect(cardEvents(sink)).toHaveLength(2)
+
+    ;(daemon as any).permissions.onAcpElicitComplete('agent-1', 'el-1')
+    expect(cardEvents(sink)[2]).toEqual({ kind: 'elicitation_resolved', requestId, outcome: 'completed' })
+    // The notification is advisory and arrives at most once: a repeat is ignored.
+    ;(daemon as any).permissions.onAcpElicitComplete('agent-1', 'el-1')
+    expect(cardEvents(sink)).toHaveLength(3)
+  })
+
+  it('declines a URL a browser tab must never be handed, and one on a form-only surface', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    installWebchat(pending)
+
+    for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'not a url'])
+      await expect(
+        (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation({ url }))
+      ).resolves.toBeUndefined()
+    // An elicitationId is what a completion notification is keyed by; without one there is
+    // nothing to consent to either.
+    await expect(
+      (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation({ elicitationId: '' }))
+    ).resolves.toBeUndefined()
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+
+    // And a surface with no consent card keeps declining — Slack gains none here.
+    const slack: any = installPending(daemon)
+    slack.plan.platform = 'slack'
+    await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())).resolves.toBeUndefined()
+  })
+
+  it('masks an agent secret embedded in the URL before the card carries it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+    ;(daemon as any).agents = new Map([
+      ['agent-1', { id: 'agent-1', runtimeOverrides: { secrets: [{ name: 'TOKEN', value: 'sk-live-DEADBEEF' }] } }]
+    ])
+
+    void (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      urlElicitation({ url: 'https://billing.example.com/pay?token=sk-live-DEADBEEF' })
+    )
+    await vi.waitFor(() => expect(cardEvents(sink)).toHaveLength(1))
+    expect(cardEvents(sink)[0].url).not.toContain('sk-live-DEADBEEF')
+  })
+})
