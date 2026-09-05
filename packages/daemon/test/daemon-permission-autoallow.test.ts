@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { LocalStore } from '../src/store/local-store.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
 import { SlackConnection } from '../src/slack/connection.js'
-import { elicitForm, elicitTarget, SLACK_ELICIT_KINDS, WEBCHAT_ELICIT_KINDS } from '../src/slack/render.js'
+import { elicitForm, elicitTarget, SLACK_ELICIT_SURFACE, WEBCHAT_ELICIT_SURFACE } from '../src/slack/render.js'
 
 /**
  * Auto-approve policy for the daemon's OWN built-in MCP tools (UX fix): a human should
@@ -608,7 +608,7 @@ describe('webchat renders and answers ACP elicitation cards', () => {
 // ── multi-select on webchat only (issue #1794 gap 2) ─────────────────────────
 // A Slack card is a row of buttons and cannot express "pick several, then confirm", so the
 // kind is one webchat renders and Slack still declines — the surfaces declare what they can
-// render (`SLACK_ELICIT_KINDS` / `WEBCHAT_ELICIT_KINDS`) rather than each kind excluding Slack.
+// render (`SLACK_ELICIT_SURFACE` / `WEBCHAT_ELICIT_SURFACE`) rather than each kind excluding Slack.
 
 /** A multi-select form: an array of enum items, bounded unless `schema` says otherwise. */
 function multiElicitation(items: Record<string, unknown> = {}): CreateElicitationRequest {
@@ -737,7 +737,65 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     ).resolves.toBeUndefined()
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
     // The same form IS renderable — just not here: webchat cards it.
-    expect(elicitTarget(multiElicitation({ minItems: 1 }), WEBCHAT_ELICIT_KINDS)?.kind).toBe('multi-enum')
+    expect(elicitTarget(multiElicitation({ minItems: 1 }), WEBCHAT_ELICIT_SURFACE)?.kind).toBe('multi-enum')
+  })
+})
+
+// ── long option lists (issue #1794 gap 7) ────────────────────────────────────
+
+/** A single-field enum form with `n` options. */
+function enumElicitation(options: string[]): CreateElicitationRequest {
+  return formElicitation({
+    message: 'Which one?',
+    requestedSchema: { type: 'object', properties: { pick: { type: 'string', enum: options } }, required: ['pick'] }
+  })
+}
+
+describe('a Slack card offers every option or none', () => {
+  /** A Slack turn whose posted card blocks are captured. */
+  function slackPending(daemon: any): { pending: any; posted: any[][] } {
+    const pending: any = installPending(daemon)
+    const posted: any[][] = []
+    pending.plan.platform = 'slack'
+    const conn = Object.create(SlackConnection.prototype)
+    conn.postBlocks = async (_c: string, blocks: any[]) => {
+      posted.push(blocks)
+      return 'ts-1'
+    }
+    conn.updateBlocks = async () => true
+    conn.workspaceId = () => 'T1'
+    pending.conn = conn
+    return { pending, posted }
+  }
+
+  // The seven-option enum of the issue: five buttons went out, the reader never saw the last two,
+  // and whichever they picked came back as `accept` on the whole question.
+  it('cards all seven options and accepts a pick past the fifth', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    const seven = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(seven))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    const elements = posted[0]![1]!.elements as any[]
+    expect(elements.map((e) => e.text.text)).toEqual([...seven, 'Dismiss'])
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'g' })
+    await expect(answered).resolves.toEqual({ action: 'accept', content: { pick: 'g' } })
+  })
+
+  // Past what the surface declares, there is no card and no answer: the agent is declined and
+  // can ask again, which is the same verdict a field Slack cannot render already gets.
+  it('declines rather than posting a card built from part of the list', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    const many = Array.from({ length: 25 }, (_, i) => `o${i}`)
+    await expect(
+      (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(many))
+    ).resolves.toBeUndefined()
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+    expect(posted).toHaveLength(0)
+    // The same form is renderable where nothing declares a limit — webchat still shows them all.
+    expect(elicitTarget(enumElicitation(many), WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(25)
   })
 })
 
@@ -906,8 +964,8 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
     await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', numberElicitation())).resolves.toBeUndefined()
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
     // The same forms ARE renderable — just not here: webchat types into them.
-    expect(elicitTarget(textElicitation(), WEBCHAT_ELICIT_KINDS)?.kind).toBe('text')
-    expect(elicitTarget(numberElicitation(), WEBCHAT_ELICIT_KINDS)?.kind).toBe('number')
+    expect(elicitTarget(textElicitation(), WEBCHAT_ELICIT_SURFACE)?.kind).toBe('text')
+    expect(elicitTarget(numberElicitation(), WEBCHAT_ELICIT_SURFACE)?.kind).toBe('number')
   })
 
   it('declines a form whose pattern could hang the daemon, rather than run it', async () => {
@@ -1121,9 +1179,9 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     ).resolves.toBeUndefined()
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
     // Unchanged where it matters: one card, one field that satisfies `required` alone.
-    expect(elicitTarget(twoFieldElicitation(['branch', 'note']), SLACK_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(twoFieldElicitation(['branch', 'note']), SLACK_ELICIT_SURFACE)).toBeNull()
     // The same form IS renderable — just not here: webchat asks every field.
-    expect(elicitForm(twoFieldElicitation(['branch', 'note']), WEBCHAT_ELICIT_KINDS)).toHaveLength(2)
+    expect(elicitForm(twoFieldElicitation(['branch', 'note']), WEBCHAT_ELICIT_SURFACE)).toHaveLength(2)
   })
 
   it('keeps a one-field form on the single-field card, byte for byte', async () => {

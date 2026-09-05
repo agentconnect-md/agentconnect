@@ -41,11 +41,11 @@ import {
   elicitUrl,
   multiSelectAccepts,
   numberAccepts,
-  SLACK_ELICIT_KINDS,
+  SLACK_ELICIT_SURFACE,
   textAccepts,
-  WEBCHAT_ELICIT_KINDS
+  WEBCHAT_ELICIT_SURFACE
 } from '../slack/render.js'
-import type { ElicitKind, ElicitSurfaceKinds, ElicitTarget } from '../slack/render.js'
+import type { ElicitKind, ElicitSurface, ElicitTarget } from '../slack/render.js'
 import { slackThreadUrl } from '../platforms/slack/permalink.js'
 import { slackAgentIdentityOptions } from '../platforms/slack/turn-output.js'
 import { turnChromeFor } from '../platforms/turn-chrome.js'
@@ -101,10 +101,10 @@ type PendingElicitSurface =
   | { surface: 'slack'; conn: SlackConnection; channel: string; ts?: string }
   | { surface: 'webchat'; wc: NonNullable<Pending['webchat']> }
 
-/** The kinds the surface a card was posted to renders — re-deriving its target has to ask the
- *  same question the post did, or a card could be read back as a field its surface never showed. */
-function surfaceKinds(rec: PendingElicitSurface): ElicitSurfaceKinds {
-  return rec.surface === 'webchat' ? WEBCHAT_ELICIT_KINDS : SLACK_ELICIT_KINDS
+/** What the surface a card was posted to renders — re-deriving its target has to ask the same
+ *  question the post did, or a card could be read back as a field its surface never showed. */
+function surfaceOf(rec: PendingElicitSurface): ElicitSurface {
+  return rec.surface === 'webchat' ? WEBCHAT_ELICIT_SURFACE : SLACK_ELICIT_SURFACE
 }
 
 /** How a settled card names the answer: the chosen option's LABEL, or every chosen label for a
@@ -728,7 +728,7 @@ export class PermissionCoordinator {
           .catch(() => {})
       return
     }
-    const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params, SLACK_ELICIT_KINDS) : null
+    const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params, SLACK_ELICIT_SURFACE) : null
     live.notify = {
       target,
       conn,
@@ -1384,7 +1384,7 @@ export class PermissionCoordinator {
     if (params.mode === 'url') return undefined
     const conn = p.conn
     if (!turnChromeFor(p.plan.platform).chatInputCards || !(conn instanceof SlackConnection)) return undefined
-    const target = elicitTarget(params, SLACK_ELICIT_KINDS)
+    const target = elicitTarget(params, SLACK_ELICIT_SURFACE)
     if (!target) return undefined
     const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
     const blocks = buildElicitationCard(requestId, params, this.host.httpSlackSessionTarget(p))
@@ -1471,7 +1471,7 @@ export class PermissionCoordinator {
     p: Pending,
     wc: NonNullable<Pending['webchat']>
   ): Promise<CreateElicitationResponse | undefined> {
-    const form = elicitForm(params, WEBCHAT_ELICIT_KINDS)
+    const form = elicitForm(params, WEBCHAT_ELICIT_SURFACE)
     if (!form) return undefined
     const target = form[0]!
     const required = new Set(elicitRequiredProps(params))
@@ -1689,13 +1689,13 @@ export class PermissionCoordinator {
     if (rec.url) return await this.handleUrlElicitConsent(a.requestId, { ...rec, url: rec.url }, a)
     // A FORM card is answered by a record and nothing else, and every other card by a scalar
     // or a list — re-derived from the card's own params, exactly as `target` is below.
-    const form = rec.form ? elicitForm(rec.params, surfaceKinds(rec)) : null
+    const form = rec.form ? elicitForm(rec.params, surfaceOf(rec)) : null
     if (rec.form && !form) return
     if (a.value !== null && isFormAnswer(a.value) !== !!form) return
     // Each kind takes one shape of answer and no other: a list for a multi-select, a number
     // for a numeric field, a string for the rest. Dismiss (null) settles any of them.
     if (a.value !== null && !isFormAnswer(a.value) && !answerFitsKind(rec.kind, a.value)) return
-    const target = elicitTarget(rec.params, surfaceKinds(rec))
+    const target = elicitTarget(rec.params, surfaceOf(rec))
     if (a.webchatConversationId !== undefined) {
       if (rec.surface !== 'webchat' || rec.wc.conversationId !== a.webchatConversationId) return
       // The card names every answer it accepts; anything else would inject an unoffered value

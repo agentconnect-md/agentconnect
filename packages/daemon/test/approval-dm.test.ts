@@ -1,7 +1,7 @@
 import { agentHostKey } from '../src/acp/host-key.js'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
-import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { PermissionCoordinator, type PermissionHost } from '../src/permissions/coordinator.js'
 import type { SlackConnection } from '../src/slack/connection.js'
 import { LocalStore } from '../src/store/local-store.js'
@@ -32,6 +32,18 @@ function permissionParams(): RequestPermissionRequest {
       { optionId: 'o-deny', name: 'Deny', kind: 'reject_once' }
     ]
   } as unknown as RequestPermissionRequest
+}
+
+/** An MCP-approval elicitation whose single enum field offers `options` — the DM's card path. */
+function approvalElicitation(options: string[]): CreateElicitationRequest {
+  return {
+    sessionId: ACP_SESSION,
+    toolCallId: 'call-e',
+    mode: 'form',
+    message: 'Which one?',
+    requestedSchema: { type: 'object', properties: { pick: { type: 'string', enum: options } }, required: ['pick'] },
+    _meta: { codex_approval_kind: 'mcp_tool_call' }
+  } as unknown as CreateElicitationRequest
 }
 
 async function world(over?: {
@@ -135,6 +147,32 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     expect(rows).toMatchObject([{ status: 'allowed', resolvedBy: 'slack:T1:U1', resolvedByName: 'Ada' }])
     expect(w.conn.updateBlocks).toHaveBeenCalled()
     await w.store.close()
+  })
+
+  // The DM builds its card with the very same `buildElicitationCard` the in-channel card uses,
+  // so #1794 gap 7's option cap has to read the same on both — every option, or no card at all.
+  it('carries every option of a long enum onto the approval DM, and declines past the cap', async () => {
+    const seven = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+    const w = await world()
+    void w.coordinator.onAcpElicit(OWNER, ACP_SESSION, approvalElicitation(seven))
+    await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
+    const blocks = (w.conn.postBlocks.mock.calls[0] as unknown[])[1] as any[]
+    const actions = blocks.find((b) => b.type === 'actions')
+    expect(actions.elements.map((e: any) => e.text.text)).toEqual([...seven, 'Dismiss'])
+    await w.store.close()
+
+    // Past the cap `buildElicitationCard` returns null, so the DM posts the intro and no buttons.
+    const over = await world()
+    void over.coordinator.onAcpElicit(
+      OWNER,
+      ACP_SESSION,
+      approvalElicitation(Array.from({ length: 25 }, (_, i) => `o${i}`))
+    )
+    await vi.waitFor(() => expect(over.conn.postBlocks).toHaveBeenCalledTimes(1))
+    const overBlocks = (over.conn.postBlocks.mock.calls[0] as unknown[])[1] as any[]
+    expect(overBlocks.some((b) => b.type === 'actions')).toBe(false)
+    await over.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
+    await over.store.close()
   })
 
   it('refuses a wrong actor and an unanswerable verify without settling the request', async () => {

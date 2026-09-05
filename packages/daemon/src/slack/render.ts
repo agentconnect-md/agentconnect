@@ -604,23 +604,35 @@ export function buildPermissionUpdateCard(updateUrl: string): unknown[] {
  *  LIST of the chosen values, `number` with a real JS number, the rest with one scalar. */
 export type ElicitKind = 'enum' | 'boolean' | 'multi-enum' | 'text' | 'number'
 
-/** What a surface declares it is able to render. {@link elicitTarget} skips every property
- *  whose kind is absent here, so a kind reaches a surface only once that surface claims it —
- *  a new kind is invisible to every other surface without anyone remembering to exclude it. */
-export type ElicitSurfaceKinds = ReadonlySet<ElicitKind>
+/** What a surface declares it is able to render — the field kinds it has controls for, and the
+ *  most options one of those controls may offer. {@link elicitTarget} skips every property the
+ *  surface has not claimed on either count, so a kind (or an option list) reaches a surface only
+ *  once that surface claims it, and a form it cannot show whole is declined rather than trimmed.
+ *  Every surface limit belongs here: a limit left inside a card builder is one the reduction
+ *  cannot see, which is exactly how an over-long option list used to be quietly cut to fit. */
+export interface ElicitSurface {
+  kinds: ReadonlySet<ElicitKind>
+  /** The most options one field may offer here. `undefined` is no limit — webchat renders them all. */
+  maxOptions?: number
+}
+
+/** Slack allows 25 elements in one `actions` block and wraps them across lines, so the card can
+ *  offer every option of a list this long and still keep its Dismiss button. A longer list is
+ *  declined: no card is built from a slice of it, which is what made a pick a misreported answer. */
+const SLACK_ELICIT_MAX_OPTIONS = 24
 
 /** Slack's card is a row of buttons: it can express "pick one", not "pick several, then
  *  confirm", and it has no field to type into, so those forms are declined there instead. */
-export const SLACK_ELICIT_KINDS: ElicitSurfaceKinds = new Set<ElicitKind>(['enum', 'boolean'])
+export const SLACK_ELICIT_SURFACE: ElicitSurface = {
+  kinds: new Set<ElicitKind>(['enum', 'boolean']),
+  maxOptions: SLACK_ELICIT_MAX_OPTIONS
+}
 
-/** Webchat's card has toggles, a confirm control and a typed input, so it takes every kind. */
-export const WEBCHAT_ELICIT_KINDS: ElicitSurfaceKinds = new Set<ElicitKind>([
-  'enum',
-  'boolean',
-  'multi-enum',
-  'text',
-  'number'
-])
+/** Webchat's card has toggles, a confirm control and a typed input, so it takes every kind,
+ *  and its list scrolls, so it declares no option limit. */
+export const WEBCHAT_ELICIT_SURFACE: ElicitSurface = {
+  kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum', 'text', 'number'])
+}
 
 /** The `format` values MCP `2025-11-25` defines for an elicited string — exactly these four. */
 export type ElicitFormat = 'email' | 'uri' | 'date' | 'date-time'
@@ -857,12 +869,16 @@ export function elicitFieldLabel(params: CreateElicitationRequest, propName: str
  * kind. The shared scan behind {@link elicitTarget} and {@link elicitForm}, so the two can
  * never disagree about what is renderable. Empty for URL-mode and an empty/absent schema.
  */
-function elicitCandidates(params: CreateElicitationRequest, renderable: ElicitSurfaceKinds): ElicitTarget[] {
+function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurface): ElicitTarget[] {
   const p = params as {
     mode?: string
     requestedSchema?: { properties?: Record<string, Record<string, unknown>> }
   }
   if (p.mode !== 'form') return []
+  const renderable = surface.kinds
+  // More options than the surface can show is not a renderable field: a card built from part of
+  // the list would report the reader's pick as their answer to the whole question.
+  const fits = (options: readonly unknown[]) => surface.maxOptions === undefined || options.length <= surface.maxOptions
   const found: ElicitTarget[] = []
   for (const [name, prop] of Object.entries(p.requestedSchema?.properties ?? {})) {
     const keep = (t: ElicitTarget | null) => {
@@ -876,7 +892,7 @@ function elicitCandidates(params: CreateElicitationRequest, renderable: ElicitSu
         : Array.isArray(en)
           ? en.map((v) => ({ value: String(v), label: clampTo(String(v), 75) }))
           : []
-      if (options.length && renderable.has('enum')) keep({ propName: name, kind: 'enum', options })
+      if (options.length && fits(options) && renderable.has('enum')) keep({ propName: name, kind: 'enum', options })
       // Free text is the string with nothing to choose from — an enumerated one is a pick,
       // and typing into it would let an unoffered value through.
       if (!options.length && renderable.has('text')) keep(textTarget(name, prop))
@@ -889,7 +905,7 @@ function elicitCandidates(params: CreateElicitationRequest, renderable: ElicitSu
       const max = itemBound(prop.maxItems)
       // Bounds that admit only the empty selection, or none at all, are not a question.
       const askable = max === undefined || (max > 0 && max >= (min ?? 0))
-      if (options.length && askable)
+      if (options.length && fits(options) && askable)
         keep({
           propName: name,
           kind: 'multi-enum',
@@ -940,10 +956,10 @@ export function elicitUrl(params: CreateElicitationRequest): { elicitationId: st
  * required one, and stopping here would decline a form this surface can in fact answer. Pure,
  * and shared by every surface so the option values and their interpretation can't drift.
  */
-export function elicitTarget(params: CreateElicitationRequest, renderable: ElicitSurfaceKinds): ElicitTarget | null {
+export function elicitTarget(params: CreateElicitationRequest, surface: ElicitSurface): ElicitTarget | null {
   const required = elicitRequiredProps(params)
   // A required field we can't render is unanswerable: accepting without it would assert a lie.
-  return elicitCandidates(params, renderable).find((t) => required.every((r) => r === t.propName)) ?? null
+  return elicitCandidates(params, surface).find((t) => required.every((r) => r === t.propName)) ?? null
 }
 
 /**
@@ -955,8 +971,8 @@ export function elicitTarget(params: CreateElicitationRequest, renderable: Elici
  * exactly what {@link elicitTarget} would return, which is what keeps a single-field card's
  * wire payload unchanged.
  */
-export function elicitForm(params: CreateElicitationRequest, renderable: ElicitSurfaceKinds): ElicitTarget[] | null {
-  const targets = elicitCandidates(params, renderable)
+export function elicitForm(params: CreateElicitationRequest, surface: ElicitSurface): ElicitTarget[] | null {
+  const targets = elicitCandidates(params, surface)
   if (!targets.length || targets.length > ELICIT_FORM_FIELD_CAP) return null
   const rendered = new Set(targets.map((t) => t.propName))
   return elicitRequiredProps(params).every((r) => rendered.has(r)) ? targets : null
@@ -1057,22 +1073,31 @@ function elicitCardMessage(params: CreateElicitationRequest): string {
     .replace(BARE_URL_RE, (m) => `\`${m}\``)
 }
 
+/** Slack's own limit on one section's mrkdwn text. */
+const SLACK_SECTION_TEXT_CAP = 3000
+
+/** How much of the agent's question a card carries. Cut only where Slack itself would refuse the
+ *  block — the old 400 cut ordinary questions Slack could have shown whole, and {@link clampTo}'s
+ *  trailing `…` is the only mark a cut ever gets, so a shorter cap is a quieter one. */
+const ELICIT_MESSAGE_CAP = SLACK_SECTION_TEXT_CAP - 200
+
 /**
- * Build the interactive elicitation card: the agent's `message`, an optional field title,
- * and an actions row of option buttons (one per {@link elicitTarget} option, capped at 5)
- * plus a Dismiss button. The choice rides each button `value` (`<requestId>|<optionValue>`).
- * Returns null when the form can't be rendered inline (caller declines) — including a
- * multi-select, which {@link SLACK_ELICIT_KINDS} withholds from this surface. Pure.
+ * Build the interactive elicitation card: the agent's `message`, an optional field title, and an
+ * actions row carrying EVERY {@link elicitTarget} option as a button, plus a Dismiss button. The
+ * choice rides each button `value` (`<requestId>|<optionValue>`). Returns null when the form
+ * can't be rendered inline (caller declines) — a multi-select, which {@link SLACK_ELICIT_SURFACE}
+ * withholds from this surface, or a list longer than that surface declares it can show, which the
+ * reduction has already refused. Nothing here trims a list to fit. Pure.
  */
 export function buildElicitationCard(
   requestId: string,
   params: CreateElicitationRequest,
   sessionTarget?: string
 ): unknown[] | null {
-  const target = elicitTarget(params, SLACK_ELICIT_KINDS)
+  const target = elicitTarget(params, SLACK_ELICIT_SURFACE)
   if (!target) return null
   const message = elicitCardMessage(params)
-  const buttons = target.options.slice(0, 5).map((o, i) => ({
+  const buttons = target.options.map((o, i) => ({
     type: 'button',
     action_id: `${ELICIT_ACTION_PREFIX}:${i}`,
     text: { type: 'plain_text', text: o.label, emoji: true },
@@ -1085,7 +1110,7 @@ export function buildElicitationCard(
     value: requestId
   } as (typeof buttons)[number])
   return [
-    { type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, 400)}` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}` } },
     { type: 'actions', ...(sessionTarget ? { block_id: sessionTarget } : {}), elements: buttons }
   ]
 }
@@ -1094,7 +1119,8 @@ export function buildElicitationCard(
  *  buildElicitationCard} once answered, dismissed, or cancelled. Pure. */
 export function buildElicitationResolvedCard(params: CreateElicitationRequest, decision: string): unknown[] {
   const message = elicitCardMessage(params)
-  return [{ type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, 400)}\n${decision}` } }]
+  const text = clampTo(`:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}\n${decision}`, SLACK_SECTION_TEXT_CAP)
+  return [{ type: 'section', text: { type: 'mrkdwn', text } }]
 }
 
 export interface SharedStatusActions {
