@@ -667,17 +667,26 @@ function readConsentUrl(url: string): { scheme: string; host: string; rest: stri
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null
   // Split the ORIGINAL string, never the re-serialized one: the reader has to examine the same
   // bytes the agent asked for, down to a trailing dot or a stray case the URL parser would fix.
-  const at = url.indexOf(parsed.host, url.indexOf('//'))
-  if (at < 0) return null
+  // Split by POSITION, not by searching for `parsed.host` — the parser lowercases an uppercase
+  // host and punycodes a Unicode one, so neither occurs in the original and the search would
+  // find nothing, leaving a card with no URL and no way to consent.
+  const afterScheme = url.indexOf('//') + 2
+  const authorityEnd = url.slice(afterScheme).search(/[/?#]/)
+  const hostEnd = authorityEnd < 0 ? url.length : afterScheme + authorityEnd
   const warnings: string[] = []
   if (parsed.protocol !== 'https:')
     warnings.push('Not encrypted (http) — anything you type on that page can be read in transit.')
-  if (/(^|\.)xn--/i.test(parsed.hostname))
-    warnings.push('This host is written in Punycode (xn--), which can disguise a lookalike domain.')
+  // Both spellings of the same risk: the parser punycodes a Unicode host, so check the ORIGINAL
+  // too — the reader is looking at that, and a homograph is only a lookalike on screen.
+  const shownHost = url.slice(afterScheme, hostEnd)
+  if (/(^|\.)xn--/i.test(parsed.hostname) || /[^\x00-\x7F]/.test(shownHost))
+    warnings.push(
+      `This host is not plain ASCII (it resolves to ${parsed.hostname}), which can disguise a lookalike domain.`
+    )
   return {
-    scheme: url.slice(0, at),
-    host: url.slice(at, at + parsed.host.length),
-    rest: url.slice(at + parsed.host.length),
+    scheme: url.slice(0, afterScheme),
+    host: url.slice(afterScheme, hostEnd),
+    rest: url.slice(hostEnd),
     warnings
   }
 }

@@ -624,9 +624,26 @@ describe('the agent’s URL-mode consent card', () => {
     live.steps = urlCard('https://xn--80ak6aa92e.example-login.com/authorize')
     await render()
 
-    expect(text()).toContain('Punycode')
+    expect(text()).toContain('not plain ASCII')
     // The full URL is still shown, and the card is still answerable — the warning is advisory.
     expect(text()).toContain('xn--80ak6aa92e.example-login.com')
+    expect(linkNamed('Open link')).toBeDefined()
+  })
+
+  // The parser lowercases an uppercase host and punycodes a Unicode one, so neither spelling
+  // occurs in the original string. Searching it for the normalized host found nothing and left
+  // a card with no URL and no way to consent, for requests the daemon had already accepted.
+  it('shows the URL and offers Open for hosts the parser would rewrite', async () => {
+    live.steps = urlCard('https://Billing.EXAMPLE.com/Pay?t=1')
+    await render()
+    expect(text()).toContain('Billing.EXAMPLE.com')
+    expect(linkNamed('Open link')?.getAttribute('href')).toBe('https://Billing.EXAMPLE.com/Pay?t=1')
+
+    live.steps = urlCard('https://例え.jp/authorize')
+    await render()
+    // Shown as the reader sees it, warned about as what it resolves to.
+    expect(text()).toContain('例え.jp')
+    expect(text()).toContain('not plain ASCII')
     expect(linkNamed('Open link')).toBeDefined()
   })
 
@@ -641,7 +658,7 @@ describe('the agent’s URL-mode consent card', () => {
     live.steps = urlCard('https://billing.example.com/pay')
     await render()
 
-    expect(text()).not.toContain('Punycode')
+    expect(text()).not.toContain('not plain ASCII')
     expect(text()).not.toContain('Not encrypted')
   })
 
