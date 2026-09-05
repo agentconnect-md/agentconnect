@@ -645,7 +645,50 @@ function PlanBlock({ step }: { step: FmtStep }) {
 const ELICIT_OUTCOME: Record<string, { icon: string; color: string; label: (answer?: string) => string }> = {
   accepted: { icon: 'check', color: 'var(--green-500)', label: (answer) => answer ?? 'Answered' },
   dismissed: { icon: 'x', color: 'var(--text-tertiary)', label: () => 'Dismissed' },
-  cancelled: { icon: 'clock', color: 'var(--text-tertiary)', label: () => 'Cancelled' }
+  cancelled: { icon: 'clock', color: 'var(--text-tertiary)', label: () => 'Cancelled' },
+  // URL mode's second settlement: the agent reported the flow behind an opened link finished.
+  completed: { icon: 'check', color: 'var(--green-500)', label: () => 'Completed' }
+}
+
+/** How a consent card reads its URL: the three display parts, so the HOST can be emphasized
+ *  against the rest, plus what to warn about. Both checks are on the host alone — a lookalike
+ *  hides there, not in the path — and both are advisory: the card still shows the full URL and
+ *  still opens only on an explicit click. Punycode (`xn--`) is the minimum ask, since it is how
+ *  a homograph host spells itself on the wire. Null ⇒ not something to hand a browser tab at
+ *  all; the daemon already refuses those, and the card refuses them again rather than trust the
+ *  wire. Pure — it parses the URL and never touches the network. */
+function readConsentUrl(url: string): { scheme: string; host: string; rest: string; warnings: string[] } | null {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null
+  // Split the ORIGINAL string, never the re-serialized one: the reader has to examine the same
+  // bytes the agent asked for, down to a trailing dot or a stray case the URL parser would fix.
+  // Split by POSITION, not by searching for `parsed.host` — the parser lowercases an uppercase
+  // host and punycodes a Unicode one, so neither occurs in the original and the search would
+  // find nothing, leaving a card with no URL and no way to consent.
+  const afterScheme = url.indexOf('//') + 2
+  const authorityEnd = url.slice(afterScheme).search(/[/?#]/)
+  const hostEnd = authorityEnd < 0 ? url.length : afterScheme + authorityEnd
+  const warnings: string[] = []
+  if (parsed.protocol !== 'https:')
+    warnings.push('Not encrypted (http) — anything you type on that page can be read in transit.')
+  // Both spellings of the same risk: the parser punycodes a Unicode host, so check the ORIGINAL
+  // too — the reader is looking at that, and a homograph is only a lookalike on screen.
+  const shownHost = url.slice(afterScheme, hostEnd)
+  if (/(^|\.)xn--/i.test(parsed.hostname) || /[^\x00-\x7F]/.test(shownHost))
+    warnings.push(
+      `This host is not plain ASCII (it resolves to ${parsed.hostname}), which can disguise a lookalike domain.`
+    )
+  return {
+    scheme: url.slice(0, afterScheme),
+    host: url.slice(afterScheme, hostEnd),
+    rest: url.slice(hostEnd),
+    warnings
+  }
 }
 
 /** What a multi-select card asks of the reader, from the schema's bounds. */
@@ -808,6 +851,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   const [picks, setPicks] = useState<Record<string, string[]>>(() => formPicks(step.elicit?.fields))
   const elicit = step.elicit
   const multi = elicit?.multi
+  const consentUrl = elicit?.url
+  const consent = consentUrl ? readConsentUrl(consentUrl) : null
   const fields = elicit?.fields?.length ? elicit.fields : undefined
   const typed = !fields && elicit && (elicit.text || elicit.number) ? elicit : undefined
   const min = multi?.minItems ?? 0
@@ -833,6 +878,54 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
             <Icon name={settled.icon} size={13} color={settled.color} />
             <span className="min-w-0 truncate">{settled.label(elicit.answerLabel)}</span>
           </span>
+        ) : consent && consentUrl ? (
+          // URL mode. The full URL is shown for examination and NOTHING here touches it: no
+          // favicon, no preview, no title lookup, no prefetch hint. Opening is the reader's own
+          // click on a plain anchor into a new tab — never an iframe or an in-app webview — so
+          // neither the console nor the model can observe the page or what is typed there.
+          // That click is also the consent the ACP request resolves on.
+          <div className="flex w-full min-w-0 flex-col gap-[10px]">
+            <div className="min-w-0 rounded-sm border border-(--border-subtle) bg-(--surface-card) px-[10px] py-[8px] font-mono text-[12.5px] leading-[1.5] break-all">
+              <span className="text-(--text-tertiary)">{consent.scheme}</span>
+              <span className="font-medium text-(--text-primary)">{consent.host}</span>
+              <span className="text-(--text-tertiary)">{consent.rest}</span>
+            </div>
+            {consent.warnings.map((w) => (
+              <span
+                key={w}
+                className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--amber-500)"
+              >
+                <span className="mt-[2px] flex-none">
+                  <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
+                </span>
+                <span className="min-w-0">{w}</span>
+              </span>
+            ))}
+            <div className="flex flex-wrap items-center gap-[6px]">
+              {onAnswer ? (
+                <a
+                  className="dsbtn dsbtn-primary xs no-underline"
+                  href={consentUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => onAnswer(consentUrl)}
+                >
+                  Open link
+                </a>
+              ) : (
+                <span className="dsbtn dsbtn-primary xs cursor-default opacity-55">Open link</span>
+              )}
+              <button
+                type="button"
+                className="chip disabled:cursor-default disabled:opacity-55"
+                disabled={!onAnswer}
+                onClick={() => onAnswer?.(null)}
+                title="Refuse without opening"
+              >
+                Decline
+              </button>
+            </div>
+          </div>
         ) : fields ? (
           <div className="flex w-full min-w-0 flex-col gap-[10px]">
             {fields.map((f) => {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
@@ -691,4 +691,75 @@ describe('AcpHost.stop', () => {
     },
     15_000
   )
+})
+
+// URL-mode elicitation (issue #1794 gap 4). The daemon is an ACP *client*: it answers
+// `elicitation/create` and receives `elicitation/complete`, and never raises either.
+describe('AcpHost elicitation capabilities', () => {
+  it('advertises both form and url elicitation, so a runtime may pick the URL seam', async () => {
+    const chunks: string[] = []
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [{ name: 'AC_ECHO_CLIENT_CAPS', value: '1' }] },
+      {
+        onUpdate: (_sid, update) => {
+          const c = (update as any).content
+          if ((update as any).sessionUpdate === 'agent_message_chunk' && c?.type === 'text') chunks.push(c.text)
+        }
+      }
+    )
+    await host.start()
+    const sessionId = await host.newSession('/tmp')
+    await host.prompt(sessionId, [{ type: 'text', text: 'hi' }])
+    // Without `url` here a runtime cannot use the seam the spec reserves for credentials.
+    expect(JSON.parse(chunks[0]!).elicitation).toEqual({ form: {}, url: {} })
+    await host.stop()
+  })
+
+  it('routes a URL elicitation to the policy and reports its completion by id alone', async () => {
+    const completed: string[] = []
+    const chunks: string[] = []
+    let seen: any
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [{ name: 'AC_ELICIT_URL', value: '1' }] },
+      {
+        onUpdate: (_sid, update) => {
+          const c = (update as any).content
+          if ((update as any).sessionUpdate === 'agent_message_chunk' && c?.type === 'text') chunks.push(c.text)
+        },
+        onElicit: async (_sid, params) => {
+          seen = params
+          return { action: 'accept' }
+        },
+        onElicitComplete: (elicitationId) => completed.push(elicitationId)
+      }
+    )
+    await host.start()
+    const sessionId = await host.newSession('/tmp')
+    await host.prompt(sessionId, [{ type: 'text', text: 'hi' }])
+    expect(seen).toMatchObject({ mode: 'url', elicitationId: 'el-fixture', url: 'https://example.test/authorize' })
+    expect(chunks).toContain('elicited:accept')
+    // The notification carries no session — only the elicitation id it settles. It rides the
+    // same stream as the prompt result and is dispatched independently of it, so wait rather
+    // than assume the turn's resolution ordered it.
+    await vi.waitFor(() => expect(completed).toEqual(['el-fixture']))
+    await host.stop()
+  })
+
+  it('declines a URL elicitation when no policy is wired, rather than hanging the turn', async () => {
+    const chunks: string[] = []
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [{ name: 'AC_ELICIT_URL', value: '1' }] },
+      {
+        onUpdate: (_sid, update) => {
+          const c = (update as any).content
+          if ((update as any).sessionUpdate === 'agent_message_chunk' && c?.type === 'text') chunks.push(c.text)
+        }
+      }
+    )
+    await host.start()
+    const sessionId = await host.newSession('/tmp')
+    await host.prompt(sessionId, [{ type: 'text', text: 'hi' }])
+    await vi.waitFor(() => expect(chunks).toContain('elicited:decline'))
+    await host.stop()
+  })
 })

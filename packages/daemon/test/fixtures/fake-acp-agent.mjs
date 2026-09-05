@@ -105,11 +105,34 @@ const configOptions = (sessionId) => {
   return options.length ? options : undefined
 }
 
+let clientCapabilities
+let requestCounter = 1000
+let pendingElicit
 rl.on('line', async (line) => {
   if (!line.trim()) return
   const msg = JSON.parse(line)
   const { id, method, params } = msg
+  // The client's answer to our elicitation/create: report the flow complete, then end the turn.
+  if (method === undefined && pendingElicit && msg.result?.action !== undefined) {
+    const { promptId, sessionId } = pendingElicit
+    pendingElicit = undefined
+    send({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: `elicited:${msg.result.action}` }
+        }
+      }
+    })
+    send({ jsonrpc: '2.0', method: 'elicitation/complete', params: { elicitationId: 'el-fixture' } })
+    send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } })
+    return
+  }
   if (method === 'initialize') {
+    clientCapabilities = params?.clientCapabilities
     send({ jsonrpc: '2.0', id, result: { protocolVersion: 1, agentCapabilities: agentCapabilities() } })
   } else if (method === 'session/new') {
     if (!acceptsAdditionalDirectories(id, params)) return
@@ -154,6 +177,39 @@ rl.on('line', async (line) => {
     send({ jsonrpc: '2.0', id, result: {} })
   } else if (method === 'session/prompt') {
     const text = (params.prompt ?? []).map((b) => b.text ?? '').join('')
+    // `AC_ECHO_CLIENT_CAPS=1` replies with what the client advertised at initialize, which is
+    // the only way a test sees the capability declaration from the agent's own side.
+    if (process.env.AC_ECHO_CLIENT_CAPS === '1') {
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: JSON.stringify(clientCapabilities) }
+          }
+        }
+      })
+    }
+    // `AC_ELICIT_URL=1` runs one URL-mode elicitation and reports it complete afterwards.
+    if (process.env.AC_ELICIT_URL === '1') {
+      const elicitId = ++requestCounter
+      pendingElicit = { promptId: id, sessionId: params.sessionId }
+      send({
+        jsonrpc: '2.0',
+        id: elicitId,
+        method: 'elicitation/create',
+        params: {
+          sessionId: params.sessionId,
+          mode: 'url',
+          elicitationId: 'el-fixture',
+          url: 'https://example.test/authorize',
+          message: 'Open the login page'
+        }
+      })
+      return
+    }
     // send a session/update notification to the client
     send({
       jsonrpc: '2.0',

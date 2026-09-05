@@ -1164,7 +1164,10 @@ export interface SessionStep {
      *  descriptor above is then absent, so a reader that does not know `fields` has nothing
      *  to answer with rather than half an answer. */
     fields?: ElicitFieldSpec[]
-    outcome?: 'accepted' | 'dismissed' | 'cancelled'
+    /** Present ⇒ a URL-mode CONSENT card: the reader examines this exact URL and opens it in
+     *  their own browser tab. Nothing here ever fetches it, and `options` is then empty. */
+    url?: string
+    outcome?: 'accepted' | 'dismissed' | 'cancelled' | 'completed'
     answerLabel?: string
   }
 }

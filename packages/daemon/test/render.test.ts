@@ -23,6 +23,7 @@ import {
   elicitFormContent,
   elicitRequiredProps,
   elicitTarget,
+  elicitUrl,
   SLACK_ELICIT_KINDS,
   WEBCHAT_ELICIT_KINDS,
   multiSelectAccepts,
@@ -1980,5 +1981,69 @@ describe('elicitation card', () => {
     const blocks = buildElicitationResolvedCard(form({ ok: { type: 'boolean' } }), ':white_check_mark: Yes')
     expect(blocks).toHaveLength(1)
     expect((blocks[0] as any).text.text).toContain(':white_check_mark: Yes')
+  })
+})
+
+// URL-mode elicitation (issue #1794 gap 4).
+describe('elicitUrl', () => {
+  const urlReq = (overrides: Record<string, unknown> = {}) =>
+    ({
+      mode: 'url',
+      sessionId: 's1',
+      message: 'Sign in',
+      elicitationId: 'el-1',
+      url: 'https://x.test/a',
+      ...overrides
+    }) as any
+
+  it('reads the id and the URL verbatim, never a re-serialized spelling of it', () => {
+    // A trailing dot and an upper-case host are exactly what a lookalike hides behind, so the
+    // reader has to be shown the bytes the agent asked for, not the parser's cleanup of them.
+    const req = urlReq({ url: 'https://Login.Example.test./a?b=1' })
+    expect(elicitUrl(req)).toEqual({ elicitationId: 'el-1', url: 'https://Login.Example.test./a?b=1' })
+  })
+
+  it('refuses anything a browser tab must never be handed, and any non-URL ask', () => {
+    for (const url of ['javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'mailto:a@b.c', 'nope'])
+      expect(elicitUrl(urlReq({ url }))).toBeNull()
+    expect(elicitUrl(urlReq({ url: `https://x.test/${'a'.repeat(2100)}` }))).toBeNull()
+    // A completion notification is keyed by the id alone; without one there is nothing to settle.
+    expect(elicitUrl(urlReq({ elicitationId: '' }))).toBeNull()
+    expect(elicitUrl(urlReq({ elicitationId: undefined }))).toBeNull()
+    // And a form-mode ask is never a URL ask, whatever else it carries.
+    expect(elicitUrl({ mode: 'form', message: 'x', url: 'https://x.test/a' } as any)).toBeNull()
+  })
+
+  it('takes http as well as https — the card calls the missing encryption out instead', () => {
+    expect(elicitUrl(urlReq({ url: 'http://x.test/a' }))?.url).toBe('http://x.test/a')
+  })
+})
+
+describe('a FORM-mode elicitation card never renders a URL as clickable', () => {
+  const askWith = (message: string) =>
+    ({
+      mode: 'form',
+      sessionId: 's1',
+      message,
+      requestedSchema: { type: 'object', properties: { ok: { type: 'boolean' } } }
+    }) as any
+  const cardText = (message: string) => (buildElicitationCard('r1', askWith(message))![0] as any).text.text
+
+  it('defuses a bare URL, which Slack would otherwise autolink', () => {
+    const text = cardText('Paste the token from https://evil.test/steal')
+    // Still readable in full — it just is not something to tap.
+    expect(text).toContain('https://evil.test/steal')
+    expect(text).toContain('`https://evil.test/steal`')
+  })
+
+  it('defuses Slack’s own link syntax, label and all', () => {
+    const text = cardText('Click <https://evil.test/steal|here> to continue')
+    expect(text).not.toContain('<https://evil.test/steal|here>')
+    expect(text).toContain('&lt;')
+  })
+
+  it('defuses the same URL on the settled card, which outlives the buttons', () => {
+    const blocks = buildElicitationResolvedCard(askWith('See https://evil.test/steal'), ':white_check_mark: Yes')
+    expect((blocks[0] as any).text.text).toContain('`https://evil.test/steal`')
   })
 })

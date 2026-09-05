@@ -4510,6 +4510,7 @@ export class Daemon {
           }
         : {}),
       onElicit: (sid, params) => this.permissions.onAcpElicit(opts.hostKey, sid, params),
+      onElicitComplete: (elicitationId) => this.permissions.onAcpElicitComplete(opts.hostKey, elicitationId),
       onSdkLifecycle: (sid, message) => this.onSdkLifecycle(opts.hostKey, sid, message),
       // Pairs the runtime's terminal exit with the ordinary rebuild — see reapTerminalHost.
       onTerminal: () => this.reapTerminalHost(opts.hostKey, constructed.host),

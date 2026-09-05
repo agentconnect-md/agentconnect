@@ -199,7 +199,7 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   // only after the fact. There is no relay capability echo to gate on (`rd/hello/ok` carries
   // only `relayId`), so this is the tradeoff rather than an oversight.
   z.object({ kind: z.literal('plan'), entries: z.array(PlanEntry) }),
-  // The agent asked for a choice (ACP `elicitation/create`, form mode) — webchat's own
+  // The agent asked for a choice (ACP `elicitation/create`, form or url mode) — webchat's own
   // in-band card, the peer of the Slack Block Kit one. Deliberately NOT the raw
   // `requestedSchema`: the daemon has already reduced the form to its renderable
   // field(s), and its options are the only answers the browser may send back (as the
@@ -234,16 +234,27 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     // absent — deliberately, and the same closed-failure trade `text` records: an old reader
     // sees an optionless card it can only Dismiss, rather than a card it could half-fill with
     // one field's answer that the daemon would then refuse.
-    fields: z.array(ElicitField).min(2).max(ELICIT_FORM_FIELD_CAP).optional()
+    fields: z.array(ElicitField).min(2).max(ELICIT_FORM_FIELD_CAP).optional(),
+    // Present ⇒ the card is a URL-mode CONSENT card (ACP `ElicitationUrlMode`): the reader is
+    // shown this exact URL and opens it in their own browser, and nothing about the page ever
+    // returns here. `options` is then empty and every field descriptor above is absent, so the
+    // same closed skew `text` records holds — an old reader sees a card it can only Dismiss,
+    // which the daemon reads as the spec's `decline`, never as consent. Only http/https reach
+    // here; the daemon declines any other scheme rather than hand a browser an unopenable href.
+    url: z.string().min(1).max(2048).optional()
   }),
   // The same card, settled. Slack rewrites its message in place; this stream is
   // append-only, so the collapse is a second event keyed by the same `requestId`.
   // `label` is the chosen option's label — the chosen labels joined, for a multi-select —
   // and is present only on 'accepted'.
+  // 'completed' is URL mode's second settlement (ACP `elicitation/complete`): the card is
+  // already 'accepted' at consent, and this only re-labels it once the agent says the flow
+  // finished. An old reader fails THIS frame's decode and keeps showing the consented card —
+  // the losing direction is a missing "Completed" label, never a wrong verdict.
   z.object({
     kind: z.literal('elicitation_resolved'),
     requestId: z.string().min(1).max(200),
-    outcome: z.enum(['accepted', 'dismissed', 'cancelled']),
+    outcome: z.enum(['accepted', 'dismissed', 'cancelled', 'completed']),
     label: z.string().optional()
   })
 ])

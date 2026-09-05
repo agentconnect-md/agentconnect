@@ -911,6 +911,26 @@ function elicitCandidates(params: CreateElicitationRequest, renderable: ElicitSu
   return found
 }
 
+/** The elicitation's URL-mode target (ACP `ElicitationUrlMode`), or null when this is not a
+ *  URL-mode ask. Only `http`/`https` survive: every other scheme — `javascript:`, `data:`,
+ *  `file:` — is something a consent card must never hand a browser as an href, and the caller
+ *  declines instead. The URL is returned VERBATIM, never re-serialized, because the reader has
+ *  to examine the same bytes the agent asked for. Pure. */
+export function elicitUrl(params: CreateElicitationRequest): { elicitationId: string; url: string } | null {
+  const p = params as { mode?: string; url?: unknown; elicitationId?: unknown }
+  if (p.mode !== 'url') return null
+  if (typeof p.url !== 'string' || typeof p.elicitationId !== 'string' || !p.elicitationId) return null
+  if (p.url.length > 2048) return null
+  let parsed: URL
+  try {
+    parsed = new URL(p.url)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null
+  return { elicitationId: p.elicitationId, url: p.url }
+}
+
 /**
  * Resolve the single form field an elicitation card renders: the FIRST renderable property
  * that ALONE satisfies the schema's `required`. Returns null for URL-mode, an empty/absent
@@ -1021,6 +1041,22 @@ export function numberAccepts(target: ElicitTarget, value: number): boolean {
   return target.maximum === undefined || value <= target.maximum
 }
 
+const BARE_URL_RE = /(?:https?:\/\/|www\.)\S+/gi
+
+/** The agent-authored elicitation `message`, with every link in it defused. A form-mode ask
+ *  may not send the reader anywhere — the spec keeps URLs on URL-mode elicitations, whose
+ *  consent card is the only place a URL is ever followable — and Slack turns both bare URLs
+ *  and `<url|label>` into taps, so the angle-bracket form is escaped and the bare form is
+ *  wrapped in a code span, which Slack mrkdwn does not autolink. Pure. */
+function elicitCardMessage(params: CreateElicitationRequest): string {
+  const raw = (params as { message?: string }).message?.trim() || 'The agent needs your input'
+  return raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(BARE_URL_RE, (m) => `\`${m}\``)
+}
+
 /**
  * Build the interactive elicitation card: the agent's `message`, an optional field title,
  * and an actions row of option buttons (one per {@link elicitTarget} option, capped at 5)
@@ -1035,7 +1071,7 @@ export function buildElicitationCard(
 ): unknown[] | null {
   const target = elicitTarget(params, SLACK_ELICIT_KINDS)
   if (!target) return null
-  const message = (params as { message?: string }).message?.trim() || 'The agent needs your input'
+  const message = elicitCardMessage(params)
   const buttons = target.options.slice(0, 5).map((o, i) => ({
     type: 'button',
     action_id: `${ELICIT_ACTION_PREFIX}:${i}`,
@@ -1057,7 +1093,7 @@ export function buildElicitationCard(
 /** Build the RESOLVED elicitation card (buttons removed) that replaces {@link
  *  buildElicitationCard} once answered, dismissed, or cancelled. Pure. */
 export function buildElicitationResolvedCard(params: CreateElicitationRequest, decision: string): unknown[] {
-  const message = (params as { message?: string }).message?.trim() || 'The agent needs your input'
+  const message = elicitCardMessage(params)
   return [{ type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, 400)}\n${decision}` } }]
 }
 

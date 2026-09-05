@@ -86,6 +86,43 @@ describe('WebchatOutput — event / status framing', () => {
     }
   })
 
+  it('carries a URL-mode consent card, and its completion as a fourth outcome', () => {
+    const card = WebchatOutput.safeParse({
+      conversationId: CONV,
+      turnId: TURN,
+      index: 4,
+      event: {
+        kind: 'elicitation',
+        requestId: 'elicit-9',
+        message: 'Sign in to continue',
+        // No options and no field descriptors — the card is the URL.
+        options: [],
+        url: 'https://billing.example.test/oauth/authorize?state=xyz'
+      }
+    })
+    expect(card.success).toBe(true)
+    if (card.success && card.data.event?.kind === 'elicitation')
+      expect(card.data.event.url).toBe('https://billing.example.test/oauth/authorize?state=xyz')
+    // 'completed' re-labels an already-consented card; the three original outcomes are untouched.
+    expect(
+      WebchatOutput.safeParse({
+        conversationId: CONV,
+        turnId: TURN,
+        index: 5,
+        event: { kind: 'elicitation_resolved', requestId: 'elicit-9', outcome: 'completed' }
+      }).success
+    ).toBe(true)
+    // A form card written before this field still decodes to exactly what it always meant.
+    const form = WebchatOutput.safeParse({
+      conversationId: CONV,
+      turnId: TURN,
+      index: 6,
+      event: { kind: 'elicitation', requestId: 'elicit-1', message: 'Pick', options: [{ value: 'a', label: 'a' }] }
+    })
+    expect(form.success).toBe(true)
+    if (form.success && form.data.event?.kind === 'elicitation') expect(form.data.event.url).toBeUndefined()
+  })
+
   it('marks a multi-select card with its bounds, and leaves the single-choice card untouched', () => {
     const card = (event: Record<string, unknown>) =>
       WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 4, event })

@@ -265,11 +265,12 @@ type WebchatEvent =
       number?: { integer?: boolean; minimum?: number; maximum?: number }
       defaultValue?: string | number | boolean | string[]
       fields?: ElicitFieldSpec[]
+      url?: string
     }
   | {
       kind: 'elicitation_resolved'
       requestId: string
-      outcome: 'accepted' | 'dismissed' | 'cancelled'
+      outcome: 'accepted' | 'dismissed' | 'cancelled' | 'completed'
       label?: string
     }
 
@@ -641,7 +642,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 ...(ev.defaultValue !== undefined ? { defaultValue: ev.defaultValue } : {}),
                 // A multi-field form: the fields ARE the card, and the descriptors above are
                 // absent, so a build that does not know them shows nothing to answer with.
-                ...(ev.fields ? { fields: ev.fields } : {})
+                ...(ev.fields ? { fields: ev.fields } : {}),
+                // A URL-mode consent card. Carried through verbatim: the reader has to see the
+                // same bytes the agent asked for, so nothing here normalizes or shortens it.
+                ...(ev.url ? { url: ev.url } : {})
               },
               boundary: true
             })
