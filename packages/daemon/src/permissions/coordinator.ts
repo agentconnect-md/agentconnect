@@ -208,7 +208,7 @@ const CONSENTED_URL_ELICIT_CAP = 64
 /** `elicitation/complete` carries no session, so a consented card is keyed by its ACP id within
  *  the agent host that raised it — two agents may hold the same id concurrently. */
 function consentedUrlKey(owner: HostKey, elicitationId: string): string {
-  return `${owner} ${elicitationId}`
+  return `${owner}\x00${elicitationId}`
 }
 
 /** One outstanding `elicitation/create` awaiting a human answer. */
@@ -325,7 +325,7 @@ export class PermissionCoordinator {
   // ── Interactive elicitations (ACP elicitation/create, form + url mode) ──────
   private elicitSeq = 0
   private pendingElicits = new Map<string, PendingElicit>()
-  /** URL-mode cards already consented to, keyed by `<owner> <elicitationId>` and awaiting
+  /** URL-mode cards already consented to, keyed by `<owner>\x00<elicitationId>` and awaiting
    *  an `elicitation/complete` that may never come — their ACP request resolved at consent, so
    *  these hold only the webchat coordinates the "Completed" re-label is emitted on. Bounded:
    *  an agent that never completes its flows must not grow this without limit. */
