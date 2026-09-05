@@ -24,8 +24,8 @@ import {
   elicitRequiredProps,
   elicitTarget,
   elicitUrl,
-  SLACK_ELICIT_KINDS,
-  WEBCHAT_ELICIT_KINDS,
+  SLACK_ELICIT_SURFACE,
+  WEBCHAT_ELICIT_SURFACE,
   multiSelectAccepts,
   numberAccepts,
   safeElicitPattern,
@@ -1412,8 +1412,8 @@ describe('elicitation card', () => {
         required: ['ok']
       }
     } as any
-    expect(elicitTarget(req, WEBCHAT_ELICIT_KINDS)).toMatchObject({ propName: 'ok', kind: 'boolean' })
-    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toMatchObject({ propName: 'ok', kind: 'boolean' })
+    expect(elicitTarget(req, WEBCHAT_ELICIT_SURFACE)).toMatchObject({ propName: 'ok', kind: 'boolean' })
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)).toMatchObject({ propName: 'ok', kind: 'boolean' })
   })
 
   it('reaches a later enum when an earlier optional one is not the required field', () => {
@@ -1430,7 +1430,7 @@ describe('elicitation card', () => {
         required: ['branch']
       }
     } as any
-    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toMatchObject({ propName: 'branch' })
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)).toMatchObject({ propName: 'branch' })
   })
 
   it('declines when two properties are required, since one card answers one field', () => {
@@ -1444,18 +1444,18 @@ describe('elicitation card', () => {
         required: ['a', 'b']
       }
     } as any
-    expect(elicitTarget(req, WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(req, WEBCHAT_ELICIT_SURFACE)).toBeNull()
   })
 
   // maxItems 0 admits only the empty selection, so it is not a question — and emitting it
   // would fail the wire schema, dropping the card while the ACP request stayed live.
   it('skips a multi-select whose bounds admit nothing to choose', () => {
     const zero = form({ tags: { type: 'array', maxItems: 0, items: { type: 'string', enum: ['a', 'b'] } } })
-    expect(elicitTarget(zero, WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(zero, WEBCHAT_ELICIT_SURFACE)).toBeNull()
     const inverted = form({
       tags: { type: 'array', minItems: 2, maxItems: 1, items: { type: 'string', enum: ['a', 'b'] } }
     })
-    expect(elicitTarget(inverted, WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(inverted, WEBCHAT_ELICIT_SURFACE)).toBeNull()
   })
 
   it('renders titled enum (oneOf) as buttons carrying requestId|const, plus Dismiss', () => {
@@ -1479,8 +1479,65 @@ describe('elicitation card', () => {
     expect(btns[2].value).toBe('elicit-1')
   })
 
+  // #1794 gap 7: a seven-option enum used to render five buttons and still answer `accept`,
+  // reporting a pick from a set the reader never saw as their answer to the whole question.
+  it('renders EVERY option of a long enum, not the first five', () => {
+    const seven = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+    const blocks = buildElicitationCard('elicit-7', form({ pick: { type: 'string', enum: seven } })) as any[]
+    const btns = blocks[1].elements
+    expect(btns.map((b: any) => b.text.text)).toEqual([...seven, 'Dismiss'])
+    expect(btns.slice(0, 7).map((b: any) => b.value)).toEqual(seven.map((v) => `elicit-7|${v}`))
+    expect(btns.map((b: any) => b.action_id)).toEqual([
+      ...seven.map((_, i) => `${ELICIT_ACTION_PREFIX}:${i}`),
+      ELICIT_DISMISS_ACTION
+    ])
+  })
+
+  // The surface declares the limit and the reduction enforces it, so the card is never built
+  // from part of a list: at the boundary it shows everything, past it there is no card at all.
+  it('declines an enum longer than the Slack surface declares it can show', () => {
+    const opts = (n: number) => Array.from({ length: n }, (_, i) => `o${i}`)
+    const at = form({ pick: { type: 'string', enum: opts(24) } })
+    expect(elicitTarget(at, SLACK_ELICIT_SURFACE)?.options).toHaveLength(24)
+    expect((buildElicitationCard('elicit-24', at) as any[])[1].elements).toHaveLength(25)
+    const over = form({ pick: { type: 'string', enum: opts(25) } })
+    expect(elicitTarget(over, SLACK_ELICIT_SURFACE)).toBeNull()
+    expect(elicitForm(over, SLACK_ELICIT_SURFACE)).toBeNull()
+    expect(buildElicitationCard('elicit-25', over)).toBeNull()
+  })
+
+  // Webchat's list scrolls, so it declares no option limit and keeps rendering every option.
+  it('leaves webchat uncapped', () => {
+    const opts = (n: number) => Array.from({ length: n }, (_, i) => `o${i}`)
+    expect(
+      elicitTarget(form({ pick: { type: 'string', enum: opts(200) } }), WEBCHAT_ELICIT_SURFACE)?.options
+    ).toHaveLength(200)
+    expect(
+      elicitTarget(
+        form({ tags: { type: 'array', items: { type: 'string', enum: opts(200) } } }),
+        WEBCHAT_ELICIT_SURFACE
+      )?.options
+    ).toHaveLength(200)
+  })
+
+  // The question is cut only where Slack itself would refuse the block, and clampTo's `…` is
+  // what says it was cut — a 400-char cap silently dropped questions Slack could have shown.
+  it('carries a question far longer than 400 chars, and marks one Slack cannot fit', () => {
+    const long = 'x'.repeat(1200)
+    const blocks = buildElicitationCard('elicit-l', form({ ok: { type: 'boolean' } }, long)) as any[]
+    expect(blocks[0].text.text).toContain(long)
+    const huge = 'y'.repeat(5000)
+    const cut = (buildElicitationCard('elicit-h', form({ ok: { type: 'boolean' } }, huge)) as any[])[0].text.text
+    expect(cut.length).toBeLessThanOrEqual(3000)
+    expect(cut.endsWith('…')).toBe(true)
+    const resolved = (
+      buildElicitationResolvedCard(form({ ok: { type: 'boolean' } }, huge), ':x: Dismissed') as any[]
+    )[0]
+    expect(resolved.text.text.length).toBeLessThanOrEqual(3000)
+  })
+
   it('renders bare string enum with value == label', () => {
-    const t = elicitTarget(form({ color: { type: 'string', enum: ['red', 'green'] } }), SLACK_ELICIT_KINDS)
+    const t = elicitTarget(form({ color: { type: 'string', enum: ['red', 'green'] } }), SLACK_ELICIT_SURFACE)
     expect(t).toEqual({
       propName: 'color',
       kind: 'enum',
@@ -1492,7 +1549,7 @@ describe('elicitation card', () => {
   })
 
   it('renders boolean as Yes/No', () => {
-    const t = elicitTarget(form({ ok: { type: 'boolean' } }), SLACK_ELICIT_KINDS)
+    const t = elicitTarget(form({ ok: { type: 'boolean' } }), SLACK_ELICIT_SURFACE)
     expect(t).toEqual({
       propName: 'ok',
       kind: 'boolean',
@@ -1510,7 +1567,7 @@ describe('elicitation card', () => {
       message: 'Pick a language',
       requestedSchema: { type: 'object', properties: { color: { type: 'string', enum: ['red'] } }, required: ['color'] }
     } as any
-    expect(elicitTarget(req, SLACK_ELICIT_KINDS)?.propName).toBe('color')
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)?.propName).toBe('color')
   })
 
   it('renders when extra non-required properties ride along', () => {
@@ -1528,7 +1585,7 @@ describe('elicitation card', () => {
         required: ['color']
       }
     } as any
-    expect(elicitTarget(req, SLACK_ELICIT_KINDS)?.propName).toBe('color')
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)?.propName).toBe('color')
   })
 
   it('returns null when the schema requires a property the card cannot answer', () => {
@@ -1542,7 +1599,7 @@ describe('elicitation card', () => {
         required: ['color', 'note']
       }
     } as any
-    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)).toBeNull()
     expect(buildElicitationCard('e', req)).toBeNull()
   })
 
@@ -1557,18 +1614,18 @@ describe('elicitation card', () => {
         required: ['ok', 'reason']
       }
     } as any
-    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)).toBeNull()
   })
 
   it('renders when required is absent', () => {
-    expect(elicitTarget(form({ ok: { type: 'boolean' } }), SLACK_ELICIT_KINDS)?.propName).toBe('ok')
+    expect(elicitTarget(form({ ok: { type: 'boolean' } }), SLACK_ELICIT_SURFACE)?.propName).toBe('ok')
   })
 
   it('returns null (→ caller declines) for free-text-only forms and url mode', () => {
-    expect(elicitTarget(form({ name: { type: 'string' } }), SLACK_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(form({ name: { type: 'string' } }), SLACK_ELICIT_SURFACE)).toBeNull()
     expect(buildElicitationCard('e', form({ name: { type: 'string' } }))).toBeNull()
     expect(
-      elicitTarget({ mode: 'url', sessionId: 's1', message: 'go', url: 'https://x' } as any, SLACK_ELICIT_KINDS)
+      elicitTarget({ mode: 'url', sessionId: 's1', message: 'go', url: 'https://x' } as any, SLACK_ELICIT_SURFACE)
     ).toBeNull()
   })
 
@@ -1577,7 +1634,7 @@ describe('elicitation card', () => {
   it('reads both array shapes as one multi-enum target, with the schema bounds', () => {
     const bare = elicitTarget(
       form({ colors: { type: 'array', items: { type: 'string', enum: ['Red', 'Green'] }, minItems: 1, maxItems: 2 } }),
-      WEBCHAT_ELICIT_KINDS
+      WEBCHAT_ELICIT_SURFACE
     )
     expect(bare).toEqual({
       propName: 'colors',
@@ -1601,7 +1658,7 @@ describe('elicitation card', () => {
           }
         }
       }),
-      WEBCHAT_ELICIT_KINDS
+      WEBCHAT_ELICIT_SURFACE
     )
     // Unbounded: no minItems/maxItems invented where the schema states none.
     expect(titled).toEqual({
@@ -1616,23 +1673,25 @@ describe('elicitation card', () => {
 
   it('leaves multi-select unrenderable on Slack, whose card would have to decline it', () => {
     const req = form({ colors: { type: 'array', items: { type: 'string', enum: ['Red', 'Green'] } } })
-    expect(elicitTarget(req, SLACK_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)).toBeNull()
     expect(buildElicitationCard('elicit-1', req)).toBeNull()
   })
 
   it('skips a field the surface cannot render and takes the next one it can', () => {
     // Slack passes over the array and cards the boolean, exactly as it did before the kind existed.
     const req = form({ colors: { type: 'array', items: { type: 'string', enum: ['Red'] } }, ok: { type: 'boolean' } })
-    expect(elicitTarget(req, SLACK_ELICIT_KINDS)?.propName).toBe('ok')
-    expect(elicitTarget(req, WEBCHAT_ELICIT_KINDS)?.propName).toBe('colors')
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)?.propName).toBe('ok')
+    expect(elicitTarget(req, WEBCHAT_ELICIT_SURFACE)?.propName).toBe('colors')
   })
 
   it('declines an array the card cannot honestly answer', () => {
     // Non-string item consts would make the accepted list lie about the schema's item type,
     // an untyped/free-form array has nothing to offer, and a required peer is still fatal.
     const anyOfNumbers = form({ n: { type: 'array', items: { anyOf: [{ const: 1, title: 'One' }] } } })
-    expect(elicitTarget(anyOfNumbers, WEBCHAT_ELICIT_KINDS)).toBeNull()
-    expect(elicitTarget(form({ tags: { type: 'array', items: { type: 'string' } } }), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(anyOfNumbers, WEBCHAT_ELICIT_SURFACE)).toBeNull()
+    expect(
+      elicitTarget(form({ tags: { type: 'array', items: { type: 'string' } } }), WEBCHAT_ELICIT_SURFACE)
+    ).toBeNull()
     const required = {
       mode: 'form',
       sessionId: 's1',
@@ -1643,7 +1702,7 @@ describe('elicitation card', () => {
         required: ['colors', 'note']
       }
     } as any
-    expect(elicitTarget(required, WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(required, WEBCHAT_ELICIT_SURFACE)).toBeNull()
   })
 
   it('accepts only a submitted list the card offered, without repeats and inside its bounds', () => {
@@ -1651,7 +1710,7 @@ describe('elicitation card', () => {
       form({
         colors: { type: 'array', items: { type: 'string', enum: ['Red', 'Green', 'Blue'] }, minItems: 1, maxItems: 2 }
       }),
-      WEBCHAT_ELICIT_KINDS
+      WEBCHAT_ELICIT_SURFACE
     )!
     expect(multiSelectAccepts(target, ['Red'])).toBe(true)
     expect(multiSelectAccepts(target, ['Red', 'Blue'])).toBe(true)
@@ -1659,7 +1718,7 @@ describe('elicitation card', () => {
     expect(multiSelectAccepts(target, ['Red', 'Green', 'Blue'])).toBe(false) // above maxItems
     expect(multiSelectAccepts(target, ['Red', 'Red'])).toBe(false) // a repeat is not two picks
     expect(multiSelectAccepts(target, ['rm -rf /'])).toBe(false) // never offered
-    const single = elicitTarget(form({ color: { type: 'string', enum: ['Red'] } }), WEBCHAT_ELICIT_KINDS)!
+    const single = elicitTarget(form({ color: { type: 'string', enum: ['Red'] } }), WEBCHAT_ELICIT_SURFACE)!
     expect(multiSelectAccepts(single, ['Red'])).toBe(false) // not a multi-select card at all
   })
 
@@ -1669,7 +1728,7 @@ describe('elicitation card', () => {
     expect(
       elicitTarget(
         form({ name: { type: 'string', minLength: 3, maxLength: 50, pattern: '^[A-Za-z]+$', format: 'email' } }),
-        WEBCHAT_ELICIT_KINDS
+        WEBCHAT_ELICIT_SURFACE
       )
     ).toEqual({
       propName: 'name',
@@ -1681,18 +1740,18 @@ describe('elicitation card', () => {
       format: 'email'
     })
     // An enumerated string is still a pick: typing into it would let an unoffered value through.
-    expect(elicitTarget(form({ c: { type: 'string', enum: ['Red'] } }), WEBCHAT_ELICIT_KINDS)?.kind).toBe('enum')
+    expect(elicitTarget(form({ c: { type: 'string', enum: ['Red'] } }), WEBCHAT_ELICIT_SURFACE)?.kind).toBe('enum')
   })
 
   it('reads number and integer as one numeric target, integer-ness kept apart from the bounds', () => {
-    expect(elicitTarget(form({ pct: { type: 'number', minimum: 0, maximum: 100 } }), WEBCHAT_ELICIT_KINDS)).toEqual({
+    expect(elicitTarget(form({ pct: { type: 'number', minimum: 0, maximum: 100 } }), WEBCHAT_ELICIT_SURFACE)).toEqual({
       propName: 'pct',
       kind: 'number',
       options: [],
       minimum: 0,
       maximum: 100
     })
-    expect(elicitTarget(form({ n: { type: 'integer' } }), WEBCHAT_ELICIT_KINDS)).toEqual({
+    expect(elicitTarget(form({ n: { type: 'integer' } }), WEBCHAT_ELICIT_SURFACE)).toEqual({
       propName: 'n',
       kind: 'number',
       options: [],
@@ -1703,49 +1762,51 @@ describe('elicitation card', () => {
   it('leaves typed fields unrenderable on Slack, whose card has nothing to type into', () => {
     const text = form({ name: { type: 'string' } })
     const number = form({ pct: { type: 'number' } })
-    expect(elicitTarget(text, SLACK_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(text, SLACK_ELICIT_SURFACE)).toBeNull()
     expect(buildElicitationCard('elicit-1', text)).toBeNull()
-    expect(elicitTarget(number, SLACK_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(number, SLACK_ELICIT_SURFACE)).toBeNull()
     expect(buildElicitationCard('elicit-1', number)).toBeNull()
     // The same forms ARE renderable — just not here: webchat types into them.
-    expect(elicitTarget(text, WEBCHAT_ELICIT_KINDS)?.kind).toBe('text')
-    expect(elicitTarget(number, WEBCHAT_ELICIT_KINDS)?.kind).toBe('number')
+    expect(elicitTarget(text, WEBCHAT_ELICIT_SURFACE)?.kind).toBe('text')
+    expect(elicitTarget(number, WEBCHAT_ELICIT_SURFACE)?.kind).toBe('number')
   })
 
   it('declines a typed field whose constraints ask for something it cannot render', () => {
     // Only the four MCP formats exist; anything else is a promise this card cannot keep.
-    expect(elicitTarget(form({ n: { type: 'string', format: 'hostname' } }), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(form({ n: { type: 'string', format: 'hostname' } }), WEBCHAT_ELICIT_SURFACE)).toBeNull()
     // Bounds that admit no answer at all are not a question.
-    expect(elicitTarget(form({ n: { type: 'string', minLength: 5, maxLength: 2 } }), WEBCHAT_ELICIT_KINDS)).toBeNull()
-    expect(elicitTarget(form({ n: { type: 'number', minimum: 5, maximum: 2 } }), WEBCHAT_ELICIT_KINDS)).toBeNull()
-    expect(elicitTarget(form({ n: { type: 'integer', minimum: 0.2, maximum: 0.8 } }), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(form({ n: { type: 'string', minLength: 5, maxLength: 2 } }), WEBCHAT_ELICIT_SURFACE)).toBeNull()
+    expect(elicitTarget(form({ n: { type: 'number', minimum: 5, maximum: 2 } }), WEBCHAT_ELICIT_SURFACE)).toBeNull()
+    expect(
+      elicitTarget(form({ n: { type: 'integer', minimum: 0.2, maximum: 0.8 } }), WEBCHAT_ELICIT_SURFACE)
+    ).toBeNull()
     // A pattern we refuse to run leaves the field unanswerable, never unchecked.
-    expect(elicitTarget(form({ n: { type: 'string', pattern: '^(a+)+$' } }), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(form({ n: { type: 'string', pattern: '^(a+)+$' } }), WEBCHAT_ELICIT_SURFACE)).toBeNull()
   })
 
   it('re-checks a typed string against every constraint the card carried', () => {
     const target = elicitTarget(
       form({ name: { type: 'string', minLength: 3, maxLength: 6, pattern: '^[a-z]+$' } }),
-      WEBCHAT_ELICIT_KINDS
+      WEBCHAT_ELICIT_SURFACE
     )!
     expect(textAccepts(target, 'abc')).toBe(true)
     expect(textAccepts(target, 'ab')).toBe(false) // below minLength
     expect(textAccepts(target, 'abcdefg')).toBe(false) // above maxLength
     expect(textAccepts(target, 'ABC')).toBe(false) // fails the pattern
     // An answer far past the cap is refused whatever the schema says.
-    const unbounded = elicitTarget(form({ name: { type: 'string' } }), WEBCHAT_ELICIT_KINDS)!
+    const unbounded = elicitTarget(form({ name: { type: 'string' } }), WEBCHAT_ELICIT_SURFACE)!
     expect(textAccepts(unbounded, 'x'.repeat(4096))).toBe(true)
     expect(textAccepts(unbounded, 'x'.repeat(4097))).toBe(false)
     // A multi-select target is not a text card, so nothing typed answers it.
     const list = elicitTarget(
       form({ c: { type: 'array', items: { type: 'string', enum: ['a'] } } }),
-      WEBCHAT_ELICIT_KINDS
+      WEBCHAT_ELICIT_SURFACE
     )!
     expect(textAccepts(list, 'a')).toBe(false)
   })
 
   it('accepts each of the four formats and refuses a value that is not one', () => {
-    const of = (format: string) => elicitTarget(form({ v: { type: 'string', format } }), WEBCHAT_ELICIT_KINDS)!
+    const of = (format: string) => elicitTarget(form({ v: { type: 'string', format } }), WEBCHAT_ELICIT_SURFACE)!
     expect(textAccepts(of('email'), 'user@example.com')).toBe(true)
     expect(textAccepts(of('email'), 'user@example')).toBe(false)
     expect(textAccepts(of('uri'), 'https://example.com/x')).toBe(true)
@@ -1757,14 +1818,14 @@ describe('elicitation card', () => {
   })
 
   it('re-checks a typed number against its bounds and its integer-ness', () => {
-    const pct = elicitTarget(form({ pct: { type: 'number', minimum: 0, maximum: 100 } }), WEBCHAT_ELICIT_KINDS)!
+    const pct = elicitTarget(form({ pct: { type: 'number', minimum: 0, maximum: 100 } }), WEBCHAT_ELICIT_SURFACE)!
     expect(numberAccepts(pct, 0)).toBe(true)
     expect(numberAccepts(pct, 50.5)).toBe(true)
     expect(numberAccepts(pct, -1)).toBe(false)
     expect(numberAccepts(pct, 101)).toBe(false)
     expect(numberAccepts(pct, Number.NaN)).toBe(false)
     expect(numberAccepts(pct, Number.POSITIVE_INFINITY)).toBe(false)
-    const count = elicitTarget(form({ n: { type: 'integer', minimum: 1 } }), WEBCHAT_ELICIT_KINDS)!
+    const count = elicitTarget(form({ n: { type: 'integer', minimum: 1 } }), WEBCHAT_ELICIT_SURFACE)!
     expect(numberAccepts(count, 2)).toBe(true)
     expect(numberAccepts(count, 2.5)).toBe(false)
   })
@@ -1781,7 +1842,7 @@ describe('elicitation card', () => {
     expect(safeElicitPattern(`^${'a'.repeat(201)}$`)).toBeNull()
     expect(safeElicitPattern('^[a-z$')).toBeNull() // does not even compile
     // The classic ReDoS input against the classic ReDoS pattern: never run at all.
-    const target = elicitTarget(form({ n: { type: 'string', pattern: '^(a+)+$' } }), WEBCHAT_ELICIT_KINDS)
+    const target = elicitTarget(form({ n: { type: 'string', pattern: '^(a+)+$' } }), WEBCHAT_ELICIT_SURFACE)
     expect(target).toBeNull()
   })
 
@@ -1791,12 +1852,15 @@ describe('elicitation card', () => {
     expect(safeElicitPattern('^a*a*a*a*b$')).toBeNull()
     // Degree is budgeted against the input cap, so ordinary multi-quantifier patterns stand.
     expect(safeElicitPattern('^\\d{3}-\\d{2}-\\d{4}$')).toBeInstanceOf(RegExp)
-    const target = elicitTarget(form({ n: { type: 'string', pattern: '^a*a*a*a*b$' } }), WEBCHAT_ELICIT_KINDS)
+    const target = elicitTarget(form({ n: { type: 'string', pattern: '^a*a*a*a*b$' } }), WEBCHAT_ELICIT_SURFACE)
     expect(target).toBeNull()
   })
 
   it('spends a pattern only on a short answer, however long the field allows', () => {
-    const t = elicitTarget(form({ n: { type: 'string', pattern: '^[a-z]+$', maxLength: 4000 } }), WEBCHAT_ELICIT_KINDS)!
+    const t = elicitTarget(
+      form({ n: { type: 'string', pattern: '^[a-z]+$', maxLength: 4000 } }),
+      WEBCHAT_ELICIT_SURFACE
+    )!
     expect(textAccepts(t, 'abc')).toBe(true)
     expect(textAccepts(t, 'a'.repeat(256))).toBe(true)
     expect(textAccepts(t, 'a'.repeat(257))).toBe(false)
@@ -1805,27 +1869,27 @@ describe('elicitation card', () => {
   // Dropping a bound we cannot enforce would accept an answer the schema forbids — the same
   // class of lie as answering a form whose required field the card never showed.
   it('declines a text field whose minimum exceeds the length it can enforce', () => {
-    expect(elicitTarget(form({ n: { type: 'string', minLength: 5000 } }), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(form({ n: { type: 'string', minLength: 5000 } }), WEBCHAT_ELICIT_SURFACE)).toBeNull()
     expect(
-      elicitTarget(form({ n: { type: 'string', pattern: '^[a-z]+$', minLength: 300 } }), WEBCHAT_ELICIT_KINDS)
+      elicitTarget(form({ n: { type: 'string', pattern: '^[a-z]+$', minLength: 300 } }), WEBCHAT_ELICIT_SURFACE)
     ).toBeNull()
   })
 
   it('carries the effective maximum, clamping a declared one down to what it can enforce', () => {
-    const plain = elicitTarget(form({ n: { type: 'string' } }), WEBCHAT_ELICIT_KINDS)!
+    const plain = elicitTarget(form({ n: { type: 'string' } }), WEBCHAT_ELICIT_SURFACE)!
     expect(plain.maxLength).toBe(4096)
-    const declared = elicitTarget(form({ n: { type: 'string', maxLength: 50 } }), WEBCHAT_ELICIT_KINDS)!
+    const declared = elicitTarget(form({ n: { type: 'string', maxLength: 50 } }), WEBCHAT_ELICIT_SURFACE)!
     expect(declared.maxLength).toBe(50)
     // A patterned field's ceiling is the pattern cap, so the browser bounds its draft by it.
     const patterned = elicitTarget(
       form({ n: { type: 'string', pattern: '^[a-z]+$', maxLength: 4000 } }),
-      WEBCHAT_ELICIT_KINDS
+      WEBCHAT_ELICIT_SURFACE
     )!
     expect(patterned.maxLength).toBe(256)
   })
 
   it('fails an impossible calendar value instead of throwing out of the check', () => {
-    const d = elicitTarget(form({ n: { type: 'string', format: 'date' } }), WEBCHAT_ELICIT_KINDS)!
+    const d = elicitTarget(form({ n: { type: 'string', format: 'date' } }), WEBCHAT_ELICIT_SURFACE)!
     expect(() => textAccepts(d, '2025-13-01')).not.toThrow()
     expect(textAccepts(d, '2025-13-01')).toBe(false)
     expect(textAccepts(d, '2025-02-30')).toBe(false)
@@ -1833,7 +1897,8 @@ describe('elicitation card', () => {
   })
 
   it('pre-populates every kind from the schema default, and drops one it would refuse', () => {
-    const seed = (prop: Record<string, unknown>) => elicitTarget(form({ v: prop }), WEBCHAT_ELICIT_KINDS)?.defaultValue
+    const seed = (prop: Record<string, unknown>) =>
+      elicitTarget(form({ v: prop }), WEBCHAT_ELICIT_SURFACE)?.defaultValue
     expect(seed({ type: 'string', enum: ['red', 'green'], default: 'green' })).toBe('green')
     expect(seed({ type: 'boolean', default: true })).toBe(true)
     expect(seed({ type: 'string', format: 'email', default: 'user@example.com' })).toBe('user@example.com')
@@ -1867,38 +1932,40 @@ describe('elicitation card', () => {
 
   it('renders a two-field form on webchat and still declines it on Slack', () => {
     const two = req(TWO, ['branch', 'note'])
-    expect(elicitForm(two, WEBCHAT_ELICIT_KINDS)?.map((t) => [t.propName, t.kind])).toEqual([
+    expect(elicitForm(two, WEBCHAT_ELICIT_SURFACE)?.map((t) => [t.propName, t.kind])).toEqual([
       ['branch', 'enum'],
       ['note', 'text']
     ])
     // One card answers one field there, and Slack has nothing to type into either — both
     // reasons still hold, so the form declines rather than half-answering.
-    expect(elicitTarget(two, WEBCHAT_ELICIT_KINDS)).toBeNull()
-    expect(elicitTarget(two, SLACK_ELICIT_KINDS)).toBeNull()
-    expect(elicitForm(two, SLACK_ELICIT_KINDS)).toBeNull()
+    expect(elicitTarget(two, WEBCHAT_ELICIT_SURFACE)).toBeNull()
+    expect(elicitTarget(two, SLACK_ELICIT_SURFACE)).toBeNull()
+    expect(elicitForm(two, SLACK_ELICIT_SURFACE)).toBeNull()
     expect(buildElicitationCard('elicit-1', two)).toBeNull()
   })
 
   it('answers a form whose required set is fully rendered, and declines one that is not', () => {
     // Every required property is among the rendered fields — the #1795 rule, generalised.
-    expect(elicitForm(req(TWO, ['branch']), WEBCHAT_ELICIT_KINDS)).toHaveLength(2)
-    expect(elicitForm(req(TWO, []), WEBCHAT_ELICIT_KINDS)).toHaveLength(2)
+    expect(elicitForm(req(TWO, ['branch']), WEBCHAT_ELICIT_SURFACE)).toHaveLength(2)
+    expect(elicitForm(req(TWO, []), WEBCHAT_ELICIT_SURFACE)).toHaveLength(2)
     // A required property NO surface can render leaves the form unanswerable, exactly as one
     // required field the single-field card could not show always did.
     const nested = { branch: { type: 'string', enum: ['main'] }, extra: { type: 'object' } }
-    expect(elicitForm(req(nested, ['branch', 'extra']), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitForm(req(nested, ['branch', 'extra']), WEBCHAT_ELICIT_SURFACE)).toBeNull()
     // Unrenderable because of its own constraints, not its type: same verdict.
     const bad = { branch: { type: 'string', enum: ['main'] }, name: { type: 'string', pattern: '^(a+)+$' } }
-    expect(elicitForm(req(bad, ['branch', 'name']), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitForm(req(bad, ['branch', 'name']), WEBCHAT_ELICIT_SURFACE)).toBeNull()
     // Nothing renderable at all is not a form.
-    expect(elicitForm(req({ extra: { type: 'object' } }, []), WEBCHAT_ELICIT_KINDS)).toBeNull()
-    expect(elicitForm({ mode: 'url', sessionId: 's1', url: 'https://x' } as any, WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitForm(req({ extra: { type: 'object' } }, []), WEBCHAT_ELICIT_SURFACE)).toBeNull()
+    expect(elicitForm({ mode: 'url', sessionId: 's1', url: 'https://x' } as any, WEBCHAT_ELICIT_SURFACE)).toBeNull()
   })
 
   it('declines a form longer than one card can ask', () => {
     const props = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`f${i}`, { type: 'boolean' }]))
-    expect(elicitForm(req(props(ELICIT_FORM_FIELD_CAP), []), WEBCHAT_ELICIT_KINDS)).toHaveLength(ELICIT_FORM_FIELD_CAP)
-    expect(elicitForm(req(props(ELICIT_FORM_FIELD_CAP + 1), []), WEBCHAT_ELICIT_KINDS)).toBeNull()
+    expect(elicitForm(req(props(ELICIT_FORM_FIELD_CAP), []), WEBCHAT_ELICIT_SURFACE)).toHaveLength(
+      ELICIT_FORM_FIELD_CAP
+    )
+    expect(elicitForm(req(props(ELICIT_FORM_FIELD_CAP + 1), []), WEBCHAT_ELICIT_SURFACE)).toBeNull()
   })
 
   it('reduces a one-field form to exactly what the single-field card renders', () => {
@@ -1910,7 +1977,7 @@ describe('elicitation card', () => {
       { type: 'array', items: { type: 'string', enum: ['a', 'b'] }, minItems: 1 }
     ]) {
       const one = req({ v: prop }, ['v'])
-      expect(elicitForm(one, WEBCHAT_ELICIT_KINDS)).toEqual([elicitTarget(one, WEBCHAT_ELICIT_KINDS)])
+      expect(elicitForm(one, WEBCHAT_ELICIT_SURFACE)).toEqual([elicitTarget(one, WEBCHAT_ELICIT_SURFACE)])
     }
   })
 
@@ -1930,7 +1997,7 @@ describe('elicitation card', () => {
       force: { type: 'boolean' }
     }
     const params = req(props, ['branch'])
-    const form = elicitForm(params, WEBCHAT_ELICIT_KINDS)!
+    const form = elicitForm(params, WEBCHAT_ELICIT_SURFACE)!
     const accepts = (answer: Record<string, string | number | string[]>) =>
       elicitFormAccepts(form, elicitRequiredProps(params), answer)
 
@@ -1966,7 +2033,7 @@ describe('elicitation card', () => {
       },
       ['branch']
     )
-    const form = elicitForm(params, WEBCHAT_ELICIT_KINDS)!
+    const form = elicitForm(params, WEBCHAT_ELICIT_SURFACE)!
     // A boolean's wire value is its option string; the content carries a real boolean.
     expect(elicitFormContent(form, { branch: 'main', retries: 2, checks: ['lint'], force: 'false' })).toEqual({
       branch: 'main',
