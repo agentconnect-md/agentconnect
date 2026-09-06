@@ -115,7 +115,8 @@ describe('finding the preset the adapter ships', () => {
     }
   })
 
-  it.each(['dsh/config/agent-presets', 'dsh-agent-presets/presets'])(
+  // These Linux image archive fixtures use tar commands that Windows Git tar misreads as remote drive-letter paths.
+  it.skipIf(process.platform === 'win32').each(['dsh/config/agent-presets', 'dsh-agent-presets/presets'])(
     'bakes the standard preset from a vendored %s archive',
     (layout) => {
       const root = mkdtempSync(join(tmpdir(), 'ac-dsh-archive-'))
