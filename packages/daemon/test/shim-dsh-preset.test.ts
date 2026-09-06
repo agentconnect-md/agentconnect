@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -70,11 +71,11 @@ describe('baking the no-search preset', () => {
 })
 
 describe('finding the preset the adapter ships', () => {
-  // The adapter has installed dsh beside itself, under itself, and as a vendored archive across
-  // versions the image has pinned, and only the built image proves which layout is there.
-  it('tries the hoisted install before the one nested under the adapter', () => {
-    const [hoisted, nested] = presetCandidates('/n')
+  // A separate harness takes precedence over the adapter's nested or vendored copy.
+  it('tries both hoisted layouts before the one nested under the adapter', () => {
+    const [hoisted, currentHoisted, nested] = presetCandidates('/n')
     expect(hoisted).toBe(join('/n', '@deepseek-ai', 'dsh', 'config', 'agent-presets', 'standard'))
+    expect(currentHoisted).toBe(join('/n', '@deepseek-ai', 'dsh-agent-presets', 'presets', 'standard'))
     expect(nested).toBe(
       join(
         '/n',
@@ -90,7 +91,7 @@ describe('finding the preset the adapter ships', () => {
     )
   })
 
-  it('bakes from a nested install, which is how the pinned adapter ships it', () => {
+  it('bakes from a nested legacy install', () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-dsh-root-'))
     try {
       const source = join(
@@ -113,6 +114,31 @@ describe('finding the preset the adapter ships', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // These Linux image archive fixtures use tar commands that Windows Git tar misreads as remote drive-letter paths.
+  it.skipIf(process.platform === 'win32').each(['dsh/config/agent-presets', 'dsh-agent-presets/presets'])(
+    'bakes the standard preset from a vendored %s archive',
+    (layout) => {
+      const root = mkdtempSync(join(tmpdir(), 'ac-dsh-archive-'))
+      try {
+        const staging = join(root, 'staging')
+        const source = join(staging, 'node_modules', '@deepseek-ai', layout, 'standard')
+        mkdirSync(source, { recursive: true })
+        writeFileSync(join(source, 'agent.cordis.yml'), STANDARD_ROW)
+        writeFileSync(join(source, 'plugin.js'), 'export const name = "preset-plugin"\n')
+        const modules = join(root, 'installed')
+        const vendor = join(modules, '@openma', 'deepseek-harness-acp', 'vendor')
+        mkdirSync(vendor, { recursive: true })
+        writeFileSync(join(vendor, 'runtime.json'), JSON.stringify({ archive: 'dsh-runtime.tgz' }))
+        execFileSync('tar', ['-czf', join(vendor, 'dsh-runtime.tgz'), '-C', staging, 'node_modules'])
+        const target = join(root, 'out', SANDBOX_DSH_PRESET_ID)
+        expect(readFileSync(bakePreset(target, modules), 'utf8')).toContain('search: false')
+        expect(readFileSync(join(target, 'plugin.js'), 'utf8')).toBe('export const name = "preset-plugin"\n')
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
 
   it('names every path it tried when no layout has one', () => {
     const empty = mkdtempSync(join(tmpdir(), 'ac-dsh-empty-'))
