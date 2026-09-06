@@ -13,11 +13,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-/** The preset the adapter mounts when a caller names none, and therefore the one to copy. */
+// Copy the preset the adapter mounts when a caller names none.
 const SOURCE_PRESET = 'standard'
-/** Where the shipped presets sit inside a dsh installation. */
-const SHIPPED_PRESETS = join('config', 'agent-presets')
-/** The ACP adapter whose vendored dsh runtime carries those presets when no dsh is installed. */
+// dsh 0.1.2 moved the shipped presets from the meta package into the roster package.
+const SHIPPED_PRESETS = [
+  join('@deepseek-ai', 'dsh', 'config', 'agent-presets', SOURCE_PRESET),
+  join('@deepseek-ai', 'dsh-agent-presets', 'presets', SOURCE_PRESET)
+]
+// The adapter vendors dsh for installations without a separate harness.
 const ADAPTER_PACKAGE = join('@openma', 'deepseek-harness-acp')
 
 /**
@@ -72,20 +75,11 @@ function moduleRoot() {
   return execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim()
 }
 
-/**
- * Materialize the shipped preset directory to copy from, into `staging` when it has to be unpacked.
- *
- * Three layouts, because the adapter has shipped dsh in all of them: installed beside it (a
- * deployment that installs the harness itself, which must not be shadowed by an adapter's copy),
- * installed under it as an ordinary dependency (0.4.16), or packed as a vendored archive it unpacks
- * at first run (0.4.26). A real directory wins over the archive either way.
- */
+// Prefer a separately installed harness, then the adapter's nested install, over its vendored archive.
 export function presetCandidates(root) {
-  const adapter = join(root, ADAPTER_PACKAGE)
-  return [
-    join(root, '@deepseek-ai', 'dsh', SHIPPED_PRESETS, SOURCE_PRESET),
-    join(adapter, 'node_modules', '@deepseek-ai', 'dsh', SHIPPED_PRESETS, SOURCE_PRESET)
-  ]
+  return [root, join(root, ADAPTER_PACKAGE, 'node_modules')].flatMap((modules) =>
+    SHIPPED_PRESETS.map((preset) => join(modules, preset))
+  )
 }
 
 function shippedPreset(root, staging) {
@@ -99,8 +93,16 @@ function shippedPreset(root, staging) {
   }
   const archive = join(adapter, 'vendor', JSON.parse(readFileSync(manifest, 'utf8')).archive)
   if (!existsSync(archive)) throw new Error(`vendored runtime manifest names a missing archive: ${archive}`)
-  // Only the one preset directory out of a whole node_modules tarball.
-  const member = join('node_modules', '@deepseek-ai', 'dsh', SHIPPED_PRESETS, SOURCE_PRESET)
+  // Match POSIX archive members before extracting only the shipped preset directory.
+  const members = new Set(
+    execFileSync('tar', ['-tzf', archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+      .split('\n')
+      .map((member) => member.replace(/^\.\//, '').replace(/\/$/, ''))
+  )
+  const member = SHIPPED_PRESETS.map((preset) => join('node_modules', preset).replaceAll('\\', '/')).find((candidate) =>
+    members.has(`${candidate}/agent.cordis.yml`)
+  )
+  if (!member) throw new Error(`vendored runtime ${archive} ships no ${SOURCE_PRESET} preset`)
   execFileSync('tar', ['-xzf', archive, '-C', staging, member], { stdio: ['ignore', 'ignore', 'inherit'] })
   const extracted = join(staging, member)
   if (!existsSync(extracted)) throw new Error(`vendored runtime ${archive} ships no ${member}`)
