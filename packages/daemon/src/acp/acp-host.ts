@@ -858,6 +858,11 @@ export class AcpHost {
     return this.isClaudeRuntime()
   }
 
+  /** Whether this runtime was launched under the OS sandbox — the launch carried a sandbox plan. */
+  runsInSandbox(): boolean {
+    return this.opts.sandbox !== undefined
+  }
+
   /** Create a fresh ACP session. `effortOverride` (the sticky per-session effort choice,
    *  when set) takes the place of the agent default in the Claude `_meta` — the only
    *  channel `ultracode` can ride (the `thought_level` select rejects it); select-based

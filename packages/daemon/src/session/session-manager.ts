@@ -589,6 +589,8 @@ export class SessionManager {
           needsReplyToParent,
           memoryIndex,
           usesMeta,
+          // The launch's own answer, so a downgraded (unconfinable) host never claims the sandbox rules.
+          sandboxed: host.runsInSandbox?.() ?? false,
           // The platform's session-stable block (Linear's issue coordinates and working convention):
           // standing, so it never lands as a leading user block or a transcript row.
           ...(platformStanding ? { platformStanding } : {})

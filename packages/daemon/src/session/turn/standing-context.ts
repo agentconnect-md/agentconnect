@@ -73,6 +73,8 @@ export type StandingContextInput = {
   usesMeta: boolean
   /** The platform module's own standing block (`NormalizedMessage.standingContext`), if any. */
   platformStanding?: string
+  /** Whether the host runs under the OS sandbox, whose Git-metadata rules the model must know. */
+  sandboxed?: boolean
 }
 
 /** The assembled standing-context strings for one turn. */
@@ -83,6 +85,8 @@ export type StandingContext = {
   workspaceRootsAppend: string
   /** The platform module's standing block; '' when the delivery carried none. */
   platformAppend: string
+  /** The sandbox's standing rules; '' for an unconfined host. */
+  sandboxAppend: string
   collabAppend: string
   parentReplyAppend: string
   /** Durable standing rules re-asserted on session/load — no memory index. */
@@ -212,6 +216,21 @@ export function buildWorkspaceRootsAppend(
   ].join('\n')
 }
 
+// Daemon-side Git runs in the same checkout outside the sandbox, so `.git/config`/`hooks` stay read-only to the model; said up front, or `push -u`'s EBUSY reads as a broken checkout.
+export function buildSandboxAppend(sandboxed: boolean | undefined): string {
+  if (!sandboxed) return ''
+  return (
+    `# Sandbox\n` +
+    `You run inside an OS sandbox. In every Git checkout, \`.git/config\` and \`.git/hooks\` are read-only: ` +
+    `commands that write them fail, usually as \`Device or resource busy\`, and that failure is expected, not a ` +
+    `broken checkout. So do not run \`git config\`, \`git remote add/set-url\`, or set an upstream — push with the ` +
+    `explicit form \`git push origin <branch>\` (never \`-u\`/\`--set-upstream\`) and pull with ` +
+    `\`git pull --ff-only origin <branch>\`. Author identity and other Git settings are already provided ` +
+    `through the environment. Zero-byte placeholder files the sandbox mounts inside the checkout may appear ` +
+    `untracked in \`git status\`; leave them alone and never commit them.`
+  )
+}
+
 // Standing guidance for agent↔agent collaboration. `sendMessage` can wake a peer, reach
 // humans, post at a channel root, or reply into a parent session. It has no visible
 // in-thread form: speaking in the current conversation is an ordinary reply. `toAgent`
@@ -290,6 +309,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const memoryAppend = buildMemoryAppend(input.memoryIndex)
   const agentMeta = buildAgentMeta(input)
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots)
+  const sandboxAppend = buildSandboxAppend(input.sandboxed)
   // Session-stable like the roots, so it is re-asserted on resume in the same seat.
   const platformAppend = input.platformStanding?.trim() ?? ''
   const collabAppend = COLLAB_APPEND
@@ -297,6 +317,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const resumeSystemContext = [
     agentMeta,
     workspaceRootsAppend,
+    sandboxAppend,
     platformAppend,
     collabAppend,
     parentReplyAppend,
@@ -309,6 +330,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     memoryAppend,
     agentMeta,
     workspaceRootsAppend,
+    sandboxAppend,
     platformAppend,
     collabAppend,
     parentReplyAppend,

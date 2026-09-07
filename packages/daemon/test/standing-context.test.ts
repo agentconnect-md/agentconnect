@@ -77,3 +77,24 @@ describe('buildStandingContext with a platform standing block', () => {
     expect(buildStandingContext({ ...BASE, platformStanding: '  \n' })).toEqual(buildStandingContext(BASE))
   })
 })
+
+describe('buildStandingContext under the sandbox', () => {
+  it('states the read-only Git metadata rule after the roots and re-asserts it on resume', () => {
+    const context = buildStandingContext({ ...BASE, workspaceRoots: ROOTS, sandboxed: true })
+
+    expect(context.sandboxAppend).toContain('`.git/config` and `.git/hooks` are read-only')
+    expect(context.sandboxAppend).toContain('git push origin <branch>')
+    expect(context.resumeSystemContext).toContain(context.sandboxAppend)
+    expect(context.resumeSystemContext.indexOf('# Sandbox')).toBeGreaterThan(
+      context.resumeSystemContext.indexOf('# Additional repositories')
+    )
+    expect(context.resumeSystemContext.indexOf('# Sandbox')).toBeLessThan(
+      context.resumeSystemContext.indexOf('# Collaborating with other agents')
+    )
+  })
+
+  it('leaves an unconfined host byte-identical', () => {
+    expect(buildStandingContext({ ...BASE, sandboxed: false })).toEqual(buildStandingContext(BASE))
+    expect(buildStandingContext(BASE).sandboxAppend).toBe('')
+  })
+})
