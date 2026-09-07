@@ -21,6 +21,8 @@ import {
   elicitForm,
   elicitFormAccepts,
   elicitFormContent,
+  elicitReplyAnswer,
+  elicitReplyExpectation,
   elicitRequiredProps,
   elicitTarget,
   elicitUrl,
@@ -1625,9 +1627,7 @@ describe('elicitation card', () => {
     expect(elicitTarget(form({ ok: { type: 'boolean' } }), SLACK_ELICIT_SURFACE)?.propName).toBe('ok')
   })
 
-  it('returns null (→ caller declines) for free-text-only forms and url mode', () => {
-    expect(elicitTarget(form({ name: { type: 'string' } }), SLACK_ELICIT_SURFACE)).toBeNull()
-    expect(buildElicitationCard('e', form({ name: { type: 'string' } }))).toBeNull()
+  it('returns null (→ caller declines) for url mode, which is a consent card and not a field', () => {
     expect(
       elicitTarget({ mode: 'url', sessionId: 's1', message: 'go', url: 'https://x' } as any, SLACK_ELICIT_SURFACE)
     ).toBeNull()
@@ -1759,10 +1759,93 @@ describe('elicitation card', () => {
   })
 
   it('skips a field the surface cannot render and takes the next one it can', () => {
-    // Slack passes over the free-text field and cards the boolean; webchat renders both kinds.
-    const req = form({ name: { type: 'string' }, ok: { type: 'boolean' } })
-    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)?.propName).toBe('ok')
+    // A nested object is a field NO surface has a control for, so both pass over it; the
+    // approval DM, which renders neither typed kind, passes over the text field too.
+    const req = form({ extra: { type: 'object' }, name: { type: 'string' }, ok: { type: 'boolean' } })
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)?.propName).toBe('name')
     expect(elicitTarget(req, WEBCHAT_ELICIT_SURFACE)?.propName).toBe('name')
+    expect(elicitTarget(req, SLACK_DM_ELICIT_SURFACE)?.propName).toBe('ok')
+  })
+
+  // ── a single text / number field, answered by a thread reply (issue #1794, Slack column) ──
+  // Slack's own way to type something is to send a message, so the card carries the question,
+  // what is expected, whom it waits for, and Dismiss — and nothing to type into.
+
+  it('cards a text field as a question with no control but Dismiss', () => {
+    const req = form({ note: { type: 'string', minLength: 3, maxLength: 40 } }, 'What should the release note say?')
+    const blocks = buildElicitationCard(
+      'elicit-1',
+      req,
+      'shared-session-target',
+      SLACK_ELICIT_SURFACE,
+      '<@U1>'
+    ) as any[]
+    expect(blocks[0].text.text).toBe(':speech_balloon: What should the release note say?')
+    expect(blocks[1]).toEqual({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: 'Reply in this thread with some text, 3 to 40 characters long. Waiting for <@U1>.'
+        }
+      ]
+    })
+    expect(blocks[2].block_id).toBe('shared-session-target')
+    const [dismiss, ...rest] = blocks[2].elements
+    expect(rest).toEqual([]) // nothing to tap but the refusal
+    expect([dismiss.action_id, dismiss.value, dismiss.text.text]).toEqual([
+      ELICIT_DISMISS_ACTION,
+      'elicit-1',
+      'Dismiss'
+    ])
+  })
+
+  it('says who may answer when the turn named no requester', () => {
+    const blocks = buildElicitationCard('elicit-1', form({ n: { type: 'integer', minimum: 1, maximum: 5 } })) as any[]
+    expect(blocks[1].elements[0].text).toBe(
+      'Reply in this thread with a whole number from 1 to 5. Anyone in this thread can answer.'
+    )
+  })
+
+  it('says what is expected in plain words, never in schema vocabulary', () => {
+    const expectation = (prop: Record<string, unknown>) =>
+      elicitReplyExpectation(elicitTarget(form({ f: prop }), SLACK_ELICIT_SURFACE)!)
+    expect(expectation({ type: 'number' })).toBe('a number')
+    expect(expectation({ type: 'integer' })).toBe('a whole number')
+    expect(expectation({ type: 'number', minimum: 0.5 })).toBe('a number, 0.5 or more')
+    expect(expectation({ type: 'integer', maximum: 10 })).toBe('a whole number, 10 or less')
+    expect(expectation({ type: 'string' })).toBe('some text')
+    expect(expectation({ type: 'string', minLength: 2 })).toBe('some text, at least 2 characters long')
+    expect(expectation({ type: 'string', maxLength: 8 })).toBe('some text, at most 8 characters long')
+    expect(expectation({ type: 'string', format: 'email' })).toBe('an email address')
+    expect(expectation({ type: 'string', format: 'date' })).toBe('a date, like 2026-09-07')
+    expect(expectation({ type: 'string', pattern: '^[a-z]+$' })).toBe(
+      'some text, in the exact format the question asks for'
+    )
+  })
+
+  it('re-derives a reply against the card, and answers a numeric field with a real number', () => {
+    const number = elicitTarget(form({ n: { type: 'integer', minimum: 1, maximum: 5 } }), SLACK_ELICIT_SURFACE)!
+    expect(elicitReplyAnswer(number, ' 4 ')).toBe(4)
+    expect(elicitReplyAnswer(number, '4')).not.toBe('4') // a real number, never the wire string
+    expect(elicitReplyAnswer(number, '9')).toBeNull() // outside the bounds the card showed
+    expect(elicitReplyAnswer(number, '2.5')).toBeNull() // not whole
+    expect(elicitReplyAnswer(number, 'four')).toBeNull()
+    // Shapes `Number()` reads as numbers that no reader typed as one.
+    expect(elicitReplyAnswer(number, '0x3')).toBeNull()
+    expect(elicitReplyAnswer(number, '')).toBeNull()
+    expect(elicitReplyAnswer(number, 'Infinity')).toBeNull()
+    const text = elicitTarget(
+      form({ t: { type: 'string', minLength: 3, maxLength: 6, pattern: '^[a-z]+$' } }),
+      SLACK_ELICIT_SURFACE
+    )!
+    expect(elicitReplyAnswer(text, ' abcd \n')).toBe('abcd')
+    expect(elicitReplyAnswer(text, 'ab')).toBeNull()
+    expect(elicitReplyAnswer(text, 'abcdefg')).toBeNull()
+    expect(elicitReplyAnswer(text, 'ABCD')).toBeNull()
+    // A pick is never answered by typing at it: that would let an unoffered value through.
+    const pick = elicitTarget(form({ p: { type: 'string', enum: ['main'] } }), SLACK_ELICIT_SURFACE)!
+    expect(elicitReplyAnswer(pick, 'main')).toBeNull()
   })
 
   it('declines an array the card cannot honestly answer', () => {
@@ -1840,16 +1923,19 @@ describe('elicitation card', () => {
     })
   })
 
-  it('leaves typed fields unrenderable on Slack, whose card has nothing to type into', () => {
+  it('renders typed fields on Slack as a question answered by a thread reply', () => {
     const text = form({ name: { type: 'string' } })
     const number = form({ pct: { type: 'number' } })
-    expect(elicitTarget(text, SLACK_ELICIT_SURFACE)).toBeNull()
-    expect(buildElicitationCard('elicit-1', text)).toBeNull()
-    expect(elicitTarget(number, SLACK_ELICIT_SURFACE)).toBeNull()
-    expect(buildElicitationCard('elicit-1', number)).toBeNull()
-    // The same forms ARE renderable — just not here: webchat types into them.
+    expect(elicitTarget(text, SLACK_ELICIT_SURFACE)?.kind).toBe('text')
+    expect(elicitTarget(number, SLACK_ELICIT_SURFACE)?.kind).toBe('number')
     expect(elicitTarget(text, WEBCHAT_ELICIT_SURFACE)?.kind).toBe('text')
     expect(elicitTarget(number, WEBCHAT_ELICIT_SURFACE)?.kind).toBe('number')
+    // The approval DM keeps declining both: a DM has no session thread whose replies are read
+    // as the answer, so the card would ask for a reply nothing intercepts.
+    expect(elicitTarget(text, SLACK_DM_ELICIT_SURFACE)).toBeNull()
+    expect(elicitTarget(number, SLACK_DM_ELICIT_SURFACE)).toBeNull()
+    expect(buildElicitationCard('elicit-1', text, undefined, SLACK_DM_ELICIT_SURFACE)).toBeNull()
+    expect(buildElicitationCard('elicit-1', number, undefined, SLACK_DM_ELICIT_SURFACE)).toBeNull()
   })
 
   it('declines a typed field whose constraints ask for something it cannot render', () => {
@@ -2017,11 +2103,13 @@ describe('elicitation card', () => {
       ['branch', 'enum'],
       ['note', 'text']
     ])
-    // One card answers one field there, and Slack has nothing to type into either — both
-    // reasons still hold, so the form declines rather than half-answering.
+    // One card answers one field, on either surface — so the reduction declines rather than
+    // half-answering, and Slack's card builder (which reads only the reduction) declines with
+    // it. Slack now RENDERS both kinds, so the whole-form read lists them; the modal that would
+    // show them is its own item and nothing calls this with a Slack surface yet.
     expect(elicitTarget(two, WEBCHAT_ELICIT_SURFACE)).toBeNull()
     expect(elicitTarget(two, SLACK_ELICIT_SURFACE)).toBeNull()
-    expect(elicitForm(two, SLACK_ELICIT_SURFACE)).toBeNull()
+    expect(elicitForm(two, SLACK_ELICIT_SURFACE)?.map((t) => t.propName)).toEqual(['branch', 'note'])
     expect(buildElicitationCard('elicit-1', two)).toBeNull()
   })
 

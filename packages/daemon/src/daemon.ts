@@ -6421,6 +6421,11 @@ export class Daemon {
       return { kind: 'rejected', reason: 'suppressed' }
     }
 
+    // A live `text`/`number` elicitation card is answered by a reply in its own thread, and while
+    // it waits the ACP prompt is still blocked — so the reply is intercepted as the answer here,
+    // before routing could dispatch or queue it as a turn of its own (#1794's Slack column).
+    if (await this.permissions.answerElicitReply(msg)) return { kind: 'rejected', reason: 'suppressed' }
+
     const threadOwner = await this.prefetchedThreadOwner(msg)
     const result = routeRules(msg, routingRules, () => threadOwner)
     // Participant delivery is independent of whether the single-target ladder found an
@@ -7051,6 +7056,9 @@ export class Daemon {
       await this.commands.handleCommand(command, normalized, target)
       return { msgId: msg.msgId, accepted: true }
     }
+    // The same elicitation-reply interception the direct path applies, at the same point in the
+    // ladder: both Slack ingresses behave identically for every other elicitation verb too.
+    if (await this.permissions.answerElicitReply(normalized)) return { msgId: msg.msgId, accepted: true }
     // HTTP-bot ingress bypasses onInbound(), so repeat its `!stop` thread-mute gate:
     // while muted, implicit routing (thread affinity / keyword / auto / dm) never
     // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic
