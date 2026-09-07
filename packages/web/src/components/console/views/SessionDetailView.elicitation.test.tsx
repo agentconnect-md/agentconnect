@@ -500,7 +500,6 @@ describe('the agent’s elicitation card on the session page', () => {
               label: 'Branch',
               description: 'Which branch should I cut from?',
               kind: 'enum',
-              required: true,
               options: [{ value: 'main', label: 'main' }]
             },
             { propName: 'question_0_custom', label: 'Other', kind: 'text', options: [], customAnswerFor: 'question_0' },
@@ -521,8 +520,7 @@ describe('the agent’s elicitation card on the session page', () => {
     // The schema's question text rides under the header the title only names.
     expect(text()).toContain('Which branch should I cut from?')
 
-    // A typed box IS the question's answer: the required select stops being asked for.
-    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    // A typed box IS the question's answer: its own select stops being asked for.
     await typeInto(inputNamed('Branch — Other')!, 'release/1.2')
     expect(text()).toContain('1/2')
     expect(buttonNamed('Submit')?.disabled).toBe(false)
@@ -537,6 +535,61 @@ describe('the agent’s elicitation card on the session page', () => {
     // Each answer under its own property — the untouched second box is left out entirely.
     expect(live.answered).toEqual([
       ['session-1', 'agent-1', 'elicit-1', { question_0_custom: 'release/1.2', question_1: '1' }, 'conv-1']
+    ])
+  })
+
+  it('still asks a REQUIRED question for its own pick, box or no box', async () => {
+    // `elicitFormAccepts` refuses an answer that leaves a required property out, so a box that
+    // unlocked Submit here would post an answer the daemon drops — the card would sit pending
+    // with nothing said about why.
+    live.steps = [
+      {
+        ...CARD,
+        elicit: {
+          requestId: 'elicit-1',
+          options: [],
+          fields: [
+            {
+              propName: 'question_0',
+              label: 'Branch',
+              kind: 'enum',
+              required: true,
+              options: [{ value: 'main', label: 'main' }]
+            },
+            {
+              propName: 'question_0_custom',
+              label: 'Other',
+              kind: 'text',
+              options: [],
+              customAnswerFor: 'question_0',
+              text: { maxLength: 6 }
+            }
+          ]
+        }
+      }
+    ]
+    await render()
+
+    await typeInto(inputNamed('Branch — Other')!, 'dev')
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(text()).toContain('Choose one')
+    expect(text()).toContain('0/1')
+
+    // What was typed is checked either way — an over-long box holds an answered question too.
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    await typeInto(inputNamed('Branch — Other')!, 'far too long')
+    expect(text()).toContain('Enter at most 6 characters')
+    expect(buttonNamed('Submit')?.disabled).toBe(true)
+
+    await typeInto(inputNamed('Branch — Other')!, 'dev')
+    await act(async () => {
+      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([
+      ['session-1', 'agent-1', 'elicit-1', { question_0: 'main', question_0_custom: 'dev' }, 'conv-1']
     ])
   })
 

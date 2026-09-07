@@ -859,20 +859,33 @@ function companionOf(fields: ElicitFieldSpec[], f: ElicitFieldSpec): ElicitField
   return fields.find((c) => c.customAnswerFor === f.propName)
 }
 
-/** Whether a question is answered — by its own control, or by the box the reader typed into
- *  instead, which is what the counter has to count for the two to agree. */
+/** Whether what the reader typed into a question's box answers that question BY ITSELF. It
+ *  does — the agent reads a typed answer in place of the selection — unless the schema requires
+ *  the question's own property, which the daemon enforces by refusing an answer that leaves it
+ *  out. Enabling Submit there would post an answer the daemon drops, leaving the card pending
+ *  with nothing said. */
+function customAnswerStandsAlone(
+  f: ElicitFieldSpec,
+  companion: ElicitFieldSpec | undefined,
+  drafts: Record<string, string>
+): boolean {
+  return !!companion && !f.required && !!(drafts[companion.propName] ?? '').trim()
+}
+
+/** Whether a question is answered — by its own control, or by a box that answers for it, which
+ *  is what the counter has to count for it and the Submit gate to agree. */
 function rowAnswered(
   f: ElicitFieldSpec,
   companion: ElicitFieldSpec | undefined,
   drafts: Record<string, string>,
   picks: Record<string, string[]>
 ): boolean {
-  return fieldAnswered(f, drafts, picks) || (!!companion && fieldAnswered(companion, drafts, picks))
+  return fieldAnswered(f, drafts, picks) || customAnswerStandsAlone(f, companion, drafts)
 }
 
-/** Why a question is not yet answerable. A typed companion IS the answer — the agent reads it
- *  in place of the selection — so the question's own control stops being asked for and only
- *  what was typed is checked. */
+/** Why a question is not yet answerable. What was typed into its box is always checked — the
+ *  daemon re-checks it either way — and it stops the question's own control being asked for
+ *  only where it answers on its own. */
 function rowInvalidReason(
   f: ElicitFieldSpec,
   companion: ElicitFieldSpec | undefined,
@@ -880,7 +893,10 @@ function rowInvalidReason(
   picks: Record<string, string[]>
 ): string | undefined {
   const draft = companion ? (drafts[companion.propName] ?? '') : ''
-  if (companion && draft.trim()) return typedInvalidReason(companion, draft)
+  if (companion && draft.trim()) {
+    const typed = typedInvalidReason(companion, draft)
+    if (typed || customAnswerStandsAlone(f, companion, drafts)) return typed
+  }
   return fieldInvalidReason(f, drafts, picks)
 }
 

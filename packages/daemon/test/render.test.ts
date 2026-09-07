@@ -1997,6 +1997,10 @@ describe('elicitation card', () => {
     expect(form?.[1]?.description).toBeUndefined()
     // The box is still an ordinary optional text field on the way back in.
     expect(elicitFormAccepts(form!, [], { question_0_custom: 'release/1.2' })).toBe(true)
+    // And it does NOT stand in for a REQUIRED question: the schema names that property, so an
+    // answer without it is refused here — which is why the card keeps asking for the pick too.
+    expect(elicitFormAccepts(form!, ['question_0'], { question_0_custom: 'release/1.2' })).toBe(false)
+    expect(elicitFormAccepts(form!, ['question_0'], { question_0: 'main', question_0_custom: 'x' })).toBe(true)
   })
 
   it('leaves a custom-answer box standing alone when its question is not on the card', () => {
