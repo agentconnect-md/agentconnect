@@ -2649,7 +2649,7 @@
         "scratchWorkspace": "临时工作区",
         "publicRepository": "公开仓库，匿名克隆",
         "public": "公开",
-        "pull": "从远端快进拉取",
+        "pull": "与远端分支同步",
         "viewRemote": "在 {provider} 中查看",
         "implicitAuthorization": "工作区仓库——由 GitHub App 安装隐式授权",
         "editWorkspace": "编辑工作区",

@@ -415,7 +415,7 @@ describe('toWorkspaceGitPullDto', () => {
         agentId: 'a1',
         isRepo: true,
         ok: true,
-        detail: 'Fast-forwarded — updated 2 files.',
+        detail: 'Synced main — updated 2 files.',
         changed: 2,
         insertions: 10,
         deletions: 3
@@ -423,7 +423,7 @@ describe('toWorkspaceGitPullDto', () => {
     ).toEqual({
       isRepo: true,
       ok: true,
-      detail: 'Fast-forwarded — updated 2 files.',
+      detail: 'Synced main — updated 2 files.',
       changed: 2,
       insertions: 10,
       deletions: 3
