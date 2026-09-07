@@ -902,9 +902,11 @@ export function elicitFieldLabel(params: CreateElicitationRequest, propName: str
   return clampTo((typeof title === 'string' && title.trim()) || propName, 75)
 }
 
-/** ACP's cross-agent marker for a select question's own free-text box — written by the
- *  AskUserQuestion bridges (Claude, Codex) under a namespace-free `_meta` key on purpose. */
+// ACP's cross-agent marker for a select question's own free-text box, under a namespace-free `_meta` key on purpose.
 const CUSTOM_ANSWER_META_KEY = '_askUserQuestionCustomAnswer'
+
+// Codex spells the same box its own way: `request_user_input` writes `_meta.codex.isOtherAnswer`, so both are read.
+const CODEX_CUSTOM_ANSWER_META_KEY = 'codex'
 
 /** The longest question text a card carries under a field's label. */
 const ELICIT_DESCRIPTION_MAX = 300
@@ -912,10 +914,16 @@ const ELICIT_DESCRIPTION_MAX = 300
 /** The question a property's `_meta` claims this free-text box answers, or undefined when it
  *  claims none — an unmarked property is a question in its own right. */
 function customAnswerOwner(prop: Record<string, unknown>): string | undefined {
-  const meta = (prop._meta as Record<string, unknown> | undefined)?.[CUSTOM_ANSWER_META_KEY] as
-    { questionId?: unknown; isCustomAnswer?: unknown } | undefined
-  const owner = meta?.questionId
-  return meta?.isCustomAnswer === true && typeof owner === 'string' && owner ? owner : undefined
+  const meta = prop._meta as Record<string, unknown> | undefined
+  for (const [key, flag] of [
+    [CUSTOM_ANSWER_META_KEY, 'isCustomAnswer'],
+    [CODEX_CUSTOM_ANSWER_META_KEY, 'isOtherAnswer']
+  ] as const) {
+    const marker = meta?.[key] as Record<string, unknown> | undefined
+    const owner = marker?.questionId
+    if (marker?.[flag] === true && typeof owner === 'string' && owner) return owner
+  }
+  return undefined
 }
 
 /**

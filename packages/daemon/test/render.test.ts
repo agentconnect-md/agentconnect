@@ -2052,6 +2052,7 @@ describe('elicitation card', () => {
   // An AskUserQuestion bridge (claude-agent-acp, codex) pairs every select question with its
   // own free-text box, marked `_askUserQuestionCustomAnswer`. The box belongs INSIDE its
   // question — rendered as a peer it read as a second question titled "Other" (#1817).
+  // Codex's native `request_user_input` marks the same box `_meta.codex.isOtherAnswer` instead.
   const custom = (questionId: string) => ({
     type: 'string',
     title: 'Other',
@@ -2082,6 +2083,48 @@ describe('elicitation card', () => {
     // answer without it is refused here — which is why the card keeps asking for the pick too.
     expect(elicitFormAccepts(form!, ['question_0'], { question_0_custom: 'release/1.2' })).toBe(false)
     expect(elicitFormAccepts(form!, ['question_0'], { question_0: 'main', question_0_custom: 'x' })).toBe(true)
+  })
+
+  it("binds Codex's own `_meta.codex` other-answer box the same way", () => {
+    const codexOther = (questionId: string) => ({
+      type: 'string',
+      title: 'Other',
+      description: 'Type your own answer instead of choosing an option above.',
+      _meta: { codex: { questionId, isOtherAnswer: true, isSecret: false } }
+    })
+    const asked = req(
+      {
+        need_type: {
+          type: 'string',
+          title: '需求类型',
+          description: '你希望我协助处理哪一类事情?',
+          oneOf: [{ const: '内容创作' }]
+        },
+        need_type__other: codexOther('need_type'),
+        result_form: { type: 'string', title: '结果形式', oneOf: [{ const: '简洁回答' }] },
+        result_form__other: codexOther('result_form')
+      },
+      []
+    )
+    expect(elicitForm(asked, WEBCHAT_ELICIT_SURFACE)?.map((t) => [t.propName, t.customAnswerFor])).toEqual([
+      ['need_type', undefined],
+      ['need_type__other', 'need_type'],
+      ['result_form', undefined],
+      ['result_form__other', 'result_form']
+    ])
+  })
+
+  it('ignores a codex marker that claims no question', () => {
+    // `isOtherAnswer` absent (or false) makes the box a question of its own, exactly as an
+    // unmarked property is — the flag, not the namespace, is what binds it.
+    const unflagged = req(
+      {
+        a: { type: 'string', enum: ['x'] },
+        a__other: { type: 'string', title: 'Other', _meta: { codex: { questionId: 'a', isSecret: false } } }
+      },
+      []
+    )
+    expect(elicitForm(unflagged, WEBCHAT_ELICIT_SURFACE)?.every((t) => t.customAnswerFor === undefined)).toBe(true)
   })
 
   it('leaves a custom-answer box standing alone when its question is not on the card', () => {
