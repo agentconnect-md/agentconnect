@@ -15,7 +15,7 @@ export interface RuntimeLoginTarget {
 /** The login command for one runtime, run on the daemon's own host. `auth` is not CLI-owned, so
  *  the unified CLI delegates it verbatim to the active daemon with the terminal attached. */
 export function runtimeLoginCommand(runtimeId: string): string {
-  return `agentconnect auth --runtime ${runtimeId}`
+  return `npx -y @agentconnect.md/cli auth --runtime ${runtimeId}`
 }
 
 /**
@@ -92,15 +92,6 @@ export default function RuntimeLoginModal({ target, onClose }: { target: Runtime
           <li>
             It lists the login methods <span className="mono text-(--text-secondary)">{target.runtimeId}</span> offers
             and walks the chosen one — a browser URL, an API key, or the runtime&apos;s own interactive CLI.
-          </li>
-          <li>
-            Drop <span className="mono text-(--text-secondary)">--runtime</span> to pick from every runtime installed
-            there, each row annotated with whether it is already logged in.
-          </li>
-          <li>
-            No <span className="mono text-(--text-secondary)">agentconnect</span> on that host&apos;s PATH? Prefix it
-            with <span className="mono text-(--text-secondary)">npx -y @agentconnect.md/cli</span>. A named service
-            instance also takes <span className="mono text-(--text-secondary)">--instance &lt;name&gt;</span>.
           </li>
           <li>
             Sessions pick the credential up on their next start — the daemon needs no restart, and this warning clears
