@@ -692,6 +692,10 @@ function readConsentUrl(url: string): { scheme: string; host: string; rest: stri
   // Both spellings of the same risk: the parser punycodes a Unicode host, so check the ORIGINAL
   // too — the reader is looking at that, and a homograph is only a lookalike on screen.
   const shownHost = url.slice(afterScheme, hostEnd)
+  // Userinfo makes the emphasized authority attacker-chosen text: `login.example.com@evil.test`
+  // reads as the host it is not. Name the real destination rather than trusting what shows.
+  if (shownHost.includes('@'))
+    warnings.push(`This link goes to ${parsed.hostname} — the text before the @ is not the destination.`)
   if (/(^|\.)xn--/i.test(parsed.hostname) || /[^\x00-\x7F]/.test(shownHost))
     warnings.push(
       `This host is not plain ASCII (it resolves to ${parsed.hostname}), which can disguise a lookalike domain.`
