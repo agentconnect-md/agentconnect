@@ -9,6 +9,7 @@ import type { PickerModel, PickerRow } from '../src/cli/auth-picker.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 import type { RuntimeProbeResult } from '../src/runtimes/runtime-prober.js'
+import type { CreateElicitationRequest, CreateElicitationResponse } from '@agentclientprotocol/sdk'
 
 function scaffold(): { root: string; configPath: string } {
   const root = mkdtempSync(join(tmpdir(), 'ac-auth-'))
@@ -63,7 +64,6 @@ describe('runAuth: the runtime list', () => {
   it('lists every runtime as checking before a single verdict lands', async () => {
     const { root, configPath } = scaffold()
     let shown: PickerRow[] | undefined
-    let release = (): void => {}
     await runAuth({
       root,
       configPath,
@@ -71,15 +71,16 @@ describe('runAuth: the runtime list', () => {
       io: io(),
       resolveCatalog: async () => catalog(),
       installed: (c) => c,
-      // Never answers while the picker is open: the list must not wait for it.
-      probeRuntimes: async () => new Promise((resolve) => (release = () => resolve([]))),
+      // Never answers while the picker is open — only once the choice cancels it, which is what
+      // a real sweep does now: the list must not wait for a verdict.
+      probeRuntimes: async (_runtimes, opts) =>
+        await new Promise((resolve) => opts.signal?.addEventListener('abort', () => resolve([]))),
       pick: async (model) => {
         shown = model.rows()
         return 'antigravity-acp'
       },
       hostFactory: () => fakeHost([{ id: 'oauth-personal', name: 'Log in with Google' }])
     })
-    release()
     expect(shown).toEqual([
       { id: 'antigravity-acp', name: 'Google Antigravity', hint: 'checking…' },
       { id: 'claude-acp', name: 'Claude Agent', hint: 'checking…' },
@@ -156,6 +157,33 @@ describe('runAuth: the runtime list', () => {
     // Nothing new is launched while the login this command exists for is running.
     expect(signal?.aborted).toBe(true)
     expect(calls).toEqual(['oauth'])
+  })
+
+  it('waits for the cancelled sweep to tear down before it returns', async () => {
+    // runAuth resolving is the CLI action calling process.exit: a teardown nobody awaited leaves
+    // probe children running after the command is gone.
+    const { root, configPath } = scaffold()
+    let torndown = false
+    await runAuth({
+      root,
+      configPath,
+      out: capture().stream,
+      io: io(),
+      resolveCatalog: async () => catalog(),
+      installed: (c) => c,
+      probeRuntimes: async (_runtimes, opts) =>
+        await new Promise((resolve) => {
+          opts.signal?.addEventListener('abort', () =>
+            setTimeout(() => {
+              torndown = true
+              resolve([])
+            }, 10)
+          )
+        }),
+      pick: async () => 'claude-acp',
+      hostFactory: () => fakeHost([{ id: 'oauth', name: 'Log in' }])
+    })
+    expect(torndown).toBe(true)
   })
 
   it('probes every installed runtime, keyed by id', async () => {
@@ -459,6 +487,48 @@ describe('runAuth: method selection', () => {
     expect(out.text()).not.toContain('copy the URL')
   })
 
+  it('finishes on its own when the login settles while the paste prompt is waiting', async () => {
+    // A browser login routinely takes longer than the paste offer's delay. Once the question is
+    // on stdin, only releasing it can end the command — no keypress should be required.
+    const { root, configPath } = scaffold()
+    const out = capture()
+    let asked = 0
+    let released = false
+    let finishLogin = (): void => {}
+    const login = new Promise<void>((resolve) => (finishLogin = resolve))
+    await runAuth({
+      root,
+      configPath,
+      out: out.stream,
+      runtimeId: 'antigravity-acp',
+      methodId: 'oauth-personal',
+      resolveCatalog: async () => catalog(),
+      installed: (c) => c,
+      hostFactory: () =>
+        ({
+          start: async () => {},
+          authMethods: () => [{ id: 'oauth-personal', name: 'Log in with Google' }],
+          authenticate: async () => login,
+          stop: async () => {}
+        }) as unknown as AcpHost,
+      pasteAfterMs: 0,
+      readLine: async (_question, signal) => {
+        asked += 1
+        // The operator is off in a browser: this question is answered by nobody.
+        setTimeout(finishLogin, 10)
+        return await new Promise<string>((resolve) =>
+          signal?.addEventListener('abort', () => {
+            released = true
+            resolve('')
+          })
+        )
+      }
+    })
+    expect(asked).toBe(1)
+    expect(released).toBe(true)
+    expect(out.text()).toContain('✓ antigravity-acp is logged in on this host.')
+  })
+
   it('says so when a runtime advertises no login at all', async () => {
     const { root, configPath } = scaffold()
     const out = capture()
@@ -488,5 +558,155 @@ describe('runAuth: method selection', () => {
     ).rejects.toThrow(
       /runtime "absent" is not installed on this host\. Available: antigravity-acp, claude-acp, grok-build/
     )
+  })
+})
+
+/** Drive the host options the command builds — `onAuthElicit` is what the agent's auth phase
+ *  asks over, so the form answers are asserted through the very hook the agent calls. */
+async function authElicit(
+  params: CreateElicitationRequest,
+  over: Parameters<typeof runAuth>[0] = {}
+): Promise<CreateElicitationResponse | undefined> {
+  const { root, configPath } = scaffold()
+  let elicit: ((p: CreateElicitationRequest) => Promise<CreateElicitationResponse | undefined>) | undefined
+  let answer: CreateElicitationResponse | undefined
+  await runAuth({
+    root,
+    configPath,
+    out: capture().stream,
+    io: io(),
+    runtimeId: 'claude-acp',
+    methodId: 'oauth',
+    resolveCatalog: async () => catalog(),
+    installed: (c) => c,
+    hostFactory: (_runtime, options) => {
+      elicit = options?.onAuthElicit
+      return {
+        start: async () => {},
+        authMethods: () => [{ id: 'oauth', name: 'Log in' }],
+        authenticate: async () => {
+          answer = await elicit!(params)
+        },
+        stop: async () => {}
+      } as unknown as AcpHost
+    },
+    ...over
+  })
+  return answer
+}
+
+describe('runAuth: the auth phase’s form elicitations', () => {
+  it('answers under the schema’s own property names and types', async () => {
+    const answer = await authElicit(
+      {
+        mode: 'form',
+        message: 'Which project should this credential belong to?',
+        requestedSchema: {
+          type: 'object',
+          required: ['projectId'],
+          properties: {
+            projectId: { type: 'string', title: 'Project id' },
+            region: {
+              type: 'string',
+              title: 'Region',
+              oneOf: [
+                { const: 'us', title: 'United States' },
+                { const: 'eu', title: 'Europe' }
+              ]
+            },
+            sandbox: { type: 'boolean', title: 'Sandbox project' }
+          }
+        }
+      } as unknown as CreateElicitationRequest,
+      {
+        readLine: async () => 'proj-42',
+        // The enum and the boolean are PICKED from what the agent offered, never typed.
+        pick: async (model) => model.rows()[0]!.id
+      }
+    )
+
+    // A fixed {type,text} payload would answer none of these — the request asked for projectId.
+    expect(answer).toEqual({
+      action: 'accept',
+      content: { projectId: 'proj-42', region: 'us', sandbox: true }
+    })
+  })
+
+  it('declines when a required field is left unanswered', async () => {
+    const answer = await authElicit(
+      {
+        mode: 'form',
+        message: 'Which project?',
+        requestedSchema: {
+          type: 'object',
+          required: ['projectId'],
+          properties: {
+            projectId: { type: 'string', title: 'Project id' },
+            label: { type: 'string', title: 'Label' }
+          }
+        }
+      } as unknown as CreateElicitationRequest,
+      // Asked in schema order: the required field is skipped, the optional one answered — so the
+      // form is refused by the required check, not by the "nothing typed at all" shortcut.
+      {
+        readLine: (() => {
+          const typed = ['', 'staging']
+          return async () => typed.shift()!
+        })()
+      }
+    )
+    expect(answer).toBeUndefined()
+  })
+
+  it('re-asks a value the field’s own schema refuses', async () => {
+    const typed = ['not-a-number', '7']
+    const answer = await authElicit(
+      {
+        mode: 'form',
+        message: 'How many retries?',
+        requestedSchema: {
+          type: 'object',
+          required: ['retries'],
+          properties: { retries: { type: 'integer', title: 'Retries', minimum: 1, maximum: 10 } }
+        }
+      } as unknown as CreateElicitationRequest,
+      { readLine: async () => typed.shift()! }
+    )
+    expect(answer).toEqual({ action: 'accept', content: { retries: 7 } })
+  })
+
+  it('declines a form whose required field this terminal cannot render', async () => {
+    const answer = await authElicit(
+      {
+        mode: 'form',
+        message: 'Upload the key file',
+        requestedSchema: {
+          type: 'object',
+          required: ['keyFile'],
+          properties: {
+            keyFile: { type: 'object', title: 'Key file' },
+            note: { type: 'string', title: 'Note' }
+          }
+        }
+      } as unknown as CreateElicitationRequest,
+      { readLine: async () => 'anything' }
+    )
+    // Half-answering a form is a lie about what the operator supplied.
+    expect(answer).toBeUndefined()
+  })
+
+  it('accepts a URL-mode ask by showing the link, never by opening one', async () => {
+    const out = capture()
+    const answer = await authElicit(
+      {
+        mode: 'url',
+        elicitationId: 'e-1',
+        message: 'Sign in with Google',
+        url: 'https://accounts.example.test/o/oauth2/auth?client_id=x'
+      } as unknown as CreateElicitationRequest,
+      { out: out.stream }
+    )
+    expect(answer).toEqual({ action: 'accept' })
+    expect(out.text()).toContain('https://accounts.example.test/o/oauth2/auth?client_id=x')
   })
 })

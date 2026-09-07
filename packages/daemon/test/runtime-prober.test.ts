@@ -281,6 +281,35 @@ describe('probeRuntime', () => {
     expect(res.ok).toBe(false)
     expect(res.error).toContain('timed out')
   })
+
+  it('ends an in-flight probe on abort instead of at its deadline, tearing the child down', async () => {
+    // The caller that aborts (the auth CLI's picker) exits right after; a probe left to run out a
+    // 60s deadline would outlive it as an orphan.
+    let stopped = false
+    const host = fakeHost({ newSession: () => new Promise<string>(() => {}), onStop: () => (stopped = true) })
+    const sweep = new AbortController()
+    setTimeout(() => sweep.abort(), 5)
+    const res = await probeRuntime('slow', rt, '/tmp/x', {
+      hostFactory: () => host,
+      timeoutMs: 60_000,
+      signal: sweep.signal
+    })
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('cancelled')
+    expect(stopped).toBe(true)
+  })
+
+  it('reports an already-aborted sweep without launching the runtime at all', async () => {
+    let started = 0
+    const host = fakeHost({ start: async () => void started++ })
+    const res = await probeRuntime('slow', rt, '/tmp/x', {
+      hostFactory: () => host,
+      signal: AbortSignal.abort()
+    })
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('cancelled')
+    expect(started).toBe(0)
+  })
 })
 
 describe('curatedProbeEnvironment', () => {

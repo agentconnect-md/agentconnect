@@ -14,6 +14,16 @@ import { installedRuntimeCatalog } from '../runtimes/probe.js'
 import { probeAllRuntimes, type RuntimeProbeResult } from '../runtimes/runtime-prober.js'
 import { defaultProbeHostFactory } from '../acp/probe-host-factory.js'
 import { fixedRows, pickRow, type PickerIo, type PickerModel, type PickerRow } from './auth-picker.js'
+import {
+  CLI_ELICIT_SURFACE,
+  elicitFieldLabel,
+  elicitForm,
+  elicitFormAccepts,
+  elicitFormContent,
+  elicitRequiredProps,
+  fieldAccepts,
+  type ElicitTarget
+} from '../slack/render.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from '../runtimes/registry.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 
@@ -46,8 +56,9 @@ export interface RunAuthOpts {
   hostFactory?: (runtime: RuntimeDef, options: ConstructorParameters<typeof AcpHost>[1]) => AcpHost
   /** Test seam for the client-run `terminal` method; production spawns it on the real TTY. */
   runTerminalAuth?: (runtime: RuntimeDef, method: AuthMethod) => Promise<number>
-  /** Test seams for the loopback-paste fallback: reading a line, and replaying the pasted URL. */
-  readLine?: (question: string) => Promise<string>
+  /** Test seams for the loopback-paste fallback: reading a line, and replaying the pasted URL.
+   *  An aborted `signal` must release a question already waiting on stdin, answering empty. */
+  readLine?: (question: string, signal?: AbortSignal) => Promise<string>
   deliverLoopback?: (url: string) => Promise<void>
   /** How long to let an agent-run login settle before offering the paste fallback. */
   pasteAfterMs?: number
@@ -69,11 +80,20 @@ function hintFor(method: AuthMethod): string {
   return `${method.description?.trim() || method.name} (${kind})`
 }
 
-async function readLine(question: string): Promise<string> {
+/** Ask one line. An abort resolves it empty and closes the interface: a login that settles while
+ *  the operator is being prompted must not stay parked on stdin waiting for a keypress. */
+async function readLine(question: string, signal?: AbortSignal): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
+  let onAbort: (() => void) | undefined
   try {
-    return await new Promise<string>((resolve) => rl.question(question, resolve))
+    return await new Promise<string>((resolve) => {
+      if (signal?.aborted) return resolve('')
+      onAbort = () => resolve('')
+      signal?.addEventListener('abort', onAbort, { once: true })
+      rl.question(question, resolve)
+    })
   } finally {
+    if (onAbort) signal?.removeEventListener('abort', onAbort)
     rl.close()
   }
 }
@@ -147,9 +167,10 @@ async function chooseRuntime(
     }
   }
 
-  // Aborted the moment a runtime is chosen: nothing new is launched, and the probes already in
-  // flight tear their own children down on their per-runtime deadline. The sweep is deliberately
-  // NOT awaited — waiting for it is the very delay this list exists to avoid.
+  // Aborted the moment a runtime is chosen: nothing new is launched and every probe in flight
+  // ends at once (runtime-prober races the signal), which is what makes the teardown below cheap
+  // to wait for. The sweep is never awaited BEFORE a choice — that delay is what this list exists
+  // to avoid.
   const sweep = new AbortController()
   const probe = opts.probeRuntimes ?? probeAllRuntimes
   const running = probe(Object.fromEntries(ids.map((id) => [id, catalog.entries[id]!.runtime])), {
@@ -173,7 +194,12 @@ async function chooseRuntime(
   try {
     return await pick(model, io, 'Select a runtime to log in')
   } finally {
+    // Cancelled AND awaited: these probes are children of THIS process, and the CLI action exits
+    // as soon as runAuth resolves, so a teardown nobody waited for leaves them running after the
+    // command is gone. The abort ends each in-flight probe at once rather than at its deadline,
+    // so waiting for it costs the operator nothing measurable.
     sweep.abort()
+    await running.catch(() => undefined)
   }
 }
 
@@ -218,18 +244,22 @@ async function offerLoopbackPaste(login: Promise<void>, opts: RunAuthOpts, out: 
       if (res.status >= 500) throw new Error(`the local listener answered HTTP ${res.status}`)
     })
 
+  // The prompt is racing the login itself, so it gets a signal rather than a flag: a resolved
+  // login has to close the readline question, which no amount of polling `settled` can do.
   let settled = false
-  void login.then(
-    () => (settled = true),
-    () => (settled = true)
-  )
+  const done = new AbortController()
+  const finish = (): void => {
+    settled = true
+    done.abort()
+  }
+  void login.then(finish, finish)
   await Promise.race([login.catch(() => undefined), new Promise((r) => setTimeout(r, opts.pasteAfterMs ?? 3000))])
   if (settled) return
 
   out.write('\nIf the browser could not reach the redirect (this host is headless, no port forward),\n')
   out.write('copy the URL of the tab that failed to load and paste it here — it carries the code.\n')
   while (!settled) {
-    const answer = (await ask('\nRedirect URL (Enter to keep waiting): ')).trim()
+    const answer = (await ask('\nRedirect URL (Enter to keep waiting): ', done.signal)).trim()
     if (settled || answer === '') return
     const url = loopbackRedirect(answer)
     if (!url) {
@@ -244,6 +274,92 @@ async function offerLoopbackPaste(login: Promise<void>, opts: RunAuthOpts, out: 
       out.write(`Could not reach the local listener: ${(err as Error).message}\n`)
     }
   }
+}
+
+/** Split a typed multi-select answer into the values the schema will be checked against. */
+function splitValues(line: string): string[] {
+  return line
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '')
+}
+
+/** The most times one field is re-asked before it is left unanswered — a typo deserves another
+ *  go, an operator who cannot satisfy the schema deserves to be let out of the loop. */
+const FIELD_ATTEMPTS = 3
+
+/**
+ * Ask one reduced field on the terminal, or return undefined when it was left unanswered.
+ *
+ * The pickable kinds are chosen from the options the AGENT offered, so a typo cannot invent a
+ * value it never asked for; text, number and multi-select are typed and re-asked while the
+ * field's own schema refuses them ({@link fieldAccepts} — the same gate the answer is checked
+ * against, applied here so the refusal is explainable rather than a late blanket decline).
+ */
+async function askField(
+  target: ElicitTarget,
+  label: string,
+  opts: RunAuthOpts,
+  out: NodeJS.WritableStream
+): Promise<string | number | string[] | undefined> {
+  if (target.kind === 'enum' || target.kind === 'boolean') {
+    const io = opts.io ?? { input: process.stdin, output: process.stdout }
+    const rows = target.options.map((option) => ({ id: option.value, name: option.label }))
+    return await (opts.pick ?? pickRow)(fixedRows(rows), io, label)
+  }
+
+  const ask = opts.readLine ?? readLine
+  if (target.kind === 'multi-enum') {
+    out.write(`\n${label} — one or more of: ${target.options.map((option) => option.value).join(', ')}\n`)
+  } else {
+    out.write(`\n${label}\n`)
+  }
+  const prompt = target.kind === 'multi-enum' ? 'Values (comma-separated, empty to skip): ' : 'Value (empty to skip): '
+  for (let attempt = 0; attempt < FIELD_ATTEMPTS; attempt++) {
+    const line = (await ask(prompt)).trim()
+    if (line === '') return undefined
+    const value = target.kind === 'multi-enum' ? splitValues(line) : target.kind === 'number' ? Number(line) : line
+    if (fieldAccepts(target, value)) return value
+    out.write(`That is not a value ${target.propName} accepts.\n`)
+  }
+  return undefined
+}
+
+/**
+ * Answer a form elicitation with the properties the agent's own `requestedSchema` asked for.
+ *
+ * The reduction is the shared one — {@link elicitForm} over {@link CLI_ELICIT_SURFACE} — so this
+ * terminal answers under the schema's own property names and types, and a form carrying a
+ * required field it cannot render is declined whole rather than half-answered. An accept keyed
+ * on anything else (a fixed `{type,text}`, say) is an answer the runtime never asked for: a
+ * request for `projectId` would come back without one and the login would fail on it.
+ */
+async function answerAuthForm(
+  params: CreateElicitationRequest,
+  opts: RunAuthOpts,
+  out: NodeJS.WritableStream
+): Promise<CreateElicitationResponse | undefined> {
+  const form = elicitForm(params, CLI_ELICIT_SURFACE)
+  if (!form) {
+    out.write('\nThe runtime asked for input this terminal cannot render whole — declining.\n')
+    return undefined
+  }
+  const message = (params as { message?: unknown }).message
+  if (typeof message === 'string' && message.trim()) out.write(`\n${message.trim()}\n`)
+
+  const answer: Record<string, string | number | string[]> = {}
+  for (const target of form) {
+    const value = await askField(target, elicitFieldLabel(params, target.propName), opts, out)
+    if (value !== undefined) answer[target.propName] = value
+  }
+  // Nothing typed is a decline, not an empty accept: the spec has agents handle `decline`, and
+  // an empty accept would report "answered" for a question the operator walked away from.
+  if (Object.keys(answer).length === 0) return undefined
+  if (!elicitFormAccepts(form, elicitRequiredProps(params), answer)) {
+    out.write('\nDeclined — the runtime needs every required field answered.\n')
+    return undefined
+  }
+  return { action: 'accept', content: elicitFormContent(form, answer) } as CreateElicitationResponse
 }
 
 export async function runAuth(opts: RunAuthOpts): Promise<void> {
@@ -295,12 +411,7 @@ export async function runAuth(opts: RunAuthOpts): Promise<void> {
         out.write('Waiting for the runtime to confirm…\n')
         return { action: 'accept' } as CreateElicitationResponse
       }
-      const message = (params as { message?: unknown }).message
-      if (typeof message === 'string') out.write(`\n${message}\n`)
-      const answer = (await (opts.readLine ?? readLine)('Response (empty to decline): ')).trim()
-      return answer
-        ? ({ action: 'accept', content: { type: 'text', text: answer } } as unknown as CreateElicitationResponse)
-        : undefined
+      return await answerAuthForm(params, opts, out)
     }
   }
   const host = opts.hostFactory ? opts.hostFactory(runtime, hostOptions) : new AcpHost(runtime, hostOptions)
