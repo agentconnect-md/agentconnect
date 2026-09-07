@@ -580,6 +580,56 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', { question_0: 'main' }, 'conv-1']])
   })
 
+  it('lays a question out as rows, not chips, once one of its options is a sentence', async () => {
+    const LONG = 'Roll back to the previous release and page the on-call engineer'
+    live.steps = [
+      {
+        ...CARD,
+        elicit: {
+          requestId: 'elicit-1',
+          options: [],
+          fields: [
+            { propName: 'branch', label: 'Branch', kind: 'enum', options: [{ value: 'main', label: 'main' }] },
+            {
+              propName: 'strategy',
+              label: 'If the deploy fails',
+              kind: 'enum',
+              options: [
+                { value: 'rollback', label: LONG },
+                { value: 'hold', label: 'Hold the failed build and wait for a human' }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+    await render()
+
+    // A short-value question stays a row of chips…
+    expect(buttonNamed('main')?.className).toContain('chip')
+    // …while one option long enough to be a sentence turns its whole question into full-width
+    // rows, so no answer is truncated away and they all read alike.
+    const row = buttonNamed(LONG)
+    expect(row?.className).not.toContain('chip')
+    expect(row?.className).toContain('items-start')
+    expect(buttonNamed('Hold the failed build and wait for a human')?.className).toContain('items-start')
+    expect(row?.getAttribute('aria-pressed')).toBe('false')
+
+    await act(async () => {
+      row?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(buttonNamed(LONG)?.getAttribute('aria-pressed')).toBe('true')
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await act(async () => {
+      buttonNamed('Submit answers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([
+      ['session-1', 'agent-1', 'elicit-1', { branch: 'main', strategy: 'rollback' }, 'conv-1']
+    ])
+  })
+
   it('still asks a REQUIRED question for its own pick, box or no box', async () => {
     // `elicitFormAccepts` refuses an answer that leaves a required property out, so a box that
     // unlocked Submit here would post an answer the daemon drops — the card would sit pending

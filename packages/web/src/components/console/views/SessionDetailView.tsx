@@ -912,9 +912,83 @@ function rowInvalidReason(
 const ELICIT_CHIP = 'chip max-w-full truncate rounded-sm disabled:cursor-default disabled:opacity-55'
 const ELICIT_CHIP_ON =
   'chip max-w-full truncate rounded-sm border-(--brand) bg-(--brand) text-white disabled:cursor-default disabled:opacity-55'
+// The "Other" affordance is an option the agent did not offer, so it wears the soft accent
+// rather than the solid one a real pick gets.
+const ELICIT_CHIP_SOFT = 'chip max-w-full truncate rounded-sm text-(--text-tertiary) disabled:opacity-55'
+const ELICIT_CHIP_SOFT_ON =
+  'chip max-w-full truncate rounded-sm border-(--brand-soft-border) bg-(--brand-soft) text-(--brand-soft-text) disabled:opacity-55'
+const ELICIT_ROW_BASE =
+  'flex w-full min-w-0 cursor-pointer items-start gap-[9px] rounded-sm border px-[11px] py-[8px] text-left font-sans text-[13px] font-medium leading-[1.45] disabled:cursor-default disabled:opacity-55'
+const ELICIT_ROW = `${ELICIT_ROW_BASE} border-(--border-default) bg-(--surface-card) text-(--text-secondary) hover:border-(--border-strong) hover:bg-(--surface-hover)`
+const ELICIT_ROW_ON = `${ELICIT_ROW_BASE} border-(--brand) bg-(--brand-soft) text-(--text-primary)`
+const ELICIT_ROW_SOFT = `${ELICIT_ROW_BASE} border-(--border-default) bg-(--surface-card) text-(--text-tertiary) hover:border-(--border-strong) hover:bg-(--surface-hover)`
+const ELICIT_ROW_SOFT_ON = `${ELICIT_ROW_BASE} border-(--brand-soft-border) bg-(--brand-soft) text-(--brand-soft-text)`
 const ELICIT_INPUT = 'inp w-full min-w-0 bg-(--surface-app) disabled:cursor-default disabled:opacity-55'
-// A chip whose label IS its value reads as the literal the agent will receive, not as prose.
-const chipFont = (option: { label: string; value: string }) => (option.label === option.value ? ' font-mono' : '')
+// An option long enough to be a sentence cannot be a chip: a row of them would either
+// truncate the answer away or wrap into a ragged block. One such option turns the whole
+// question into a list — the options stay comparable only if they are all shaped alike.
+const LONG_OPTION = 22
+const asList = (options: { label: string }[]) => options.some((o) => o.label.length > LONG_OPTION)
+
+/** One offered option, as a chip or — where the question went long — as a full-width row.
+ *  `staged` marks the selection the card is holding until Submit; a card that answers on the
+ *  tap itself shows no indicator, because there is no held state for one to report. */
+function ElicitOption({
+  label,
+  on,
+  list,
+  soft,
+  mono,
+  staged,
+  multi,
+  disabled,
+  onPick
+}: {
+  label: string
+  on: boolean
+  list: boolean
+  soft?: boolean
+  mono?: boolean
+  staged?: boolean
+  multi?: boolean
+  disabled: boolean
+  onPick: () => void
+}) {
+  const cls = list
+    ? soft
+      ? on
+        ? ELICIT_ROW_SOFT_ON
+        : ELICIT_ROW_SOFT
+      : on
+        ? ELICIT_ROW_ON
+        : ELICIT_ROW
+    : soft
+      ? on
+        ? ELICIT_CHIP_SOFT_ON
+        : ELICIT_CHIP_SOFT
+      : on
+        ? ELICIT_CHIP_ON
+        : ELICIT_CHIP
+  return (
+    <button
+      type="button"
+      {...(staged || multi ? { 'aria-pressed': on } : {})}
+      className={cls + (mono ? ' font-mono' : '')}
+      disabled={disabled}
+      title={label}
+      onClick={onPick}
+    >
+      {list && staged ? (
+        <span
+          className={`mt-[2px] grid size-[14px] flex-none place-items-center border ${multi ? 'rounded-[4px]' : 'rounded-full'} ${on ? 'border-(--brand) bg-(--brand)' : 'border-(--border-strong) bg-(--surface-card)'}`}
+        >
+          {on ? <span className={`size-[6px] bg-white ${multi ? 'rounded-[1px]' : 'rounded-full'}`} /> : null}
+        </span>
+      ) : null}
+      <span className="min-w-0">{label}</span>
+    </button>
+  )
+}
 const ELICIT_HINT = 'font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)'
 const ELICIT_ACTIONS = 'flex flex-wrap items-center gap-[8px] border-t border-(--border-subtle) pt-[11px]'
 
@@ -960,7 +1034,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   // The head reads the card's phase before the reader reaches a control: accent edge, icon, and
   // — for a form long enough to scroll past its own question — how much of it is still open.
   const edge = settled ? settled.edge : 'border-l-(--brand)'
-  const headIcon = settled ? settled.icon : consent ? 'external-link' : 'message-circle-question-mark'
+  const headIcon = settled ? settled.icon : consent ? 'external-link' : 'message-square-dot'
   const headColor = settled ? settled.color : 'var(--brand)'
   // The head names the ask in one line; anything the agent wrote past that first line reads as
   // the preamble it is, above the questions rather than as a paragraph-long title.
@@ -1059,6 +1133,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
               const reason = rowInvalidReason(f, companion, drafts, picks)
               const hint =
                 f.kind === 'multi-enum' ? selectionHint(f.multi?.minItems ?? 0, f.multi?.maxItems) : undefined
+              const list = asList(f.options)
               return (
                 <div
                   key={f.propName}
@@ -1105,7 +1180,13 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                         onChange={(e) => setDrafts((prev) => ({ ...prev, [f.propName]: e.target.value }))}
                       />
                     ) : (
-                      <div className="flex min-w-0 flex-wrap items-center gap-[6px]">
+                      <div
+                        className={
+                          list
+                            ? 'flex min-w-0 flex-col gap-[6px] desktop:max-w-[520px]'
+                            : 'flex min-w-0 flex-wrap items-center gap-[6px]'
+                        }
+                      >
                         {f.options.map((option) => {
                           const held = picks[f.propName] ?? []
                           const on = held.includes(option.value)
@@ -1114,14 +1195,16 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                           const cap = f.kind === 'multi-enum' ? f.multi?.maxItems : undefined
                           const capped = !on && cap !== undefined && held.length >= cap
                           return (
-                            <button
+                            <ElicitOption
                               key={option.value}
-                              type="button"
-                              aria-pressed={on}
-                              className={(on ? ELICIT_CHIP_ON : ELICIT_CHIP) + chipFont(option)}
-                              title={option.label}
+                              label={option.label}
+                              on={on}
+                              list={list}
+                              mono={option.label === option.value}
+                              staged
+                              multi={f.kind === 'multi-enum'}
                               disabled={!onAnswer || capped}
-                              onClick={() =>
+                              onPick={() =>
                                 setPicks((prev) => {
                                   const was = prev[f.propName] ?? []
                                   if (was.includes(option.value))
@@ -1134,28 +1217,25 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                                   }
                                 })
                               }
-                            >
-                              {option.label}
-                            </button>
+                            />
                           )
                         })}
                         {companion ? (
-                          <button
-                            type="button"
-                            aria-pressed={!!others[f.propName]}
-                            className={others[f.propName] ? ELICIT_CHIP_ON : ELICIT_CHIP}
+                          <ElicitOption
+                            label="Other…"
+                            on={!!others[f.propName]}
+                            list={list}
+                            soft
+                            staged={list}
                             disabled={!onAnswer}
-                            onClick={() => toggleOther(f, companion)}
-                            title={companion.description ?? companion.label}
-                          >
-                            Other…
-                          </button>
+                            onPick={() => toggleOther(f, companion)}
+                          />
                         ) : null}
                       </div>
                     )}
                     {companion && (f.kind === 'text' || f.kind === 'number' || others[f.propName]) ? (
                       <input
-                        className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
+                        className={`${ELICIT_INPUT} ${list ? 'desktop:max-w-[340px]' : 'font-mono desktop:max-w-[260px]'}`}
                         type="text"
                         autoFocus={!!others[f.propName]}
                         value={drafts[companion.propName] ?? ''}
@@ -1249,28 +1329,35 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
           </div>
         ) : (
           <div className="flex w-full min-w-0 flex-col gap-[10px]">
-            <div className="flex min-w-0 flex-wrap items-center gap-[6px]">
+            <div
+              className={
+                asList(elicit.options)
+                  ? 'flex min-w-0 flex-col gap-[6px] desktop:max-w-[520px]'
+                  : 'flex min-w-0 flex-wrap items-center gap-[6px]'
+              }
+            >
               {elicit.options.map((option) => {
                 const on = picked.includes(option.value)
                 // At the cap, the options still unpicked stop taking a tap — an answer the card
                 // would have to refuse should not look available in the first place.
                 const capped = !!multi && !on && max !== undefined && picked.length >= max
                 return (
-                  <button
+                  <ElicitOption
                     key={option.value}
-                    type="button"
-                    {...(multi ? { 'aria-pressed': on } : {})}
-                    className={(on ? ELICIT_CHIP_ON : ELICIT_CHIP) + chipFont(option)}
-                    title={option.label}
+                    label={option.label}
+                    on={on}
+                    list={asList(elicit.options)}
+                    mono={option.label === option.value}
+                    // A single-choice card answers on the tap, so it holds nothing an
+                    // indicator could report; a multi-select does.
+                    {...(multi ? { staged: true, multi: true } : {})}
                     disabled={!onAnswer || capped}
-                    onClick={() =>
+                    onPick={() =>
                       multi
                         ? setPicked((prev) => (on ? prev.filter((v) => v !== option.value) : [...prev, option.value]))
                         : onAnswer?.(option.value)
                     }
-                  >
-                    {option.label}
-                  </button>
+                  />
                 )
               })}
             </div>
