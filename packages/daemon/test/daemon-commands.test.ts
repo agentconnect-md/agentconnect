@@ -1959,10 +1959,17 @@ describe('Slack interactive status bar', () => {
     ;(daemon as any).permissions.pendingElicits.set('elicit-1', {
       agentId: 'bot-a',
       sessionId: 'acp-1',
-      params: { message: 'Pick one' },
+      // The params a real entry carries: onAcpElicit only stores what built the card, and the
+      // answer is now re-derived against it, so a schema-less stand-in is not a card at all.
+      params: {
+        mode: 'form',
+        message: 'Pick one',
+        requestedSchema: { type: 'object', properties: { language: { type: 'string', enum: ['TypeScript', 'Go'] } } }
+      },
       propName: 'language',
       kind: 'enum',
       approval: false,
+      surface: 'slack',
       conn: { updateBlocks, workspaceId: () => 'T1' },
       channel: 'C1',
       ts: 'card-2',
