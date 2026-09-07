@@ -1119,11 +1119,13 @@ const BARE_URL_RE = /(?:https?:\/\/|www\.)\S+/gi
  *  wrapped in a code span, which Slack mrkdwn does not autolink. Pure. */
 function elicitCardMessage(params: CreateElicitationRequest): string {
   const raw = (params as { message?: string }).message?.trim() || 'The agent needs your input'
-  return raw
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(BARE_URL_RE, (m) => `\`${m}\``)
+  return escapeSlackMrkdwn(raw).replace(BARE_URL_RE, (m) => `\`${m}\``)
+}
+
+/** The three characters Slack mrkdwn reads as markup rather than as themselves. Escaping them is
+ *  how a literal `&`, `<` or `>` reaches the reader — Slack unescapes the entities on display. */
+function escapeSlackMrkdwn(raw: string): string {
+  return raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 /** Slack's own limit on one section's mrkdwn text. */
@@ -1174,6 +1176,104 @@ export function buildElicitationResolvedCard(params: CreateElicitationRequest, d
   const message = elicitCardMessage(params)
   const text = clampTo(`:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}\n${decision}`, SLACK_SECTION_TEXT_CAP)
   return [{ type: 'section', text: { type: 'mrkdwn', text } }]
+}
+
+/** Slack's own limit on an interactive element's `value`. A URL longer than this cannot ride a
+ *  button, so its card is not built at all rather than posted with a truncated consent. */
+const SLACK_ACTION_VALUE_CAP = 2000
+
+/** What a consent card shows about its URL: the REAL host, so a lookalike or a userinfo prefix
+ *  cannot pass itself off as one, and what to warn about. Both checks are on the host alone — a
+ *  lookalike hides there, not in the path — and both are advisory: the card still shows the whole
+ *  URL and still opens only on an explicit tap. Null ⇒ nothing a consent card may offer: a scheme
+ *  no browser tab should take (the caller's {@link elicitUrl} already refused those, and this
+ *  refuses them again rather than trust its caller), or a backtick, which cannot sit inside the
+ *  code span that keeps the URL unfollowable without either escaping the span or lying about the
+ *  bytes. Pure — it parses the URL and never touches the network. */
+function consentUrlParts(url: string): { host: string; warnings: string[] } | null {
+  if (url.includes('`')) return null
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null
+  // Sliced by POSITION, never by searching `parsed.host`: the parser's spelling is not in the original.
+  const afterScheme = url.indexOf('//') + 2
+  const authorityEnd = url.slice(afterScheme).search(/[/?#]/)
+  const shownHost = url.slice(afterScheme, authorityEnd < 0 ? url.length : afterScheme + authorityEnd)
+  const warnings: string[] = []
+  if (parsed.protocol !== 'https:')
+    warnings.push('Not encrypted (http) — anything you type on that page can be read in transit.')
+  // Both spellings of one risk: the parser punycodes Unicode, but a homograph is a lookalike ON SCREEN.
+  if (/(^|\.)xn--/i.test(parsed.hostname) || /[^\x00-\x7F]/.test(shownHost))
+    warnings.push('This host is not plain ASCII, which can disguise a lookalike domain.')
+  return { host: parsed.hostname, warnings }
+}
+
+/** Build the URL-mode CONSENT card: the agent's defused `message`, the real host, the whole URL in
+ *  a code span, any advisory warnings, an Open link button and a Dismiss button. The URL is shown
+ *  but deliberately NOT followable as text — Slack autolinks a bare URL, and a reader who left
+ *  through that autolink would deliver no interaction, so the card would hang unanswered. The
+ *  button's `url` field both opens the page and still sends Slack's interaction, which is what
+ *  makes consent observable; its `value` carries the URL back so the answer is re-derived against
+ *  the card that offered it. Returns null — the caller then declines with a notice — when this is
+ *  not a URL-mode ask, when the URL is not one a card may offer, or when it will not fit a Slack
+ *  button `value`. Pure; the daemon never fetches the URL. */
+export function buildUrlConsentCard(
+  requestId: string,
+  params: CreateElicitationRequest,
+  sessionTarget?: string
+): unknown[] | null {
+  const url = elicitUrl(params)
+  const parts = url && consentUrlParts(url.url)
+  if (!url || !parts) return null
+  const value = encodePermValue(requestId, url.url)
+  if (value.length > SLACK_ACTION_VALUE_CAP) return null
+  const detail = [
+    'Opens in your browser. This agent never sees that page or anything you type on it.',
+    `Host: \`${escapeSlackMrkdwn(parts.host)}\``,
+    `\`${escapeSlackMrkdwn(url.url)}\``,
+    ...parts.warnings.map((w) => `:warning: ${escapeSlackMrkdwn(w)}`)
+  ].join('\n')
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `:link: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}` }
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: clampTo(detail, SLACK_SECTION_TEXT_CAP) } },
+    {
+      type: 'actions',
+      ...(sessionTarget ? { block_id: sessionTarget } : {}),
+      elements: [
+        {
+          type: 'button',
+          action_id: `${ELICIT_ACTION_PREFIX}:0`,
+          text: { type: 'plain_text', text: 'Open link', emoji: true },
+          style: 'primary',
+          url: url.url,
+          value
+        },
+        {
+          type: 'button',
+          action_id: ELICIT_DISMISS_ACTION as string,
+          text: { type: 'plain_text', text: 'Dismiss', emoji: true },
+          value: requestId
+        }
+      ]
+    }
+  ]
+}
+
+/** Build the RESOLVED consent card (buttons removed) that replaces {@link buildUrlConsentCard}
+ *  once opened, dismissed, cancelled, or reported complete. It keeps the URL on screen so the
+ *  settled card still records what was consented to. Pure. */
+export function buildUrlConsentResolvedCard(params: CreateElicitationRequest, decision: string): unknown[] {
+  const url = elicitUrl(params)
+  const shown = url && !url.url.includes('`') ? `\n\`${escapeSlackMrkdwn(url.url)}\`` : ''
+  const text = `:link: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}${shown}\n${decision}`
+  return [{ type: 'section', text: { type: 'mrkdwn', text: clampTo(text, SLACK_SECTION_TEXT_CAP) } }]
 }
 
 export interface SharedStatusActions {

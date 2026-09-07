@@ -756,6 +756,18 @@ describe('the agent’s URL-mode consent card', () => {
     expect(linkNamed('Open link')).toBeDefined()
   })
 
+  // The emphasized authority is attacker-chosen when it carries userinfo, so the card must name
+  // where the link actually goes rather than letting the prefix speak for it.
+  it('names the real destination when a userinfo prefix impersonates the host', async () => {
+    live.steps = urlCard('https://login.example.com@evil.test/authorize')
+    await render()
+
+    expect(text()).toContain('This link goes to evil.test')
+    // The full URL is still shown verbatim, and the card stays answerable — the warning is advisory.
+    expect(text()).toContain('login.example.com@evil.test')
+    expect(linkNamed('Open link')).toBeDefined()
+  })
+
   it('calls out a link that is not encrypted', async () => {
     live.steps = urlCard('http://billing.example.com/pay')
     await render()

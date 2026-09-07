@@ -166,6 +166,32 @@ describe('an elicitation declined for want of a surface says so in the channel',
     await daemon.permissions.releaseElicits('agent-1', 's1')
   })
 
+  it('says nothing for a URL-mode ask Slack now renders as a consent card', async () => {
+    const { daemon, notices } = slackTurn()
+    void daemon.permissions.onAcpElicit('agent-1', 's1', {
+      sessionId: 's1',
+      mode: 'url',
+      elicitationId: 'el-1',
+      url: 'https://billing.example.com/oauth/authorize',
+      message: 'Sign in to continue'
+    } as CreateElicitationRequest)
+    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    expect(notices()).toEqual([])
+    await daemon.permissions.releaseElicits('agent-1', 's1')
+
+    // A URL no card may offer is still an ask Slack cannot render, so that one keeps its notice.
+    await expect(
+      daemon.permissions.onAcpElicit('agent-1', 's1', {
+        sessionId: 's1',
+        mode: 'url',
+        elicitationId: 'el-2',
+        url: 'javascript:alert(1)',
+        message: 'Run this'
+      } as CreateElicitationRequest)
+    ).resolves.toBeUndefined()
+    expect(notices()).toHaveLength(1)
+  })
+
   it('says nothing for an MCP approval, which has its own notice on the editor path', async () => {
     const { daemon, notices } = slackTurn()
     // Chat approval enabled, so the request reaches the card path rather than the editor queue.

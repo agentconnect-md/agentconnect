@@ -1394,9 +1394,9 @@ describe('webchat renders and settles a URL-mode consent card', () => {
     ).resolves.toBeUndefined()
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
 
-    // And a surface with no consent card keeps declining — Slack gains none here.
-    const slack: any = installPending(daemon)
-    slack.plan.platform = 'slack'
+    // And a platform whose chrome declares no input cards keeps declining.
+    const telegram: any = installPending(daemon)
+    telegram.plan.platform = 'telegram'
     await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())).resolves.toBeUndefined()
   })
 
@@ -1415,5 +1415,186 @@ describe('webchat renders and settles a URL-mode consent card', () => {
     )
     await vi.waitFor(() => expect(cardEvents(sink)).toHaveLength(1))
     expect(cardEvents(sink)[0].url).not.toContain('sk-live-DEADBEEF')
+  })
+})
+
+// ── Slack's URL-mode consent card (#1794, Slack column) ──────────────────────
+// URL mode used to decline on Slack — latterly with a notice (#1819), which the reader still
+// could not act on without leaving the channel. The card is a second SURFACE for the machinery
+// #1810 built, not a second implementation of it.
+
+/** Every mrkdwn string a posted card carries, in block order. */
+const cardText = (blocks: any[]): string[] =>
+  blocks.filter((b) => b.type === 'section').map((b) => b.text.text as string)
+
+/** The card's action row elements. */
+const cardButtons = (blocks: any[]): any[] => blocks.find((b) => b.type === 'actions')?.elements ?? []
+
+/** The one live card's request id, once it is actually ON the channel — a reader cannot tap a
+ *  card whose `chat.postMessage` has not returned, and only then can the record be rewritten. */
+async function liveSlackCard(daemon: any): Promise<string> {
+  return await vi.waitFor(() => {
+    const [id, rec] = [...daemon.permissions.pendingElicits.entries()][0] ?? []
+    expect(rec?.ts).toBeTruthy()
+    return id as string
+  })
+}
+
+describe('Slack renders and settles a URL-mode consent card', () => {
+  it('shows the whole URL unfollowable, opens it from the button, and resolves accept on consent', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted, updated } = slackPending(daemon)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    const url = 'https://billing.example.com/oauth/authorize?state=xyz'
+    const text = cardText(posted[0]!).join('\n')
+    // The full URL is examinable, and it sits in a code span — which Slack mrkdwn does not
+    // autolink, so following it as TEXT (and thus consenting unobservably) is not on offer.
+    expect(text).toContain(`\`${url}\``)
+    expect(text).not.toContain(`<${url}`)
+    // The real host stands on its own line, so a userinfo prefix or a lookalike path cannot
+    // pass itself off as the destination.
+    expect(text).toContain('Host: `billing.example.com`')
+    expect(text).toContain('Sign in to the billing provider to continue')
+
+    const [open, dismiss] = cardButtons(posted[0]!)
+    // Slack's `url` field is what both opens the page and still delivers an interaction.
+    expect(open).toMatchObject({ text: { text: 'Open link' }, url, value: expect.stringContaining(url) })
+    expect(dismiss).toMatchObject({ text: { text: 'Dismiss' } })
+
+    const requestId = await liveSlackCard(daemon)
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: url })
+    // Consent resolves the ACP request — with no `content`, since nothing was answered here.
+    await expect(result).resolves.toEqual({ action: 'accept' })
+    // "Opened" and not "Done": the tap proves consent, never that the flow behind it finished.
+    await vi.waitFor(() => expect(cardText(updated[0] ?? [])[0]).toContain(':white_check_mark: Opened'))
+    expect(cardText(updated[0]!)[0]).toContain(`\`${url}\``)
+    expect(cardButtons(updated[0]!)).toEqual([])
+  })
+
+  it('declines on Dismiss and cancels when the turn ends under a live card', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { updated } = slackPending(daemon)
+    const dismissed = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
+    const first = await liveSlackCard(daemon)
+    await (daemon as any).permissions.handleElicitChoice({ requestId: first, value: null })
+    await expect(dismissed).resolves.toEqual({ action: 'decline' })
+    await vi.waitFor(() => expect(cardText(updated[0] ?? [])[0]).toContain(':no_entry_sign: Dismissed'))
+
+    const abandoned = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
+    await liveSlackCard(daemon)
+    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await expect(abandoned).resolves.toEqual({ action: 'cancel' })
+    await vi.waitFor(() => expect(cardText(updated[1] ?? [])[0]).toContain(':hourglass: Cancelled'))
+  })
+
+  it('flags a Punycode host and calls out an unencrypted one', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+
+    void (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      urlElicitation({ url: 'http://xn--80ak6aa92e.example-login.com/authorize' })
+    )
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    const text = cardText(posted[0]!).join('\n')
+    expect(text).toContain('Not encrypted (http)')
+    expect(text).toContain('not plain ASCII')
+    // Whatever it warns about, the bytes the agent asked for are still shown verbatim.
+    expect(text).toContain('`http://xn--80ak6aa92e.example-login.com/authorize`')
+    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+  })
+
+  it('declines a scheme no browser tab may be handed, with no card at all', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    for (const url of ['javascript:alert(1)', 'data:text/html,<script>1</script>', 'file:///etc/passwd'])
+      await expect(
+        (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation({ url }))
+      ).resolves.toBeUndefined()
+    expect(posted).toEqual([])
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+  })
+
+  it('cannot let the agent’s own message contribute a second followable link', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+
+    void (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      urlElicitation({ message: 'Or sign in at <https://evil.example/x|your account> or https://evil.example/y' })
+    )
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    const text = cardText(posted[0]!).join('\n')
+    // A Slack CARD is an mrkdwn section, so the syntax to kill is `<url|label>` — and a bare URL
+    // autolinks, so it lands in a code span instead.
+    expect(text).not.toContain('<https://evil.example/x')
+    expect(text).toContain('&lt;`https://evil.example/x|your` account&gt;')
+    expect(text).toContain('`https://evil.example/y`')
+    // The consent URL stays the ONE followable thing on the card: no other button carries a url.
+    expect(cardButtons(posted[0]!).filter((b: any) => b.url)).toHaveLength(1)
+    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+  })
+
+  it('refuses a consent naming a URL other than the card’s own, and a browser answering a Slack card', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    slackPending(daemon)
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
+    const requestId = await liveSlackCard(daemon)
+
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'https://billing.example.com.evil.test/oauth/authorize?state=xyz'
+    })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    // A webchat frame cannot settle a card posted to Slack, guessable `elicit-<n>` id or not.
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'https://billing.example.com/oauth/authorize?state=xyz',
+      webchatConversationId: 'conv-1'
+    })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+    await expect(result).resolves.toEqual({ action: 'cancel' })
+  })
+
+  it('re-labels the settled card on elicitation/complete, and ignores an id it does not hold', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { updated } = slackPending(daemon)
+    void (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
+    const requestId = await liveSlackCard(daemon)
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: 'https://billing.example.com/oauth/authorize?state=xyz'
+    })
+    await vi.waitFor(() => expect(updated).toHaveLength(1))
+    ;(daemon as any).permissions.onAcpElicitComplete('agent-1', 'el-nope')
+    ;(daemon as any).permissions.onAcpElicitComplete('agent-2', 'el-1')
+    expect(updated).toHaveLength(1)
+    ;(daemon as any).permissions.onAcpElicitComplete('agent-1', 'el-1')
+    await vi.waitFor(() => expect(cardText(updated[1] ?? [])[0]).toContain(':white_check_mark: Completed'))
+    // Advisory and at most once: a repeat re-labels nothing, and never arriving is also fine.
+    ;(daemon as any).permissions.onAcpElicitComplete('agent-1', 'el-1')
+    expect(updated).toHaveLength(2)
+  })
+
+  it('masks an agent secret embedded in the URL before the card carries it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    ;(daemon as any).agents = new Map([
+      ['agent-1', { id: 'agent-1', runtimeOverrides: { secrets: [{ name: 'TOKEN', value: 'sk-live-DEADBEEF' }] } }]
+    ])
+
+    void (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      urlElicitation({ url: 'https://billing.example.com/pay?token=sk-live-DEADBEEF' })
+    )
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    expect(JSON.stringify(posted[0])).not.toContain('sk-live-DEADBEEF')
+    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
   })
 })
