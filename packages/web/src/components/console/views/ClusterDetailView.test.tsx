@@ -327,7 +327,7 @@ describe('ClusterDetailView', () => {
     act(() => root.unmount())
     host.remove()
 
-    expect(opened).toContain('agentconnect auth --runtime claude-acp')
+    expect(opened).toContain('npx -y @agentconnect.md/cli auth --runtime claude-acp')
   })
 
   it('says so when no pool member has registered at all', () => {
