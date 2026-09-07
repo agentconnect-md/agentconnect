@@ -27,6 +27,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
       event: () => {},
       action: () => {},
       shortcut: () => {},
+      view: () => {},
       client: {
         views: { open: ok, update: ok },
         auth: {

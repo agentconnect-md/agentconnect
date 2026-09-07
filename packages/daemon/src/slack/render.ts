@@ -3,10 +3,15 @@ import {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_FORM_CALLBACK_ID,
   ELICIT_FORM_FIELD_CAP,
+  ELICIT_FORM_INPUT_ACTION,
+  ELICIT_OPEN_ACTION,
   ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SLACK_STATUS_ACTION,
+  elicitFormBlockId,
+  encodeElicitFormMetadata,
   encodePermValue,
   encodeSlackStatusOverflowValue
 } from '@agentconnect.md/protocol'
@@ -14,12 +19,18 @@ export {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_FORM_CALLBACK_ID,
+  ELICIT_OPEN_ACTION,
   ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
+  decodeElicitFormMetadata,
   decodePermValue,
+  elicitFormBlockId,
+  elicitFormViewValues,
   encodePermValue,
   selectedOptionsFromState,
-  type SlackBlockActionsState
+  type SlackBlockActionsState,
+  type SlackViewState
 } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { flattenUnsafeLinks } from '../messages/agent-links.js'
@@ -905,6 +916,15 @@ export function elicitFieldLabel(params: CreateElicitationRequest, propName: str
   return clampTo((typeof title === 'string' && title.trim()) || propName, 75)
 }
 
+/** How a MULTI-FIELD card names one field. A select question's free-text companion is named for
+ *  the question it belongs to ("Branch (Other)") rather than on its own: "Other" beside a stack
+ *  of other labels says which words were typed but not what they answer. Pure. */
+export function elicitFormFieldLabel(params: CreateElicitationRequest, target: ElicitTarget): string {
+  const own = elicitFieldLabel(params, target.propName)
+  if (!target.customAnswerFor) return own
+  return clampTo(`${elicitFieldLabel(params, target.customAnswerFor)} (${own})`, 75)
+}
+
 // ACP's cross-agent marker for a select question's own free-text box, under a namespace-free `_meta` key on purpose.
 const CUSTOM_ANSWER_META_KEY = '_askUserQuestionCustomAnswer'
 
@@ -1413,6 +1433,257 @@ export function buildElicitationResolvedCard(params: CreateElicitationRequest, d
   const message = elicitCardMessage(params)
   const text = clampTo(`:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}\n${decision}`, SLACK_SECTION_TEXT_CAP)
   return [{ type: 'section', text: { type: 'mrkdwn', text } }]
+}
+
+// ── Multi-field elicitation forms (Slack modal, issue #1794's last Slack item) ────────────────
+
+/** Slack's own cap on a modal title. 24 characters hold no question, so the title is a FIXED
+ *  deployment-authored line and the agent's own words go in the modal's first section, defused
+ *  by {@link elicitCardMessage} like every other card's — an agent-authored string clamped into
+ *  24 characters would be both unreadable and the one place on the modal a reader would trust
+ *  most. This is the same phrase the seam already uses as a card's notification fallback. */
+const SLACK_MODAL_TITLE = 'Agent needs your input'
+
+/** Slack's own cap on a `plain_text_input`'s `min_length`/`max_length`, and on a select option's
+ *  `value` — a modal has no button to fall back to, so an enum whose values outrun the second
+ *  cap declines rather than posting a modal Slack would reject (#1813's finding, one surface on). */
+const SLACK_INPUT_LENGTH_CAP = 3000
+
+/** The `input` element one form field is answered by: a select for the pickable kinds, a
+ *  `plain_text_input` for text and a `number_input` for numbers, each carrying the schema's own
+ *  bounds so Slack refuses in the modal what the daemon would refuse anyway. Null ⇒ this field
+ *  cannot BE an input block — an enum option value past Slack's 75-char select cap, or a minimum
+ *  length past what an input holds — and the whole modal is then withheld rather than posted
+ *  with a field the reader cannot answer honestly. Pure. */
+function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> | null {
+  const action_id = ELICIT_FORM_INPUT_ACTION as string
+  if (target.kind === 'text') {
+    const min = target.minLength
+    if (min !== undefined && min > SLACK_INPUT_LENGTH_CAP) return null
+    const max = Math.min(target.maxLength ?? SLACK_INPUT_LENGTH_CAP, SLACK_INPUT_LENGTH_CAP)
+    return {
+      type: 'plain_text_input',
+      action_id,
+      ...(min !== undefined ? { min_length: min } : {}),
+      max_length: max,
+      ...(typeof target.defaultValue === 'string' ? { initial_value: target.defaultValue } : {})
+    }
+  }
+  if (target.kind === 'number') {
+    return {
+      type: 'number_input',
+      action_id,
+      is_decimal_allowed: target.integer !== true,
+      ...(target.minimum !== undefined ? { min_value: String(target.minimum) } : {}),
+      ...(target.maximum !== undefined ? { max_value: String(target.maximum) } : {}),
+      ...(typeof target.defaultValue === 'number' ? { initial_value: String(target.defaultValue) } : {})
+    }
+  }
+  const options = target.options.map((o) => ({
+    text: { type: 'plain_text', text: o.label, emoji: true },
+    value: o.value
+  }))
+  if (!options.length || options.some((o) => o.value.length > SLACK_SELECT_VALUE_CAP)) return null
+  if (target.kind === 'multi-enum') {
+    const seeded = Array.isArray(target.defaultValue) ? new Set(target.defaultValue) : null
+    const initial = seeded ? options.filter((o) => seeded.has(o.value)) : []
+    return {
+      type: 'multi_static_select',
+      action_id,
+      placeholder: { type: 'plain_text', text: 'Select options', emoji: true },
+      options,
+      ...(initial.length ? { initial_options: initial } : {}),
+      ...(target.maxItems !== undefined ? { max_selected_items: target.maxItems } : {})
+    }
+  }
+  // A boolean's `default` is a real boolean, so its option value is the string the card spells it with.
+  const seed = target.kind === 'boolean' ? String(target.defaultValue) : target.defaultValue
+  const initial = options.find((o) => o.value === seed)
+  return {
+    type: 'static_select',
+    action_id,
+    placeholder: { type: 'plain_text', text: 'Choose one', emoji: true },
+    options,
+    ...(initial ? { initial_option: initial } : {})
+  }
+}
+
+/**
+ * Build the MULTI-FIELD elicitation card that goes in the channel. An `actions` block holds no
+ * inputs, so the fields cannot be here at all: the card carries the agent's defused question, one
+ * line naming what will be asked, an Answer button that opens the modal, and Dismiss — both in
+ * one actions block so they share the `block_id` the relay routes on. Pure.
+ */
+export function buildElicitationFormCard(
+  requestId: string,
+  params: CreateElicitationRequest,
+  form: readonly ElicitTarget[],
+  sessionTarget?: string
+): unknown[] {
+  const asked = form.map((t) => elicitFormFieldLabel(params, t)).join(', ')
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}` }
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: clampTo(`Asks for ${escapeSlackMrkdwn(asked)}.`, SLACK_SECTION_TEXT_CAP) }]
+    },
+    {
+      type: 'actions',
+      ...(sessionTarget ? { block_id: sessionTarget } : {}),
+      elements: [
+        {
+          type: 'button',
+          action_id: ELICIT_OPEN_ACTION as string,
+          text: { type: 'plain_text', text: 'Answer', emoji: true },
+          style: 'primary',
+          value: requestId
+        },
+        elicitDismissButton(requestId)
+      ]
+    }
+  ]
+}
+
+/**
+ * Build the modal that ANSWERS a multi-field card: the agent's defused question, then one
+ * `input` block per field in schema order, each keyed by {@link elicitFormBlockId} so the
+ * submitted state and a per-field error share one key. `private_metadata` names the card and
+ * carries the opaque session target the relay routes the submission on — the same value the
+ * card's own `block_id` carries, and nothing about the reader.
+ *
+ * Both ingress paths call THIS function with the card's own params, so the direct Socket Mode
+ * modal and the relay-forwarded one are the same view. Null ⇒ some field cannot be an input
+ * block (see {@link elicitFormInputElement}) and the caller declines with a notice. Pure.
+ */
+export function buildElicitationFormModal(
+  requestId: string,
+  params: CreateElicitationRequest,
+  form: readonly ElicitTarget[],
+  sessionTarget?: string
+): Record<string, unknown> | null {
+  const required = new Set(elicitRequiredProps(params))
+  const inputs: Record<string, unknown>[] = []
+  for (const [index, target] of form.entries()) {
+    const element = elicitFormInputElement(target)
+    if (!element) return null
+    const hint = target.description ?? (target.kind === 'multi-enum' ? selectionHint(target) : '')
+    inputs.push({
+      type: 'input',
+      block_id: elicitFormBlockId(index),
+      label: { type: 'plain_text', text: elicitFormFieldLabel(params, target), emoji: true },
+      // Slack enforces presence itself for a required field; a required multi-select then also
+      // needs one selection, which is stricter than `minItems: 0` but never admits less.
+      optional: !required.has(target.propName),
+      ...(hint ? { hint: { type: 'plain_text', text: hint } } : {}),
+      element
+    })
+  }
+  return {
+    type: 'modal',
+    callback_id: ELICIT_FORM_CALLBACK_ID as string,
+    private_metadata: encodeElicitFormMetadata({ requestId, ...(sessionTarget ? { target: sessionTarget } : {}) }),
+    title: { type: 'plain_text', text: SLACK_MODAL_TITLE },
+    submit: { type: 'plain_text', text: 'Submit' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP) }
+      },
+      ...inputs
+    ]
+  }
+}
+
+/** The modal a tap on an ALREADY-SETTLED card opens: a stale client still shows the Answer
+ *  button, and telling the reader the question closed is the difference between an explanation
+ *  and a button that does nothing. Also the view a second reader's submission is replaced with
+ *  once the first one settled the request. Pure. */
+export function buildElicitFormClosedModal(): Record<string, unknown> {
+  return {
+    type: 'modal',
+    title: { type: 'plain_text', text: SLACK_MODAL_TITLE },
+    close: { type: 'plain_text', text: 'Close' },
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: 'This question has already been answered or dismissed.' } }
+    ]
+  }
+}
+
+/** What a refused field's error says, in the same plain words the card would have used — a
+ *  reader who has to retype something is told the shape, never the schema keyword. */
+function elicitFormFieldError(target: ElicitTarget): string {
+  if (target.kind === 'text' || target.kind === 'number') return `Enter ${elicitReplyExpectation(target)}.`
+  if (target.kind === 'multi-enum') return selectionHint(target) || 'Select from the options offered.'
+  return 'Choose one of the options offered.'
+}
+
+/** A form modal's answer, or the per-field errors that refuse it. Keyed by BLOCK id, which is
+ *  what Slack's `response_action: errors` addresses. */
+export interface ElicitFormSubmission {
+  answer?: Record<string, string | number | string[]>
+  errors?: Record<string, string>
+}
+
+/**
+ * Decode one `view_submission`'s raw field state into the typed record a form card answers with,
+ * re-derived against the FORM THAT WAS RENDERED rather than trusted from the wire (#1815): each
+ * value is read under its field's own block id, given the schema's own type — a real number for
+ * `number`/`integer`, a list for a multi-select — and checked by {@link fieldAccepts}. A blank
+ * optional input is simply absent; a missing REQUIRED field, a value of the wrong shape, and a
+ * value the field does not admit each come back as that field's error, so one bad field refuses
+ * the submission instead of being silently dropped. Pure.
+ */
+export function elicitFormSubmission(
+  params: CreateElicitationRequest,
+  form: readonly ElicitTarget[],
+  fields: Readonly<Record<string, string | string[]>>
+): ElicitFormSubmission {
+  const required = new Set(elicitRequiredProps(params))
+  const answer: Record<string, string | number | string[]> = {}
+  const errors: Record<string, string> = {}
+  for (const [index, target] of form.entries()) {
+    const blockId = elicitFormBlockId(index)
+    const raw = fields[blockId]
+    // Slack sends `[]` for a multi-select nobody touched, so a blank OPTIONAL one is an omission,
+    // not an empty answer that then fails its own `minItems`. A required field keeps being checked:
+    // there, `[]` is a real selection and its bounds decide. (An emptied REQUIRED select staying an
+    // answer is #1801's reading, kept.)
+    const blank = raw === undefined || (Array.isArray(raw) && !raw.length && !required.has(target.propName))
+    if (blank) {
+      if (required.has(target.propName)) errors[blockId] = 'This field is required.'
+      continue
+    }
+    const shaped =
+      target.kind === 'multi-enum'
+        ? Array.isArray(raw)
+          ? raw
+          : undefined
+        : Array.isArray(raw)
+          ? undefined
+          : target.kind === 'number'
+            ? NUMERIC_REPLY_RE.test(raw.trim())
+              ? Number(raw.trim())
+              : undefined
+            : raw
+    if (shaped === undefined || !fieldAccepts(target, shaped)) errors[blockId] = elicitFormFieldError(target)
+    else answer[target.propName] = shaped
+  }
+  return Object.keys(errors).length ? { errors } : { answer }
+}
+
+/** The `view_submission` response that puts those errors back on the modal, and the one that
+ *  replaces it when the card it answers is already settled. Slack decodes both; the relay only
+ *  carries them, on the opaque `response` slot of its own ack. Pure. */
+export function elicitFormErrorResponse(errors: Record<string, string>): Record<string, unknown> {
+  return { response_action: 'errors', errors }
+}
+
+export function elicitFormClosedResponse(): Record<string, unknown> {
+  return { response_action: 'update', view: buildElicitFormClosedModal() }
 }
 
 /** Slack's own limit on an interactive element's `value`. A URL longer than this cannot ride a

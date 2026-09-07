@@ -371,6 +371,21 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
     kind: z.literal('elicitation-confirm'),
     requestId: z.string().min(1),
     values: z.array(z.string()).max(100)
+  }),
+  // A MULTI-FIELD card's Answer button. Only the trigger id crosses: the relay never renders or
+  // holds the view — the daemon owns the card's schema and opens the modal on the same bot token
+  // it posted the card with, exactly as `open-config` above has always opened the status modal.
+  z.object({ kind: z.literal('elicitation-open'), requestId: z.string().min(1), triggerId: z.string().min(1) }),
+  // That modal's `view_submission`, keyed by the field's own block id so the daemon's per-field
+  // verdict can ride back under the same keys (`RdAck.response`, a `response_action: errors`
+  // payload the relay surfaces verbatim on Slack's 200). A blank optional input is simply
+  // absent — the record is re-validated whole against the card, so nothing here is trusted.
+  z.object({
+    kind: z.literal('elicitation-submit'),
+    requestId: z.string().min(1),
+    fields: z
+      .record(z.string().min(1).max(200), z.union([z.string(), z.array(z.string()).max(100)]))
+      .refine((v) => Object.keys(v).length <= ELICIT_FORM_WIRE_FIELD_CAP)
   })
 ])
 export type RdSlackAction = z.infer<typeof RdSlackAction>

@@ -4,12 +4,17 @@ import {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_FORM_CALLBACK_ID,
+  ELICIT_FORM_INPUT_ACTION,
+  ELICIT_OPEN_ACTION,
   ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
   SLACK_STATUS_ACTION,
+  elicitFormBlockId,
+  encodeElicitFormMetadata,
   encodeSlackStatusOverflowValue,
   encodeSharedSlackStatusTarget
 } from '@agentconnect.md/protocol'
@@ -17,6 +22,7 @@ import {
   normalizeSlackMessage,
   parseHttpSlackAgentSelection,
   parseHttpSlackAgentSwitch,
+  parseHttpSlackElicitFormSubmit,
   parseHttpSlackSessionAction,
   httpSlackAgentOptions,
   SlackHttpIngest,
@@ -386,6 +392,107 @@ describe('parseHttpSlackSessionAction', () => {
   })
 })
 
+// A multi-field card's two interactions (#1794's Slack column). Answer carries only the trigger
+// id: the DAEMON builds and opens the view on its own bot token, so the relay renders no part of
+// that modal and holds nothing of it. The submission carries the fields keyed by block id, which
+// is also how the daemon's per-field errors come back.
+describe('the multi-field elicitation form’s Slack interactions', () => {
+  it('forwards the Answer tap as elicitation-open, with the trigger id and nothing else', () => {
+    const parsed = parseHttpSlackSessionAction(
+      body(ELICIT_OPEN_ACTION, {
+        actions: [
+          {
+            action_id: ELICIT_OPEN_ACTION,
+            action_ts: '1720000000.000800',
+            block_id: ENCODED_TARGET,
+            value: 'elicit-4'
+          }
+        ],
+        view: undefined,
+        user: { id: 'U-ALICE' }
+      })
+    )
+    expect(parsed).toMatchObject({
+      target: TARGET,
+      kind: 'elicitation-open',
+      requestId: 'elicit-4',
+      triggerId: 'trigger-1',
+      userId: 'U-ALICE'
+    })
+    // The one-shot trigger id stays OUT of the dedup identity (as open-config's does), so trigger
+    // material never reaches a log or a key — and a redelivery still dedups against itself.
+    expect(httpSlackActionMsgId('bot', parsed!)).toBe(
+      httpSlackActionMsgId('bot', { ...parsed!, triggerId: 'another-trigger' } as never)
+    )
+    // No trigger is nothing to open.
+    expect(
+      parseHttpSlackSessionAction(
+        body(ELICIT_OPEN_ACTION, {
+          trigger_id: undefined,
+          actions: [{ action_id: ELICIT_OPEN_ACTION, action_ts: '1', block_id: ENCODED_TARGET, value: 'elicit-4' }],
+          view: undefined
+        })
+      )
+    ).toBeNull()
+  })
+
+  it('reads the submitted view state into elicitation-submit, keyed by block id', () => {
+    const submit = parseHttpSlackElicitFormSubmit({
+      type: 'view_submission',
+      trigger_id: 'trigger-submit',
+      user: { id: 'U-BOB' },
+      view: {
+        callback_id: ELICIT_FORM_CALLBACK_ID,
+        private_metadata: encodeElicitFormMetadata({ requestId: 'elicit-5', target: ENCODED_TARGET }),
+        state: {
+          values: {
+            [elicitFormBlockId(0)]: { [ELICIT_FORM_INPUT_ACTION]: { selected_option: { value: 'main' } } },
+            [elicitFormBlockId(1)]: { [ELICIT_FORM_INPUT_ACTION]: { value: 'ship it' } }
+          }
+        }
+      }
+    })
+    expect(submit).toMatchObject({
+      target: TARGET,
+      kind: 'elicitation-submit',
+      requestId: 'elicit-5',
+      fields: { [elicitFormBlockId(0)]: 'main', [elicitFormBlockId(1)]: 'ship it' },
+      userId: 'U-BOB'
+    })
+    // The submitted fields ARE part of the identity: a corrected resubmission is a second answer.
+    expect(httpSlackActionMsgId('bot', submit!)).not.toBe(
+      httpSlackActionMsgId('bot', { ...submit!, fields: { [elicitFormBlockId(0)]: 'develop' } })
+    )
+  })
+
+  it('is not one of ours without our callback id, a decodable metadata, or a receipt', () => {
+    const meta = encodeElicitFormMetadata({ requestId: 'elicit-5', target: ENCODED_TARGET })
+    const view = { callback_id: ELICIT_FORM_CALLBACK_ID, private_metadata: meta }
+    expect(parseHttpSlackElicitFormSubmit({ type: 'view_submission', trigger_id: 't', view })).toMatchObject({
+      kind: 'elicitation-submit'
+    })
+    expect(parseHttpSlackElicitFormSubmit({ type: 'block_actions', trigger_id: 't', view })).toBeNull()
+    expect(
+      parseHttpSlackElicitFormSubmit({
+        type: 'view_submission',
+        trigger_id: 't',
+        view: { callback_id: SHARED_CONFIG_ACTION_ID, private_metadata: meta }
+      })
+    ).toBeNull()
+    expect(parseHttpSlackElicitFormSubmit({ type: 'view_submission', trigger_id: 't', view: {} })).toBeNull()
+    // The direct Socket Mode modal carries no session target, so its submission is not routable
+    // here at all — and it never arrives here, since that path has no relay.
+    expect(
+      parseHttpSlackElicitFormSubmit({
+        type: 'view_submission',
+        trigger_id: 't',
+        view: { callback_id: ELICIT_FORM_CALLBACK_ID, private_metadata: encodeElicitFormMetadata({ requestId: 'e' }) }
+      })
+    ).toBeNull()
+    expect(parseHttpSlackElicitFormSubmit({ type: 'view_submission', view })).toBeNull()
+  })
+})
+
 describe('HTTP Slack agent selector', () => {
   const agents = [
     { agentId: AGENT_ID, name: 'Deploy Agent' },
@@ -463,6 +570,7 @@ describe('SlackHttpIngest.handleInteraction', () => {
     onSetChannelAgent: vi.fn(),
     onSelectThreadAgent: vi.fn(),
     onSessionAction: vi.fn(),
+    onElicitFormSubmit: vi.fn(async () => ''),
     onSessionShortcut: vi.fn(() => false),
     onSessionStopped: vi.fn(),
     log: silentLog,
@@ -494,6 +602,33 @@ describe('SlackHttpIngest.handleInteraction', () => {
     })
     expect(result).toBe('')
     expect(onSelectThreadAgent).toHaveBeenCalledWith('C123', '1720000000.000100', AGENT_ID)
+  })
+
+  it('puts the daemon’s form verdict on the 200 body — the one interaction Slack waits for', async () => {
+    const onElicitFormSubmit = vi.fn<SlackHttpIngestDeps['onElicitFormSubmit']>(async () => ({
+      response_action: 'errors',
+      errors: { ac_elicit_f0: 'nope' }
+    }))
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      ingestDeps({ onElicitFormSubmit })
+    )
+    const result = await ingest.handleInteraction({
+      type: 'view_submission',
+      trigger_id: 'trigger-submit',
+      view: {
+        callback_id: ELICIT_FORM_CALLBACK_ID,
+        private_metadata: encodeElicitFormMetadata({ requestId: 'elicit-5', target: ENCODED_TARGET }),
+        state: { values: { [elicitFormBlockId(0)]: { [ELICIT_FORM_INPUT_ACTION]: { value: 'main' } } } }
+      }
+    })
+    expect(result).toEqual({ response_action: 'errors', errors: { ac_elicit_f0: 'nope' } })
+    expect(onElicitFormSubmit).toHaveBeenCalledTimes(1)
+    expect(onElicitFormSubmit.mock.calls[0]![0]).toMatchObject({
+      requestId: 'elicit-5',
+      fields: { [elicitFormBlockId(0)]: 'main' }
+    })
   })
 
   it('forwards a message shortcut with the selected conversation coordinates', async () => {
@@ -534,6 +669,7 @@ describe('SlackHttpIngest channel membership events', () => {
     onSetChannelAgent: vi.fn(),
     onSelectThreadAgent: vi.fn(),
     onSessionAction: vi.fn(),
+    onElicitFormSubmit: vi.fn(async () => ''),
     onSessionShortcut: vi.fn(() => false),
     onSessionStopped: vi.fn(),
     webClientFactory: () => web as never,
@@ -784,6 +920,7 @@ describe('SlackHttpIngest message events', () => {
         onSetChannelAgent: vi.fn(),
         onSelectThreadAgent: vi.fn(),
         onSessionAction: vi.fn(),
+        onElicitFormSubmit: vi.fn(async () => ''),
         onSessionShortcut: vi.fn(() => false),
         onSessionStopped: vi.fn(),
         webClientFactory: () => web as never,

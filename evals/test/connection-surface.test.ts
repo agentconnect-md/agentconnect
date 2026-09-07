@@ -60,7 +60,8 @@ const EXEMPT: Record<string, string> = {
   // Interactive Slack surfaces (Block Kit actions / modals) are driven by
   // Bolt callbacks the virtual transport never receives; the daemon only
   // invokes them from those callbacks.
-  openStatusModal: 'interactivity-only (status modal from a Bolt action)'
+  openStatusModal: 'interactivity-only (status modal from a Bolt action)',
+  openView: 'interactivity-only (elicitation form modal from a Bolt action or a forwarded trigger_id)'
 }
 
 function recordingConnection() {

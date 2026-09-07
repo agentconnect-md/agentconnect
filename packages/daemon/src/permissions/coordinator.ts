@@ -27,7 +27,10 @@ import { SlackConnection } from '../slack/connection.js'
 import type { InteractionActor } from '../platforms/contract.js'
 import {
   buildApprovalDmIntro,
+  buildElicitFormClosedModal,
   buildElicitationCard,
+  buildElicitationFormCard,
+  buildElicitationFormModal,
   buildElicitationResolvedCard,
   buildPermissionCard,
   buildPermissionResolvedCard,
@@ -38,8 +41,12 @@ import {
   ELICIT_REPLY_KINDS,
   elicitFieldLabel,
   elicitForm,
+  elicitFormFieldLabel,
   elicitFormAccepts,
+  elicitFormClosedResponse,
   elicitFormContent,
+  elicitFormErrorResponse,
+  elicitFormSubmission,
   elicitReplyAnswer,
   elicitReplyExpectation,
   elicitRequiredProps,
@@ -160,16 +167,12 @@ function formAnswerLabel(
   form: readonly ElicitTarget[],
   answer: ElicitFormAnswer
 ): string {
-  // A companion box is named for the question it sits in ("Branch (Other)"), never on its own:
-  // "Other: dev" in a transcript says which words were typed but not what they answer.
-  const name = (t: ElicitTarget) =>
-    t.customAnswerFor
-      ? `${elicitFieldLabel(params, t.customAnswerFor)} (${elicitFieldLabel(params, t.propName)})`
-      : elicitFieldLabel(params, t.propName)
   const parts: string[] = []
   for (const t of form) {
     const value = answer[t.propName]
-    if (value !== undefined) parts.push(`${name(t)}: ${chosenLabel(t, value)}`)
+    // Named exactly as a form card names its fields, companion box included ("Branch (Other)"):
+    // "Other: dev" in a transcript says which words were typed but not what they answer.
+    if (value !== undefined) parts.push(`${elicitFormFieldLabel(params, t)}: ${chosenLabel(t, value)}`)
   }
   // An all-optional form left alone is still an answer — settling it as nothing would read
   // as a card that never resolved, the same reason a `minItems: 0` selection says so too.
@@ -293,9 +296,14 @@ type PendingElicit = PendingElicitSurface & {
   params: CreateElicitationRequest
   propName: string
   kind: ElicitKind
-  /** Set only for a MULTI-field webchat form card — the fields it rendered, in schema order.
-   *  Absent ⇒ the single-field card, answered by a scalar or a list as it always was. */
+  /** Set only for a MULTI-field form card — webchat's, or Slack's Answer-button-plus-modal —
+   *  the fields it rendered, in schema order. Absent ⇒ the single-field card, answered by a
+   *  scalar or a list as it always was. */
   form?: ElicitTarget[]
+  /** Set beside `form` on a SLACK form card: the opaque session target its modal carries in
+   *  `private_metadata`, so a relay-forwarded submission routes back to this daemon. It is the
+   *  same value the card's own `block_id` carries, and it names nothing about the reader. */
+  sessionTarget?: string
   /** Set only for a URL-mode consent card: the ACP `elicitationId` and the exact URL shown.
    *  Present ⇒ `propName`/`kind`/`form` mean nothing — the card has no field, and its only
    *  answers are consent (this same URL back) or Dismiss. */
@@ -1465,6 +1473,13 @@ export class PermissionCoordinator {
     // A second SURFACE for #1810's URL mode: the notice is only for an ask Slack still cannot render.
     if (url) return await this.awaitSlackUrlElicitation(agentId, sessionId, params, p, conn, url)
     if (params.mode === 'url') return this.noticeUnrenderableElicit(p, params, isApproval)
+    // A form asking more than one QUESTION cannot be a row of buttons: an `actions` block holds
+    // no inputs at all, so it becomes an Answer button plus a modal — the one shape on this
+    // surface that needs one (#1794's Slack column). An approval never takes it: allow/deny is a
+    // single enum, and chat approval's own bookkeeping lives on the single-field path below.
+    const form = isApproval ? null : elicitForm(params, SLACK_ELICIT_SURFACE)
+    if (form && form.filter((t) => !t.customAnswerFor).length > 1)
+      return await this.awaitSlackFormElicitation(agentId, sessionId, params, p, conn, form)
     const target = elicitTarget(params, SLACK_ELICIT_SURFACE)
     if (!target) return this.noticeUnrenderableElicit(p, params, isApproval)
     // A `text`/`number` card has nothing to tap: the reader answers by replying in the thread,
@@ -1760,6 +1775,125 @@ export class PermissionCoordinator {
     return await result
   }
 
+  /**
+   * Slack's peer of {@link awaitWebchatElicitation}: post the multi-field card — the question, a
+   * line naming what will be asked, an Answer button and Dismiss — and park the resolver until
+   * the modal behind Answer is submitted, Dismiss is tapped, or the turn ends. The fields live in
+   * the modal because Slack's `actions` block holds none, and the modal itself is built on demand
+   * from these same `params`, so nothing pre-rendered is stored anywhere.
+   *
+   * A form no modal can hold (an enum option value past Slack's select cap, a minimum length past
+   * an input's) is declined with the same notice every other unrenderable ask gets — checked HERE,
+   * before the card is posted, so the reader is never offered an Answer button with no modal.
+   */
+  private async awaitSlackFormElicitation(
+    agentId: string,
+    sessionId: string,
+    params: CreateElicitationRequest,
+    p: Pending,
+    conn: SlackConnection,
+    form: ElicitTarget[]
+  ): Promise<CreateElicitationResponse | undefined> {
+    const requestId = `elicit-${++this.elicitSeq}`
+    const sessionTarget = this.host.httpSlackSessionTarget(p)
+    if (!buildElicitationFormModal(requestId, params, form, sessionTarget))
+      return this.noticeUnrenderableElicit(p, params, false)
+    const blocks = buildElicitationFormCard(requestId, params, form, sessionTarget)
+    const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
+    let resolveResult!: (res: CreateElicitationResponse) => void
+    const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
+    this.pendingElicits.set(requestId, {
+      owner: p.hostKey,
+      agentId,
+      sessionId,
+      params,
+      // A form answers with a RECORD keyed by property name, so these two carry nothing: they
+      // are the single-field card's shape, and the form path never reads either.
+      propName: '',
+      kind: 'text',
+      form,
+      ...(sessionTarget ? { sessionTarget } : {}),
+      approval: false,
+      surface: 'slack',
+      conn,
+      channel: p.plan.channel,
+      resolve: resolveResult
+    })
+    this.syncApprovalActivity(p.hostKey, sessionId)
+    const ts = await this.host.postCardSerialized(p, (sc) =>
+      sc.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
+        ...(slackAgentIdentityOptions(p.plan) ?? {}),
+        chrome: true
+      })
+    )
+    const live = this.pendingElicits.get(requestId)
+    // Settled mid-post (an ended turn, say) — the card must stop offering an Answer nobody awaits.
+    if (!live) {
+      if (ts) this.rewriteSlackCard(conn, p.plan.channel, ts, params, ':hourglass: Cancelled', 'Cancelled', false)
+      return await result
+    }
+    if (!ts) {
+      this.pendingElicits.delete(requestId)
+      this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
+      live.resolve({ action: 'cancel' })
+      return await result
+    }
+    if (live.surface === 'slack') live.ts = ts
+    return await result
+  }
+
+  /**
+   * Open a live form card's modal (SlackDeps.onElicitFormOpen, and the relay's
+   * `elicitation-open`). The view is BUILT HERE, from the card's own params, on both ingress
+   * paths — so the two produce the same modal by construction, and the relay never holds,
+   * renders or caches any part of it. Opened on the card's OWN connection, which is the bot
+   * token that posted it.
+   *
+   * A request id with no live form card — already answered, dismissed, cancelled, or simply
+   * never ours — opens the closed modal instead of nothing at all: a stale client still shows
+   * the Answer button, and this is the difference between an explanation and a dead button.
+   */
+  async openElicitFormModal(a: { requestId: string; triggerId: string; conn: SlackConnection }): Promise<void> {
+    const rec = this.pendingElicits.get(a.requestId)
+    const form = rec?.form && rec.surface === 'slack' ? elicitForm(rec.params, surfaceOf(rec)) : null
+    const view = rec && form ? buildElicitationFormModal(a.requestId, rec.params, form, rec.sessionTarget) : null
+    // A closed card is told on the connection the tap arrived through: the record that would
+    // have named one is exactly what is missing.
+    await a.conn.openView(a.triggerId, view ?? buildElicitFormClosedModal())
+  }
+
+  /**
+   * Answer a form card from its modal's `view_submission` (SlackDeps.onElicitFormSubmit, and the
+   * relay's `elicitation-submit`). The whole record is re-derived against the form THAT CARD
+   * rendered, exactly as webchat's is (#1807) and as every tapped option is (#1815): the rendered
+   * property set, every `required` name present, an omitted optional field allowed, each value
+   * valid for its own field. One bad field refuses the submission with that field's own error and
+   * leaves the card live — Dismiss stays the only explicit refusal.
+   *
+   * Resolves to the response Slack is given: undefined closes the modal, `errors` keeps it open,
+   * and an already-settled card is replaced by the closed view — which is what a SECOND reader
+   * sees when someone else's submission got there first.
+   */
+  async submitElicitForm(a: {
+    requestId: string
+    fields: Record<string, string | string[]>
+    actor?: InteractionActor
+  }): Promise<Record<string, unknown> | undefined> {
+    const rec = this.pendingElicits.get(a.requestId)
+    const form = rec?.form && rec.surface === 'slack' ? elicitForm(rec.params, surfaceOf(rec)) : null
+    if (!rec || !form) return elicitFormClosedResponse()
+    const submission = elicitFormSubmission(rec.params, form, a.fields)
+    if (submission.errors) return elicitFormErrorResponse(submission.errors)
+    // No await between the check above and the settlement below, so two concurrent submissions
+    // cannot both pass: the loser finds no record and is answered with the closed view.
+    await this.handleElicitChoice({
+      requestId: a.requestId,
+      value: submission.answer ?? {},
+      ...(a.actor ? { actor: a.actor } : {})
+    })
+    return undefined
+  }
+
   /** Rewrite a settled Slack card in place, best effort — the ACP resolution never depends on it.
    *  A consent card keeps its own shape so the settled message still records the URL. */
   private rewriteSlackCard(
@@ -2005,7 +2139,7 @@ export class PermissionCoordinator {
    *  `minItems`/`maxItems` is refused there with the card left live. */
   async confirmElicitSelection(a: { requestId: string; values: string[]; actor?: InteractionActor }): Promise<void> {
     const rec = this.pendingElicits.get(a.requestId)
-    if (!rec || rec.surface !== 'slack' || rec.kind !== 'multi-enum' || rec.url) return
+    if (!rec || rec.surface !== 'slack' || rec.kind !== 'multi-enum' || rec.url || rec.form) return
     await this.handleElicitChoice({
       requestId: a.requestId,
       value: a.values,

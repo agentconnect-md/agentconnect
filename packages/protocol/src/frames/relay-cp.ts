@@ -609,6 +609,97 @@ export const ELICIT_DISMISS_ACTION = 'ac_elicit_dismiss'
 export const ELICIT_SELECT_ACTION = 'ac_elicit_select'
 export const ELICIT_CONFIRM_ACTION = 'ac_elicit_confirm'
 
+/** A MULTI-FIELD elicitation card's own three ids. An `actions` block holds no inputs, so the
+ *  in-channel card cannot carry the fields at all: it carries an Answer button whose tap opens a
+ *  modal ({@link ELICIT_FORM_CALLBACK_ID}) whose `input` blocks are the fields. One input per
+ *  block, because Slack keys both the submitted state AND `response_action: errors` by BLOCK id. */
+export const ELICIT_OPEN_ACTION = 'ac_elicit_open'
+export const ELICIT_FORM_CALLBACK_ID = 'ac_elicit_form'
+export const ELICIT_FORM_INPUT_ACTION = 'ac_elicit_input'
+
+const ELICIT_FORM_BLOCK_PREFIX = 'ac_elicit_f'
+
+/** The block id of the modal's Nth field. The INDEX rather than the property name: a property
+ *  name can outrun Slack's own id length, and the daemon re-derives the field list from the
+ *  card's params anyway (#1815), so an index is all the wire has to carry. */
+export function elicitFormBlockId(index: number): string {
+  return `${ELICIT_FORM_BLOCK_PREFIX}${index}`
+}
+
+/** The field index one of those block ids names, or null when the id is not one of ours. */
+export function elicitFormBlockIndex(blockId: string): number | null {
+  if (!blockId.startsWith(ELICIT_FORM_BLOCK_PREFIX)) return null
+  const digits = blockId.slice(ELICIT_FORM_BLOCK_PREFIX.length)
+  return /^\d+$/.test(digits) ? Number(digits) : null
+}
+
+/** One `view_submission` payload's state — every input of the modal, keyed by block then action
+ *  id. Widened past {@link SlackBlockActionsState} because a form's inputs answer with a typed
+ *  `value` or a single `selected_option` as well as a list. */
+export interface SlackViewState {
+  values?:
+    | Record<
+        string,
+        | Record<
+            string,
+            | {
+                value?: unknown
+                selected_option?: { value?: unknown } | null
+                selected_options?: { value?: unknown }[]
+              }
+            | undefined
+          >
+        | undefined
+      >
+    | undefined
+}
+
+/** What the reader typed and picked in a form modal, keyed by the field's BLOCK id so a
+ *  per-field error can be returned under the very same key. A blank input and a cleared select
+ *  are OMITTED rather than reported as empty: an untouched optional field is absent from the
+ *  answer, which is what the schema means by optional, and the daemon's own accept check is
+ *  what decides whether a required one may be missing. Pure. */
+export function elicitFormViewValues(state: SlackViewState | undefined): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {}
+  for (const [blockId, block] of Object.entries(state?.values ?? {})) {
+    if (elicitFormBlockIndex(blockId) === null) continue
+    const input = block?.[ELICIT_FORM_INPUT_ACTION]
+    if (!input) continue
+    if (Array.isArray(input.selected_options)) {
+      const values = input.selected_options.map((o) => o.value)
+      if (values.every((v) => typeof v === 'string')) out[blockId] = values as string[]
+      continue
+    }
+    const picked = input.selected_option?.value
+    if (typeof picked === 'string') out[blockId] = picked
+    else if (typeof input.value === 'string' && input.value.length) out[blockId] = input.value
+  }
+  return out
+}
+
+/** A form modal's `private_metadata`: which card it answers, plus the opaque session target the
+ *  relay routes its submission on (absent on the direct Socket Mode path, which needs no
+ *  routing hint — the connection that received the submission is the one that posted the card). */
+export interface SlackElicitFormMetadata {
+  requestId: string
+  target?: string
+}
+
+export function encodeElicitFormMetadata(meta: SlackElicitFormMetadata): string {
+  return JSON.stringify({ v: 1, r: meta.requestId, ...(meta.target ? { t: meta.target } : {}) })
+}
+
+export function decodeElicitFormMetadata(raw: string): SlackElicitFormMetadata | null {
+  try {
+    const parsed = JSON.parse(raw) as { v?: unknown; r?: unknown; t?: unknown }
+    if (parsed.v !== 1 || typeof parsed.r !== 'string' || !parsed.r) return null
+    if (parsed.t !== undefined && typeof parsed.t !== 'string') return null
+    return { requestId: parsed.r, ...(typeof parsed.t === 'string' && parsed.t ? { target: parsed.t } : {}) }
+  } catch {
+    return null
+  }
+}
+
 /** One `block_actions` payload's message state — every stateful element of the message the tap
  *  came from, keyed by block then action id. Slack has carried the full state on `block_actions`
  *  (not just view submissions) since 2020-09-01. */
