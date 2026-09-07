@@ -50,6 +50,7 @@ import type { ElicitKind, ElicitSurface, ElicitTarget } from '../slack/render.js
 import { slackThreadUrl } from '../platforms/slack/permalink.js'
 import { slackAgentIdentityOptions } from '../platforms/slack/turn-output.js'
 import { turnChromeFor } from '../platforms/turn-chrome.js'
+import { buildElicitDeclinedNotice } from './elicit-notice.js'
 import { formatErr } from '../daemon/text.js'
 import {
   approvalRequestSummary,
@@ -1392,14 +1393,15 @@ export class PermissionCoordinator {
         ? await this.awaitWebchatUrlElicitation(agentId, sessionId, params, p, p.webchat, url)
         : await this.awaitWebchatElicitation(agentId, sessionId, params, p, p.webchat)
     }
-    if (params.mode === 'url') return undefined
+    if (params.mode === 'url') return this.noticeUnrenderableElicit(p, params, isApproval)
     const conn = p.conn
-    if (!turnChromeFor(p.plan.platform).chatInputCards || !(conn instanceof SlackConnection)) return undefined
+    if (!turnChromeFor(p.plan.platform).chatInputCards || !(conn instanceof SlackConnection))
+      return this.noticeUnrenderableElicit(p, params, isApproval)
     const target = elicitTarget(params, SLACK_ELICIT_SURFACE)
-    if (!target) return undefined
+    if (!target) return this.noticeUnrenderableElicit(p, params, isApproval)
     const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
     const blocks = buildElicitationCard(requestId, params, this.host.httpSlackSessionTarget(p))
-    if (!blocks) return undefined
+    if (!blocks) return this.noticeUnrenderableElicit(p, params, isApproval)
     const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
@@ -1467,6 +1469,36 @@ export class PermissionCoordinator {
     }
     if (live.surface === 'slack') live.ts = ts
     return isApproval ? await this.trackHumanApprovalWait(p, result) : await result
+  }
+
+  /** Say in the channel that an elicitation was declined for want of a surface that can render it.
+   *  Every caller is past the webchat branches, so this only ever speaks on a chat platform whose
+   *  card the reader would otherwise have never seen. An MCP approval is excluded: it took the
+   *  editor queue with its own notice. Returns `undefined` so a decline site stays one line.
+   *  ONE notice per distinct question — a runtime re-raising the same unrenderable ask floods
+   *  nothing, and a genuinely different question is a second thing the reader has not been told.
+   *  Best effort: the decline never depends on the notice landing. */
+  private noticeUnrenderableElicit(p: Pending, params: CreateElicitationRequest, isApproval: boolean): undefined {
+    if (isApproval || !p.conn) return undefined
+    const key = (params as { message?: string }).message?.trim() ?? ''
+    const seen = (p.declinedElicitNotices ??= new Set<string>())
+    if (seen.has(key)) return undefined
+    seen.add(key)
+    let sessionUrl: string | undefined
+    // A console link this daemon cannot compute must not cost the reader the question itself.
+    try {
+      sessionUrl = this.host.sessionLink(p.outwardSessionId)
+    } catch {
+      sessionUrl = undefined
+    }
+    try {
+      // Built from the MASKED params `onAcpElicit` reassigned at its top, never an earlier capture.
+      const text = buildElicitDeclinedNotice(params, turnChromeFor(p.plan.platform).noticeMarkup, sessionUrl)
+      this.host.enqueueApply(p, { kind: 'notice', text })
+    } catch (err) {
+      this.host.log().warn(`elicitation decline notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
+    }
+    return undefined
   }
 
   /** Webchat's peer of the Slack elicitation card: stream the card as an in-band event and

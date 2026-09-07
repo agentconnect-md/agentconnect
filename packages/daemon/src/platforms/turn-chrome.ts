@@ -41,7 +41,17 @@ export interface TurnChrome {
   /** Failure notices are posted with a chrome marker (and agent identity) so a
    *  peer daemon's thread backfill skips them. */
   readonly chromeMarkedNotices?: boolean
+  /** How the surface PARSES a plain notice's text, so agent-authored text quoted in one can be
+   *  defused before the surface turns it into a tappable link. Absent ⇒ no markup at all: the
+   *  text is shown verbatim and there is no label syntax to spoof a destination with. */
+  readonly noticeMarkup?: NoticeMarkup
 }
+
+/** The markup dialects a NOTICE's text is read as — `markdown` autolinks and honours
+ *  `[label](url)`. Slack's notice is one of these: `postMessage` sends a `type: 'markdown'`
+ *  block, NOT the `mrkdwn` section its elicitation CARD uses, which is defused separately in
+ *  `elicitCardMessage`. Getting those two confused leaves the label syntax live. */
+export type NoticeMarkup = 'markdown'
 
 const CHROME = new Map<string, TurnChrome>([
   [
@@ -51,14 +61,15 @@ const CHROME = new Map<string, TurnChrome>([
       attributionFooter: true,
       sessionTitle: true,
       chatInputCards: true,
-      chromeMarkedNotices: true
+      chromeMarkedNotices: true,
+      noticeMarkup: 'markdown'
     }
   ],
   // The three on-demand platforms declare so EXPLICITLY: their status emit path
   // records the dedup key and posts nothing, which is different from having no
   // declaration at all (the legacy default arm).
   ['telegram', { statusSurface: 'on-demand' }],
-  ['discord', { statusSurface: 'on-demand' }],
+  ['discord', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }],
   ['feishu', { statusSurface: 'on-demand' }]
 ])
 
