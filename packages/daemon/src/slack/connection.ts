@@ -17,13 +17,17 @@ import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/c
 import {
   STATUS_ACTION,
   ELICIT_ACTION_PREFIX,
+  ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   PERMISSION_UPDATE_ACTION,
   buildPermissionUpdateCard,
   buildStatusModal,
   buildStatusUnavailableModal,
   decodePermValue,
+  selectedOptionsFromState,
+  type SlackBlockActionsState,
   type SlackStreamChunk,
   type StatusBarInfo,
   type StatusModalIdentity
@@ -439,6 +443,10 @@ export interface SlackDeps {
    *  (render.buildElicitationCard). `value` is the chosen option's wire value, or null
    *  for the Dismiss button (decline). `actor` gates DM-card clicks (slack-approval-dm.md §6.4). */
   onElicitChoice?: (a: { requestId: string; value: string | null; actor?: InteractionActor }) => void
+  /** Fired when a user taps a multi-select elicitation card's Confirm button. `values` is the
+   *  selection read out of THAT tap's own message state, so it is the state this reader
+   *  confirmed — nothing is tracked between a selection change and the Confirm. */
+  onElicitConfirm?: (a: { requestId: string; values: string[]; actor?: InteractionActor }) => void
   newTraceId: () => string
   log?: Logger
   /** When true, hand Bolt LogLevel.DEBUG so socket-mode internals are visible. */
@@ -476,6 +484,9 @@ type BlockActionArgs = {
     view?: { id?: string; private_metadata?: string }
     actions?: { block_id?: string }[]
     user?: { id?: string; username?: string; name?: string }
+    /** The message's full state, which a Block Kit tap carries — how a Confirm reads the
+     *  selection its own card was showing (`selectedOptionsFromState`). */
+    state?: SlackBlockActionsState
   }
 }
 
@@ -1199,6 +1210,20 @@ export class SlackConnection implements PlatformConnection {
     this.app.action(ELICIT_DISMISS_ACTION, async ({ ack, action, body }) => {
       await ack()
       if (action.value) this.deps.onElicitChoice?.({ requestId: action.value, value: null, actor: actorOf(body) })
+    })
+    // Multi-select card (buildElicitationCard, `multi-enum`): a selection change is acked and
+    // otherwise ignored — nothing is tracked between interactions, so there is nothing to record.
+    this.app.action(new RegExp(`^${ELICIT_SELECT_ACTION}:`), async ({ ack }) => {
+      await ack()
+    })
+    // Confirm reads the selection out of its OWN payload's message state, keyed by the select's
+    // action id: that is the state this reader tapped Confirm on, whoever else touched the card.
+    this.app.action(ELICIT_CONFIRM_ACTION, async ({ ack, action, body }) => {
+      await ack()
+      if (!action.value) return
+      const values = selectedOptionsFromState(body?.state, `${ELICIT_SELECT_ACTION}:${action.value}`)
+      // No state for the select ⇒ nothing this tap can be said to confirm; the card stays live.
+      if (values) this.deps.onElicitConfirm?.({ requestId: action.value, values, actor: actorOf(body) })
     })
     log?.debug('slack: app.start → opening Socket Mode WebSocket (wss://…slack.com)…')
     await this.app.start()

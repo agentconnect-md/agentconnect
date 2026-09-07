@@ -1599,6 +1599,7 @@ export class Daemon {
       statusInfoForKey: (key) => this.statusInfoForKey(key),
       handlePermissionChoice: (a) => this.permissions.handlePermissionChoice(a),
       handleElicitChoice: (a) => this.permissions.handleElicitChoice(a),
+      handleElicitConfirm: (a) => void this.permissions.confirmElicitSelection(a),
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
       handleTelegramCallback: (cb, conn) => this.commands.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
@@ -7644,6 +7645,12 @@ export class Daemon {
       await this.permissions.handlePermissionChoice({ ...payload, actor })
     } else if (payload.kind === 'elicitation-choice') {
       await this.permissions.handleElicitChoice({ requestId: payload.requestId, value: payload.value, actor })
+    } else if (payload.kind === 'elicitation-confirm') {
+      await this.permissions.confirmElicitSelection({
+        requestId: payload.requestId,
+        values: payload.values,
+        actor
+      })
     } else {
       await this.commands.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
     }

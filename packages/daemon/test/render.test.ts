@@ -25,6 +25,7 @@ import {
   elicitTarget,
   elicitUrl,
   buildUrlConsentCard,
+  SLACK_DM_ELICIT_SURFACE,
   SLACK_ELICIT_SURFACE,
   WEBCHAT_ELICIT_SURFACE,
   multiSelectAccepts,
@@ -35,7 +36,9 @@ import {
   decodePermValue,
   PERMISSION_ACTION_PREFIX,
   ELICIT_ACTION_PREFIX,
+  ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_SELECT_ACTION,
   type SlackAction,
   type SlackAttributionInfo
 } from '../src/slack/render.js'
@@ -1672,17 +1675,94 @@ describe('elicitation card', () => {
     })
   })
 
-  it('leaves multi-select unrenderable on Slack, whose card would have to decline it', () => {
+  // #1794 Slack column: a `multi_static_select` CAN express "pick several", but it never submits
+  // on its own — so the card is a select plus its own Confirm, and Dismiss as always.
+  it('cards a multi-select as a select plus Confirm', () => {
+    const req = form({
+      colors: {
+        type: 'array',
+        items: {
+          anyOf: [
+            { const: '#FF0000', title: 'Red' },
+            { const: '#00FF00', title: 'Green' }
+          ]
+        },
+        minItems: 1,
+        maxItems: 2,
+        default: ['#00FF00']
+      }
+    })
+    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)?.kind).toBe('multi-enum')
+    const blocks = buildElicitationCard('elicit-1', req, 'shared-session-target') as any[]
+    // The bounds are on the card, so a refused Confirm is not the reader's first news of them.
+    expect(blocks[1]).toEqual({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Select 1 to 2.' }] })
+    expect(blocks[2].block_id).toBe('shared-session-target')
+    const [select, confirm, dismiss] = blocks[2].elements
+    expect(select.type).toBe('multi_static_select')
+    // The request rides the select's OWN action_id: deselecting everything is a change too,
+    // and a card named only by its selected options could not report one.
+    expect(select.action_id).toBe(`${ELICIT_SELECT_ACTION}:elicit-1`)
+    expect(select.options.map((o: any) => [o.text.text, o.value])).toEqual([
+      ['Red', '#FF0000'],
+      ['Green', '#00FF00']
+    ])
+    expect(select.max_selected_items).toBe(2)
+    // Seeded from the schema's `default`, so an untouched Confirm submits what the card shows.
+    expect(select.initial_options).toEqual([
+      { text: { type: 'plain_text', text: 'Green', emoji: true }, value: '#00FF00' }
+    ])
+    expect([confirm.action_id, confirm.value]).toEqual([ELICIT_CONFIRM_ACTION, 'elicit-1'])
+    expect([dismiss.action_id, dismiss.value]).toEqual([ELICIT_DISMISS_ACTION, 'elicit-1'])
+  })
+
+  it('names an unbounded multi-select no bounds and seeds it nothing', () => {
     const req = form({ colors: { type: 'array', items: { type: 'string', enum: ['Red', 'Green'] } } })
-    expect(elicitTarget(req, SLACK_ELICIT_SURFACE)).toBeNull()
-    expect(buildElicitationCard('elicit-1', req)).toBeNull()
+    const blocks = buildElicitationCard('elicit-1', req) as any[]
+    expect(blocks).toHaveLength(2) // no hint block: there is nothing to say
+    const select = blocks[1].elements[0]
+    expect(select.max_selected_items).toBeUndefined()
+    expect(select.initial_options).toBeUndefined()
+  })
+
+  // A select holds 100 options where an actions row of buttons holds 24, and caps one option's
+  // `value` at 75 chars where a button's is 2000 — so the limits are per kind, not per surface.
+  it('declines a multi-select past Slack’s own select limits', () => {
+    const items = (n: number) => ({ type: 'string', enum: Array.from({ length: n }, (_, i) => `o${i}`) })
+    const at = form({ colors: { type: 'array', items: items(100) } })
+    expect(elicitTarget(at, SLACK_ELICIT_SURFACE)?.options).toHaveLength(100)
+    expect((buildElicitationCard('elicit-100', at) as any[])[1].elements[0].options).toHaveLength(100)
+    const over = form({ colors: { type: 'array', items: items(101) } })
+    expect(elicitTarget(over, SLACK_ELICIT_SURFACE)).toBeNull()
+    expect(buildElicitationCard('elicit-101', over)).toBeNull()
+    // 25 buttons is past the actions row, but well inside the select — one kind's cap is its own.
+    expect(elicitTarget(form({ pick: { type: 'string', enum: items(25).enum } }), SLACK_ELICIT_SURFACE)).toBeNull()
+    expect(elicitTarget(form({ colors: { type: 'array', items: items(25) } }), SLACK_ELICIT_SURFACE)).not.toBeNull()
+    // A value Slack's select cannot carry: declined whole, never posted with the option cut.
+    const long = form({ colors: { type: 'array', items: { type: 'string', enum: ['ok', 'x'.repeat(76)] } } })
+    expect(elicitTarget(long, SLACK_ELICIT_SURFACE)).toBeNull()
+    expect(buildElicitationCard('elicit-long', long)).toBeNull()
+    // Webchat's own list is unlimited on both counts, exactly as before.
+    expect(elicitTarget(over, WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(101)
+    expect(elicitTarget(long, WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(2)
+  })
+
+  // The approval DM's taps settle through the editor path, which holds no per-card selection,
+  // so a multi-select there could be shown but never confirmed.
+  it('withholds a multi-select from the approval-DM surface', () => {
+    const req = form({ colors: { type: 'array', items: { type: 'string', enum: ['Red', 'Green'] } } })
+    expect(elicitTarget(req, SLACK_DM_ELICIT_SURFACE)).toBeNull()
+    expect(buildElicitationCard('elicit-1', req, undefined, SLACK_DM_ELICIT_SURFACE)).toBeNull()
+    // The button kinds it does render are unchanged there.
+    expect(
+      buildElicitationCard('elicit-1', form({ ok: { type: 'boolean' } }), undefined, SLACK_DM_ELICIT_SURFACE)
+    ).not.toBeNull()
   })
 
   it('skips a field the surface cannot render and takes the next one it can', () => {
-    // Slack passes over the array and cards the boolean, exactly as it did before the kind existed.
-    const req = form({ colors: { type: 'array', items: { type: 'string', enum: ['Red'] } }, ok: { type: 'boolean' } })
+    // Slack passes over the free-text field and cards the boolean; webchat renders both kinds.
+    const req = form({ name: { type: 'string' }, ok: { type: 'boolean' } })
     expect(elicitTarget(req, SLACK_ELICIT_SURFACE)?.propName).toBe('ok')
-    expect(elicitTarget(req, WEBCHAT_ELICIT_SURFACE)?.propName).toBe('colors')
+    expect(elicitTarget(req, WEBCHAT_ELICIT_SURFACE)?.propName).toBe('name')
   })
 
   it('declines an array the card cannot honestly answer', () => {

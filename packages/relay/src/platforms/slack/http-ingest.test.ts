@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { createHmac } from 'node:crypto'
 import {
   ELICIT_ACTION_PREFIX,
+  ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
@@ -21,6 +23,7 @@ import {
   type SlackHttpIngestDeps,
   type SlackInteractiveBody
 } from './http-ingest.js'
+import { httpSlackActionMsgId } from './ingress-plugin.js'
 import { verifySlackSignature } from '../../hooks/signature.js'
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111'
@@ -201,6 +204,134 @@ describe('parseHttpSlackSessionAction', () => {
         })
       )
     ).toBeNull()
+  })
+
+  // A multi-select card's Confirm carries the selection out of its OWN payload's message state,
+  // so what the relay forwards is the state the tapping reader confirmed. A selection CHANGE is
+  // acked and dropped: nothing is tracked between the two interactions.
+  it('routes a multi-select card’s Confirm with the selection its own payload carried', () => {
+    const parseConfirm = (state?: unknown, value = 'elicit-3') =>
+      parseHttpSlackSessionAction(
+        body(ELICIT_CONFIRM_ACTION, {
+          actions: [
+            {
+              action_id: ELICIT_CONFIRM_ACTION,
+              action_ts: '1720000000.000700',
+              block_id: ENCODED_TARGET,
+              value
+            }
+          ],
+          view: undefined,
+          ...(state !== undefined ? { state } : {})
+        } as Partial<SlackInteractiveBody>)
+      )
+    const stateWith = (selected_options: { value?: unknown }[], block = ENCODED_TARGET) => ({
+      values: { [block]: { [`${ELICIT_SELECT_ACTION}:elicit-3`]: { selected_options } } }
+    })
+
+    expect(parseConfirm(stateWith([{ value: 'lint' }, { value: 'test' }]))).toMatchObject({
+      target: TARGET,
+      kind: 'elicitation-confirm',
+      requestId: 'elicit-3',
+      values: ['lint', 'test']
+    })
+    // Found by ACTION id, so it does not matter which block Slack grouped the select into.
+    expect(parseConfirm(stateWith([{ value: 'lint' }], 'some-other-block'))).toMatchObject({
+      kind: 'elicitation-confirm',
+      values: ['lint']
+    })
+    // An emptied select is a real answer; NO state for it is not one, and forwards nothing.
+    expect(parseConfirm(stateWith([]))).toMatchObject({ kind: 'elicitation-confirm', values: [] })
+    expect(parseConfirm({ values: {} })).toBeNull()
+    expect(parseConfirm()).toBeNull()
+    expect(parseConfirm(stateWith([{}]))).toBeNull()
+    // Another card's state cannot answer this Confirm: the key is this request's select.
+    expect(parseConfirm(stateWith([{ value: 'lint' }]), 'elicit-9')).toBeNull()
+
+    // A selection change is not a session action at all — the relay acks it and keeps nothing.
+    expect(
+      parseHttpSlackSessionAction(
+        body(`${ELICIT_SELECT_ACTION}:elicit-3`, {
+          actions: [
+            {
+              action_id: `${ELICIT_SELECT_ACTION}:elicit-3`,
+              action_ts: '1720000000.000600',
+              block_id: ENCODED_TARGET
+            }
+          ],
+          view: undefined
+        })
+      )
+    ).toBeNull()
+  })
+
+  // The reviewer's scenario, in order: A selects lint, B selects test, then A taps Confirm. With
+  // a per-card record of the last selection seen, A's Confirm submitted B's pick — every value in
+  // it a valid option, so no whitelist could catch it. Neither change is forwarded at all now,
+  // and A's Confirm carries the state A tapped it on, so processing order decides nothing.
+  it('answers A’s Confirm with A’s own selection after B changed the card', () => {
+    const selectBody = (user: string) =>
+      body(`${ELICIT_SELECT_ACTION}:elicit-3`, {
+        user: { id: user },
+        actions: [
+          { action_id: `${ELICIT_SELECT_ACTION}:elicit-3`, action_ts: '1720000000.000600', block_id: ENCODED_TARGET }
+        ],
+        view: undefined
+      })
+    const confirmBody = (user: string, values: string[]) =>
+      ({
+        ...body(ELICIT_CONFIRM_ACTION, {
+          user: { id: user },
+          actions: [
+            {
+              action_id: ELICIT_CONFIRM_ACTION,
+              action_ts: '1720000000.000800',
+              block_id: ENCODED_TARGET,
+              value: 'elicit-3'
+            }
+          ],
+          view: undefined
+        }),
+        state: {
+          values: {
+            [ENCODED_TARGET]: {
+              [`${ELICIT_SELECT_ACTION}:elicit-3`]: { selected_options: values.map((value) => ({ value })) }
+            }
+          }
+        }
+      }) as SlackInteractiveBody
+
+    // A selects, then B selects: two interactions, neither of them an answer to forward.
+    expect(parseHttpSlackSessionAction(selectBody('U-A'))).toBeNull()
+    expect(parseHttpSlackSessionAction(selectBody('U-B'))).toBeNull()
+    // A confirms. What is forwarded is the selection A's own payload carried, not B's.
+    expect(parseHttpSlackSessionAction(confirmBody('U-A', ['lint']))).toMatchObject({
+      kind: 'elicitation-confirm',
+      requestId: 'elicit-3',
+      values: ['lint'],
+      userId: 'U-A'
+    })
+    expect(parseHttpSlackSessionAction(confirmBody('U-B', ['test']))).toMatchObject({
+      kind: 'elicitation-confirm',
+      values: ['test'],
+      userId: 'U-B'
+    })
+  })
+
+  // Two Confirms on one card are two answers: a redelivery of either must dedup against itself,
+  // never against the other, or the second answer would be dropped as a duplicate.
+  it('gives each confirmed selection its own msgId', () => {
+    const confirm = (values: string[]) => ({
+      target: TARGET,
+      interactionId: JSON.stringify([ELICIT_CONFIRM_ACTION, '1']),
+      kind: 'elicitation-confirm' as const,
+      requestId: 'elicit-3',
+      values
+    })
+    const one = httpSlackActionMsgId('B1', confirm(['lint']))
+    expect(httpSlackActionMsgId('B1', confirm(['lint']))).toBe(one)
+    expect(httpSlackActionMsgId('B1', confirm(['lint', 'test']))).not.toBe(one)
+    expect(httpSlackActionMsgId('B1', confirm([]))).not.toBe(one)
   })
 
   it('parses an inline Cancel target from action.value', () => {

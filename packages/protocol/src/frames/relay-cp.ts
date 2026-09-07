@@ -601,6 +601,37 @@ export const SLACK_STATUS_ACTION = {
 export const PERMISSION_ACTION_PREFIX = 'ac_perm'
 export const ELICIT_ACTION_PREFIX = 'ac_elicit'
 export const ELICIT_DISMISS_ACTION = 'ac_elicit_dismiss'
+/** A multi-select elicitation card's own two ids: the `multi_static_select`, which never submits
+ *  on its own, and the Confirm button that does. The selection is not tracked between the two —
+ *  Confirm reads it out of its OWN payload's message state, so what it submits is the state that
+ *  card was in when this reader tapped it. The select's action_id carries the request id, which
+ *  is the key {@link selectedOptionsFromState} finds that state under. */
+export const ELICIT_SELECT_ACTION = 'ac_elicit_select'
+export const ELICIT_CONFIRM_ACTION = 'ac_elicit_confirm'
+
+/** One `block_actions` payload's message state — every stateful element of the message the tap
+ *  came from, keyed by block then action id. Slack has carried the full state on `block_actions`
+ *  (not just view submissions) since 2020-09-01. */
+export interface SlackBlockActionsState {
+  values?: Record<string, Record<string, { selected_options?: { value?: unknown }[] } | undefined> | undefined>
+}
+
+/** The selection a `multi_static_select` held when this interaction was raised, read from the
+ *  payload's own message state — the snapshot a Confirm tap submits, and the reason no selection
+ *  has to be tracked between interactions. Searched by ACTION id across every block, so it does
+ *  not depend on which block Slack grouped the select into, nor on the card naming that block.
+ *  Null ⇒ this payload carries no state for that select, which is NOT an empty selection: the
+ *  caller drops the interaction rather than confirm a selection it cannot see. An empty array is
+ *  a real answer (the reader cleared the select), which is why the two are distinct. */
+export function selectedOptionsFromState(state: SlackBlockActionsState | undefined, actionId: string): string[] | null {
+  for (const block of Object.values(state?.values ?? {})) {
+    const element = block?.[actionId]
+    if (!element?.selected_options) continue
+    const values = element.selected_options.map((o) => o.value)
+    return values.every((v) => typeof v === 'string') ? (values as string[]) : null
+  }
+  return null
+}
 
 /** Encode/decode the choice carried by permission and elicitation buttons. The
  * daemon-generated request id is `|`-free; runtime-owned option values may contain it. */

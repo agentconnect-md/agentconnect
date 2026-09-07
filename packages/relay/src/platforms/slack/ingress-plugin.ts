@@ -62,6 +62,11 @@ export function httpSlackActionMsgId(botId: string, action: HttpSlackSessionActi
     case 'elicitation-choice':
       value = `${action.requestId}:${action.value ?? ''}`
       break
+    // The confirmed selection is part of the identity: two Confirms on one card are two answers,
+    // and a redelivery of either must dedup against itself rather than against the other.
+    case 'elicitation-confirm':
+      value = `${action.requestId}:${JSON.stringify(action.values)}`
+      break
     case 'open-config':
     case 'cancel':
       break

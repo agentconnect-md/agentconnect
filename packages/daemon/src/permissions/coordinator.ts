@@ -44,6 +44,7 @@ import {
   fieldAccepts,
   multiSelectAccepts,
   numberAccepts,
+  SLACK_DM_ELICIT_SURFACE,
   SLACK_ELICIT_SURFACE,
   textAccepts,
   WEBCHAT_ELICIT_SURFACE
@@ -691,7 +692,7 @@ export class PermissionCoordinator {
     const card =
       rec.kind === 'permission'
         ? buildPermissionCard(requestId, rec.params, sessionTarget)
-        : (buildElicitationCard(requestId, rec.params, sessionTarget) ?? [])
+        : (buildElicitationCard(requestId, rec.params, sessionTarget, SLACK_DM_ELICIT_SURFACE) ?? [])
     const fromSlack = p.plan.platform === 'slack'
     const sourceUrl =
       fromSlack && p.conn instanceof SlackConnection
@@ -744,7 +745,7 @@ export class PermissionCoordinator {
           .catch(() => {})
       return
     }
-    const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params, SLACK_ELICIT_SURFACE) : null
+    const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params, SLACK_DM_ELICIT_SURFACE) : null
     live.notify = {
       target,
       conn,
@@ -899,7 +900,7 @@ export class PermissionCoordinator {
     } else if (notify.propName && notify.valueKind) {
       // Same card builder, same re-derivation: the actor checks above say who tapped, not what
       // this card offered, so an unoffered value is dropped and the DM card stays live.
-      const target = elicitTarget(rec.params, SLACK_ELICIT_SURFACE)
+      const target = elicitTarget(rec.params, SLACK_DM_ELICIT_SURFACE)
       if (!target || !fieldAccepts(target, value)) return
       const chosen = notify.valueKind === 'boolean' ? value === 'true' : value
       res = { action: 'accept', content: { [notify.propName]: chosen } }
@@ -1925,6 +1926,23 @@ export class PermissionCoordinator {
         .updateBlocks(rec.channel, rec.ts, buildElicitationResolvedCard(rec.params, decision), 'Input received', true)
         .catch(() => {})
     rec.resolve(res)
+  }
+
+  /** A tapped Confirm on a multi-select card (SlackDeps.onElicitConfirm). `values` is the
+   *  selection carried by that tap's own Slack payload, so it is the state THIS reader confirmed:
+   *  no selection is held between interactions, which is what keeps one reader's pick from being
+   *  submitted as another's answer and makes the order two interactions arrive in irrelevant. It
+   *  is a relayed value like any other, so it goes through the same answer path a button tap
+   *  takes — `multiSelectAccepts` re-derives it against the card, and a selection outside
+   *  `minItems`/`maxItems` is refused there with the card left live. */
+  async confirmElicitSelection(a: { requestId: string; values: string[]; actor?: InteractionActor }): Promise<void> {
+    const rec = this.pendingElicits.get(a.requestId)
+    if (!rec || rec.surface !== 'slack' || rec.kind !== 'multi-enum' || rec.url) return
+    await this.handleElicitChoice({
+      requestId: a.requestId,
+      value: a.values,
+      ...(a.actor ? { actor: a.actor } : {})
+    })
   }
 
   /** Resolve every outstanding elicitation for a session as `cancel` — ACP's cancellation

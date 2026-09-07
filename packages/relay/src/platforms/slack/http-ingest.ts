@@ -25,7 +25,9 @@ import {
 } from '@agentconnect.md/message'
 import {
   ELICIT_ACTION_PREFIX,
+  ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
@@ -34,7 +36,9 @@ import {
   decodePermValue,
   decodeSlackStatusOverflowValue,
   decodeSharedSlackStatusTarget,
+  selectedOptionsFromState,
   type RdSlackAction,
+  type SlackBlockActionsState,
   type SharedSlackStatusTarget,
   type WireNormalizedMessage
 } from '@agentconnect.md/protocol'
@@ -69,6 +73,9 @@ export interface SlackInteractiveBody {
     value?: string
     selected_option?: { value?: string }
   }[]
+  /** A `block_actions` payload's full message state (Slack, 2020-09-01) — how a Confirm tap
+   *  carries the selection its own card was showing. */
+  state?: SlackBlockActionsState
   view?: {
     callback_id?: string
     private_metadata?: string
@@ -215,6 +222,23 @@ function decodeHttpSlackSessionAction(body: SlackInteractiveBody): HttpSlackSess
           kind: 'elicitation-choice',
           requestId: choice.requestId,
           value: choice.optionId
+        }
+      : null
+  }
+  // A multi-select card's Confirm. A selection CHANGE is not forwarded at all — the relay acks
+  // Slack and keeps nothing — because the selection rides this tap's own message state, which
+  // Slack has carried on `block_actions` since 2020-09-01. Reading it here is what makes the
+  // forwarded answer the state THIS reader confirmed, rather than whatever was recorded last.
+  if (target && action.action_id === ELICIT_CONFIRM_ACTION && action.value) {
+    const values = selectedOptionsFromState(body.state, `${ELICIT_SELECT_ACTION}:${action.value}`)
+    // No state for the select ⇒ nothing this tap can be said to confirm, so nothing is forwarded.
+    return values
+      ? {
+          target,
+          interactionId: JSON.stringify([action.action_id, receipt]),
+          kind: 'elicitation-confirm',
+          requestId: action.value,
+          values
         }
       : null
   }

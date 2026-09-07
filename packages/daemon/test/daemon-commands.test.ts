@@ -1989,6 +1989,40 @@ describe('Slack interactive status bar', () => {
       content: { language: 'TypeScript' }
     })
 
+    // A multi-select card's one relayed verb: Confirm, carrying the selection the tapping
+    // reader's own payload held, submitted through the re-derivation a button click takes.
+    const multiResolved = vi.fn()
+    ;(daemon as any).permissions.pendingElicits.set('elicit-2', {
+      agentId: 'bot-a',
+      sessionId: 'acp-1',
+      params: {
+        mode: 'form',
+        message: 'Which checks?',
+        requestedSchema: {
+          type: 'object',
+          properties: { checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test'] }, minItems: 1 } }
+        }
+      },
+      propName: 'checks',
+      kind: 'multi-enum',
+      approval: false,
+      surface: 'slack',
+      conn: { updateBlocks, workspaceId: () => 'T1' },
+      channel: 'C1',
+      ts: 'card-3',
+      resolve: multiResolved
+    })
+    expect(
+      await (daemon as any).handleRelayMsg(
+        action({
+          msgId: 'action-elicit-confirm',
+          payload: { kind: 'elicitation-confirm', requestId: 'elicit-2', values: ['lint', 'test'] }
+        }),
+        () => {}
+      )
+    ).toEqual({ msgId: 'action-elicit-confirm', accepted: true })
+    expect(multiResolved).toHaveBeenCalledWith({ action: 'accept', content: { checks: ['lint', 'test'] } })
+
     // A DM approval card's click (slack-approval-dm.md §5.3) bypasses the in-conversation
     // session gate — its origin session may be webchat — and authorizes in the coordinator.
     // With no CP verify available in this harness it fails closed: admitted, not decided.
