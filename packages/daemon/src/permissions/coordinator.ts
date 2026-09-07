@@ -34,10 +34,14 @@ import {
   buildUrlConsentCard,
   buildUrlConsentResolvedCard,
   clampTo,
+  decodeSlackReplyValue,
+  ELICIT_REPLY_KINDS,
   elicitFieldLabel,
   elicitForm,
   elicitFormAccepts,
   elicitFormContent,
+  elicitReplyAnswer,
+  elicitReplyExpectation,
   elicitRequiredProps,
   elicitTarget,
   elicitUrl,
@@ -46,6 +50,7 @@ import {
   numberAccepts,
   SLACK_DM_ELICIT_SURFACE,
   SLACK_ELICIT_SURFACE,
+  stripLeadingSelfMention,
   textAccepts,
   WEBCHAT_ELICIT_SURFACE
 } from '../slack/render.js'
@@ -65,6 +70,10 @@ import {
   type ApprovalRequestParts
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
+import { slackTsFromMsgId } from '../daemon/helpers.js'
+import { isTrustedHumanTurn } from '../daemon/loop-guard-scope.js'
+import { transcriptChannelKey } from '../store/local-store.js'
+import type { NormalizedMessage } from '../messages/normalized.js'
 
 /** The union of a turn's explicit human-approval waits, measured here and nowhere else.
  *  Regeneration budgets subtract it while retaining runtime/tool work time; `depth` counts
@@ -231,6 +240,51 @@ function consentedUrlKey(owner: HostKey, elicitationId: string): string {
   return `${owner}\x00${elicitationId}`
 }
 
+/** Where a reply-answered Slack card takes its answer from — the whole interception, held on the
+ *  card's own record so it can never outlive it. `conversation` is the platform plus the turn's
+ *  transcript channel, so another Slack app watching the same channel is a different
+ *  conversation; `thread` is the turn's own thread, so another thread of that channel is not the
+ *  answer either. A DM session ALSO takes a top-level message there, since a DM reader answers
+ *  where they are talking rather than in a thread. `requesterId` is the turn's requester when it
+ *  is known — the only person the card then waits for. */
+interface ElicitReplyTarget {
+  conversation: string
+  thread: string
+  dm: boolean
+  requesterId?: string
+}
+
+/** The conversation half of {@link ElicitReplyTarget}, from either side: a live turn's plan or an
+ *  inbound message. Both spell the channel the way the transcript does, scope included. */
+function elicitReplyConversation(platform: string, transcriptChannel: string): string {
+  return `${platform}\x00${transcriptChannel}`
+}
+
+/** Is this message a reply INTO someone else's thread, rather than a root of its own?
+ *
+ *  Slack normalization sets `thread` to `thread_ts ?? ts`, so it is never absent and a top-level
+ *  message carries its OWN id there — which is exactly how a root is told apart from a reply,
+ *  once you compare the two rather than test for absence. Derived here rather than preserved as a
+ *  new normalized field: nothing was lost in normalization, `thread` has some forty readers whose
+ *  meaning must not shift under them, and a new wire field would need a skew window on both
+ *  ingress paths for a fact already in hand. */
+function isThreadReply(msg: NormalizedMessage): boolean {
+  return msg.thread !== undefined && msg.thread !== slackTsFromMsgId(msg.msgId)
+}
+
+/** The reply target a live turn's card takes: its own conversation and thread, and its requester
+ *  where the turn names one. `unknown` is not a person — a turn whose author could not be
+ *  identified waits for anyone in the thread instead, which is what the card then says. */
+function elicitReplyTargetFor(p: Pending): ElicitReplyTarget {
+  const requester = p.plan.requesterId
+  return {
+    conversation: elicitReplyConversation(p.plan.platform, p.plan.transcriptChannel),
+    thread: p.plan.statusThread,
+    dm: p.plan.isDm === true,
+    ...(requester && requester !== 'unknown' ? { requesterId: requester } : {})
+  }
+}
+
 /** One outstanding `elicitation/create` awaiting a human answer. */
 type PendingElicit = PendingElicitSurface & {
   owner: HostKey
@@ -246,6 +300,9 @@ type PendingElicit = PendingElicitSurface & {
    *  Present ⇒ `propName`/`kind`/`form` mean nothing — the card has no field, and its only
    *  answers are consent (this same URL back) or Dismiss. */
   url?: { elicitationId: string; url: string }
+  /** Set only for a card answered by a THREAD REPLY ({@link ELICIT_REPLY_KINDS}) — the reply this
+   *  card takes as its answer. Absent on every card whose answer is a tap. */
+  reply?: ElicitReplyTarget
   approval: boolean
   resolve: (res: CreateElicitationResponse) => void
 }
@@ -1410,8 +1467,18 @@ export class PermissionCoordinator {
     if (params.mode === 'url') return this.noticeUnrenderableElicit(p, params, isApproval)
     const target = elicitTarget(params, SLACK_ELICIT_SURFACE)
     if (!target) return this.noticeUnrenderableElicit(p, params, isApproval)
+    // A `text`/`number` card has nothing to tap: the reader answers by replying in the thread,
+    // and the card says whose reply it waits for. An approval never takes this shape — allow/deny
+    // is an enum — so the interception only ever belongs to a plain question.
+    const reply = ELICIT_REPLY_KINDS.has(target.kind) ? elicitReplyTargetFor(p) : undefined
     const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
-    const blocks = buildElicitationCard(requestId, params, this.host.httpSlackSessionTarget(p))
+    const blocks = buildElicitationCard(
+      requestId,
+      params,
+      this.host.httpSlackSessionTarget(p),
+      SLACK_ELICIT_SURFACE,
+      reply?.requesterId ? `<@${reply.requesterId}>` : undefined
+    )
     if (!blocks) return this.noticeUnrenderableElicit(p, params, isApproval)
     const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
     let resolveResult!: (res: CreateElicitationResponse) => void
@@ -1423,6 +1490,7 @@ export class PermissionCoordinator {
       params,
       propName: target.propName,
       kind: target.kind,
+      ...(reply ? { reply } : {}),
       approval: isApproval,
       surface: 'slack',
       conn,
@@ -1943,6 +2011,104 @@ export class PermissionCoordinator {
       value: a.values,
       ...(a.actor ? { actor: a.actor } : {})
     })
+  }
+
+  /**
+   * A thread reply, while a `text`/`number` card is live, IS that card's answer rather than a new
+   * turn (issue #1794's Slack column): sending a message is what typing something already is on
+   * Slack. Called from BOTH Slack ingress paths — relay-forwarded and direct socket — before
+   * either dispatches or queues, since the ACP prompt is still blocked while the card waits.
+   *
+   * Returns true when the reply was consumed: accepted, or refused with the reason said in the
+   * thread and the card LEFT LIVE, which is the same "drop it and leave the card live" verdict
+   * every other surface's re-derivation reaches — Dismiss is the only explicit refusal. Returns
+   * false for a message that is not this card's answer, which then stays an ordinary one.
+   *
+   * Nothing is remembered here: the interception is the pending card's own `reply` target, so it
+   * is released the instant the card settles, is dismissed, or the turn ends (`releaseElicits`).
+   */
+  async answerElicitReply(msg: NormalizedMessage): Promise<boolean> {
+    // Only a human's own words answer a question — a bot echo, an automation, and this daemon's
+    // own posts all reach the same ingress. An EDIT of an earlier message never gets here at all:
+    // Slack ingress drops edit wrappers, so re-typing a past message is not an answer either.
+    if (!isTrustedHumanTurn(msg)) return false
+    // A reply that shares a file is not a typed answer, and consuming it would drop the file:
+    // it stays an ordinary message, and the card stays live for a reply that IS one.
+    if (msg.attachments?.length) return false
+    const conversation = elicitReplyConversation(msg.platform, transcriptChannelKey(msg.channel, msg.transportScope))
+    const matched: { requestId: string; rec: PendingElicit; target: ElicitTarget }[] = []
+    for (const [requestId, rec] of this.pendingElicits) {
+      const reply = rec.reply
+      if (!reply || reply.conversation !== conversation) continue
+      // The turn's OWN thread — another thread of the same channel is another conversation, word
+      // for word. A DM session ALSO takes a root message, since that is where its reader talks.
+      if (isThreadReply(msg) ? msg.thread !== reply.thread : !reply.dm) continue
+      // The requester answers their own turn; a card that could name none takes anyone in the
+      // thread. Anyone else is not answering it — their message stays an ordinary one.
+      if (reply.requesterId !== undefined && reply.requesterId !== msg.sender.id) continue
+      const target = elicitTarget(rec.params, surfaceOf(rec))
+      if (target && ELICIT_REPLY_KINDS.has(target.kind)) matched.push({ requestId, rec, target })
+    }
+    if (!matched.length) return false
+    // Two open questions in one thread cannot both be answered by one reply, and picking either
+    // would tell one runtime the reader answered a question they did not. Name the ambiguity and
+    // take nothing: the reader can dismiss one, or wait for one to settle.
+    if (matched.length > 1) {
+      this.sayElicitReplyAmbiguous(matched.map((m) => m.rec))
+      return false
+    }
+    const { requestId, rec, target } = matched[0]!
+    // What the reader actually typed, in two pure steps before any schema check: the one piece of
+    // addressing that is chrome rather than value comes off (`@bot 42` is 42), then Slack's own
+    // representation of a link is decoded (`<mailto:a@b|a@b>` is a@b), since neither is the
+    // reader's answer and both would fail validation forever. The bot id comes from the card's
+    // OWN connection, so both ingresses read the same identity, and an unresolved one (a
+    // send-only connection before `auth.test`) strips nothing.
+    const addressed = stripLeadingSelfMention(msg.text, rec.surface === 'slack' ? rec.conn.botUserId : undefined)
+    // Re-derived against the card that asked, exactly as a tapped option is (#1815).
+    const answer = elicitReplyAnswer(target, decodeSlackReplyValue(addressed))
+    if (answer === null) {
+      this.sayElicitReplyRefused(rec, target)
+      return true
+    }
+    await this.handleElicitChoice({
+      requestId,
+      value: answer,
+      actor: { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
+    })
+    return true
+  }
+
+  /** Say that a reply cannot answer any of the several questions open in this thread, leaving
+   *  every one of them live. ONE line per reply rather than one per card — they share the thread,
+   *  and it is the thread that is ambiguous — spoken through the first card whose turn is still
+   *  live. */
+  private sayElicitReplyAmbiguous(recs: readonly PendingElicit[]): void {
+    const text =
+      `${recs.length} questions are open in this thread, so a reply cannot answer any of them — ` +
+      'dismiss all but one, or let one settle, and the next reply answers that one.'
+    for (const rec of recs) if (this.noticeInTurn(rec, text)) return
+  }
+
+  /** Say why a reply could not be the answer, leaving the card live: an invalid reply is not a
+   *  refusal, so it does not consume the question. Dismiss remains the only one. */
+  private sayElicitReplyRefused(rec: PendingElicit, target: ElicitTarget): void {
+    this.noticeInTurn(rec, `That reply isn't ${elicitReplyExpectation(target)} — the question is still open.`)
+  }
+
+  /** Post one daemon-authored line into a pending card's own turn — a notice, so it lands where
+   *  every other one does. False when that turn is already gone, or when the surface refused it.
+   *  Best effort by construction: no elicitation outcome depends on it. */
+  private noticeInTurn(rec: PendingElicit, text: string): boolean {
+    const p = this.host.pending().get(pendingTurnKey(rec.owner, rec.sessionId))
+    if (!p) return false
+    try {
+      this.host.enqueueApply(p, { kind: 'notice', text })
+    } catch (err) {
+      this.host.log().warn(`elicitation reply notice not delivered for ${rec.sessionId}: ${formatErr(err)}`)
+      return false
+    }
+    return true
   }
 
   /** Resolve every outstanding elicitation for a session as `cancel` — ACP's cancellation

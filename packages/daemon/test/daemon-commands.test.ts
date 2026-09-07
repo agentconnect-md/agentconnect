@@ -267,6 +267,52 @@ describe('Daemon in-conversation commands', () => {
     expect(dispatch).toHaveBeenCalledWith('bot-a', payload, 'int-a')
   })
 
+  // #1794's Slack column: a `text`/`number` elicitation card is answered by a reply in the
+  // turn's thread, so while one is live the reply must be intercepted as the answer rather than
+  // dispatched or queued as a turn of its own. Both Slack ingresses do it at the same point in
+  // the ladder — after control commands, before routing — so they behave identically here too.
+  it('hands a thread reply to a live elicitation card instead of dispatching it, on both ingresses', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    const seen: string[] = []
+    ;(daemon as any).permissions.answerElicitReply = async (msg: any) => {
+      seen.push(msg.msgId)
+      return true
+    }
+
+    const payload = dm('relay-answer', '42')
+    expect(
+      await (daemon as any).handleRelayMsg(
+        {
+          source: 'im',
+          agentId: 'bot-a',
+          sessionKey: 'slack:C1:dm',
+          msgId: 'relay-answer',
+          botId: '11111111-1111-4111-8111-111111111111',
+          integrationId: 'int-a',
+          chatId: 'C1',
+          payload
+        } as RdMsgIm,
+        () => {}
+      )
+    ).toEqual({ msgId: 'relay-answer', accepted: true })
+
+    expect(await (daemon as any).onInboundOutcome(dm('300', '42'))).toEqual({
+      kind: 'rejected',
+      reason: 'suppressed'
+    })
+    expect(seen).toEqual(['slack:C1:relay-answer', 'slack:C1:300'])
+    // Both deliveries would otherwise have been a turn each — this agent routes DMs.
+    expect(blocked.prompts).toHaveLength(0)
+    await daemon.stop()
+  })
+
   it('stamps trigger=mention on relay im when the message mentions the integration bot', async () => {
     // Relay arbitration never populates the wire `trigger`; the daemon recomputes it
     // from the mention list + this integration's own bot identity (see handleRelayIm).

@@ -28,16 +28,41 @@ function formElicitation(overrides: Record<string, unknown> = {}): CreateElicita
   } as CreateElicitationRequest
 }
 
-/** A free-text field: renderable on webchat, never on Slack, which has no box to type into. */
+/** A required nested object: a field NO surface has a control for, so every one of them
+ *  declines it — which is what leaves the in-channel notice as the only thing to say. */
 function unrenderableElicitation(overrides: Record<string, unknown> = {}): CreateElicitationRequest {
+  return formElicitation({
+    message: 'Which checks should I run?',
+    requestedSchema: {
+      type: 'object',
+      properties: { checks: { type: 'object' } },
+      required: ['checks']
+    },
+    ...overrides
+  })
+}
+
+/** Two required fields: one webchat card asks both, while Slack's single-field card cannot. */
+function twoFieldElicitation(): CreateElicitationRequest {
+  return formElicitation({
+    message: 'Which checks should I run?',
+    requestedSchema: {
+      type: 'object',
+      properties: { checks: { type: 'string', enum: ['lint', 'test'] }, note: { type: 'string' } },
+      required: ['checks', 'note']
+    }
+  })
+}
+
+/** A free-text field — which Slack now asks as a question answered by a thread reply. */
+function textElicitation(): CreateElicitationRequest {
   return formElicitation({
     message: 'Which checks should I run?',
     requestedSchema: {
       type: 'object',
       properties: { checks: { type: 'string' } },
       required: ['checks']
-    },
-    ...overrides
+    }
   })
 }
 
@@ -166,7 +191,7 @@ describe('an elicitation declined for want of a surface says so in the channel',
     await daemon.permissions.releaseElicits('agent-1', 's1')
   })
 
-  it('says nothing on a webchat turn, which renders every shape itself', async () => {
+  it('says nothing on a webchat turn, which renders a whole form Slack cannot', async () => {
     const { daemon, pending, notices } = slackTurn()
     pending.plan.platform = 'webchat'
     pending.webchat = {
@@ -178,7 +203,7 @@ describe('an elicitation declined for want of a surface says so in the channel',
       heldText: '',
       messageEmitted: false
     }
-    void daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())
+    void daemon.permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation())
     await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
     expect(notices()).toEqual([])
     await daemon.permissions.releaseElicits('agent-1', 's1')
@@ -187,6 +212,14 @@ describe('an elicitation declined for want of a surface says so in the channel',
   it('says nothing for a multi-select Slack now renders as a select plus Confirm', async () => {
     const { daemon, notices } = slackTurn()
     void daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation())
+    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    expect(notices()).toEqual([])
+    await daemon.permissions.releaseElicits('agent-1', 's1')
+  })
+
+  it('says nothing for a text field Slack now answers by a thread reply', async () => {
+    const { daemon, notices } = slackTurn()
+    void daemon.permissions.onAcpElicit('agent-1', 's1', textElicitation())
     await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
     expect(notices()).toEqual([])
     await daemon.permissions.releaseElicits('agent-1', 's1')

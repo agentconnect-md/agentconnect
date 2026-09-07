@@ -636,12 +636,13 @@ const SLACK_ELICIT_MAX_BUTTONS = 24
 const SLACK_SELECT_MAX_OPTIONS = 100
 const SLACK_SELECT_VALUE_CAP = 75
 
-/** Slack renders single-select and boolean as a row of buttons, and multi-select as a
- *  `multi_static_select` plus a Confirm button — the select cannot submit on its own. It still has
- *  no field to type into, so `text`/`number` forms are declined there. The two controls carry
+/** Slack renders single-select and boolean as a row of buttons, multi-select as a
+ *  `multi_static_select` plus a Confirm button — the select cannot submit on its own — and a
+ *  `text`/`number` field as a question answered by REPLYING in the thread, since sending a
+ *  message is what typing something already is on Slack. The option-taking controls carry
  *  different lists, which is why the limits are per kind rather than one number for the surface. */
 export const SLACK_ELICIT_SURFACE: ElicitSurface = {
-  kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum']),
+  kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum', 'text', 'number']),
   optionLimits: {
     enum: { maxOptions: SLACK_ELICIT_MAX_BUTTONS },
     'multi-enum': { maxOptions: SLACK_SELECT_MAX_OPTIONS, maxOptionValue: SLACK_SELECT_VALUE_CAP }
@@ -650,7 +651,9 @@ export const SLACK_ELICIT_SURFACE: ElicitSurface = {
 
 /** The approval DM's card is a button row whose taps settle through the editor path, which holds
  *  no per-card selection — so a multi-select could be shown there but never confirmed, and it is
- *  withheld rather than posted dead. Otherwise exactly the in-channel Slack surface. */
+ *  withheld rather than posted dead. A `text`/`number` field is withheld for the same reason from
+ *  the other end: a DM has no session thread whose replies are intercepted as the answer, so the
+ *  card would ask for a reply nothing reads. Otherwise exactly the in-channel Slack surface. */
 export const SLACK_DM_ELICIT_SURFACE: ElicitSurface = {
   kinds: new Set<ElicitKind>(['enum', 'boolean']),
   optionLimits: { enum: { maxOptions: SLACK_ELICIT_MAX_BUTTONS } }
@@ -1151,6 +1154,114 @@ export function numberAccepts(target: ElicitTarget, value: number): boolean {
   return target.maximum === undefined || value <= target.maximum
 }
 
+/** The kinds a Slack card holds no control for and answers with a THREAD REPLY instead
+ *  (issue #1794's Slack column): sending a message is what typing something already is there,
+ *  where an `input` block with `dispatch_action` costs an interaction per change and buys
+ *  nothing. Read by the card builder and by the ingress interception, so the two agree. */
+export const ELICIT_REPLY_KINDS: ReadonlySet<ElicitKind> = new Set<ElicitKind>(['text', 'number'])
+
+/** How a reply-answered card names the shape a `format` asks for — plain words, with an example
+ *  where the shape is not one, because the reader has to type it from the card alone. */
+const FORMAT_EXPECTATION: Record<ElicitFormat, string> = {
+  email: 'an email address',
+  uri: 'a link',
+  date: 'a date, like 2026-09-07',
+  'date-time': 'a date and time, like 2026-09-07T09:30:00Z'
+}
+
+/** What a reply-answered card asks for, in plain words and never in schema vocabulary — shown on
+ *  the card and repeated when a reply does not fit, so the reader is told the same thing twice
+ *  rather than two different things. Pure. */
+export function elicitReplyExpectation(target: ElicitTarget): string {
+  if (target.kind === 'number') {
+    const noun = target.integer ? 'a whole number' : 'a number'
+    const { minimum: min, maximum: max } = target
+    if (min !== undefined && max !== undefined) return `${noun} from ${min} to ${max}`
+    if (min !== undefined) return `${noun}, ${min} or more`
+    return max !== undefined ? `${noun}, ${max} or less` : noun
+  }
+  const min = target.minLength
+  // Only a bound TIGHTER than the ceilings this surface imposes is the reader's to break: our own
+  // 4096/256 answer caps are not news, and a target cannot tell a declared 256 from the pattern one.
+  const max =
+    target.maxLength !== undefined && target.maxLength < ELICIT_PATTERN_INPUT_CAP ? target.maxLength : undefined
+  const length =
+    min !== undefined && max !== undefined
+      ? `${min} to ${max} characters long`
+      : min !== undefined
+        ? `at least ${min} characters long`
+        : max !== undefined
+          ? `at most ${max} characters long`
+          : ''
+  const parts = [target.format ? FORMAT_EXPECTATION[target.format] : 'some text']
+  if (length) parts.push(length)
+  if (target.pattern !== undefined) parts.push('in the exact format the question asks for')
+  return parts.join(', ')
+}
+
+/** Slack's mention token for one user, at the very START of a message: the modern `<@U…>` and
+ *  the legacy `<@U…|name>`, plus the punctuation a reader puts after an address. */
+const LEADING_MENTION_RE = /^\s*<@([A-Z0-9]+)(?:\|[^>]*)?>[ \t]*[:,]?[ \t]*/
+
+/** A reply's text with a LEADING mention of the ASKING bot removed: "@bot 42" is 42, because
+ *  addressing the bot is chrome rather than value. Only that token, only this bot's own id —
+ *  a mention of anyone else, a second mention, or one anywhere but the front is content, and
+ *  guessing which PART of a message is the answer is how a typed answer comes back wrong. An
+ *  unknown bot id (identity not resolved yet) strips nothing. Pure. */
+export function stripLeadingSelfMention(text: string, botUserId?: string): string {
+  if (!botUserId) return text
+  const found = LEADING_MENTION_RE.exec(text)
+  return found && found[1] === botUserId ? text.slice(found[0].length) : text
+}
+
+/** Slack's retrieved-message form for ONE link and nothing else: `<dest>` or `<dest|label>`,
+ *  where the destination is the part BEFORE the pipe and the label is display text. Anchored on
+ *  purpose — a link sitting inside prose is not this. */
+const SLACK_LINK_ONLY_RE = /^<([^|>\s]+)(?:\|[^>]*)?>$/
+
+/** The three characters Slack HTML-escapes in the text it hands back, and nothing else — so
+ *  un-escaping exactly these is the lossless inverse of what the reader typed. */
+const SLACK_ENTITIES: [RegExp, string][] = [
+  [/&lt;/g, '<'],
+  [/&gt;/g, '>'],
+  [/&amp;/g, '&']
+]
+
+/** What the reader actually typed, recovered from Slack's own representation of it — the step
+ *  before any schema check, because `<https://x/>` and `<mailto:a@b|a@b>` are Slack's spelling
+ *  of a link, not the reader's answer, and would fail `uri`/`email` forever.
+ *
+ *  DECODING, never extracting: only a reply that is one link and nothing else is unwrapped, and
+ *  `mailto:` comes off so an `email` field gets `a@b` rather than `mailto:a@b`. Prose with a link
+ *  inside is returned whole — deciding which PART of a message is the value is the guess this
+ *  route refuses to make. Entity un-escaping applies either way, since Slack escapes those three
+ *  everywhere in message text. Inbound only: it has nothing to do with the outbound defusing
+ *  (#1810/#1819) that keeps AGENT-authored text from becoming markup on a card. Pure. */
+export function decodeSlackReplyValue(text: string): string {
+  const trimmed = text.trim()
+  const link = SLACK_LINK_ONLY_RE.exec(trimmed)
+  const value = link ? link[1]!.replace(/^mailto:/, '') : trimmed
+  return SLACK_ENTITIES.reduce((out, [pattern, char]) => out.replace(pattern, char), value)
+}
+
+/** The digit shapes a numeric reply may take. Deliberately narrower than `Number()`, which reads
+ *  `0x1f`, `Infinity` and whitespace as numbers a reader plainly did not type. */
+const NUMERIC_REPLY_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
+
+/** The answer a thread reply carries for a reply-answered card, re-derived against the card
+ *  itself exactly as a tapped option is: the typed value when this target would accept it, null
+ *  when it would not — the caller then says why and leaves the card live. A numeric field comes
+ *  back as a real JS number, so the accept content carries the schema's own type. Pure. */
+export function elicitReplyAnswer(target: ElicitTarget, reply: string): string | number | null {
+  const value = reply.trim()
+  if (target.kind === 'number') {
+    if (!NUMERIC_REPLY_RE.test(value)) return null
+    const parsed = Number(value)
+    return numberAccepts(target, parsed) ? parsed : null
+  }
+  return target.kind === 'text' && textAccepts(target, value) ? value : null
+}
+
 const BARE_URL_RE = /(?:https?:\/\/|www\.)\S+/gi
 
 /** The agent-authored elicitation `message`, with every link in it defused. A form-mode ask
@@ -1187,6 +1298,24 @@ function selectionHint(target: ElicitTarget): string {
   return max !== undefined ? `Select up to ${max}.` : ''
 }
 
+/** The Dismiss button every elicitation card carries — the reader's one explicit `decline`. */
+function elicitDismissButton(requestId: string): Record<string, unknown> {
+  return {
+    type: 'button',
+    action_id: ELICIT_DISMISS_ACTION as string,
+    text: { type: 'plain_text', text: 'Dismiss', emoji: true },
+    value: requestId
+  }
+}
+
+/** What a reply-answered card tells the reader to do: reply in this thread, with what, and whom
+ *  the question waits for — there is nothing on the card itself to type into. `awaits` is the
+ *  turn's requester as the platform spells them, absent when the card could not name one. */
+function replyInstruction(target: ElicitTarget, awaits?: string): string {
+  const ask = `Reply in this thread with ${elicitReplyExpectation(target)}.`
+  return awaits ? `${ask} Waiting for ${awaits}.` : `${ask} Anyone in this thread can answer.`
+}
+
 /** The multi-select half of {@link buildElicitationCard}: a `multi_static_select` carrying every
  *  option, a Confirm button and Dismiss, in ONE actions block so all three share the block_id the
  *  relay routes on. The select re-delivers the whole selection on each change and never submits,
@@ -1219,12 +1348,7 @@ function buildMultiSelectElements(requestId: string, target: ElicitTarget): unkn
       style: 'primary',
       value: requestId
     },
-    {
-      type: 'button',
-      action_id: ELICIT_DISMISS_ACTION as string,
-      text: { type: 'plain_text', text: 'Dismiss', emoji: true },
-      value: requestId
-    }
+    elicitDismissButton(requestId)
   ]
 }
 
@@ -1232,20 +1356,34 @@ function buildMultiSelectElements(requestId: string, target: ElicitTarget): unkn
  * Build the interactive elicitation card: the agent's `message` and one actions row — EVERY
  * {@link elicitTarget} option as a button for a single-select or boolean, or a
  * `multi_static_select` plus Confirm for a multi-select — always with a Dismiss button. The choice
- * rides each option's `value` (`<requestId>|<optionValue>`). Returns null when the form can't be
- * rendered on `surface` (caller declines): a kind or an option list it does not claim, which the
- * reduction has already refused, or a multi-select whose encoded option values Slack's select
- * would reject. Nothing here trims a list to fit. Pure.
+ * rides each option's `value` (`<requestId>|<optionValue>`). A {@link ELICIT_REPLY_KINDS} field
+ * has no control at all: the card carries the question, what is expected, whom it awaits
+ * (`awaits`) and Dismiss, and the answer arrives as a reply in the thread. Returns null when the
+ * form can't be rendered on `surface` (caller declines): a kind or an option list it does not
+ * claim, which the reduction has already refused, or a multi-select whose encoded option values
+ * Slack's select would reject. Nothing here trims a list to fit. Pure.
  */
 export function buildElicitationCard(
   requestId: string,
   params: CreateElicitationRequest,
   sessionTarget?: string,
-  surface: ElicitSurface = SLACK_ELICIT_SURFACE
+  surface: ElicitSurface = SLACK_ELICIT_SURFACE,
+  awaits?: string
 ): unknown[] | null {
   const target = elicitTarget(params, surface)
   if (!target) return null
   const message = elicitCardMessage(params)
+  if (ELICIT_REPLY_KINDS.has(target.kind)) {
+    return [
+      { type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}` } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: replyInstruction(target, awaits) }] },
+      {
+        type: 'actions',
+        ...(sessionTarget ? { block_id: sessionTarget } : {}),
+        elements: [elicitDismissButton(requestId)]
+      }
+    ]
+  }
   if (target.kind === 'multi-enum') {
     const elements = buildMultiSelectElements(requestId, target)
     if (!elements) return null
@@ -1262,12 +1400,7 @@ export function buildElicitationCard(
     text: { type: 'plain_text', text: o.label, emoji: true },
     value: encodePermValue(requestId, o.value)
   }))
-  buttons.push({
-    type: 'button',
-    action_id: ELICIT_DISMISS_ACTION as string,
-    text: { type: 'plain_text', text: 'Dismiss', emoji: true },
-    value: requestId
-  } as (typeof buttons)[number])
+  buttons.push(elicitDismissButton(requestId) as (typeof buttons)[number])
   return [
     { type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}` } },
     { type: 'actions', ...(sessionTarget ? { block_id: sessionTarget } : {}), elements: buttons }
