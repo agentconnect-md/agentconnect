@@ -641,13 +641,26 @@ function PlanBlock({ step }: { step: FmtStep }) {
   )
 }
 
-// How a settled elicitation card reads once its buttons are gone.
-const ELICIT_OUTCOME: Record<string, { icon: string; color: string; label: (answer?: string) => string }> = {
-  accepted: { icon: 'check', color: 'var(--green-500)', label: (answer) => answer ?? 'Answered' },
-  dismissed: { icon: 'x', color: 'var(--text-tertiary)', label: () => 'Dismissed' },
-  cancelled: { icon: 'clock', color: 'var(--text-tertiary)', label: () => 'Cancelled' },
+// How a settled elicitation card reads once its buttons are gone, and the accent edge it wears.
+const ELICIT_OUTCOME: Record<
+  string,
+  { icon: string; color: string; edge: string; label: (answer?: string) => string }
+> = {
+  accepted: {
+    icon: 'check',
+    color: 'var(--green-500)',
+    edge: 'border-l-(--green-500)',
+    label: (answer) => answer ?? 'Answered'
+  },
+  dismissed: { icon: 'x', color: 'var(--text-tertiary)', edge: 'border-l-(--border-strong)', label: () => 'Dismissed' },
+  cancelled: {
+    icon: 'clock',
+    color: 'var(--text-tertiary)',
+    edge: 'border-l-(--border-strong)',
+    label: () => 'Cancelled'
+  },
   // URL mode's second settlement: the agent reported the flow behind an opened link finished.
-  completed: { icon: 'check', color: 'var(--green-500)', label: () => 'Completed' }
+  completed: { icon: 'check', color: 'var(--green-500)', edge: 'border-l-(--green-500)', label: () => 'Completed' }
 }
 
 /** How a consent card reads its URL: the three display parts, so the HOST can be emphasized
@@ -835,13 +848,27 @@ function formAnswer(
   return out
 }
 
+/** Whether a form field currently holds an answer — what the card's progress counter counts. */
+function fieldAnswered(f: ElicitFieldSpec, drafts: Record<string, string>, picks: Record<string, string[]>): boolean {
+  if (f.kind === 'text' || f.kind === 'number') return !!(drafts[f.propName] ?? '').trim()
+  return (picks[f.propName] ?? []).length > 0
+}
+
+// One elicitation control, styled alike wherever a card places it.
+const ELICIT_CHIP = 'chip max-w-full truncate rounded-sm disabled:cursor-default disabled:opacity-55'
+const ELICIT_CHIP_ON =
+  'chip max-w-full truncate rounded-sm border-(--brand) bg-(--brand) text-white disabled:cursor-default disabled:opacity-55'
+const ELICIT_INPUT = 'inp w-full min-w-0 bg-(--surface-app) disabled:cursor-default disabled:opacity-55'
+const ELICIT_HINT = 'font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)'
+const ELICIT_ACTIONS = 'flex flex-wrap items-center gap-[8px] border-t border-(--border-subtle) pt-[11px]'
+
 /** The agent's in-band question: its options while it is live, its outcome once settled.
  *  A multi-select (`elicit.multi`) toggles its options and answers with the list on Confirm —
  *  one tap can't express a set — while a single-choice card still answers on the tap itself.
  *  A typed field (`elicit.text` / `elicit.number`) has no options at all: it submits what the
  *  reader wrote, once the schema's own constraints are met. A multi-field form (`elicit.fields`)
- *  stacks one labelled control per field behind a single Submit that stays disabled until every
- *  one of them is answerable, and sends a value per field.
+ *  stacks one numbered, labelled control per field behind a single Submit that stays disabled
+ *  until every one of them is answerable, and sends a value per field.
  *  Without `onAnswer` — a reader with no live socket to answer over — the same card renders
  *  as a plain record of the ask, controls inert rather than missing. */
 function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: ElicitAnswerValue) => void }) {
@@ -862,19 +889,33 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   const invalid = typed ? typedInvalidReason(typed, draft) : undefined
   if (!elicit) return null
   const settled = elicit.outcome ? ELICIT_OUTCOME[elicit.outcome] : undefined
+  // The head reads the card's phase before the reader reaches a control: accent edge, icon, and
+  // — for a form long enough to scroll past its own question — how much of it is still open.
+  const edge = settled ? settled.edge : 'border-l-(--brand)'
+  const headIcon = settled ? settled.icon : consent ? 'external-link' : 'message-circle-question-mark'
+  const headColor = settled ? settled.color : 'var(--brand)'
+  const counter =
+    fields && !settled ? `${fields.filter((f) => fieldAnswered(f, drafts, picks)).length}/${fields.length}` : undefined
   return (
-    <div className="overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-      <div className="flex min-w-0 items-start gap-[8px] px-[14px] py-[10px]">
+    <div
+      className={`overflow-hidden rounded-md border border-l-2 border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs) ${edge}`}
+    >
+      <div className="flex min-w-0 items-start gap-[9px] px-[14px] py-[11px]">
         <span className="mt-[2px] flex-none">
-          <Icon name="message-circle-question-mark" size={13} color="var(--text-tertiary)" />
+          <Icon name={headIcon} size={14} color={headColor} />
         </span>
-        <span className="min-w-0 whitespace-pre-wrap font-sans text-[13px] leading-[1.5] text-(--text-primary)">
+        <span className="min-w-0 flex-1 whitespace-pre-wrap font-sans text-[13.5px] font-medium leading-[1.5] text-(--text-primary)">
           {step.text}
         </span>
+        {counter && (
+          <span className="mt-[3px] flex-none font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            {counter}
+          </span>
+        )}
       </div>
-      <div className="flex flex-wrap items-center gap-[6px] border-t border-(--border-subtle) px-[14px] py-[10px]">
+      <div className="min-w-0 border-t border-(--border-subtle) px-[14px] py-[11px]">
         {settled ? (
-          <span className="inline-flex min-w-0 items-center gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          <span className="inline-flex min-w-0 items-center gap-[7px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
             <Icon name={settled.icon} size={13} color={settled.color} />
             <span className="min-w-0 truncate">{settled.label(elicit.answerLabel)}</span>
           </span>
@@ -884,8 +925,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
           // click on a plain anchor into a new tab — never an iframe or an in-app webview — so
           // neither the console nor the model can observe the page or what is typed there.
           // That click is also the consent the ACP request resolves on.
-          <div className="flex w-full min-w-0 flex-col gap-[10px]">
-            <div className="min-w-0 rounded-sm border border-(--border-subtle) bg-(--surface-card) px-[10px] py-[8px] font-mono text-[12.5px] leading-[1.5] break-all">
+          <div className="flex w-full min-w-0 flex-col gap-[11px]">
+            <div className="min-w-0 rounded-sm border border-(--border-subtle) bg-(--surface-app) px-[11px] py-[9px] font-mono text-[12.5px] leading-[1.5] break-all">
               <span className="text-(--text-tertiary)">{consent.scheme}</span>
               <span className="font-medium text-(--text-primary)">{consent.host}</span>
               <span className="text-(--text-tertiary)">{consent.rest}</span>
@@ -893,7 +934,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
             {consent.warnings.map((w) => (
               <span
                 key={w}
-                className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[12.5px] font-normal leading-normal text-(--amber-500)"
+                className="inline-flex min-w-0 items-start gap-[6px] rounded-sm border border-(--border-subtle) bg-(--amber-50) px-[10px] py-[7px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-primary)"
               >
                 <span className="mt-[2px] flex-none">
                   <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
@@ -901,7 +942,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                 <span className="min-w-0">{w}</span>
               </span>
             ))}
-            <div className="flex flex-wrap items-center gap-[6px]">
+            <div className={ELICIT_ACTIONS}>
               {onAnswer ? (
                 <a
                   className="dsbtn dsbtn-primary xs no-underline"
@@ -917,90 +958,113 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
               )}
               <button
                 type="button"
-                className="chip disabled:cursor-default disabled:opacity-55"
+                className={ELICIT_CHIP}
                 disabled={!onAnswer}
                 onClick={() => onAnswer?.(null)}
                 title="Refuse without opening"
               >
                 Decline
               </button>
+              <span className={`ml-auto ${ELICIT_HINT}`}>Opens in a new tab</span>
             </div>
           </div>
         ) : fields ? (
-          <div className="flex w-full min-w-0 flex-col gap-[10px]">
-            {fields.map((f) => {
+          <div className="flex w-full min-w-0 flex-col">
+            {fields.map((f, fi) => {
               const reason = fieldInvalidReason(f, drafts, picks)
-              const note =
-                reason ??
-                (f.kind === 'multi-enum' ? selectionHint(f.multi?.minItems ?? 0, f.multi?.maxItems) : undefined)
+              const hint =
+                f.kind === 'multi-enum' ? selectionHint(f.multi?.minItems ?? 0, f.multi?.maxItems) : undefined
               return (
-                <div key={f.propName} className="flex min-w-0 flex-col gap-[6px]">
-                  <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                    {f.label}
-                    {!f.required && <span className="text-(--text-tertiary)">&#32;(optional)</span>}
+                <div
+                  key={f.propName}
+                  className={
+                    fi > 0
+                      ? 'grid min-w-0 grid-cols-[22px_minmax(0,1fr)] gap-x-[10px] gap-y-[7px] border-t border-(--border-subtle) py-[11px]'
+                      : 'grid min-w-0 grid-cols-[22px_minmax(0,1fr)] gap-x-[10px] gap-y-[7px] pb-[11px]'
+                  }
+                >
+                  <span className="mt-[1px] font-mono text-[11.5px] font-normal leading-normal text-(--text-disabled)">
+                    {String(fi + 1).padStart(2, '0')}
                   </span>
-                  {f.kind === 'text' || f.kind === 'number' ? (
-                    <input
-                      className="inp w-full min-w-0 desktop:max-w-[320px] disabled:cursor-default disabled:opacity-55"
-                      type={f.kind === 'number' ? 'number' : 'text'}
-                      value={drafts[f.propName] ?? ''}
-                      disabled={!onAnswer}
-                      aria-label={f.label}
-                      {...(f.number?.minimum !== undefined ? { min: f.number.minimum } : {})}
-                      {...(f.number?.maximum !== undefined ? { max: f.number.maximum } : {})}
-                      {...(f.number?.integer ? { step: 1 } : {})}
-                      {...(f.text?.maxLength !== undefined ? { maxLength: f.text.maxLength } : {})}
-                      onChange={(e) => setDrafts((prev) => ({ ...prev, [f.propName]: e.target.value }))}
-                    />
-                  ) : (
-                    <div className="flex min-w-0 flex-wrap items-center gap-[6px]">
-                      {f.options.map((option) => {
-                        const held = picks[f.propName] ?? []
-                        const on = held.includes(option.value)
-                        // At the cap, an unpicked option stops taking a tap — an answer the
-                        // card would have to refuse must not look available.
-                        const cap = f.kind === 'multi-enum' ? f.multi?.maxItems : undefined
-                        const capped = !on && cap !== undefined && held.length >= cap
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            aria-pressed={on}
-                            className={
-                              on
-                                ? 'chip max-w-full truncate border-(--brand) bg-(--brand-soft) text-(--brand-soft-text) disabled:cursor-default disabled:opacity-55'
-                                : 'chip max-w-full truncate disabled:cursor-default disabled:opacity-55'
-                            }
-                            disabled={!onAnswer || capped}
-                            onClick={() =>
-                              setPicks((prev) => {
-                                const was = prev[f.propName] ?? []
-                                if (was.includes(option.value))
-                                  return { ...prev, [f.propName]: was.filter((v) => v !== option.value) }
-                                // One choice replaces the last for a single-pick field; a
-                                // multi-select adds to the set.
-                                return {
-                                  ...prev,
-                                  [f.propName]: f.kind === 'multi-enum' ? [...was, option.value] : [option.value]
-                                }
-                              })
-                            }
-                          >
-                            {option.label}
-                          </button>
-                        )
-                      })}
+                  <div className="flex min-w-0 flex-col gap-[7px]">
+                    <div className="flex min-w-0 items-baseline gap-[8px]">
+                      <span className="min-w-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                        {f.label}
+                      </span>
+                      <span
+                        className={
+                          f.required
+                            ? 'ml-auto flex-none font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)'
+                            : 'ml-auto flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-disabled)'
+                        }
+                      >
+                        {f.required ? 'required' : '(optional)'}
+                      </span>
                     </div>
-                  )}
-                  {note && (
-                    <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                      {note}
-                    </span>
-                  )}
+                    {f.kind === 'text' || f.kind === 'number' ? (
+                      <input
+                        className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
+                        type={f.kind === 'number' ? 'number' : 'text'}
+                        value={drafts[f.propName] ?? ''}
+                        disabled={!onAnswer}
+                        aria-label={f.label}
+                        {...(f.number?.minimum !== undefined ? { min: f.number.minimum } : {})}
+                        {...(f.number?.maximum !== undefined ? { max: f.number.maximum } : {})}
+                        {...(f.number?.integer ? { step: 1 } : {})}
+                        {...(f.text?.maxLength !== undefined ? { maxLength: f.text.maxLength } : {})}
+                        onChange={(e) => setDrafts((prev) => ({ ...prev, [f.propName]: e.target.value }))}
+                      />
+                    ) : (
+                      <div className="flex min-w-0 flex-wrap items-center gap-[6px]">
+                        {f.options.map((option) => {
+                          const held = picks[f.propName] ?? []
+                          const on = held.includes(option.value)
+                          // At the cap, an unpicked option stops taking a tap — an answer the
+                          // card would have to refuse must not look available.
+                          const cap = f.kind === 'multi-enum' ? f.multi?.maxItems : undefined
+                          const capped = !on && cap !== undefined && held.length >= cap
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              aria-pressed={on}
+                              className={on ? ELICIT_CHIP_ON : ELICIT_CHIP}
+                              disabled={!onAnswer || capped}
+                              onClick={() =>
+                                setPicks((prev) => {
+                                  const was = prev[f.propName] ?? []
+                                  if (was.includes(option.value))
+                                    return { ...prev, [f.propName]: was.filter((v) => v !== option.value) }
+                                  // One choice replaces the last for a single-pick field; a
+                                  // multi-select adds to the set.
+                                  return {
+                                    ...prev,
+                                    [f.propName]: f.kind === 'multi-enum' ? [...was, option.value] : [option.value]
+                                  }
+                                })
+                              }
+                            >
+                              {option.label}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                    {reason ? (
+                      <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
+                        <span className="mt-[2px] flex-none">
+                          <Icon name="triangle-alert" size={12} color="var(--brand)" />
+                        </span>
+                        <span className="min-w-0">{reason}</span>
+                      </span>
+                    ) : hint ? (
+                      <span className={ELICIT_HINT}>{hint}</span>
+                    ) : null}
+                  </div>
                 </div>
               )
             })}
-            <div className="flex flex-wrap items-center gap-[6px]">
+            <div className={ELICIT_ACTIONS}>
               <button
                 type="button"
                 className="dsbtn dsbtn-primary xs"
@@ -1011,19 +1075,20 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
               </button>
               <button
                 type="button"
-                className="chip disabled:cursor-default disabled:opacity-55"
+                className={ELICIT_CHIP}
                 disabled={!onAnswer}
                 onClick={() => onAnswer?.(null)}
                 title="Dismiss without answering"
               >
                 Dismiss
               </button>
+              <span className={`ml-auto ${ELICIT_HINT}`}>Optional answers left blank are not sent</span>
             </div>
           </div>
         ) : typed ? (
-          <>
+          <div className="flex w-full min-w-0 flex-col gap-[9px]">
             <input
-              className="inp min-w-0 flex-1 basis-[220px] disabled:cursor-default disabled:opacity-55"
+              className={`${ELICIT_INPUT} desktop:max-w-[380px]`}
               type={elicit.number ? 'number' : 'text'}
               value={draft}
               disabled={!onAnswer}
@@ -1038,61 +1103,63 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
               }}
             />
             {invalid && (
-              <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                {invalid}
+              <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
+                <span className="mt-[2px] flex-none">
+                  <Icon name="triangle-alert" size={12} color="var(--brand)" />
+                </span>
+                <span className="min-w-0">{invalid}</span>
               </span>
             )}
-            <button
-              type="button"
-              className="dsbtn dsbtn-primary xs"
-              disabled={!onAnswer || !!invalid}
-              onClick={() => onAnswer?.(elicit.number ? Number(draft) : draft)}
-            >
-              Submit
-            </button>
-            <button
-              type="button"
-              className="chip disabled:cursor-default disabled:opacity-55"
-              disabled={!onAnswer}
-              onClick={() => onAnswer?.(null)}
-              title="Dismiss without answering"
-            >
-              Dismiss
-            </button>
-          </>
+            <div className={ELICIT_ACTIONS}>
+              <button
+                type="button"
+                className="dsbtn dsbtn-primary xs"
+                disabled={!onAnswer || !!invalid}
+                onClick={() => onAnswer?.(elicit.number ? Number(draft) : draft)}
+              >
+                Submit
+              </button>
+              <button
+                type="button"
+                className={ELICIT_CHIP}
+                disabled={!onAnswer}
+                onClick={() => onAnswer?.(null)}
+                title="Dismiss without answering"
+              >
+                Dismiss
+              </button>
+              <span className={`ml-auto ${ELICIT_HINT}`}>Enter submits</span>
+            </div>
+          </div>
         ) : (
-          <>
-            {elicit.options.map((option) => {
-              const on = picked.includes(option.value)
-              // At the cap, the options still unpicked stop taking a tap — an answer the card
-              // would have to refuse should not look available in the first place.
-              const capped = !!multi && !on && max !== undefined && picked.length >= max
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  {...(multi ? { 'aria-pressed': on } : {})}
-                  className={
-                    on
-                      ? 'chip max-w-full truncate border-(--brand) bg-(--brand-soft) text-(--brand-soft-text) disabled:cursor-default disabled:opacity-55'
-                      : 'chip max-w-full truncate disabled:cursor-default disabled:opacity-55'
-                  }
-                  disabled={!onAnswer || capped}
-                  onClick={() =>
-                    multi
-                      ? setPicked((prev) => (on ? prev.filter((v) => v !== option.value) : [...prev, option.value]))
-                      : onAnswer?.(option.value)
-                  }
-                >
-                  {option.label}
-                </button>
-              )
-            })}
-            {multi && (
-              <>
-                <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                  {selectionHint(min, max)}
-                </span>
+          <div className="flex w-full min-w-0 flex-col gap-[10px]">
+            <div className="flex min-w-0 flex-wrap items-center gap-[6px]">
+              {elicit.options.map((option) => {
+                const on = picked.includes(option.value)
+                // At the cap, the options still unpicked stop taking a tap — an answer the card
+                // would have to refuse should not look available in the first place.
+                const capped = !!multi && !on && max !== undefined && picked.length >= max
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    {...(multi ? { 'aria-pressed': on } : {})}
+                    className={on ? ELICIT_CHIP_ON : ELICIT_CHIP}
+                    disabled={!onAnswer || capped}
+                    onClick={() =>
+                      multi
+                        ? setPicked((prev) => (on ? prev.filter((v) => v !== option.value) : [...prev, option.value]))
+                        : onAnswer?.(option.value)
+                    }
+                  >
+                    {option.label}
+                  </button>
+                )
+              })}
+            </div>
+            {multi && <span className={ELICIT_HINT}>{selectionHint(min, max)}</span>}
+            <div className={ELICIT_ACTIONS}>
+              {multi && (
                 <button
                   type="button"
                   className="dsbtn dsbtn-primary xs"
@@ -1101,18 +1168,18 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                 >
                   Confirm
                 </button>
-              </>
-            )}
-            <button
-              type="button"
-              className="chip disabled:cursor-default disabled:opacity-55"
-              disabled={!onAnswer}
-              onClick={() => onAnswer?.(null)}
-              title="Dismiss without answering"
-            >
-              Dismiss
-            </button>
-          </>
+              )}
+              <button
+                type="button"
+                className={ELICIT_CHIP}
+                disabled={!onAnswer}
+                onClick={() => onAnswer?.(null)}
+                title="Dismiss without answering"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>
