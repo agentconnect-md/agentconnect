@@ -103,18 +103,19 @@ describe('an elicitation declined for want of a surface says so in the channel',
     expect(notices()[0]).toContain('/sessions/sess-1')
   })
 
-  it('carries the agent’s question DEFUSED — a Slack notice is mrkdwn, and links in it are taps', async () => {
+  // A Slack NOTICE is a `type: 'markdown'` block (postMessage → markdownBlock), NOT the `mrkdwn`
+  // section an elicitation CARD uses — so the syntax to kill here is `[label](url)`, not `<url|label>`.
+  it('carries the agent’s question DEFUSED — a Slack notice is markdown, and links in it are taps', async () => {
     const { daemon, notices } = slackTurn()
     await daemon.permissions.onAcpElicit(
       'agent-1',
       's1',
-      multiElicitation({ message: 'Sign in at <https://evil.example/x|your account> or https://evil.example/y' })
+      multiElicitation({ message: 'Sign in at [your account](https://evil.example/x) or https://evil.example/y' })
     )
     const text = notices()[0]!
-    // The angle-bracket label form cannot survive as markup, and the bare URL cannot autolink.
-    expect(text).not.toContain('<https://')
-    expect(text).toContain('&lt;')
-    expect(text).toContain('&gt;')
+    // The label form cannot survive as markup, and the bare URL cannot autolink.
+    expect(text).not.toContain('[your account](')
+    expect(text).toContain('\\[your account\\]')
     expect(text).toContain('`https://evil.example/y`')
   })
 
@@ -198,6 +199,12 @@ describe('an elicitation declined for want of a surface says so in the channel',
 
 describe('a notice defuses agent text the way its own surface reads it', () => {
   it('neutralises Discord’s masked-link syntax and its autolink', () => {
+    // A backslash-escaped scheme slips past a bare-URL scan while the parser still reads the
+    // destination, so the LABEL is what has to die — escaping the brackets is what does it.
+    const escaped = defuseNoticeText('Sign in at [your account](https\\://evil.example/login)', 'markdown')
+    expect(escaped).not.toContain('[your account](')
+    expect(escaped).toContain('\\[your account\\]')
+
     const out = defuseNoticeText('See [your account](https://evil.example/x) or https://evil.example/y', 'markdown')
     expect(out).toBe('See \\[your account\\](`https://evil.example/x`) or `https://evil.example/y`')
   })

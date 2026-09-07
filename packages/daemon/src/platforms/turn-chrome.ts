@@ -47,9 +47,11 @@ export interface TurnChrome {
   readonly noticeMarkup?: NoticeMarkup
 }
 
-/** The markup dialects a notice's text is read as. `slack-mrkdwn` autolinks bare URLs and honours
- *  `<url|label>`; `markdown` autolinks and honours `[label](url)`. */
-export type NoticeMarkup = 'slack-mrkdwn' | 'markdown'
+/** The markup dialects a NOTICE's text is read as — `markdown` autolinks and honours
+ *  `[label](url)`. Slack's notice is one of these: `postMessage` sends a `type: 'markdown'`
+ *  block, NOT the `mrkdwn` section its elicitation CARD uses, which is defused separately in
+ *  `elicitCardMessage`. Getting those two confused leaves the label syntax live. */
+export type NoticeMarkup = 'markdown'
 
 const CHROME = new Map<string, TurnChrome>([
   [
@@ -60,7 +62,7 @@ const CHROME = new Map<string, TurnChrome>([
       sessionTitle: true,
       chatInputCards: true,
       chromeMarkedNotices: true,
-      noticeMarkup: 'slack-mrkdwn'
+      noticeMarkup: 'markdown'
     }
   ],
   // The three on-demand platforms declare so EXPLICITLY: their status emit path

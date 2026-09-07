@@ -9,7 +9,7 @@ describe('turn chrome facet', () => {
       sessionTitle: true,
       chatInputCards: true,
       chromeMarkedNotices: true,
-      noticeMarkup: 'slack-mrkdwn'
+      noticeMarkup: 'markdown'
     })
   })
 
