@@ -3145,8 +3145,8 @@ export interface WorkspaceGitStatusDto {
   lastFetchAt: string | null // RFC3339; when the checkout last fetched/pulled
 }
 
-// Outcome of a forced ff-only pull (POST /agents/:id/workspace/gitpull). A pull
-// that can't fast-forward is `ok:false` + `detail` (data), not an HTTP error.
+// Outcome of a workspace sync (POST /agents/:id/workspace/gitpull). A refused
+// sync is `ok:false` + `detail` (data), not an HTTP error.
 export interface WorkspaceGitPullDto {
   isRepo: boolean
   ok: boolean
@@ -3239,8 +3239,8 @@ export async function fetchWorkspaceGitLog(
   return apiGet<WorkspaceGitLogDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitlog${query}`)
 }
 
-// Force the owning daemon to `git pull` (fast-forward only) the agent's workspace
-// now. A pull that can't fast-forward returns `ok:false`; 503 when daemon offline.
+// Sync the agent's checkout to its remote branch on the owning daemon now. A refused sync
+// returns `ok:false` + detail; 409 while the agent works in the checkout, 503 when daemon offline.
 export async function workspaceGitPull(agentId: string, opts: { repo?: string } = {}): Promise<WorkspaceGitPullDto> {
   const query = opts.repo ? `?repo=${encodeURIComponent(opts.repo)}` : ''
   return apiPost<WorkspaceGitPullDto>(

@@ -15,7 +15,7 @@ import {
   daemonGitCredentialTarget,
   initGitInjection,
   parseGitVersion,
-  pullWorkspaceRef,
+  syncWorkspaceRef,
   sandboxGitCredentialTarget,
   sessionGitConfig,
   sessionGitEnv,
@@ -508,7 +508,7 @@ describe('gitEnvBase', () => {
     }
   })
 
-  it('updates the origin tracking ref when an explicit URL pull advances HEAD', async () => {
+  it('updates the origin tracking ref when a sync advances HEAD', async () => {
     const root = mkdtempSync(join(tmpdir(), 'git-pull-refspec-test-'))
     const remote = join(root, 'remote.git')
     const seed = join(root, 'seed')
@@ -530,7 +530,8 @@ describe('gitEnvBase', () => {
 
       const git = gitFor(workspace).env(env)
       const runner = new LocalGitRunner(git, workspace, (overrides) => gitFor(workspace).env(overrides), env)
-      await pullWorkspaceRef(runner, 'origin', 'main')
+      const moved = await syncWorkspaceRef(runner, 'origin', 'main')
+      expect(moved.switchedFrom).toBeUndefined()
 
       const [head, tracking, status] = await Promise.all([
         git.raw(['rev-parse', 'HEAD']),
@@ -540,6 +541,97 @@ describe('gitEnvBase', () => {
       expect(head.trim()).toBe(tracking.trim())
       expect(status.ahead).toBe(0)
       expect(status.behind).toBe(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // One remote, one clone of it, both on `main`; the caller then moves the clone into the shape under test.
+  function seedSyncFixture(prefix: string) {
+    const root = mkdtempSync(join(tmpdir(), prefix))
+    const remote = join(root, 'remote.git')
+    const seed = join(root, 'seed')
+    const workspace = join(root, 'workspace')
+    const env = { ...workspaceGitLocalEnv(), GIT_ALLOW_PROTOCOL: 'file:https:ssh' }
+    const run = (args: string[]) => execFileSync('git', args, { env, stdio: 'ignore' })
+    run(['init', '--bare', remote])
+    run(['init', '-b', 'main', seed])
+    run(['-C', seed, 'config', 'user.name', 'Test'])
+    run(['-C', seed, 'config', 'user.email', 'test@example.invalid'])
+    writeFileSync(join(seed, 'README.md'), 'one\n')
+    run(['-C', seed, 'add', 'README.md'])
+    run(['-C', seed, 'commit', '-m', 'initial'])
+    run(['-C', seed, 'remote', 'add', 'origin', remote])
+    run(['-C', seed, 'push', 'origin', 'main'])
+    run(['clone', '--branch', 'main', remote, workspace])
+    run(['-C', workspace, 'config', 'user.name', 'Test'])
+    run(['-C', workspace, 'config', 'user.email', 'test@example.invalid'])
+    const git = gitFor(workspace).env(env)
+    const runner = new LocalGitRunner(git, workspace, (overrides) => gitFor(workspace).env(overrides), env)
+    return { root, seed, workspace, env, run, git, runner }
+  }
+
+  it('switches a checkout left on another branch back to the configured one, carrying uncommitted edits', async () => {
+    const { root, seed, workspace, run, git, runner } = seedSyncFixture('git-sync-switch-test-')
+    try {
+      // The agent branched off, committed there, and left an unrelated edit uncommitted; the remote moved on.
+      run(['-C', workspace, 'checkout', '-b', 'dev/agent/canary'])
+      writeFileSync(join(workspace, 'canary.txt'), 'canary\n')
+      run(['-C', workspace, 'add', 'canary.txt'])
+      run(['-C', workspace, 'commit', '-m', 'canary'])
+      writeFileSync(join(workspace, 'notes.md'), 'work in progress\n')
+      writeFileSync(join(seed, 'README.md'), 'one\ntwo\n')
+      run(['-C', seed, 'commit', '-am', 'advance'])
+      run(['-C', seed, 'push', 'origin', 'main'])
+
+      const moved = await syncWorkspaceRef(runner, 'origin', 'main')
+
+      expect(moved.switchedFrom).toBe('dev/agent/canary')
+      // Everything between the two HEADs: the remote's edit and the canary file that only the agent's branch has.
+      expect(moved.files.sort()).toEqual(['README.md', 'canary.txt'])
+      expect((await git.raw(['symbolic-ref', '--short', 'HEAD'])).trim()).toBe('main')
+      expect((await git.raw(['rev-parse', 'HEAD'])).trim()).toBe(
+        (await git.raw(['rev-parse', 'refs/remotes/origin/main'])).trim()
+      )
+      // The edit rode along; the agent's own branch and its commit are untouched.
+      expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('work in progress\n')
+      expect((await git.raw(['rev-list', '--count', 'dev/agent/canary', '^main'])).trim()).toBe('1')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses rather than discarding a local commit the remote lacks', async () => {
+    const { root, seed, workspace, run, git, runner } = seedSyncFixture('git-sync-refuse-test-')
+    try {
+      writeFileSync(join(workspace, 'local.txt'), 'local\n')
+      run(['-C', workspace, 'add', 'local.txt'])
+      run(['-C', workspace, 'commit', '-m', 'unpushed'])
+      const before = (await git.raw(['rev-parse', 'HEAD'])).trim()
+      run(['-C', seed, 'commit', '--allow-empty', '-m', 'advance'])
+      run(['-C', seed, 'push', 'origin', 'main'])
+
+      await expect(syncWorkspaceRef(runner, 'origin', 'main')).rejects.toThrow(
+        /local main has 1 commit the remote does not/
+      )
+      expect((await git.raw(['rev-parse', 'HEAD'])).trim()).toBe(before)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses when an uncommitted edit touches a file the sync would rewrite', async () => {
+    const { root, seed, workspace, run, git, runner } = seedSyncFixture('git-sync-overlap-test-')
+    try {
+      writeFileSync(join(workspace, 'README.md'), 'one\nlocal edit\n')
+      writeFileSync(join(seed, 'README.md'), 'one\ntwo\n')
+      run(['-C', seed, 'commit', '-am', 'advance'])
+      run(['-C', seed, 'push', 'origin', 'main'])
+      const before = (await git.raw(['rev-parse', 'HEAD'])).trim()
+
+      await expect(syncWorkspaceRef(runner, 'origin', 'main')).rejects.toThrow(/README\.md/)
+      expect((await git.raw(['rev-parse', 'HEAD'])).trim()).toBe(before)
+      expect(readFileSync(join(workspace, 'README.md'), 'utf8')).toBe('one\nlocal edit\n')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

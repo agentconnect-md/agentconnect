@@ -63,6 +63,44 @@ const githubTarget = async () => ({
   githubApp: false
 })
 
+const BEFORE = 'a'.repeat(40)
+const AFTER = 'b'.repeat(40)
+
+/** `raw` as the sync path sees it: the origin for `remote get-url`, and every probe answered like a checkout on `current` whose HEAD `checkout -B` moves from `before` to `after`. */
+function syncRaw(
+  opts: { origin?: string; before?: string; after?: string; current?: string; numstat?: string; unique?: string } = {}
+) {
+  const before = opts.before ?? BEFORE
+  const after = opts.after ?? before
+  let head = before
+  return vi.fn().mockImplementation(async (args: string[]) => {
+    switch (args[0]) {
+      case 'remote':
+        return `${opts.origin ?? 'https://github.com/acme/repo.git'}\n`
+      case 'rev-parse':
+        return `${args[2] === 'HEAD' ? head : before}\n`
+      case 'symbolic-ref':
+        return `${opts.current ?? 'main'}\n`
+      case 'rev-list':
+        return `${opts.unique ?? '0'}\n`
+      case 'checkout':
+        head = after
+        return ''
+      case 'diff':
+        return opts.numstat ?? ''
+      default:
+        return ''
+    }
+  })
+}
+
+/** The `raw` calls that reach the network or move the checkout — what a refused sync must never make. */
+function syncWrites(raw: ReturnType<typeof vi.fn>): string[][] {
+  return raw.mock.calls
+    .map((call) => call[0] as string[])
+    .filter((args) => args[0] === 'fetch' || args[0] === 'checkout')
+}
+
 beforeEach(() => {
   simpleGitArgs = []
   statusImpl = vi.fn()
@@ -202,7 +240,7 @@ describe('createWorkspaceGit.status', () => {
 })
 
 describe('createWorkspaceGit.pull', () => {
-  it('reports isRepo:false / ok:false for a from-scratch workspace (nothing to pull)', async () => {
+  it('reports isRepo:false / ok:false for a from-scratch workspace (nothing to sync)', async () => {
     const dir = ws(false)
     const git = createWorkspaceGit(workspaces, async () => dir)
     expect(await git.pull('a')).toEqual({
@@ -211,12 +249,12 @@ describe('createWorkspaceGit.pull', () => {
       ok: false,
       detail: 'workspace is not a git checkout'
     })
-    expect(pullImpl).not.toHaveBeenCalled()
+    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>)).toEqual([])
   })
 
-  it('ff-only pulls and summarizes the update on success', async () => {
+  it('syncs the configured branch to the remote and summarizes the update on success', async () => {
     const dir = ws(true)
-    pullImpl = vi.fn().mockResolvedValue({ files: ['a.ts', 'b.ts'], summary: { insertions: 10, deletions: 3 } })
+    rawImpl = syncRaw({ after: AFTER, numstat: '10\t3\ta.ts\n0\t0\tb.ts\n' })
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
@@ -227,30 +265,64 @@ describe('createWorkspaceGit.pull', () => {
     expect(
       simpleGitArgs.some((options) => (options as { abort?: unknown } | undefined)?.abort instanceof AbortSignal)
     ).toBe(true)
-    expect(pullImpl).toHaveBeenCalledWith(
-      expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
-      '+refs/heads/main:refs/remotes/origin/main',
-      ['--ff-only', '--no-recurse-submodules']
-    )
+    // Fetch the configured branch through the credential alias, then pin and check out — never a merge.
+    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>)).toEqual([
+      [
+        'fetch',
+        '--no-recurse-submodules',
+        expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
+        '+refs/heads/main:refs/remotes/origin/main'
+      ],
+      ['checkout', '--no-recurse-submodules', '--no-track', '-B', 'main', 'refs/remotes/origin/main']
+    ])
     expect(envImpl).toHaveBeenCalledWith(
       expect.objectContaining({ AC_GITCRED_CAPABILITY: 'cap-a', GIT_ALLOW_PROTOCOL: 'https:ssh' })
     )
     expect(r).toMatchObject({ isRepo: true, ok: true, changed: 2, insertions: 10, deletions: 3 })
-    expect(r.detail).toMatch(/updated 2 files/i)
+    expect(r.detail).toBe('Synced main — updated 2 files.')
+  })
+
+  it('names the branch it had to leave when the checkout was parked elsewhere', async () => {
+    const dir = ws(true)
+    rawImpl = syncRaw({ current: 'dev/agent/canary', after: AFTER, numstat: '1\t1\tREADME.md\n' })
+    const git = createWorkspaceGit(
+      workspaces,
+      async () => dir,
+      () => undefined,
+      githubTarget
+    )
+    const r = await git.pull('a')
+    expect(r).toMatchObject({ ok: true, changed: 1 })
+    expect(r.detail).toBe('Switched from dev/agent/canary to main — updated 1 file.')
+  })
+
+  it('refuses, as data, a local commit the remote lacks instead of discarding it', async () => {
+    const dir = ws(true)
+    rawImpl = syncRaw({ unique: '2' })
+    const git = createWorkspaceGit(
+      workspaces,
+      async () => dir,
+      () => undefined,
+      githubTarget
+    )
+    const r = await git.pull('a')
+    expect(r).toMatchObject({ isRepo: true, ok: false })
+    expect(r.detail).toMatch(/local main has 2 commits the remote does not/)
+    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>).map((args) => args[0])).toEqual(['fetch'])
   })
 
   it('sanitizes host git context before inspecting the origin', async () => {
     const dir = ws(true)
     const previousGitDir = process.env.GIT_DIR
     process.env.GIT_DIR = '/tmp/attacker-controlled-git-dir'
-    rawImpl = vi.fn().mockImplementation(async () => {
+    const probes = syncRaw()
+    rawImpl = vi.fn().mockImplementation(async (args: string[]) => {
       expect(envImpl).toHaveBeenCalled()
       const firstEnv = (envImpl as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, string>
       expect(firstEnv).not.toHaveProperty('GIT_DIR')
       expect(firstEnv.GIT_ALLOW_PROTOCOL).toBe('')
-      return 'https://github.com/acme/repo.git\n'
+      return probes(args)
     })
-    pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
 
     try {
       await expect(
@@ -271,8 +343,7 @@ describe('createWorkspaceGit.pull', () => {
 
   it('pulls the SCOPED root: its own target, its credentials, and no fallback to the primary', async () => {
     const dir = ws(true)
-    rawImpl = vi.fn().mockResolvedValue('https://github.com/acme/infra.git\n')
-    pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
+    rawImpl = syncRaw({ origin: 'https://github.com/acme/infra.git' })
     const roots: (string | undefined)[] = []
     const credentialScopes: (string | undefined)[] = []
     const git = createWorkspaceGit(
@@ -297,16 +368,17 @@ describe('createWorkspaceGit.pull', () => {
     expect(roots).toEqual(['acme/infra'])
     expect(credentialScopes).toEqual(['acme/infra'])
     // The refspec git was asked for names the secondary root's branch, never the primary's.
-    expect(pullImpl).toHaveBeenCalledWith(
+    expect(rawImpl).toHaveBeenCalledWith([
+      'fetch',
+      '--no-recurse-submodules',
       expect.any(String),
-      '+refs/heads/trunk:refs/remotes/origin/trunk',
-      expect.anything()
-    )
+      '+refs/heads/trunk:refs/remotes/origin/trunk'
+    ])
   })
 
-  it('reports "Already up to date." when nothing changed', async () => {
+  it('reports "Already in sync." when nothing changed', async () => {
     const dir = ws(true)
-    pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
+    rawImpl = syncRaw()
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
@@ -315,10 +387,10 @@ describe('createWorkspaceGit.pull', () => {
     )
     const r = await git.pull('a')
     expect(r.ok).toBe(true)
-    expect(r.detail).toBe('Already up to date.')
+    expect(r.detail).toBe('Already in sync.')
   })
 
-  it('refuses an unsafe origin without running pull or echoing its secrets', async () => {
+  it('refuses an unsafe origin without syncing or echoing its secrets', async () => {
     const dir = ws(true)
     rawImpl = vi.fn().mockResolvedValue('https://legacy-user:super-secret@invalid.invalid/repo?token=query-secret\n')
     const git = createWorkspaceGit(
@@ -338,7 +410,7 @@ describe('createWorkspaceGit.pull', () => {
     })
     expect(JSON.stringify(result)).not.toContain('super-secret')
     expect(JSON.stringify(result)).not.toContain('query-secret')
-    expect(pullImpl).not.toHaveBeenCalled()
+    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>)).toEqual([])
   })
 
   it('refuses a safe but mismatched origin for an App-backed workspace', async () => {
@@ -356,10 +428,10 @@ describe('createWorkspaceGit.pull', () => {
       ok: false,
       detail: 'workspace origin is not a safe remote'
     })
-    expect(pullImpl).not.toHaveBeenCalled()
+    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>)).toEqual([])
   })
 
-  it('refuses to pull without the configured workspace target', async () => {
+  it('refuses to sync without the configured workspace target', async () => {
     const dir = ws(true)
     const git = createWorkspaceGit(workspaces, async () => dir)
 
@@ -368,7 +440,7 @@ describe('createWorkspaceGit.pull', () => {
       ok: false,
       detail: 'workspace origin is not a safe remote'
     })
-    expect(pullImpl).not.toHaveBeenCalled()
+    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>)).toEqual([])
   })
 
   it('refuses checkout-owned URL rewrites before pull', async () => {
@@ -392,17 +464,17 @@ describe('createWorkspaceGit.pull', () => {
       ok: false,
       detail: 'workspace Git configuration contains a disallowed network override or executable setting'
     })
-    expect(pullImpl).not.toHaveBeenCalled()
+    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>)).toEqual([])
   })
 
   it('pulls normally when local includes only configure repository hooks', async () => {
     const dir = ws(true)
+    const probes = syncRaw()
     rawImpl = vi
       .fn()
       .mockImplementation(async (args: string[]) =>
-        args[0] === 'remote' ? 'https://github.com/acme/repo.git\n' : 'include.path\0core.hookspath\0'
+        args[0] === 'config' ? 'include.path\0core.hookspath\0' : probes(args)
       )
-    pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
@@ -411,15 +483,12 @@ describe('createWorkspaceGit.pull', () => {
     )
 
     await expect(git.pull('a')).resolves.toMatchObject({ isRepo: true, ok: true })
-    expect(pullImpl).toHaveBeenCalledOnce()
+    expect(syncWrites(rawImpl as ReturnType<typeof vi.fn>).map((args) => args[0])).toEqual(['fetch', 'checkout'])
   })
 
-  it('ignores a checkout-controlled upstream and pulls the configured target explicitly', async () => {
+  it('ignores a checkout-controlled upstream and syncs the configured target explicitly', async () => {
     const dir = ws(true)
-    rawImpl = vi
-      .fn()
-      .mockImplementation(async (args: string[]) => (args[0] === 'remote' ? 'https://github.com/acme/repo.git\n' : ''))
-    pullImpl = vi.fn().mockResolvedValue({ files: [], summary: { insertions: 0, deletions: 0 } })
+    rawImpl = syncRaw()
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,
@@ -429,11 +498,12 @@ describe('createWorkspaceGit.pull', () => {
 
     await expect(git.pull('a')).resolves.toMatchObject({ ok: true })
 
-    expect(pullImpl).toHaveBeenCalledWith(
+    expect(rawImpl).toHaveBeenCalledWith([
+      'fetch',
+      '--no-recurse-submodules',
       expect.stringMatching(/^agentconnect-[0-9a-f-]+$/),
-      '+refs/heads/release/v2:refs/remotes/origin/release/v2',
-      ['--ff-only', '--no-recurse-submodules']
-    )
+      '+refs/heads/release/v2:refs/remotes/origin/release/v2'
+    ])
     expect(
       (envImpl as ReturnType<typeof vi.fn>).mock.calls.some((call) =>
         Object.values(call[0] as Record<string, string>).includes('https://github.com/acme/repo.git')
@@ -441,9 +511,13 @@ describe('createWorkspaceGit.pull', () => {
     ).toBe(true)
   })
 
-  it('surfaces a failed pull as ok:false and scrubs the host path out of the detail', async () => {
+  it('surfaces a refused sync as ok:false and scrubs the host path out of the detail', async () => {
     const dir = ws(true)
-    pullImpl = vi.fn().mockRejectedValue(new Error(`cannot fast-forward in ${dir}/x`))
+    const probes = syncRaw()
+    rawImpl = vi.fn().mockImplementation(async (args: string[]) => {
+      if (args[0] === 'checkout') throw new Error(`Your local changes would be overwritten by checkout: ${dir}/x`)
+      return probes(args)
+    })
     const git = createWorkspaceGit(
       workspaces,
       async () => dir,

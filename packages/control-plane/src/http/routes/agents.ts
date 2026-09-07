@@ -4758,17 +4758,18 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Workspace git pull: force an on-demand ff-only pull on the owning daemon. A
-    // pull that can't fast-forward (offline, diverged, local edits) is data
-    // (`ok:false` + `detail`), not an HTTP error — only an offline daemon → 503.
+    // Workspace sync: pin the configured branch to its remote and check it out on the owning daemon. A
+    // refused sync (offline remote, a local commit the remote lacks, an edit it would rewrite) is data
+    // (`ok:false` + `detail`); the daemon's "agent is working here" refusal is a 409 like every other
+    // console git write, and only an offline daemon → 503.
     r.post(
       '/agents/:id/workspace/gitpull',
       {
         schema: {
           tags: [Tag.Workspace],
-          summary: 'Pull the workspace',
+          summary: 'Sync the workspace',
           description:
-            'Force an on-demand ff-only pull on the owning daemon; a pull that can’t fast-forward (diverged, local edits) is data (ok:false + detail), only an offline daemon yields 503. Pass repo to pull one of the agent’s authorized additional repositories instead of its primary workspace.',
+            'Sync the checkout to its configured remote branch on the owning daemon: fetch, point the local branch at the remote tip and check it out, carrying uncommitted edits and never merging. A refused sync (a local commit the remote lacks, an edit it would rewrite) is data (ok:false + detail); 409 when the agent is working in the checkout, 503 only when the daemon is offline. Pass repo to sync one of the agent’s authorized additional repositories instead of its primary workspace.',
           operationId: 'pullAgentWorkspace',
           params: IdParam,
           querystring: WorkspaceRepoScopeQueryDto,
@@ -4797,10 +4798,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toWorkspaceGitPullDto(rep)
         } catch (err) {
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendWorkspaceFailure(reply, err)) return
           throw err
         }
       }
