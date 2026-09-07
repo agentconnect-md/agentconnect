@@ -1002,9 +1002,12 @@ describe('a Slack answer is re-derived against the card that offered it', () => 
 // ── free text and numbers (issue #1794 gap 3) ────────────────────────────────
 
 /** A free-text form, optionally constrained. */
-function textElicitation(prop: Record<string, unknown> = {}): CreateElicitationRequest {
+function textElicitation(
+  prop: Record<string, unknown> = {},
+  message = 'What should I name the branch?'
+): CreateElicitationRequest {
   return formElicitation({
-    message: 'What should I name the branch?',
+    message,
     requestedSchema: {
       type: 'object',
       properties: { name: { type: 'string', ...prop } },
@@ -1908,8 +1911,9 @@ describe('a Slack text/number card is answered by a reply in its thread', () => 
     expect(await answer(daemon, 'add-retries', { sender: { id: 'U-other', isBot: false } })).toBe(false)
     // Another thread of the same channel is another conversation, even one word for word.
     expect(await answer(daemon, 'add-retries', { thread: 'other-thread' })).toBe(false)
-    // A top-level channel post is not a reply in the thread either.
-    expect(await answer(daemon, 'add-retries', { thread: undefined })).toBe(false)
+    // A root channel post is not a reply in the thread either — and its `thread` is its own ts,
+    // which is the shape normalization really produces.
+    expect(await answer(daemon, 'add-retries', { msgId: 'slack:test:200', thread: '200' })).toBe(false)
     // Another Slack app watching the same channel is a different conversation.
     expect(await answer(daemon, 'add-retries', { transportScope: 'slack:other-app' })).toBe(false)
     // A bot's message never answers a question — including this daemon's own posts.
@@ -1938,14 +1942,78 @@ describe('a Slack text/number card is answered by a reply in its thread', () => 
     await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'add-retries' } })
   })
 
-  it('takes a DM session’s top-level message, where its reader actually talks', async () => {
+  // The shape Slack normalization ACTUALLY produces: `thread` is `thread_ts ?? ts`, so it is
+  // never absent and a root message carries its OWN ts there. Testing for absence made the DM
+  // exception dead code — the card was as unanswerable as if it had never been written.
+  it('takes a DM session’s ROOT message, whose thread is its own timestamp', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const { pending } = slackReplyTurn(daemon)
     pending.plan.isDm = true
+    pending.plan.statusThread = '100.001'
     const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation())
     await liveCard(daemon)
-    expect(await answer(daemon, 'add-retries', { thread: undefined, isDm: true })).toBe(true)
+
+    // Still not ANY thread of that conversation: a reply under another root is another question.
+    expect(await answer(daemon, 'add-retries', { msgId: 'slack:test:300.001', thread: '250.001', isDm: true })).toBe(
+      false
+    )
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+
+    // The reviewer's reproduction: card at 100.001, a later top-level answer at 200.001.
+    expect(await answer(daemon, 'add-retries', { msgId: 'slack:test:200.001', thread: '200.001', isDm: true })).toBe(
+      true
+    )
     await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'add-retries' } })
+  })
+
+  // A `format`ted field asks for exactly the two things Slack rewrites on the way back out, so
+  // without decoding, a reader following the card's own instruction is refused forever.
+  it('reads a link answer out of Slack’s own markup for it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    slackReplyTurn(daemon)
+    const uri = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      textElicitation({ format: 'uri' }, 'Which page should I open?')
+    )
+    await liveCard(daemon)
+    expect(await answer(daemon, '<https://example.com/>')).toBe(true)
+    await expect(uri).resolves.toEqual({ action: 'accept', content: { name: 'https://example.com/' } })
+
+    // `<dest|label>`: the destination is the part BEFORE the pipe, and a `mailto:` scheme is
+    // Slack's spelling of an address rather than part of it.
+    const email = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      textElicitation({ format: 'email' }, 'Who should I notify?')
+    )
+    await liveCard(daemon)
+    expect(await answer(daemon, '<mailto:reader@example.com|reader@example.com>')).toBe(true)
+    await expect(email).resolves.toEqual({ action: 'accept', content: { name: 'reader@example.com' } })
+  })
+
+  // Decoding is not extracting: unwrapping ONE link is recovering what the reader typed, while
+  // picking a link out of a sentence is a judgement about which PART of it is the value.
+  it('leaves a link inside prose alone, and never takes a label for the value', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { notices } = slackReplyTurn(daemon)
+    const answered = (daemon as any).permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      textElicitation({ format: 'uri' }, 'Which page should I open?')
+    )
+    await liveCard(daemon)
+
+    // Prose carrying a link is not one link: refused with the reason, and the card stays live.
+    expect(await answer(daemon, 'try <https://example.com/> first')).toBe(true)
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(notices).toHaveLength(1)
+
+    // A labelled link IS one link, and its value is the destination — the label is display text
+    // Slack added, and answering with it would report something the reader never gave.
+    expect(await answer(daemon, '<https://example.com/|the docs page>')).toBe(true)
+    await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'https://example.com/' } })
+    expect(notices).toHaveLength(1)
   })
 
   it('releases the interception on Dismiss and on turn end — a later reply is conversation', async () => {

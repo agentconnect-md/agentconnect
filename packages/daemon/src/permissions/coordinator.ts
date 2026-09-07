@@ -34,6 +34,7 @@ import {
   buildUrlConsentCard,
   buildUrlConsentResolvedCard,
   clampTo,
+  decodeSlackReplyValue,
   ELICIT_REPLY_KINDS,
   elicitFieldLabel,
   elicitForm,
@@ -69,6 +70,7 @@ import {
   type ApprovalRequestParts
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
+import { slackTsFromMsgId } from '../daemon/helpers.js'
 import { isTrustedHumanTurn } from '../daemon/loop-guard-scope.js'
 import { transcriptChannelKey } from '../store/local-store.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
@@ -256,6 +258,18 @@ interface ElicitReplyTarget {
  *  inbound message. Both spell the channel the way the transcript does, scope included. */
 function elicitReplyConversation(platform: string, transcriptChannel: string): string {
   return `${platform}\x00${transcriptChannel}`
+}
+
+/** Is this message a reply INTO someone else's thread, rather than a root of its own?
+ *
+ *  Slack normalization sets `thread` to `thread_ts ?? ts`, so it is never absent and a top-level
+ *  message carries its OWN id there — which is exactly how a root is told apart from a reply,
+ *  once you compare the two rather than test for absence. Derived here rather than preserved as a
+ *  new normalized field: nothing was lost in normalization, `thread` has some forty readers whose
+ *  meaning must not shift under them, and a new wire field would need a skew window on both
+ *  ingress paths for a fact already in hand. */
+function isThreadReply(msg: NormalizedMessage): boolean {
+  return msg.thread !== undefined && msg.thread !== slackTsFromMsgId(msg.msgId)
 }
 
 /** The reply target a live turn's card takes: its own conversation and thread, and its requester
@@ -2026,8 +2040,9 @@ export class PermissionCoordinator {
     for (const [requestId, rec] of this.pendingElicits) {
       const reply = rec.reply
       if (!reply || reply.conversation !== conversation) continue
-      // The turn's OWN thread. A DM session also takes a top-level message, where its reader talks.
-      if (msg.thread !== undefined ? msg.thread !== reply.thread : !reply.dm) continue
+      // The turn's OWN thread — another thread of the same channel is another conversation, word
+      // for word. A DM session ALSO takes a root message, since that is where its reader talks.
+      if (isThreadReply(msg) ? msg.thread !== reply.thread : !reply.dm) continue
       // The requester answers their own turn; a card that could name none takes anyone in the
       // thread. Anyone else is not answering it — their message stays an ordinary one.
       if (reply.requesterId !== undefined && reply.requesterId !== msg.sender.id) continue
@@ -2043,12 +2058,15 @@ export class PermissionCoordinator {
       return false
     }
     const { requestId, rec, target } = matched[0]!
-    // Re-derived against the card that asked, exactly as a tapped option is (#1815) — after the
-    // one piece of addressing that is chrome rather than value comes off (`@bot 42` is 42). The
-    // bot id comes from the card's OWN connection, so both ingresses read the same identity, and
-    // an unresolved one (a send-only connection before `auth.test`) strips nothing.
+    // What the reader actually typed, in two pure steps before any schema check: the one piece of
+    // addressing that is chrome rather than value comes off (`@bot 42` is 42), then Slack's own
+    // representation of a link is decoded (`<mailto:a@b|a@b>` is a@b), since neither is the
+    // reader's answer and both would fail validation forever. The bot id comes from the card's
+    // OWN connection, so both ingresses read the same identity, and an unresolved one (a
+    // send-only connection before `auth.test`) strips nothing.
     const addressed = stripLeadingSelfMention(msg.text, rec.surface === 'slack' ? rec.conn.botUserId : undefined)
-    const answer = elicitReplyAnswer(target, addressed)
+    // Re-derived against the card that asked, exactly as a tapped option is (#1815).
+    const answer = elicitReplyAnswer(target, decodeSlackReplyValue(addressed))
     if (answer === null) {
       this.sayElicitReplyRefused(rec, target)
       return true

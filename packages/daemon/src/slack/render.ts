@@ -1206,6 +1206,36 @@ export function stripLeadingSelfMention(text: string, botUserId?: string): strin
   return found && found[1] === botUserId ? text.slice(found[0].length) : text
 }
 
+/** Slack's retrieved-message form for ONE link and nothing else: `<dest>` or `<dest|label>`,
+ *  where the destination is the part BEFORE the pipe and the label is display text. Anchored on
+ *  purpose — a link sitting inside prose is not this. */
+const SLACK_LINK_ONLY_RE = /^<([^|>\s]+)(?:\|[^>]*)?>$/
+
+/** The three characters Slack HTML-escapes in the text it hands back, and nothing else — so
+ *  un-escaping exactly these is the lossless inverse of what the reader typed. */
+const SLACK_ENTITIES: [RegExp, string][] = [
+  [/&lt;/g, '<'],
+  [/&gt;/g, '>'],
+  [/&amp;/g, '&']
+]
+
+/** What the reader actually typed, recovered from Slack's own representation of it — the step
+ *  before any schema check, because `<https://x/>` and `<mailto:a@b|a@b>` are Slack's spelling
+ *  of a link, not the reader's answer, and would fail `uri`/`email` forever.
+ *
+ *  DECODING, never extracting: only a reply that is one link and nothing else is unwrapped, and
+ *  `mailto:` comes off so an `email` field gets `a@b` rather than `mailto:a@b`. Prose with a link
+ *  inside is returned whole — deciding which PART of a message is the value is the guess this
+ *  route refuses to make. Entity un-escaping applies either way, since Slack escapes those three
+ *  everywhere in message text. Inbound only: it has nothing to do with the outbound defusing
+ *  (#1810/#1819) that keeps AGENT-authored text from becoming markup on a card. Pure. */
+export function decodeSlackReplyValue(text: string): string {
+  const trimmed = text.trim()
+  const link = SLACK_LINK_ONLY_RE.exec(trimmed)
+  const value = link ? link[1]!.replace(/^mailto:/, '') : trimmed
+  return SLACK_ENTITIES.reduce((out, [pattern, char]) => out.replace(pattern, char), value)
+}
+
 /** The digit shapes a numeric reply may take. Deliberately narrower than `Number()`, which reads
  *  `0x1f`, `Infinity` and whitespace as numbers a reader plainly did not type. */
 const NUMERIC_REPLY_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/

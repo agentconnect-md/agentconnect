@@ -21,6 +21,7 @@ import {
   elicitForm,
   elicitFormAccepts,
   elicitFormContent,
+  decodeSlackReplyValue,
   elicitReplyAnswer,
   elicitReplyExpectation,
   stripLeadingSelfMention,
@@ -1840,6 +1841,26 @@ describe('elicitation card', () => {
     // An identity not resolved yet strips nothing rather than guessing at the token.
     expect(stripLeadingSelfMention('<@UBOT> 42', '')).toBe('<@UBOT> 42')
     expect(stripLeadingSelfMention('<@UBOT> 42', undefined)).toBe('<@UBOT> 42')
+  })
+
+  it('decodes a reply Slack handed back as link markup, and only when it is one link', () => {
+    // Slack rewrites what the reader typed on the way back out, so `uri`/`email` would refuse a
+    // reader following the card's own instruction.
+    expect(decodeSlackReplyValue('<https://example.com/>')).toBe('https://example.com/')
+    // The destination is the part BEFORE the pipe; the label is display text Slack added.
+    expect(decodeSlackReplyValue('<https://example.com/|the docs page>')).toBe('https://example.com/')
+    expect(decodeSlackReplyValue('<mailto:a@b.co|a@b.co>')).toBe('a@b.co')
+    expect(decodeSlackReplyValue('<mailto:a@b.co>')).toBe('a@b.co')
+    // One link and nothing else. Prose with a link inside is returned whole: choosing which PART
+    // of a sentence is the value is a guess, not a decode.
+    expect(decodeSlackReplyValue('try <https://example.com/> first')).toBe('try <https://example.com/> first')
+    expect(decodeSlackReplyValue('<https://a/> <https://b/>')).toBe('<https://a/> <https://b/>')
+    // Slack escapes exactly these three everywhere in message text, so undoing them is lossless
+    // — and a query string is where a silently wrong value would otherwise have got through.
+    expect(decodeSlackReplyValue('<https://example.com/?a=1&amp;b=2>')).toBe('https://example.com/?a=1&b=2')
+    expect(decodeSlackReplyValue('2 &lt; 3 &amp;&amp; 3 &gt; 2')).toBe('2 < 3 && 3 > 2')
+    // An ordinary answer is itself, trimmed.
+    expect(decodeSlackReplyValue('  add-retries \n')).toBe('add-retries')
   })
 
   it('re-derives a reply against the card, and answers a numeric field with a real number', () => {
