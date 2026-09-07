@@ -1968,6 +1968,64 @@ describe('elicitation card', () => {
     expect(elicitForm(req(props(ELICIT_FORM_FIELD_CAP + 1), []), WEBCHAT_ELICIT_SURFACE)).toBeNull()
   })
 
+  // An AskUserQuestion bridge (claude-agent-acp, codex) pairs every select question with its
+  // own free-text box, marked `_askUserQuestionCustomAnswer`. The box belongs INSIDE its
+  // question — rendered as a peer it read as a second question titled "Other" (#1817).
+  const custom = (questionId: string) => ({
+    type: 'string',
+    title: 'Other',
+    description: 'Type your own answer instead of choosing an option above (optional).',
+    _meta: { _askUserQuestionCustomAnswer: { questionId, isCustomAnswer: true } }
+  })
+
+  it('binds a free-text custom-answer box to the question that offered it', () => {
+    const asked = req(
+      {
+        question_0: { type: 'string', title: 'Branch', description: 'Which branch?', oneOf: [{ const: 'main' }] },
+        question_0_custom: custom('question_0')
+      },
+      []
+    )
+    const form = elicitForm(asked, WEBCHAT_ELICIT_SURFACE)
+    expect(form?.map((t) => [t.propName, t.customAnswerFor])).toEqual([
+      ['question_0', undefined],
+      ['question_0_custom', 'question_0']
+    ])
+    // The question's own text rides under its header; the companion's boilerplate does not,
+    // since sitting inside the question is what already says what it is for.
+    expect(form?.[0]?.description).toBe('Which branch?')
+    expect(form?.[1]?.description).toBeUndefined()
+    // The box is still an ordinary optional text field on the way back in.
+    expect(elicitFormAccepts(form!, [], { question_0_custom: 'release/1.2' })).toBe(true)
+  })
+
+  it('leaves a custom-answer box standing alone when its question is not on the card', () => {
+    // The marker names a property this surface never rendered (or none at all): a box that
+    // pointed at an absent control would simply vanish, so it stays a field of its own.
+    const orphan = req({ q: { type: 'object' }, q_custom: custom('q') }, [])
+    expect(elicitForm(orphan, WEBCHAT_ELICIT_SURFACE)?.map((t) => [t.propName, t.customAnswerFor])).toEqual([
+      ['q_custom', undefined]
+    ])
+    // A marker on something that is not a typed box claims nothing.
+    const notText = req({ a: { type: 'string', enum: ['x'] }, b: { ...custom('a'), type: 'boolean' } }, [])
+    expect(elicitForm(notText, WEBCHAT_ELICIT_SURFACE)?.every((t) => t.customAnswerFor === undefined)).toBe(true)
+  })
+
+  it('counts questions, not their custom-answer boxes, against the form cap', () => {
+    const paired = (n: number) =>
+      Object.fromEntries(
+        Array.from({ length: n }, (_, i) => [
+          [`question_${i}`, { type: 'string', oneOf: [{ const: 'y' }] }],
+          [`question_${i}_custom`, custom(`question_${i}`)]
+        ]).flat() as [string, unknown][]
+      )
+    // At the cap the card carries twice the cap in properties and still renders.
+    expect(elicitForm(req(paired(ELICIT_FORM_FIELD_CAP), []), WEBCHAT_ELICIT_SURFACE)).toHaveLength(
+      ELICIT_FORM_FIELD_CAP * 2
+    )
+    expect(elicitForm(req(paired(ELICIT_FORM_FIELD_CAP + 1), []), WEBCHAT_ELICIT_SURFACE)).toBeNull()
+  })
+
   it('reduces a one-field form to exactly what the single-field card renders', () => {
     for (const prop of [
       { type: 'string', enum: ['main', 'dev'], default: 'dev' },

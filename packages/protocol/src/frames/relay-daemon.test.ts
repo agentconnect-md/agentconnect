@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ELICIT_FORM_FIELD_CAP,
+  ELICIT_FORM_WIRE_FIELD_CAP,
   WireFeishuCardActionEvent,
   RdMsg,
   RdMsgWebchat,
@@ -242,7 +242,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     ).toBe(false)
     expect(RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: '', value: 'y' }).success).toBe(false)
     // No form is longer than the card cap (an EMPTY record IS an answer — see the case below).
-    const wide = Object.fromEntries(Array.from({ length: ELICIT_FORM_FIELD_CAP + 1 }, (_, i) => [`f${i}`, 'x']))
+    const wide = Object.fromEntries(Array.from({ length: ELICIT_FORM_WIRE_FIELD_CAP + 1 }, (_, i) => [`f${i}`, 'x']))
     expect(RelayWebchatOp.safeParse({ op: 'elicitation_choice', requestId: 'e-1', value: wide }).success).toBe(false)
     // A field's value is a scalar or a list of them — never a nested object or a non-number.
     expect(

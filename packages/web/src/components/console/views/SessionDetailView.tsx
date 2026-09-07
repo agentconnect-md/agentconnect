@@ -854,6 +854,36 @@ function fieldAnswered(f: ElicitFieldSpec, drafts: Record<string, string>, picks
   return (picks[f.propName] ?? []).length > 0
 }
 
+/** The free-text box a question carries instead of an option, if the form gave it one. */
+function companionOf(fields: ElicitFieldSpec[], f: ElicitFieldSpec): ElicitFieldSpec | undefined {
+  return fields.find((c) => c.customAnswerFor === f.propName)
+}
+
+/** Whether a question is answered — by its own control, or by the box the reader typed into
+ *  instead, which is what the counter has to count for the two to agree. */
+function rowAnswered(
+  f: ElicitFieldSpec,
+  companion: ElicitFieldSpec | undefined,
+  drafts: Record<string, string>,
+  picks: Record<string, string[]>
+): boolean {
+  return fieldAnswered(f, drafts, picks) || (!!companion && fieldAnswered(companion, drafts, picks))
+}
+
+/** Why a question is not yet answerable. A typed companion IS the answer — the agent reads it
+ *  in place of the selection — so the question's own control stops being asked for and only
+ *  what was typed is checked. */
+function rowInvalidReason(
+  f: ElicitFieldSpec,
+  companion: ElicitFieldSpec | undefined,
+  drafts: Record<string, string>,
+  picks: Record<string, string[]>
+): string | undefined {
+  const draft = companion ? (drafts[companion.propName] ?? '') : ''
+  if (companion && draft.trim()) return typedInvalidReason(companion, draft)
+  return fieldInvalidReason(f, drafts, picks)
+}
+
 // One elicitation control, styled alike wherever a card places it.
 const ELICIT_CHIP = 'chip max-w-full truncate rounded-sm disabled:cursor-default disabled:opacity-55'
 const ELICIT_CHIP_ON =
@@ -881,6 +911,9 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   const consentUrl = elicit?.url
   const consent = consentUrl ? readConsentUrl(consentUrl) : null
   const fields = elicit?.fields?.length ? elicit.fields : undefined
+  // The card's QUESTIONS: a select question's free-text companion is part of the question it
+  // names, not one of its own, so it is never numbered, counted, or asked twice.
+  const rows = fields?.filter((f) => !f.customAnswerFor)
   const typed = !fields && elicit && (elicit.text || elicit.number) ? elicit : undefined
   const min = multi?.minItems ?? 0
   const max = multi?.maxItems
@@ -895,7 +928,9 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   const headIcon = settled ? settled.icon : consent ? 'external-link' : 'message-circle-question-mark'
   const headColor = settled ? settled.color : 'var(--brand)'
   const counter =
-    fields && !settled ? `${fields.filter((f) => fieldAnswered(f, drafts, picks)).length}/${fields.length}` : undefined
+    rows && !settled
+      ? `${rows.filter((f) => rowAnswered(f, companionOf(fields!, f), drafts, picks)).length}/${rows.length}`
+      : undefined
   return (
     <div
       className={`overflow-hidden rounded-md border border-l-2 border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs) ${edge}`}
@@ -968,10 +1003,11 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
               <span className={`ml-auto ${ELICIT_HINT}`}>Opens in a new tab</span>
             </div>
           </div>
-        ) : fields ? (
+        ) : fields && rows ? (
           <div className="flex w-full min-w-0 flex-col">
-            {fields.map((f, fi) => {
-              const reason = fieldInvalidReason(f, drafts, picks)
+            {rows.map((f, fi) => {
+              const companion = companionOf(fields, f)
+              const reason = rowInvalidReason(f, companion, drafts, picks)
               const hint =
                 f.kind === 'multi-enum' ? selectionHint(f.multi?.minItems ?? 0, f.multi?.maxItems) : undefined
               return (
@@ -1001,6 +1037,11 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                         {f.required ? 'required' : '(optional)'}
                       </span>
                     </div>
+                    {f.description ? (
+                      <span className="min-w-0 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                        {f.description}
+                      </span>
+                    ) : null}
                     {f.kind === 'text' || f.kind === 'number' ? (
                       <input
                         className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
@@ -1050,6 +1091,20 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                         })}
                       </div>
                     )}
+                    {companion ? (
+                      <div className="flex min-w-0 items-center gap-[8px]">
+                        <span className={`flex-none ${ELICIT_HINT}`}>{companion.label}</span>
+                        <input
+                          className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
+                          type="text"
+                          value={drafts[companion.propName] ?? ''}
+                          disabled={!onAnswer}
+                          aria-label={`${f.label} — ${companion.label}`}
+                          {...(companion.text?.maxLength !== undefined ? { maxLength: companion.text.maxLength } : {})}
+                          onChange={(e) => setDrafts((prev) => ({ ...prev, [companion.propName]: e.target.value }))}
+                        />
+                      </div>
+                    ) : null}
                     {reason ? (
                       <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
                         <span className="mt-[2px] flex-none">
@@ -1068,7 +1123,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
               <button
                 type="button"
                 className="dsbtn dsbtn-primary xs"
-                disabled={!onAnswer || fields.some((f) => !!fieldInvalidReason(f, drafts, picks))}
+                disabled={!onAnswer || rows.some((f) => !!rowInvalidReason(f, companionOf(fields, f), drafts, picks))}
                 onClick={() => onAnswer?.(formAnswer(fields, drafts, picks))}
               >
                 Submit

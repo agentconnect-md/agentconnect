@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ELICIT_FORM_FIELD_CAP, WebchatOutput, WebchatStatus } from '../index.js'
+import { ELICIT_FORM_WIRE_FIELD_CAP, WebchatOutput, WebchatStatus } from '../index.js'
 
 const CONV = '11111111-1111-4111-8111-111111111111'
 const TURN = '22222222-2222-4222-8222-222222222222'
@@ -218,7 +218,7 @@ describe('WebchatOutput — event / status framing', () => {
     expect(card({ kind: 'elicitation', requestId: 'e', message: 'm', options: [], fields: [field('a')] }).success).toBe(
       false
     )
-    const wide = Array.from({ length: ELICIT_FORM_FIELD_CAP + 1 }, (_, i) => field(`f${i}`))
+    const wide = Array.from({ length: ELICIT_FORM_WIRE_FIELD_CAP + 1 }, (_, i) => field(`f${i}`))
     expect(card({ kind: 'elicitation', requestId: 'e', message: 'm', options: [], fields: wide }).success).toBe(false)
     // A field with no property to answer under, or a kind no surface renders, is not a field.
     expect(

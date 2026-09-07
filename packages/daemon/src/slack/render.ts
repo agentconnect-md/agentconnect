@@ -661,6 +661,13 @@ export interface ElicitTarget {
   /** The schema's `default`, kept only when it satisfies this target's own constraints —
    *  the card seeds its control with it, and the reader may still answer something else. */
   defaultValue?: string | number | boolean | string[]
+  /** The property's own `description` — the question text, where `title` is only its header
+   *  (an AskUserQuestion bridge splits them that way). Absent when the schema gave none. */
+  description?: string
+  /** Set on a select question's free-text companion: the property whose question this box
+   *  types an answer for. Only ever a `text` target, and only when that question is rendered
+   *  in the same form — the card then places the box inside it instead of asking it twice. */
+  customAnswerFor?: string
 }
 
 /** The longest answer a card accepts: an elicitation asks a question, not for a file. */
@@ -861,6 +868,22 @@ export function elicitFieldLabel(params: CreateElicitationRequest, propName: str
   return clampTo((typeof title === 'string' && title.trim()) || propName, 75)
 }
 
+/** ACP's cross-agent marker for a select question's own free-text box — written by the
+ *  AskUserQuestion bridges (Claude, Codex) under a namespace-free `_meta` key on purpose. */
+const CUSTOM_ANSWER_META_KEY = '_askUserQuestionCustomAnswer'
+
+/** The longest question text a card carries under a field's label. */
+const ELICIT_DESCRIPTION_MAX = 300
+
+/** The question a property's `_meta` claims this free-text box answers, or undefined when it
+ *  claims none — an unmarked property is a question in its own right. */
+function customAnswerOwner(prop: Record<string, unknown>): string | undefined {
+  const meta = (prop._meta as Record<string, unknown> | undefined)?.[CUSTOM_ANSWER_META_KEY] as
+    { questionId?: unknown; isCustomAnswer?: unknown } | undefined
+  const owner = meta?.questionId
+  return meta?.isCustomAnswer === true && typeof owner === 'string' && owner ? owner : undefined
+}
+
 /**
  * Every property of the form this surface can render, in schema order: string-enum (`oneOf`
  * titled options or bare `enum`), boolean, string-array multi-select (`items.enum` or
@@ -881,8 +904,23 @@ function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurfa
   const fits = (options: readonly unknown[]) => surface.maxOptions === undefined || options.length <= surface.maxOptions
   const found: ElicitTarget[] = []
   for (const [name, prop] of Object.entries(p.requestedSchema?.properties ?? {})) {
+    const owner = customAnswerOwner(prop)
+    // A companion's own description is boilerplate the inline placement already says; the
+    // question's is the ask itself, which `title` (a header) does not carry.
+    const desc = !owner && typeof prop.description === 'string' ? prop.description.trim() : ''
     const keep = (t: ElicitTarget | null) => {
-      if (t) found.push(withDefault(t, prop.default))
+      if (!t) return
+      found.push(
+        withDefault(
+          {
+            ...t,
+            ...(desc ? { description: clampTo(desc, ELICIT_DESCRIPTION_MAX) } : {}),
+            // Only a typed box can BE a custom answer; a marker on anything else is ignored.
+            ...(owner && t.kind === 'text' ? { customAnswerFor: owner } : {})
+          },
+          prop.default
+        )
+      )
     }
     if (prop?.type === 'string') {
       const oneOf = prop.oneOf as { const?: unknown; title?: unknown }[] | undefined
@@ -924,7 +962,14 @@ function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurfa
         ]
       })
   }
-  return found
+  // A companion whose question this surface did not render has nothing to sit inside, so it
+  // stands as a field of its own rather than pointing at a control that is not on the card.
+  const questions = new Set(found.filter((t) => !t.customAnswerFor).map((t) => t.propName))
+  return found.map((t) => {
+    if (!t.customAnswerFor || questions.has(t.customAnswerFor)) return t
+    const { customAnswerFor: _orphan, ...rest } = t
+    return rest
+  })
 }
 
 /** The elicitation's URL-mode target (ACP `ElicitationUrlMode`), or null when this is not a
@@ -967,13 +1012,15 @@ export function elicitTarget(params: CreateElicitationRequest, surface: ElicitSu
  * order. Returns null when the surface can render nothing, when a `required` property is not
  * among the rendered set — {@link elicitTarget}'s rule (#1795) generalised from the one
  * rendered field to the rendered set, and still the difference between an honest `accept` and
- * a lie — or when the form is longer than {@link ELICIT_FORM_FIELD_CAP}. A one-field result is
- * exactly what {@link elicitTarget} would return, which is what keeps a single-field card's
- * wire payload unchanged.
+ * a lie — or when the form asks more than {@link ELICIT_FORM_FIELD_CAP} QUESTIONS. A select
+ * question's free-text companion is not one of them: it rides inside the question it belongs
+ * to, so pairing every question with an "Other" box does not halve the form a card can show.
+ * A one-field result is exactly what {@link elicitTarget} would return, which is what keeps a
+ * single-field card's wire payload unchanged.
  */
 export function elicitForm(params: CreateElicitationRequest, surface: ElicitSurface): ElicitTarget[] | null {
   const targets = elicitCandidates(params, surface)
-  if (!targets.length || targets.length > ELICIT_FORM_FIELD_CAP) return null
+  if (!targets.length || targets.filter((t) => !t.customAnswerFor).length > ELICIT_FORM_FIELD_CAP) return null
   const rendered = new Set(targets.map((t) => t.propName))
   return elicitRequiredProps(params).every((r) => rendered.has(r)) ? targets : null
 }
