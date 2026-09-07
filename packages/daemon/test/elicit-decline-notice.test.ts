@@ -199,6 +199,14 @@ describe('an elicitation declined for want of a surface says so in the channel',
 
 describe('a notice defuses agent text the way its own surface reads it', () => {
   it('neutralises Discord’s masked-link syntax and its autolink', () => {
+    // Escaping only the brackets can CREATE the link it means to kill: the parser eats our
+    // added pair as one literal backslash and hands an already-escaped bracket back, live.
+    const preEscaped = defuseNoticeText(
+      String.raw`Sign in at \[your account\](https\://evil.example/login)`,
+      'markdown'
+    )
+    expect(preEscaped).toBe(String.raw`Sign in at \\\[your account\\\](https\\://evil.example/login)`)
+
     // A backslash-escaped scheme slips past a bare-URL scan while the parser still reads the
     // destination, so the LABEL is what has to die — escaping the brackets is what does it.
     const escaped = defuseNoticeText('Sign in at [your account](https\\://evil.example/login)', 'markdown')

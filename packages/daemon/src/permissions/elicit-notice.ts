@@ -17,9 +17,11 @@ const NOTICE_QUESTION_CAP = 900
  *  one is ever followable — so the surface's link syntax is neutralised the way it reads it.
  *  Escaping the brackets is what kills `[label](url)`, and it is the LABEL that matters: a bare
  *  URL left autolinking still shows the reader the destination they are going to, whereas a
- *  label can say anything. A surface declaring no markup shows the text verbatim. Pure. */
+ *  label can say anything. Backslashes are escaped in the SAME pass, or an already-escaped
+ *  `\\[label\\]` would come back to life: the parser eats our added pair as one literal
+ *  backslash and hands the bracket back. A surface declaring no markup shows it verbatim. Pure. */
 export function defuseNoticeText(raw: string, markup?: NoticeMarkup): string {
-  if (markup === 'markdown') return raw.replace(/[[\]]/g, (c) => `\\${c}`).replace(BARE_URL_RE, (m) => `\`${m}\``)
+  if (markup === 'markdown') return raw.replace(/[\\[\]]/g, (c) => `\\${c}`).replace(BARE_URL_RE, (m) => `\`${m}\``)
   return raw
 }
 
