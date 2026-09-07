@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
+  ELICIT_FORM_INPUT_ACTION,
+  decodeElicitFormMetadata,
+  elicitFormBlockId,
+  elicitFormBlockIndex,
+  elicitFormViewValues,
+  encodeElicitFormMetadata,
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_DAEMON_DRAINING,
   HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER,
@@ -1061,6 +1067,54 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(r.ok).toBe(false)
     if (r.ok) throw new Error('expected failure')
     expect(r.msg).toBe('FRAME_TOO_LARGE')
+  })
+})
+
+describe('the elicitation form modal’s own Slack codecs', () => {
+  it('round-trips the block id, and reads exactly our own field state out of a view', () => {
+    expect(elicitFormBlockId(0)).toBe('ac_elicit_f0')
+    expect(elicitFormBlockIndex(elicitFormBlockId(12))).toBe(12)
+    // Not ours, or not an index: nothing this modal rendered.
+    expect(elicitFormBlockIndex('agent_block')).toBeNull()
+    expect(elicitFormBlockIndex('ac_elicit_fx')).toBeNull()
+    expect(
+      elicitFormViewValues({
+        values: {
+          [elicitFormBlockId(0)]: { [ELICIT_FORM_INPUT_ACTION]: { selected_option: { value: 'main' } } },
+          [elicitFormBlockId(1)]: { [ELICIT_FORM_INPUT_ACTION]: { value: 'ship it' } },
+          [elicitFormBlockId(2)]: { [ELICIT_FORM_INPUT_ACTION]: { selected_options: [{ value: 'lint' }] } },
+          // A blank input and a cleared select are OMITTED, which is what an untouched
+          // optional field means; an empty LIST stays a real (empty) selection.
+          [elicitFormBlockId(3)]: { [ELICIT_FORM_INPUT_ACTION]: { value: null } },
+          [elicitFormBlockId(4)]: { [ELICIT_FORM_INPUT_ACTION]: { value: '' } },
+          [elicitFormBlockId(5)]: { [ELICIT_FORM_INPUT_ACTION]: { selected_option: null } },
+          [elicitFormBlockId(6)]: { [ELICIT_FORM_INPUT_ACTION]: { selected_options: [] } },
+          // Another block, and another action inside one of ours, are not this form's fields.
+          [elicitFormBlockId(7)]: { some_other_action: { value: 'injected' } },
+          agent_block: { [ELICIT_FORM_INPUT_ACTION]: { value: 'injected' } }
+        }
+      })
+    ).toEqual({
+      [elicitFormBlockId(0)]: 'main',
+      [elicitFormBlockId(1)]: 'ship it',
+      [elicitFormBlockId(2)]: ['lint'],
+      [elicitFormBlockId(6)]: []
+    })
+    expect(elicitFormViewValues(undefined)).toEqual({})
+  })
+
+  it('round-trips the view metadata and refuses anything that is not one', () => {
+    expect(decodeElicitFormMetadata(encodeElicitFormMetadata({ requestId: 'elicit-1', target: 'tgt' }))).toEqual({
+      requestId: 'elicit-1',
+      target: 'tgt'
+    })
+    // The direct Socket Mode path needs no routing hint: the connection that received the
+    // submission is the one that posted the card.
+    expect(decodeElicitFormMetadata(encodeElicitFormMetadata({ requestId: 'elicit-1' }))).toEqual({
+      requestId: 'elicit-1'
+    })
+    for (const bad of ['', 'not json', '{}', '{"v":2,"r":"x"}', '{"v":1,"r":""}', '{"v":1,"r":"x","t":3}'])
+      expect(decodeElicitFormMetadata(bad)).toBeNull()
   })
 })
 

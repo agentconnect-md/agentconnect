@@ -27,18 +27,23 @@ import {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_FORM_CALLBACK_ID,
+  ELICIT_OPEN_ACTION,
   ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
   SLACK_STATUS_ACTION,
+  decodeElicitFormMetadata,
   decodePermValue,
   decodeSlackStatusOverflowValue,
   decodeSharedSlackStatusTarget,
+  elicitFormViewValues,
   selectedOptionsFromState,
   type RdSlackAction,
   type SlackBlockActionsState,
+  type SlackViewState,
   type SharedSlackStatusTarget,
   type WireNormalizedMessage
 } from '@agentconnect.md/protocol'
@@ -79,7 +84,9 @@ export interface SlackInteractiveBody {
   view?: {
     callback_id?: string
     private_metadata?: string
-    state?: { values?: Record<string, Record<string, { selected_option?: { value?: string } }>> }
+    /** Widened past the config modal's one select: an elicitation form's inputs answer with a
+     *  typed value and with lists too, and {@link elicitFormViewValues} reads all three. */
+    state?: SlackViewState & { values?: Record<string, Record<string, { selected_option?: { value?: string } }>> }
   }
 }
 
@@ -242,6 +249,18 @@ function decodeHttpSlackSessionAction(body: SlackInteractiveBody): HttpSlackSess
         }
       : null
   }
+  // A multi-field card's Answer. Only the trigger id crosses to the daemon, which builds and
+  // opens the view itself on the same bot token it posted the card with — the relay renders no
+  // part of that modal and keeps nothing of it, exactly as it keeps nothing of a status modal.
+  if (target && action.action_id === ELICIT_OPEN_ACTION && action.value && body.trigger_id) {
+    return {
+      target,
+      interactionId: JSON.stringify([action.action_id, receipt]),
+      kind: 'elicitation-open',
+      requestId: action.value,
+      triggerId: body.trigger_id
+    }
+  }
   if (target && action.action_id === ELICIT_DISMISS_ACTION && action.value) {
     return {
       target,
@@ -303,6 +322,32 @@ function decodeHttpSlackSessionAction(body: SlackInteractiveBody): HttpSlackSess
       return { target: statusTarget, interactionId, kind: 'cancel' }
     default:
       return null
+  }
+}
+
+/** One submitted elicitation-form modal, ready to forward: the daemon-minted session target the
+ *  view carried in `private_metadata`, plus the raw field state keyed by block id. Null when the
+ *  payload is not one of our form submissions, or names no routable target. */
+export type HttpSlackElicitFormSubmit = HttpSlackInteractionReceipt & {
+  target: SharedSlackStatusTarget
+  userId?: string
+} & Extract<RdSlackAction, { kind: 'elicitation-submit' }>
+
+export function parseHttpSlackElicitFormSubmit(body: SlackInteractiveBody): HttpSlackElicitFormSubmit | null {
+  if (body.type !== 'view_submission' || body.view?.callback_id !== ELICIT_FORM_CALLBACK_ID) return null
+  const meta = body.view.private_metadata ? decodeElicitFormMetadata(body.view.private_metadata) : null
+  const target = meta?.target ? decodeSharedSlackStatusTarget(meta.target) : null
+  // A view_submission's trigger id is fresh per submission, so a corrected resubmission is its
+  // own interaction while Slack's own redelivery of one dedups against itself.
+  const receipt = body.trigger_id
+  if (!meta || !target || !receipt) return null
+  return {
+    target,
+    interactionId: JSON.stringify([ELICIT_FORM_CALLBACK_ID, receipt]),
+    kind: 'elicitation-submit',
+    requestId: meta.requestId,
+    fields: elicitFormViewValues(body.view.state),
+    ...(body.user?.id ? { userId: body.user.id } : {})
   }
 }
 
@@ -386,6 +431,11 @@ export interface SlackHttpIngestDeps {
   onSelectThreadAgent: (channelId: string, threadTs: string, agentId: string) => void
   /** Forward the current agent/session controls to its owning daemon. */
   onSessionAction: (action: HttpSlackSessionAction) => void
+  /** Forward a submitted elicitation-form modal and RESOLVE to the daemon's verdict: the one
+   *  Slack interaction on this seam whose answer Slack itself is waiting for, since per-field
+   *  errors only exist as a `view_submission` response. Resolves to '' when there is nothing
+   *  to say, which closes the modal. */
+  onElicitFormSubmit: (submit: HttpSlackElicitFormSubmit) => Promise<unknown>
   /** Resolve and forward the app-level message shortcut. False opens a local
    *  unavailable modal while the one-shot trigger id is still valid. */
   onSessionShortcut: (shortcut: HttpSlackSessionShortcut) => boolean
@@ -685,6 +735,9 @@ export class SlackHttpIngest {
         else if (context && picked) this.deps.onSetChannelAgent(context.channelId, picked)
         return '' // empty 200 closes the modal (same as the old empty ack)
       }
+      const formSubmit = parseHttpSlackElicitFormSubmit(body)
+      // Awaited, unlike every other forward here: the daemon's re-validation IS this 200's body.
+      if (formSubmit) return await this.deps.onElicitFormSubmit(formSubmit)
       const sessionAction = parseHttpSlackSessionAction(body)
       if (sessionAction) {
         this.deps.onSessionAction(sessionAction)

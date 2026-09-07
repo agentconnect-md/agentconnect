@@ -2136,16 +2136,16 @@ describe('elicitation card', () => {
 
   const TWO = { branch: { type: 'string', enum: ['main', 'dev'] }, note: { type: 'string', maxLength: 40 } }
 
-  it('renders a two-field form on webchat and still declines it on Slack', () => {
+  it('renders a two-field form on both surfaces, and never as a SINGLE-field card', () => {
     const two = req(TWO, ['branch', 'note'])
     expect(elicitForm(two, WEBCHAT_ELICIT_SURFACE)?.map((t) => [t.propName, t.kind])).toEqual([
       ['branch', 'enum'],
       ['note', 'text']
     ])
-    // One card answers one field, on either surface — so the reduction declines rather than
-    // half-answering, and Slack's card builder (which reads only the reduction) declines with
-    // it. Slack now RENDERS both kinds, so the whole-form read lists them; the modal that would
-    // show them is its own item and nothing calls this with a Slack surface yet.
+    // One SINGLE-field card answers one field, on either surface — so the per-field reduction
+    // declines rather than half-answering, and the button-row builder (which reads only that
+    // reduction) declines with it. The whole-form read is what answers this form: webchat cards
+    // every field, Slack asks them in a modal (see slack-elicit-form.test.ts).
     expect(elicitTarget(two, WEBCHAT_ELICIT_SURFACE)).toBeNull()
     expect(elicitTarget(two, SLACK_ELICIT_SURFACE)).toBeNull()
     expect(elicitForm(two, SLACK_ELICIT_SURFACE)?.map((t) => t.propName)).toEqual(['branch', 'note'])

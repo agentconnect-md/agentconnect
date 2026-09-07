@@ -43,6 +43,7 @@ function fakeAppWith(
     event() {},
     action() {},
     shortcut() {},
+    view() {},
     client: {
       auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
       chat: { postMessage, getPermalink: async () => ({ permalink: 'https://example.slack.com/thread' }) },
@@ -145,6 +146,7 @@ describe('SlackConnection.openDirectMessage', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: { conversations: { open } },
           start: async () => {},
           stop: async () => {}
@@ -164,6 +166,7 @@ describe('SlackConnection.listBotChannels', () => {
       event() {},
       action() {},
       shortcut() {},
+      view() {},
       client: {
         auth: { test: async () => ({ user_id: 'U1' }) },
         users: {
@@ -219,6 +222,7 @@ describe('SlackConnection.listBotChannels', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: {
             auth: { test: async () => ({ user_id: 'U1' }) },
             users: {
@@ -257,6 +261,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -282,6 +287,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -306,6 +312,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -349,6 +356,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -392,6 +400,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -425,6 +434,7 @@ describe('SlackConnection.getThreadReplies', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { replies } },
           start: async () => {},
           stop: async () => {}
@@ -456,6 +466,7 @@ describe('SlackConnection.getChannelHistory', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { history } },
           start: async () => {},
           stop: async () => {}
@@ -494,6 +505,7 @@ describe('SlackConnection.getChannelHistory', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: { auth: { test: async () => ({ user_id: 'UBOT' }) }, conversations: { history } },
           start: async () => {},
           stop: async () => {}
@@ -521,6 +533,7 @@ describe('SlackConnection membership events', () => {
     shortcut(id: string, h: (a: any) => unknown) {
       shortcuts?.set(id, h)
     },
+    view() {},
     client: {
       auth: { test: async () => ({ user_id: 'UBOT' }) },
       views: { open: async (a: any) => void opened?.push(a), update: async () => {} }
@@ -733,6 +746,7 @@ describe('SlackConnection assistant DM threads', () => {
           },
           action() {},
           shortcut() {},
+          view() {},
           client: {
             auth: { test: async () => ({ user_id: 'UBOT' }) },
             views: { open: async () => {}, update: async () => {} }
@@ -789,6 +803,7 @@ describe('SlackConnection assistant DM threads', () => {
           event() {},
           action() {},
           shortcut() {},
+          view() {},
           client: {
             auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BSELF' }) },
             views: { open: async () => {}, update: async () => {} }
@@ -1123,6 +1138,7 @@ describe('SlackConnection agent_session_stopped', () => {
     },
     action() {},
     shortcut() {},
+    view() {},
     client: {
       auth: { test: async () => ({ user_id: 'UBOT' }) },
       views: { open: async () => {}, update: async () => {} },
@@ -1313,6 +1329,7 @@ describe('SlackConnection.updateBlocks', () => {
     event() {},
     action() {},
     shortcut() {},
+    view() {},
     client: { chat: { update } },
     start: async () => {},
     stop: async () => {}
@@ -1416,6 +1433,7 @@ describe('SlackConnection chat.postMessage boundary', () => {
     event() {},
     action() {},
     shortcut() {},
+    view() {},
     client: { chat: { postMessage, getPermalink } },
     start: async () => {},
     stop: async () => {}

@@ -1600,6 +1600,8 @@ export class Daemon {
       handlePermissionChoice: (a) => this.permissions.handlePermissionChoice(a),
       handleElicitChoice: (a) => this.permissions.handleElicitChoice(a),
       handleElicitConfirm: (a) => void this.permissions.confirmElicitSelection(a),
+      handleElicitFormOpen: (a) => void this.permissions.openElicitFormModal(a),
+      handleElicitFormSubmit: (a) => this.permissions.submitElicitForm(a),
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
       handleTelegramCallback: (cb, conn) => this.commands.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
@@ -7659,6 +7661,23 @@ export class Daemon {
         values: payload.values,
         actor
       })
+    } else if (payload.kind === 'elicitation-open') {
+      // The trigger id is one-shot and short-lived: open on this daemon's own bot token now,
+      // exactly as open-config above does, and let rd/ack be the relay receipt it always was.
+      void this.permissions.openElicitFormModal({
+        requestId: payload.requestId,
+        triggerId: payload.triggerId,
+        conn
+      })
+    } else if (payload.kind === 'elicitation-submit') {
+      // The ONE Slack action whose verdict Slack itself is waiting for: the per-field errors ride
+      // back on the ack's opaque `response`, which the relay surfaces verbatim on its 200.
+      const response = await this.permissions.submitElicitForm({
+        requestId: payload.requestId,
+        fields: payload.fields,
+        ...(actor ? { actor } : {})
+      })
+      return { msgId: msg.msgId, accepted: true, ...(response ? { response } : {}) }
     } else {
       await this.commands.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
     }

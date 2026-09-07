@@ -11,6 +11,7 @@ import { LocalStore } from '../src/store/local-store.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import {
+  ELICIT_OPEN_ACTION,
   ELICIT_SELECT_ACTION,
   elicitForm,
   elicitTarget,
@@ -1171,11 +1172,11 @@ describe('webchat answers a typed elicitation with the schema’s own type', () 
   })
 })
 
-// ── multi-field forms, webchat only (issue #1794 gap 1) ──────────────────────
-// A Slack card answers ONE field, so `elicitTarget` still requires one property to satisfy
-// `required` alone and a multi-field ask declines there. Webchat reads the whole form
-// (`elicitForm`) and answers it with a value per field — the first thing that can honestly
-// accept a form whose `required` names more than one property.
+// ── multi-field forms (issue #1794 gap 1) ────────────────────────────────────
+// A single card answers ONE field, so `elicitTarget` still requires one property to satisfy
+// `required` alone. Webchat reads the whole form (`elicitForm`) and answers it with a value per
+// field — the first thing that can honestly accept a form whose `required` names more than one
+// property. Slack asks the same whole form in a modal (slack-elicit-form.test.ts).
 
 /** A two-field form: a required pick plus an optional typed note. */
 function twoFieldElicitation(required = ['branch']): CreateElicitationRequest {
@@ -1357,20 +1358,30 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     expect(cardEvents(sink)[1]).toEqual({ kind: 'elicitation_resolved', requestId, outcome: 'dismissed' })
   })
 
-  it('still declines a multi-field form on a Slack turn, whose card answers one field', async () => {
+  it('takes the MODAL path on a Slack turn rather than a single-field card', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending: any = installPending(daemon)
     pending.plan.platform = 'slack'
-    pending.conn = Object.create(SlackConnection.prototype)
+    pending.plan.channel = 'C1'
+    pending.plan.statusThread = 'T1'
+    const conn = Object.create(SlackConnection.prototype)
+    const posted: unknown[][] = []
+    conn.postBlocks = async (_c: string, blocks: unknown[]) => {
+      posted.push(blocks)
+      return 'ts-1'
+    }
+    conn.updateBlocks = async () => true
+    pending.conn = conn
 
-    await expect(
-      (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation(['branch', 'note']))
-    ).resolves.toBeUndefined()
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
-    // Unchanged where it matters: one card, one field that satisfies `required` alone.
+    void (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation(['branch', 'note']))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    // The card carries an Answer button, never the fields — the modal behind it asks both.
+    await vi.waitFor(() => expect(JSON.stringify(posted[0])).toContain(ELICIT_OPEN_ACTION))
+    // Unchanged where it matters: the per-field reduction still needs one field that satisfies
+    // `required` alone, and there is none here.
     expect(elicitTarget(twoFieldElicitation(['branch', 'note']), SLACK_ELICIT_SURFACE)).toBeNull()
-    // The same form IS renderable — just not here: webchat asks every field.
     expect(elicitForm(twoFieldElicitation(['branch', 'note']), WEBCHAT_ELICIT_SURFACE)).toHaveLength(2)
+    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
   })
 
   it('keeps a one-field form on the single-field card, byte for byte', async () => {

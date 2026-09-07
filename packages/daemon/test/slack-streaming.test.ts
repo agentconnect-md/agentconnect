@@ -920,6 +920,7 @@ describe('SlackConnection chrome streaming', () => {
       event() {},
       action() {},
       shortcut() {},
+      view() {},
       client: {
         auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'B1', team_id: 'T123' }) },
         views: { open: async () => ({}), update: async () => ({}) },
