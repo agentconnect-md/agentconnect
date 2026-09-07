@@ -193,6 +193,66 @@ describe('SpawnDriver seam', () => {
  * `error` event is rethrown as an uncaught exception, which would take down every
  * other agent this daemon runs.
  */
+/**
+ * A login command is interactive, and some runtimes install a signal handler that dumps a stack
+ * trace to the terminal on SIGTERM — after a login that in fact succeeded. A runtime that exits on
+ * stdin EOF should be allowed to, which is what the grace window buys.
+ */
+describe('LocalDriver stop with an EOF grace window', () => {
+  /** A child that exits cleanly the moment stdin closes, and shouts if it is ever signalled. */
+  const eofRunner = [
+    '-e',
+    `process.on('SIGTERM', () => { process.stdout.write('SIGNALLED'); process.exit(9) });
+     process.stdin.on('end', () => process.exit(0));
+     process.stdin.resume(); process.stdout.write('{}\\n')`
+  ]
+
+  it('lets a runtime exit on EOF, with no signal and no output', async () => {
+    const driver = new LocalDriver()
+    const runtime = await driver.launch({ command: process.execPath, args: eofRunner, env: {} })
+    const reader = (runtime.fromAgent as ReadableStream<Uint8Array>).getReader()
+    await reader.read() // it is up
+    void reader.cancel()
+    const started = Date.now()
+    await runtime.stop(5000, 2500)
+    // Under 2.5s means the wait ended on the child's own exit, not on the grace timer.
+    expect(Date.now() - started).toBeLessThan(2400)
+  })
+
+  it('still signals a runtime that ignores EOF, without waiting out the whole deadline', async () => {
+    const driver = new LocalDriver()
+    const runtime = await driver.launch({
+      command: process.execPath,
+      // Ignores EOF entirely, so only a signal ends it.
+      args: ['-e', "process.stdin.resume(); setInterval(() => {}, 1000); process.stdout.write('{}\\n')"],
+      env: {}
+    })
+    const reader = (runtime.fromAgent as ReadableStream<Uint8Array>).getReader()
+    await reader.read()
+    void reader.cancel()
+    const started = Date.now()
+    await runtime.stop(5000, 300)
+    const elapsed = Date.now() - started
+    expect(elapsed).toBeGreaterThanOrEqual(300)
+    expect(elapsed).toBeLessThan(3000)
+  })
+
+  it('signals immediately when no grace is asked for, which is what daemon teardown wants', async () => {
+    const driver = new LocalDriver()
+    const runtime = await driver.launch({
+      command: process.execPath,
+      args: ['-e', "process.stdin.resume(); setInterval(() => {}, 1000); process.stdout.write('{}\\n')"],
+      env: {}
+    })
+    const reader = (runtime.fromAgent as ReadableStream<Uint8Array>).getReader()
+    await reader.read()
+    void reader.cancel()
+    const started = Date.now()
+    await runtime.stop(5000)
+    expect(Date.now() - started).toBeLessThan(300)
+  })
+})
+
 describe('LocalDriver spawn failures', () => {
   const missing = join(tmpdir(), 'agentconnect-nonexistent-runtime')
 

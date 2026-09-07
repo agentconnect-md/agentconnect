@@ -184,6 +184,9 @@ export interface ProbeOptions {
   /** Resolve the def to probe, just before spawning — an archive-distributed runtime installs here.
    *  Undefined means the runtime is no longer launchable and gets no probe at all. */
   resolveRuntime?: (id: string, rt: RuntimeDef) => Promise<RuntimeDef | undefined>
+  /** Stop starting new probes. Checked between runtimes, so an aborted sweep still lets the
+   *  probes already in flight tear their own children down through their per-runtime deadline. */
+  signal?: AbortSignal
   /** Prepare the same sandbox/private-HOME or inherited-host launch used by a real agent. */
   launchFor?: (
     id: string,
@@ -633,6 +636,7 @@ export async function probeAllRuntimes(
 
   const worker = async (): Promise<void> => {
     for (let i = next++; i < ids.length; i = next++) {
+      if (opts.signal?.aborted) return
       const id = ids[i]!
       // Resolved inside this worker: a vendor archive installing on demand occupies one probe slot
       // instead of the whole sweep, and sits outside the per-runtime deadline probeRuntime applies.
