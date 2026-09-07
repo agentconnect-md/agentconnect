@@ -173,12 +173,12 @@ describe('runAuth: the runtime list', () => {
       installed: (c) => c,
       probeRuntimes: async (_runtimes, opts) =>
         await new Promise((resolve) => {
-          opts.signal?.addEventListener('abort', () =>
-            setTimeout(() => {
-              torndown = true
-              resolve([])
-            }, 10)
-          )
+          // Deferred a tick past the abort, so returning before the teardown is observable.
+          const tearDown = (): void => {
+            torndown = true
+            resolve([])
+          }
+          opts.signal?.addEventListener('abort', () => void setTimeout(tearDown, 10))
         }),
       pick: async () => 'claude-acp',
       hostFactory: () => fakeHost([{ id: 'oauth', name: 'Log in' }])
