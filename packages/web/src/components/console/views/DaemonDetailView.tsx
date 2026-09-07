@@ -320,13 +320,25 @@ export default function DaemonDetailView() {
                     <div className={rowCls}>{rowInner}</div>
                   )}
                   {rt.authRequired && (
-                    <div
-                      title="The runtime rejected the daemon's probe with 'authentication required' — sign in to it on the daemon host. The warning clears on the next probe."
-                      className="flex items-center gap-[6px] bg-(--status-paused-soft) px-4 py-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)"
+                    <button
+                      type="button"
+                      title="The runtime rejected the daemon's probe with 'authentication required' — show the command that logs it in on the daemon host."
+                      onClick={() =>
+                        openModal('runtimeLogin', {
+                          runtimeId: rt.runtime,
+                          runtimeLabel: runtimeLabel(rt.runtime, meta?.name),
+                          daemonName: daemon.name
+                        })
+                      }
+                      className="flex w-full cursor-pointer items-center gap-[6px] border-0 bg-(--status-paused-soft) px-4 py-[7px] text-left font-sans text-[11.5px] font-medium leading-normal text-(--amber-500) transition-opacity hover:opacity-80"
                     >
                       <Icon name="triangle-alert" size={12} className="flex-none" />
                       <span className="min-w-0 truncate">Login required — sign in on the daemon host</span>
-                    </div>
+                      <span className="ml-auto flex flex-none items-center gap-[3px] underline underline-offset-2">
+                        Show command
+                        <Icon name="chevron-right" size={12} className="flex-none" />
+                      </span>
+                    </button>
                   )}
                   {open && (
                     <div className="flex flex-col gap-3 pt-[2px] pr-4 pb-3 pl-14">
@@ -714,6 +726,7 @@ export default function DaemonDetailView() {
         runtimes={runtimes}
         agents={hosted}
         empty="No runtimes reported — this daemon hasn't advertised its runtime profiles yet."
+        daemonName={daemon.name}
       />
 
       <FleetAgentsCard

@@ -31,6 +31,7 @@ import { amountToNumber } from '@/lib/amount'
 import { consoleKeys } from '@/lib/swr-keys'
 import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
 import { useOrgs } from '@/lib/org-context'
+import { useModal } from '@/components/console/ModalProvider'
 
 /** Bar colour tracks the reading — one scale across Infra, cluster, group and daemon detail. */
 export function barColor(pct: number): string {
@@ -379,7 +380,8 @@ export function FleetRuntimesCard({
   runtimes,
   agents,
   empty,
-  note
+  note,
+  daemonName
 }: {
   title: string
   runtimes: readonly FleetRuntime[]
@@ -388,8 +390,12 @@ export function FleetRuntimesCard({
   empty: string
   /** What the header says the list means — a group's is narrower than a pool's. */
   note?: string
+  /** The one machine these runtimes are on, when the card is a single daemon's — a login command
+   *  belongs on a named host, and a set of them has no single one to name. */
+  daemonName?: string
 }) {
   const acpRegistry = useAcpRegistry()
+  const { openModal } = useModal()
   // Independent disclosures — more than one runtime's models can be open at once.
   const [open, setOpen] = useState<Set<string>>(new Set())
   const toggle = (rid: string) =>
@@ -451,13 +457,25 @@ export function FleetRuntimesCard({
                   />
                 </button>
                 {rt.authRequired && (
-                  <div
-                    title="The runtime rejected a probe with 'authentication required' — sign in to it on the daemon host. The warning clears on the next probe."
-                    className="flex items-center gap-[6px] bg-(--status-paused-soft) px-[13px] py-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)"
+                  <button
+                    type="button"
+                    title="The runtime rejected a probe with 'authentication required' — show the command that logs it in on the daemon host."
+                    onClick={() =>
+                      openModal('runtimeLogin', {
+                        runtimeId: rt.runtime,
+                        runtimeLabel: label,
+                        ...(daemonName ? { daemonName } : {})
+                      })
+                    }
+                    className="flex w-full cursor-pointer items-center gap-[6px] border-0 bg-(--status-paused-soft) px-[13px] py-[6px] text-left font-sans text-[11.5px] font-medium leading-normal text-(--amber-500) transition-opacity hover:opacity-80"
                   >
                     <Icon name="triangle-alert" size={12} className="flex-none" />
-                    <span className="min-w-0 truncate">Login required — sign in on the daemon host</span>
-                  </div>
+                    <span className="min-w-0 truncate">Login required</span>
+                    <span className="ml-auto flex flex-none items-center gap-[3px] underline underline-offset-2">
+                      Show command
+                      <Icon name="chevron-right" size={12} className="flex-none" />
+                    </span>
+                  </button>
                 )}
                 {shown && (
                   <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-[13px] py-[10px]">

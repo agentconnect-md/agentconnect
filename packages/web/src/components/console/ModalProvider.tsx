@@ -29,6 +29,7 @@ import EditDescriptionModal from './modals/EditDescriptionModal'
 import EditProfileModal from './modals/EditProfileModal'
 import EditOrgModal from './modals/EditOrgModal'
 import GroupModal from './modals/GroupModal'
+import RuntimeLoginModal, { type RuntimeLoginTarget } from './modals/RuntimeLoginModal'
 import DeleteGroupModal from './modals/DeleteGroupModal'
 
 export type ModalKind =
@@ -50,9 +51,11 @@ export type ModalKind =
   | 'editOrg'
   | 'group'
   | 'deleteGroup'
+  | 'runtimeLogin'
 
 // HookDto[] = the whole GitHub group (header unplug — disconnect every repo subscription).
-type ModalTarget = DaemonRow | Agent | CronDto | IntegrationRow | HookDto | HookDto[] | MemberSetRow
+type ModalTarget =
+  DaemonRow | Agent | CronDto | IntegrationRow | HookDto | HookDto[] | MemberSetRow | RuntimeLoginTarget
 
 // Per-kind extras: `platform` preselects the Add-integration pane (the GitHub group
 // card's "Add repository" lands on GitHub, not the Slack default). `focusSection`
@@ -199,6 +202,10 @@ export function ModalProvider({ children }: { children: ReactNode }) {
             )}
             {open.kind === 'editAgentDesc' && open.target && (
               <EditDescriptionModal agent={open.target as Agent} onClose={close} />
+            )}
+            {/* The "Login required" warning on a runtime row — the command belongs on that host. */}
+            {open.kind === 'runtimeLogin' && open.target && (
+              <RuntimeLoginModal target={open.target as RuntimeLoginTarget} onClose={close} />
             )}
             {open.kind === 'editProfile' && <EditProfileModal onClose={close} />}
             {open.kind === 'editOrg' && <EditOrgModal onClose={close} />}
