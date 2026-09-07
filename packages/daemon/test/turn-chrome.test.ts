@@ -8,8 +8,17 @@ describe('turn chrome facet', () => {
       attributionFooter: true,
       sessionTitle: true,
       chatInputCards: true,
-      chromeMarkedNotices: true
+      chromeMarkedNotices: true,
+      noticeMarkup: 'slack-mrkdwn'
     })
+  })
+
+  it('declares how each surface PARSES a notice, so agent text in one can be defused', () => {
+    // A notice is plain text, and a surface that reads markup in it turns an agent's link into a
+    // tap — Slack's `<url|label>`, Discord's `[label](url)`. Telegram and Feishu read neither.
+    expect(turnChromeFor('discord').noticeMarkup).toBe('markdown')
+    expect(turnChromeFor('telegram').noticeMarkup).toBeUndefined()
+    expect(turnChromeFor('feishu').noticeMarkup).toBeUndefined()
   })
 
   it('declares the on-demand status platforms EXPLICITLY', () => {

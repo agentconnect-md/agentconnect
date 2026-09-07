@@ -613,6 +613,9 @@ export interface Pending {
    * transcript once (webchat has no Slack post boundary where text is otherwise saved).
    */
   webchat?: WebchatTurnContext & { index: number; replyText: string; heldText: string; messageEmitted: boolean }
+  /** Agent questions this turn has already told the channel it could not render (#1794), so a
+   *  runtime re-raising the same unrenderable ask posts one notice rather than one per attempt. */
+  declinedElicitNotices?: Set<string>
 }
 
 /** Visible Slack thread messages that establish a new chronological boundary. Any live
