@@ -24,6 +24,7 @@ import {
   elicitRequiredProps,
   elicitTarget,
   elicitUrl,
+  buildUrlConsentCard,
   SLACK_ELICIT_SURFACE,
   WEBCHAT_ELICIT_SURFACE,
   multiSelectAccepts,
@@ -2145,6 +2146,48 @@ describe('elicitUrl', () => {
 
   it('takes http as well as https — the card calls the missing encryption out instead', () => {
     expect(elicitUrl(urlReq({ url: 'http://x.test/a' }))?.url).toBe('http://x.test/a')
+  })
+})
+
+describe('buildUrlConsentCard', () => {
+  const urlReq = (overrides: Record<string, unknown> = {}) =>
+    ({
+      mode: 'url',
+      sessionId: 's1',
+      message: 'Sign in',
+      elicitationId: 'el-1',
+      url: 'https://login.example.test/a?b=1',
+      ...overrides
+    }) as any
+  const text = (blocks: unknown[]) =>
+    blocks
+      .filter((b: any) => b.type === 'section')
+      .map((b: any) => b.text.text as string)
+      .join('\n')
+
+  it('refuses a non-URL ask, a scheme no tab may take, and a URL too long for a Slack value', () => {
+    expect(buildUrlConsentCard('r1', { mode: 'form', message: 'x' } as any)).toBeNull()
+    expect(buildUrlConsentCard('r1', urlReq({ url: 'javascript:alert(1)' }))).toBeNull()
+    // Slack caps a button `value` at 2000; a URL that cannot ride one has no observable consent.
+    expect(buildUrlConsentCard('r1', urlReq({ url: `https://x.test/${'a'.repeat(1990)}` }))).toBeNull()
+    // A backtick cannot sit inside the code span that keeps the URL unfollowable.
+    expect(buildUrlConsentCard('r1', urlReq({ url: 'https://x.test/a`b' }))).toBeNull()
+  })
+
+  it('escapes the mrkdwn metacharacters a URL carries, so the reader sees its real bytes', () => {
+    const blocks = buildUrlConsentCard('r1', urlReq({ url: 'https://x.test/a?b=1&c=<2>' }))!
+    expect(text(blocks)).toContain('`https://x.test/a?b=1&amp;c=&lt;2&gt;`')
+  })
+
+  it('names the REAL host, so a userinfo prefix cannot pass itself off as the destination', () => {
+    const blocks = buildUrlConsentCard('r1', urlReq({ url: 'https://login.example.test@evil.test/authorize' }))!
+    expect(text(blocks)).toContain('Host: `evil.test`')
+    expect(text(blocks)).toContain('`https://login.example.test@evil.test/authorize`')
+  })
+
+  it('flags a Unicode host the parser punycodes, which never appears in the shown bytes', () => {
+    const blocks = buildUrlConsentCard('r1', urlReq({ url: 'https://\u0440\u0430\u0443.example.test/a' }))!
+    expect(text(blocks)).toContain('not plain ASCII')
   })
 })
 

@@ -31,6 +31,8 @@ import {
   buildElicitationResolvedCard,
   buildPermissionCard,
   buildPermissionResolvedCard,
+  buildUrlConsentCard,
+  buildUrlConsentResolvedCard,
   clampTo,
   elicitFieldLabel,
   elicitForm,
@@ -213,6 +215,15 @@ function elicitCardDescriptors(t: ElicitTarget): ElicitCardDescriptors {
 /** How many consented URL elicitations wait for an `elicitation/complete` that may never come. */
 const CONSENTED_URL_ELICIT_CAP = 64
 
+/** How a settled Slack consent card labels each outcome. "Opened" is deliberately not "Done":
+ *  consent is all the tap proves, and only the agent's own `elicitation/complete` says more. */
+const URL_CONSENT_DECISION = {
+  accepted: ':white_check_mark: Opened',
+  dismissed: ':no_entry_sign: Dismissed',
+  cancelled: ':hourglass: Cancelled',
+  completed: ':white_check_mark: Completed'
+} as const
+
 /** `elicitation/complete` carries no session, so a consented card is keyed by its ACP id within
  *  the agent host that raised it — two agents may hold the same id concurrently. */
 function consentedUrlKey(owner: HostKey, elicitationId: string): string {
@@ -335,12 +346,9 @@ export class PermissionCoordinator {
   private pendingElicits = new Map<string, PendingElicit>()
   /** URL-mode cards already consented to, keyed by `<owner>\x00<elicitationId>` and awaiting
    *  an `elicitation/complete` that may never come — their ACP request resolved at consent, so
-   *  these hold only the webchat coordinates the "Completed" re-label is emitted on. Bounded:
+   *  these hold only the surface coordinates the "Completed" re-label is said on. Bounded:
    *  an agent that never completes its flows must not grow this without limit. */
-  private readonly consentedUrlElicits = new Map<
-    string,
-    { requestId: string; rec: Extract<PendingElicit, { surface: 'webchat' }> }
-  >()
+  private readonly consentedUrlElicits = new Map<string, { requestId: string; rec: PendingElicit }>()
 
   /** Sessions the CP currently believes are waiting, keyed by `pendingTurnKey` — emit only on a change. */
   private readonly awaitingApproval = new Map<string, { owner: HostKey; agentId: string; sessionId: string }>()
@@ -1393,10 +1401,12 @@ export class PermissionCoordinator {
         ? await this.awaitWebchatUrlElicitation(agentId, sessionId, params, p, p.webchat, url)
         : await this.awaitWebchatElicitation(agentId, sessionId, params, p, p.webchat)
     }
-    if (params.mode === 'url') return this.noticeUnrenderableElicit(p, params, isApproval)
     const conn = p.conn
     if (!turnChromeFor(p.plan.platform).chatInputCards || !(conn instanceof SlackConnection))
       return this.noticeUnrenderableElicit(p, params, isApproval)
+    // A second SURFACE for #1810's URL mode: the notice is only for an ask Slack still cannot render.
+    if (url) return await this.awaitSlackUrlElicitation(agentId, sessionId, params, p, conn, url)
+    if (params.mode === 'url') return this.noticeUnrenderableElicit(p, params, isApproval)
     const target = elicitTarget(params, SLACK_ELICIT_SURFACE)
     if (!target) return this.noticeUnrenderableElicit(p, params, isApproval)
     const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
@@ -1624,6 +1634,80 @@ export class PermissionCoordinator {
     return await result
   }
 
+  /** Slack's peer of {@link awaitWebchatUrlElicitation}: post the CONSENT card and park the
+   *  resolver until the reader taps Open link or Dismiss. Nothing here fetches the URL — the tap
+   *  hands it to the reader's browser, which is what keeps the page out of the model's context —
+   *  so the only thing this seam decides is whether they agreed to go there. A card this surface
+   *  cannot build falls back to the same decline notice every other unrenderable ask gets. */
+  private async awaitSlackUrlElicitation(
+    agentId: string,
+    sessionId: string,
+    params: CreateElicitationRequest,
+    p: Pending,
+    conn: SlackConnection,
+    url: { elicitationId: string; url: string }
+  ): Promise<CreateElicitationResponse | undefined> {
+    const requestId = `elicit-${++this.elicitSeq}`
+    const blocks = buildUrlConsentCard(requestId, params, this.host.httpSlackSessionTarget(p))
+    if (!blocks) return this.noticeUnrenderableElicit(p, params, false)
+    const fallback = (params as { message?: string }).message ?? 'The agent needs you to open a link'
+    let resolveResult!: (res: CreateElicitationResponse) => void
+    const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
+    this.pendingElicits.set(requestId, {
+      owner: p.hostKey,
+      agentId,
+      sessionId,
+      params,
+      // A URL card has no field; these are the record's unused shape, never read on this path.
+      propName: '',
+      kind: 'text',
+      url,
+      approval: false,
+      surface: 'slack',
+      conn,
+      channel: p.plan.channel,
+      resolve: resolveResult
+    })
+    this.syncApprovalActivity(p.hostKey, sessionId)
+    const ts = await this.host.postCardSerialized(p, (sc) =>
+      sc.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
+        ...(slackAgentIdentityOptions(p.plan) ?? {}),
+        chrome: true
+      })
+    )
+    const live = this.pendingElicits.get(requestId)
+    // Settled mid-post (an ended turn, say) — the card must stop offering a consent nobody awaits.
+    if (!live) {
+      if (ts) this.rewriteSlackCard(conn, p.plan.channel, ts, params, ':hourglass: Cancelled', 'Cancelled', true)
+      return await result
+    }
+    if (!ts) {
+      this.pendingElicits.delete(requestId)
+      this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
+      live.resolve({ action: 'cancel' })
+      return await result
+    }
+    if (live.surface === 'slack') live.ts = ts
+    return await result
+  }
+
+  /** Rewrite a settled Slack card in place, best effort — the ACP resolution never depends on it.
+   *  A consent card keeps its own shape so the settled message still records the URL. */
+  private rewriteSlackCard(
+    conn: SlackConnection,
+    channel: string,
+    ts: string,
+    params: CreateElicitationRequest,
+    decision: string,
+    fallback: string,
+    consent: boolean
+  ): void {
+    const blocks = consent
+      ? buildUrlConsentResolvedCard(params, decision)
+      : buildElicitationResolvedCard(params, decision)
+    void conn.updateBlocks(channel, ts, blocks, fallback, true).catch(() => {})
+  }
+
   /** Settle a URL-mode consent card. `accept` means only that the user agreed to OPEN the URL —
    *  not that whatever happens on that page finished — so the ACP request resolves right here
    *  and any later `elicitation/complete` is a re-label, not a second resolution. Dismiss is the
@@ -1633,30 +1717,42 @@ export class PermissionCoordinator {
     rec: PendingElicit & { url: NonNullable<PendingElicit['url']> },
     a: { value: ElicitAnswer; webchatConversationId?: string }
   ): Promise<void> {
-    // A consent card lives only on webchat, and only the conversation it was shown in answers it.
-    if (rec.surface !== 'webchat') return
-    if (a.webchatConversationId === undefined || rec.wc.conversationId !== a.webchatConversationId) return
+    // A card settles only from its own surface: its webchat conversation, or a Slack tap (no conversation).
+    if (rec.surface === 'webchat') {
+      if (a.webchatConversationId === undefined || rec.wc.conversationId !== a.webchatConversationId) return
+    } else if (a.webchatConversationId !== undefined) return
     // Consent echoes the card's own URL back: the only value this card offers, checked the way
     // every other card checks that an answer was one it actually rendered.
     const consented = a.value === rec.url.url
     if (!consented && a.value !== null) return
     this.pendingElicits.delete(requestId)
     this.syncApprovalActivity(rec.owner, rec.sessionId, { id: requestId, allowed: consented })
-    this.emitWebchatElicitResolved(
-      rec,
-      requestId,
-      consented ? 'accepted' : 'dismissed',
-      consented ? 'Opened' : undefined
-    )
+    this.settleUrlElicit(rec, requestId, consented ? 'accepted' : 'dismissed')
     if (consented) this.rememberConsentedUrlElicit(requestId, rec)
     rec.resolve({ action: consented ? 'accept' : 'decline' })
+  }
+
+  /** Say on the card's own surface how a consent card ended: webchat appends a stream event,
+   *  Slack rewrites the message. Best effort on both — the ACP resolution never depends on it. */
+  private settleUrlElicit(
+    rec: PendingElicit,
+    requestId: string,
+    outcome: 'accepted' | 'dismissed' | 'cancelled' | 'completed'
+  ): void {
+    if (rec.surface === 'webchat') {
+      this.emitWebchatElicitResolved(rec, requestId, outcome, outcome === 'accepted' ? 'Opened' : undefined)
+      return
+    }
+    if (!rec.ts) return
+    const decision = URL_CONSENT_DECISION[outcome]
+    this.rewriteSlackCard(rec.conn, rec.channel, rec.ts, rec.params, decision, decision, true)
   }
 
   /** Park a consented card's coordinates so a later `elicitation/complete` can find it. Oldest
    *  out at the cap — a flow that never completes must not pin this map open forever. */
   private rememberConsentedUrlElicit(
     requestId: string,
-    rec: Extract<PendingElicit, { surface: 'webchat' }> & { url: NonNullable<PendingElicit['url']> }
+    rec: PendingElicit & { url: NonNullable<PendingElicit['url']> }
   ): void {
     while (this.consentedUrlElicits.size >= CONSENTED_URL_ELICIT_CAP) {
       const oldest = this.consentedUrlElicits.keys().next().value
@@ -1676,7 +1772,7 @@ export class PermissionCoordinator {
     const hit = this.consentedUrlElicits.get(key)
     if (!hit) return
     this.consentedUrlElicits.delete(key)
-    this.emitWebchatElicitResolved(hit.rec, hit.requestId, 'completed')
+    this.settleUrlElicit(hit.rec, hit.requestId, 'completed')
   }
 
   /** Append the settled card to a webchat stream — the append-only equivalent of Slack
@@ -1840,17 +1936,11 @@ export class PermissionCoordinator {
       this.pendingElicits.delete(id)
       this.syncApprovalActivity(owner, sessionId, { id })
       if (rec.approval) await this.resolveStoredPermissionRequest(agentId, id, 'expired')
-      if (rec.surface === 'webchat') this.emitWebchatElicitResolved(rec, id, 'cancelled')
+      // A consent card settles through its own shape, so the cancelled message still shows the URL.
+      if (rec.url) this.settleUrlElicit(rec, id, 'cancelled')
+      else if (rec.surface === 'webchat') this.emitWebchatElicitResolved(rec, id, 'cancelled')
       else if (rec.ts)
-        void rec.conn
-          .updateBlocks(
-            rec.channel,
-            rec.ts,
-            buildElicitationResolvedCard(rec.params, ':hourglass: Cancelled'),
-            'Cancelled',
-            true
-          )
-          .catch(() => {})
+        this.rewriteSlackCard(rec.conn, rec.channel, rec.ts, rec.params, ':hourglass: Cancelled', 'Cancelled', false)
       rec.resolve({ action: 'cancel' })
     }
   }
