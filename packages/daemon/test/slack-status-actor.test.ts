@@ -24,7 +24,11 @@ type ActionArgs = {
     selected_option?: { value?: string }
     selected_options?: { value?: string }[]
   }
-  body?: { view?: { private_metadata?: string }; user?: { id?: string } }
+  body?: {
+    view?: { private_metadata?: string }
+    user?: { id?: string }
+    state?: { values?: Record<string, Record<string, { selected_options?: { value?: unknown }[] }>> }
+  }
 }
 type Handler = (args: ActionArgs) => Promise<void> | void
 
@@ -88,36 +92,51 @@ describe('slack status actions carry the acting user', () => {
     expect(seen).toEqual([{ requestId: 'req-1', optionId: 'allow_always', actor: { userId: 'U-BOB' } }])
   })
 
-  // A multi-select card is two interactions: the select re-sends the whole current selection on
-  // every change, its own action_id naming the request, and Confirm submits what was seen.
-  it('reports a multi-select card’s whole selection, then its Confirm', async () => {
-    const selected: unknown[] = []
+  // A multi-select card's Confirm reads its selection out of its OWN payload's message state
+  // (Slack has carried full state on `block_actions` since 2020-09-01), so what reaches the
+  // daemon is the state THIS reader tapped Confirm on — nothing is kept between interactions.
+  it('reports the selection a multi-select Confirm’s own payload carried', async () => {
     const confirmed: unknown[] = []
-    const actions = await connect({
-      onElicitSelect: (a: unknown) => selected.push(a),
-      onElicitConfirm: (a: unknown) => confirmed.push(a)
+    const actions = await connect({ onElicitConfirm: (a: unknown) => confirmed.push(a) })
+    const stateWith = (values: string[], block = 'blk-1') => ({
+      values: {
+        [block]: { [`${ELICIT_SELECT_ACTION}:elicit-9`]: { selected_options: values.map((value) => ({ value })) } }
+      }
     })
-    const select = [...actions.entries()].find(([id]) => id.includes(`${ELICIT_SELECT_ACTION}:`))![1]
+    const confirm = (state?: ReturnType<typeof stateWith>, user?: string) =>
+      actions.get(ELICIT_CONFIRM_ACTION)!({
+        ack,
+        action: { value: 'elicit-9' },
+        body: { ...(state !== undefined ? { state } : {}), ...(user ? { user: { id: user } } : {}) }
+      })
 
-    await select({
-      ack,
-      action: {
-        action_id: `${ELICIT_SELECT_ACTION}:elicit-9`,
-        selected_options: [{ value: 'lint' }, { value: 'test' }]
-      },
-      body: { user: { id: 'U-CAROL' } }
-    })
-    // Deselecting everything is a change too, and the action_id still names the card.
-    await select({ ack, action: { action_id: `${ELICIT_SELECT_ACTION}:elicit-9`, selected_options: [] }, body: {} })
-    // An option Slack sent without a value would make the list lie about what is selected.
-    await select({ ack, action: { action_id: `${ELICIT_SELECT_ACTION}:elicit-9`, selected_options: [{}] }, body: {} })
-    expect(selected).toEqual([
-      { requestId: 'elicit-9', values: ['lint', 'test'], actor: { userId: 'U-CAROL' } },
+    await confirm(stateWith(['lint', 'test']), 'U-DAN')
+    // Found by ACTION id, whichever block Slack grouped the select into.
+    await confirm(stateWith(['test'], 'another-block'), 'U-ERIN')
+    // An emptied select is a real answer; no state for it is not one, and reaches nothing.
+    await confirm(stateWith([]))
+    await confirm({ values: {} })
+    await confirm()
+    expect(confirmed).toEqual([
+      { requestId: 'elicit-9', values: ['lint', 'test'], actor: { userId: 'U-DAN' } },
+      { requestId: 'elicit-9', values: ['test'], actor: { userId: 'U-ERIN' } },
       { requestId: 'elicit-9', values: [], actor: undefined }
     ])
+  })
 
-    await actions.get(ELICIT_CONFIRM_ACTION)!({ ack, action: { value: 'elicit-9' }, body: { user: { id: 'U-DAN' } } })
-    expect(confirmed).toEqual([{ requestId: 'elicit-9', actor: { userId: 'U-DAN' } }])
+  // A selection change is acked and otherwise ignored: there is no state to record.
+  it('acks a selection change without reporting anything', async () => {
+    const seen: unknown[] = []
+    const actions = await connect({ onElicitConfirm: (a: unknown) => seen.push(a) })
+    const select = [...actions.entries()].find(([id]) => id.includes(`${ELICIT_SELECT_ACTION}:`))![1]
+    let acked = false
+    await select({
+      ack: async () => void (acked = true),
+      action: { action_id: `${ELICIT_SELECT_ACTION}:elicit-9`, selected_options: [{ value: 'lint' }] },
+      body: {}
+    })
+    expect(acked).toBe(true)
+    expect(seen).toEqual([])
   })
 
   it('leaves the actor absent when the payload names no user', async () => {

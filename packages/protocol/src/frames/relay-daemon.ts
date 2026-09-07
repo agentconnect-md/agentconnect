@@ -360,19 +360,18 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('cancel') }),
   z.object({ kind: z.literal('permission-choice'), requestId: z.string().min(1), optionId: z.string() }),
   z.object({ kind: z.literal('elicitation-choice'), requestId: z.string().min(1), value: z.string().nullable() }),
-  // A Slack multi-select card settles in TWO interactions: the `multi_static_select` re-sends the
-  // whole current selection on every change, and Confirm submits it — a select never submits on
-  // its own. The selection is its own verb rather than a widened `elicitation-choice` because only
-  // the daemon may hold it: the relay persists no message content, and a Confirm button's `value`
-  // is fixed when the card is rendered. Skew fails closed forward — a daemon predating these two
-  // rejects the whole action, so the card stays live — and backward a relay predating them simply
-  // never sends one, so Confirm submits whatever selection the card was posted showing.
+  // A Slack multi-select card's Confirm: a `multi_static_select` never submits on its own, so the
+  // reader taps a button, and `values` is the selection read out of THAT tap's own message state
+  // (`selectedOptionsFromState`). Carrying the snapshot is what makes the verb self-contained —
+  // no selection is tracked between interactions, so one reader's pick can never be submitted as
+  // another's answer, and the ordering of two interactions cannot change what is confirmed. The
+  // relay forwards no selection CHANGE at all: it acks Slack and keeps nothing. A daemon
+  // predating the verb rejects the whole action, so the card stays live.
   z.object({
-    kind: z.literal('elicitation-select'),
+    kind: z.literal('elicitation-confirm'),
     requestId: z.string().min(1),
     values: z.array(z.string()).max(100)
-  }),
-  z.object({ kind: z.literal('elicitation-confirm'), requestId: z.string().min(1) })
+  })
 ])
 export type RdSlackAction = z.infer<typeof RdSlackAction>
 

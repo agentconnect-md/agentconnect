@@ -36,7 +36,9 @@ import {
   decodePermValue,
   decodeSlackStatusOverflowValue,
   decodeSharedSlackStatusTarget,
+  selectedOptionsFromState,
   type RdSlackAction,
+  type SlackBlockActionsState,
   type SharedSlackStatusTarget,
   type WireNormalizedMessage
 } from '@agentconnect.md/protocol'
@@ -70,8 +72,10 @@ export interface SlackInteractiveBody {
     block_id?: string
     value?: string
     selected_option?: { value?: string }
-    selected_options?: { value?: string }[]
   }[]
+  /** A `block_actions` payload's full message state (Slack, 2020-09-01) — how a Confirm tap
+   *  carries the selection its own card was showing. */
+  state?: SlackBlockActionsState
   view?: {
     callback_id?: string
     private_metadata?: string
@@ -221,28 +225,22 @@ function decodeHttpSlackSessionAction(body: SlackInteractiveBody): HttpSlackSess
         }
       : null
   }
-  // A multi-select card is two interactions: the select re-sends the WHOLE current selection on
-  // every change (its `action_id` names the request, so deselecting everything reports too), and
-  // Confirm submits it. The relay holds neither — it forwards both verbs and the daemon decides.
-  if (target && action.action_id.startsWith(`${ELICIT_SELECT_ACTION}:`)) {
-    const requestId = action.action_id.slice(ELICIT_SELECT_ACTION.length + 1)
-    const selected = action.selected_options ?? []
-    if (!requestId || selected.some((o) => typeof o.value !== 'string')) return null
-    return {
-      target,
-      interactionId: JSON.stringify([action.action_id, receipt]),
-      kind: 'elicitation-select',
-      requestId,
-      values: selected.map((o) => o.value as string)
-    }
-  }
+  // A multi-select card's Confirm. A selection CHANGE is not forwarded at all — the relay acks
+  // Slack and keeps nothing — because the selection rides this tap's own message state, which
+  // Slack has carried on `block_actions` since 2020-09-01. Reading it here is what makes the
+  // forwarded answer the state THIS reader confirmed, rather than whatever was recorded last.
   if (target && action.action_id === ELICIT_CONFIRM_ACTION && action.value) {
-    return {
-      target,
-      interactionId: JSON.stringify([action.action_id, receipt]),
-      kind: 'elicitation-confirm',
-      requestId: action.value
-    }
+    const values = selectedOptionsFromState(body.state, `${ELICIT_SELECT_ACTION}:${action.value}`)
+    // No state for the select ⇒ nothing this tap can be said to confirm, so nothing is forwarded.
+    return values
+      ? {
+          target,
+          interactionId: JSON.stringify([action.action_id, receipt]),
+          kind: 'elicitation-confirm',
+          requestId: action.value,
+          values
+        }
+      : null
   }
   if (target && action.action_id === ELICIT_DISMISS_ACTION && action.value) {
     return {

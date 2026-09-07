@@ -246,13 +246,6 @@ type PendingElicit = PendingElicitSurface & {
    *  Present ⇒ `propName`/`kind`/`form` mean nothing — the card has no field, and its only
    *  answers are consent (this same URL back) or Dismiss. */
   url?: { elicitationId: string; url: string }
-  /** A MULTI-SELECT Slack card's in-progress selection — the last whole selection Slack sent for
-   *  it. It lives here, on the card's own record, because nothing else can hold it: the relay
-   *  persists no message content, and Confirm's `value` is fixed when the card is rendered. Freed
-   *  with the card, since every settle path drops the record. Seeded from the schema's `default`,
-   *  so an untouched Confirm submits exactly what the card was posted showing. Relayed, never
-   *  trusted: `multiSelectAccepts` re-derives it against the card at Confirm. */
-  selected?: string[]
   approval: boolean
   resolve: (res: CreateElicitationResponse) => void
 }
@@ -1430,9 +1423,6 @@ export class PermissionCoordinator {
       params,
       propName: target.propName,
       kind: target.kind,
-      ...(target.kind === 'multi-enum'
-        ? { selected: Array.isArray(target.defaultValue) ? target.defaultValue : [] }
-        : {}),
       approval: isApproval,
       surface: 'slack',
       conn,
@@ -1938,26 +1928,19 @@ export class PermissionCoordinator {
     rec.resolve(res)
   }
 
-  /** A change on a multi-select card's `multi_static_select` (SlackDeps.onElicitSelect): remember
-   *  the WHOLE selection Slack re-sent, so Confirm has something to submit. Not an answer and not
-   *  a resolution — the card stays live, nothing is validated here, and Confirm's own
-   *  re-derivation is what makes a selection an answer. No-op for any other card. */
-  noteElicitSelection(a: { requestId: string; values: string[]; actor?: InteractionActor }): void {
-    const rec = this.pendingElicits.get(a.requestId)
-    if (!rec || rec.surface !== 'slack' || rec.kind !== 'multi-enum' || rec.url) return
-    rec.selected = a.values
-  }
-
-  /** A tapped Confirm on a multi-select card (SlackDeps.onElicitConfirm): submit the selection
-   *  last seen for this request through the same answer path a button click takes, so the accepted
-   *  content, the re-derivation and the settled card are one implementation. A selection outside
-   *  `minItems`/`maxItems` is refused there and the card stays live. */
-  async confirmElicitSelection(a: { requestId: string; actor?: InteractionActor }): Promise<void> {
+  /** A tapped Confirm on a multi-select card (SlackDeps.onElicitConfirm). `values` is the
+   *  selection carried by that tap's own Slack payload, so it is the state THIS reader confirmed:
+   *  no selection is held between interactions, which is what keeps one reader's pick from being
+   *  submitted as another's answer and makes the order two interactions arrive in irrelevant. It
+   *  is a relayed value like any other, so it goes through the same answer path a button tap
+   *  takes — `multiSelectAccepts` re-derives it against the card, and a selection outside
+   *  `minItems`/`maxItems` is refused there with the card left live. */
+  async confirmElicitSelection(a: { requestId: string; values: string[]; actor?: InteractionActor }): Promise<void> {
     const rec = this.pendingElicits.get(a.requestId)
     if (!rec || rec.surface !== 'slack' || rec.kind !== 'multi-enum' || rec.url) return
     await this.handleElicitChoice({
       requestId: a.requestId,
-      value: rec.selected ?? [],
+      value: a.values,
       ...(a.actor ? { actor: a.actor } : {})
     })
   }

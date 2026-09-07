@@ -17,7 +17,9 @@ export {
   ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   decodePermValue,
-  encodePermValue
+  encodePermValue,
+  selectedOptionsFromState,
+  type SlackBlockActionsState
 } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { flattenUnsafeLinks } from '../messages/agent-links.js'

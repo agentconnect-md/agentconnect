@@ -1989,8 +1989,8 @@ describe('Slack interactive status bar', () => {
       content: { language: 'TypeScript' }
     })
 
-    // A multi-select card's two relayed verbs: the select records the whole selection Slack
-    // re-sent, and Confirm submits it through the same re-derivation a button click takes.
+    // A multi-select card's one relayed verb: Confirm, carrying the selection the tapping
+    // reader's own payload held, submitted through the re-derivation a button click takes.
     const multiResolved = vi.fn()
     ;(daemon as any).permissions.pendingElicits.set('elicit-2', {
       agentId: 'bot-a',
@@ -2005,7 +2005,6 @@ describe('Slack interactive status bar', () => {
       },
       propName: 'checks',
       kind: 'multi-enum',
-      selected: [],
       approval: false,
       surface: 'slack',
       conn: { updateBlocks, workspaceId: () => 'T1' },
@@ -2016,16 +2015,9 @@ describe('Slack interactive status bar', () => {
     expect(
       await (daemon as any).handleRelayMsg(
         action({
-          msgId: 'action-elicit-select',
-          payload: { kind: 'elicitation-select', requestId: 'elicit-2', values: ['lint', 'test'] }
+          msgId: 'action-elicit-confirm',
+          payload: { kind: 'elicitation-confirm', requestId: 'elicit-2', values: ['lint', 'test'] }
         }),
-        () => {}
-      )
-    ).toEqual({ msgId: 'action-elicit-select', accepted: true })
-    expect(multiResolved).not.toHaveBeenCalled() // a change is not an answer
-    expect(
-      await (daemon as any).handleRelayMsg(
-        action({ msgId: 'action-elicit-confirm', payload: { kind: 'elicitation-confirm', requestId: 'elicit-2' } }),
         () => {}
       )
     ).toEqual({ msgId: 'action-elicit-confirm', accepted: true })

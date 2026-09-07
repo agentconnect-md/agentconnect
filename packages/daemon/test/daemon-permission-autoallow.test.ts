@@ -739,9 +739,8 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation({ minItems: 1 }))
     await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
     const [requestId] = (daemon as any).permissions.pendingElicits.keys()
-    // A browser card holds its own selection, so the Slack select/confirm verbs are not its wire.
-    ;(daemon as any).permissions.noteElicitSelection({ requestId, values: ['lint'] })
-    await (daemon as any).permissions.confirmElicitSelection({ requestId })
+    // A browser card carries its own answer, so Slack's Confirm verb is not its wire.
+    await (daemon as any).permissions.confirmElicitSelection({ requestId, values: ['lint'] })
     expect((daemon as any).permissions.pendingElicits.size).toBe(1)
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
@@ -817,9 +816,9 @@ describe('a Slack card offers every option or none', () => {
 
 // ── multi-select on Slack (issue #1794, Slack column) ───────────────────────
 // A `multi_static_select` expresses "pick several" but never submits on its own: Slack delivers
-// an interaction per selection change, each carrying the WHOLE current selection, and the card
-// needs its own Confirm. The in-progress selection lives on the card's pending record, since the
-// relay persists no message content and Confirm's `value` is fixed when the card is rendered.
+// an interaction per selection change, and the card needs its own Confirm. NOTHING is tracked
+// between the two — a Confirm carries the selection out of its own payload's message state — so
+// two readers of one card, and two interactions in any order, cannot answer for each other.
 
 describe('a Slack multi-select card confirms the selection it was sent', () => {
   const selectOf = (posted: any[][]) => posted[0]!.at(-1)!.elements[0]
@@ -831,6 +830,8 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     await vi.waitFor(() => expect(daemon.permissions.pendingElicits.get(requestId).ts).toBe('ts-1'))
     return requestId
   }
+  const confirm = (daemon: any, requestId: string, values: string[], actor?: { userId: string }) =>
+    daemon.permissions.confirmElicitSelection({ requestId, values, ...(actor ? { actor } : {}) })
 
   it('cards a select plus Confirm, and accepts the confirmed list', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
@@ -845,15 +846,34 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     expect(elements.map((e) => e.type)).toEqual(['multi_static_select', 'button', 'button'])
     expect(elements.slice(1).map((e) => e.text.text)).toEqual(['Confirm', 'Dismiss'])
     expect(selectOf(posted).action_id).toBe(`${ELICIT_SELECT_ACTION}:${requestId}`)
+    expect(updated).toHaveLength(0) // nothing has answered it yet
 
-    // Slack re-sends the whole selection on each change; the daemon holds the last one it saw.
-    ;(daemon as any).permissions.noteElicitSelection({ requestId, values: ['lint'] })
-    ;(daemon as any).permissions.noteElicitSelection({ requestId, values: ['lint', 'build'] })
-    expect(updated).toHaveLength(0) // a change is not an answer: the card is still live
-    await (daemon as any).permissions.confirmElicitSelection({ requestId })
+    await confirm(daemon, requestId, ['lint', 'build'])
     await expect(answered).resolves.toEqual({ action: 'accept', content: { checks: ['lint', 'build'] } })
     // The settled card names the chosen option LABELS, as #1801 settled a browser card.
     expect(updated[0]![0].text.text).toContain(':white_check_mark: lint, build')
+  })
+
+  // The bug this shape exists to prevent: a per-card record of "the last selection seen" is
+  // shared by every reader and ordered by processing, so A's Confirm could submit B's picks —
+  // an `accept` asserting one reader answered what another chose, and every value in it is a
+  // valid option, so no whitelist can catch it. A Confirm carrying its own snapshot cannot.
+  it('answers each reader with the selection THEIR Confirm carried', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    slackPending(daemon)
+    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation({ minItems: 1 }))
+    const requestId = await liveCard(daemon)
+
+    // A selects lint, B selects test — neither reaches the daemon; only a Confirm does. A then
+    // confirms the card A was looking at, and that is what the runtime is told.
+    await confirm(daemon, requestId, ['lint'], { userId: 'U-A' })
+    await expect(answered).resolves.toEqual({ action: 'accept', content: { checks: ['lint'] } })
+
+    // And the same card confirmed by B alone answers with B's own selection, not A's.
+    const second = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation({ minItems: 1 }))
+    const secondId = await liveCard(daemon)
+    await confirm(daemon, secondId, ['test'], { userId: 'U-B' })
+    await expect(second).resolves.toEqual({ action: 'accept', content: { checks: ['test'] } })
   })
 
   it('refuses a selection outside minItems/maxItems and leaves the card live', async () => {
@@ -865,23 +885,22 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
       multiElicitation({ minItems: 2, maxItems: 2 })
     )
     const requestId = await liveCard(daemon)
-    const confirm = async (values: string[]) => {
-      ;(daemon as any).permissions.noteElicitSelection({ requestId, values })
-      await (daemon as any).permissions.confirmElicitSelection({ requestId })
-    }
-    await (daemon as any).permissions.confirmElicitSelection({ requestId }) // untouched: nothing selected
-    await confirm(['lint']) // below minItems
-    await confirm(['lint', 'test', 'build']) // above maxItems — Slack's own cap is not the gate
-    await confirm(['lint', 'lint']) // a repeat is not two picks
-    await confirm(['lint', 'rm -rf /']) // a relayed value the card never offered
+    await confirm(daemon, requestId, []) // an emptied select is an answer, and not a legal one here
+    await confirm(daemon, requestId, ['lint']) // below minItems
+    await confirm(daemon, requestId, ['lint', 'test', 'build']) // above maxItems — Slack's own cap is not the gate
+    await confirm(daemon, requestId, ['lint', 'lint']) // a repeat is not two picks
+    await confirm(daemon, requestId, ['lint', 'rm -rf /']) // a relayed value the card never offered
     expect((daemon as any).permissions.pendingElicits.size).toBe(1)
     expect(updated).toHaveLength(0)
 
-    await confirm(['lint', 'test'])
+    await confirm(daemon, requestId, ['lint', 'test'])
     await expect(answered).resolves.toEqual({ action: 'accept', content: { checks: ['lint', 'test'] } })
   })
 
-  it('confirms the schema default when the reader never touched the select', async () => {
+  // The card still SHOWS the schema default (`initial_options`), which is what Slack then reports
+  // as that select's state for a reader who never touched it — so the seeding lives on the card
+  // alone, and the daemon holds no copy of it to go stale.
+  it('shows the schema default as the select’s own initial state', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const { posted } = slackPending(daemon)
     const answered = (daemon as any).permissions.onAcpElicit(
@@ -891,7 +910,7 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     )
     const requestId = await liveCard(daemon)
     expect(selectOf(posted).initial_options.map((o: any) => o.value)).toEqual(['test'])
-    await (daemon as any).permissions.confirmElicitSelection({ requestId })
+    await confirm(daemon, requestId, ['test'])
     await expect(answered).resolves.toEqual({ action: 'accept', content: { checks: ['test'] } })
   })
 
@@ -900,7 +919,6 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     const { updated } = slackPending(daemon)
     const dismissed = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation({ minItems: 1 }))
     const first = await liveCard(daemon)
-    ;(daemon as any).permissions.noteElicitSelection({ requestId: first, values: ['lint'] })
     await (daemon as any).permissions.handleElicitChoice({ requestId: first, value: null })
     await expect(dismissed).resolves.toEqual({ action: 'decline' })
     expect(updated[0]![0].text.text).toContain(':no_entry_sign: Dismissed')
@@ -909,7 +927,6 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     await liveCard(daemon)
     await (daemon as any).permissions.releaseElicits('agent-1', 's1')
     await expect(cancelled).resolves.toEqual({ action: 'cancel' })
-    // The selection is freed with the card: the record it lived on is gone.
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
   })
 
@@ -924,13 +941,12 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     expect(elicitTarget(over, WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(101)
   })
 
-  it('ignores a selection aimed at a card that is not a multi-select', async () => {
+  it('ignores a Confirm aimed at a card that is not a multi-select', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const { updated } = slackPending(daemon)
     const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(['a', 'b']))
     const requestId = await liveCard(daemon)
-    ;(daemon as any).permissions.noteElicitSelection({ requestId, values: ['a'] })
-    await (daemon as any).permissions.confirmElicitSelection({ requestId })
+    await confirm(daemon, requestId, ['a'])
     expect((daemon as any).permissions.pendingElicits.size).toBe(1)
     expect(updated).toHaveLength(0)
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'a' })
