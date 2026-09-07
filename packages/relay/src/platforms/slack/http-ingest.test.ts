@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { createHmac } from 'node:crypto'
 import {
   ELICIT_ACTION_PREFIX,
+  ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
@@ -21,6 +23,7 @@ import {
   type SlackHttpIngestDeps,
   type SlackInteractiveBody
 } from './http-ingest.js'
+import { httpSlackActionMsgId } from './ingress-plugin.js'
 import { verifySlackSignature } from '../../hooks/signature.js'
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111'
@@ -201,6 +204,71 @@ describe('parseHttpSlackSessionAction', () => {
         })
       )
     ).toBeNull()
+  })
+
+  // A multi-select card settles in two interactions: the select re-sends the WHOLE current
+  // selection on every change, and Confirm submits it. The relay forwards both and holds neither.
+  it('routes a multi-select card’s selection changes and its Confirm', () => {
+    const parseSelect = (action_id: string, selected_options?: { value?: string }[]) =>
+      parseHttpSlackSessionAction(
+        body(action_id, {
+          actions: [{ action_id, action_ts: '1720000000.000600', block_id: ENCODED_TARGET, selected_options }],
+          view: undefined
+        })
+      )
+
+    expect(parseSelect(`${ELICIT_SELECT_ACTION}:elicit-3`, [{ value: 'lint' }, { value: 'test' }])).toMatchObject({
+      target: TARGET,
+      kind: 'elicitation-select',
+      requestId: 'elicit-3',
+      values: ['lint', 'test']
+    })
+    // Deselecting everything is a change too, which is why the request rides the action_id.
+    expect(parseSelect(`${ELICIT_SELECT_ACTION}:elicit-3`, [])).toMatchObject({
+      kind: 'elicitation-select',
+      requestId: 'elicit-3',
+      values: []
+    })
+    expect(parseSelect(`${ELICIT_SELECT_ACTION}:elicit-3`, [{}])).toBeNull()
+    expect(parseSelect(`${ELICIT_SELECT_ACTION}:`)).toBeNull()
+    expect(
+      parseHttpSlackSessionAction(
+        body(ELICIT_CONFIRM_ACTION, {
+          actions: [
+            {
+              action_id: ELICIT_CONFIRM_ACTION,
+              action_ts: '1720000000.000700',
+              block_id: ENCODED_TARGET,
+              value: 'elicit-3'
+            }
+          ],
+          view: undefined
+        })
+      )
+    ).toMatchObject({ target: TARGET, kind: 'elicitation-confirm', requestId: 'elicit-3' })
+  })
+
+  // Two changes on one card are two interactions: a redelivery of either must dedup against
+  // itself, never against the other, or the second selection would be dropped as a duplicate.
+  it('gives each selection change and its Confirm distinct msgIds', () => {
+    const select = (values: string[]) => ({
+      target: TARGET,
+      interactionId: JSON.stringify([`${ELICIT_SELECT_ACTION}:elicit-3`, '1']),
+      kind: 'elicitation-select' as const,
+      requestId: 'elicit-3',
+      values
+    })
+    const one = httpSlackActionMsgId('B1', select(['lint']))
+    expect(httpSlackActionMsgId('B1', select(['lint']))).toBe(one)
+    expect(httpSlackActionMsgId('B1', select(['lint', 'test']))).not.toBe(one)
+    expect(
+      httpSlackActionMsgId('B1', {
+        target: TARGET,
+        interactionId: JSON.stringify([ELICIT_CONFIRM_ACTION, '1']),
+        kind: 'elicitation-confirm',
+        requestId: 'elicit-3'
+      })
+    ).not.toBe(one)
   })
 
   it('parses an inline Cancel target from action.value', () => {

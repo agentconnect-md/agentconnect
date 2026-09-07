@@ -17,7 +17,9 @@ import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/c
 import {
   STATUS_ACTION,
   ELICIT_ACTION_PREFIX,
+  ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   PERMISSION_UPDATE_ACTION,
   buildPermissionUpdateCard,
@@ -439,6 +441,12 @@ export interface SlackDeps {
    *  (render.buildElicitationCard). `value` is the chosen option's wire value, or null
    *  for the Dismiss button (decline). `actor` gates DM-card clicks (slack-approval-dm.md §6.4). */
   onElicitChoice?: (a: { requestId: string; value: string | null; actor?: InteractionActor }) => void
+  /** Fired on every change of a multi-select elicitation card's `multi_static_select`, with the
+   *  WHOLE current selection Slack re-sends each time — not a delta, and not yet an answer. */
+  onElicitSelect?: (a: { requestId: string; values: string[]; actor?: InteractionActor }) => void
+  /** Fired when a user taps that card's Confirm button: submit the selection last seen for this
+   *  request. The button carries no selection, since only the daemon holds one. */
+  onElicitConfirm?: (a: { requestId: string; actor?: InteractionActor }) => void
   newTraceId: () => string
   log?: Logger
   /** When true, hand Bolt LogLevel.DEBUG so socket-mode internals are visible. */
@@ -1199,6 +1207,24 @@ export class SlackConnection implements PlatformConnection {
     this.app.action(ELICIT_DISMISS_ACTION, async ({ ack, action, body }) => {
       await ack()
       if (action.value) this.deps.onElicitChoice?.({ requestId: action.value, value: null, actor: actorOf(body) })
+    })
+    // Multi-select card (buildElicitationCard, `multi-enum`): the select delivers an interaction
+    // per change whose `selected_options` is the whole current selection, and its `action_id`
+    // names the request, so deselecting everything reports too; Confirm submits what was seen.
+    this.app.action(new RegExp(`^${ELICIT_SELECT_ACTION}:`), async ({ ack, action, body }) => {
+      await ack()
+      const requestId = action.action_id?.slice(ELICIT_SELECT_ACTION.length + 1)
+      const selected = (action as { selected_options?: { value?: string }[] }).selected_options ?? []
+      if (!requestId || selected.some((o) => typeof o.value !== 'string')) return
+      this.deps.onElicitSelect?.({
+        requestId,
+        values: selected.map((o) => o.value as string),
+        actor: actorOf(body)
+      })
+    })
+    this.app.action(ELICIT_CONFIRM_ACTION, async ({ ack, action, body }) => {
+      await ack()
+      if (action.value) this.deps.onElicitConfirm?.({ requestId: action.value, actor: actorOf(body) })
     })
     log?.debug('slack: app.start → opening Socket Mode WebSocket (wss://…slack.com)…')
     await this.app.start()

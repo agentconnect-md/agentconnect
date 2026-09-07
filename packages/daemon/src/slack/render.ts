@@ -1,8 +1,10 @@
 import type { CreateElicitationRequest, RequestPermissionRequest, SessionUpdate } from '@agentclientprotocol/sdk'
 import {
   ELICIT_ACTION_PREFIX,
+  ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
   ELICIT_FORM_FIELD_CAP,
+  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SLACK_STATUS_ACTION,
   encodePermValue,
@@ -10,7 +12,9 @@ import {
 } from '@agentconnect.md/protocol'
 export {
   ELICIT_ACTION_PREFIX,
+  ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   decodePermValue,
   encodePermValue
@@ -612,20 +616,42 @@ export type ElicitKind = 'enum' | 'boolean' | 'multi-enum' | 'text' | 'number'
  *  cannot see, which is exactly how an over-long option list used to be quietly cut to fit. */
 export interface ElicitSurface {
   kinds: ReadonlySet<ElicitKind>
-  /** The most options one field may offer here. `undefined` is no limit — webchat renders them all. */
-  maxOptions?: number
+  /** Per-kind option limits, because one surface's controls do not all hold the same list: on
+   *  Slack a row of buttons and a select menu differ in BOTH how many options they take and how
+   *  long an option's wire value may be. A kind absent from the map is unlimited on both counts —
+   *  webchat renders them all. Widening one kind's limit never widens another's. */
+  optionLimits?: Partial<Record<ElicitKind, { maxOptions?: number; maxOptionValue?: number }>>
 }
 
 /** Slack allows 25 elements in one `actions` block and wraps them across lines, so the card can
  *  offer every option of a list this long and still keep its Dismiss button. A longer list is
  *  declined: no card is built from a slice of it, which is what made a pick a misreported answer. */
-const SLACK_ELICIT_MAX_OPTIONS = 24
+const SLACK_ELICIT_MAX_BUTTONS = 24
 
-/** Slack's card is a row of buttons: it can express "pick one", not "pick several, then
- *  confirm", and it has no field to type into, so those forms are declined there instead. */
+/** Slack's own cap on a select menu's `options`, and on one option's `value` — the second is why
+ *  #1813 refused a `static_select` for single-select, where a button's 2000 fits any enum value.
+ *  A multi-select has no button to fall back to, so an option value this long declines instead. */
+const SLACK_SELECT_MAX_OPTIONS = 100
+const SLACK_SELECT_VALUE_CAP = 75
+
+/** Slack renders single-select and boolean as a row of buttons, and multi-select as a
+ *  `multi_static_select` plus a Confirm button — the select cannot submit on its own. It still has
+ *  no field to type into, so `text`/`number` forms are declined there. The two controls carry
+ *  different lists, which is why the limits are per kind rather than one number for the surface. */
 export const SLACK_ELICIT_SURFACE: ElicitSurface = {
+  kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum']),
+  optionLimits: {
+    enum: { maxOptions: SLACK_ELICIT_MAX_BUTTONS },
+    'multi-enum': { maxOptions: SLACK_SELECT_MAX_OPTIONS, maxOptionValue: SLACK_SELECT_VALUE_CAP }
+  }
+}
+
+/** The approval DM's card is a button row whose taps settle through the editor path, which holds
+ *  no per-card selection — so a multi-select could be shown there but never confirmed, and it is
+ *  withheld rather than posted dead. Otherwise exactly the in-channel Slack surface. */
+export const SLACK_DM_ELICIT_SURFACE: ElicitSurface = {
   kinds: new Set<ElicitKind>(['enum', 'boolean']),
-  maxOptions: SLACK_ELICIT_MAX_OPTIONS
+  optionLimits: { enum: { maxOptions: SLACK_ELICIT_MAX_BUTTONS } }
 }
 
 /** Webchat's card has toggles, a confirm control and a typed input, so it takes every kind,
@@ -905,9 +931,13 @@ function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurfa
   }
   if (p.mode !== 'form') return []
   const renderable = surface.kinds
-  // More options than the surface can show is not a renderable field: a card built from part of
-  // the list would report the reader's pick as their answer to the whole question.
-  const fits = (options: readonly unknown[]) => surface.maxOptions === undefined || options.length <= surface.maxOptions
+  // A list this surface's control for that kind cannot hold whole is not a renderable field: a
+  // card built from part of it would report the reader's pick as their answer to the question.
+  const fits = (kind: ElicitKind, options: readonly { value: string }[]) => {
+    const limits = surface.optionLimits?.[kind]
+    if (limits?.maxOptions !== undefined && options.length > limits.maxOptions) return false
+    return limits?.maxOptionValue === undefined || options.every((o) => o.value.length <= limits.maxOptionValue!)
+  }
   const found: ElicitTarget[] = []
   for (const [name, prop] of Object.entries(p.requestedSchema?.properties ?? {})) {
     const owner = customAnswerOwner(prop)
@@ -936,7 +966,8 @@ function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurfa
         : Array.isArray(en)
           ? en.map((v) => ({ value: String(v), label: clampTo(String(v), 75) }))
           : []
-      if (options.length && fits(options) && renderable.has('enum')) keep({ propName: name, kind: 'enum', options })
+      if (options.length && fits('enum', options) && renderable.has('enum'))
+        keep({ propName: name, kind: 'enum', options })
       // Free text is the string with nothing to choose from — an enumerated one is a pick,
       // and typing into it would let an unoffered value through.
       if (!options.length && renderable.has('text')) keep(textTarget(name, prop))
@@ -949,7 +980,7 @@ function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurfa
       const max = itemBound(prop.maxItems)
       // Bounds that admit only the empty selection, or none at all, are not a question.
       const askable = max === undefined || (max > 0 && max >= (min ?? 0))
-      if (options.length && fits(options) && askable)
+      if (options.length && fits('multi-enum', options) && askable)
         keep({
           propName: name,
           kind: 'multi-enum',
@@ -1136,22 +1167,85 @@ const SLACK_SECTION_TEXT_CAP = 3000
  *  trailing `…` is the only mark a cut ever gets, so a shorter cap is a quieter one. */
 const ELICIT_MESSAGE_CAP = SLACK_SECTION_TEXT_CAP - 200
 
+/** What a multi-select card says its bounds are, so a refused Confirm is not the reader's first
+ *  news of them. Slack enforces the maximum itself (`max_selected_items`); the minimum is the
+ *  one a reader can break, and the daemon re-validates both either way. Empty when unbounded. */
+function selectionHint(target: ElicitTarget): string {
+  const { minItems: min, maxItems: max } = target
+  if (min !== undefined && max !== undefined) return min === max ? `Select exactly ${min}.` : `Select ${min} to ${max}.`
+  if (min !== undefined) return `Select at least ${min}.`
+  return max !== undefined ? `Select up to ${max}.` : ''
+}
+
+/** The multi-select half of {@link buildElicitationCard}: a `multi_static_select` carrying every
+ *  option, a Confirm button and Dismiss, in ONE actions block so all three share the block_id the
+ *  relay routes on. The select re-delivers the whole selection on each change and never submits,
+ *  so Confirm carries only the request id and the daemon confirms the selection it last saw. The
+ *  request id rides the select's own `action_id`, not its option values: DESELECTING EVERYTHING is
+ *  a change too, and a card named only by its options could not report one. Slack caps an option
+ *  value at 75 chars — a card that would overflow it is not built at all rather than posted with
+ *  an option Slack would reject. Pure. */
+function buildMultiSelectElements(requestId: string, target: ElicitTarget): unknown[] | null {
+  const options = target.options.map((o) => ({
+    text: { type: 'plain_text', text: o.label, emoji: true },
+    value: o.value
+  }))
+  if (options.some((o) => o.value.length > SLACK_SELECT_VALUE_CAP)) return null
+  const seeded = Array.isArray(target.defaultValue) ? new Set(target.defaultValue) : null
+  const initial = seeded ? target.options.map((o, i) => (seeded.has(o.value) ? options[i] : null)).filter(Boolean) : []
+  return [
+    {
+      type: 'multi_static_select',
+      action_id: `${ELICIT_SELECT_ACTION}:${requestId}`,
+      placeholder: { type: 'plain_text', text: 'Select options', emoji: true },
+      options,
+      ...(initial.length ? { initial_options: initial } : {}),
+      ...(target.maxItems !== undefined ? { max_selected_items: target.maxItems } : {})
+    },
+    {
+      type: 'button',
+      action_id: ELICIT_CONFIRM_ACTION as string,
+      text: { type: 'plain_text', text: 'Confirm', emoji: true },
+      style: 'primary',
+      value: requestId
+    },
+    {
+      type: 'button',
+      action_id: ELICIT_DISMISS_ACTION as string,
+      text: { type: 'plain_text', text: 'Dismiss', emoji: true },
+      value: requestId
+    }
+  ]
+}
+
 /**
- * Build the interactive elicitation card: the agent's `message`, an optional field title, and an
- * actions row carrying EVERY {@link elicitTarget} option as a button, plus a Dismiss button. The
- * choice rides each button `value` (`<requestId>|<optionValue>`). Returns null when the form
- * can't be rendered inline (caller declines) — a multi-select, which {@link SLACK_ELICIT_SURFACE}
- * withholds from this surface, or a list longer than that surface declares it can show, which the
- * reduction has already refused. Nothing here trims a list to fit. Pure.
+ * Build the interactive elicitation card: the agent's `message` and one actions row — EVERY
+ * {@link elicitTarget} option as a button for a single-select or boolean, or a
+ * `multi_static_select` plus Confirm for a multi-select — always with a Dismiss button. The choice
+ * rides each option's `value` (`<requestId>|<optionValue>`). Returns null when the form can't be
+ * rendered on `surface` (caller declines): a kind or an option list it does not claim, which the
+ * reduction has already refused, or a multi-select whose encoded option values Slack's select
+ * would reject. Nothing here trims a list to fit. Pure.
  */
 export function buildElicitationCard(
   requestId: string,
   params: CreateElicitationRequest,
-  sessionTarget?: string
+  sessionTarget?: string,
+  surface: ElicitSurface = SLACK_ELICIT_SURFACE
 ): unknown[] | null {
-  const target = elicitTarget(params, SLACK_ELICIT_SURFACE)
+  const target = elicitTarget(params, surface)
   if (!target) return null
   const message = elicitCardMessage(params)
+  if (target.kind === 'multi-enum') {
+    const elements = buildMultiSelectElements(requestId, target)
+    if (!elements) return null
+    const hint = selectionHint(target)
+    return [
+      { type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}` } },
+      ...(hint ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: hint }] }] : []),
+      { type: 'actions', ...(sessionTarget ? { block_id: sessionTarget } : {}), elements }
+    ]
+  }
   const buttons = target.options.map((o, i) => ({
     type: 'button',
     action_id: `${ELICIT_ACTION_PREFIX}:${i}`,

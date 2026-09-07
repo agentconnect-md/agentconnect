@@ -44,6 +44,7 @@ import {
   fieldAccepts,
   multiSelectAccepts,
   numberAccepts,
+  SLACK_DM_ELICIT_SURFACE,
   SLACK_ELICIT_SURFACE,
   textAccepts,
   WEBCHAT_ELICIT_SURFACE
@@ -245,6 +246,13 @@ type PendingElicit = PendingElicitSurface & {
    *  Present ⇒ `propName`/`kind`/`form` mean nothing — the card has no field, and its only
    *  answers are consent (this same URL back) or Dismiss. */
   url?: { elicitationId: string; url: string }
+  /** A MULTI-SELECT Slack card's in-progress selection — the last whole selection Slack sent for
+   *  it. It lives here, on the card's own record, because nothing else can hold it: the relay
+   *  persists no message content, and Confirm's `value` is fixed when the card is rendered. Freed
+   *  with the card, since every settle path drops the record. Seeded from the schema's `default`,
+   *  so an untouched Confirm submits exactly what the card was posted showing. Relayed, never
+   *  trusted: `multiSelectAccepts` re-derives it against the card at Confirm. */
+  selected?: string[]
   approval: boolean
   resolve: (res: CreateElicitationResponse) => void
 }
@@ -691,7 +699,7 @@ export class PermissionCoordinator {
     const card =
       rec.kind === 'permission'
         ? buildPermissionCard(requestId, rec.params, sessionTarget)
-        : (buildElicitationCard(requestId, rec.params, sessionTarget) ?? [])
+        : (buildElicitationCard(requestId, rec.params, sessionTarget, SLACK_DM_ELICIT_SURFACE) ?? [])
     const fromSlack = p.plan.platform === 'slack'
     const sourceUrl =
       fromSlack && p.conn instanceof SlackConnection
@@ -744,7 +752,7 @@ export class PermissionCoordinator {
           .catch(() => {})
       return
     }
-    const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params, SLACK_ELICIT_SURFACE) : null
+    const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params, SLACK_DM_ELICIT_SURFACE) : null
     live.notify = {
       target,
       conn,
@@ -899,7 +907,7 @@ export class PermissionCoordinator {
     } else if (notify.propName && notify.valueKind) {
       // Same card builder, same re-derivation: the actor checks above say who tapped, not what
       // this card offered, so an unoffered value is dropped and the DM card stays live.
-      const target = elicitTarget(rec.params, SLACK_ELICIT_SURFACE)
+      const target = elicitTarget(rec.params, SLACK_DM_ELICIT_SURFACE)
       if (!target || !fieldAccepts(target, value)) return
       const chosen = notify.valueKind === 'boolean' ? value === 'true' : value
       res = { action: 'accept', content: { [notify.propName]: chosen } }
@@ -1422,6 +1430,9 @@ export class PermissionCoordinator {
       params,
       propName: target.propName,
       kind: target.kind,
+      ...(target.kind === 'multi-enum'
+        ? { selected: Array.isArray(target.defaultValue) ? target.defaultValue : [] }
+        : {}),
       approval: isApproval,
       surface: 'slack',
       conn,
@@ -1925,6 +1936,30 @@ export class PermissionCoordinator {
         .updateBlocks(rec.channel, rec.ts, buildElicitationResolvedCard(rec.params, decision), 'Input received', true)
         .catch(() => {})
     rec.resolve(res)
+  }
+
+  /** A change on a multi-select card's `multi_static_select` (SlackDeps.onElicitSelect): remember
+   *  the WHOLE selection Slack re-sent, so Confirm has something to submit. Not an answer and not
+   *  a resolution — the card stays live, nothing is validated here, and Confirm's own
+   *  re-derivation is what makes a selection an answer. No-op for any other card. */
+  noteElicitSelection(a: { requestId: string; values: string[]; actor?: InteractionActor }): void {
+    const rec = this.pendingElicits.get(a.requestId)
+    if (!rec || rec.surface !== 'slack' || rec.kind !== 'multi-enum' || rec.url) return
+    rec.selected = a.values
+  }
+
+  /** A tapped Confirm on a multi-select card (SlackDeps.onElicitConfirm): submit the selection
+   *  last seen for this request through the same answer path a button click takes, so the accepted
+   *  content, the re-derivation and the settled card are one implementation. A selection outside
+   *  `minItems`/`maxItems` is refused there and the card stays live. */
+  async confirmElicitSelection(a: { requestId: string; actor?: InteractionActor }): Promise<void> {
+    const rec = this.pendingElicits.get(a.requestId)
+    if (!rec || rec.surface !== 'slack' || rec.kind !== 'multi-enum' || rec.url) return
+    await this.handleElicitChoice({
+      requestId: a.requestId,
+      value: rec.selected ?? [],
+      ...(a.actor ? { actor: a.actor } : {})
+    })
   }
 
   /** Resolve every outstanding elicitation for a session as `cancel` — ACP's cancellation

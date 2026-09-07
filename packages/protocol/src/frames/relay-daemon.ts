@@ -359,7 +359,20 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('set-output'), outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']) }),
   z.object({ kind: z.literal('cancel') }),
   z.object({ kind: z.literal('permission-choice'), requestId: z.string().min(1), optionId: z.string() }),
-  z.object({ kind: z.literal('elicitation-choice'), requestId: z.string().min(1), value: z.string().nullable() })
+  z.object({ kind: z.literal('elicitation-choice'), requestId: z.string().min(1), value: z.string().nullable() }),
+  // A Slack multi-select card settles in TWO interactions: the `multi_static_select` re-sends the
+  // whole current selection on every change, and Confirm submits it — a select never submits on
+  // its own. The selection is its own verb rather than a widened `elicitation-choice` because only
+  // the daemon may hold it: the relay persists no message content, and a Confirm button's `value`
+  // is fixed when the card is rendered. Skew fails closed forward — a daemon predating these two
+  // rejects the whole action, so the card stays live — and backward a relay predating them simply
+  // never sends one, so Confirm submits whatever selection the card was posted showing.
+  z.object({
+    kind: z.literal('elicitation-select'),
+    requestId: z.string().min(1),
+    values: z.array(z.string()).max(100)
+  }),
+  z.object({ kind: z.literal('elicitation-confirm'), requestId: z.string().min(1) })
 ])
 export type RdSlackAction = z.infer<typeof RdSlackAction>
 

@@ -74,6 +74,8 @@ export interface PlatformActionSink {
   statusInfoForKey: NonNullable<SlackDeps['onStatusInfo']>
   handlePermissionChoice: NonNullable<SlackDeps['onPermissionChoice']>
   handleElicitChoice: NonNullable<SlackDeps['onElicitChoice']>
+  handleElicitSelect: NonNullable<SlackDeps['onElicitSelect']>
+  handleElicitConfirm: NonNullable<SlackDeps['onElicitConfirm']>
   handleDiscordSelect: NonNullable<DiscordDeps['onSelectAction']>
   handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): Promise<void>
   slackShortcutSession(
@@ -214,6 +216,8 @@ export class ConnectionReconciler {
       onStatusInfo: (key) => this.host.statusInfoForKey(key),
       onPermissionChoice: (a) => this.host.handlePermissionChoice(a),
       onElicitChoice: (a) => this.host.handleElicitChoice(a),
+      onElicitSelect: (a) => this.host.handleElicitSelect(a),
+      onElicitConfirm: (a) => this.host.handleElicitConfirm(a),
       log: this.log,
       boltDebug: this.host.boltDebug()
     }
@@ -503,6 +507,8 @@ export class ConnectionReconciler {
             onStatusInfo: (key) => this.host.statusInfoForKey(key),
             onPermissionChoice: (a) => this.host.handlePermissionChoice(a),
             onElicitChoice: (a) => this.host.handleElicitChoice(a),
+            onElicitSelect: (a) => this.host.handleElicitSelect(a),
+            onElicitConfirm: (a) => this.host.handleElicitConfirm(a),
             log: this.log
           },
           this.host.slackAppFactory()

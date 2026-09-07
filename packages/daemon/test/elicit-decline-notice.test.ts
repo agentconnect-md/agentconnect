@@ -28,16 +28,28 @@ function formElicitation(overrides: Record<string, unknown> = {}): CreateElicita
   } as CreateElicitationRequest
 }
 
-/** A multi-select: renderable on webchat, never on a Slack button row. */
-function multiElicitation(overrides: Record<string, unknown> = {}): CreateElicitationRequest {
+/** A free-text field: renderable on webchat, never on Slack, which has no box to type into. */
+function unrenderableElicitation(overrides: Record<string, unknown> = {}): CreateElicitationRequest {
+  return formElicitation({
+    message: 'Which checks should I run?',
+    requestedSchema: {
+      type: 'object',
+      properties: { checks: { type: 'string' } },
+      required: ['checks']
+    },
+    ...overrides
+  })
+}
+
+/** A multi-select — which Slack renders as a select plus Confirm, so it keeps no notice. */
+function multiElicitation(): CreateElicitationRequest {
   return formElicitation({
     message: 'Which checks should I run?',
     requestedSchema: {
       type: 'object',
       properties: { checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test'] } } },
       required: ['checks']
-    },
-    ...overrides
+    }
   })
 }
 
@@ -95,7 +107,7 @@ function slackTurn(): { daemon: any; pending: any; notices: () => string[] } {
 describe('an elicitation declined for want of a surface says so in the channel', () => {
   it('posts the notice and still declines when a Slack card cannot express the form', async () => {
     const { daemon, notices } = slackTurn()
-    await expect(daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation())).resolves.toBeUndefined()
+    await expect(daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())).resolves.toBeUndefined()
     expect(daemon.permissions.pendingElicits.size).toBe(0)
     expect(notices()).toHaveLength(1)
     expect(notices()[0]).toContain("this chat can't collect an answer for")
@@ -110,7 +122,9 @@ describe('an elicitation declined for want of a surface says so in the channel',
     await daemon.permissions.onAcpElicit(
       'agent-1',
       's1',
-      multiElicitation({ message: 'Sign in at [your account](https://evil.example/x) or https://evil.example/y' })
+      unrenderableElicitation({
+        message: 'Sign in at [your account](https://evil.example/x) or https://evil.example/y'
+      })
     )
     const text = notices()[0]!
     // The label form cannot survive as markup, and the bare URL cannot autolink.
@@ -125,17 +139,21 @@ describe('an elicitation declined for want of a surface says so in the channel',
       ...params,
       message: params.message.replace('hunter2', '••••')
     })
-    await daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation({ message: 'Is hunter2 still the token?' }))
+    await daemon.permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      unrenderableElicitation({ message: 'Is hunter2 still the token?' })
+    )
     expect(notices()[0]).toContain('Is •••• still the token?')
     expect(notices()[0]).not.toContain('hunter2')
   })
 
   it('collapses a repeated question to one notice, and lets a different question through', async () => {
     const { daemon, notices } = slackTurn()
-    await daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation())
-    await daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation())
+    await daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())
+    await daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())
     expect(notices()).toHaveLength(1)
-    await daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation({ message: 'And which runner?' }))
+    await daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation({ message: 'And which runner?' }))
     expect(notices()).toHaveLength(2)
     expect(notices()[1]).toContain('And which runner?')
   })
@@ -160,6 +178,14 @@ describe('an elicitation declined for want of a surface says so in the channel',
       heldText: '',
       messageEmitted: false
     }
+    void daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())
+    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    expect(notices()).toEqual([])
+    await daemon.permissions.releaseElicits('agent-1', 's1')
+  })
+
+  it('says nothing for a multi-select Slack now renders as a select plus Confirm', async () => {
+    const { daemon, notices } = slackTurn()
     void daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation())
     await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
     expect(notices()).toEqual([])
@@ -200,7 +226,7 @@ describe('an elicitation declined for want of a surface says so in the channel',
       daemon.permissions.onAcpElicit(
         'agent-1',
         's1',
-        multiElicitation({ _meta: { codex_approval_kind: 'mcp_tool_call' } })
+        unrenderableElicitation({ _meta: { codex_approval_kind: 'mcp_tool_call' } })
       )
     ).resolves.toBeUndefined()
     expect(notices()).toEqual([])
@@ -209,14 +235,16 @@ describe('an elicitation declined for want of a surface says so in the channel',
   it('says nothing on a turn whose surface was deliberately suppressed', async () => {
     const suppressed = slackTurn()
     suppressed.pending.plan.approvalSurfaceSuppressed = true
-    await expect(suppressed.daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation())).resolves.toEqual({
+    await expect(
+      suppressed.daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())
+    ).resolves.toEqual({
       action: 'cancel'
     })
     expect(suppressed.notices()).toEqual([])
 
     const quiet = slackTurn()
     quiet.pending.outputSuppressed = 'paused'
-    await expect(quiet.daemon.permissions.onAcpElicit('agent-1', 's1', multiElicitation())).resolves.toEqual({
+    await expect(quiet.daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())).resolves.toEqual({
       action: 'cancel'
     })
     expect(quiet.notices()).toEqual([])

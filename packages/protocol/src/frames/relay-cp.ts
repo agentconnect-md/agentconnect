@@ -601,6 +601,13 @@ export const SLACK_STATUS_ACTION = {
 export const PERMISSION_ACTION_PREFIX = 'ac_perm'
 export const ELICIT_ACTION_PREFIX = 'ac_elicit'
 export const ELICIT_DISMISS_ACTION = 'ac_elicit_dismiss'
+/** A multi-select elicitation card's own two ids: the `multi_static_select`, which Slack
+ *  re-delivers with the WHOLE current selection on every change, and the Confirm button that
+ *  submits it — a select never submits on its own, so the two are separate interactions. Each
+ *  selected option carries `encodePermValue`, so the change names its own card; Confirm carries
+ *  the bare request id, since only the daemon holds what is selected. */
+export const ELICIT_SELECT_ACTION = 'ac_elicit_select'
+export const ELICIT_CONFIRM_ACTION = 'ac_elicit_confirm'
 
 /** Encode/decode the choice carried by permission and elicitation buttons. The
  * daemon-generated request id is `|`-free; runtime-owned option values may contain it. */

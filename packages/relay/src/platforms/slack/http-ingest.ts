@@ -25,7 +25,9 @@ import {
 } from '@agentconnect.md/message'
 import {
   ELICIT_ACTION_PREFIX,
+  ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
+  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
@@ -68,6 +70,7 @@ export interface SlackInteractiveBody {
     block_id?: string
     value?: string
     selected_option?: { value?: string }
+    selected_options?: { value?: string }[]
   }[]
   view?: {
     callback_id?: string
@@ -217,6 +220,29 @@ function decodeHttpSlackSessionAction(body: SlackInteractiveBody): HttpSlackSess
           value: choice.optionId
         }
       : null
+  }
+  // A multi-select card is two interactions: the select re-sends the WHOLE current selection on
+  // every change (its `action_id` names the request, so deselecting everything reports too), and
+  // Confirm submits it. The relay holds neither — it forwards both verbs and the daemon decides.
+  if (target && action.action_id.startsWith(`${ELICIT_SELECT_ACTION}:`)) {
+    const requestId = action.action_id.slice(ELICIT_SELECT_ACTION.length + 1)
+    const selected = action.selected_options ?? []
+    if (!requestId || selected.some((o) => typeof o.value !== 'string')) return null
+    return {
+      target,
+      interactionId: JSON.stringify([action.action_id, receipt]),
+      kind: 'elicitation-select',
+      requestId,
+      values: selected.map((o) => o.value as string)
+    }
+  }
+  if (target && action.action_id === ELICIT_CONFIRM_ACTION && action.value) {
+    return {
+      target,
+      interactionId: JSON.stringify([action.action_id, receipt]),
+      kind: 'elicitation-confirm',
+      requestId: action.value
+    }
   }
   if (target && action.action_id === ELICIT_DISMISS_ACTION && action.value) {
     return {
