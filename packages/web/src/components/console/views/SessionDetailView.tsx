@@ -795,6 +795,14 @@ function formDrafts(fields: ElicitFieldSpec[] | undefined): Record<string, strin
   return out
 }
 
+/** Which questions open with their own "Other" box already showing — only those whose box the
+ *  schema handed a default, so a blank form shows options and nothing else. */
+function formOthers(fields: ElicitFieldSpec[] | undefined): Record<string, boolean> {
+  const out: Record<string, boolean> = {}
+  for (const f of fields ?? []) if (f.customAnswerFor && typedDraft(f).trim()) out[f.customAnswerFor] = true
+  return out
+}
+
 function formPicks(fields: ElicitFieldSpec[] | undefined): Record<string, string[]> {
   const out: Record<string, string[]> = {}
   for (const f of fields ?? []) if (f.kind !== 'text' && f.kind !== 'number') out[f.propName] = pickedDefaults(f)
@@ -905,6 +913,8 @@ const ELICIT_CHIP = 'chip max-w-full truncate rounded-sm disabled:cursor-default
 const ELICIT_CHIP_ON =
   'chip max-w-full truncate rounded-sm border-(--brand) bg-(--brand) text-white disabled:cursor-default disabled:opacity-55'
 const ELICIT_INPUT = 'inp w-full min-w-0 bg-(--surface-app) disabled:cursor-default disabled:opacity-55'
+// A chip whose label IS its value reads as the literal the agent will receive, not as prose.
+const chipFont = (option: { label: string; value: string }) => (option.label === option.value ? ' font-mono' : '')
 const ELICIT_HINT = 'font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)'
 const ELICIT_ACTIONS = 'flex flex-wrap items-center gap-[8px] border-t border-(--border-subtle) pt-[11px]'
 
@@ -922,6 +932,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   const [draft, setDraft] = useState<string>(() => typedDraft(step.elicit))
   const [drafts, setDrafts] = useState<Record<string, string>>(() => formDrafts(step.elicit?.fields))
   const [picks, setPicks] = useState<Record<string, string[]>>(() => formPicks(step.elicit?.fields))
+  const [others, setOthers] = useState<Record<string, boolean>>(() => formOthers(step.elicit?.fields))
   const elicit = step.elicit
   const multi = elicit?.multi
   const consentUrl = elicit?.url
@@ -931,6 +942,14 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   // names, not one of its own, so it is never numbered, counted, or asked twice.
   const rows = fields?.filter((f) => !f.customAnswerFor)
   const typed = !fields && elicit && (elicit.text || elicit.number) ? elicit : undefined
+  // A question's box is disclosed by its own chip rather than standing open: the options are
+  // what the agent offered, so the box only takes room once the reader asks for it. Closing it
+  // drops what was typed — a hidden draft must never be part of the answer.
+  const toggleOther = (f: ElicitFieldSpec, companion: ElicitFieldSpec) => {
+    const on = !others[f.propName]
+    setOthers((prev) => ({ ...prev, [f.propName]: on }))
+    if (!on) setDrafts((prev) => ({ ...prev, [companion.propName]: '' }))
+  }
   const min = multi?.minItems ?? 0
   const max = multi?.maxItems
   // The same bounds the daemon re-checks: a browser frame is not what makes an answer valid.
@@ -943,9 +962,13 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   const edge = settled ? settled.edge : 'border-l-(--brand)'
   const headIcon = settled ? settled.icon : consent ? 'external-link' : 'message-circle-question-mark'
   const headColor = settled ? settled.color : 'var(--brand)'
+  // The head names the ask in one line; anything the agent wrote past that first line reads as
+  // the preamble it is, above the questions rather than as a paragraph-long title.
+  const headLine = step.text.split('\n', 1)[0] ?? step.text
+  const preamble = step.text.slice(headLine.length).trim()
   const counter =
     rows && !settled
-      ? `${rows.filter((f) => rowAnswered(f, companionOf(fields!, f), drafts, picks)).length}/${rows.length}`
+      ? `${rows.filter((f) => rowAnswered(f, companionOf(fields!, f), drafts, picks)).length}/${rows.length} answered`
       : undefined
   return (
     <div
@@ -955,16 +978,26 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
         <span className="mt-[2px] flex-none">
           <Icon name={headIcon} size={14} color={headColor} />
         </span>
-        <span className="min-w-0 flex-1 whitespace-pre-wrap font-sans text-[13.5px] font-medium leading-[1.5] text-(--text-primary)">
-          {step.text}
+        <span className="min-w-0 whitespace-pre-wrap font-sans text-[13.5px] font-medium leading-[1.5] text-(--text-primary)">
+          {headLine}
         </span>
         {counter && (
           <span className="mt-[3px] flex-none font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
             {counter}
           </span>
         )}
+        {step.time && (
+          <span className="mt-[3px] ml-auto flex-none font-mono text-[11.5px] font-normal leading-normal text-(--text-disabled)">
+            {step.time}
+          </span>
+        )}
       </div>
       <div className="min-w-0 border-t border-(--border-subtle) px-[14px] py-[11px]">
+        {preamble && !settled ? (
+          <span className="mb-[11px] block min-w-0 whitespace-pre-wrap font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+            {preamble}
+          </span>
+        ) : null}
         {settled ? (
           <span className="inline-flex min-w-0 items-center gap-[7px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
             <Icon name={settled.icon} size={13} color={settled.color} />
@@ -1039,10 +1072,15 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                     {String(fi + 1).padStart(2, '0')}
                   </span>
                   <div className="flex min-w-0 flex-col gap-[7px]">
-                    <div className="flex min-w-0 items-baseline gap-[8px]">
+                    <div className="flex min-w-0 flex-wrap items-baseline gap-x-[8px] gap-y-[2px]">
                       <span className="min-w-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
                         {f.label}
                       </span>
+                      {f.description ? (
+                        <span className="min-w-0 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                          {f.description}
+                        </span>
+                      ) : null}
                       <span
                         className={
                           f.required
@@ -1050,14 +1088,9 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                             : 'ml-auto flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-disabled)'
                         }
                       >
-                        {f.required ? 'required' : '(optional)'}
+                        {f.required ? 'required' : 'optional'}
                       </span>
                     </div>
-                    {f.description ? (
-                      <span className="min-w-0 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-                        {f.description}
-                      </span>
-                    ) : null}
                     {f.kind === 'text' || f.kind === 'number' ? (
                       <input
                         className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
@@ -1085,7 +1118,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                               key={option.value}
                               type="button"
                               aria-pressed={on}
-                              className={on ? ELICIT_CHIP_ON : ELICIT_CHIP}
+                              className={(on ? ELICIT_CHIP_ON : ELICIT_CHIP) + chipFont(option)}
+                              title={option.label}
                               disabled={!onAnswer || capped}
                               onClick={() =>
                                 setPicks((prev) => {
@@ -1105,21 +1139,32 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                             </button>
                           )
                         })}
+                        {companion ? (
+                          <button
+                            type="button"
+                            aria-pressed={!!others[f.propName]}
+                            className={others[f.propName] ? ELICIT_CHIP_ON : ELICIT_CHIP}
+                            disabled={!onAnswer}
+                            onClick={() => toggleOther(f, companion)}
+                            title={companion.description ?? companion.label}
+                          >
+                            Other…
+                          </button>
+                        ) : null}
                       </div>
                     )}
-                    {companion ? (
-                      <div className="flex min-w-0 items-center gap-[8px]">
-                        <span className={`flex-none ${ELICIT_HINT}`}>{companion.label}</span>
-                        <input
-                          className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
-                          type="text"
-                          value={drafts[companion.propName] ?? ''}
-                          disabled={!onAnswer}
-                          aria-label={`${f.label} — ${companion.label}`}
-                          {...(companion.text?.maxLength !== undefined ? { maxLength: companion.text.maxLength } : {})}
-                          onChange={(e) => setDrafts((prev) => ({ ...prev, [companion.propName]: e.target.value }))}
-                        />
-                      </div>
+                    {companion && (f.kind === 'text' || f.kind === 'number' || others[f.propName]) ? (
+                      <input
+                        className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
+                        type="text"
+                        autoFocus={!!others[f.propName]}
+                        value={drafts[companion.propName] ?? ''}
+                        disabled={!onAnswer}
+                        aria-label={`${f.label} — ${companion.label}`}
+                        placeholder={companion.label}
+                        {...(companion.text?.maxLength !== undefined ? { maxLength: companion.text.maxLength } : {})}
+                        onChange={(e) => setDrafts((prev) => ({ ...prev, [companion.propName]: e.target.value }))}
+                      />
                     ) : null}
                     {reason ? (
                       <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
@@ -1142,7 +1187,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                 disabled={!onAnswer || rows.some((f) => !!rowInvalidReason(f, companionOf(fields, f), drafts, picks))}
                 onClick={() => onAnswer?.(formAnswer(fields, drafts, picks))}
               >
-                Submit
+                Submit answers
               </button>
               <button
                 type="button"
@@ -1215,7 +1260,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                     key={option.value}
                     type="button"
                     {...(multi ? { 'aria-pressed': on } : {})}
-                    className={on ? ELICIT_CHIP_ON : ELICIT_CHIP}
+                    className={(on ? ELICIT_CHIP_ON : ELICIT_CHIP) + chipFont(option)}
+                    title={option.label}
                     disabled={!onAnswer || capped}
                     onClick={() =>
                       multi
