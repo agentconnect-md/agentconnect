@@ -418,6 +418,13 @@ describe('the agent’s elicitation card on the session page', () => {
     })
   }
 
+  // A question's box is behind its own "Other…" chip, so a reader opens it before typing.
+  const openOther = async () => {
+    await act(async () => {
+      buttonNamed('Other…')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+  }
+
   const FORM_FIELDS = [
     {
       propName: 'branch',
@@ -450,9 +457,9 @@ describe('the agent’s elicitation card on the session page', () => {
 
     // Every field is named, and the one the schema does not require says so.
     for (const label of ['Base branch', 'Note', 'Force push']) expect(text()).toContain(label)
-    expect(text()).toContain('(optional)')
+    expect(text()).toContain('optional')
     // Two required fields unanswered, so there is nothing valid to submit yet.
-    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(true)
     expect(text()).toContain('Choose one')
 
     await act(async () => {
@@ -461,22 +468,22 @@ describe('the agent’s elicitation card on the session page', () => {
     // A pick is held, not sent: a form answers once, on Submit.
     expect(live.answered).toEqual([])
     expect(buttonNamed('main')?.getAttribute('aria-pressed')).toBe('true')
-    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(true)
 
     await act(async () => {
       buttonNamed('No')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(false)
 
     // One bad OPTIONAL field is still enough to hold the whole answer, with its own reason.
     await typeInto(inputNamed('Note')!, 'far too long')
     expect(text()).toContain('Enter at most 6 characters')
-    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(true)
 
     await typeInto(inputNamed('Note')!, 'ok')
-    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(false)
     await act(async () => {
-      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      buttonNamed('Submit answers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     // One value per field, each in the shape its own kind answers with.
     expect(live.answered).toEqual([
@@ -516,25 +523,110 @@ describe('the agent’s elicitation card on the session page', () => {
       .map((n) => n.textContent ?? '')
       .filter((t) => /^\d\d$/.test(t))
     expect(numbers).toEqual(['01', '02'])
-    expect(text()).toContain('0/2')
+    expect(text()).toContain('0/2 answered')
     // The schema's question text rides under the header the title only names.
     expect(text()).toContain('Which branch should I cut from?')
 
+    // The box is not standing open — the question shows its options and its own chip.
+    expect(inputNamed('Branch — Other')).toBe(null)
     // A typed box IS the question's answer: its own select stops being asked for.
+    await openOther()
     await typeInto(inputNamed('Branch — Other')!, 'release/1.2')
     expect(text()).toContain('1/2')
-    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(false)
 
     await act(async () => {
       buttonNamed('1')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(text()).toContain('2/2')
     await act(async () => {
-      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      buttonNamed('Submit answers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     // Each answer under its own property — the untouched second box is left out entirely.
     expect(live.answered).toEqual([
       ['session-1', 'agent-1', 'elicit-1', { question_0_custom: 'release/1.2', question_1: '1' }, 'conv-1']
+    ])
+  })
+
+  it('closes a question’s box back up, and answers with the options rather than a hidden draft', async () => {
+    live.steps = [
+      {
+        ...CARD,
+        elicit: {
+          requestId: 'elicit-1',
+          options: [],
+          fields: [
+            { propName: 'question_0', label: 'Branch', kind: 'enum', options: [{ value: 'main', label: 'main' }] },
+            { propName: 'question_0_custom', label: 'Other', kind: 'text', options: [], customAnswerFor: 'question_0' }
+          ]
+        }
+      }
+    ]
+    await render()
+
+    await openOther()
+    await typeInto(inputNamed('Branch — Other')!, 'release/1.2')
+    // Closing the box takes the draft with it — what is not on screen is not in the answer.
+    await openOther()
+    expect(inputNamed('Branch — Other')).toBe(null)
+    expect(text()).toContain('0/1 answered')
+
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await act(async () => {
+      buttonNamed('Submit answers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', { question_0: 'main' }, 'conv-1']])
+  })
+
+  it('lays a question out as rows, not chips, once one of its options is a sentence', async () => {
+    const LONG = 'Roll back to the previous release and page the on-call engineer'
+    live.steps = [
+      {
+        ...CARD,
+        elicit: {
+          requestId: 'elicit-1',
+          options: [],
+          fields: [
+            { propName: 'branch', label: 'Branch', kind: 'enum', options: [{ value: 'main', label: 'main' }] },
+            {
+              propName: 'strategy',
+              label: 'If the deploy fails',
+              kind: 'enum',
+              options: [
+                { value: 'rollback', label: LONG },
+                { value: 'hold', label: 'Hold the failed build and wait for a human' }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+    await render()
+
+    // A short-value question stays a row of chips…
+    expect(buttonNamed('main')?.className).toContain('chip')
+    // …while one option long enough to be a sentence turns its whole question into full-width
+    // rows, so no answer is truncated away and they all read alike.
+    const row = buttonNamed(LONG)
+    expect(row?.className).not.toContain('chip')
+    expect(row?.className).toContain('items-start')
+    expect(buttonNamed('Hold the failed build and wait for a human')?.className).toContain('items-start')
+    expect(row?.getAttribute('aria-pressed')).toBe('false')
+
+    await act(async () => {
+      row?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(buttonNamed(LONG)?.getAttribute('aria-pressed')).toBe('true')
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await act(async () => {
+      buttonNamed('Submit answers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([
+      ['session-1', 'agent-1', 'elicit-1', { branch: 'main', strategy: 'rollback' }, 'conv-1']
     ])
   })
 
@@ -570,8 +662,9 @@ describe('the agent’s elicitation card on the session page', () => {
     ]
     await render()
 
+    await openOther()
     await typeInto(inputNamed('Branch — Other')!, 'dev')
-    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(true)
     expect(text()).toContain('Choose one')
     expect(text()).toContain('0/1')
 
@@ -579,14 +672,14 @@ describe('the agent’s elicitation card on the session page', () => {
     await act(async () => {
       buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(false)
     await typeInto(inputNamed('Branch — Other')!, 'far too long')
     expect(text()).toContain('Enter at most 6 characters')
-    expect(buttonNamed('Submit')?.disabled).toBe(true)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(true)
 
     await typeInto(inputNamed('Branch — Other')!, 'dev')
     await act(async () => {
-      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      buttonNamed('Submit answers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(live.answered).toEqual([
       ['session-1', 'agent-1', 'elicit-1', { question_0: 'main', question_0_custom: 'dev' }, 'conv-1']
@@ -615,9 +708,9 @@ describe('the agent’s elicitation card on the session page', () => {
     await act(async () => {
       buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(false)
     await act(async () => {
-      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      buttonNamed('Submit answers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', { branch: 'main' }, 'conv-1']])
 
@@ -647,9 +740,9 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(inputNamed('Note')?.value).toBe('seed')
     expect(buttonNamed('develop')?.getAttribute('aria-pressed')).toBe('true')
     // Seeded AND already valid, so the reader can simply accept what the agent suggested.
-    expect(buttonNamed('Submit')?.disabled).toBe(false)
+    expect(buttonNamed('Submit answers')?.disabled).toBe(false)
     await act(async () => {
-      buttonNamed('Submit')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      buttonNamed('Submit answers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', { branch: 'develop', note: 'seed' }, 'conv-1']])
   })
