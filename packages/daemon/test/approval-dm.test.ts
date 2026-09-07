@@ -175,6 +175,23 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     await over.store.close()
   })
 
+  // Same card builder, so the same #1812 re-derivation: the actor and verify checks establish
+  // WHO tapped, never what this card offered.
+  it('re-derives the DM answer against its own card, dropping one it never offered', async () => {
+    const w = await world()
+    const answered = w.coordinator.onAcpElicit(OWNER, ACP_SESSION, approvalElicitation(['once', 'session']))
+    await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
+    const requestId = requestIdOf(w.route)
+
+    await w.coordinator.handleElicitChoice({ requestId, value: 'always', actor: { userId: 'U1' } })
+    expect(w.conn.updateBlocks).not.toHaveBeenCalled()
+    expect((await w.store.listPermissionRequests(AGENT))[0]!.status).toBe('pending')
+
+    await w.coordinator.handleElicitChoice({ requestId, value: 'session', actor: { userId: 'U1' } })
+    await expect(answered).resolves.toEqual({ action: 'accept', content: { pick: 'session' } })
+    await w.store.close()
+  })
+
   it('refuses a wrong actor and an unanswerable verify without settling the request', async () => {
     const w = await world()
     const decided = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())

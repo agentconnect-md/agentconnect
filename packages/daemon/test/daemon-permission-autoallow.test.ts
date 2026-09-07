@@ -751,23 +751,27 @@ function enumElicitation(options: string[]): CreateElicitationRequest {
   })
 }
 
-describe('a Slack card offers every option or none', () => {
-  /** A Slack turn whose posted card blocks are captured. */
-  function slackPending(daemon: any): { pending: any; posted: any[][] } {
-    const pending: any = installPending(daemon)
-    const posted: any[][] = []
-    pending.plan.platform = 'slack'
-    const conn = Object.create(SlackConnection.prototype)
-    conn.postBlocks = async (_c: string, blocks: any[]) => {
-      posted.push(blocks)
-      return 'ts-1'
-    }
-    conn.updateBlocks = async () => true
-    conn.workspaceId = () => 'T1'
-    pending.conn = conn
-    return { pending, posted }
+/** A Slack turn whose posted card blocks are captured, alongside every in-place rewrite. */
+function slackPending(daemon: any): { pending: any; posted: any[][]; updated: any[][] } {
+  const pending: any = installPending(daemon)
+  const posted: any[][] = []
+  const updated: any[][] = []
+  pending.plan.platform = 'slack'
+  const conn = Object.create(SlackConnection.prototype)
+  conn.postBlocks = async (_c: string, blocks: any[]) => {
+    posted.push(blocks)
+    return 'ts-1'
   }
+  conn.updateBlocks = async (_c: string, _ts: string, blocks: any[]) => {
+    updated.push(blocks)
+    return true
+  }
+  conn.workspaceId = () => 'T1'
+  pending.conn = conn
+  return { pending, posted, updated }
+}
 
+describe('a Slack card offers every option or none', () => {
   // The seven-option enum of the issue: five buttons went out, the reader never saw the last two,
   // and whichever they picked came back as `accept` on the whole question.
   it('cards all seven options and accepts a pick past the fifth', async () => {
@@ -796,6 +800,49 @@ describe('a Slack card offers every option or none', () => {
     expect(posted).toHaveLength(0)
     // The same form is renderable where nothing declares a limit — webchat still shows them all.
     expect(elicitTarget(enumElicitation(many), WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(25)
+  })
+})
+
+// ── every surface re-derives its answer (issue #1812) ────────────────────────
+// The whitelist used to sit inside the webchat-only branch, so a Slack answer became agent
+// content unchecked — correctness resting on the relay and on Slack rather than on the card
+// the daemon itself posted.
+
+describe('a Slack answer is re-derived against the card that offered it', () => {
+  it('drops a value the card never offered and leaves the card live', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { updated } = slackPending(daemon)
+    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(['a', 'b', 'c']))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'rm -rf /' })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1) // still live — nothing settled it
+    expect(updated).toHaveLength(0)
+
+    // A Slack tap on a button the card actually carries still resolves, unchanged.
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'b' })
+    await expect(answered).resolves.toEqual({ action: 'accept', content: { pick: 'b' } })
+  })
+
+  it('resolves a Codex MCP approval through the persist option its own card offered', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted, updated } = slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    const approval = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('call-1'))
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    // The approval's enum reaches Slack as one button per value, each carrying `<id>|<value>`.
+    const elements = posted[0]![1]!.elements as any[]
+    expect(elements.map((e) => e.value)).toEqual([`${requestId}|once`, `${requestId}|session`, requestId])
+
+    // A `persist` the schema never enumerated is not an approval this card can report.
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'always' })
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(updated).toHaveLength(0)
+
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'session' })
+    await expect(approval).resolves.toEqual({ action: 'accept', content: { persist: 'session' } })
   })
 })
 

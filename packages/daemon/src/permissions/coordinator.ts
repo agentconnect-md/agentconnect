@@ -39,6 +39,7 @@ import {
   elicitRequiredProps,
   elicitTarget,
   elicitUrl,
+  fieldAccepts,
   multiSelectAccepts,
   numberAccepts,
   SLACK_ELICIT_SURFACE,
@@ -881,6 +882,10 @@ export class PermissionCoordinator {
       res = { action: 'decline' }
       decision = ':no_entry_sign: Dismissed'
     } else if (notify.propName && notify.valueKind) {
+      // Same card builder, same re-derivation: the actor checks above say who tapped, not what
+      // this card offered, so an unoffered value is dropped and the DM card stays live.
+      const target = elicitTarget(rec.params, SLACK_ELICIT_SURFACE)
+      if (!target || !fieldAccepts(target, value)) return
       const chosen = notify.valueKind === 'boolean' ? value === 'true' : value
       res = { action: 'accept', content: { [notify.propName]: chosen } }
       decision = `:white_check_mark: ${notify.valueKind === 'boolean' ? (chosen ? 'Yes' : 'No') : value}`
@@ -1696,30 +1701,29 @@ export class PermissionCoordinator {
     // for a numeric field, a string for the rest. Dismiss (null) settles any of them.
     if (a.value !== null && !isFormAnswer(a.value) && !answerFitsKind(rec.kind, a.value)) return
     const target = elicitTarget(rec.params, surfaceOf(rec))
+    // A browser answers only a card ITS OWN conversation was shown: both surfaces share one
+    // `elicit-<n>` counter, so the guessable id would otherwise reach another conversation's.
     if (a.webchatConversationId !== undefined) {
       if (rec.surface !== 'webchat' || rec.wc.conversationId !== a.webchatConversationId) return
-      // The card names every answer it accepts; anything else would inject an unoffered value
-      // into the agent's content, so it is dropped and the card stays live. A multi-select adds
-      // no repeats and a count its bounds allow; a typed field, the schema constraints the
-      // control was shown — a browser frame is never what makes an answer valid.
-      // A form's record answers exactly the fields the card rendered, each value valid for its
-      // own field: one bad or unexpected field refuses the whole answer, card still live.
-      const offered =
-        a.value === null ||
-        (isFormAnswer(a.value)
-          ? !!form && elicitFormAccepts(form, elicitRequiredProps(rec.params), a.value)
-          : !!target &&
-            (Array.isArray(a.value)
-              ? multiSelectAccepts(target, a.value)
-              : typeof a.value === 'number'
-                ? numberAccepts(target, a.value)
-                : target.kind === 'text'
-                  ? textAccepts(target, a.value)
-                  : target.options.some((o) => o.value === a.value)))
-      if (!offered) return
-      // A card settles only from its own surface: both share one `elicit-<n>` counter, so
-      // without this a Slack tap could answer a live webchat card.
+      // And a card settles only from its own surface, so a Slack tap never answers a webchat one.
     } else if (rec.surface === 'webchat') return
+    // Every surface's answer is re-derived against the card that offered it: a signed interaction
+    // and a relay that checks the block target say who tapped, never what the card offered.
+    // An unoffered value would inject content the agent never asked for, so it is dropped and the
+    // card stays live — one bad field refusing a whole form answer, as on webchat all along.
+    const offered =
+      a.value === null ||
+      (isFormAnswer(a.value)
+        ? !!form && elicitFormAccepts(form, elicitRequiredProps(rec.params), a.value)
+        : !!target &&
+          (Array.isArray(a.value)
+            ? multiSelectAccepts(target, a.value)
+            : typeof a.value === 'number'
+              ? numberAccepts(target, a.value)
+              : target.kind === 'text'
+                ? textAccepts(target, a.value)
+                : target.options.some((o) => o.value === a.value)))
+    if (!offered) return
     if (rec.approval && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
       if (rec.surface === 'slack' && rec.ts) {
         void rec.conn
