@@ -1749,6 +1749,8 @@ describe('a Slack text/number card is answered by a reply in its thread', () => 
   /** A Slack turn plus the notices its refusals post, and the card's live request id. */
   const slackReplyTurn = (daemon: any) => {
     const surface = slackPending(daemon)
+    // A real connection resolves this at `auth.test`, on the send-only (relay-managed) path too.
+    surface.pending.conn.botUserId = 'UBOT'
     const notices: string[] = []
     daemon.enqueueApply = (_p: unknown, action: any) => {
       if (action.kind === 'notice') notices.push(action.text as string)
@@ -1778,6 +1780,60 @@ describe('a Slack text/number card is answered by a reply in its thread', () => 
     }) as any
   const answer = (daemon: any, text: string, over: Record<string, unknown> = {}): Promise<boolean> =>
     daemon.permissions.answerElicitReply(reply(text, over))
+
+  // One reply cannot answer two open questions, and picking either would tell one runtime the
+  // reader answered something they did not — the same lie a shared selection told on #1825.
+  it('answers neither of two questions open in one thread, and says why', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { notices } = slackReplyTurn(daemon)
+    void (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation({ minLength: 1 }))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    void (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation({ minLength: 1 }))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(2))
+
+    // Taken as neither answer, and left an ordinary message.
+    expect(await answer(daemon, 'add-retries')).toBe(false)
+    expect((daemon as any).permissions.pendingElicits.size).toBe(2)
+    expect(notices).toEqual([
+      '2 questions are open in this thread, so a reply cannot answer any of them — dismiss all ' +
+        'but one, or let one settle, and the next reply answers that one.'
+    ])
+
+    // One dismissed leaves exactly one question in the thread, and the next reply answers it.
+    const [firstId] = (daemon as any).permissions.pendingElicits.keys()
+    await (daemon as any).permissions.handleElicitChoice({ requestId: firstId, value: null })
+    expect(await answer(daemon, 'add-retries')).toBe(true)
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+  })
+
+  it('drops a leading mention of the asker, which addresses it rather than answering it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { notices } = slackReplyTurn(daemon)
+    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', numberElicitation({ minimum: 0 }))
+    await liveCard(daemon)
+
+    // Everything that is NOT this one shape stays part of the answer, so none of these is a
+    // number: guessing which other PART of a message is the value is how an answer comes back
+    // wrong. Each is refused with the reason and the card stays live.
+    expect(await answer(daemon, '<@U-someone-else> 42')).toBe(true)
+    expect(await answer(daemon, '42 <@UBOT>')).toBe(true)
+    expect(await answer(daemon, 'ping <@UBOT> 42')).toBe(true)
+    expect(await answer(daemon, '<@UBOT> <@UBOT> 42')).toBe(true)
+    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
+    expect(notices).toHaveLength(4)
+
+    expect(await answer(daemon, '<@UBOT> 42')).toBe(true)
+    await expect(answered).resolves.toEqual({ action: 'accept', content: { retries: 42 } })
+  })
+
+  it('keeps a text answer’s own words, minus only that one leading address', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    slackReplyTurn(daemon)
+    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation({ minLength: 3 }))
+    await liveCard(daemon)
+    expect(await answer(daemon, '<@UBOT>: add-retries')).toBe(true)
+    await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'add-retries' } })
+  })
 
   it('cards the question, what is expected and whom it awaits, then takes the reply', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })

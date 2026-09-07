@@ -23,6 +23,7 @@ import {
   elicitFormContent,
   elicitReplyAnswer,
   elicitReplyExpectation,
+  stripLeadingSelfMention,
   elicitRequiredProps,
   elicitTarget,
   elicitUrl,
@@ -1822,6 +1823,23 @@ describe('elicitation card', () => {
     expect(expectation({ type: 'string', pattern: '^[a-z]+$' })).toBe(
       'some text, in the exact format the question asks for'
     )
+  })
+
+  it('strips one leading mention of the asking bot, and nothing else', () => {
+    // `@bot 42` is 42: addressing the asker is chrome, not value. Both mention spellings, and
+    // the punctuation a reader puts after an address.
+    expect(stripLeadingSelfMention('<@UBOT> 42', 'UBOT')).toBe('42')
+    expect(stripLeadingSelfMention('<@UBOT|acme-bot> 42', 'UBOT')).toBe('42')
+    expect(stripLeadingSelfMention('  <@UBOT>:  42', 'UBOT')).toBe('42')
+    expect(stripLeadingSelfMention('<@UBOT>, add-retries', 'UBOT')).toBe('add-retries')
+    // Anyone else's mention, a second one, and any position but the front are all content.
+    expect(stripLeadingSelfMention('<@UOTHER> 42', 'UBOT')).toBe('<@UOTHER> 42')
+    expect(stripLeadingSelfMention('<@UBOT> <@UBOT> 42', 'UBOT')).toBe('<@UBOT> 42')
+    expect(stripLeadingSelfMention('42 <@UBOT>', 'UBOT')).toBe('42 <@UBOT>')
+    expect(stripLeadingSelfMention('ping <@UBOT> 42', 'UBOT')).toBe('ping <@UBOT> 42')
+    // An identity not resolved yet strips nothing rather than guessing at the token.
+    expect(stripLeadingSelfMention('<@UBOT> 42', '')).toBe('<@UBOT> 42')
+    expect(stripLeadingSelfMention('<@UBOT> 42', undefined)).toBe('<@UBOT> 42')
   })
 
   it('re-derives a reply against the card, and answers a numeric field with a real number', () => {

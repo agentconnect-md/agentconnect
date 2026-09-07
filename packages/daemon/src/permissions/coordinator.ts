@@ -49,6 +49,7 @@ import {
   numberAccepts,
   SLACK_DM_ELICIT_SURFACE,
   SLACK_ELICIT_SURFACE,
+  stripLeadingSelfMention,
   textAccepts,
   WEBCHAT_ELICIT_SURFACE
 } from '../slack/render.js'
@@ -2021,6 +2022,7 @@ export class PermissionCoordinator {
     // it stays an ordinary message, and the card stays live for a reply that IS one.
     if (msg.attachments?.length) return false
     const conversation = elicitReplyConversation(msg.platform, transcriptChannelKey(msg.channel, msg.transportScope))
+    const matched: { requestId: string; rec: PendingElicit; target: ElicitTarget }[] = []
     for (const [requestId, rec] of this.pendingElicits) {
       const reply = rec.reply
       if (!reply || reply.conversation !== conversation) continue
@@ -2030,33 +2032,65 @@ export class PermissionCoordinator {
       // thread. Anyone else is not answering it — their message stays an ordinary one.
       if (reply.requesterId !== undefined && reply.requesterId !== msg.sender.id) continue
       const target = elicitTarget(rec.params, surfaceOf(rec))
-      if (!target || !ELICIT_REPLY_KINDS.has(target.kind)) return false
-      // Re-derived against the card that asked, exactly as a tapped option is (#1815).
-      const answer = elicitReplyAnswer(target, msg.text)
-      if (answer === null) {
-        this.sayElicitReplyRefused(rec, target)
-        return true
-      }
-      await this.handleElicitChoice({
-        requestId,
-        value: answer,
-        actor: { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
-      })
+      if (target && ELICIT_REPLY_KINDS.has(target.kind)) matched.push({ requestId, rec, target })
+    }
+    if (!matched.length) return false
+    // Two open questions in one thread cannot both be answered by one reply, and picking either
+    // would tell one runtime the reader answered a question they did not. Name the ambiguity and
+    // take nothing: the reader can dismiss one, or wait for one to settle.
+    if (matched.length > 1) {
+      this.sayElicitReplyAmbiguous(matched.map((m) => m.rec))
+      return false
+    }
+    const { requestId, rec, target } = matched[0]!
+    // Re-derived against the card that asked, exactly as a tapped option is (#1815) — after the
+    // one piece of addressing that is chrome rather than value comes off (`@bot 42` is 42). The
+    // bot id comes from the card's OWN connection, so both ingresses read the same identity, and
+    // an unresolved one (a send-only connection before `auth.test`) strips nothing.
+    const addressed = stripLeadingSelfMention(msg.text, rec.surface === 'slack' ? rec.conn.botUserId : undefined)
+    const answer = elicitReplyAnswer(target, addressed)
+    if (answer === null) {
+      this.sayElicitReplyRefused(rec, target)
       return true
     }
-    return false
+    await this.handleElicitChoice({
+      requestId,
+      value: answer,
+      actor: { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
+    })
+    return true
   }
 
-  /** Say in the conversation why a reply could not be the answer, leaving the card live: an
-   *  invalid reply is not a refusal, so it does not consume the question. A notice, so it lands
-   *  where every other one does. Best effort — the card is answerable again either way. */
+  /** Say that a reply cannot answer any of the several questions open in this thread, leaving
+   *  every one of them live. ONE line per reply rather than one per card — they share the thread,
+   *  and it is the thread that is ambiguous — spoken through the first card whose turn is still
+   *  live. */
+  private sayElicitReplyAmbiguous(recs: readonly PendingElicit[]): void {
+    const text =
+      `${recs.length} questions are open in this thread, so a reply cannot answer any of them — ` +
+      'dismiss all but one, or let one settle, and the next reply answers that one.'
+    for (const rec of recs) if (this.noticeInTurn(rec, text)) return
+  }
+
+  /** Say why a reply could not be the answer, leaving the card live: an invalid reply is not a
+   *  refusal, so it does not consume the question. Dismiss remains the only one. */
   private sayElicitReplyRefused(rec: PendingElicit, target: ElicitTarget): void {
+    this.noticeInTurn(rec, `That reply isn't ${elicitReplyExpectation(target)} — the question is still open.`)
+  }
+
+  /** Post one daemon-authored line into a pending card's own turn — a notice, so it lands where
+   *  every other one does. False when that turn is already gone, or when the surface refused it.
+   *  Best effort by construction: no elicitation outcome depends on it. */
+  private noticeInTurn(rec: PendingElicit, text: string): boolean {
     const p = this.host.pending().get(pendingTurnKey(rec.owner, rec.sessionId))
-    if (!p) return
-    this.host.enqueueApply(p, {
-      kind: 'notice',
-      text: `That reply isn't ${elicitReplyExpectation(target)} — the question is still open.`
-    })
+    if (!p) return false
+    try {
+      this.host.enqueueApply(p, { kind: 'notice', text })
+    } catch (err) {
+      this.host.log().warn(`elicitation reply notice not delivered for ${rec.sessionId}: ${formatErr(err)}`)
+      return false
+    }
+    return true
   }
 
   /** Resolve every outstanding elicitation for a session as `cancel` — ACP's cancellation

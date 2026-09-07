@@ -1191,6 +1191,21 @@ export function elicitReplyExpectation(target: ElicitTarget): string {
   return parts.join(', ')
 }
 
+/** Slack's mention token for one user, at the very START of a message: the modern `<@U…>` and
+ *  the legacy `<@U…|name>`, plus the punctuation a reader puts after an address. */
+const LEADING_MENTION_RE = /^\s*<@([A-Z0-9]+)(?:\|[^>]*)?>[ \t]*[:,]?[ \t]*/
+
+/** A reply's text with a LEADING mention of the ASKING bot removed: "@bot 42" is 42, because
+ *  addressing the bot is chrome rather than value. Only that token, only this bot's own id —
+ *  a mention of anyone else, a second mention, or one anywhere but the front is content, and
+ *  guessing which PART of a message is the answer is how a typed answer comes back wrong. An
+ *  unknown bot id (identity not resolved yet) strips nothing. Pure. */
+export function stripLeadingSelfMention(text: string, botUserId?: string): string {
+  if (!botUserId) return text
+  const found = LEADING_MENTION_RE.exec(text)
+  return found && found[1] === botUserId ? text.slice(found[0].length) : text
+}
+
 /** The digit shapes a numeric reply may take. Deliberately narrower than `Number()`, which reads
  *  `0x1f`, `Infinity` and whitespace as numbers a reader plainly did not type. */
 const NUMERIC_REPLY_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
