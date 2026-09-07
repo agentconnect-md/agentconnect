@@ -8,7 +8,7 @@ export interface RuntimeExecutableHint {
 }
 
 /** A codex-acp runtime (its command/args reference `codex-acp`), including the managed npx fork. */
-function isCodexRuntimeDef(runtime: RuntimeDef): boolean {
+export function isCodexRuntimeDef(runtime: RuntimeDef): boolean {
   return [runtime.command, ...runtime.args].some((part) => /(?:^|[\\/@])codex-acp(?:@[^\\/]*)?$/i.test(part))
 }
 

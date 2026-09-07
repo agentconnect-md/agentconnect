@@ -30,7 +30,8 @@ import {
   type ClaudeProtectedSettings,
   ULTRACODE_EFFORT
 } from '../runtime-defs/claude-runtime.js'
-import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
+import { isCodexRuntimeDef, runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
+import { codexConfigWithUserInputTool } from '../runtimes/codex-config.js'
 import {
   LocalDriver,
   type AcpSandboxLaunch,
@@ -660,6 +661,14 @@ export class AcpHost {
         `acp: account-app isolation disabled by daemon config for ${appIsolation.runtime}; ` +
           `signed-in account apps/connectors may be inherited${detail}`
       )
+    }
+    // Codex offers `request_user_input` only when configured on; enable it exactly when this host services session elicitations.
+    if (this.opts.onElicit && (this.opts.runtimeId === 'codex-acp' || isCodexRuntimeDef(this.runtime))) {
+      try {
+        env.CODEX_CONFIG = codexConfigWithUserInputTool(env.CODEX_CONFIG)
+      } catch (err) {
+        this.opts.log?.warn(`acp: leaving Codex's request_user_input tool off — ${(err as Error).message}`)
+      }
     }
     // NOTE: the memory-backend env (disable the runtime's own memory for `managed`,
     // or redirect it under the private runtime HOME for `native`) is assembled by the daemon

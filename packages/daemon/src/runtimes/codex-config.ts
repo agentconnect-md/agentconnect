@@ -81,3 +81,15 @@ export function codexConfigWithBaseUrlFillIn(raw: string | undefined, baseUrl: s
   if (typeof config.openai_base_url === 'string' && config.openai_base_url.trim()) return undefined
   return codexConfigWithBaseUrl(raw, baseUrl)
 }
+
+// Codex offers `request_user_input` — the only path from a Codex turn to our ACP form elicitation — in
+// Default mode only behind this feature; verified against @openai/codex-linux-x64 bundled with
+// codex-acp@1.10.0 (the `[tools] experimental_request_user_input` knob alone changes nothing there).
+export function codexConfigWithUserInputTool(raw: string | undefined): string {
+  const config = objectFromJson(raw, 'CODEX_CONFIG')
+  const features = record(config.features, 'CODEX_CONFIG.features')
+  return JSON.stringify({
+    ...config,
+    features: { ...features, default_mode_request_user_input: true }
+  })
+}

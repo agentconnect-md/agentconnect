@@ -365,7 +365,8 @@ async function runIsolatedFixture(
   name: string,
   value: string,
   log?: { info: (message: string) => void; warn: (message: string) => void },
-  isolateAccountApps?: boolean
+  isolateAccountApps?: boolean,
+  servicesElicitations?: boolean
 ): Promise<string[]> {
   const updates: string[] = []
   const host = new AcpHost(
@@ -381,6 +382,7 @@ async function runIsolatedFixture(
       env: { AC_ECHO_NAME: name, [name]: value },
       runtimeId,
       isolateAccountApps,
+      ...(servicesElicitations ? { onElicit: async () => undefined } : {}),
       ...(log
         ? {
             log: {
@@ -423,6 +425,24 @@ describe('AcpHost — account-bound app isolation', () => {
     const echoed = out.find((line) => line.startsWith('env:'))?.slice('env:'.length)
     expect(JSON.parse(echoed ?? '')).toEqual({ features: { apps: false } })
     expect(warns.join('\n')).toContain('ignoring unsafe inherited CODEX_CONFIG')
+  })
+
+  it("enables Codex's request_user_input tool when the host services elicitations", async () => {
+    const raw = JSON.stringify({ model: 'gpt-test', features: { apps: true } })
+    const out = await runIsolatedFixture('codex-acp', 'CODEX_CONFIG', raw, undefined, undefined, true)
+
+    const echoed = out.find((line) => line.startsWith('env:'))?.slice('env:'.length)
+    expect(JSON.parse(echoed ?? '')).toEqual({
+      model: 'gpt-test',
+      features: { apps: false, default_mode_request_user_input: true }
+    })
+  })
+
+  it('leaves it off for a headless Codex host that would decline the question', async () => {
+    const out = await runIsolatedFixture('codex-acp', 'CODEX_CONFIG', JSON.stringify({ model: 'gpt-test' }))
+
+    const echoed = out.find((line) => line.startsWith('env:'))?.slice('env:'.length)
+    expect(JSON.parse(echoed ?? '')).toEqual({ model: 'gpt-test', features: { apps: false } })
   })
 
   it('forces Claude.ai MCP servers off in the spawned process', async () => {
