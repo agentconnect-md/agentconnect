@@ -157,9 +157,11 @@ export const ElicitField = z.object({
   required: z.boolean().optional(),
   /** The schema's own `description` — the question text, where the title is only its header. */
   description: z.string().max(300).optional(),
-  /** Set on a select question's free-text companion (ACP `_askUserQuestionCustomAnswer`): the
-   *  property whose question this box types an answer for. The card renders it INSIDE that
-   *  question rather than as a question of its own, and never numbers or counts it. */
+  /** Set on a select question's free-text companion: the property whose question this box types
+   *  an answer for. The card renders it INSIDE that question rather than as a question of its
+   *  own, and never numbers or counts it. Which `_meta` marker said so (ACP
+   *  `_askUserQuestionCustomAnswer`, or Codex's `_meta.codex.isOtherAnswer`) is the daemon's to
+   *  read: the raw schema never crosses this wire, so a reader has only this field. */
   customAnswerFor: z.string().min(1).max(200).optional(),
   options: ElicitOptions,
   multi: ElicitMulti.optional(),
