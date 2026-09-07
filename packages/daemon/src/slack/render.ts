@@ -1648,7 +1648,12 @@ export function elicitFormSubmission(
   for (const [index, target] of form.entries()) {
     const blockId = elicitFormBlockId(index)
     const raw = fields[blockId]
-    if (raw === undefined) {
+    // Slack sends `[]` for a multi-select nobody touched, so a blank OPTIONAL one is an omission,
+    // not an empty answer that then fails its own `minItems`. A required field keeps being checked:
+    // there, `[]` is a real selection and its bounds decide. (An emptied REQUIRED select staying an
+    // answer is #1801's reading, kept.)
+    const blank = raw === undefined || (Array.isArray(raw) && !raw.length && !required.has(target.propName))
+    if (blank) {
       if (required.has(target.propName)) errors[blockId] = 'This field is required.'
       continue
     }

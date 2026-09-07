@@ -164,6 +164,23 @@ describe('a form submission is re-derived against the card that offered it', () 
     })
   })
 
+  // Slack sends `[]` for a multi-select nobody touched. Reading that as an empty ANSWER made an
+  // optional `minItems: 1` field unsubmittable — the reader could not get past their own blank.
+  it('takes a blank OPTIONAL multi-select as omitted, not as a selection that fails its bounds', () => {
+    const optional = form(
+      { branch: EVERY_KIND.branch, checks: { type: 'array', minItems: 1, items: EVERY_KIND.checks.items } },
+      ['branch']
+    )
+    const target = elicitForm(optional, SLACK_ELICIT_SURFACE)!
+    expect(
+      elicitFormSubmission(optional, target, { [elicitFormBlockId(0)]: 'main', [elicitFormBlockId(1)]: [] })
+    ).toEqual({ answer: { branch: 'main' } })
+    // A REQUIRED one keeps its own bounds: there an empty selection is a real answer to judge.
+    const needed = form({ checks: { type: 'array', minItems: 1, items: EVERY_KIND.checks.items } }, ['checks'])
+    const neededTarget = elicitForm(needed, SLACK_ELICIT_SURFACE)!
+    expect(elicitFormSubmission(needed, neededTarget, { [elicitFormBlockId(0)]: [] }).errors).toBeDefined()
+  })
+
   it('refuses ONE bad field with that field’s own error, rather than dropping it', () => {
     const bad = elicitFormSubmission(req, fields, {
       [elicitFormBlockId(0)]: 'trunk', // never offered
