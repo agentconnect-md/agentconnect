@@ -1084,6 +1084,11 @@ export interface ElicitFieldSpec {
   label: string
   kind: 'enum' | 'boolean' | 'multi-enum' | 'text' | 'number'
   required?: boolean
+  /** The schema's own question text, where `label` is only its header. */
+  description?: string
+  /** Set on a select question's free-text companion: the property whose question it answers.
+   *  The card renders it inside that question, and never numbers or counts it as one. */
+  customAnswerFor?: string
   options: { value: string; label: string }[]
   multi?: { minItems?: number; maxItems?: number }
   text?: { minLength?: number; maxLength?: number; pattern?: string; format?: string }

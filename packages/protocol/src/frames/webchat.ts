@@ -121,6 +121,11 @@ export type PlanEntry = z.infer<typeof PlanEntry>
  *  form is declined, which is honest — the agent can ask again in smaller pieces. */
 export const ELICIT_FORM_FIELD_CAP = 10
 
+/** The most FIELDS one card's wire payload carries. The cap above counts QUESTIONS, and an
+ *  AskUserQuestion bridge gives every question its own free-text companion (`customAnswerFor`),
+ *  so a form at the cap arrives as twice that many properties — and answers with them too. */
+export const ELICIT_FORM_WIRE_FIELD_CAP = ELICIT_FORM_FIELD_CAP * 2
+
 /** The per-kind field descriptors of an elicitation card. Shared by the single-field card and
  *  by each entry of a multi-field form, so the two can never describe one field differently. */
 const ElicitOptions = z.array(z.object({ value: z.string(), label: z.string() }))
@@ -150,6 +155,12 @@ export const ElicitField = z.object({
   label: z.string(),
   kind: z.enum(['enum', 'boolean', 'multi-enum', 'text', 'number']),
   required: z.boolean().optional(),
+  /** The schema's own `description` — the question text, where the title is only its header. */
+  description: z.string().max(300).optional(),
+  /** Set on a select question's free-text companion (ACP `_askUserQuestionCustomAnswer`): the
+   *  property whose question this box types an answer for. The card renders it INSIDE that
+   *  question rather than as a question of its own, and never numbers or counts it. */
+  customAnswerFor: z.string().min(1).max(200).optional(),
   options: ElicitOptions,
   multi: ElicitMulti.optional(),
   text: ElicitText.optional(),
@@ -234,7 +245,7 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     // absent — deliberately, and the same closed-failure trade `text` records: an old reader
     // sees an optionless card it can only Dismiss, rather than a card it could half-fill with
     // one field's answer that the daemon would then refuse.
-    fields: z.array(ElicitField).min(2).max(ELICIT_FORM_FIELD_CAP).optional(),
+    fields: z.array(ElicitField).min(2).max(ELICIT_FORM_WIRE_FIELD_CAP).optional(),
     // Present ⇒ the card is a URL-mode CONSENT card (ACP `ElicitationUrlMode`): the reader is
     // shown this exact URL and opens it in their own browser, and nothing about the page ever
     // returns here. `options` is then empty and every field descriptor above is absent, so the

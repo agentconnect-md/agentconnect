@@ -8,7 +8,13 @@ import {
 } from '../normalized-message.js'
 import { frameSchema } from '../envelope.js'
 import { ErrorFrame } from './error.js'
-import { ELICIT_FORM_FIELD_CAP, WebchatDone, WebchatImageAttachment, WebchatOutput, WebchatPost } from './webchat.js'
+import {
+  ELICIT_FORM_WIRE_FIELD_CAP,
+  WebchatDone,
+  WebchatImageAttachment,
+  WebchatOutput,
+  WebchatPost
+} from './webchat.js'
 import { GitlabHookMetadata, GithubHookMetadata, HookContext, OptionalHookConfigSnapshot } from './hook.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
@@ -230,7 +236,7 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
         .record(z.string().min(1).max(200), z.union([z.string(), z.number(), z.array(z.string()).max(100)]))
         // EMPTY is a real answer: a form of nothing but optional fields, all left alone, is
         // schema-valid content and the daemon's own accept check already takes it.
-        .refine((v) => Object.keys(v).length <= ELICIT_FORM_FIELD_CAP),
+        .refine((v) => Object.keys(v).length <= ELICIT_FORM_WIRE_FIELD_CAP),
       z.null()
     ]),
     agentId: z.string().uuid().optional()

@@ -147,10 +147,16 @@ function formAnswerLabel(
   form: readonly ElicitTarget[],
   answer: ElicitFormAnswer
 ): string {
+  // A companion box is named for the question it sits in ("Branch (Other)"), never on its own:
+  // "Other: dev" in a transcript says which words were typed but not what they answer.
+  const name = (t: ElicitTarget) =>
+    t.customAnswerFor
+      ? `${elicitFieldLabel(params, t.customAnswerFor)} (${elicitFieldLabel(params, t.propName)})`
+      : elicitFieldLabel(params, t.propName)
   const parts: string[] = []
   for (const t of form) {
     const value = answer[t.propName]
-    if (value !== undefined) parts.push(`${elicitFieldLabel(params, t.propName)}: ${chosenLabel(t, value)}`)
+    if (value !== undefined) parts.push(`${name(t)}: ${chosenLabel(t, value)}`)
   }
   // An all-optional form left alone is still an answer — settling it as nothing would read
   // as a card that never resolved, the same reason a `minItems: 0` selection says so too.
@@ -1518,6 +1524,8 @@ export class PermissionCoordinator {
                   label: elicitFieldLabel(params, t.propName),
                   kind: t.kind,
                   ...(required.has(t.propName) ? { required: true } : {}),
+                  ...(t.description ? { description: t.description } : {}),
+                  ...(t.customAnswerFor ? { customAnswerFor: t.customAnswerFor } : {}),
                   ...elicitCardDescriptors(t)
                 }))
               }
