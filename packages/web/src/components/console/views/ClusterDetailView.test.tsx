@@ -52,6 +52,9 @@ vi.mock('swr', () => ({
 }))
 
 const ClusterDetailView = (await import('./ClusterDetailView')).default
+// The runtimes card opens the runtime-login dialog, so it renders under the provider the
+// console mounts it under — the same composition, not a stub.
+const { ModalProvider } = await import('@/components/console/ModalProvider')
 
 function member(id: string, over: Partial<DaemonRow> = {}): DaemonRow {
   return {
@@ -143,7 +146,11 @@ function render(): string {
   document.body.appendChild(host)
   const root: Root = createRoot(host)
   act(() => {
-    root.render(<ClusterDetailView />)
+    root.render(
+      <ModalProvider>
+        <ClusterDetailView />
+      </ModalProvider>
+    )
   })
   const html = host.innerHTML
   act(() => root.unmount())
@@ -272,7 +279,11 @@ describe('ClusterDetailView', () => {
     document.body.appendChild(host)
     const root: Root = createRoot(host)
     act(() => {
-      root.render(<ClusterDetailView />)
+      root.render(
+        <ModalProvider>
+          <ClusterDetailView />
+        </ModalProvider>
+      )
     })
     expect(host.innerHTML).not.toContain('sonnet')
     act(() => {
@@ -284,6 +295,39 @@ describe('ClusterDetailView', () => {
 
     expect(opened).toContain('sonnet')
     expect(opened).toContain('aria-expanded="true"')
+  })
+
+  it('hands over the login command for a runtime that rejected the probe', () => {
+    // The credential lives on the daemon host, so the warning's job is to produce the exact
+    // command — the console has no way to run it.
+    mocks.daemons = [
+      member('p1', {
+        runtimeModels: [
+          { runtime: 'claude-acp', version: '0.75.1', models: ['opus'], acpProtocolVersion: 1, authRequired: true }
+        ]
+      })
+    ] as unknown[]
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root: Root = createRoot(host)
+    act(() => {
+      root.render(
+        <ModalProvider>
+          <ClusterDetailView />
+        </ModalProvider>
+      )
+    })
+    expect(host.innerHTML).toContain('Login required')
+    const warning = [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      b.textContent?.includes('Login required')
+    )
+    act(() => warning?.click())
+    const opened = host.innerHTML
+    act(() => root.unmount())
+    host.remove()
+
+    expect(opened).toContain('agentconnect auth --runtime claude-acp')
   })
 
   it('says so when no pool member has registered at all', () => {

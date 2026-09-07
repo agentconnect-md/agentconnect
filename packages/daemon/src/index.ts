@@ -263,5 +263,29 @@ program
     }
   })
 
+program
+  .command('auth')
+  .description("Log a runtime in on this host (ACP authenticate, or the runtime's own interactive login)")
+  .option('--runtime <id>', 'runtime to log in; omit to list what is installed here')
+  .option('--method <id>', 'login method to use; omit to be shown what the runtime offers')
+  .option('--skip-probe', 'skip the login-state check and list every installed runtime')
+  .action(async (cmd: { runtime?: string; method?: string; skipProbe?: boolean }) => {
+    const opts = program.opts()
+    try {
+      const { runAuth } = await import('./cli/auth.js')
+      await runAuth({
+        ...(cmd.runtime ? { runtimeId: cmd.runtime } : {}),
+        ...(cmd.method ? { methodId: cmd.method } : {}),
+        ...(cmd.skipProbe ? { skipProbe: true } : {}),
+        configPath: opts.config,
+        root: opts.root
+      })
+      return exit(0)
+    } catch (err) {
+      console.error(`agentconnect auth: ${(err as Error).message}`)
+      return exit(1)
+    }
+  })
+
 await program.parseAsync()
 await telemetry.shutdown()

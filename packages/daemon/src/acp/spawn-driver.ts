@@ -74,8 +74,10 @@ export interface SpawnedRuntime {
   fromAgent: ReadableStream<Uint8Array>
   /** Fires once when the runtime reaches terminal exit on its own. */
   onExit(listener: () => void): void
-  /** Graceful stop escalating past the deadline. Safe to call on a dead target. */
-  stop(deadlineMs: number): Promise<void>
+  /** Graceful stop escalating past the deadline. Safe to call on a dead target.
+   *  `eofGraceMs` waits that long for the runtime to exit on stdin EOF before any signal —
+   *  0 (the default) signals immediately, which is what a daemon teardown wants. */
+  stop(deadlineMs: number, eofGraceMs?: number): Promise<void>
 }
 
 /**
@@ -266,7 +268,7 @@ class LocalSpawnedRuntime implements SpawnedRuntime {
     this.child.once('close', once)
   }
 
-  async stop(deadlineMs: number): Promise<void> {
+  async stop(deadlineMs: number, eofGraceMs = 0): Promise<void> {
     if (this.stopped) return
     this.stopped = true
     const child = this.child
@@ -300,6 +302,19 @@ class LocalSpawnedRuntime implements SpawnedRuntime {
       child.stdin?.end()
     } catch {
       /* stream locked/destroyed — signals still land */
+    }
+    // An interactive caller may pay for a graceful exit: a runtime that handles EOF exits with
+    // status 0 and prints nothing, while the SIGTERM below makes some of them dump a signal
+    // handler's stack trace over the operator's terminal. Daemon teardown passes 0 and skips this.
+    if (eofGraceMs > 0) {
+      const exited = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), eofGraceMs)
+        this.onExit(() => {
+          clearTimeout(timer)
+          resolve(true)
+        })
+      })
+      if (exited) return
     }
     kill('SIGTERM')
     await new Promise<void>((resolve) => {

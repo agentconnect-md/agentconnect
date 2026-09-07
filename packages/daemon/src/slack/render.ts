@@ -634,6 +634,12 @@ export const WEBCHAT_ELICIT_SURFACE: ElicitSurface = {
   kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum', 'text', 'number'])
 }
 
+/** The auth CLI drives a real terminal: an arrow-key list for the pickable kinds and a typed
+ *  line for the rest, so it claims every kind, and its list scrolls like webchat's — no limit. */
+export const CLI_ELICIT_SURFACE: ElicitSurface = {
+  kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum', 'text', 'number'])
+}
+
 /** The `format` values MCP `2025-11-25` defines for an elicited string — exactly these four. */
 export type ElicitFormat = 'email' | 'uri' | 'date' | 'date-time'
 const ELICIT_FORMATS: readonly ElicitFormat[] = ['email', 'uri', 'date', 'date-time']

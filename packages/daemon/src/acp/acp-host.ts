@@ -4,6 +4,7 @@ import {
   ndJsonStream,
   type ClientConnection,
   type ContentBlock,
+  type AuthMethod,
   type CreateElicitationRequest,
   type CreateElicitationResponse,
   type McpServer,
@@ -531,6 +532,7 @@ export class AcpHost {
   // baseline and always accepted). null until the handshake completes; the
   // unstable `acp` transport flag is deliberately ignored. Read via mcpCapabilities().
   private mcpCaps: McpTransportCapabilities | null = null
+  private agentAuthMethods: AuthMethod[] = []
   // The ACP agent's self-reported identity from the `initialize` response
   // (`agentInfo`: name/title/version) — the ACTUAL running adapter version (e.g.
   // claude-agent-acp 0.59.0), as opposed to the registry's declared version.
@@ -580,6 +582,18 @@ export class AcpHost {
        * breaking. Never fires for non-Claude runtimes or adapters that don't forward it.
        */
       onSdkLifecycle?: (sessionId: string, message: unknown) => void
+      /**
+       * Services the REQUEST-scoped elicitations of the auth/config phase (no sessionId), which
+       * {@link onElicit} deliberately declines because they map to no live turn. Set only by an
+       * interactive caller — a daemon session has no reader for a question its turn cannot carry.
+       */
+      onAuthElicit?: (params: CreateElicitationRequest) => Promise<CreateElicitationResponse | undefined>
+      /**
+       * Advertises `auth.terminal`, letting the agent offer auth methods the CLIENT completes by
+       * re-launching the agent program interactively. Per the spec a client may claim this only
+       * when it can reproduce that invocation on a real terminal, so a daemon session never does.
+       */
+      authTerminalCapable?: boolean
       env?: Record<string, string>
       /** Files `env` points at, written by the driver in the runtime's own filesystem before start. */
       files?: SpawnFile[]
@@ -740,6 +754,14 @@ export class AcpHost {
         // Only session-scoped elicitations map to a live turn; request-scoped ones
         // (auth/config phase, no session) have no sessionId — decline those.
         const sessionId = (ctx.params as { sessionId?: string }).sessionId
+        if (!sessionId && self.opts.onAuthElicit) {
+          try {
+            const res = await self.opts.onAuthElicit(ctx.params)
+            if (res) return res
+          } catch (err) {
+            self.opts.log?.debug(`acp: onAuthElicit failed, declining: ${(err as Error).message}`)
+          }
+        }
         if (self.opts.onElicit && sessionId) {
           try {
             const res = await self.opts.onElicit(sessionId, ctx.params)
@@ -785,10 +807,12 @@ export class AcpHost {
         // spec reserves for them instead of a form that would carry the secret through chat.
         // Unrenderable forms and surfaces without a consent card are declined gracefully by
         // the onElicit fallback above.
-        elicitation: { form: {}, url: {} }
+        elicitation: { form: {}, url: {} },
+        ...(this.opts.authTerminalCapable ? { auth: { terminal: true } } : {})
       }
     })
     this.negotiatedProtocolVersion = init.protocolVersion
+    this.agentAuthMethods = init.authMethods ?? []
     this.canLoad = init.agentCapabilities?.loadSession ?? false
     this.canUseAdditionalDirectories = init.agentCapabilities?.sessionCapabilities?.additionalDirectories != null
     this.canDelete = init.agentCapabilities?.sessionCapabilities?.delete != null
@@ -1027,6 +1051,21 @@ export class AcpHost {
 
   /** The ACP protocol version negotiated at initialize, or undefined before the
    *  handshake completed. Used by the runtime probe to report ACP coverage. */
+  /** Login methods the agent advertised at `initialize`, in its own order. */
+  authMethods(): AuthMethod[] {
+    return this.agentAuthMethods
+  }
+
+  /** Run the agent's own login for one advertised method. `terminal` methods are the CLIENT's to
+   *  run as an interactive process, and the spec forbids passing them here. */
+  async authenticate(methodId: string): Promise<void> {
+    const method = this.agentAuthMethods.find((entry) => entry.id === methodId)
+    if (method && 'type' in method && method.type === 'terminal') {
+      throw new Error(`auth method "${methodId}" is completed by the client, not by \`authenticate\``)
+    }
+    await this.conn!.agent.request(methods.agent.authenticate, { methodId })
+  }
+
   acpProtocolVersion(): number | undefined {
     return this.negotiatedProtocolVersion
   }
@@ -1163,10 +1202,10 @@ export class AcpHost {
    *  spawned detached) so they reach the real adapter behind an npx wrapper too.
    *  Idempotent — the child handle is cleared up front so a concurrent stop (drain
    *  + reconcile racing) is a no-op rather than a double-kill. */
-  async stop(deadlineMs = 5000): Promise<void> {
+  async stop(deadlineMs = 5000, eofGraceMs = 0): Promise<void> {
     const spawned = this.spawned
     if (!spawned) return
     this.spawned = undefined
-    await spawned.stop(deadlineMs)
+    await spawned.stop(deadlineMs, eofGraceMs)
   }
 }

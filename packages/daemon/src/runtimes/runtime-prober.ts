@@ -184,6 +184,9 @@ export interface ProbeOptions {
   /** Resolve the def to probe, just before spawning — an archive-distributed runtime installs here.
    *  Undefined means the runtime is no longer launchable and gets no probe at all. */
   resolveRuntime?: (id: string, rt: RuntimeDef) => Promise<RuntimeDef | undefined>
+  /** Stop starting new probes. Checked between runtimes, so an aborted sweep still lets the
+   *  probes already in flight tear their own children down through their per-runtime deadline. */
+  signal?: AbortSignal
   /** Prepare the same sandbox/private-HOME or inherited-host launch used by a real agent. */
   launchFor?: (
     id: string,
@@ -553,7 +556,21 @@ export async function probeRuntime(
     timer = setTimeout(() => reject(new Error(`probe timed out after ${timeoutMs}ms`)), timeoutMs)
   })
 
+  // An abort ends THIS probe, not just the queue behind it: the `finally` below then stops the
+  // child at once instead of leaving it to run out its deadline after the caller has moved on.
+  const signal = opts.signal
+  let onAbort: (() => void) | undefined
+  const cancelled = new Promise<never>((_, reject) => {
+    // An ALREADY-aborted sweep is the guard below, not this promise: rejecting here before the
+    // race exists is an unhandled rejection, and the guard never launches the runtime anyway.
+    if (!signal || signal.aborted) return
+    onAbort = () => reject(new Error('probe cancelled'))
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+
   try {
+    // A sweep already cancelled launches nothing: the caller has stopped waiting for verdicts.
+    if (signal?.aborted) throw new Error('probe cancelled')
     const launch = preparedProbeLaunch(id, rt, cwd, opts)
     redactValues = launch?.redactValues ?? []
     const effectiveRuntime = launch?.runtime ?? rt
@@ -575,7 +592,7 @@ export async function probeRuntime(
       probeSessionId = await activeHost.newSession(cwd, [])
       return activeHost.modelOptions()
     }
-    const opt = await Promise.race([run(), timeout])
+    const opt = await Promise.race([run(), timeout, cancelled])
     // Surface the model selector verbatim, including any literal "default" entry
     // the agent advertises (claude offers one, and it is the fresh-session
     // currentValue). We never SYNTHESIZE a "default" choice, but we mirror one the
@@ -607,6 +624,7 @@ export async function probeRuntime(
     return { runtime: id, ok: false, models: [], error, ...(isAuthRequiredError(err) ? { authRequired: true } : {}) }
   } finally {
     if (timer) clearTimeout(timer)
+    if (onAbort) signal?.removeEventListener('abort', onAbort)
     await host?.stop().catch(() => {}) // best-effort teardown — never mask the probe result
   }
 }
@@ -633,6 +651,7 @@ export async function probeAllRuntimes(
 
   const worker = async (): Promise<void> => {
     for (let i = next++; i < ids.length; i = next++) {
+      if (opts.signal?.aborted) return
       const id = ids[i]!
       // Resolved inside this worker: a vendor archive installing on demand occupies one probe slot
       // instead of the whole sweep, and sits outside the per-runtime deadline probeRuntime applies.
