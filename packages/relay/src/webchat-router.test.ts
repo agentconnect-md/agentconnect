@@ -50,15 +50,15 @@ describe('WebchatRouter', () => {
     expect(r.size()).toBe(0)
   })
 
-  it('unregister is only-if-still-ours — a stale close must not evict a resumed socket', () => {
+  it('a stale close removes only its own subscription', () => {
     const r = new WebchatRouter()
     const first = sink()
     const second = sink()
     r.register(CHAT_A, first)
-    r.register(CHAT_A, second) // a resume reclaims the same chatId
-    r.unregister(CHAT_A, first) // the OLD socket's late close fires — must be a no-op
+    r.register(CHAT_A, second)
+    r.unregister(CHAT_A, first)
     r.deliver(chat(CHAT_A))
-    expect(second.onChat).toHaveBeenCalledOnce() // resumed socket still attached
+    expect(second.onChat).toHaveBeenCalledOnce()
     expect(first.onChat).not.toHaveBeenCalled()
   })
 })

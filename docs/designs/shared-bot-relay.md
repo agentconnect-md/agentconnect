@@ -486,9 +486,11 @@ block at the daemon, and is never persisted by the relay or Control Plane.
   the normal daemon path.
 - Direct Slack integrations retain their daemon-owned socket transport.
 - Webchat output is returned through `rd/chat` to the relay holding the browser
-  session. The daemon assigns monotonically increasing output indexes, retains
-  the bounded replay window, and can rebind an accepted turn to a replacement
-  relay connection.
+  session. That relay delivers output, completion, and canonical posts to every
+  verified browser connection for the conversation; opening or closing another
+  tab preserves existing subscriptions. The daemon assigns monotonically
+  increasing output indexes, retains the bounded replay window, and can rebind
+  an accepted turn to a replacement relay connection.
 
 Slack rate limits are global to a bot while send queues are local to member
 daemons. Each daemon respects `429` and `Retry-After`; conversation ownership reduces
