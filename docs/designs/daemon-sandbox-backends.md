@@ -1,14 +1,14 @@
 # Daemon Sandbox Backends
 
 **Status: Partially implemented.** SRT remains the default. The opt-in Linux
-microsandbox backend implements explicit image selection, resource configuration,
-guest execution, host mounts, and retained-disk stop/start. A complete real-daemon
-workload remains an acceptance gate. Default release image selection, Docker,
-network configuration, and port publication remain **Proposed**.
+microsandbox backend implements release image defaults and explicit overrides,
+resource configuration, guest execution, host mounts, retained-disk stop/start,
+and Docker/Compose tooling that agents can start inside each VM when needed.
+Networking has one fixed requirement for isolated sessions: public internet
+access, with no access to other session VMs or host/private networks. End-to-end
+network and workload validation remains pending.
 
-The first VM implementation uses the existing workspace modes and lifecycle.
-Docker, Compose, and development networking are subsequent additions to that
-execution path.
+The VM implementation uses the existing workspace modes and lifecycle.
 
 This extends [daemon configuration and lifecycle](daemon-detailed-design.md) and
 uses the existing [execution-driver seam](cluster-spawn-and-shim.md#1-why-a-seam-at-all).
@@ -28,8 +28,8 @@ The daemon-owned `sandbox` object in `~/.agentconnect/config.json` defaults to
 }
 ```
 
-The current microsandbox configuration requires an explicit image. Replace the
-example reference with a compatible runtime image:
+Release builds include the shared runtime image reference. This example uses
+that default:
 
 ```json
 {
@@ -46,7 +46,6 @@ example reference with a compatible runtime image:
       }
     ],
     "microsandbox": {
-      "image": "registry.example.com/agentconnect/runtime-sandbox:build-tag",
       "cpus": 2,
       "memoryMiB": 2048,
       "diskGiB": 10
@@ -57,21 +56,21 @@ example reference with a compatible runtime image:
 
 The resource values shown are the defaults, not measured minimums or capacity
 recommendations. All three are positive integers bounded by the SDK's supported
-numeric ranges. The VM configuration is strict: `docker` and `network` fields
-are not accepted yet.
+numeric ranges. Source/development builds have no release image default and
+require an explicit `sandbox.microsandbox.image`, such
+as `registry.example.com/agentconnect/runtime-sandbox:build-tag`. An explicit image
+also overrides the release default. Networking is fixed backend behavior; the
+strict VM configuration has no network modes, port mappings, or outbound-proxy
+settings.
 
-| Setting                        | Meaning and delivery status                                                                                                                                                                                                                                                                                                           |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox.backend`              | Implemented: `srt` is the default; `microsandbox` selects the Linux VM implementation for sandboxed launches.                                                                                                                                                                                                                         |
-| `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent, using the selected backend.                                                                                                                                                                                                                                           |
-| Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents.                                                                                                                                                                                      |
-| `sandbox.microsandbox.image`   | Implemented: required, non-empty OCI reference when selecting microsandbox. No bundled release default or Kubernetes image lookup is used.                                                                                                                                                                                            |
-| `cpus`, `memoryMiB`, `diskGiB` | Implemented: per-VM CPU allocation, memory limit, and disk capacity; defaults are `2`, `2048`, and `10`. Host capacity planning remains the operator's responsibility.                                                                                                                                                                |
-| `docker`                       | Proposed: start an independent Docker daemon inside each VM. Requires Docker tools in the selected image; never means mounting the host Docker socket. Default false until the Docker-enabled shared image and workload checks are delivered.                                                                                         |
-| `sandbox.mounts`               | Implemented: operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `readOnly` (default `true`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets. Workspace, HOME, and runtime state remain automatically provisioned.                                                  |
-| `network.access`               | Proposed: `development` allows public, private-network, and host connectivity subject to mandatory control/admin exclusions; `public` allows public egress and required daemon endpoints; `none` disables external egress. The proposed default is `development`; the current implementation retains upstream public-only networking. |
-| `network.ports`                | Proposed: guest service ports exposed through daemon-assigned host ports. `host: 0` requests an available port. The backend binds and verifies the mapping; retry allocation conflicts and release mappings on teardown.                                                                                                              |
-| `network.outboundProxy`        | Proposed: optional host-side SOCKS URL for microsandbox's outbound transport.                                                                                                                                                                                                                                                         |
+| Setting                        | Meaning and delivery status                                                                                                                                                                                                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sandbox.backend`              | Implemented: `srt` is the default; `microsandbox` selects the Linux VM implementation for sandboxed launches.                                                                                                                                                                        |
+| `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent, using the selected backend.                                                                                                                                                                                          |
+| Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents.                                                                                                                                     |
+| `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                     |
+| `cpus`, `memoryMiB`, `diskGiB` | Implemented: per-VM CPU allocation, memory limit, and disk capacity; defaults are `2`, `2048`, and `10`. Host capacity planning remains the operator's responsibility.                                                                                                               |
+| `sandbox.mounts`               | Implemented: operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `readOnly` (default `true`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets. Workspace, HOME, and runtime state remain automatically provisioned. |
 
 ### Shared mounts and manual conversion
 
@@ -162,8 +161,8 @@ mount specification, and a hash of the SDK's saved configuration. Reuse rejects
 missing or changed bindings and configuration rather than silently recreating the
 VM. A retained VM keeps its original configuration. Restarting the daemon does
 not upgrade it or migrate its disk; configuration changes require an explicit
-retirement/recreation or a future data-migration operation. Resolved-image metadata
-and upgrade tooling remain proposed.
+retirement/recreation or a future data-migration operation. Image digest
+resolution and upgrade tooling remain proposed.
 
 Kubernetes mode retains `K8sDriver`, its resource configuration, and image rollout.
 An explicitly configured local microsandbox backend
@@ -237,7 +236,7 @@ paths. This change does not redesign Git storage.
 
 ### Current image contract and flat disks
 
-An explicit OCI image is required. The runtime image must contain Node at
+The resolved OCI image must contain Node at
 `/usr/local/bin/node`, Python 3 for the guest helper, the declared runtime tools,
 and `/opt/agentconnect/runtime/k8s-runtimes.json`. The existing pool image contains
 these components. Startup reads and validates that table in a real VM; individual
@@ -264,71 +263,87 @@ image forms, and tests stop/start. The VM continues to use its flat disk. This
 uses the upstream CLI and package without an upstream source patch; cold image
 preparation includes the extra materialization cost.
 
-### Proposed release image selection and Docker
+### Release image selection and Docker
 
-Add release-generated metadata bundled with the daemon containing the published
-`runtimeSandboxImage` OCI reference. Generate it from the release workflow's
-component-version output, so local daemons use the same artifact as the pool
-without querying a cluster. This is new metadata: today's `poolRuntimeImage()`
-resolves the Kubernetes SandboxTemplate, and is not a local default resolver.
-An explicit daemon image would override this metadata; builds without metadata
-would still require an explicit image. This default resolver is not implemented.
-The current shared image does not include a configured Docker daemon.
+The release build bundles `dist/release.json` with a `runtimeSandboxImage` OCI
+reference. It names the current release's `runtime-sandbox:v<version>` alias.
+The image workflow creates this alias even when it reuses an older component
+image, so it identifies the same shared artifact as the pool without querying a
+cluster. The daemon package is published before image finalization; the matching
+image workflow must complete before this default can be pulled. A missing image
+fails preflight rather than selecting another version.
+Runtime-image input changes also trigger daemon package publication so its
+bundled default follows the updated image.
+The shared release image is currently Linux amd64; an arm64 daemon must configure
+a compatible image explicitly.
 
-For `docker=true`, extend that shared image with Docker Engine and the Compose
-plugin, and explicitly start dockerd inside the VM with guest privileges before
-launching the harness. Configure the harness user to reach the guest Docker
-socket. Keep Docker opt-in for sessions that do not need its resource cost. A
-custom image must satisfy the same runtime/tool contract or fail its admission
-probe; do not silently install missing tools on every session start.
+An explicit daemon image overrides this metadata. Development builds remove
+release metadata and require an explicit image; they do not derive a default
+from the development package version. Upgrading to a different default image
+reference remains a configuration change under the persisted-VM checks above.
+Pin an explicit image to retain the same reference across daemon upgrades.
 
-Docker data and build caches would use the retained flat disk. Docker Engine,
-Compose, and Testcontainers compatibility remain separate acceptance work; the
-current backend neither starts dockerd nor exposes a `docker` setting.
+The shared image contains pinned Docker Engine, CLI, containerd, Buildx, and
+Compose packages. Its ordinary container user and shim entrypoint remain in
+place. Image construction installs and verifies the tools; it does not start
+Docker. Inside a microsandbox VM, the agent can start Docker when a task needs it:
 
-### Current network and proposed development/preview experience
+```sh
+sudo -n dockerd > /tmp/dockerd.log 2>&1 &
+docker info
+```
 
-The current implementation selects upstream's `single-tenant` deployment profile
-and leaves its default public-only network policy unchanged: public egress and
-gateway DNS are available; private, host, loopback, link-local, and metadata
-destinations are denied. There are no published ports and no daemon network or
-outbound-proxy settings yet. The following development and preview behavior is
-**Proposed**, not enabled by selecting microsandbox today.
+Wait for that command's Docker server to become ready before using containers.
+The image grants the `agent` user permission to run `dockerd` through sudo and
+access the Docker group's Unix socket. It does not grant unrestricted sudo.
+A custom image owns its corresponding tools and startup permissions.
 
-Development networking should let package managers, Git, databases, and web
-servers behave normally. The proposed profile admits the connectivity described
-in section 1 without per-domain approval prompts. Translate upstream's public-only
-rules deliberately; they are not the proposed development profile. The stricter
-multi-tenant profile is not selected here: it disables host access and port
-publication needed by this future local workflow.
+There is no daemon Docker configuration, automatic startup, health gate, or
+Docker process supervisor. Docker failures are ordinary tool failures and do not
+stop an otherwise healthy agent VM. The host Docker socket is not mounted by the
+backend; ambient host Docker contexts and connection paths are removed from guest
+launches. Managed-pool pod privileges are unchanged by the image's installed tools.
 
-Before broad development rules, deny the daemon's registered control/admin
-listeners and deployment-configured management endpoints, including the local
-Setup Server. Match their actual ports across the host gateway and all relevant
-IPv4/IPv6 addresses; the `host` group alone does not cover every LAN alias.
-Admission fails if these rules cannot be installed. Unknown host services require
-operator configuration; this profile does not discover every management service.
-Apply destination policy before an outbound SOCKS proxy as well.
+Docker image layers, named volumes, and build caches live on the retained flat
+disk. Stopping retains them; after a VM restart the agent starts dockerd again
+when needed. VM retirement deletes them. Docker-published ports belong to the
+VM's network namespace, so two sessions can use the same internal port. This does not publish the port on the
+daemon host or provide a remote browser preview.
 
-When the runtime needs an allowed host service, guest `127.0.0.1` refers to the
-guest. Use `host.microsandbox.internal` and configure the destination listener and
-network rules for that route. SRT retains its existing network integration. See
-[microsandbox networking](https://docs.microsandbox.dev/networking/overview) and
-[its outbound proxy](https://docs.microsandbox.dev/networking/outbound-proxy).
+### Session network isolation
 
-Two sessions could both use guest ports 3000 and 5432. The daemon would allocate separate
-host listeners and report their effective mappings; the browser would get an address
-for the selected session. Remote-daemon preview needs a separately provided
-tunnel or preview route: returning that machine's localhost URL is not
-a working remote preview. Live preview bytes must not be added to the CP control
-WebSocket.
+In session-isolation mode, each session's VM has its own network environment.
+The required behavior is fixed:
 
-Native microsandbox port mappings are creation-time configuration in the inspected
-API; its modify interface does not expose changing ports/network. First support
-declared ports. Automatic discovery and opening arbitrary ports in a running
-session requires a daemon-owned guest forwarding channel, including WebSocket
-upgrade for development servers, and is a later deliverable. Do not claim the SDK
-already supplies that experience.
+- Sessions can access the public internet, including DNS, Git, and package registries.
+- Sessions cannot connect directly to other session VMs or to host/private-network services.
+- Services inside one session can communicate normally, including guest loopback
+  and Docker container networks.
+
+Shared workspace mode continues to reuse the agent's VM and therefore its
+network environment; separate conversations in that mode are not isolated VMs.
+SRT retains its existing network integration.
+
+The current manager selects upstream's `single-tenant` deployment profile,
+retains its default public-only outbound policy, and configures no published
+ports. See [microsandbox networking](https://docs.microsandbox.dev/networking/overview).
+The backend uses the SDK guest channel for daemon communication. This does not
+require allowing guest access to the host's general network services.
+The existing policy is the implementation baseline; complete-session tests must
+still establish public egress and denied host/private/peer connectivity, including
+applicable IPv4/IPv6 host addresses and aliases. The upstream
+[host category](https://github.com/superradcompany/microsandbox/blob/v0.6.17/crates/network/lib/policy/destination.rs#L40)
+covers the VM gateway; a routable public address belonging to the host can still classify
+as public. Blocking that route remains an implementation/validation gap. Selecting
+a deployment profile alone is not evidence that these checks passed.
+
+Two isolated sessions can each listen on guest port 3000 or publish a Docker
+container on guest port 5432 without a conflict. Those ports belong to separate
+VM networks. Allocating different host ports is only needed when exposing these
+services through listeners on the daemon host; it does not create session
+isolation. Host port publication, dynamic preview forwarding, and remote browser
+access are outside this delivery scope. No daemon networking configuration is
+added for them.
 
 ### Stop, restart, and retirement
 
@@ -364,24 +379,29 @@ Delivery is split into independently reviewable steps:
    explicit image and resources, Linux VM boot/runtime-table/stop-start checks,
    SDK-backed ACP streams and guest Git, shared host filesystem paths, and retained
    environment lifecycle. Keep upstream public-only networking and SRT as default.
-3. **Proposed — image and development features:** add release image metadata,
-   Docker/Compose support, and configured networking/declared ports with admin
-   exclusions. These configuration fields are not part of the current schema.
-4. **Proposed — developer experience and measurement:** run real projects and add
-   dynamic preview forwarding separately. Change the default only after compatibility
-   and resource measurements support it.
+3. **Implemented — release image and Docker:** bundle the shared release image
+   reference with explicit override support, and provide Docker/Compose tools
+   and manual startup permissions in the image. Verify actual workloads and
+   lifecycle below.
+4. **Pending — network and workload validation:** verify public egress, denied
+   host/private/peer connectivity, and concurrent sessions using the same guest
+   ports. Complete native-tool, Docker, and lifecycle checks; fix demonstrated
+   gaps without adding network modes or host port publication.
+5. **Pending — performance measurement:** run real projects at increasing session
+   counts. Change the default only after compatibility and resource measurements
+   support it.
 
 Implementation status above does not establish successful end-to-end daemon
 execution. The current VM slice still needs complete-session and lifecycle
-evidence; proposed features have their own subsequent acceptance gates:
+evidence, with the following acceptance checks:
 
 | Area                       | Required evidence                                                                                                                                                                                                                                                           |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Existing behavior          | Default SRT, required/optional sandbox policy, and Kubernetes execution remain usable. No-KVM behavior is explicit.                                                                                                                                                         |
 | Mounts                     | SRT accepts equal normalized paths and rejects remapping; read-only is the default and writable mounts reach native tools. Verify nested/duplicate entries, VM guest targets and mount flags, package-cache access, and host-data preservation on retirement.               |
-| Image and complete session | Explicit image preparation, ACP initialize/new/load, output, cancellation, cleanup, and a real native-tool turn succeed. Proposed release image defaults need separate verification when implemented.                                                                       |
-| Docker — Proposed          | Compose and Testcontainers work, including DNS, random ports, bind mounts, build cache, and cleanup helpers. Two sessions use the same internal ports.                                                                                                                      |
-| Networking                 | Verify current public Git/npm egress and denied host/private destinations. Proposed profiles additionally need an allowed host database, preview/WebSockets, and control/admin exclusions across gateway/address aliases, including with SOCKS.                             |
+| Image and complete session | Explicit image preparation, ACP initialize/new/load, output, cancellation, cleanup, and a real native-tool turn succeed. Verify the release image default, explicit overrides, and metadata-free development builds.                                                        |
+| Docker                     | Compose and Testcontainers work, including DNS, random ports, bind mounts, build cache, and cleanup helpers. Two sessions use the same internal ports.                                                                                                                      |
+| Networking                 | Verify public DNS/Git/npm egress, denied host/private/peer connections across applicable IPv4/IPv6 addresses and aliases, and successful same-port listeners in two isolated sessions. Guest loopback and Docker networking must remain usable.                             |
 | Lifecycle                  | Idle stop preserves work/cache; start re-establishes ACP; daemon restart fences old hosts; dirty/unpushed work prevents destructive retirement.                                                                                                                             |
 | Performance                | Measure cold image preparation, warm disk clone, stopped-session restart, ACP-ready latency, and Git/install/build duration. At 1/10/20 sessions, record whole-environment memory, peaks, disk growth, CPU limits, and cleanup. Record reflink versus sparse-copy behavior. |
 

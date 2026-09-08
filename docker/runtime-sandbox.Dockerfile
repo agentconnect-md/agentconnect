@@ -19,7 +19,7 @@
 #      PID 1 ignores SIGTERM is a pod that only ever dies by SIGKILL.
 #   2. The shim is root-owned and not writable by the user the runtime runs as. The runtime is
 #      the untrusted party; a shim it can rewrite is a shim it can replace.
-#   3. It runs as non-root, with no capability to become root.
+#   3. It defaults to non-root; pool pods prevent privilege escalation.
 #   4. It mounts no service-account token of its own. The pod template governs that projection,
 #      and the image must not smuggle in an identity of its own.
 
@@ -114,6 +114,10 @@ ARG CLAUDE_ACP_VERSION=0.75.1
 ARG CODEX_ACP_VERSION=1.10.0-agentconnect.2
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.30
 ARG AGENT_BROWSER_VERSION=0.37.0
+ARG DOCKER_VERSION=5:29.8.0-1~debian.12~bookworm
+ARG CONTAINERD_VERSION=2.3.5-1~debian.12~bookworm
+ARG DOCKER_BUILDX_VERSION=0.37.0-1~debian.12~bookworm
+ARG DOCKER_COMPOSE_VERSION=5.5.1-1~debian.12~bookworm
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
 # shim's exec channel. openssh-client is for ssh remotes; tini is PID 1.
@@ -126,6 +130,20 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 # `python` as well as `python3` — plenty of tooling still spawns the unsuffixed name.
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
+
+# Docker's signed Debian repository supplies exact versions; the image never starts dockerd automatically.
+RUN install -m 0755 -d /etc/apt/keyrings \
+  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+  && chmod 0644 /etc/apt/keyrings/docker.asc \
+  && printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable\n' \
+    "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.list \
+  && apt-get update \
+  && apt-get install --no-install-recommends -y \
+    "docker-ce=${DOCKER_VERSION}" "docker-ce-cli=${DOCKER_VERSION}" \
+    "containerd.io=${CONTAINERD_VERSION}" "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
+    "docker-compose-plugin=${DOCKER_COMPOSE_VERSION}" sudo \
+  && rm -rf /var/lib/apt/lists/* \
+  && dockerd --version && docker --version && docker buildx version && docker compose version
 
 # Chrome's shared libraries: `agent-browser install` installs these with `sudo apt-get`, which uid 10001 cannot.
 # The 25-soname `ldd chrome` closure only — headless CDP was verified without libgtk-3-0 (+116 MB) and xvfb (+167 MB).
@@ -252,6 +270,12 @@ RUN printf '%s\n' \
 RUN groupadd --gid 10001 agent \
   && useradd --uid 10001 --gid 10001 --home-dir /agent --shell /usr/sbin/nologin --create-home agent \
   && chown 10001:10001 /agent
+
+# VM users can start Docker on demand; pool no-new-privileges still prevents sudo elevation.
+RUN usermod --append --groups docker agent \
+  && printf 'agent ALL=(root) NOPASSWD: /usr/bin/dockerd\n' > /etc/sudoers.d/agent-dockerd \
+  && chmod 0440 /etc/sudoers.d/agent-dockerd \
+  && visudo --check --file /etc/sudoers.d/agent-dockerd
 
 # Where the shim serves the daemon's unix sockets (src/shim/tunnel.ts SANDBOX_TUNNEL_PATHS).
 # Created HERE because /run is root-owned and the shim runs as 10001: without an owned directory

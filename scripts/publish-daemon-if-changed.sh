@@ -1,8 +1,5 @@
 #!/bin/sh
-# Publishes the daemon to npm ONLY when something that lands in its bundle
-# changed since the previous release on this channel. The daemon actually
-# changes in well under half of releases (~43% as of 2026-07), and the fleet
-# upgrades manually — every skipped publish is one less no-op version.
+# Publish only when the daemon bundle or its default runtime image inputs change on this channel.
 #
 # Called by release.config.js's prepareCmd/publishCmd (cwd = repo root) with:
 #   $1 = previous release git tag on this channel ('' on a channel's first
@@ -42,35 +39,17 @@ case "$MODE" in
     ;;
 esac
 
-# Everything tsdown inlines into the daemon bundle: the daemon itself, its
-# workspace deps (keep in sync with packages/daemon/package.json), and
-# tsconfig.base.json (shapes the emitted JS). The lockfile is deliberately
-# NOT here: it is shared by every workspace package, so diffing it whole
-# republished the daemon whenever ANY package touched a dependency (a web
-# icons bump, say). It is checked separately below, scoped to the daemon's
-# importers.
-DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/k8s-client tsconfig.base.json"
-DAEMON_IMPORTERS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/k8s-client"
+. "$REPO_ROOT/scripts/runtime-sandbox-inputs.sh"
+# The image consumes the full lockfile, so even unrelated dependency bumps now refresh its daemon default.
+DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packages/protocol packages/connection packages/k8s-client tsconfig.base.json $RUNTIME_SANDBOX_PATHS"
 
 if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev/null; then
   # Word-splitting DAEMON_PATHS is deliberate: it is a list of pathspecs.
   # shellcheck disable=SC2086
   CHANGED=$(git diff --name-only "$LAST_TAG" HEAD -- $DAEMON_PATHS)
   if [ -z "$CHANGED" ]; then
-    # Package dirs untouched — but a floating-range resolution bump can still
-    # change the bundle without touching any package dir, so ask whether the
-    # lockfile's resolved closure for the daemon's importers moved. Prints
-    # "unchanged" only when certain; anything it can't parse counts as
-    # changed. The helper runs in a plain assignment — NOT inside the if
-    # condition, where errexit is suspended — so a git/node failure exits
-    # non-zero and aborts the release instead of publishing after a failed
-    # safety check.
-    # shellcheck disable=SC2086
-    LOCK_VERDICT=$(node "$REPO_ROOT/scripts/lockfile-closure-changed.mjs" "$LAST_TAG" HEAD $DAEMON_IMPORTERS)
-    if [ "$LOCK_VERDICT" = "unchanged" ]; then
-      echo "daemon bundle inputs unchanged since ${LAST_TAG} — skipping ${SKIP_LABEL} (checked: ${DAEMON_PATHS} + lockfile closure of ${DAEMON_IMPORTERS})"
-      exit 0
-    fi
+    echo "daemon bundle and runtime image inputs unchanged since ${LAST_TAG} — skipping ${SKIP_LABEL} (checked: ${DAEMON_PATHS})"
+    exit 0
   fi
 fi
 
@@ -83,7 +62,7 @@ if [ "$MODE" = prepare ]; then
   # is equivalent here — the bundle is already built by tsdown and deps are
   # stripped below.
   pnpm exec json -I -f package.json -e "this.version='$VALUE'"
-  pnpm run build
+  AGENTCONNECT_RELEASE_VERSION="$VALUE" pnpm run build
   pnpm exec json -I -f package.json -e 'this.dependencies={}'
   exit 0
 fi

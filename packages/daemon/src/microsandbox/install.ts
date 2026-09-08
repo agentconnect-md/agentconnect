@@ -4,8 +4,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { RuntimeStore } from '../runtimes/runtime-store.js'
 import { MicrosandboxManager } from './driver.js'
-import type { Config } from '../config/config-schema.js'
+import { MicrosandboxConfigSchema, type Config } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
+import { resolveMicrosandboxImage } from '../release-image.js'
 
 export const MICROSANDBOX_VERSION = '0.6.17'
 
@@ -26,11 +27,13 @@ export function microsandboxGuestEntry(root: string): string {
 
 export async function installMicrosandbox(opts: {
   root: string
-  config: NonNullable<Config['sandbox']['microsandbox']>
+  config: Config['sandbox']['microsandbox']
   sockets: { mcp: string; gitcred: string }
   log: Logger
 }): Promise<MicrosandboxManager> {
   if (process.platform !== 'linux') throw new Error('microsandbox currently requires a Linux host with KVM')
+  const config = MicrosandboxConfigSchema.parse(opts.config ?? {})
+  const image = resolveMicrosandboxImage(config.image)
   const state = join(opts.root, 'microsandbox')
   mkdirSync(state, { recursive: true, mode: 0o700 })
   // The SDK has process-wide local state; this daemon owns its home for its entire lifetime.
@@ -51,5 +54,5 @@ export async function installMicrosandbox(opts: {
   )) as typeof import('microsandbox')
   const platform = `@superradcompany/microsandbox-linux-${process.arch}-gnu`
   const command = join(dirname(installedRequire.resolve(`${platform}/package.json`)), 'bin', 'msb')
-  return new MicrosandboxManager({ ...opts, sdk, msbCommand: { command, args: [] } })
+  return new MicrosandboxManager({ ...opts, config: { ...config, image }, sdk, msbCommand: { command, args: [] } })
 }

@@ -77,6 +77,34 @@ check('runs as a non-root user', () => {
   return `uid ${uid} (USER ${configured})`
 })
 
+check('Docker Engine, Buildx and Compose are installed without starting a daemon', () => {
+  return inImage('set -e; dockerd --version; docker --version; docker buildx version; docker compose version')
+})
+
+check('the runtime user may elevate only the Docker daemon command', () => {
+  return inImage(
+    'set -e; getent group docker | cut -d: -f4 | tr , "\\n" | grep -qx agent; sudo -n /usr/bin/dockerd --version; if sudo -n /usr/bin/id -u >/dev/null 2>&1; then exit 1; fi'
+  )
+})
+
+check('pool no-new-privileges prevents the Docker sudo grant', () => {
+  execFileSync(
+    'docker',
+    [
+      'run',
+      '--rm',
+      '--security-opt',
+      'no-new-privileges=true',
+      '--entrypoint',
+      'sh',
+      image,
+      '-c',
+      'if sudo -n /usr/bin/dockerd --version >/dev/null 2>&1; then exit 1; fi'
+    ],
+    { encoding: 'utf8' }
+  )
+})
+
 // PID 1 has to reap the runtime's children and forward SIGTERM; without that a drain can only
 // ever end in SIGKILL, and every drain looks like a crash.
 check('tini is PID 1 and forwards signals', () => {
