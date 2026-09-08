@@ -15,7 +15,7 @@ import { memoryContinuations, memoryEntryTokens } from '../src/memory/entries/st
 import type { MemoryEntriesView } from '../src/memory/entries/contract.js'
 import type { MemoryRecord, RecordMemoryAdmin } from '../src/memory/types.js'
 import type { LocalStore } from '../src/store/local-store.js'
-import { openTestStore } from './store-support.js'
+import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
 
 const cleanup: (() => Promise<unknown>)[] = []
 afterEach(async () => {
@@ -339,4 +339,21 @@ it('rejects oversized metadata explicitly without silently dropping it', async (
   f.records.get('topic-000.md')!.metadata = { huge: '\u0000'.repeat(12_000) }
   const { ref } = (await f.api.list()).entries[0]!
   await expect(f.api.get({ ref })).rejects.toMatchObject({ code: 'TOO_LARGE' })
+})
+
+it('retains every concurrent allocation from separate store handles while capacity is available', async () => {
+  const database = usingPostgresStore() ? undefined : memoryStoreDatabase()
+  const db = await openTestStore({ database })
+  const peer = await openTestStore({ database })
+  cleanup.push(() => db.close())
+  const expiresAt = Date.now() + 60_000
+  const tokens = await Promise.all(
+    Array.from({ length: 16 }, (_, index) =>
+      (index % 2 ? db : peer).putMemoryEntryContinuation('concurrent-agent', String(index), expiresAt)
+    )
+  )
+  const values = await Promise.all(
+    tokens.map((token) => db.getMemoryEntryContinuation('concurrent-agent', token, Date.now()))
+  )
+  expect(values).toEqual(Array.from({ length: 16 }, (_, index) => String(index)))
 })

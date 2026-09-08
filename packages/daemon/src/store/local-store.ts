@@ -5917,22 +5917,35 @@ export class LocalStore {
     if (Buffer.byteLength(value) > MEMORY_CONTINUATION_MAX_BYTES)
       throw new Error('memory continuation exceeds storage budget')
     const token = randomUUID()
-    await this.transaction(async (tx) => {
-      const rows = (
-        await tx.query('SELECT slot, expiresAt FROM memory_entry_continuation WHERE agentId = ?', [agentId])
-      ).rows as { slot: number; expiresAt: number }[]
-      const used = new Set(rows.map((row) => row.slot))
-      const slot =
-        Array.from({ length: MEMORY_CONTINUATION_SLOTS }, (_, index) => index).find((index) => !used.has(index)) ??
-        rows.sort((a, b) => a.expiresAt - b.expiresAt || a.slot - b.slot)[0]!.slot
-      await tx.query(
-        `INSERT INTO memory_entry_continuation (agentId, slot, token, value, expiresAt)
-        VALUES (?, ?, ?, ?, ?) ON CONFLICT (agentId, slot) DO UPDATE SET
-        token = excluded.token, value = excluded.value, expiresAt = excluded.expiresAt`,
-        [agentId, slot, token, value, expiresAt]
-      )
-    })
-    return token
+    for (let attempt = 0; attempt < 64; attempt++) {
+      const allocated = await this.transaction(async (tx) => {
+        const rows = (
+          await tx.query('SELECT slot, token, expiresAt FROM memory_entry_continuation WHERE agentId = ?', [agentId])
+        ).rows as { slot: number; token: string; expiresAt: number }[]
+        const used = new Set(rows.map((row) => row.slot))
+        const free = Array.from({ length: MEMORY_CONTINUATION_SLOTS }, (_, index) => index).find(
+          (index) => !used.has(index)
+        )
+        if (free !== undefined) {
+          const result = await tx.query(
+            `INSERT INTO memory_entry_continuation (agentId, slot, token, value, expiresAt)
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT (agentId, slot) DO NOTHING`,
+            [agentId, free, token, value, expiresAt]
+          )
+          return result.changes === 1
+        }
+        const oldest = rows.sort((a, b) => a.expiresAt - b.expiresAt || a.slot - b.slot)[0]!
+        // Evict only the observed occupant; a concurrent allocator's new token is never our victim.
+        const result = await tx.query(
+          `UPDATE memory_entry_continuation SET token = ?, value = ?, expiresAt = ?
+           WHERE agentId = ? AND slot = ? AND token = ?`,
+          [token, value, expiresAt, agentId, oldest.slot, oldest.token]
+        )
+        return result.changes === 1
+      })
+      if (allocated) return token
+    }
+    throw new Error('memory continuation allocation is temporarily busy')
   }
 
   async getMemoryEntryContinuation(agentId: string, token: string, now: number): Promise<string | undefined> {
