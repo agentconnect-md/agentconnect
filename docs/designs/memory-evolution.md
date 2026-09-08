@@ -250,8 +250,13 @@ composes the record — it holds `before`, `after` and `source` — and sends it
 write as a second, best-effort D→C request, `memory/history` (a batch, since adoption
 records every changed file at once), exactly the provenance-never-fails-the-write rule
 the sidecar has today; retention (`MAX_HISTORY_VERSIONS_PER_FILE` and the byte cap) is a
-delete rather than a rewrite. A `daemon` home keeps the sidecar file; `listMemoryHistory`
-reads whichever the home provides, and the console frame is unchanged.
+delete rather than a rewrite. The daemon never reads it back: the change log has one
+reader, the console, and under a `control-plane` home the CP answers the `memory/history`
+frame from its own table without asking the daemon at all — the one console read that
+already works with the daemon offline. Dream adoption is unaffected: its drift decision
+comes from the in-process write ledger and a content diff against the dream's own
+snapshot, not from the log, and its provenance rows go out as one more batch. A
+`daemon` home keeps the sidecar file and today's frame path.
 
 **Why the port survives the split.** Those two carried the whole case against putting a
 POSIX-shaped op set on this wire. What is left is the memory files themselves: capped at
@@ -288,11 +293,11 @@ refuses to activate a `control-plane` binding with that reason.
 
 **What stays on the daemon.** Everything above the port: the directory lock, retention,
 frontmatter normalization, index generation, the write ledger, the dream fence.
-Console traffic is unchanged in this step — the `memory/*` C→D frames still go to the
-owning daemon, which now answers from the CP-backed port instead of
-waking a pod (#1077's wake stays for `daemon`-home cluster trees only until those are
-gone). Answering list/read/history straight from the table, and so with the daemon
-offline, is a later step. Per-file cap stays `MAX_MEMORY_FILE_BYTES`. The dream runner is
+Console traffic is unchanged in this step except for the change log above — the other
+`memory/*` C→D frames still go to the owning daemon, which now answers from the
+CP-backed port instead of waking a pod (#1077's wake stays for `daemon`-home cluster
+trees only until those are gone). Answering list and read straight from the table, and
+so with the daemon offline, is a later step. Per-file cap stays `MAX_MEMORY_FILE_BYTES`. The dream runner is
 unchanged and keeps staging beside its extraction host; on the pool its `withMemoryHome`
 still binds the agent pod, for the extraction host and the staging root, not the store.
 
