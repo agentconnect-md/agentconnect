@@ -39,7 +39,7 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
       )
       for (const { child, rendered: result } of children) {
         // Literal syntax beside a rewritten link must not become an active outer link on the platform.
-        const rendered = changed && child.type === 'text' ? escapeLiteralOpeners(result) : result
+        const rendered = changed && child.type === 'text' ? escapeLiteralLinkSyntax(result) : result
         content += text.slice(cursor, child.position!.start.offset!) + rendered
         label += rendered
         cursor = child.position!.end.offset!
@@ -64,9 +64,9 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
   return render(tree)
 }
 
-/** Preserve existing escapes while keeping literal bracket and autolink openers inert. */
-function escapeLiteralOpeners(text: string): string {
-  return text.replace(/\\.|[<[]/g, (token) => (token.length === 1 ? `\\${token}` : token))
+/** Escape both bracket sides so literal text cannot open or prematurely close a surrounding link. */
+function escapeLiteralLinkSyntax(text: string): string {
+  return text.replace(/\\.|[<[\]]/g, (token) => (token.length === 1 ? `\\${token}` : token))
 }
 
 /** Hold a whole Markdown block when later definitions could still change its references. */

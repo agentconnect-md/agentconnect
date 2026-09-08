@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { fromMarkdown } from 'mdast-util-from-markdown'
 import { flattenUnsafeLinks } from '../src/messages/agent-links.js'
 
 describe('flattenUnsafeLinks', () => {
@@ -90,11 +91,20 @@ describe('flattenUnsafeLinks', () => {
     )
   })
 
+  it('keeps a safe outer link with literal brackets when rewriting an image in its label', () => {
+    const result = flattenUnsafeLinks('[[label] ![chart](/tmp/chart.png)](https://example.test/report)')
+    expect(fromMarkdown(result).children[0]).toMatchObject({
+      type: 'paragraph',
+      children: [{ type: 'link', url: 'https://example.test/report' }]
+    })
+    expect(result).not.toContain('/tmp/')
+  })
+
   // Preserve dollar sequences as text, and keep the originally literal outer syntax inert.
   it.each([
-    ['[a $$ b [log](/tmp/a.log)](https://ci.test)', '\\[a $$ b log (`a.log`)](https://ci.test)'],
-    ['[$& label [i](/x/i.md)](https://e.test)', '\\[$& label i (`i.md`)](https://e.test)'],
-    ["[$` and $' [i](/x/i.md)](https://e.test)", "\\[$` and $' i (`i.md`)](https://e.test)"]
+    ['[a $$ b [log](/tmp/a.log)](https://ci.test)', '\\[a $$ b log (`a.log`)\\](https://ci.test)'],
+    ['[$& label [i](/x/i.md)](https://e.test)', '\\[$& label i (`i.md`)\\](https://e.test)'],
+    ["[$` and $' [i](/x/i.md)](https://e.test)", "\\[$` and $' i (`i.md`)\\](https://e.test)"]
   ])('keeps dollar sequences and surrounding literal text intact: %s', (input, expected) => {
     expect(flattenUnsafeLinks(input)).toBe(expected)
   })

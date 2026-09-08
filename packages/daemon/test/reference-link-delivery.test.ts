@@ -27,7 +27,7 @@ describe.each([
   it('does not activate an outer host link when its nested link is flattened', () => {
     const c = create('low')
     c.onUpdate(chunk('[report [source](/home/agent/source.md)](/home/agent/report.md)'))
-    expect(bodies(c.onFinal())).toContain('\\[report source (`source.md`)](/home/agent/report.md)')
+    expect(bodies(c.onFinal())).toContain('\\[report source (`source.md`)\\](/home/agent/report.md)')
   })
 
   it.each(['final', 'terminal'])(
@@ -59,5 +59,5 @@ describe.each([
 it('removes a newly activated host link from the shared code-host reply', () => {
   const reply = new GithubReplyCollector()
   reply.onUpdate(chunk('[report [source](/home/agent/source.md)](/home/agent/report.md)'))
-  expect(reply.finalText()).toBe('\\[report source (`source.md`)](/home/agent/report.md)')
+  expect(reply.finalText()).toBe('\\[report source (`source.md`)\\](/home/agent/report.md)')
 })
