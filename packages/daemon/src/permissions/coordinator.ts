@@ -28,6 +28,7 @@ import type { InteractionActor } from '../platforms/contract.js'
 import {
   buildApprovalDmIntro,
   buildElicitationCard,
+  buildElicitDmUnanswerableCard,
   buildElicitationFormCard,
   buildElicitationResolvedCard,
   buildPermissionCard,
@@ -42,6 +43,7 @@ import {
   elicitFormAccepts,
   elicitFormContent,
   elicitFormRefusalNotice,
+  ELICIT_ANSWER_REFUSED,
   elicitFormSubmission,
   elicitRequiredProps,
   elicitTarget,
@@ -694,10 +696,14 @@ export class PermissionCoordinator {
     if (!conn) return
     const channel = await conn.openDirectMessage(target.userId)
     const sessionTarget = this.host.slackDmSessionTarget(p, target.integrationId)
+    // A question this DM has no control for still gets its own block: the reader is handed the
+    // ask and the console, never an intro with nothing under it (#1794). The request itself is
+    // untouched — it stays open on the editor path, which is where the DM points.
     const card =
       rec.kind === 'permission'
         ? buildPermissionCard(requestId, rec.params, sessionTarget)
-        : (buildElicitationCard(requestId, rec.params, sessionTarget, SLACK_DM_ELICIT_SURFACE) ?? [])
+        : (buildElicitationCard(requestId, rec.params, sessionTarget, SLACK_DM_ELICIT_SURFACE) ??
+          buildElicitDmUnanswerableCard(rec.params))
     const fromSlack = p.plan.platform === 'slack'
     const sourceUrl =
       fromSlack && p.conn instanceof SlackConnection
@@ -1502,25 +1508,12 @@ export class PermissionCoordinator {
    *  Every caller is past the webchat branches, so this only ever speaks on a chat platform whose
    *  card the reader would otherwise have never seen. An MCP approval is excluded: it took the
    *  editor queue with its own notice. Returns `undefined` so a decline site stays one line.
-   *  ONE notice per distinct question — a runtime re-raising the same unrenderable ask floods
-   *  nothing, and a genuinely different question is a second thing the reader has not been told.
    *  Best effort: the decline never depends on the notice landing. */
   private noticeUnrenderableElicit(p: Pending, params: CreateElicitationRequest, isApproval: boolean): undefined {
     if (isApproval || !p.conn) return undefined
-    const key = (params as { message?: string }).message?.trim() ?? ''
-    const seen = (p.declinedElicitNotices ??= new Set<string>())
-    if (seen.has(key)) return undefined
-    seen.add(key)
-    let sessionUrl: string | undefined
-    // A console link this daemon cannot compute must not cost the reader the question itself.
+    const text = this.takeElicitDeclineNotice(p, params, 'chat')
+    if (text === null) return undefined
     try {
-      sessionUrl = this.host.sessionLink(p.outwardSessionId)
-    } catch {
-      sessionUrl = undefined
-    }
-    try {
-      // Built from the MASKED params `onAcpElicit` reassigned at its top, never an earlier capture.
-      const text = buildElicitDeclinedNotice(params, turnChromeFor(p.plan.platform).noticeMarkup, sessionUrl)
       this.host.enqueueApply(p, { kind: 'notice', text })
     } catch (err) {
       this.host.log().warn(`elicitation decline notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
@@ -1528,12 +1521,82 @@ export class PermissionCoordinator {
     return undefined
   }
 
+  /** Webchat's peer of {@link noticeUnrenderableElicit}: the same words, said the way webchat says
+   *  anything — a STANDING stream event, since this surface has no channel to post a message into.
+   *  #1819 held that webchat needed none because it renders every shape; a `required` property no
+   *  control can answer (#1795) is the shape it does not, and that decline was silent. */
+  private noticeUnrenderableWebchatElicit(
+    p: Pending,
+    wc: NonNullable<Pending['webchat']>,
+    params: CreateElicitationRequest
+  ): undefined {
+    const text = this.takeElicitDeclineNotice(p, params, 'webchat')
+    if (text !== null) this.streamWebchatNotice(wc, text)
+    return undefined
+  }
+
+  /** The words one declined elicitation is described with, or null when this turn has already
+   *  said them (or the text could not be built at all). ONE notice per distinct question — a
+   *  runtime re-raising the same unrenderable ask floods nothing, and a genuinely different
+   *  question is a second thing the reader has not been told — and the set is shared with the
+   *  chat notice, so a continuation cannot say it twice on two surfaces.
+   *
+   *  `surface` decides two things. Markup: a chat notice is read as markdown and has its link
+   *  syntax defused, while webchat's card is our own DOM, which renders the text as a text node
+   *  with no label syntax to spoof, so defusing it there would only show the reader backslashes.
+   *  And the console link: a webchat reader is already IN the console, and it is that console's
+   *  own surface which just declined, so pointing them at it would be a lie. */
+  private takeElicitDeclineNotice(
+    p: Pending,
+    params: CreateElicitationRequest,
+    surface: 'chat' | 'webchat'
+  ): string | null {
+    const key = (params as { message?: string }).message?.trim() ?? ''
+    const seen = (p.declinedElicitNotices ??= new Set<string>())
+    if (seen.has(key)) return null
+    seen.add(key)
+    let sessionUrl: string | undefined
+    // A console link this daemon cannot compute must not cost the reader the question itself.
+    try {
+      sessionUrl = surface === 'chat' ? this.host.sessionLink(p.outwardSessionId) : undefined
+    } catch {
+      sessionUrl = undefined
+    }
+    try {
+      // Built from the MASKED params `onAcpElicit` reassigned at its top, never an earlier capture.
+      const markup = surface === 'chat' ? turnChromeFor(p.plan.platform).noticeMarkup : undefined
+      return buildElicitDeclinedNotice(params, markup, sessionUrl)
+    } catch (err) {
+      this.host.log().warn(`elicitation decline notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
+      return null
+    }
+  }
+
+  /** Say one daemon-authored line on a webchat stream, as a STANDING notice: not a wait, but
+   *  something the reader has to keep, so the browser never retires it when output resumes.
+   *  Best effort by construction — no elicitation outcome depends on it. */
+  private streamWebchatNotice(wc: NonNullable<Pending['webchat']>, text: string): boolean {
+    try {
+      wc.sink.output({
+        conversationId: wc.conversationId,
+        turnId: wc.turnId,
+        index: wc.index++,
+        event: { kind: 'notice', text, standing: true }
+      })
+      return true
+    } catch (err) {
+      this.host.log().warn(`webchat notice not delivered for "${wc.conversationId}": ${formatErr(err)}`)
+      return false
+    }
+  }
+
   /** Webchat's peer of the Slack elicitation card: stream the card as an in-band event and
    *  park the same resolver. Takes the WHOLE form (`elicitForm`) rather than Slack's one field,
    *  so a multi-field ask renders one control per field and answers with a record; a one-field
    *  form takes the single-field path and its payload is unchanged. Returns `undefined`
    *  (⇒ decline) when the surface cannot render the form — including a `required` property it
-   *  has no control for, which is the same verdict Slack reaches by the same rule. */
+   *  has no control for, which is the same verdict Slack reaches by the same rule — and now says
+   *  so in the stream rather than declining into silence (#1794). */
   private async awaitWebchatElicitation(
     agentId: string,
     sessionId: string,
@@ -1542,7 +1605,7 @@ export class PermissionCoordinator {
     wc: NonNullable<Pending['webchat']>
   ): Promise<CreateElicitationResponse | undefined> {
     const form = elicitForm(params, WEBCHAT_ELICIT_SURFACE)
-    if (!form) return undefined
+    if (!form) return this.noticeUnrenderableWebchatElicit(p, wc, params)
     const target = form[0]!
     const required = new Set(elicitRequiredProps(params))
     const requestId = `elicit-${++this.elicitSeq}`
@@ -1593,7 +1656,9 @@ export class PermissionCoordinator {
       })
     } catch (err) {
       // An undelivered card can never be answered — drop the resolver and decline now
-      // rather than stall the runtime until the turn ends.
+      // rather than stall the runtime until the turn ends. No notice: this sink IS the only thing
+      // that speaks to this reader, so a line saying the ask could not be shown would go out
+      // through the very call that just threw, and a webchat turn has no second surface for it.
       this.pendingElicits.delete(requestId)
       this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
       this.host.log().warn(`webchat elicitation card not delivered for "${p.plan.sessionKey}": ${formatErr(err)}`)
@@ -1984,7 +2049,14 @@ export class PermissionCoordinator {
               : target.kind === 'text'
                 ? textAccepts(target, a.value)
                 : target.options.some((o) => o.value === a.value)))
-    if (!offered) return
+    // A refused answer is not a silent one (#1794): the reader just acted, the card is still
+    // standing, so its own surface says the answer was not taken — the same words a refused
+    // Confirm gets, on whichever transport that card was posted to. Nothing here changes WHAT is
+    // refused, and there is no per-question dedup: one line per tap, as #1836's notice already is.
+    if (!offered) {
+      this.noticeInTurn(rec, ELICIT_ANSWER_REFUSED)
+      return
+    }
     if (rec.approval && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
       if (rec.surface === 'slack' && rec.ts) {
         void rec.conn
@@ -2052,10 +2124,12 @@ export class PermissionCoordinator {
     rec.resolve(res)
   }
 
-  /** Post one daemon-authored line into a pending card's own turn — a notice, so it lands where
-   *  every other one does. False when that turn is already gone, or when the surface refused it.
-   *  Best effort by construction: no elicitation outcome depends on it. */
+  /** Post one daemon-authored line on the card's OWN surface — a notice, so it lands where every
+   *  other one does: in the channel for a Slack card, on the stream for a webchat one. False when
+   *  that turn is already gone, or when the surface refused it. Best effort by construction: no
+   *  elicitation outcome depends on it. */
   private noticeInTurn(rec: PendingElicit, text: string): boolean {
+    if (rec.surface === 'webchat') return this.streamWebchatNotice(rec.wc, text)
     const p = this.host.pending().get(pendingTurnKey(rec.owner, rec.sessionId))
     if (!p) return false
     try {

@@ -32,6 +32,7 @@ import {
   buildUrlConsentResolvedCard,
   SLACK_DM_ELICIT_SURFACE,
   slackCardViolations,
+  buildElicitDmUnanswerableCard,
   SLACK_ELICIT_SURFACE,
   WEBCHAT_ELICIT_SURFACE,
   multiSelectAccepts,
@@ -1478,7 +1479,10 @@ describe('every card we build is one Slack would accept', () => {
         } as any,
         'sess-target'
       ),
-      buildElicitationCard('elicit-1', req({ b: { type: 'boolean' } }), 'sess-target', SLACK_DM_ELICIT_SURFACE)!
+      buildElicitationCard('elicit-1', req({ b: { type: 'boolean' } }), 'sess-target', SLACK_DM_ELICIT_SURFACE)!,
+      // The DM stand-in for a question that surface has no control for — a card of one section,
+      // which is exactly why it can carry no answer.
+      buildElicitDmUnanswerableCard(req({ p: pick(2) }))
     ]
     for (const card of settled) expect(slackCardViolations(card)).toEqual([])
   })

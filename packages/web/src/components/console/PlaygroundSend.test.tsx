@@ -383,6 +383,40 @@ describe('stream text delta batching', () => {
     ])
   })
 
+  it('keeps a STANDING notice when the turn streams on — it is not a wait that ended', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: {
+            turnId,
+            agentId: 'agent-1',
+            index: 0,
+            event: { kind: 'notice', text: 'The agent asked something this chat can’t collect…', standing: true }
+          }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 1, event: { kind: 'message', text: 'Moving on then.' } }
+        })
+      })
+    })
+    act(runFrame)
+
+    // Retiring this one would delete the ONLY thing the reader was told about a question the
+    // agent asked and this surface could not show (#1794) — the answer that follows is not
+    // the wait ending, it is the agent carrying on without them.
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      { kind: 'notice', text: 'The agent asked something this chat can’t collect…', standing: true, boundary: true },
+      { kind: 'done', text: 'Moving on then.' }
+    ])
+  })
+
   // ACP resends the WHOLE list on every revision, so a live plan must be one block that is
   // rewritten — appending would stack a fresh checklist per keystroke of progress.
   it("replaces the lane's plan block on each revision instead of appending another", async () => {

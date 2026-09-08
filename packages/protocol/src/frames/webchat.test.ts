@@ -123,6 +123,22 @@ describe('WebchatOutput — event / status framing', () => {
     if (form.success && form.data.event?.kind === 'elicitation') expect(form.data.event.url).toBeUndefined()
   })
 
+  it('marks a STANDING notice, and leaves the wait notice it grew out of untouched', () => {
+    const notice = (event: Record<string, unknown>) =>
+      WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 2, event })
+    // A notice the reader has to keep: an ask this surface could not show, or an answer it would
+    // not take. Without the flag the browser retires it the moment output resumes, which is what
+    // made a declined webchat elicitation silent (#1794).
+    const standing = notice({ kind: 'notice', text: 'The agent asked something…', standing: true })
+    expect(standing.success).toBe(true)
+    if (standing.success && standing.data.event?.kind === 'notice') expect(standing.data.event.standing).toBe(true)
+    // The wait notice predates the field, so every payload written before it still means "a wait".
+    const wait = notice({ kind: 'notice', text: 'Allocating a sandbox pod…' })
+    expect(wait.success).toBe(true)
+    if (wait.success && wait.data.event?.kind === 'notice') expect(wait.data.event.standing).toBeUndefined()
+    expect(notice({ kind: 'notice', text: 'x', standing: 'yes' }).success).toBe(false)
+  })
+
   it('marks a multi-select card with its bounds, and leaves the single-choice card untouched', () => {
     const card = (event: Record<string, unknown>) =>
       WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 4, event })

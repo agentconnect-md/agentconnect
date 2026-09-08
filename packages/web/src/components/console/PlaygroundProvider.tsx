@@ -227,10 +227,12 @@ function stampStep(step: UnstampedStep, observedAtMs = Date.now()): SessionStep 
   }
 }
 
-/** Drop this lane's live-only wait notice — streamed output IS the wait ending, so the line must go. */
+/** Drop this lane's live-only wait notice — streamed output IS the wait ending, so the line must go.
+ *  A STANDING notice is not a wait (a declined ask, a refused answer) and survives: retiring it
+ *  would delete the only thing the reader was ever told about that question. */
 function dropWaitNotices(steps: SessionStep[], agentId: string | undefined, turnId: string): SessionStep[] {
   const waiting = (s: SessionStep): boolean =>
-    s.kind === 'notice' && (s.agentId ?? undefined) === agentId && s.turnId === turnId
+    s.kind === 'notice' && !s.standing && (s.agentId ?? undefined) === agentId && s.turnId === turnId
   return steps.some(waiting) ? steps.filter((s) => !waiting(s)) : steps
 }
 
@@ -253,7 +255,7 @@ type WebchatEvent =
   | { kind: 'tool_update'; toolCallId: string; status: string; title?: string }
   | { kind: 'session_info'; title: string }
   | { kind: 'superseded'; generation: number }
-  | { kind: 'notice'; text: string }
+  | { kind: 'notice'; text: string; standing?: boolean }
   | { kind: 'plan'; entries: { content: string; status: string; priority?: string }[] }
   | {
       kind: 'elicitation'
@@ -677,8 +679,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           // Daemon chrome for a wait with nothing else to show (a sandbox pod coming up).
           // Its own lane, not the work lane: it is not something the agent thought or did,
           // so it must not be counted or hidden as a reasoning step. `boundary` keeps the
-          // reply chunks that follow from accumulating into it.
-          return [...steps, lane({ kind: 'notice', text: ev.text, boundary: true })]
+          // reply chunks that follow from accumulating into it. A `standing` one is not a wait —
+          // it is what the reader was told about an ask this surface could not show, or an answer
+          // it would not take — so it is marked and never retired when output resumes.
+          return [
+            ...steps,
+            lane({ kind: 'notice', text: ev.text, ...(ev.standing ? { standing: true } : {}), boundary: true })
+          ]
         }
         if (ev.kind === 'message') {
           if (last && last.kind === 'done' && last.who === who) {

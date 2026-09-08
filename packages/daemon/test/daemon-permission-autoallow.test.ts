@@ -453,8 +453,20 @@ function installWebchat(pending: any, conversationId = 'conv-1'): { output: Retu
   return sink
 }
 
-const cardEvents = (sink: { output: ReturnType<typeof vi.fn> }): any[] =>
+const streamEvents = (sink: { output: ReturnType<typeof vi.fn> }): any[] =>
   sink.output.mock.calls.map(([o]: any[]) => o.event)
+
+/** The card's own events. A declined ask and a refused answer now stream a STANDING notice of
+ *  their own (#1794), which is asserted where that refusal is decided — every assertion about
+ *  the CARD stays about the card. */
+const cardEvents = (sink: { output: ReturnType<typeof vi.fn> }): any[] =>
+  streamEvents(sink).filter((e) => e.kind !== 'notice')
+
+/** What this stream was TOLD, as opposed to shown: the standing notices, in order. */
+const noticeTexts = (sink: { output: ReturnType<typeof vi.fn> }): string[] =>
+  streamEvents(sink)
+    .filter((e) => e.kind === 'notice' && e.standing === true)
+    .map((e) => e.text as string)
 
 describe('webchat renders and answers ACP elicitation cards', () => {
   it('streams the card, then accepts the tapped option and settles it in place', async () => {
@@ -589,7 +601,10 @@ describe('webchat renders and answers ACP elicitation cards', () => {
         })
       )
     ).resolves.toBeUndefined()
-    expect(sink.output).not.toHaveBeenCalled()
+    // The decline stands, but it is no longer silent: webchat says what was asked and that it
+    // could not be shown, the way Slack's channel notice does (#1794).
+    expect(cardEvents(sink)).toEqual([])
+    expect(noticeTexts(sink)).toEqual([expect.stringContaining("this chat can't collect an answer for")])
     expect((daemon as any).permissions.pendingElicits.size).toBe(0)
   })
 
@@ -699,6 +714,11 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     await answer(['lint', 'test'], 'conv-other') // another conversation was never shown this card
     expect((daemon as any).permissions.pendingElicits.size).toBe(1)
     expect(cardEvents(sink)).toHaveLength(1) // still live — nothing settled it
+    // Each refusal of an answer THIS reader gave says so, and the card is left to answer again
+    // (#1794): a Confirm that silently does nothing is indistinguishable from a broken card. The
+    // last two are not this reader's answers at all — a shape no card of theirs could submit, and
+    // another conversation's tap — so neither is explained to them.
+    expect(noticeTexts(sink)).toEqual(Array(4).fill("That answer wasn't accepted — the question is still open."))
 
     await answer(['lint', 'test'])
     await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint', 'test'] } })
@@ -975,9 +995,11 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
 // the daemon itself posted.
 
 describe('a Slack answer is re-derived against the card that offered it', () => {
-  it('drops a value the card never offered and leaves the card live', async () => {
+  it('drops a value the card never offered, says so, and leaves the card live', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const { updated } = slackPending(daemon)
+    const applied: any[] = []
+    ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
     const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(['a', 'b', 'c']))
     await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
     const [requestId] = (daemon as any).permissions.pendingElicits.keys()
@@ -985,6 +1007,11 @@ describe('a Slack answer is re-derived against the card that offered it', () => 
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'rm -rf /' })
     expect((daemon as any).permissions.pendingElicits.size).toBe(1) // still live — nothing settled it
     expect(updated).toHaveLength(0)
+    // The refusal stands, and the thread hears it — the same words a refused Confirm gets, since
+    // the reader cannot tell a rejected tap from a dead button either way (#1794).
+    expect(applied.filter((a) => a.kind === 'notice').map((a) => a.text)).toEqual([
+      "That answer wasn't accepted — the question is still open."
+    ])
 
     // A Slack tap on a button the card actually carries still resolves, unchanged.
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'b' })
