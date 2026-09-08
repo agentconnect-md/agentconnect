@@ -21,6 +21,7 @@ import {
   fetchAgentMemoryChannels,
   ApiError,
   type MemoryFileEntry,
+  type ManagedMemoryHome,
   type ManagedMemoryScope,
   type MemoryChannelDto,
   type MemoryDreamingConfig
@@ -36,8 +37,11 @@ import {
 import { MemoryProviderPicker } from '@/components/console/MemoryProviderPicker'
 import {
   cloneMemorySettings,
+  MEMORY_HOME_OPTIONS,
   memoryBackendChanged,
   memoryConfigForDraft,
+  memoryHomeLabel,
+  memoryHomeMovesForward,
   memoryProviderLabel,
   memorySettingsBlocker,
   memorySettingsChanged,
@@ -150,10 +154,82 @@ function MemoryScopeField({
   )
 }
 
+const HOME_POOL_REASON = 'Agents on the managed pool keep their memory in the Control Plane.'
+const HOME_PENDING_STATUS = 'Moving memory to the Control Plane…'
+const HOME_CONTROL_PLANE_FIXED =
+  'Memory in the Control Plane stays there; moving it back is a separate, forced action below.'
+
+// The home is chosen one way (memory-evolution.md §3.2.1): `daemon` is offered only while it is the current value.
+function MemoryHomeField({
+  home,
+  persistedHome,
+  canEdit,
+  poolPlaced,
+  pending,
+  onChange
+}: {
+  home: ManagedMemoryHome
+  persistedHome: ManagedMemoryHome
+  canEdit: boolean
+  poolPlaced: boolean
+  pending: boolean
+  onChange: (next: ManagedMemoryHome) => void
+}) {
+  const options = MEMORY_HOME_OPTIONS.filter(
+    (option) => option.value !== 'daemon' || (persistedHome === 'daemon' && !poolPlaced)
+  )
+  const editable = canEdit && !poolPlaced && !pending
+  const reason = poolPlaced
+    ? HOME_POOL_REASON
+    : pending
+      ? HOME_PENDING_STATUS
+      : persistedHome === 'control-plane'
+        ? HOME_CONTROL_PLANE_FIXED
+        : null
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="font-sans text-[13px] font-semibold leading-normal">Memory home</span>
+        <span className="pillbar">
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              disabled={!editable}
+              data-memory-home={option.value}
+              aria-pressed={home === option.value}
+              className={`pill ${home === option.value ? 'on' : ''} px-2 py-1 text-[12px] ${editable ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+              onClick={() => {
+                if (editable) onChange(option.value)
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </span>
+      </div>
+      <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+        {MEMORY_HOME_OPTIONS.find((option) => option.value === home)?.help}
+      </span>
+      {reason ? (
+        <span
+          data-memory-home-reason
+          className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+          aria-live={pending ? 'polite' : undefined}
+        >
+          {reason}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
 function settingsFromProps(input: {
   memoryProvider: string
   autoDistill: boolean
   memoryScope?: ManagedMemoryScope
+  memoryHome?: ManagedMemoryHome
+  poolPlaced?: boolean
   memoryDreaming?: MemoryDreamingConfig
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
@@ -163,6 +239,8 @@ function settingsFromProps(input: {
     provider: input.memoryProvider,
     autoDistill: input.autoDistill,
     scope: input.memoryScope,
+    // The pool refuses `daemon`, so a pool-placed agent's draft is pinned to the only home it may carry.
+    home: input.poolPlaced ? 'control-plane' : input.memoryHome,
     dreaming: input.memoryDreaming,
     connectionId: input.memoryConnectionId,
     recall: input.memoryRecall,
@@ -176,18 +254,25 @@ export function MemoryPanel({
   memoryProvider,
   autoDistill,
   memoryScope,
+  memoryHome,
+  memoryHomeMigration,
   memoryDreaming,
   memoryConnectionId,
   memoryRecall,
   memoryCaptureMode,
   sessionBasePath,
-  sandboxed = false
+  sandboxed = false,
+  poolPlaced = false
 }: {
   agentId: string
   canEdit: boolean
   memoryProvider: string
   autoDistill: boolean
   memoryScope?: ManagedMemoryScope
+  /** Where the managed tree lives; absent reads as `daemon`. */
+  memoryHome?: ManagedMemoryHome
+  /** Set while the owning daemon copies the tree into the Control Plane; the home control waits for it to clear. */
+  memoryHomeMigration?: 'pending'
   memoryDreaming?: MemoryDreamingConfig
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
@@ -195,6 +280,8 @@ export function MemoryPanel({
   sessionBasePath?: string
   /** The agent runs in a cluster sandbox: its managed memory is readable only through a running pod, so opening the tab wakes it rather than waiting for the read to refuse. */
   sandboxed?: boolean
+  /** Placed on the install-wide pool, where the home is fixed to `control-plane` and there is no way back. */
+  poolPlaced?: boolean
 }) {
   const { updateAgent } = useConsoleData()
   const isMobile = useIsMobile()
@@ -229,6 +316,8 @@ export function MemoryPanel({
     memoryProvider,
     autoDistill,
     memoryScope,
+    memoryHome,
+    poolPlaced,
     memoryDreaming,
     memoryConnectionId,
     memoryRecall,
@@ -241,6 +330,12 @@ export function MemoryPanel({
   const [savingProvider, setSavingProvider] = useState(false)
   const [providerError, setProviderError] = useState<string | null>(null)
   const [confirmingBackendChange, setConfirmingBackendChange] = useState(false)
+  const [confirmingHomeMove, setConfirmingHomeMove] = useState(false)
+  // The forced return (`control-plane` → `daemon`) is its own action with its own dialog, never a selector choice.
+  const [confirmingHomeReturn, setConfirmingHomeReturn] = useState(false)
+  const [returningHome, setReturningHome] = useState(false)
+  const [homeReturnError, setHomeReturnError] = useState<string | null>(null)
+  const homeMigrationPending = memoryHomeMigration === 'pending'
   // The settings form is collapsed behind a one-line summary by default so the
   // memory content itself stays the page's focus. Closing the form discards any
   // unsaved draft — a closed form always summarizes the persisted settings.
@@ -258,6 +353,8 @@ export function MemoryPanel({
       memoryProvider,
       autoDistill,
       memoryScope,
+      memoryHome,
+      poolPlaced,
       memoryDreaming,
       memoryConnectionId,
       memoryRecall,
@@ -267,11 +364,14 @@ export function MemoryPanel({
     setPersistedSettings(cloneMemorySettings(next))
     setProviderError(null)
     setConfirmingBackendChange(false)
+    setConfirmingHomeMove(false)
   }, [
     agentId,
     memoryProvider,
     autoDistill,
     memoryScope,
+    memoryHome,
+    poolPlaced,
     memoryDreaming?.enabled,
     memoryDreaming?.sessionWindow,
     memoryDreaming?.schedule,
@@ -291,6 +391,7 @@ export function MemoryPanel({
   const persistedProvider = persistedSettings.provider
   const settingsChanged = memorySettingsChanged(persistedSettings, settings)
   const backendChanged = memoryBackendChanged(persistedSettings, settings)
+  const homeMovesForward = memoryHomeMovesForward(persistedSettings, settings)
   const settingsBlocker = memorySettingsBlocker(settings)
   const persistedProviderLabel = memoryProviderLabel(persistedProvider)
   const providerLabel = memoryProviderLabel(provider)
@@ -313,6 +414,7 @@ export function MemoryPanel({
       await updateAgent(agentId, { memory: memoryConfigForDraft(settings) })
       setPersistedSettings(cloneMemorySettings(settings))
       setConfirmingBackendChange(false)
+      setConfirmingHomeMove(false)
       setSettingsOpen(false)
     } catch (e) {
       setProviderError(e instanceof Error ? e.message : String(e))
@@ -332,7 +434,33 @@ export function MemoryPanel({
       setConfirmingBackendChange(true)
       return
     }
+    if (homeMovesForward) {
+      setProviderError(null)
+      setConfirmingHomeMove(true)
+      return
+    }
     void persistMemorySettings()
+  }
+
+  // Sends the persisted binding with `home: 'daemon'` and `force: true`; the CP drops every file and its history.
+  const returnHomeToDaemon = async () => {
+    if (returningHome) return
+    setReturningHome(true)
+    setHomeReturnError(null)
+    try {
+      const memory = memoryConfigForDraft(persistedSettings)
+      if (memory.provider !== 'managed') throw new Error('memory is not managed')
+      await updateAgent(agentId, { memory: { ...memory, home: 'daemon' }, force: true })
+      const next = cloneMemorySettings({ ...persistedSettings, home: 'daemon' })
+      setPersistedSettings(next)
+      setSettings(cloneMemorySettings(next))
+      setConfirmingHomeReturn(false)
+      setSettingsOpen(false)
+    } catch (e) {
+      setHomeReturnError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setReturningHome(false)
+    }
   }
 
   const discardMemorySettings = () => {
@@ -340,6 +468,7 @@ export function MemoryPanel({
     setSettings(cloneMemorySettings(persistedSettings))
     setProviderError(null)
     setConfirmingBackendChange(false)
+    setConfirmingHomeMove(false)
   }
 
   const closeSettings = () => {
@@ -356,6 +485,7 @@ export function MemoryPanel({
         if (persistedSettings.scope === 'channel') {
           return [
             'Managed directory',
+            memoryHomeLabel(persistedSettings.home),
             `Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'}`,
             'Channel scope'
           ].join(' · ')
@@ -364,6 +494,7 @@ export function MemoryPanel({
         const cadence = dreaming.schedule === '0 4 * * *' ? 'daily' : dreaming.schedule ? 'scheduled' : 'manual'
         return [
           'Managed directory',
+          memoryHomeLabel(persistedSettings.home),
           `Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'}`,
           dreaming.enabled ? `Dreaming ${cadence}` : 'Dreaming off',
           ...(dreaming.enabled && dreaming.mineSkills === true ? ['Skill mining on'] : []),
@@ -769,6 +900,16 @@ export function MemoryPanel({
                   Unsaved changes
                 </span>
               ) : null}
+              {persistedProvider === 'managed' && homeMigrationPending ? (
+                <span
+                  data-memory-home-status
+                  className="inline-flex items-center gap-1 font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
+                  aria-live="polite"
+                >
+                  <Spinner size={11} />
+                  {HOME_PENDING_STATUS}
+                </span>
+              ) : null}
             </div>
             <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
               {settingsSummary}
@@ -819,6 +960,20 @@ export function MemoryPanel({
                 canEdit={canEdit && !savingProvider}
                 onChange={(next) => {
                   setSettings((current) => ({ ...current, scope: next }))
+                  setProviderError(null)
+                }}
+              />
+            ) : null}
+
+            {provider === 'managed' ? (
+              <MemoryHomeField
+                home={settings.home}
+                persistedHome={persistedSettings.home}
+                canEdit={canEdit && !savingProvider}
+                poolPlaced={poolPlaced}
+                pending={homeMigrationPending}
+                onChange={(next) => {
+                  setSettings((current) => ({ ...current, home: next }))
                   setProviderError(null)
                 }}
               />
@@ -994,6 +1149,34 @@ export function MemoryPanel({
                 ) : null}
               </div>
             ) : null}
+
+            {canEdit &&
+            persistedProvider === 'managed' &&
+            persistedSettings.home === 'control-plane' &&
+            !poolPlaced &&
+            !homeMigrationPending ? (
+              <div className="flex flex-col gap-2 rounded-md border border-(--status-error-soft) px-3 py-3 desktop:flex-row desktop:items-center desktop:justify-between">
+                <div className="flex min-w-0 flex-col gap-[3px]">
+                  <span className="font-sans text-[12.5px] font-semibold leading-normal">
+                    Move memory back to the daemon
+                  </span>
+                  <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                    Deletes every memory file and its history in the Control Plane; the agent starts with empty memory.
+                  </span>
+                </div>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  disabled={savingProvider || returningHome}
+                  onClick={() => {
+                    setHomeReturnError(null)
+                    setConfirmingHomeReturn(true)
+                  }}
+                >
+                  Move memory back to the daemon
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </section>
@@ -1138,6 +1321,42 @@ export function MemoryPanel({
             This switches the agent from <strong className="font-semibold">{persistedProviderLabel}</strong> to{' '}
             <strong className="font-semibold">{memoryProviderLabel(provider)}</strong>. Existing memory is not migrated,
             and any pending capture stays with its original connection.
+          </p>
+        </ConfirmationDialog>
+      ) : null}
+      {confirmingHomeMove ? (
+        <ConfirmationDialog
+          title="Move memory to the Control Plane?"
+          confirmLabel="Move"
+          busy={savingProvider}
+          error={providerError}
+          onClose={() => {
+            if (!savingProvider) setConfirmingHomeMove(false)
+          }}
+          onConfirm={() => void persistMemorySettings()}
+        >
+          <p className="m-0">
+            The owning daemon copies this agent&apos;s memory into the Control Plane. Memory is unavailable until the
+            copy completes, and it cannot be moved back without deleting it.
+          </p>
+        </ConfirmationDialog>
+      ) : null}
+      {confirmingHomeReturn ? (
+        <ConfirmationDialog
+          title="Move memory back to the daemon?"
+          confirmLabel="Move"
+          busyLabel="Moving…"
+          destructive
+          busy={returningHome}
+          error={homeReturnError}
+          onClose={() => {
+            if (!returningHome) setConfirmingHomeReturn(false)
+          }}
+          onConfirm={() => void returnHomeToDaemon()}
+        >
+          <p className="m-0">
+            Nothing is kept. Every memory file and its history in the Control Plane is deleted, and the agent starts
+            with empty memory on its daemon.
           </p>
         </ConfirmationDialog>
       ) : null}

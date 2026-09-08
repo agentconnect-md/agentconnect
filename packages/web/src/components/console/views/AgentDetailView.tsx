@@ -2195,12 +2195,15 @@ export default function AgentDetailView() {
           memoryProvider={da.memoryProvider}
           autoDistill={da.memoryAutoDistill}
           memoryScope={da.memoryScope}
+          memoryHome={da.memoryHome}
+          memoryHomeMigration={da.memoryHomeMigration}
           memoryDreaming={da.memoryDreaming}
           memoryConnectionId={da.memoryConnectionId}
           memoryRecall={da.memoryRecall}
           memoryCaptureMode={da.memoryCaptureMode}
           sessionBasePath={orgPath('/sessions')}
           sandboxed={isPoolPlacementKind(da.placementKind)}
+          poolPlaced={isPoolPlacementKind(da.placementKind, da.setId, orgSetIds)}
         />
       )}
 

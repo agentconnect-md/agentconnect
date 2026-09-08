@@ -286,6 +286,8 @@ export type AgentMemoryConfig =
       dreaming?: MemoryDreamingConfig
       scope?: ManagedMemoryScope
       home?: ManagedMemoryHome
+      /** CP-owned and read-only: set by the `daemon` → `control-plane` switch, cleared by the owning daemon's completion report. */
+      homeMigration?: 'pending'
     }
   | { provider: 'native' | 'none'; autoDistill?: boolean }
   | {
@@ -988,6 +990,8 @@ export interface UpdateAgentInput {
   managedSkills?: string[]
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
+  /** Accept a change the CP otherwise refuses with a 409, such as moving the memory home back to `daemon` (keeps no memory). */
+  force?: boolean
 }
 
 /** The ONE workspace input shape, shared verbatim by agent creation and workspace
@@ -1886,6 +1890,10 @@ export function agentFromDto(d: AgentDto): Agent {
     memoryAutoDistill: d.memory?.provider === 'managed' ? (d.memory.autoDistill ?? false) : false,
     ...(d.memory?.provider === 'managed' && d.memory.scope === 'channel' ? { memoryScope: 'channel' as const } : {}),
     ...(d.memory?.provider === 'managed' && d.memory.dreaming ? { memoryDreaming: d.memory.dreaming } : {}),
+    ...(d.memory?.provider === 'managed' && d.memory.home ? { memoryHome: d.memory.home } : {}),
+    ...(d.memory?.provider === 'managed' && d.memory.homeMigration
+      ? { memoryHomeMigration: d.memory.homeMigration }
+      : {}),
     ...(d.memory?.provider === 'external'
       ? {
           memoryConnectionId: d.memory.connectionId,

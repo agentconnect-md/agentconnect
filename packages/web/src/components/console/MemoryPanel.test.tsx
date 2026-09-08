@@ -306,6 +306,7 @@ describe('MemoryPanel settings draft', () => {
       memory: {
         provider: 'managed',
         autoDistill: false,
+        home: 'daemon',
         dreaming: { enabled: true, schedule: '0 4 * * *', mineSkills: true, autoAdopt: false }
       }
     })
@@ -353,6 +354,7 @@ describe('MemoryPanel settings draft', () => {
       memory: {
         provider: 'managed',
         autoDistill: false,
+        home: 'daemon',
         dreaming: { enabled: true, schedule: '0 4 * * *', mineSkills: false, autoAdopt: true }
       }
     })
@@ -433,7 +435,7 @@ describe('MemoryPanel settings draft', () => {
     )
     await act(async () => save?.click())
     expect(mocks.updateAgent).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', {
-      memory: { provider: 'managed', autoDistill: false, scope: 'channel' }
+      memory: { provider: 'managed', autoDistill: false, scope: 'channel', home: 'daemon' }
     })
   })
 
@@ -819,5 +821,125 @@ describe('MemoryPanel sandbox wake', () => {
     await mount({ sandboxed: true, memoryProvider: 'native' })
 
     expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+  })
+})
+
+// The managed home is chosen one way (memory-evolution.md §3.2.1): `daemon` → `control-plane` from the selector behind a
+// confirmation, the return only as a forced action behind its own dialog, and on the pool no choice at all.
+describe('MemoryPanel memory home', () => {
+  const AGENT_ID = '22222222-2222-4222-8222-222222222222'
+
+  const mount = async (props: Partial<Parameters<typeof MemoryPanel>[0]> = {}) => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(<MemoryPanel agentId={AGENT_ID} canEdit memoryProvider="managed" autoDistill={false} {...props} />)
+    })
+    return container
+  }
+
+  const homePill = (host: HTMLElement, value: string) =>
+    host.querySelector<HTMLButtonElement>(`[data-memory-home="${value}"]`)
+  const dialog = (host: HTMLElement) => host.querySelector<HTMLElement>('[role="dialog"]')
+  const dialogButton = (host: HTMLElement, label: string) =>
+    Array.from(dialog(host)?.querySelectorAll('button') ?? []).find((button) => button.textContent === label)
+
+  it('reads the home from the binding and carries it through an unrelated save', async () => {
+    const host = await mount({ memoryHome: 'control-plane' })
+    expect(host.textContent).toContain('In the Control Plane')
+    await openSettings(host)
+    const autoDistill = host.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    await act(async () => autoDistill?.click())
+    await clickButton(host, 'Save memory settings')
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT_ID, {
+      memory: { provider: 'managed', autoDistill: true, home: 'control-plane' }
+    })
+  })
+
+  it('moves daemon → control-plane from the selector, but only after the confirmation', async () => {
+    const host = await mount()
+    await openSettings(host)
+    expect(homePill(host, 'daemon')?.getAttribute('aria-pressed')).toBe('true')
+    expect(homePill(host, 'daemon')?.disabled).toBe(false)
+    expect(homePill(host, 'control-plane')?.disabled).toBe(false)
+
+    await act(async () => homePill(host, 'control-plane')?.click())
+    await clickButton(host, 'Save memory settings')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(dialog(host)?.textContent).toContain('Move memory to the Control Plane?')
+    expect(dialog(host)?.textContent).toContain('Memory is unavailable until the copy completes')
+
+    await act(async () => dialogButton(host, 'Move')?.click())
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT_ID, {
+      memory: { provider: 'managed', autoDistill: false, home: 'control-plane' }
+    })
+    expect(dialog(host)).toBeNull()
+  })
+
+  it('shows the quiet status and locks the control while the copy is pending', async () => {
+    const host = await mount({ memoryHome: 'control-plane', memoryHomeMigration: 'pending' })
+    expect(host.querySelector('[data-memory-home-status]')?.textContent).toContain(
+      'Moving memory to the Control Plane…'
+    )
+    await openSettings(host)
+    expect(homePill(host, 'daemon')).toBeNull()
+    expect(homePill(host, 'control-plane')?.disabled).toBe(true)
+    expect(host.textContent).not.toContain('Move memory back to the daemon')
+  })
+
+  it('offers no daemon in the selector once the home is control-plane; the return is a forced action', async () => {
+    const host = await mount({ memoryHome: 'control-plane' })
+    await openSettings(host)
+    expect(homePill(host, 'daemon')).toBeNull()
+    expect(homePill(host, 'control-plane')?.getAttribute('aria-pressed')).toBe('true')
+
+    await clickButton(host, 'Move memory back to the daemon')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(dialog(host)?.textContent).toContain('Move memory back to the daemon?')
+    expect(dialog(host)?.textContent).toContain('Nothing is kept')
+
+    await act(async () => dialogButton(host, 'Move')?.click())
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT_ID, {
+      memory: { provider: 'managed', autoDistill: false, home: 'daemon' },
+      force: true
+    })
+    expect(dialog(host)).toBeNull()
+    expect(host.textContent).toContain('On the daemon')
+  })
+
+  it("surfaces the server's refusal inside the return dialog", async () => {
+    mocks.updateAgent.mockRejectedValueOnce(new ApiError('moving the memory home back requires force', 409))
+    const host = await mount({ memoryHome: 'control-plane' })
+    await openSettings(host)
+    await clickButton(host, 'Move memory back to the daemon')
+    await act(async () => dialogButton(host, 'Move')?.click())
+    expect(dialog(host)?.querySelector('[role="alert"]')?.textContent).toContain('requires force')
+  })
+
+  it('fixes the home to control-plane on the pool, with a reason and no way back', async () => {
+    const host = await mount({ poolPlaced: true })
+    await openSettings(host)
+    expect(homePill(host, 'daemon')).toBeNull()
+    expect(homePill(host, 'control-plane')?.disabled).toBe(true)
+    expect(homePill(host, 'control-plane')?.getAttribute('aria-pressed')).toBe('true')
+    expect(host.querySelector('[data-memory-home-reason]')?.textContent).toContain('managed pool')
+    expect(host.textContent).not.toContain('Move memory back to the daemon')
+
+    // A pool agent's binding always carries the only home it may have, even when the DTO predates the field.
+    const autoDistill = host.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    await act(async () => autoDistill?.click())
+    await clickButton(host, 'Save memory settings')
+    expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT_ID, {
+      memory: { provider: 'managed', autoDistill: true, home: 'control-plane' }
+    })
+  })
+
+  it('renders the field and the return action on mobile too', async () => {
+    mocks.isMobile = true
+    const host = await mount({ memoryHome: 'control-plane' })
+    await openSettings(host)
+    expect(homePill(host, 'control-plane')).toBeTruthy()
+    expect(host.textContent).toContain('Move memory back to the daemon')
   })
 })

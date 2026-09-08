@@ -1,4 +1,4 @@
-import type { AgentMemoryConfig, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
+import type { AgentMemoryConfig, ManagedMemoryHome, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
 import { isIanaTimezone, isValidCron } from '@/lib/cron'
 import {
   DEFAULT_EXTERNAL_MEMORY_BINDING,
@@ -36,6 +36,26 @@ export const DEFAULT_DREAMING_DRAFT: DreamingDraft = {
 
 export type MemoryProviderChoice = 'managed' | 'native' | 'external' | 'none'
 
+/** `daemon` is the default home (memory-evolution.md §3.2.1); a binding written before the field existed reads as it. */
+export const DEFAULT_MEMORY_HOME: ManagedMemoryHome = 'daemon'
+
+export const MEMORY_HOME_OPTIONS: ReadonlyArray<{ value: ManagedMemoryHome; label: string; help: string }> = [
+  {
+    value: 'daemon',
+    label: 'On the daemon',
+    help: 'The daemon keeps the memory files on the machine that runs the agent.'
+  },
+  {
+    value: 'control-plane',
+    label: 'In the Control Plane',
+    help: 'The Control Plane keeps the memory files, so they follow the agent to any daemon and need no machine to be up.'
+  }
+]
+
+export function memoryHomeLabel(value: ManagedMemoryHome): string {
+  return MEMORY_HOME_OPTIONS.find((option) => option.value === value)?.label ?? value
+}
+
 export const MEMORY_PROVIDER_OPTIONS: ReadonlyArray<{
   value: MemoryProviderChoice
   label: string
@@ -53,6 +73,8 @@ export interface MemorySettingsDraft {
   /** Managed partitioning (#653). `channel` gives each channel its own memory and
    *  disables dreaming (offline consolidation doesn't map onto per-channel folders). */
   scope: ManagedMemoryScope
+  /** Where the managed tree lives; every save sends it, so the CP's "absent keeps current" fallback is never relied on. */
+  home: ManagedMemoryHome
   dreaming: DreamingDraft
   external: ExternalMemoryBindingDraft
 }
@@ -89,6 +111,7 @@ export function memorySettingsDraft(input: {
   provider: string
   autoDistill: boolean
   scope?: ManagedMemoryScope
+  home?: ManagedMemoryHome
   dreaming?: MemoryDreamingConfig | null
   connectionId?: string
   recall?: ExternalMemoryBindingDraft['recall']
@@ -98,6 +121,7 @@ export function memorySettingsDraft(input: {
     provider: memoryProviderChoice(input.provider),
     autoDistill: input.autoDistill,
     scope: input.scope === 'channel' ? 'channel' : 'agent',
+    home: input.home === 'control-plane' ? 'control-plane' : DEFAULT_MEMORY_HOME,
     dreaming: input.dreaming
       ? {
           enabled: input.dreaming.enabled,
@@ -134,6 +158,7 @@ export function memorySettingsChanged(persisted: MemorySettingsDraft, draft: Mem
   if (persisted.provider !== draft.provider) return true
   if (draft.provider === 'managed') {
     if (persisted.scope !== draft.scope) return true
+    if (persisted.home !== draft.home) return true
     // Under channel scope dreaming is hidden/disabled, so its draft fields don't count.
     if (draft.scope === 'channel') return persisted.autoDistill !== draft.autoDistill
     return persisted.autoDistill !== draft.autoDistill || !sameDreaming(persisted.dreaming, draft.dreaming)
@@ -145,6 +170,16 @@ export function memorySettingsChanged(persisted: MemorySettingsDraft, draft: Mem
 export function memoryBackendChanged(persisted: MemorySettingsDraft, draft: MemorySettingsDraft): boolean {
   if (persisted.provider !== draft.provider) return true
   return draft.provider === 'external' && persisted.external.connectionId !== draft.external.connectionId
+}
+
+/** The one-way move: a managed binding whose home goes `daemon` → `control-plane`, which the owning daemon migrates. */
+export function memoryHomeMovesForward(persisted: MemorySettingsDraft, draft: MemorySettingsDraft): boolean {
+  return (
+    persisted.provider === 'managed' &&
+    draft.provider === 'managed' &&
+    persisted.home === 'daemon' &&
+    draft.home === 'control-plane'
+  )
 }
 
 /**
@@ -195,10 +230,15 @@ export function memoryConfigForDraft(draft: MemorySettingsDraft): AgentMemoryCon
     // Channel scope has no dreaming (offline consolidation doesn't map onto
     // per-channel folders), so never serialize a dreaming policy with it.
     if (draft.scope === 'channel') {
-      return { provider: 'managed', autoDistill: draft.autoDistill, scope: 'channel' }
+      return { provider: 'managed', autoDistill: draft.autoDistill, scope: 'channel', home: draft.home }
     }
     const dreaming = dreamingConfigForDraft(draft.dreaming)
-    return { provider: 'managed', autoDistill: draft.autoDistill, ...(dreaming ? { dreaming } : {}) }
+    return {
+      provider: 'managed',
+      autoDistill: draft.autoDistill,
+      home: draft.home,
+      ...(dreaming ? { dreaming } : {})
+    }
   }
   return { provider: draft.provider, autoDistill: false }
 }

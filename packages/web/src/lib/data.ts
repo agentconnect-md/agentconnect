@@ -4,7 +4,13 @@
 import type { AgentIcon } from '@/lib/agent-icon'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol/code-host'
-import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig, PlanBody } from '@/lib/api'
+import type {
+  DaemonSessionRetention,
+  ManagedMemoryHome,
+  ManagedMemoryScope,
+  MemoryDreamingConfig,
+  PlanBody
+} from '@/lib/api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
 import { randomUuid } from '@/lib/random-uuid'
@@ -526,6 +532,10 @@ export interface Agent {
   memoryScope?: ManagedMemoryScope
   /** Managed-memory dreaming policy; present only when configured (managed provider). */
   memoryDreaming?: MemoryDreamingConfig
+  /** Where the managed tree lives (memory-evolution.md §3.2.1); absent on a binding written before the field existed. */
+  memoryHome?: ManagedMemoryHome
+  /** Set while the owning daemon copies the tree into the Control Plane after a `daemon` → `control-plane` switch. */
+  memoryHomeMigration?: 'pending'
   /** External-memory binding metadata; present only when memoryProvider='external'. */
   memoryConnectionId?: string
   memoryRecall?: {
