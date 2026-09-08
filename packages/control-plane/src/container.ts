@@ -95,6 +95,8 @@ import {
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
+  PgAgentMemoryFileRepo,
+  PgAgentMemoryHistoryRepo,
   PgThreadAffinityStore,
   PgSlackInstallStore,
   PgSlackPlatformInstallStore,
@@ -149,6 +151,8 @@ import {
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
+import { AgentMemoryStagingSweeper } from './orchestrator/agentMemoryStagingSweeper.js'
+import { AgentMemoryStoreService } from './agent-memory/store.service.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
 import { resolveApprovalRoute, type ApprovalRouteResolver } from './orchestrator/approvalRoute.js'
@@ -422,6 +426,9 @@ export function buildContainer(
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, secretCipher),
     externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, secretCipher),
+    // The `control-plane` memory home (memory-evolution.md §3.2.1): both own their transactions.
+    agentMemoryFile: new PgAgentMemoryFileRepo(prisma),
+    agentMemoryHistory: new PgAgentMemoryHistoryRepo(prisma),
     // Owns its transactions: every external-memory check-then-write pair runs
     // under the advisory mutation scopes, so it stays serialized across CP
     // instances (rolling updates included).
@@ -1592,6 +1599,11 @@ export function buildContainer(
     http.log
   )
 
+  // The `control-plane` memory home's op set, and the sweep behind the staged rows an abandoned append
+  // sequence leaves (memory-evolution.md §3.2.1); the sweep is armed only by `startBackground()`.
+  const agentMemoryStore = new AgentMemoryStoreService(repos.agentMemoryFile, clock)
+  const agentMemoryStagingSweeper = new AgentMemoryStagingSweeper(repos.agentMemoryFile, clock, http.log)
+
   // Durable one-time assertion recovery. Invocation rows are reaped before
   // expired delegations so a parent is never removed while cached/recoverable
   // invocation state still depends on it.
@@ -1934,6 +1946,8 @@ export function buildContainer(
     agent: repos.agent,
     organizationKnowledge: repos.organizationKnowledge,
     externalMemoryConnection: repos.externalMemoryConnection,
+    agentMemoryStore,
+    agentMemoryHistory: repos.agentMemoryHistory,
     ...(github ? { github } : {}),
     // gitcred v2 (§13.1): the gitlab arm serves the agent's own account PATs; absent ⇒ disabled.
     ...(gitlab
@@ -2292,6 +2306,7 @@ export function buildContainer(
       hookRunReaper.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
+      agentMemoryStagingSweeper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
       gitlabRotator?.start()
@@ -2312,6 +2327,7 @@ export function buildContainer(
       hookRunReaper.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
+      agentMemoryStagingSweeper.stop()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       gitlabRotator?.stop()

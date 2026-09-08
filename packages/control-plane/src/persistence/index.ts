@@ -67,6 +67,7 @@ export {
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo
 } from './repositories/memory-connection.repo.js'
+export { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './repositories/agent-memory.repo.js'
 export { PgThreadAffinityStore } from './repositories/thread-affinity.repo.js'
 export { PgSlackInstallStore } from './repositories/slack-install.repo.js'
 export { PgSlackPlatformInstallStore } from './repositories/slack-platform-install.repo.js'
