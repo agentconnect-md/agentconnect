@@ -381,6 +381,11 @@ agent directories and higher custom parents are left unchanged.
 
 ### Linux ACP runtime sandbox
 
+The proposed [sandbox backend extension](daemon-sandbox-backends.md) adds
+configurable microsandbox execution and a shared mounts configuration while
+preserving SRT as the default. The behavior below describes the current SRT
+implementation.
+
 AgentConnect currently enables runtime sandboxing on Linux only. The daemon uses
 the exact-pinned `@anthropic-ai/sandbox-runtime` package, backed by `bubblewrap`,
 and launches a separate SRT provider process for each ordinary ACP host so policy
