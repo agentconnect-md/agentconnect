@@ -1178,6 +1178,12 @@ column's TYPE, and Slack publishes no schema endpoint for a list. So the columns
 from the rows a read returns and handed back with them — the read is not a convenience before
 the write, it is the only source of the ids and types the write needs.
 
+The two `lists:*` scopes are the one family NOT in `SLACK_BOT_SCOPES`. Slack Lists is a
+paid-plan feature: a free workspace can neither offer the scope in an app's config nor grant
+it, and since that list is the required set, asking for it would refuse every free-plan install
+outright. The tools stay declared on the port and answer `missing_scope` where the grant is
+absent — an installation-shaped gap, not a platform-shaped one.
+
 Three scopes in that same change have NO caller and say so: `channels:join`, `team:read`, and
 `users:read.email`. That is a deliberate exception to the scope-arrives-with-its-feature rule,
 taken because one list means every scope addition costs a reinstall of every installation —

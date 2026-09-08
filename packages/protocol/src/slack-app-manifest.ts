@@ -57,8 +57,7 @@ export const SLACK_BOT_SCOPES = [
   'mpim:write',
   'bookmarks:read',
   'bookmarks:write',
-  'lists:read',
-  'lists:write',
+  // NO `lists:*`: Lists is paid-plan-only, and a scope a free workspace cannot grant would fence it out of installing.
   // RESERVED — declared deliberately ahead of a caller, which the rule above otherwise forbids.
   // Every scope added later costs a reinstall of every installation, so the ones we know are
   // coming ride along with these and cost nothing extra: `channels:join` lets a future agent

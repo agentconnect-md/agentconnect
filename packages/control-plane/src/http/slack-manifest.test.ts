@@ -129,8 +129,6 @@ describe('buildInstallManifest', () => {
       'mpim:write',
       'bookmarks:read',
       'bookmarks:write',
-      'lists:read',
-      'lists:write',
       'channels:join',
       'team:read',
       'users:read.email',
