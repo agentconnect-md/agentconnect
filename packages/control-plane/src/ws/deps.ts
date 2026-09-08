@@ -25,8 +25,10 @@ import type {
   BotRepo,
   GithubInstallationRepo,
   DaemonLifecycleOpRepo,
-  AgentRecord
+  AgentRecord,
+  AgentMemoryHistoryRepo
 } from '../persistence/ports.js'
+import type { AgentMemoryStoreService } from '../agent-memory/store.service.js'
 import type { UsageWriter } from '../usage/writer.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { DutyAgentBundle, RelayRosterEntry } from '@agentconnect.md/protocol'
@@ -147,6 +149,10 @@ export interface DaemonWsDeps {
   organizationKnowledge?: OrganizationKnowledgeRepo
   /** Revision-fenced sink for daemon external-memory conformance facts. */
   externalMemoryConnection?: ExternalMemoryConnectionRepo
+  /** The `control-plane` memory home's op set (memory-evolution.md §3.2.1); absent ⇒ `memory/store` answers INTERNAL. */
+  agentMemoryStore?: Pick<AgentMemoryStoreService, 'apply'>
+  /** The change-log table behind `memory/history/append`; absent ⇒ INTERNAL. */
+  agentMemoryHistory?: Pick<AgentMemoryHistoryRepo, 'append'>
   /** github-app workspaces façade; absent ⇒ gitcred/request answers SCOPE_DENIED. */
   github?: GithubService
   /** gitcred v2 GitLab grants (§13.1); absent ⇒ gitlab workspaces disabled. */

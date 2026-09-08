@@ -136,6 +136,8 @@ export { isFrameType as isKnownFrameType }
 // ── wire codec (shared by daemon + control-plane) ──
 export { decodeEnvelope, decodeCpEnvelope, buildEnvelope, encode, MAX_FRAME_BYTES, REPLY_BUDGET } from './codec.js'
 export type { DecodeResult, BuildOpts, InboundControlExt } from './codec.js'
+// ── one-frame slicing of file bytes, shared by every carrier of the memory-fs op set ──
+export { encodedBytes, fitToBudget, utf8Boundary } from './wire-slice.js'
 
 // ── tolerant reading of a peer-authored payload, for a wire that needs its own reader ──
 export { tolerantReader, tolerantSchemas } from './tolerant.js'

@@ -255,7 +255,8 @@ write as a second, best-effort D→C request, `memory/history/append` →
 agent, since adoption records every changed file at once; the console's `memory/history`
 read pair keeps its name), exactly the provenance-never-fails-the-write rule
 the sidecar has today; retention (`MAX_HISTORY_VERSIONS_PER_FILE` and the byte cap) is a
-delete rather than a rewrite. The daemon never reads it back: the change log has one
+delete rather than a rewrite, applied per `(agentId, root)` so each store keeps the cap
+its sidecar had. The daemon never reads it back: the change log has one
 reader, the console, and under a `control-plane` home the CP answers the `memory/history`
 frame from its own table without asking the daemon at all — the one console read that
 already works with the daemon offline. Dream adoption is unaffected: its drift decision
@@ -285,7 +286,14 @@ than pod-absolute.
 The CP runs each op as one SQL transaction against the table: `append` concatenates
 into the temp row, `commit` checks `ifMatchMtime`, deletes the target and renames the
 temp, so the atomic publish and its precondition are one transaction; `rename` of a
-directory rewrites the path prefix. Directories are implicit — a prefix with rows:
+directory rewrites the path prefix. Two rules the table adds, both required by the
+conditional write unified-memory-interface.md §5 later builds on this transaction: the
+`mtime` a commit stamps is strictly monotonic per `(agentId, path)` — `GREATEST(now,
+previous + 1 ms)` inside the same transaction, so two commits within one millisecond
+never hand out the same token — and a staged row an abandoned append sequence left
+behind (the daemon died between its appends and its `commit` or `rm`, which clear their
+own) is removed by a bounded periodic sweep once it is an hour old. Directories are
+implicit — a prefix with rows:
 `mkdir` succeeds, `rmdir` answers whether nothing was left, and an empty directory does
 not exist. That is the only observable difference from the two disk ports, and no
 memory code depends on one. Authorization mirrors `knowledge/search`: org from the
