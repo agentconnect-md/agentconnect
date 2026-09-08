@@ -352,6 +352,11 @@ export class WorkspaceManager {
     return this.managedCredentialProvider(agent) !== undefined
   }
 
+  // Mode-agnostic, unlike usesManagedCredential: scratch carries `github-app` so git/gh/glab can name authorized repos.
+  helperBackedCredential(agent: Agent): boolean {
+    return agent.workspace.gitCredential !== undefined
+  }
+
   /**
    * Whether the spec carries a REPO-BEARING GitLab consumer (§24.4): a gitlab workspace, or an
    * authorized gitlab additional repository. A hook is deliberately not one — it authorizes a turn,

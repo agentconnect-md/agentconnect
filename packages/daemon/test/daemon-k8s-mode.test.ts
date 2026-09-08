@@ -1016,6 +1016,34 @@ describe('daemon --k8s mode', () => {
       // A managed GitLab pod needs the same socket: its clone/pull and the agent's git/glab ask for one.
       ;(k8sDaemon as any).agents.set('gl', { id: 'gl', workspace: { mode: 'git-repo', gitCredential: 'gitlab' } })
       expect(planeOptions.tunnelsFor('gl')).toEqual(['mcp', 'gitcred'])
+      // Scratch carries the marker so git/gh/glab can name authorized repos, and its pod gitconfig
+      // already points at the helper — the socket has to be there whichever host the repo lives on.
+      const scratch = (additionalRepos: unknown[]) => ({
+        mode: 'from-scratch',
+        gitCredential: 'github-app',
+        additionalRepos
+      })
+      ;(k8sDaemon as any).agents.set('scratch-gh', {
+        id: 'scratch-gh',
+        workspace: scratch([{ repoFullName: 'acme/shared', repoId: '1' }])
+      })
+      expect(planeOptions.tunnelsFor('scratch-gh')).toEqual(['mcp', 'gitcred'])
+      ;(k8sDaemon as any).agents.set('scratch-gl', {
+        id: 'scratch-gl',
+        workspace: scratch([{ provider: 'gitlab', repoFullName: 'acme/shared', repoId: '7' }])
+      })
+      expect(planeOptions.tunnelsFor('scratch-gl')).toEqual(['mcp', 'gitcred'])
+      // Tunnels open once per pod, so a pod bound before its first grant gets the socket too; the
+      // helper refuses a repository-less request, so nothing is minted for it.
+      ;(k8sDaemon as any).agents.set('scratch-none', { id: 'scratch-none', workspace: scratch([]) })
+      expect(planeOptions.tunnelsFor('scratch-none')).toEqual(['mcp', 'gitcred'])
+      // An anonymous checkout has no marker even with a row: that row authorizes control-plane-owned
+      // review of its own repo, not agent credentials, so the row count alone must not decide.
+      ;(k8sDaemon as any).agents.set('anon', {
+        id: 'anon',
+        workspace: { mode: 'git-repo', additionalRepos: [{ repoFullName: 'acme/own', repoId: '2' }] }
+      })
+      expect(planeOptions.tunnelsFor('anon')).toEqual(['mcp'])
       // And nothing for the member's own runtime probe, whose channel is granted `probe` alone —
       // asking it to serve a socket would be refused, and the refusal logged, on every boot.
       expect(planeOptions.tunnelsFor('ac-runtime-probe-0f0f0f0f')).toEqual([])
