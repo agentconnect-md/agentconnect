@@ -14,6 +14,22 @@ export interface SlackTextBearingMessage {
   text?: unknown
   blocks?: unknown
   attachments?: unknown
+  files?: unknown
+}
+
+/**
+ * A Slack file that is a REFERENCE to a hosted surface, not bytes: a canvas (`quip`, the
+ * Quip lineage Slack never renamed) or a List. What a model needs from one is the id its tool
+ * takes, not a download — `readCanvas` / `readList` do the reading.
+ */
+export function slackReferenceFileKind(
+  file: { filetype?: unknown; mode?: unknown; mimetype?: unknown } | null | undefined
+): 'List' | 'Canvas' | undefined {
+  if (!file) return undefined
+  if (file.filetype === 'list' || file.mode === 'list' || file.mimetype === 'application/vnd.slack-list') return 'List'
+  if (file.filetype === 'quip' || file.mode === 'quip' || file.mimetype === 'application/vnd.slack-docs')
+    return 'Canvas'
+  return undefined
 }
 
 function record(value: unknown): UnknownRecord | undefined {
@@ -42,6 +58,20 @@ function linkedLabel(label: string, url: string): string {
   if (!label || label === url) return url
   return `<${url}|${label}>`
 }
+
+/**
+ * A reference to a Slack-hosted surface (a List, a canvas, a file), rendered so a model can
+ * ACT on it: the kind and the id are always spelled out — `readList` / `readCanvas` take that
+ * id — with the display text and link kept around them when Slack sent any. Slack's own
+ * fallback `text` renders these as the bare id, which is exactly what a model cannot read.
+ */
+function surfaceReference(kind: string, id: string, text: string, url: string, rowId = ''): string {
+  if (!id) return linkedLabel(text, url)
+  const ref = `Slack ${kind} ${id}${rowId ? ` row ${rowId}` : ''}`
+  return linkedLabel(text ? `${text} (${ref})` : ref, url)
+}
+
+const REFERENCE_RE = /<[^|>]+\|(?:[^>]*\()?Slack (?:List|Canvas|file) ([A-Za-z0-9]+)(?: row [A-Za-z0-9]+)?\)?>/g
 
 function richElementText(value: unknown): string {
   const element = record(value)
@@ -74,10 +104,50 @@ function richElementText(value: unknown): string {
     }
     case 'date':
       return string(element.fallback)
+    // Slack-hosted surfaces mentioned inline. Their fallback `text` is the bare file id.
+    case 'list_record':
+      return surfaceReference(
+        'List',
+        string(element.file_id),
+        string(element.text),
+        string(element.url),
+        string(element.record_id)
+      )
+    case 'canvas':
+      return surfaceReference(
+        'Canvas',
+        string(element.file_id),
+        string(element.text) || string(element.label),
+        string(element.url)
+      )
+    case 'file':
+      return surfaceReference('file', string(element.file_id), string(element.text), string(element.url))
+    case 'message_mention': {
+      const channel = string(element.channel_id)
+      const ts = string(element.message_ts)
+      return linkedLabel(
+        string(element.text) || (channel && ts ? `message ${ts} in <#${channel}>` : ''),
+        string(element.url)
+      )
+    }
+    case 'canvas_message_unfurl': {
+      const channel = string(element.root_message_channel)
+      const ts = string(element.root_message_ts)
+      return channel && ts ? `message ${ts} in <#${channel}>` : ''
+    }
+    case 'tag':
+      return string(element.text)
+    case 'color':
+      return string(element.value)
     default: {
-      if (!Array.isArray(element.elements)) return ''
-      const separator = element.type === 'rich_text_section' || element.type === 'rich_text_preformatted' ? '' : '\n'
-      return join(element.elements.map(richElementText), separator)
+      if (Array.isArray(element.elements)) {
+        const separator = element.type === 'rich_text_section' || element.type === 'rich_text_preformatted' ? '' : '\n'
+        return join(element.elements.map(richElementText), separator)
+      }
+      // A leaf this extractor does not know (`attachment_mention`, `work_object_mention`,
+      // `workflow_mention`, `citation`, whatever Slack adds next): keep the text and link every
+      // one of them carries rather than dropping the reference on the floor.
+      return linkedLabel(string(element.text) || string(element.product_name), string(element.url))
     }
   }
 }
@@ -159,8 +229,10 @@ function attachmentText(value: unknown): string {
   return structured || string(attachment.fallback)
 }
 
+// A rendered surface reference collapses to its bare id, which is how Slack's fallback `text`
+// spells the same mention — so the two views of one message dedupe instead of both surviving.
 function canonical(value: string): string {
-  return value.replace(/\s+/g, ' ').trim()
+  return value.replace(REFERENCE_RE, '$1').replace(/\s+/g, ' ').trim()
 }
 
 /** Join top-level text with visible blocks/attachments while removing the common
@@ -169,7 +241,13 @@ function uniqueText(parts: string[]): string {
   const kept: { value: string; key: string }[] = []
   for (const value of parts.map((part) => part.trim()).filter(Boolean)) {
     const key = canonical(value)
-    if (kept.some((part) => part.key === key || (key.length > 8 && part.key.includes(key)))) continue
+    // Same text in two renderings: keep the one that spells more (the layout view over the fallback).
+    const same = kept.find((part) => part.key === key)
+    if (same) {
+      if (value.length > same.value.length) same.value = value
+      continue
+    }
+    if (kept.some((part) => key.length > 8 && part.key.includes(key))) continue
     for (let i = kept.length - 1; i >= 0; i--) {
       const previous = kept[i]!
       if (previous.key.length > 8 && key.includes(previous.key)) kept.splice(i, 1)
@@ -182,7 +260,23 @@ function uniqueText(parts: string[]): string {
     .trim()
 }
 
+/** A List or canvas SHARED on the message (its `files`), unless the body already mentions it —
+ *  a share without a mention has no blocks element, and the file entry is then the only carrier. */
+function referenceFilesText(value: unknown, body: string): string {
+  if (!Array.isArray(value)) return ''
+  return join(
+    value.map((entry) => {
+      const file = record(entry)
+      const kind = slackReferenceFileKind(file)
+      const id = string(file?.id)
+      if (!file || !kind || !id || body.includes(`Slack ${kind} ${id}`)) return ''
+      return surfaceReference(kind, id, string(file.title), string(file.permalink))
+    })
+  )
+}
+
 export function extractSlackMessageText(message: SlackTextBearingMessage): string {
   const attachments = Array.isArray(message.attachments) ? message.attachments.map(attachmentText) : []
-  return uniqueText([string(message.text), blocksText(message.blocks), ...attachments])
+  const body = uniqueText([string(message.text), blocksText(message.blocks), ...attachments])
+  return join([body, referenceFilesText(message.files, body)])
 }

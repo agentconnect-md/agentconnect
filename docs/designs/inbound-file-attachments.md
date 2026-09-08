@@ -134,6 +134,18 @@ parens as a dangling `— saved to …`; and the session manager's marker separa
 normalizer. Keeping the path inside the parens (and parens out of sanitized names, §2.1)
 means the strip regex and the name-keyed forwarding lookup both survive unchanged.
 
+**A Slack List or canvas is never an attachment.** Slack delivers both as `files` entries
+(`filetype: list` / `quip`, with a `url_private`), so the marker used to read
+`[attached: list (application/vnd.slack-list)]` — no id, no link, and the suggestion of a
+download. A model needs the opposite: the id its tool takes. `extractSlackMessageText` now
+renders the reference into the message text itself — the inline `list_record` / `canvas` /
+`file` rich-text elements as `<url|title (Slack List F…)>`, and a bare share (a `files` entry
+nothing in the body mentions) the same way from its title and permalink — while
+`toSlackAttachment` drops those files, so the marker stays about bytes. The same applies to
+the element types the extractor does not model: a leaf that carries `text` / `url` keeps
+them instead of vanishing, because Slack's own fallback `text` spells every such mention as a
+bare file id, which is the one rendering a model cannot act on.
+
 Around the marker, `attachmentToBlock`'s ladder changes rung by rung:
 
 - **Images keep their block.** The full-resolution bytes still become an ACP `image` block

@@ -1,5 +1,5 @@
 import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
-import { extractSlackMessageText } from './slack-message-text.js'
+import { extractSlackMessageText, slackReferenceFileKind } from './slack-message-text.js'
 
 /** The subset of a Slack file element carried through normalization. */
 export interface SlackFile {
@@ -138,6 +138,9 @@ export function slackTextAddressesAnyone(text: string): boolean {
  * tombstoned files that have no stable id and provider URL. */
 export function toSlackAttachment(file: SlackFile | null | undefined): PlatformAttachment | null {
   if (!file || typeof file !== 'object') return null
+  // A List or canvas is a reference the message TEXT now carries (`extractSlackMessageText`), not
+  // bytes; as an attachment it read `[attached: list (application/vnd.slack-list)]` — no id, no link.
+  if (slackReferenceFileKind(file)) return null
   const sourceUrl = file.url_private_download ?? file.url_private
   if (!file.id || !sourceUrl) return null
   const thumbnailUrl = file.thumb_360 ?? file.thumb_720 ?? file.thumb_1024
