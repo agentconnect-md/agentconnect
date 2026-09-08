@@ -59,6 +59,12 @@ export function checkSlackBotScopes(granted: readonly string[] | null | undefine
   return missing.length > 0 ? { status: 'short', missing } : { status: 'complete' }
 }
 
+/** Required bot scopes an exported manifest does not DECLARE — the deployment app's drift, which only the Setup Server may fix. */
+export function missingDeclaredBotScopes(manifest: Record<string, unknown>): string[] {
+  const declared = new Set(stringList(asRecord(asRecord(manifest.oauth_config).scopes).bot))
+  return SLACK_BOT_SCOPES.filter((scope) => !declared.has(scope))
+}
+
 type ManifestRecord = Record<string, unknown>
 
 function asRecord(value: unknown): ManifestRecord {

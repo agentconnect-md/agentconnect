@@ -1444,6 +1444,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({
       manifest: 'synced',
+      manifestMissingScopes: [],
       authorization: 'current',
       rejection: null,
       missingScopes: [],
@@ -1491,6 +1492,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({
       manifest: 'manual_update_required',
+      manifestMissingScopes: [],
       authorization: 'current',
       rejection: null,
       missingScopes: [],

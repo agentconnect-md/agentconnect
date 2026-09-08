@@ -152,6 +152,45 @@ export function diffSlackManifest(actual: SlackManifest, expected: SlackManifest
   return diff
 }
 
+/** `actual` with every field `diffSlackManifest` inspects brought to `expected`, everything else kept, so reconcile-then-diff is empty. */
+export function reconcileSlackManifest(actual: SlackManifest, expected: SlackManifest): SlackManifest {
+  const actualOauth = asRecord(actual.oauth_config)
+  const expectedOauth = asRecord(expected.oauth_config)
+  const actualScopes = asRecord(actualOauth.scopes)
+  const expectedScopes = asRecord(expectedOauth.scopes)
+  const actualSettings = asRecord(actual.settings)
+  const expectedSettings = asRecord(expected.settings)
+  const actualEvents = asRecord(actualSettings.event_subscriptions)
+  const expectedEvents = asRecord(expectedSettings.event_subscriptions)
+  const actualInteractivity = asRecord(actualSettings.interactivity)
+  const expectedInteractivity = asRecord(expectedSettings.interactivity)
+  const union = (current: unknown, required: unknown) => [...new Set([...asStrings(current), ...asStrings(required)])]
+  const urlOf = (value: unknown, key: string) => (typeof value === 'string' ? { [key]: value } : {})
+  return {
+    ...actual,
+    oauth_config: {
+      ...actualOauth,
+      // The redirect list is fully managed (the diff wants set equality); scopes and events are additive.
+      redirect_urls: asStrings(expectedOauth.redirect_urls),
+      scopes: { ...actualScopes, bot: union(actualScopes.bot, expectedScopes.bot) }
+    },
+    settings: {
+      ...actualSettings,
+      event_subscriptions: {
+        ...actualEvents,
+        bot_events: union(actualEvents.bot_events, expectedEvents.bot_events),
+        ...urlOf(expectedEvents.request_url, 'request_url')
+      },
+      interactivity: {
+        ...actualInteractivity,
+        ...urlOf(expectedInteractivity.request_url, 'request_url'),
+        ...urlOf(expectedInteractivity.message_menu_options_url, 'message_menu_options_url')
+      },
+      socket_mode_enabled: expectedSettings.socket_mode_enabled
+    }
+  }
+}
+
 /** Returns stable field names only; it never includes provider response values. */
 export function auditSlackManifest(actual: SlackManifest, expected: SlackManifest): string[] {
   return diffSlackManifest(actual, expected).map((item) => item.id)
