@@ -405,22 +405,42 @@ export interface SandboxMemoryFsSource {
   memoryFsFor(agentId: string): MemoryFs | undefined
 }
 
+/** The two ports the dream runner works over; today both are the same instance (memory-evolution.md §3.2.1). */
+export interface MemoryHomePorts {
+  /** The live store: `memory/`, `channels/`, `memory-backups/`, and the adoption temp dir beside them. */
+  live: MemoryFs
+  /** Dream staging (`memory-dreams/`), on the filesystem the extraction host runs in — its root is the host's cwd. */
+  staging: MemoryFs
+}
+
 /**
  * The ONE decision about where an agent's managed memory tree lives. With a sandbox plane (every
  * agent of a `--k8s` daemon runs in a pod) it is the port over the agent's sandbox volume, reachable
  * exactly while the pod is bound — no fallback to this member's disk, since a duty move would leave
- * the memory behind; without one, the local port over the agent dir.
+ * the memory behind; without one, the local port over the agent dir. A later home moves `live`
+ * alone; `staging` stays where the extraction host can see it.
  */
-export function resolveMemoryFs(
+export function resolveMemoryHomePorts(
   agent: { id: string; dir: string },
   sandbox: SandboxMemoryFsSource | undefined
-): MemoryFs {
-  if (!sandbox) return new LocalMemoryFs(agent.dir)
+): MemoryHomePorts {
+  if (!sandbox) {
+    const fs = new LocalMemoryFs(agent.dir)
+    return { live: fs, staging: fs }
+  }
   const fs = sandbox.memoryFsFor(agent.id)
   if (!fs) {
     throw new MemorySandboxUnavailableError(
       `agent "${agent.id}" has no running sandbox, so its memory cannot be reached`
     )
   }
-  return fs
+  return { live: fs, staging: fs }
+}
+
+/** The live store alone, for the consumers that never touch dream staging (the provider, the CP memory reader). */
+export function resolveMemoryFs(
+  agent: { id: string; dir: string },
+  sandbox: SandboxMemoryFsSource | undefined
+): MemoryFs {
+  return resolveMemoryHomePorts(agent, sandbox).live
 }

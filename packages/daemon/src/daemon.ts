@@ -401,7 +401,7 @@ import {
   type PreparedExternalMemoryCapture
 } from './memory/provider.js'
 import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './memory/store.js'
-import { resolveMemoryFs } from './memory/fs.js'
+import { resolveMemoryFs, resolveMemoryHomePorts, type MemoryHomePorts } from './memory/fs.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
@@ -3788,12 +3788,18 @@ export class Daemon {
     })
   }
 
-  /** The one factory every memory consumer is built on: the port over the agent's managed memory
-   *  tree, decided by placement (`resolveMemoryFs`); undefined for an unknown agent, and it throws
-   *  `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not bound. */
+  /** The live-store port every memory consumer but the dream runner is built on, decided by placement
+   *  (`resolveMemoryFs`); undefined for an unknown agent, and it throws `MemorySandboxUnavailableError`
+   *  for a cluster agent whose sandbox is not bound. */
   private memoryFsFor(agentId: string): MemoryFs | undefined {
     const agent = this.agents.get(agentId)
     return agent ? resolveMemoryFs(agent, this.k8sPlane) : undefined
+  }
+
+  /** The dream runner's pair — `live` for the store, `staging` for `memory-dreams/` — decided the same way. */
+  private memoryHomePortsFor(agentId: string): MemoryHomePorts | undefined {
+    const agent = this.agents.get(agentId)
+    return agent ? resolveMemoryHomePorts(agent, this.k8sPlane) : undefined
   }
 
   /** The one daemon-owned workspace preparation contract used by ordinary
@@ -6038,7 +6044,7 @@ export class Daemon {
     if (this.dreamRunnerInstance) return this.dreamRunnerInstance
     const runner = new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
-      memoryFsFor: (id) => this.memoryFsFor(id),
+      memoryHomePortsFor: (id) => this.memoryHomePortsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
       operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
