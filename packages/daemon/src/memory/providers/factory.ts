@@ -1,5 +1,5 @@
 import type { RuntimeDef } from '../../config/config-schema.js'
-import type { MemoryFs } from '../store.js'
+import type { MemoryHomePorts } from '../home.js'
 import { isNativeRuntimeSupported, nativeRuntimeEnv } from '../runtime/native.js'
 import { describeRuntime } from '../runtime/capabilities.js'
 import { MemoryProviderUnavailableError, type MemoryProvider, type MemoryProviderKind } from '../types.js'
@@ -65,7 +65,9 @@ export function createMemoryProvider(deps: MemoryProviderDeps): DispatchingMemor
   return new DispatchingMemoryProvider(deps)
 }
 
-/** A managed-only provider (used where per-agent dispatch isn't needed, e.g. tests). */
-export function createManagedMemoryProvider(memoryFsFor: (agentId: string) => MemoryFs | undefined): MemoryProvider {
-  return new ManagedMemoryProvider(memoryFsFor)
+/** A managed-only provider over the agents' memory homes (used where per-agent dispatch isn't needed, e.g. tests). */
+export function createManagedMemoryProvider(
+  memoryHomePortsFor: (agentId: string) => MemoryHomePorts | undefined
+): MemoryProvider {
+  return new ManagedMemoryProvider(memoryHomePortsFor)
 }

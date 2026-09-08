@@ -1,14 +1,9 @@
-/**
- * Managed distillation as a durable capture: the post-turn distillation of a cluster agent needs its
- * sandbox (the memory tree lives on the volume, and the extraction runs on the warm host in the pod).
- * When the turn's capture arrives after the pod was suspended, the turn is enqueued in the memory
- * capture outbox — the same durable, shared-store-safe pump external plugins use — under a synthetic
- * per-agent connection, and drained once the sandbox is bound again on the member holding the agent.
- *
- * The outbox knows nothing new: this module presents one "connection" per agent through the same
- * registry contract, answering no client while the tree is unreachable (the pump then defers the row
- * without spending an attempt) and a client that runs the distillation once it is.
- */
+// Managed distillation as a durable capture: a post-turn distillation needs the agent's memory home — the sandbox volume
+// (and the warm host in the pod), or the Control Plane for a `control-plane` tree. A turn captured while the home is out
+// of reach is enqueued in the memory capture outbox — the same durable, shared-store-safe pump external plugins use —
+// under a synthetic per-agent connection, and drained once the home is reachable again on the member holding the agent.
+// The outbox knows nothing new: one "connection" per agent through the same registry contract, answering no client while
+// the home is unreachable (the pump then defers the row without spending an attempt) and a distilling one once it is.
 import type { CaptureReceipt, MemoryPluginCaptureInput } from '@agentconnect.md/protocol'
 import type { EnqueueMemoryCapture, MemoryCaptureClient, MemoryCapturePumpRegistry } from '../memory-plugin/outbox.js'
 
@@ -50,7 +45,7 @@ export function managedDistillCapture(input: {
 export interface ManagedDistillDeps {
   /** Agents whose deferred distillations this member may drain: held here, managed memory. */
   agentIds(): readonly string[]
-  /** Whether the agent's memory tree is reachable right now (its sandbox is bound, or it is local). */
+  /** Whether the agent's memory home is reachable right now: this disk always, a sandbox volume while the pod is bound, a `control-plane` tree while the CP is READY with the feature and no migration copy pending. */
   reachable(agentId: string): boolean
   /** Run the distillation for one turn against the live tree; throws when it cannot. */
   distill(agentId: string, turn: MemoryPluginCaptureInput['turn']): Promise<void>

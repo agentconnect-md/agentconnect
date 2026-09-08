@@ -5,6 +5,7 @@ import { monotonicTs } from '../store/monotonic-ts.js'
 import { effectiveSessionIsolation, WorkspaceManager } from '../workspace/workspace-manager.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../memory/provider.js'
+import { MemoryHomeUnavailableError } from '../memory/fs.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { planConfigFiles } from '../shim/config-file-env.js'
 import { recallQueryFromBlocks } from '../memory/recall.js'
@@ -207,6 +208,8 @@ export class SessionManager {
       memoryScopeFor?: (agentId: string, msg: NormalizedMessage, integrationId?: string) => MemoryScope
       /** Fail-open recall diagnostics. Must never include query/record/plugin body text. */
       onMemoryRecallError?: (agentId: string, error: unknown) => void
+      /** The agent's memory home was out of reach at session start: the session opened without standing context, and this is the warning. */
+      onMemoryHomeUnavailable?: (agentId: string, error: MemoryHomeUnavailableError) => void
       /** Exact final reference bytes after provider-neutral validation/rendering. */
       onMemoryRecallInjected?: (agentId: string, bytes: number) => void
       /** Metadata-only evaluation/telemetry seam for recall. Observer failures
@@ -545,10 +548,19 @@ export class SessionManager {
     // Seeded HERE, after the host is up: a cluster agent's memory home is its sandbox
     // volume, reachable only once the pod is bound. Idempotent, so a resumed session pays
     // one cheap check.
-    if (memoryEnabled) await abortable(() => this.deps.memory.ensure(memScope, agent.name), signal)
-    const memoryIndex = memoryEnabled
-      ? (await abortable(() => this.deps.memory.standingContextAtSessionStart(memScope), signal)).trim()
-      : ''
+    // A home out of reach (memory-evolution.md §3.2.1, degradation) — the CP connection down under a `control-plane`
+    // home, a suspended sandbox — starts the session with no standing context and a warning; the memory tools answer
+    // the same error, and the post-turn distillation waits in the capture outbox. Anything else still fails the turn.
+    let memoryIndex = ''
+    if (memoryEnabled) {
+      try {
+        await abortable(() => this.deps.memory.ensure(memScope, agent.name), signal)
+        memoryIndex = (await abortable(() => this.deps.memory.standingContextAtSessionStart(memScope), signal)).trim()
+      } catch (err) {
+        if (!(err instanceof MemoryHomeUnavailableError)) throw err
+        this.deps.onMemoryHomeUnavailable?.(agentId, err)
+      }
+    }
     // The channel's human display name, if the daemon has resolved one (Slack bulk refresh /
     // ChannelNameResolver, cached in `display_names`). Stored bare for a group/channel,
     // `@name` for a DM (same value the console labels with), surfaced as-is.

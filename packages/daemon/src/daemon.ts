@@ -401,8 +401,13 @@ import {
   type MemoryScope,
   type PreparedExternalMemoryCapture
 } from './memory/provider.js'
-import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './memory/store.js'
-import { resolveMemoryFs, resolveMemoryHomePorts, type MemoryHomePorts } from './memory/home.js'
+import { memoryChannelKey, MemoryHomeUnavailableError, type MemoryFs } from './memory/store.js'
+import {
+  memoryHomeUnavailable,
+  resolveMemoryHomePorts,
+  type MemoryHomeDeps,
+  type MemoryHomePorts
+} from './memory/home.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
@@ -712,7 +717,7 @@ export class Daemon {
   // agent runs in the sandbox). Backs the memory MCP tools, the session-start index
   // injection, and the CP console's memory reads.
   private memory: DispatchingMemoryProvider = createMemoryProvider({
-    memoryFsFor: (id) => this.memoryFsFor(id),
+    memoryHomePortsFor: (id) => this.memoryHomePortsFor(id),
     agentDirByAgent: (id) => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
@@ -2480,7 +2485,11 @@ export class Daemon {
                 (!this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agent.id))
             )
             .map((agent) => agent.id),
-        reachable: (agentId) => !this.k8sPlane || this.k8sPlane.sandboxBound(agentId),
+        // "The home is reachable", not "the pod is bound": the CP READY with the feature for a `control-plane` tree.
+        reachable: (agentId) => {
+          const agent = this.agents.get(agentId)
+          return agent !== undefined && memoryHomeUnavailable(agent, this.memoryHomeDeps()) === undefined
+        },
         distill: async (agentId, turn) => {
           const agent = this.agents.get(agentId)
           if (!agent) throw new Error(`unknown agent ${agentId}`)
@@ -3055,6 +3064,8 @@ export class Daemon {
         this.log.warn(
           `memory recall degraded for agent ${agentId}: ${error instanceof Error ? error.name : 'unknown'}`
         ),
+      onMemoryHomeUnavailable: (agentId, error) =>
+        this.log.warn(`memory home unreachable for agent ${agentId} (${error.reason}): session starts without memory`),
       onMemoryRecallInjected: (_agentId, bytes) => defaultMemoryPluginMetrics.recallInjected(bytes),
       onMemoryRecallEvent: (agentId, event) =>
         this.evalHooks.emit({
@@ -3790,18 +3801,15 @@ export class Daemon {
     })
   }
 
-  /** The live-store port every memory consumer but the dream runner is built on, decided by placement
-   *  (`resolveMemoryFs`); undefined for an unknown agent, and it throws `MemorySandboxUnavailableError`
-   *  for a cluster agent whose sandbox is not bound. */
-  private memoryFsFor(agentId: string): MemoryFs | undefined {
-    const agent = this.agents.get(agentId)
-    return agent ? resolveMemoryFs(agent, this.k8sPlane) : undefined
+  /** Where a memory home is reached from: this member's sandbox plane (under `--k8s`) and its CP connection. */
+  private memoryHomeDeps(): MemoryHomeDeps {
+    return { sandbox: this.k8sPlane, cp: this.cpClient, log: this.log }
   }
 
-  /** The dream runner's pair — `live` for the store, `staging` for `memory-dreams/` — decided the same way. */
+  /** The ports every managed-memory consumer is built on — `live` for the store, `staging` for `memory-dreams/`, the change-log sink — decided by the agent's `home` and this member's placement; undefined for an unknown agent, and it throws `MemoryHomeUnavailableError` while the home is out of reach. */
   private memoryHomePortsFor(agentId: string): MemoryHomePorts | undefined {
     const agent = this.agents.get(agentId)
-    return agent ? resolveMemoryHomePorts(agent, this.k8sPlane) : undefined
+    return agent ? resolveMemoryHomePorts(agent, this.memoryHomeDeps()) : undefined
   }
 
   /** The one daemon-owned workspace preparation contract used by ordinary
@@ -5069,8 +5077,8 @@ export class Daemon {
           })
         }
       } catch (error) {
-        // A deferred managed capture (sandbox asleep) is not a failure: it completes from the outbox.
-        if (observableCapture && !(error instanceof MemorySandboxUnavailableError)) {
+        // A deferred managed capture (the home out of reach) is not a failure: it completes from the outbox.
+        if (observableCapture && !(error instanceof MemoryHomeUnavailableError)) {
           this.evalHooks.emit({
             type: 'memory.capture.failed',
             agentId,
@@ -5083,7 +5091,9 @@ export class Daemon {
       }
     }
     const logFailure = (err: unknown) =>
-      this.log.warn(`memory post-turn failed for agent ${agentId}: ${err instanceof Error ? err.name : 'unknown'}`)
+      this.log.warn(
+        `memory post-turn failed for agent ${agentId}: ${err instanceof Error ? err.name : 'unknown'}${err instanceof MemoryHomeUnavailableError ? ` (${err.reason})` : ''}`
+      )
 
     // External recordTurn performs only a synchronous SQLite enqueue before it
     // returns its promise. Do it immediately after delivery, rather than placing
@@ -5102,9 +5112,9 @@ export class Daemon {
         await record()
       })
       .catch(async (err: unknown) => {
-        // The tree is on a sandbox that has gone to sleep since the turn: keep the capture durably and
-        // distill it once the pod is bound again, instead of dropping the turn with a warning.
-        if (err instanceof MemorySandboxUnavailableError && this.memoryOutbox) {
+        // The home went out of reach since the turn (the pod asleep, the CP connection down): keep the capture durably
+        // and distill it once the home is reachable again, instead of dropping the turn with a warning.
+        if (err instanceof MemoryHomeUnavailableError && this.memoryOutbox) {
           const result = await this.memoryOutbox.enqueue(
             managedDistillCapture({ agentId, turnId, sessionId, input, output })
           )
@@ -17745,7 +17755,8 @@ export class Daemon {
       memory: () => this.memory,
       dreamRunner: () => this.dreamRunner(),
       runtimeCommands: () => this.runtimeCommands,
-      memoryFsFor: (agentId) => this.memoryFsFor(agentId),
+      memoryHomePortsFor: (agentId) => this.memoryHomePortsFor(agentId),
+      wakeMemoryOutbox: () => this.memoryOutbox?.wake(),
       gitCommitIdentity: () => this.gitCommitIdentity,
       sessionThreadUrl: (session) => this.sessionThreadUrl(session),
       childSessionStatusProbe: (probe) => this.collab.childSessionStatusProbe(probe),

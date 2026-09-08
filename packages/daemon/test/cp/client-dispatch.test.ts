@@ -2,7 +2,11 @@ import { describe, it, expect, vi } from 'vitest'
 import { buildEnvelope, decodeEnvelope, MAX_FRAME_BYTES, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { WorkspaceConflictError, WorkspaceViolationError } from '../../src/cp/workspace-reader.js'
-import { MemorySandboxUnavailableError } from '../../src/cp/memory-reader.js'
+import {
+  MemoryHistoryNotLocalError,
+  MemoryHomeUnavailableError,
+  MemorySandboxUnavailableError
+} from '../../src/cp/memory-reader.js'
 import { TaskViolationError } from '../../src/cp/task-reader.js'
 import { AgentWakeViolationError } from '../../src/cp/agent-wake.js'
 import { createRuntimeCommandsReader } from '../../src/cp/runtime-commands-reader.js'
@@ -890,6 +894,45 @@ describe('CpClient dispatch', () => {
     expect(err.corr).toBe(f.id)
     expect(err.payload.code).toBe('BAD_PAYLOAD')
     expect(err.payload.details).toEqual({ reason: 'sandbox-unavailable' })
+  })
+
+  it('refuses a control-plane home that is out of reach with its own reason, and shows a misrouted change-log page as a bug', async () => {
+    // Every home reason is "not now" for the console and rides the same shape, so the CP answers 503 with it; a page
+    // of a change log the home keeps itself was routed to the wrong side — that is INTERNAL, with the message, not an empty page.
+    const warn = vi.fn()
+    const { t } = await readyClient({
+      log: { ...silent, warn },
+      memoryReader: {
+        list: async () => {
+          throw new MemoryHomeUnavailableError(
+            'migrating',
+            'agent "a1" keeps its memory in the Control Plane, which is still receiving the copy of its tree'
+          )
+        },
+        history: async () => {
+          throw new MemoryHistoryNotLocalError("this store's change log is kept by its memory home")
+        }
+      } as any
+    })
+    const list = JSON.parse(frame('memory/list', { agentId: 'a1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(list))
+    await tick()
+    const refused = JSON.parse(t.sent[0]!)
+    expect(refused.type).toBe('error')
+    expect(refused.corr).toBe(list.id)
+    expect(refused.payload.code).toBe('BAD_PAYLOAD')
+    expect(refused.payload.details).toEqual({ reason: 'migrating' })
+    expect(refused.payload.message).toContain('still receiving the copy')
+
+    const history = JSON.parse(frame('memory/history', { agentId: 'a1', path: 'notes.md', limit: 5 }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(history))
+    await tick()
+    const bug = JSON.parse(t.sent[1]!)
+    expect(bug.type).toBe('error')
+    expect(bug.corr).toBe(history.id)
+    expect(bug.payload.code).toBe('INTERNAL')
+    expect(bug.payload.message).toContain('change log is kept by its memory home')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('memory/history failed'))
   })
 
   it('maps an unknown-agent workspace git violation to BAD_PAYLOAD', async () => {

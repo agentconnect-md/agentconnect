@@ -18,12 +18,13 @@ import {
   MemoryPathError
 } from '../src/memory/store.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
+import { localMemoryHome } from '../src/memory/home.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
 
 function provider() {
   const dir = mkdtempSync(join(tmpdir(), 'ac-chan-mem-'))
-  return { dir, mem: createManagedMemoryProvider(() => local(dir)) }
+  return { dir, mem: createManagedMemoryProvider(() => localMemoryHome(local(dir))) }
 }
 
 const chan = (channel: string, transportScope?: string) => ({
@@ -121,8 +122,10 @@ describe('channel-scoped memory overlay', () => {
 
   it('the CP memory reader lists channel folders and routes reads to the selected channel', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-chan-reader-'))
-    const mem = createManagedMemoryProvider(() => local(dir))
-    const reader = createMemoryReader(() => local(dir), { adminSurfaceForAgent: () => mem.adminSurface() })
+    const mem = createManagedMemoryProvider(() => localMemoryHome(local(dir)))
+    const reader = createMemoryReader(() => localMemoryHome(local(dir)), {
+      adminSurfaceForAgent: () => mem.adminSurface()
+    })
     const a = chan('C1')
     await mem.ensure(a, 'bot')
     await mem.write(a, 'notes.md', '- channel A note', undefined, 'tool')

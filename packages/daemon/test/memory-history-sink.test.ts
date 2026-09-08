@@ -106,13 +106,12 @@ describe('the sink seam in the write path', () => {
     expect(readFileSync(join(memoryDir(dir), 'notes.md'), 'utf8')).toBe('kept')
   })
 
-  it('selects the sidecar by default, the same one every home resolves today, and pages it back', async () => {
+  it('a `daemon` home selects the sidecar inside the store, and pages it back', async () => {
     const dir = newDir()
-    const fs = new LocalMemoryFs(dir)
-    await writeMemoryFile(fs, 'notes.md', 'v1')
-    const ports = resolveMemoryHomePorts({ id: 'bot-a', dir }, undefined)
+    const ports = resolveMemoryHomePorts({ id: 'bot-a', dir }, { log: { warn: () => {} } })
     const sink = ports.historyFor(ports.live)
     expect(sink).toBeInstanceOf(SidecarMemoryHistorySink)
+    await writeMemoryFile(ports.live, 'notes.md', 'v1', undefined, 'tool', sink)
     await sink.append([record('notes.md', 'v2', 'v1')])
     expect(readSidecar(dir).map((event) => event.after)).toEqual(['v1', 'v2'])
     const page = await sink.list!('notes.md', undefined, 5)

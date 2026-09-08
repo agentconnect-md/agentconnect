@@ -14,7 +14,14 @@ import {
   MemorySandboxUnavailableError,
   type MemoryFs
 } from '../src/memory/fs.js'
-import { MEMORY_INDEX, ensureMemory, listMemory, readMemoryFile, writeMemoryFile } from '../src/memory/store.js'
+import {
+  MEMORY_INDEX,
+  ensureMemory,
+  listMemory,
+  readMemoryFile,
+  writeMemoryFile,
+  type MemoryHistorySink
+} from '../src/memory/store.js'
 import { ShimMemoryFs, applyMemoryFsPayload } from '../src/shim/memory-fs-channel.js'
 import { REPLY_BUDGET } from '../src/wire-slice.js'
 import { pathExecutor } from './fixtures/memory-fs-pod.js'
@@ -63,9 +70,12 @@ describe('CpMemoryFs (the port over the CP connection)', () => {
     expect(fs.key).toBe(`control-plane:${AGENT}:.`)
     await ensureMemory(fs, 'bot-a')
     expect(await fsp.readFile(join(link.tree, 'memory', MEMORY_INDEX), 'utf8')).toContain('# bot-a memory')
-    await writeMemoryFile(fs, 'deploys.md', '- region sea\n', undefined, 'tool')
+    // The change log is not this port's business: a CP-homed store's sink is the CP table, never a file in the tree.
+    const elsewhere: MemoryHistorySink = { append: async () => {}, carryInto: async () => {} }
+    await writeMemoryFile(fs, 'deploys.md', '- region sea\n', undefined, 'tool', elsewhere)
     expect(await readMemoryFile(fs, 'deploys.md')).toBe('- region sea\n')
     expect((await listMemory(fs)).map((f) => f.name)).toEqual([MEMORY_INDEX, 'deploys.md'])
+    expect(await fsp.readdir(join(link.tree, 'memory'))).not.toContain('.history')
     expect(link.requests.every((r) => r.agentId === AGENT && r.op.root === '.')).toBe(true)
     expect(link.requests.map((r) => r.op.op)).toContain('memory-commit')
   })
