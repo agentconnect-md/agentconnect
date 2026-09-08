@@ -71,7 +71,7 @@ describe('sandbox exec handler', () => {
 
   it('refuses a subcommand outside the declared inventory', async () => {
     const root = repository()
-    for (const subcommand of ['push', 'submodule', 'daemon', 'gc', 'apply', 'checkout', 'for-each-ref']) {
+    for (const subcommand of ['push', 'submodule', 'daemon', 'gc', 'apply', 'read-tree', 'for-each-ref']) {
       await expect(handler(root)('exec', { tool: 'git', args: [subcommand] })).rejects.toBeInstanceOf(ExecRefusedError)
     }
     // And the inventory is the daemon's declared list, not a superset invented here.
@@ -113,10 +113,10 @@ describe('sandbox exec handler', () => {
   })
 
   it('serves the branch-and-materialize sequence the confined session tier runs instead of a checkout', async () => {
-    // The clone tier (git-workspace-model.md §11) puts a session clone on its own generated branch.
-    // `checkout` is deliberately outside the inventory, so the daemon expresses that as three
-    // subcommands that are inside it — and here is where that has to hold: a refusal on this side is
-    // a session that fails on a pool member and works self-hosted, which is how it reached the field.
+    // The clone tier (git-workspace-model.md §11) puts a session clone on its own generated branch as
+    // three subcommands rather than a `checkout` — and here is where that has to hold: a refusal on
+    // this side is a session that fails on a pool member and works self-hosted, which is how it
+    // reached the field.
     const root = repository()
     for (const args of [
       ['branch', '--no-track', 'dev/ada-lovelace/quiet-harbor', 'refs/heads/main'],
@@ -130,13 +130,45 @@ describe('sandbox exec handler', () => {
     expect(head.trim()).toBe('dev/ada-lovelace/quiet-harbor')
     // The tree is materialized, not merely pointed at, which is the half `checkout` was doing.
     expect(readFileSync(join(root, 'file.txt'), 'utf8')).toBe('x\n')
-    expect(ALLOWED_GIT_SUBCOMMANDS.has('checkout')).toBe(false)
     // And the snapshot probe retirement runs in that clone, which `for-each-ref` used to answer.
     const probe = (await handler(root)('exec', {
       tool: 'git',
       args: ['show-ref', '--verify', 'refs/agentconnect/reviews/session-1/head']
     })) as GitExecResult
     expect(probe.code).not.toBe(0)
+  })
+
+  it("serves the workspace sync's branch switch and refuses every checkout form that would touch files", async () => {
+    // The sync (git-injection.ts `syncWorkspaceRef`) pins the configured branch to the fetched tip and
+    // checks it out, carrying uncommitted edits — the one `checkout` the inventory admits. On a pool
+    // member a refusal here is a shared checkout that never comes back to its branch.
+    const root = repository()
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: root })
+    execFileSync('git', ['checkout', '-q', '-b', 'dev/agent/parked'], { cwd: root })
+    writeFileSync(join(root, 'notes.md'), 'kept\n')
+    const result = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['checkout', '--no-recurse-submodules', '--no-track', '-B', 'main', 'refs/remotes/origin/main']
+    })) as GitExecResult
+    expect(result.code).toBe(0)
+    expect(execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()).toBe(
+      'main'
+    )
+    expect(readFileSync(join(root, 'notes.md'), 'utf8')).toBe('kept\n')
+    // Discarding or restoring working-tree files is not what was admitted.
+    for (const args of [
+      ['checkout', '-f', 'main'],
+      ['checkout', '--force', 'main'],
+      ['checkout', '--', 'file.txt'],
+      ['checkout', 'main', '--', 'file.txt'],
+      ['checkout', '-p', 'main'],
+      ['checkout', '--merge', 'main'],
+      ['checkout', '--ours', 'file.txt'],
+      ['checkout', '--orphan', 'fresh'],
+      ['checkout', '--detach', 'main']
+    ]) {
+      await expect(handler(root)('exec', { tool: 'git', args })).rejects.toBeInstanceOf(ExecRefusedError)
+    }
   })
 
   it('still refuses every execution option on the newly permitted subcommands', async () => {
