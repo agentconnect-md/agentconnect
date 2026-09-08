@@ -60,6 +60,8 @@ import type {
   KnowledgeListOk,
   MemoryStoreReq,
   MemoryFsReply,
+  MemoryHistoryAppendReq,
+  MemoryHistoryAppendOk,
   OrgSkillsReq,
   OrgSkillsOk,
   OrganizationSuggestionsSyncReq,
@@ -1144,6 +1146,25 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected memory/store/ok, got ${rep.type}`, false)
     }
     return rep.payload as MemoryFsReply
+  }
+
+  // `memory/history/append` (D→C REQ): one best-effort batch of change-log records for a CP-homed store, sent like
+  // `memoryStore` — one send on one deadline. Every record carries its own id, so the CP could take a resend, but the
+  // sender holds the store's memory-dir lock while it waits, and one deadline keeps that wait bounded.
+  async memoryHistoryAppend(payload: MemoryHistoryAppendReq): Promise<MemoryHistoryAppendOk> {
+    this.requireReady('memory/history/append')
+    if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not serve the memory store', false)
+    }
+    const frame = this.scopedFrame('memory/history/append', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: MEMORY_STORE_TIMEOUT_MS
+    })
+    if (rep.type !== 'memory/history/append/ok') {
+      throw new WireError('INTERNAL', `expected memory/history/append/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as MemoryHistoryAppendOk
   }
 
   async knowledgeList(payload: KnowledgeListReq): Promise<KnowledgeListOk> {

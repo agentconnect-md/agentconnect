@@ -24,19 +24,25 @@ import {
   MAX_MEMORY_FILE_BYTES,
   listMemory,
   memoryDir,
-  type MemoryHistoryRecord
+  type MemoryHistoryRecord,
+  type MemoryHistorySink
 } from '../src/memory/store.js'
 import { LocalMemoryFs, MemorySandboxUnavailableError } from '../src/memory/fs.js'
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
 import { storeDigest } from '../src/dream/dreamer.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
-import type { MemoryFs, MemoryHomePorts } from '../src/memory/fs.js'
+import type { MemoryFs } from '../src/memory/fs.js'
+import { sidecarMemoryHistory, type MemoryHomePorts } from '../src/memory/home.js'
 import { pod } from './fixtures/memory-fs-pod.js'
 import { WAIT } from './wait-support.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
-/** One tree for both roles, the way the daemon resolves a home today. */
-const home = (fs: MemoryFs): MemoryHomePorts => ({ live: fs, staging: fs })
+/** One tree for both roles and the sidecar sink, the way the daemon resolves a home today. */
+const home = (fs: MemoryFs, historyFor = sidecarMemoryHistory): MemoryHomePorts => ({
+  live: fs,
+  staging: fs,
+  historyFor
+})
 
 /** The same port, noting every root-relative path it is asked for, `/`-separated on every platform (a subdir's paths are prefixed). */
 function recording(fs: MemoryFs, touched: string[], prefix = ''): MemoryFs {
@@ -179,17 +185,20 @@ async function setup(opts: {
   now?: () => Date
   /** Put the agent's memory tree on a sandbox volume reached through the shim channel. */
   sandbox?: boolean
+  /** The change-log sink for the store, instead of the sidecar inside it. */
+  historyFor?: MemoryHomePorts['historyFor']
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   const sandbox = opts.sandbox ? pod() : undefined
   const root: MemoryFs = sandbox?.fs ?? local(dir)
+  const historyFor = opts.historyFor ?? sidecarMemoryHistory
   await ensureMemory(root, 'bot')
-  await writeMemoryFile(root, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
+  await writeMemoryFile(root, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool', historyFor(root))
   const store = new FakeStore()
   const prompts: { systemPrompt: string; prompt: string; inputDir: string }[] = []
   const runner = new DreamRunner({
     agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-    memoryHomePortsFor: (id) => (id === 'a1' ? home(root) : undefined),
+    memoryHomePortsFor: (id) => (id === 'a1' ? home(root, historyFor) : undefined),
     dreamingPolicyFor: () => opts.policy ?? { enabled: true },
     operationPolicy: opts.operationPolicy ?? 'test-only',
     store,
@@ -934,7 +943,8 @@ describe('DreamRunner adoption', () => {
     const stagingTouched: string[] = []
     const ports: MemoryHomePorts = {
       live: recording(local(liveDir), liveTouched),
-      staging: recording(local(stagingDir), stagingTouched)
+      staging: recording(local(stagingDir), stagingTouched),
+      historyFor: sidecarMemoryHistory
     }
     await ensureMemory(ports.live, 'bot')
     await writeMemoryFile(ports.live, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
@@ -979,6 +989,48 @@ describe('DreamRunner adoption', () => {
       }))
     )
     expect(storeDigest(adoptedFiles)).toBe(token)
+  })
+
+  it("sends one dream row per changed file through the store's sink and carries no sidecar when the sink is not one", async () => {
+    // The shape a `control-plane` home has: the log is a table beside the store, so nothing inside `memory/` moves.
+    const batches: MemoryHistoryRecord[][] = []
+    const carried: string[] = []
+    const sink: MemoryHistorySink = {
+      append: async (records) => void batches.push(records),
+      carryInto: async (replacement) => void carried.push(replacement)
+    }
+    const { dir, store, runner } = await setup({
+      stagedFiles: [
+        { path: 'prefs.md', content: '- consolidated preference' },
+        { path: 'fresh.md', content: '- newly learned fact' }
+      ],
+      historyFor: () => sink
+    })
+    await writeMemoryFile(local(dir), 'obsolete.md', '- no longer relevant\n', undefined, 'tool', sink)
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+    batches.length = 0
+
+    await runner.adopt('a1', started.dreamId, false)
+
+    expect(carried).toEqual([`.memory.adopting-${started.dreamId}`])
+    // The first batch after the swap is the change set — one row per changed file, the rendered index among them —
+    // sorted by path and all dream-sourced.
+    const adoption = batches[0]!
+    expect(adoption.map((record) => [record.path, record.event])).toEqual([
+      ['fresh.md', 'add'],
+      [MEMORY_INDEX, 'update'],
+      ['obsolete.md', 'delete'],
+      ['prefs.md', 'update']
+    ])
+    expect(adoption.every((record) => record.source === 'dream' && record.id)).toBe(true)
+    expect(adoption.find((record) => record.path === 'prefs.md')).toMatchObject({
+      before: '- uses tabs\n- uses tabs again\n',
+      after: '- consolidated preference\n'
+    })
+    // No sidecar anywhere on the tree: not in the adopted store, and none was ever written to carry.
+    expect(await readdir(memoryDir(dir))).not.toContain(MEMORY_HISTORY_FILENAME)
+    expect(await readMemoryFile(local(dir), 'prefs.md')).toBe('- consolidated preference\n')
   })
 
   it('preserves the mtime of files the dream left unchanged, refreshing only changed ones', async () => {

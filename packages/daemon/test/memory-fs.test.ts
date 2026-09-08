@@ -7,9 +7,9 @@ import {
   MemoryConflictError,
   MemoryPathError,
   MemorySandboxUnavailableError,
-  resolveMemoryFs,
   type MemoryFs
 } from '../src/memory/fs.js'
+import { resolveMemoryFs } from '../src/memory/home.js'
 import {
   MEMORY_HISTORY_FILENAME,
   MEMORY_INDEX,
