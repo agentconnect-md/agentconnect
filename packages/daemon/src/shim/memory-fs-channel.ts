@@ -1,23 +1,18 @@
-/**
- * The memory-tree half of the `read` capability: a cluster agent's managed memory lives on its
- * sandbox volume, and this channel is how the daemon's `MemoryFs` port reaches it.
- *
- * Unlike the workspace channel, the daemon does not name one memory operation and let the pod
- * answer it: the memory logic (history, retention, the write ledger, the dream fence) is policy the
- * daemon keeps in its own process, and only the port's primitives cross the wire. They are shaped
- * for the 256 KiB frame: a read answers one budgeted slice at an offset, and a write is staged as
- * appended chunks into a sibling temp file, then committed by one rename that carries the mtime
- * precondition — so the atomic publish and its check still sit adjacent, on the pod.
- *
- * The pod side (`fd-memory-fs.ts`) works from open descriptors like the workspace's; the daemon
- * side (`ShimMemoryFs`) is a pass-through that reassembles slices and chunks into the port's calls.
- *
- * The primitives are not memory's alone — `shim/workspace-fs-channel.ts` is a second caller, for the
- * worktree tree on the same mount. The `memory-` op names are the wire contract a running pod already
- * speaks and are left as they are; the prefix is that contract's history, not the channel's scope.
- */
+// The daemon's `MemoryFs` port over a cluster agent's sandbox volume; its op set is protocol `frames/memory-store.ts`.
+// Only the port's primitives cross the wire — history, retention, the write ledger and the dream fence stay daemon policy.
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import {
+  MemoryFsAppendReplySchema,
+  MemoryFsCommitReplySchema,
+  MemoryFsPayloadSchema,
+  MemoryFsReadReplySchema,
+  MemoryFsReaddirReplySchema,
+  MemoryFsReplySchema,
+  type MemoryFsPayload,
+  type MemoryFsReadReply,
+  type MemoryFsReply
+} from '@agentconnect.md/protocol'
 import { REPLY_BUDGET, fitToBudget, utf8Boundary } from '../wire-slice.js'
 import {
   MemoryConflictError,
@@ -34,83 +29,11 @@ import { createFdMemoryFsExecutor } from './fd-memory-fs.js'
 import type { WorkspaceFsKind } from '../workspace/workspace-fs.js'
 import type { ShimRequester } from './channels.js'
 
-/** Absolute because it is a path in the POD's coordinates, and the shim's fence compares absolutes. */
-const RootSchema = z.string().min(1).max(4096)
-const RelSchema = z.string().max(4096)
-
-export const MemoryFsPayloadSchema = z.discriminatedUnion('op', [
-  z.object({
-    op: z.literal('memory-read'),
-    root: RootSchema,
-    rel: RelSchema,
-    offset: z.number().int().nonnegative(),
-    limit: z.number().int().positive().max(REPLY_BUDGET),
-    encoding: z.enum(['utf8', 'base64']).optional()
-  }),
-  z.object({
-    op: z.literal('memory-append'),
-    root: RootSchema,
-    rel: RelSchema,
-    content: z.string(),
-    encoding: z.enum(['utf8', 'base64']).optional(),
-    create: z.boolean(),
-    mode: z.number().int().optional()
-  }),
-  z.object({
-    op: z.literal('memory-commit'),
-    root: RootSchema,
-    rel: RelSchema,
-    temp: RelSchema,
-    ifMatchMtime: z.string().optional()
-  }),
-  z.object({ op: z.literal('memory-stat'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-readdir'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-mkdir'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-rmdir'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-rename'), root: RootSchema, from: RelSchema, to: RelSchema }),
-  z.object({ op: z.literal('memory-rm'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-utimes'), root: RootSchema, rel: RelSchema, mtime: z.string() })
-])
-export type MemoryFsPayload = z.infer<typeof MemoryFsPayloadSchema>
-
 /** Cheap discrimination for the exec handler, ahead of the full parse. */
 export function isMemoryFsPayload(payload: unknown): boolean {
   const op = (payload as { op?: unknown } | null)?.op
   return typeof op === 'string' && op.startsWith('memory-')
 }
-
-const ReadReplySchema = z.discriminatedUnion('exists', [
-  z.object({ exists: z.literal(false) }),
-  z.object({
-    exists: z.literal(true),
-    size: z.number().int().nonnegative(),
-    mtime: z.string(),
-    content: z.string(),
-    nextOffset: z.number().int().nonnegative()
-  })
-])
-export type MemoryFsReadReply = z.infer<typeof ReadReplySchema>
-
-const StatReplySchema = z.object({ size: z.number().int().nonnegative(), mtime: z.string() })
-export const KindReplySchema = z.enum(['file', 'dir', 'missing', 'other'])
-const EntriesReplySchema = z.array(
-  z.object({
-    name: z.string(),
-    kind: z.enum(['file', 'dir', 'other']),
-    size: z.number().int().nonnegative().optional(),
-    mtime: z.string().optional()
-  })
-)
-
-/** The reply, with the two typed refusals as data so they survive the channel as themselves. */
-export const MemoryFsReplySchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), value: z.unknown() }),
-  z.object({
-    ok: z.literal(false),
-    refusal: z.object({ kind: z.enum(['path', 'conflict']), message: z.string().max(500) })
-  })
-])
-export type MemoryFsReply = z.infer<typeof MemoryFsReplySchema>
 
 /** The pod-side primitive set the payloads map onto. `rel` paths are relative to `root`. */
 export interface MemoryFsExecutor {
@@ -254,7 +177,7 @@ export class ShimMemoryFs implements MemoryFs {
     const read = (offset: number) =>
       this.run(
         { op: 'memory-read', root: this.root, rel, offset, limit: BASE64_READ_LIMIT, encoding: 'base64' },
-        ReadReplySchema
+        MemoryFsReadReplySchema
       )
     for (let attempt = 0; attempt < READ_RESTARTS; attempt++) {
       const first = await read(0)
@@ -280,7 +203,10 @@ export class ShimMemoryFs implements MemoryFs {
 
   async readFile(rel: string, encoding: MemoryFsEncoding = 'utf8'): Promise<MemoryFsFile | null> {
     const read = (offset: number) =>
-      this.run({ op: 'memory-read', root: this.root, rel, offset, limit: REPLY_BUDGET, encoding }, ReadReplySchema)
+      this.run(
+        { op: 'memory-read', root: this.root, rel, offset, limit: REPLY_BUDGET, encoding },
+        MemoryFsReadReplySchema
+      )
     for (let attempt = 0; attempt < READ_RESTARTS; attempt++) {
       const first = await read(0)
       if (!first.exists) return null
@@ -331,7 +257,7 @@ export class ShimMemoryFs implements MemoryFs {
             create,
             ...(options.mode === undefined ? {} : { mode: options.mode })
           },
-          z.object({ size: z.number() })
+          MemoryFsAppendReplySchema
         )
         create = false
         offset += end
@@ -344,7 +270,7 @@ export class ShimMemoryFs implements MemoryFs {
           temp,
           ...(options.ifMatchMtime ? { ifMatchMtime: options.ifMatchMtime } : {})
         },
-        StatReplySchema
+        MemoryFsCommitReplySchema
       )
     } catch (err) {
       await this.run({ op: 'memory-rm', root: this.root, rel: temp }, z.null()).catch(() => {})
@@ -353,7 +279,7 @@ export class ShimMemoryFs implements MemoryFs {
   }
 
   readdir(rel: string): Promise<MemoryFsEntry[]> {
-    return this.run({ op: 'memory-readdir', root: this.root, rel }, EntriesReplySchema)
+    return this.run({ op: 'memory-readdir', root: this.root, rel }, MemoryFsReaddirReplySchema)
   }
 
   async mkdir(rel: string): Promise<void> {

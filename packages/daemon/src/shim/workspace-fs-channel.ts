@@ -16,7 +16,8 @@ import { isAbsolute, relative, sep } from 'node:path'
 import { z } from 'zod'
 import { MemoryPathError } from '../memory/fs.js'
 import type { WorkspaceFs, WorkspaceFsKind } from '../workspace/workspace-fs.js'
-import { KindReplySchema, ShimMemoryFs, requestMemoryFs, type ShimMemoryChannel } from './memory-fs-channel.js'
+import { MemoryFsStatReplySchema } from '@agentconnect.md/protocol'
+import { ShimMemoryFs, requestMemoryFs, type ShimMemoryChannel } from './memory-fs-channel.js'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 
@@ -37,7 +38,7 @@ export class ShimWorkspaceFs implements WorkspaceFs {
     return await requestMemoryFs(
       this.channel,
       { op: 'memory-stat', root: this.mount, rel: this.rel(path) },
-      KindReplySchema,
+      MemoryFsStatReplySchema,
       this.timeoutMs
     )
   }

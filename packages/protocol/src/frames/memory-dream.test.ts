@@ -32,12 +32,10 @@ describe('memory dreaming policy (agent binding)', () => {
       })
     ).toMatchObject({ provider: 'managed', dreaming: { enabled: true } })
 
+    // native, none and external are other union arms — dreaming is an unknown key on each of them.
     for (const provider of ['native', 'none'] as const) {
-      expect(() => AgentMemoryBinding.parse({ provider, dreaming: { enabled: true } })).toThrow(
-        /managed memory provider/
-      )
+      expect(() => AgentMemoryBinding.parse({ provider, dreaming: { enabled: true } })).toThrow()
     }
-    // external is a different union branch — dreaming is an unknown key there.
     expect(() =>
       AgentMemoryBinding.parse({
         provider: 'external',
@@ -55,20 +53,25 @@ describe('memory dreaming policy (agent binding)', () => {
 
   it('defaults managed memory to a daily auto-adopting, skill-mining dream while preserving explicit opt-out', () => {
     expect(effectiveMemoryDreamingPolicy(undefined)).toEqual(DEFAULT_MEMORY_DREAMING_POLICY)
-    expect(effectiveMemoryDreamingPolicy({ provider: 'managed' })).toEqual(DEFAULT_MEMORY_DREAMING_POLICY)
+    expect(effectiveMemoryDreamingPolicy({ provider: 'managed', home: 'daemon' })).toEqual(
+      DEFAULT_MEMORY_DREAMING_POLICY
+    )
 
     // An explicit policy with no schedule is manual-only; absent autoAdopt and
     // mineSkills normalize to the product default (true).
-    expect(effectiveMemoryDreamingPolicy({ provider: 'managed', dreaming: { enabled: true } })).toEqual({
-      enabled: true,
-      autoAdopt: true,
-      mineSkills: true
-    })
+    expect(effectiveMemoryDreamingPolicy({ provider: 'managed', dreaming: { enabled: true }, home: 'daemon' })).toEqual(
+      {
+        enabled: true,
+        autoAdopt: true,
+        mineSkills: true
+      }
+    )
     // An explicit false is a durable opt-out.
     expect(
       effectiveMemoryDreamingPolicy({
         provider: 'managed',
-        dreaming: { enabled: true, autoAdopt: false, mineSkills: false }
+        dreaming: { enabled: true, autoAdopt: false, mineSkills: false },
+        home: 'daemon'
       })
     ).toEqual({ enabled: true, autoAdopt: false, mineSkills: false })
     expect(effectiveMemoryDreamingPolicy({ provider: 'none' })).toBeUndefined()
@@ -76,13 +79,18 @@ describe('memory dreaming policy (agent binding)', () => {
 
   it('resolves the managed memory scope and disables dreaming under channel scope (#653)', () => {
     expect(effectiveManagedMemoryScope(undefined)).toBe('agent')
-    expect(effectiveManagedMemoryScope({ provider: 'managed' })).toBe('agent')
-    expect(effectiveManagedMemoryScope({ provider: 'managed', scope: 'channel' })).toBe('channel')
+    expect(effectiveManagedMemoryScope({ provider: 'managed', home: 'daemon' })).toBe('agent')
+    expect(effectiveManagedMemoryScope({ provider: 'managed', scope: 'channel', home: 'daemon' })).toBe('channel')
     // A channel-scoped agent has no dreaming policy (offline consolidation does not
     // map onto per-channel folders); the console hides the controls.
-    expect(effectiveMemoryDreamingPolicy({ provider: 'managed', scope: 'channel' })).toBeUndefined()
+    expect(effectiveMemoryDreamingPolicy({ provider: 'managed', scope: 'channel', home: 'daemon' })).toBeUndefined()
     expect(
-      effectiveMemoryDreamingPolicy({ provider: 'managed', scope: 'channel', dreaming: { enabled: true } })
+      effectiveMemoryDreamingPolicy({
+        provider: 'managed',
+        scope: 'channel',
+        dreaming: { enabled: true },
+        home: 'daemon'
+      })
     ).toBeUndefined()
     // The binding still validates: scope requires the managed provider.
     expect(AgentMemoryBinding.safeParse({ provider: 'native', scope: 'channel' }).success).toBe(false)
