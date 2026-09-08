@@ -10,6 +10,8 @@ import type { WorkspaceFs } from './workspace-fs.js'
 export const PRIMARY_CHECKOUT_DIR = 'workspace'
 /** Secondary roots live under one agent-owned parent, one subtree per authorized repository. */
 export const SECONDARY_ROOTS_DIR = 'repos'
+/** GitLab roots sit under one reserved owner keyed by numeric project id: `repos/_gitlab/<id>`. A GitHub login admits neither `_` nor a leading one, so no GitHub row can name this directory. */
+export const GITLAB_ROOTS_DIR = '_gitlab'
 /** Every root's per-session worktrees hang off this leaf of it — the agent root for the primary, the subtree for a secondary. */
 export const WORKTREES_DIR = 'worktrees'
 /** What a secondary root's subtree records about the checkout beside it. */
@@ -38,9 +40,15 @@ export function secondaryRootsDirIn(agentRoot: string): string {
   return join(agentRoot, SECONDARY_ROOTS_DIR)
 }
 
+/** The subtree name a GitLab project's root hangs at — its numeric id, which a rename cannot change. */
+export function gitlabSubtreeName(projectId: string): string {
+  return `${GITLAB_ROOTS_DIR}/${projectId}`
+}
+
 /** One secondary subtree's daemon-owned paths, in the shape a `WorkspaceRoot` needs. */
 export interface SecondarySubtree {
-  repoFullName: string
+  /** The `<a>/<b>` pair under `repos/` — `owner/repo` for GitHub, `_gitlab/<project id>` for GitLab. */
+  subtreeName: string
   /** The whole `repos/<owner>/<repo>` subtree — what retirement removal deletes. */
   subtree: string
   /** The clone itself. */
@@ -63,7 +71,7 @@ export function secondarySubtreesIn(agentRoot: string): SecondarySubtree[] {
     for (const repo of realDirEntries(join(parent, owner))) {
       const subtree = join(parent, owner, repo)
       out.push({
-        repoFullName: `${owner}/${repo}`,
+        subtreeName: `${owner}/${repo}`,
         subtree,
         path: join(subtree, 'checkout'),
         worktreesPath: join(subtree, WORKTREES_DIR)
@@ -89,7 +97,7 @@ export async function secondarySubtreesUnder(fs: WorkspaceFs, parent: string): P
     for (const repo of await realDirEntriesUnder(fs, join(parent, owner))) {
       const subtree = join(parent, owner, repo)
       out.push({
-        repoFullName: `${owner}/${repo}`,
+        subtreeName: `${owner}/${repo}`,
         subtree,
         path: join(subtree, 'checkout'),
         worktreesPath: join(subtree, WORKTREES_DIR)

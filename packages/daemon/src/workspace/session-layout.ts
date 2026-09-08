@@ -10,7 +10,7 @@ import {
 } from './secondary-layout.js'
 import type { WorkspaceFs } from './workspace-fs.js'
 
-// The on-disk shape of one confined session's directory, `<agentDir>/sessions/<leaf>/{workspace,repos/<owner>/<repo>,home}` (git-workspace-model.md §11) — separate from the manager, like secondary-layout.ts, so the launch path derives a session host's grants without the whole workspace module.
+// The on-disk shape of one confined session's directory, `<agentDir>/sessions/<leaf>/{workspace,repos/<a>/<b>,home}` (git-workspace-model.md §11) — separate from the manager, like secondary-layout.ts, so the launch path derives a session host's grants without the whole workspace module.
 
 /** Every confined session's directory hangs off one agent-owned parent. */
 export const SESSIONS_DIR = 'sessions'
@@ -53,10 +53,10 @@ export function hasSessionWorktreeIn(agentRoot: string, sessionWorktreeId: strin
   return parents.some((parent) => existsSync(join(parent, sessionWorktreeId, '.git')))
 }
 
-/** One root's clone inside a session directory: the primary's `workspace`, a secondary's `repos/<owner>/<repo>`. */
-export function sessionRootCloneIn(sessionDir: string, repoFullName?: string): string {
-  if (repoFullName === undefined) return join(sessionDir, PRIMARY_CHECKOUT_DIR)
-  return join(sessionDir, SECONDARY_ROOTS_DIR, ...repoFullName.split('/'))
+/** One root's clone inside a session directory: the primary's `workspace`, a secondary's `repos/<subtree name>`. */
+export function sessionRootCloneIn(sessionDir: string, subtreeName?: string): string {
+  if (subtreeName === undefined) return join(sessionDir, PRIMARY_CHECKOUT_DIR)
+  return join(sessionDir, SECONDARY_ROOTS_DIR, ...subtreeName.split('/'))
 }
 
 /** `<sessionDir>/home` — the session's own runtime HOME (state, temp, XDG, package caches), gone with the leaf. */
@@ -64,20 +64,20 @@ export function sessionHomeIn(sessionDir: string): string {
   return join(sessionDir, 'home')
 }
 
-/** Every `repos/<owner>/<repo>` clone ON DISK in a session directory, sorted by name; symlinks are skipped. */
-export function sessionSecondaryClonesIn(sessionDir: string): { repoFullName: string; path: string }[] {
+/** Every `repos/<a>/<b>` clone ON DISK in a session directory, sorted by name; symlinks are skipped. */
+export function sessionSecondaryClonesIn(sessionDir: string): { subtreeName: string; path: string }[] {
   const parent = join(sessionDir, SECONDARY_ROOTS_DIR)
-  const out: { repoFullName: string; path: string }[] = []
+  const out: { subtreeName: string; path: string }[] = []
   for (const owner of realDirEntries(parent)) {
     for (const repo of realDirEntries(join(parent, owner))) {
-      out.push({ repoFullName: `${owner}/${repo}`, path: join(parent, owner, repo) })
+      out.push({ subtreeName: `${owner}/${repo}`, path: join(parent, owner, repo) })
     }
   }
   return out
 }
 
 /** Every clone a session directory holds — the primary's when it has one, then the secondaries'. */
-export function sessionClonesIn(sessionDir: string): { repoFullName?: string; path: string }[] {
+export function sessionClonesIn(sessionDir: string): { subtreeName?: string; path: string }[] {
   const primary = sessionRootCloneIn(sessionDir)
   return [...(isRealDir(primary) ? [{ path: primary }] : []), ...sessionSecondaryClonesIn(sessionDir)]
 }
@@ -86,14 +86,14 @@ export function sessionClonesIn(sessionDir: string): { repoFullName?: string; pa
 export async function sessionClonesUnder(
   fs: Pick<WorkspaceFs, 'stat' | 'readdir'>,
   sessionDir: string
-): Promise<{ repoFullName?: string; path: string }[]> {
-  const out: { repoFullName?: string; path: string }[] = []
+): Promise<{ subtreeName?: string; path: string }[]> {
+  const out: { subtreeName?: string; path: string }[] = []
   const primary = sessionRootCloneIn(sessionDir)
   if ((await fs.stat(primary)) === 'dir') out.push({ path: primary })
   const parent = join(sessionDir, SECONDARY_ROOTS_DIR)
   for (const owner of await dirEntriesUnder(fs, parent)) {
     for (const repo of await dirEntriesUnder(fs, join(parent, owner))) {
-      out.push({ repoFullName: `${owner}/${repo}`, path: join(parent, owner, repo) })
+      out.push({ subtreeName: `${owner}/${repo}`, path: join(parent, owner, repo) })
     }
   }
   return out

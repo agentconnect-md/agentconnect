@@ -88,16 +88,27 @@ Proposed — one new subtree, everything else unchanged:
 ├── workspace/                                  # primary root, as today
 ├── worktrees/<sid>/                            # primary's session worktree, as today
 └── repos/                                      # secondary roots, one subtree per authorized repository
-    └── example-co/shared-library/
-        ├── .materialization.json               # {repoId, repoFullName, branch}: rename / branch change rebuilds
-        ├── checkout/                           # secondary clone at origin/HEAD (the .git lives here)
-        └── worktrees/<sid>/                    # its per-session worktree, same <sid> as the primary's
+    ├── example-co/shared-library/
+    │   ├── .materialization.json               # {provider, repoId, repoFullName, branch}: rename / branch change rebuilds
+    │   ├── checkout/                           # secondary clone at origin/HEAD (the .git lives here)
+    │   └── worktrees/<sid>/                    # its per-session worktree, same <sid> as the primary's
+    └── _gitlab/4455667/                        # a GitLab project, keyed by numeric id (see below)
+        └── …                                   # the same three entries
 ```
 
 `(workspace, worktrees)` and `(repos/o/r/checkout, repos/o/r/worktrees)` are the
 same shape, which is what lets one `WorkspaceRoot` drive both. A submodule root
 (decision 11) has the same entry but is never listed as an additional directory;
 ordinary sessions reach its content through the parent's submodule path.
+
+A GitLab project's subtree is `repos/_gitlab/<project id>` rather than its path
+([gitlab-com-integration.md §13.1](gitlab-com-integration.md)): a namespaced
+path has any depth, and the numeric id is what a rename cannot change, so the
+same directory follows the project and only its origin is converged. `_gitlab`
+is not a legal GitHub login, so no GitHub row can collide with it, and the
+attestation records `provider` because the two hosts number their repositories
+independently. Everything a session or the console sees names the root by its
+`repoFullName`; the subtree name is the daemon's placement key alone.
 
 What the runtime is handed at `session/new` (`cwd` plus `additionalDirectories`):
 

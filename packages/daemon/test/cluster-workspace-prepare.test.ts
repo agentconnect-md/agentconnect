@@ -88,15 +88,20 @@ function resolve(ref: string): string {
   return revs[ref] ?? ref
 }
 
-/** `owner/repo` for a github.com clone URL, which is how the fake remotes are keyed. */
+/** The GitLab projects the fake instance serves, by numeric id — what a `_gitlab/<id>` subtree's origin names. */
+const GITLAB_PROJECTS: Record<string, string> = { '4455667': 'example-group/sub/example-project' }
+
+/** The repository path of a github.com or gitlab.com clone URL, which is how the fake remotes are keyed. */
 function repoOfUrl(url: string): string {
-  return url.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')
+  return url.replace(/^https:\/\/(?:github|gitlab)\.com\//, '').replace(/\.git$/, '')
 }
 
 /** The origin a secondary root's own checkout (or worktree) reports, from its pod path. */
 function secondaryOriginOf(cwd: string | undefined): string | undefined {
   const match = cwd?.match(/^\/agent\/repos\/([^/]+)\/([^/]+)\//)
-  return match ? `https://github.com/${match[1]}/${match[2]}` : undefined
+  if (!match) return undefined
+  if (match[1] === '_gitlab') return `https://gitlab.com/${GITLAB_PROJECTS[match[2]!]}.git`
+  return `https://github.com/${match[1]}/${match[2]}`
 }
 
 function recordingRunner(cwd: string | undefined, env: Record<string, string> = {}): GitRunner {
@@ -325,7 +330,7 @@ describe('clusterWorkspaceCwd', () => {
         {
           path: `${POD_ROOT}/repos/acme/infra/checkout`,
           worktreesPath: `${POD_ROOT}/repos/acme/infra/worktrees`,
-          repoFullName: 'acme/infra'
+          subtreeName: 'acme/infra'
         },
         'sess-1'
       )
@@ -1008,7 +1013,11 @@ describe('secondary roots on the pod volume', () => {
   const INFRA = `${REPOS}/acme/infra`
   const SHARED = `${REPOS}/example-co/shared-library`
 
-  function agentWithRoots(rows = [{ repoFullName: 'acme/infra', repoId: '42' }]): Agent {
+  function agentWithRoots(
+    rows: Array<{ repoFullName: string; repoId: string; provider?: string }> = [
+      { repoFullName: 'acme/infra', repoId: '42' }
+    ]
+  ): Agent {
     return clusterAgent({ additionalRepos: rows } as Partial<Agent['workspace']>)
   }
 
@@ -1026,12 +1035,49 @@ describe('secondary roots on the pod volume', () => {
     expect(clone!.args).toContain('trunk')
     expect(await pod.stat(`${INFRA}/checkout/.git`)).toBe('file')
     expect(JSON.parse((await pod.readFile(`${INFRA}/.materialization.json`))!)).toEqual({
+      provider: 'github',
       repoId: '42',
       repoFullName: 'acme/infra',
       branch: 'trunk'
     })
     // Nothing landed on the daemon's own disk, where the runtime would never see it.
     expect(existsSync(REPOS)).toBe(false)
+    expect(existsSync('/daemon/agents/agent-cluster/repos')).toBe(false)
+  })
+
+  it('materializes a GitLab project under `_gitlab/<id>` from its instance, pinning that instance’s credentials', async () => {
+    remoteDefaultBranch['example-group/sub/example-project'] = 'develop'
+    const agent = agentWithRoots([
+      { repoFullName: 'example-group/sub/example-project', repoId: '4455667', provider: 'gitlab' }
+    ])
+    const GITLAB = `${REPOS}/_gitlab/4455667`
+
+    const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+
+    // Cloned from the instance under GitLab's `.git` rule, at the branch the remote reported, by id on the volume.
+    const clone = calls.find(
+      (call) => call.args[0] === 'clone' && call.args[1] === 'https://gitlab.com/example-group/sub/example-project.git'
+    )
+    expect(clone!.args[2]).toMatch(new RegExp(`^${GITLAB}/checkout\\.clone-`))
+    expect(clone!.args).toEqual(expect.arrayContaining(['--branch', 'develop']))
+    // The clone's injected credential block pins gitlab.com, and so does the repo-local pin the checkout gets.
+    expect(Object.values(clone!.env)).toContain('credential.https://gitlab.com.helper')
+    expect(Object.values(clone!.env)).not.toContain('credential.https://github.com.helper')
+    // Written into the staged clone before it is published onto `checkout`.
+    const pin = calls.find(
+      (call) => call.cwd?.startsWith(`${GITLAB}/checkout`) && call.args[0] === 'config' && call.args.includes('--add')
+    )
+    expect(pin!.args).toContain('credential.https://gitlab.com.helper')
+    expect(JSON.parse((await pod.readFile(`${GITLAB}/.materialization.json`))!)).toEqual({
+      provider: 'gitlab',
+      repoId: '4455667',
+      repoFullName: 'example-group/sub/example-project',
+      branch: 'develop'
+    })
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([`${GITLAB}/checkout`])
+    expect((await workspaces.readySecondaryRoots(agent)).map((root) => root.repoFullName)).toEqual([
+      'example-group/sub/example-project'
+    ])
     expect(existsSync('/daemon/agents/agent-cluster/repos')).toBe(false)
   })
 
@@ -1142,7 +1188,7 @@ describe('secondary roots on the pod volume', () => {
     })
     const retiredAgent = clusterAgent()
     const [retired] = await workspaces.retiredSecondaryRoots(retiredAgent)
-    expect(retired).toMatchObject({ repoFullName: 'acme/infra', repoId: '42', subtree: INFRA })
+    expect(retired).toMatchObject({ subtreeName: 'acme/infra', repoId: '42', subtree: INFRA })
 
     // The session's copy is a clone in its own directory (§11), not a worktree reading this checkout's
     // object store — so nothing holds the retired subtree, and the session keeps its clone.
@@ -1206,7 +1252,7 @@ describe('secondary roots on the pod volume', () => {
 
     expect(await workspaces.hasSessionWorktreeRoots(agent)).toBe(true)
     expect(await workspaces.sessionWorktreeRoots(agent)).toEqual([
-      { path: `${INFRA}/checkout`, worktreesPath: `${INFRA}/worktrees`, repoFullName: 'acme/infra' }
+      { path: `${INFRA}/checkout`, worktreesPath: `${INFRA}/worktrees`, subtreeName: 'acme/infra' }
     ])
     worktreeStatus = ' M a.txt\n'
     expect(await workspaces.removeSessionWorktree(agent, 'sess-1')).toEqual({
