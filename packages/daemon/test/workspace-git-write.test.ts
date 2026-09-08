@@ -12,7 +12,8 @@ import {
   gitFor
 } from '../src/workspace/git-injection.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
-import { parsePorcelainV2 } from '../src/shim/git-exec.js'
+import { parsePorcelainV2, ShimGitRunner } from '../src/shim/git-exec.js'
+import { createExecHandler } from '../src/shim/exec-handler.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
@@ -185,11 +186,57 @@ const githubTarget = (branch = 'main') => ({
 })
 
 afterEach(() => {
+  workspaces.setSandboxMode(false)
   workspaces.setGitRunnerResolver(undefined)
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
 describe('workspace git stage / unstage (real repo, real index)', () => {
+  it('reads a diff, stages and commits through the real sandbox handler with the existing guards', async () => {
+    const dir = repo()
+    const handle = createExecHandler({ workspaceRoot: dir })
+    workspaces.setSandboxMode(true)
+    workspaces.setGitRunnerResolver(
+      () =>
+        new ShimGitRunner(
+          { request: (capability, payload, options) => handle(capability, payload, options?.abort) },
+          dir
+        )
+    )
+    const seam = createWorkspaceGit(
+      workspaces,
+      async () => dir,
+      () => undefined,
+      async () => githubTarget(),
+      () => IDENTITY
+    )
+    writeFileSync(join(dir, 'tracked.txt'), 'two\n')
+    const diff = await seam.diff({ agentId: 'a', path: 'tracked.txt', staged: false })
+    expect(diff.exists).toBe(true)
+    expect(diff.diff).toContain('+two')
+
+    await expect(seam.stage({ agentId: 'a', paths: ['../outside.txt'] })).rejects.toMatchObject({
+      reason: 'path-escape'
+    })
+    git(dir, ['config', 'filter.refused.clean', 'false'])
+    await expect(seam.stage({ agentId: 'a', paths: ['tracked.txt'] })).rejects.toThrow(/disallowed/)
+    expect(git(dir, ['diff', '--cached', '--name-only'])).toBe('')
+    git(dir, ['config', '--unset', 'filter.refused.clean'])
+
+    const staged = await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
+    expect(staged.files).toContainEqual({
+      path: 'tracked.txt',
+      index: 'M',
+      workingDir: ' ',
+      additions: 1,
+      deletions: 1
+    })
+    expect(await seam.commit({ agentId: 'a', message: 'fix: sandbox change' })).toMatchObject({ ok: true })
+    expect(git(dir, ['show', 'HEAD:tracked.txt'])).toBe('two\n')
+    expect(git(dir, ['log', '-1', '--format=%an <%ae>'])).toBe(`${IDENTITY.name} <${IDENTITY.email}>\n`)
+    expect((await seam.status('a')).clean).toBe(true)
+  })
+
   it('stages a modified and an untracked path, and answers with the FRESH status', async () => {
     const dir = repo()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')

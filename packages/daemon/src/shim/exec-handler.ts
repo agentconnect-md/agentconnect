@@ -11,25 +11,22 @@ import type { ShimCapability } from './protocol.js'
 import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
 import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
 
-/**
- * The git subcommands a sandbox will run, enforced HERE.
- *
- * The daemon declares a closed inventory, but a declaration on the sending side is not a
- * control: this process is the one that spawns git, so this is where the list has to be
- * checked. Anything else and a compromised daemon — or a bug in one — reaches arbitrary git,
- * which through `-c`, hooks and `--upload-pack` reaches arbitrary execution.
- */
+// Enforce the daemon's workspace Git command inventory where Git actually runs.
 export const ALLOWED_GIT_SUBCOMMANDS = new Set([
+  'add',
   'branch',
   'check-ref-format',
   'clean',
   'clone',
+  'commit',
   'config',
   'diff',
   'fetch',
   'log',
+  'ls-files',
   'ls-remote',
   'pull',
+  'push',
   'remote',
   'reset',
   'rev-list',
