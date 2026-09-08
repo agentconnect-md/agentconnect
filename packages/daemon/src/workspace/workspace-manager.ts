@@ -549,15 +549,13 @@ export class WorkspaceManager {
     return recorded !== undefined && attestsRoot(recorded, root) ? { ...root, branch: recorded.branch } : root
   }
 
-  /** The root a console selector names. The selector carries no provider, so a name both hosts hold is
-   *  resolved by its exact text, and one that is still ambiguous is refused rather than routed to
-   *  whichever root sorted first — a read or a push must never land on the other host's repository. */
+  /** The root a console selector names. The selector carries no provider and the browser has already
+   *  matched it case-insensitively, so a name both hosts hold is refused outright rather than routed
+   *  to either — a read or a push must never land on the other host's repository. */
   private consoleRootNamed(agent: Agent, repoFullName: string): SecondaryWorkspaceRoot | undefined {
     const wanted = repoKey(repoFullName)
     const matches = this.secondaryRootsFor(agent).filter((entry) => repoKey(entry.repoFullName) === wanted)
-    if (matches.length <= 1) return matches[0]
-    const exact = matches.filter((entry) => entry.repoFullName === repoFullName.trim())
-    return exact.length === 1 ? exact[0] : undefined
+    return matches.length === 1 ? matches[0] : undefined
   }
 
   /** The primary clone's `owner/repo`, when it names github.com — an App-backed URL is canonicalized
