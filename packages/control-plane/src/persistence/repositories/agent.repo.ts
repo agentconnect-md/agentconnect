@@ -1102,6 +1102,15 @@ export class PgAgentRepo implements AgentRepo {
     return rows.map(toRecord)
   }
 
+  async listForSet(setId: string): Promise<AgentRecord[]> {
+    const rows = await this.db.agent.findMany({
+      where: { setId, placementKind: 'set' },
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
   // The org PEER directory (agent-collaboration §2.5/§6.1). A narrow `select` on the
   // agent table alone — no `withUsers` join (audit identities are console-only) and
   // deliberately NO `visibilityWhere`: ResourceVisibility gates human console access,
