@@ -34,6 +34,24 @@ export const POOL_MOVE_NEEDS_CP_HOME =
 
 export type MemoryBindingRefusal = { refused: 'pool-daemon-home' | 'reverse-needs-force'; message: string }
 
+/** A refusal raised from inside the row-locked write, where the resolution is authoritative; routes answer 409. */
+export class MemoryHomeRefusedError extends Error {
+  constructor(
+    readonly refused: MemoryBindingRefusal['refused'],
+    message: string
+  ) {
+    super(message)
+    this.name = 'MemoryHomeRefusedError'
+  }
+}
+
+/** What a caller hands the row-locked write: the submitted binding and the two facts the resolution needs. */
+export interface MemoryHomeUpdate {
+  input: MemoryBindingInput | null
+  onPool: boolean
+  force: boolean
+}
+
 /** The binding to store for a new agent, or why it is refused. `onPool` ⇒ the placement is the install-wide pool. */
 export function resolveMemoryBindingOnCreate(
   input: MemoryBindingInput | undefined,

@@ -32,6 +32,10 @@ import {
 } from '../../src/persistence/repositories/agent-memory.repo.js'
 import { AgentId } from '../../src/domain/ids.js'
 import type { AgentMemoryHistoryInput } from '../../src/persistence/ports.js'
+import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { PgAgentConfigWriter } from '../../src/persistence/repositories/agent-config.writer.js'
+import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
+import { MemoryHomeRefusedError } from '../../src/agent-memory/home.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -275,6 +279,41 @@ describe('PATCH /agents/:id — the home moves one way and comes back only by fo
       ...CP,
       scope: 'channel'
     })
+  })
+})
+
+describe('the home is resolved against the locked binding, not the caller’s earlier read', () => {
+  const repo = () => new PgAgentRepo(prisma)
+  const writer = () => new PgAgentConfigWriter(prisma, new PlaintextSecretCipher())
+
+  it('a save that read a pending binding cannot restore the flag memory/home/migrated cleared meanwhile', async () => {
+    await seedDaemon(prisma, SOURCE, { capabilities: CAPS })
+    const agentId = AgentId(await seedHomed(PENDING))
+    // The console read `PENDING`; the daemon's completion lands before its save commits.
+    expect(await repo().settleMemoryHomeMigration(DEF_ORG, agentId)).toBe('cleared')
+    // The save carries no flag of its own — it is resolved under the row lock, where the binding is already settled.
+    const saved = await writer().update(
+      DEF_ORG,
+      agentId,
+      { memory: { provider: 'managed', autoDistill: false, home: 'control-plane' } },
+      undefined,
+      { memoryHome: { input: { provider: 'managed', autoDistill: false }, onPool: false, force: false } }
+    )
+    expect(saved.memory).toEqual({ provider: 'managed', autoDistill: false, home: 'control-plane' })
+    expect(await storedMemory(agentId)).toEqual({ provider: 'managed', autoDistill: false, home: 'control-plane' })
+  })
+
+  it('a reverse that was fine against the caller’s read is refused once the locked binding is the Control Plane', async () => {
+    await seedDaemon(prisma, SOURCE, { capabilities: CAPS })
+    const agentId = AgentId(await seedHomed(DAEMON_HOME))
+    // Another edit switched the home after the caller read `daemon`.
+    await repo().update(DEF_ORG, agentId, { memory: { provider: 'managed', home: 'control-plane' } })
+    await expect(
+      writer().update(DEF_ORG, agentId, { memory: DAEMON_HOME as never }, undefined, {
+        memoryHome: { input: DAEMON_HOME as never, onPool: false, force: false }
+      })
+    ).rejects.toBeInstanceOf(MemoryHomeRefusedError)
+    expect(await storedMemory(agentId)).toEqual(CP)
   })
 })
 

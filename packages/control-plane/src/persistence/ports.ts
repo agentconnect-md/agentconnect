@@ -9,6 +9,7 @@
  * Record types are lightweight, domain-facing shapes (NOT raw Prisma models) so
  * nothing above this layer imports `@prisma/client`.
  */
+import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
   AuthReq,
   RegisterReq,
@@ -815,8 +816,11 @@ export interface AgentSkillSourceFence {
 export interface AgentUpdateOpts {
   authorizeMcpServers?: (currentlyHeld: readonly string[]) => void
   skillSources?: AgentSkillSourceFence
-  /** The forced return of a memory home to the daemon: the agent's CP tree and change log go in the same transaction. */
-  dropManagedMemoryHome?: true
+  /** Resolve the managed memory `home` against the binding under the row lock, not the caller's earlier read — so an
+   *  ordinary save cannot restore a flag `memory/home/migrated` cleared in between. It decides the stored binding
+   *  (`patch.memory` still names the target for the external-connection fence), throws `MemoryHomeRefusedError`,
+   *  and on the forced return drops the agent's CP tree and change log in the same transaction. */
+  memoryHome?: MemoryHomeUpdate
 }
 
 export interface AgentCreateOpts {

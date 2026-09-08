@@ -39,6 +39,8 @@ import {
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
+import { MemoryHomeRefusedError, resolveMemoryBindingOnUpdate } from '../../agent-memory/home.js'
+import { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './agent-memory.repo.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockAgentPlacement, settlePlacementChange } from './agent-placement.js'
 import { assertAgentMayUseSet, assertDaemonNotInSet } from './member-set.repo.js'
@@ -523,7 +525,8 @@ export class PgAgentRepo implements AgentRepo {
       patch.env !== undefined ||
       patch.mcpServers !== undefined ||
       patch.skills !== undefined ||
-      patch.memory !== undefined
+      patch.memory !== undefined ||
+      opts?.memoryHome !== undefined
     ) {
       // Row-lock the read: overrides are ONE JsonB bag, so the read-merge-write
       // below replaces keys this patch OMITS with whatever it read. Unlocked,
@@ -602,6 +605,22 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.memory !== undefined) {
         if (patch.memory === null) delete next.memory
         else next.memory = patch.memory
+      }
+      // The managed home is decided here, against the locked binding (memory-evolution.md §3.2.1): a completion
+      // `memory/home/migrated` recorded since the caller read the agent is what this write sees, not the caller's copy.
+      if (opts?.memoryHome) {
+        const { input, onPool, force } = opts.memoryHome
+        const change = resolveMemoryBindingOnUpdate(cur?.memory ?? null, input, onPool, force)
+        if (change.kind === 'refused') throw new MemoryHomeRefusedError(change.refused, change.message)
+        if (change.kind === 'write') {
+          if (change.memory === null) delete next.memory
+          else next.memory = change.memory
+          // The forced return keeps nothing: the CP tree and its change log go with the binding, or neither does.
+          if (change.dropHome) {
+            await new PgAgentMemoryFileRepo(tx).deleteTree(agentId)
+            await new PgAgentMemoryHistoryRepo(tx).deleteTree(agentId)
+          }
+        }
       }
       overrides = next
     }

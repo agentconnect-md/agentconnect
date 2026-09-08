@@ -91,6 +91,7 @@ class SkillEnableDenied extends Error {}
 import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import {
+  MemoryHomeRefusedError,
   POOL_MOVE_NEEDS_CP_HOME,
   managedMemoryHomeOf,
   memoryHomedInControlPlane,
@@ -2216,12 +2217,12 @@ export function agentRoutes(deps: HttpDeps) {
           }
           // The memory home rules (memory-evolution.md §3.2.1): an absent home keeps the current one, the forward
           // switch flags the migration, the reverse needs `force` and drops the CP tree, the pool refuses `daemon`.
-          const memoryChange = resolveMemoryBindingOnUpdate(
-            existing.memory,
-            req.body.memory,
-            await placedOnInstallPool(deps, { setId: existing.setId, daemonId: existing.daemonId }),
-            req.body.force === true
-          )
+          // This pass is the friendly refusal and names the target for the external check; the authoritative
+          // resolution runs again inside the row-locked write (`opts.memoryHome`), against the binding as it is then.
+          const onPool = await placedOnInstallPool(deps, { setId: existing.setId, daemonId: existing.daemonId })
+          const force = req.body.force === true
+          const memoryHome = req.body.memory !== undefined ? { input: req.body.memory, onPool, force } : undefined
+          const memoryChange = resolveMemoryBindingOnUpdate(existing.memory, req.body.memory, onPool, force)
           if (memoryChange.kind === 'refused') {
             return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: memoryChange.message })
           }
@@ -2261,13 +2262,17 @@ export function agentRoutes(deps: HttpDeps) {
                   {
                     authorizeMcpServers,
                     ...(skillsFence ? { skillSources: skillsFence } : {}),
-                    ...(memoryChange.kind === 'write' && memoryChange.dropHome ? { dropManagedMemoryHome: true } : {})
+                    ...(memoryHome ? { memoryHome } : {})
                   }
                 )
             )
           } catch (e) {
             if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
+            }
+            // The binding changed under the edit (a forced return, a completion) and the locked resolution refused.
+            if (e instanceof MemoryHomeRefusedError) {
+              return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
             }
             throw e
           }
