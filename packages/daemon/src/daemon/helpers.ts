@@ -6,11 +6,19 @@ import { SandboxError, sandboxBoundary } from '../acp/sandbox.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { Config } from '../config/config-schema.js'
+import { DAEMON_OWNED_AGENT_DIRNAMES, MEMORY_ARCHIVE_DIRNAME_PREFIX } from '../memory/store.js'
 import { runtimeHomePath } from '../runtimes/runtime-home.js'
 
 export function ignoreAgentWatchPath(agentsDir: string, path: string, stats?: Stats): boolean {
   const segments = relative(agentsDir, path).split(sep)
   if (segments.some((segment) => segment === 'node_modules' || segment.startsWith('.'))) return true
+  // The watcher only wants `agent.json`; the memory tree is the daemon's own, and Windows cannot rename a watched dir.
+  const owned = segments[1]
+  if (
+    owned !== undefined &&
+    (DAEMON_OWNED_AGENT_DIRNAMES.includes(owned) || owned.startsWith(MEMORY_ARCHIVE_DIRNAME_PREFIX))
+  )
+    return true
   return stats !== undefined && !stats.isDirectory() && basename(path) !== 'agent.json'
 }
 

@@ -70,6 +70,8 @@ export const MEMORY_HISTORY_FILENAME = '.history'
 export const MEMORY_DREAMS_DIRNAME = 'memory-dreams'
 /** The retained pre-adoption copy of the store (`<root>/memory-backups/`), the undo path for the last dream. */
 export const MEMORY_BACKUPS_DIRNAME = 'memory-backups'
+/** Prefix of the `<root>/memory-archive-<stamp>/` dir the forced home return moves the live store into. */
+export const MEMORY_ARCHIVE_DIRNAME_PREFIX = 'memory-archive-'
 
 /** Cap on a `before`/`after` snapshot stored in a history line — keeps a single log
  *  entry bounded even for a large file. Over this, the snapshot is truncated (with a
@@ -134,6 +136,13 @@ export function memoryDir(agentDir: string): string {
 /** Sibling of `memory/` that holds one self-contained memory subtree per channel
  *  when the agent's memory scope is `channel` (#653). */
 export const CHANNEL_MEMORY_DIRNAME = 'channels'
+/** The daemon-owned dirs directly under an agent dir that never hold `agent.json`; the archive dirs join by prefix. */
+export const DAEMON_OWNED_AGENT_DIRNAMES: readonly string[] = [
+  MEMORY_DIRNAME,
+  CHANNEL_MEMORY_DIRNAME,
+  MEMORY_BACKUPS_DIRNAME,
+  MEMORY_DREAMS_DIRNAME
+]
 
 /** A deterministic, filesystem-safe folder name for one channel's memory. Keeps a
  *  readable prefix and appends a short digest so distinct (transportScope, channel)
