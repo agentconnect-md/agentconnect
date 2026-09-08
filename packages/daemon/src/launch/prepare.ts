@@ -540,14 +540,6 @@ export function prepareRuntimeLaunch(opts: {
   for (const path of boundary.writable) {
     if (!existsSync(path)) mkdirSync(path, { recursive: true })
   }
-  if (opts.runtime && isClaudeRuntimeDef(opts.runtime)) {
-    // Both layers use SRT. If `.claude` itself is absent, the outer layer masks
-    // that first missing component read-only while protecting nested Claude
-    // config paths; Claude's inner bwrap can then no longer create its own
-    // settings mountpoint. An empty directory is enough and produces no Git diff.
-    const projectClaudeDir = join(boundary.gitSafeDirectories[0]!, '.claude')
-    if (!existsSync(projectClaudeDir)) mkdirSync(projectClaudeDir, { mode: 0o700 })
-  }
   const settingsPath = writeSandboxSettings(opts.scopeDir, hostKeyDirName(opts.hostKey), {
     writable: boundary.writable,
     // Host user data is default-denied. Re-open only the current agent surfaces

@@ -1,5 +1,15 @@
 import { spawn } from 'node:child_process'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmdirSync,
+  unlinkSync
+} from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
 import { SANDBOX_TEMP_DIR_ENV } from './sandbox-temp.js'
@@ -58,6 +68,41 @@ function childTempDir(writeRoots: string[], privateHome: string): string {
   return tempDir
 }
 
+// SRT 0.0.73's cwd-anchored mandatory-deny names (`DANGEROUS_FILES` / `getDangerousDirectories()`, not exported). Until the scan moved to the private HOME, bwrap left these behind in the checkout as zero-byte mount points that outlived any ungraceful exit.
+const LEGACY_MOUNT_POINT_FILES = [
+  '.gitconfig',
+  '.gitmodules',
+  '.bashrc',
+  '.bash_profile',
+  '.zshrc',
+  '.zprofile',
+  '.profile',
+  '.ripgreprc',
+  '.mcp.json'
+]
+const LEGACY_MOUNT_POINT_DIRS = ['.vscode', '.idea', '.claude/commands', '.claude/agents', '.claude']
+
+/** Remove the old scan's leftovers from the checkout root: only a zero-byte regular file or an empty directory of those exact names, so real content is never touched. Best-effort. */
+export function removeLegacyMountPoints(cwd: string): void {
+  for (const name of LEGACY_MOUNT_POINT_FILES) {
+    try {
+      const path = join(cwd, name)
+      if (lstatSync(path).isFile() && lstatSync(path).size === 0) unlinkSync(path)
+    } catch {
+      // absent, or not ours to touch
+    }
+  }
+  // Leaves before their parent: `.claude` itself goes only once its two protected children are gone.
+  for (const name of LEGACY_MOUNT_POINT_DIRS) {
+    try {
+      const path = join(cwd, name)
+      if (lstatSync(path).isDirectory() && readdirSync(path).length === 0) rmdirSync(path)
+    } catch {
+      // absent, non-empty, or not ours to touch
+    }
+  }
+}
+
 /**
  * Run one command through an isolated Sandbox Runtime manager. This helper is
  * launched in its own process for every ACP host: SRT's manager is global to a
@@ -99,17 +144,19 @@ export async function runSandboxRuntimeProvider(argv: string[], opts: { offline?
     if (!writeRoots.includes(resolve(sandboxCwd)) || !safeDirectories.includes(resolve(sandboxCwd))) {
       throw new Error('sandbox cwd must be an explicit SRT write root and Git safe directory')
     }
-    // SRT discovers mandatory deny paths from its own process.cwd() on Linux;
-    // the cwd argument to wrapWithSandboxArgv is not used for that scan. Anchor
-    // discovery to the trusted workspace before the manager initializes so
-    // .git/hooks, .git/config, and the other mandatory paths are protected in
-    // production as well as in smoke tests.
-    process.chdir(sandboxCwd)
     const requestedHome = process.env.HOME
     const privateHome = requestedHome && isAbsolute(requestedHome) ? realpathSync(requestedHome) : undefined
     if (!privateHome || !writeRoots.includes(resolve(privateHome))) {
       throw new Error('private HOME must be an explicit SRT write root')
     }
+    removeLegacyMountPoints(sandboxCwd)
+    // SRT's Linux mandatory-deny scan is anchored at its own process.cwd() (the cwd argument to
+    // wrapWithSandboxArgv plays no part in it), and for a missing name it has bwrap create a zero-byte
+    // mount point there. Its names are HOME's — shell rc files, `.gitconfig`, `.mcp.json` — so anchor
+    // the scan at the private HOME, where they belong and where a placeholder is nobody's untracked
+    // file, instead of the checkout. The checkouts' `.git/config` and `.git/hooks` are denied
+    // explicitly by the launch (launch/prepare.ts), so nothing depends on scanning the workspace.
+    process.chdir(privateHome)
     const privateTmp = childTempDir(writeRoots, privateHome)
     // SRT otherwise defaults TMPDIR to the shared host /tmp/claude path.
     process.env.HOME = privateHome
@@ -125,7 +172,9 @@ export async function runSandboxRuntimeProvider(argv: string[], opts: { offline?
       .slice(separator + 1)
       .map(shellQuote)
       .join(' ')
-    const wrapped = await SandboxManager.wrapWithSandboxArgv(command, undefined, undefined, undefined, process.cwd())
+    const wrapped = await SandboxManager.wrapWithSandboxArgv(command, undefined, undefined, undefined, sandboxCwd)
+    // The runtime's own cwd: bwrap runs where this process stands (SRT passes no --chdir), so move only now, after the scan.
+    process.chdir(sandboxCwd)
     const child = spawn(wrapped.argv[0]!, wrapped.argv.slice(1), {
       env: wrapped.env,
       shell: false,

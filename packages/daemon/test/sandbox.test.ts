@@ -18,6 +18,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
+import { removeLegacyMountPoints } from '../src/acp/sandbox-runtime-provider.js'
 import {
   sandboxWrap,
   sandboxBoundary,
@@ -645,6 +646,35 @@ describe('sandbox temp directories', () => {
       expect(existsSync(tempDir)).toBe(false)
     } finally {
       rmSync(agentDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('removeLegacyMountPoints', () => {
+  it('removes only the zero-byte files and empty directories the old workspace-anchored SRT scan left behind', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-legacy-mounts-'))
+    try {
+      for (const name of ['.bashrc', '.gitconfig', '.mcp.json']) writeFileSync(join(root, name), '')
+      mkdirSync(join(root, '.claude', 'agents'), { recursive: true })
+      mkdirSync(join(root, '.claude', 'commands'), { recursive: true })
+      mkdirSync(join(root, '.vscode'))
+      // Real content of a protected name, and a directory with something in it, are the checkout's own.
+      writeFileSync(join(root, '.gitmodules'), '[submodule "x"]\n')
+      writeFileSync(join(root, '.vscode', 'settings.json'), '{}')
+      writeFileSync(join(root, 'README.md'), '')
+
+      removeLegacyMountPoints(root)
+
+      expect(existsSync(join(root, '.bashrc'))).toBe(false)
+      expect(existsSync(join(root, '.gitconfig'))).toBe(false)
+      expect(existsSync(join(root, '.mcp.json'))).toBe(false)
+      expect(existsSync(join(root, '.claude'))).toBe(false)
+      expect(readFileSync(join(root, '.gitmodules'), 'utf8')).toBe('[submodule "x"]\n')
+      expect(existsSync(join(root, '.vscode', 'settings.json'))).toBe(true)
+      // An unrelated zero-byte file is not on the list and stays.
+      expect(existsSync(join(root, 'README.md'))).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })
