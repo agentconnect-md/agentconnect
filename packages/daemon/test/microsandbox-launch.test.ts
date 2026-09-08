@@ -60,7 +60,14 @@ describe('prepareMicrosandboxLaunch', () => {
         HOME: opts.hostHome,
         PATH: '/host/bin',
         SSH_AUTH_SOCK: '/host/agent.sock',
-        DBUS_SESSION_BUS_ADDRESS: 'unix:/host/bus'
+        DBUS_SESSION_BUS_ADDRESS: 'unix:/host/bus',
+        DOCKER_HOST: 'tcp://host-docker.example.test:2376',
+        DOCKER_CONTEXT: 'host-desktop',
+        DOCKER_CONFIG: '/host/docker',
+        DOCKER_CERT_PATH: '/host/docker/certs',
+        DOCKER_TLS: '1',
+        DOCKER_TLS_VERIFY: '1',
+        TESTCONTAINERS_HOST_OVERRIDE: 'host-docker.example.test'
       },
       trustedRuntimeReadRoots: [tool, missing],
       mounts: [{ source: tool, target: '/tools/tool.js', readOnly: true }]
@@ -84,11 +91,31 @@ describe('prepareMicrosandboxLaunch', () => {
     )
     expect(launch.env.SSH_AUTH_SOCK).toBeUndefined()
     expect(launch.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined()
+    for (const name of [
+      'DOCKER_HOST',
+      'DOCKER_CONTEXT',
+      'DOCKER_CONFIG',
+      'DOCKER_CERT_PATH',
+      'DOCKER_TLS',
+      'DOCKER_TLS_VERIFY',
+      'TESTCONTAINERS_HOST_OVERRIDE'
+    ]) {
+      expect(launch.env[name]).toBeUndefined()
+    }
     expect(launch.env.TMPDIR).toBe('/tmp')
     expect(launch.env.AC_GITCRED_SOCKET).toBe('/run/agentconnect/gitcred.sock')
-    expect(prepareMicrosandboxLaunch({ ...opts, explicitEnv: { PATH: '/guest/tools:/usr/bin' } }).env.PATH).toBe(
-      '/guest/tools:/usr/bin'
-    )
+    const dockerConfig = join(opts.scopeDir, 'run', 'config-files', 'docker')
+    const explicit = prepareMicrosandboxLaunch({
+      ...opts,
+      explicitEnv: { PATH: '/guest/tools:/usr/bin', DOCKER_CONFIG: dockerConfig }
+    })
+    expect(explicit.env.PATH).toBe('/guest/tools:/usr/bin')
+    expect(explicit.env.DOCKER_CONFIG).toBe(dockerConfig)
+    expect(explicit.microsandbox.mounts).toContainEqual({
+      source: join(opts.scopeDir, 'run', 'config-files'),
+      target: join(opts.scopeDir, 'run', 'config-files'),
+      readOnly: true
+    })
   })
 
   it.each([

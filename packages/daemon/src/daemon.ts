@@ -1922,7 +1922,7 @@ export class Daemon {
       try {
         this.microsandbox = await installMicrosandbox({
           root,
-          config: cfg.sandbox.microsandbox!,
+          config: cfg.sandbox.microsandbox,
           sockets: { mcp: mcpSocketPath(root), gitcred: gitcredSocketPath(root) },
           log: this.log
         })

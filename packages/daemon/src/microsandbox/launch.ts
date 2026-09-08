@@ -136,6 +136,17 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
 
   const env = { ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, hostEnv), ...credentials?.env }
   for (const name of HOST_IPC_ENV) delete env[name]
+  // Drop ambient Docker client settings, but keep explicit guest config, including materialized registry config.
+  for (const name of [
+    'TESTCONTAINERS_HOST_OVERRIDE',
+    'DOCKER_CONTEXT',
+    'DOCKER_CONFIG',
+    'DOCKER_CERT_PATH',
+    'DOCKER_TLS',
+    'DOCKER_TLS_VERIFY'
+  ]) {
+    if (opts.explicitEnv?.[name] === undefined) delete env[name]
+  }
   for (const { envVar } of opts.runtime ? runtimeExecutableHints(opts.runtime) : []) {
     if (opts.explicitEnv?.[envVar] === undefined) delete env[envVar]
   }

@@ -99,11 +99,15 @@ describe('loadConfig', () => {
     expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'docker' } })).toThrow()
   })
 
-  it('requires an explicit microsandbox image and defaults its resource allocation', () => {
-    expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } })).toThrow(
-      'sandbox.microsandbox.image'
-    )
-    for (const image of [undefined, '', '  ']) {
+  it('allows the release image default without adding Docker lifecycle configuration', () => {
+    expect(ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } }).sandbox).toEqual({
+      backend: 'microsandbox',
+      mounts: []
+    })
+    expect(
+      ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox', microsandbox: {} } }).sandbox.microsandbox
+    ).toEqual({ cpus: 2, memoryMiB: 2048, diskGiB: 10 })
+    for (const image of ['', '  ']) {
       expect(() =>
         ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox', microsandbox: { image } } })
       ).toThrow()
@@ -116,8 +120,16 @@ describe('loadConfig', () => {
     ).toEqual({
       backend: 'microsandbox',
       mounts: [],
-      microsandbox: { image: 'registry.example.test/runtime:test', cpus: 2, memoryMiB: 2048, diskGiB: 10 }
+      microsandbox: {
+        image: 'registry.example.test/runtime:test',
+        cpus: 2,
+        memoryMiB: 2048,
+        diskGiB: 10
+      }
     })
+    expect(() =>
+      ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox', microsandbox: { docker: true } } })
+    ).toThrow('docker')
   })
 
   it.each([
