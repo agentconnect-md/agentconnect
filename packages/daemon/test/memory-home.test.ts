@@ -148,10 +148,12 @@ describe('resolveMemoryHomePorts — the one selection', () => {
     expect(ports.staging.root).toBe(agent.dir)
     const sink = ports.historyFor(ports.live)
     expect(sink).toBeInstanceOf(CpMemoryHistorySink)
-    expect((sink as CpMemoryHistorySink).root).toBe('.')
+    expect((sink as CpMemoryHistorySink).root).toBe('memory')
     expect(sink.list).toBeUndefined()
-    // A channel store under `live` names its own root; a staged store, never in the CP, keeps its sidecar.
-    expect((ports.historyFor(channelMemoryRoot(ports.live, 'c1')) as CpMemoryHistorySink).root).toBe('channels/c1')
+    // A channel store under `live` files its log under its own memory/ dir; a staged store, never in the CP, keeps its sidecar.
+    expect((ports.historyFor(channelMemoryRoot(ports.live, 'c1')) as CpMemoryHistorySink).root).toBe(
+      'channels/c1/memory'
+    )
     expect(ports.historyFor(ports.staging)).toBeInstanceOf(SidecarMemoryHistorySink)
     expect(memoryHomeUnavailable(agent, { cp, log })).toBeUndefined()
 
@@ -223,10 +225,10 @@ describe('every writer and reader goes through the ports', () => {
     expect(await fsp.readFile(join(cp.tree, 'memory', 'deploys.md'), 'utf8')).toContain('- region sea')
     expect((await provider.read({ agentId: AGENT }, 'deploys.md')).content).toContain('- region sea')
     expect(cp.ops.some((op) => op.op === 'memory-commit')).toBe(true)
-    // The topic record, then the regenerated index's — both to the CP, in the store's own coordinates.
+    // The topic record, then the regenerated index's — both to the CP, filed under the store's memory/ dir, the root the CP's read filters on.
     expect(cp.appends.flatMap((req) => req.records.map((r) => [req.root, r.path, r.event, r.source]))).toEqual([
-      ['.', 'deploys.md', 'add', 'tool'],
-      ['.', MEMORY_INDEX, 'update', 'tool']
+      ['memory', 'deploys.md', 'add', 'tool'],
+      ['memory', MEMORY_INDEX, 'update', 'tool']
     ])
     expect(await fsp.readdir(join(cp.tree, 'memory'))).not.toContain(MEMORY_HISTORY_FILENAME)
     expect(existsSync(join(agent.dir, 'memory'))).toBe(false)
@@ -236,7 +238,7 @@ describe('every writer and reader goes through the ports', () => {
     expect(await fsp.readFile(join(cp.tree, 'channels', 'general-abc', 'memory', 'notes.md'), 'utf8')).toContain(
       'pinned'
     )
-    expect(cp.appends.at(-1)).toMatchObject({ agentId: AGENT, root: 'channels/general-abc' })
+    expect(cp.appends.at(-1)).toMatchObject({ agentId: AGENT, root: 'channels/general-abc/memory' })
     expect(cp.appends.at(-1)!.records.map((r) => [r.path, r.source])).toEqual([['notes.md', 'console']])
     expect(await fsp.readdir(join(cp.tree, 'channels', 'general-abc', 'memory'))).not.toContain(MEMORY_HISTORY_FILENAME)
     expect(log.warn).not.toHaveBeenCalled()

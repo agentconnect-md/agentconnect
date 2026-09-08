@@ -10,7 +10,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
-import type { MemoryHistoryRecord, MemoryHistorySink } from '../memory/store.js'
+import { MEMORY_DIRNAME, type MemoryHistoryRecord, type MemoryHistorySink } from '../memory/store.js'
 import { CP_MEMORY_TREE_ROOT, joinTreeRoot } from './memory-fs.js'
 
 /** The slice of the CP connection the sink rides: the gates `CpMemoryStoreLink` has, and the one request pair. */
@@ -50,8 +50,9 @@ function failureReason(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err)
 }
 
-// The sink over the CP. `root` is the store's tree-relative root, the coordinates `CpMemoryFs` names on every op — `.`
-// for the agent's own tree, `channels/<key>` for a channel store — so one table row lines up with one store.
+// The sink over the CP. `root` is the store's port root in `CpMemoryFs` coordinates (`.` for the agent's tree,
+// `channels/<key>` for a channel store); the log is filed under the directory that holds the store's files — `memory`,
+// `channels/<key>/memory` — which is the root the CP's `memory/history` read filters on, so a page finds what a batch wrote.
 export class CpMemoryHistorySink implements MemoryHistorySink {
   readonly root: string
 
@@ -61,7 +62,7 @@ export class CpMemoryHistorySink implements MemoryHistorySink {
     root: string = CP_MEMORY_TREE_ROOT,
     private readonly log: Pick<Logger, 'warn'>
   ) {
-    this.root = joinTreeRoot(CP_MEMORY_TREE_ROOT, root)
+    this.root = joinTreeRoot(joinTreeRoot(CP_MEMORY_TREE_ROOT, root), MEMORY_DIRNAME)
   }
 
   /** Best-effort: the write already happened, so any failure is one warn line naming what went unrecorded, never a rejection. */
