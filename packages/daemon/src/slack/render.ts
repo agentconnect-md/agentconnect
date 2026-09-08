@@ -1399,6 +1399,20 @@ export function buildElicitationCard(
   ]
 }
 
+/** Where a DM sends a reader whose question Slack has no control for. Mirrors the in-channel
+ *  decline notice's words, minus its verdict: this ask is still open on the editor path. */
+const ELICIT_DM_UNANSWERABLE =
+  ":hourglass: This chat can't collect an answer for it — answer it in the session console, via *Open session* above."
+
+/** The stand-in for an approval DM's elicitation card that {@link buildElicitationCard} cannot
+ *  build for the DM surface (#1794): the question, and where it CAN be answered. Without it the
+ *  DM went out carrying its intro and nothing else — a live request, no controls, and no hint
+ *  that the console holds the same ask — until the turn cancelled. The intro above it owns the
+ *  `Open session` link this points at, so the URL is never repeated. Pure. */
+export function buildElicitDmUnanswerableCard(params: CreateElicitationRequest): unknown[] {
+  return buildElicitationResolvedCard(params, ELICIT_DM_UNANSWERABLE)
+}
+
 /** Build the RESOLVED elicitation card (buttons removed) that replaces {@link
  *  buildElicitationCard} once answered, dismissed, or cancelled. Pure. */
 export function buildElicitationResolvedCard(params: CreateElicitationRequest, decision: string): unknown[] {
@@ -1634,6 +1648,12 @@ export function elicitFormSubmission(
   return Object.keys(errors).length ? { errors } : { answer }
 }
 
+/** What ANY refused answer is told on the card's own surface. A refusal drops the answer and
+ *  leaves the card live (#1815), which without a line like this one is a button that does nothing:
+ *  the reader cannot tell a rejected answer from a broken card. One wording for every transport —
+ *  a refusal explained on Slack and silent on webchat is worse than a consistent one. */
+export const ELICIT_ANSWER_REFUSED = "That answer wasn't accepted — the question is still open."
+
 /** What a refused Confirm is told IN THE THREAD, since a message card has no modal to return the
  *  errors to: each refused field named as the card names it, with the same plain words a reply-
  *  answered card would use, and the card left live to be answered again. Pure. */
@@ -1648,7 +1668,7 @@ export function elicitFormRefusalNotice(
     const target = index === null ? undefined : form[index]
     parts.push(target ? `${elicitFormFieldLabel(params, target)}: ${message}` : message)
   }
-  return clampTo(`That answer wasn't accepted — the question is still open. ${parts.join(' ')}`, ELICIT_MESSAGE_CAP)
+  return clampTo(`${ELICIT_ANSWER_REFUSED} ${parts.join(' ')}`, ELICIT_MESSAGE_CAP)
 }
 
 /** Slack's own limit on an interactive element's `value`. A URL longer than this cannot ride a

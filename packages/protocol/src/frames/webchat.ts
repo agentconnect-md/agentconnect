@@ -200,7 +200,13 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('superseded'), generation: z.number().int() }),
   // Live-only chrome for a wait the user cannot otherwise see (a cluster sandbox pod coming up).
   // Never persisted — a refresh rebuilds from the transcript, which does not record it.
-  z.object({ kind: z.literal('notice'), text: z.string() }),
+  // `standing` ⇒ the line is not a wait but something the reader has to keep: an ask this surface
+  // could not show, or an answer it would not take (#1794). A wait notice retires the moment
+  // output resumes, which would delete exactly those lines; a standing one stays put. An added
+  // OPTIONAL field rather than a new kind, for the reason `elicitation.multi` records: a relay or
+  // browser predating it decodes the event unchanged and merely retires the line early, where an
+  // unknown kind would drop the frame and leave the silence this field exists to end.
+  z.object({ kind: z.literal('notice'), text: z.string(), standing: z.boolean().optional() }),
   // The turn's task list (ACP `plan`). Unlike every other kind here it is a SNAPSHOT: ACP
   // resends the whole list on each revision, so the client keeps the latest and never
   // appends. Streamed because the same block already lands in the persisted transcript

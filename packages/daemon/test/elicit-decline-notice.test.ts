@@ -129,6 +129,34 @@ function slackTurn(): { daemon: any; pending: any; notices: () => string[] } {
   }
 }
 
+/** The same turn, on webchat — whose reader hears nothing through `enqueueApply` and everything
+ *  through the reply stream, so its notices are stream events. */
+function webchatTurn(): { daemon: any; pending: any; sink: any; events: () => any[]; notices: () => string[] } {
+  const { daemon, pending } = slackTurn()
+  pending.plan.platform = 'webchat'
+  const sink = { output: vi.fn(), done: vi.fn() }
+  pending.webchat = {
+    conversationId: 'conv-1',
+    turnId: 'turn-1',
+    sink,
+    index: 0,
+    replyText: '',
+    heldText: '',
+    messageEmitted: false
+  }
+  const events = (): any[] => sink.output.mock.calls.map(([o]: any[]) => o.event)
+  return {
+    daemon,
+    pending,
+    sink,
+    events,
+    notices: () =>
+      events()
+        .filter((e) => e.kind === 'notice')
+        .map((e) => e.text as string)
+  }
+}
+
 describe('an elicitation declined for want of a surface says so in the channel', () => {
   it('posts the notice and still declines when a Slack card cannot express the form', async () => {
     const { daemon, notices } = slackTurn()
@@ -307,5 +335,85 @@ describe('a notice defuses agent text the way its own surface reads it', () => {
   it('leaves a markup-less surface’s text verbatim — it has no label syntax to spoof with', () => {
     const raw = 'See <https://evil.example/x|your account> & [label](https://evil.example/y)'
     expect(defuseNoticeText(raw, undefined)).toBe(raw)
+  })
+})
+
+/**
+ * The plan for #1819 said webchat needed no notice because it renders every shape. It does not:
+ * a `required` property no control can answer (#1795) is declined here exactly as it is on Slack,
+ * and until now `awaitWebchatElicitation` returned `undefined` with NOTHING in the conversation.
+ * Webchat says things by streaming them, so the notice is a stream event rather than a post.
+ */
+describe('webchat says a declined elicitation out loud too', () => {
+  it('streams a standing notice, and still declines', async () => {
+    const { daemon, events } = webchatTurn()
+    await expect(daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())).resolves.toBeUndefined()
+    expect(daemon.permissions.pendingElicits.size).toBe(0)
+    expect(events()).toEqual([
+      {
+        kind: 'notice',
+        // `standing` is the whole point: a wait notice is retired the moment output resumes,
+        // which would delete the only thing the reader was ever told about this question.
+        standing: true,
+        text: expect.stringContaining("this chat can't collect an answer for")
+      }
+    ])
+    expect(events()[0].text).toContain('Which checks should I run?')
+  })
+
+  it('quotes the MASKED question, and leaves its text VERBATIM — this card is our own DOM', async () => {
+    const { daemon, notices } = webchatTurn()
+    daemon.maskAgentSecrets = (_id: string, params: any) => ({
+      ...params,
+      message: params.message.replace('hunter2', '••••')
+    })
+    await daemon.permissions.onAcpElicit(
+      'agent-1',
+      's1',
+      unrenderableElicitation({ message: 'Is hunter2 the token? See [your account](https://evil.example/x)' })
+    )
+    expect(notices()[0]).toContain('Is •••• the token?')
+    expect(notices()[0]).not.toContain('hunter2')
+    // No markup dialect reads this text — React renders it as a text node — so defusing it
+    // would only show the reader backslashes it cannot tell from the agent's own.
+    expect(notices()[0]).toContain('[your account](https://evil.example/x)')
+  })
+
+  it('does not send the reader to the console they are already reading it in', async () => {
+    const { daemon, notices } = webchatTurn()
+    await daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())
+    // The Slack notice's tail offers the session console; here that console's OWN surface is
+    // what declined, so offering it would be a lie.
+    expect(notices()[0]).not.toContain('/sessions/sess-1')
+    expect(notices()[0]).not.toContain('session console')
+  })
+
+  it('collapses a repeated question to one notice, and lets a different question through', async () => {
+    const { daemon, notices } = webchatTurn()
+    await daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())
+    await daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation())
+    expect(notices()).toHaveLength(1)
+    await daemon.permissions.onAcpElicit('agent-1', 's1', unrenderableElicitation({ message: 'And which runner?' }))
+    expect(notices()).toHaveLength(2)
+  })
+
+  it('says nothing when the STREAM is what failed — there is nothing left to say it with', async () => {
+    const { daemon, sink } = webchatTurn()
+    sink.output.mockImplementation(() => {
+      throw new Error('socket closed')
+    })
+    await expect(daemon.permissions.onAcpElicit('agent-1', 's1', formElicitation())).resolves.toBeUndefined()
+    expect(daemon.permissions.pendingElicits.size).toBe(0)
+    // One attempt, the card's own: a notice would ride the same broken call, and a webchat turn
+    // has no second surface to fall back to.
+    expect(sink.output).toHaveBeenCalledTimes(1)
+  })
+
+  it('says nothing for the shapes webchat renders', async () => {
+    const { daemon, notices } = webchatTurn()
+    void daemon.permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation())
+    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
+    expect(notices()).toEqual([])
+    await daemon.permissions.releaseElicits('agent-1', 's1')
   })
 })

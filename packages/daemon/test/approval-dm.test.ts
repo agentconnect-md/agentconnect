@@ -161,7 +161,9 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     expect(actions.elements.map((e: any) => e.text.text)).toEqual([...seven, 'Dismiss'])
     await w.store.close()
 
-    // Past the cap `buildElicitationCard` returns null, so the DM posts the intro and no buttons.
+    // Past the cap `buildElicitationCard` returns null. The DM used to go out carrying its intro
+    // and nothing else — a live request with no controls and no hint that the console holds the
+    // same ask (#1794) — so the missing card is now a block that says what was asked and where.
     const over = await world()
     void over.coordinator.onAcpElicit(
       OWNER,
@@ -170,7 +172,16 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     )
     await vi.waitFor(() => expect(over.conn.postBlocks).toHaveBeenCalledTimes(1))
     const overBlocks = (over.conn.postBlocks.mock.calls[0] as unknown[])[1] as any[]
+    // Nothing to tap — the answer is not collectable here, and that is the point of the line.
     expect(overBlocks.some((b) => b.type === 'actions')).toBe(false)
+    const stand = overBlocks.at(-1).text.text as string
+    expect(stand).toContain('Which one?')
+    expect(stand).toContain("This chat can't collect an answer for it")
+    // It points at the link the intro already built rather than repeating the URL.
+    expect(stand).toContain('*Open session*')
+    expect(JSON.stringify(overBlocks[0])).toContain('https://console.example/sessions/outward-1|Open session')
+    // The request itself is untouched: still open on the editor path, exactly as before.
+    expect((await over.store.listPermissionRequests(AGENT))[0]!.status).toBe('pending')
     await over.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
     await over.store.close()
   })

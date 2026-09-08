@@ -1119,6 +1119,9 @@ export interface SessionStep {
   /** A superseded answer's streamed `done` blocks, re-tagged 'plan' to collapse into the work
    *  lane. Still MESSAGE text — renderers must not apply reasoning-only treatment to it. */
   demoted?: boolean
+  /** A `notice` step the reader has to keep (an ask this surface could not show, or an answer it
+   *  would not take) rather than the wait notice that retires when output resumes. */
+  standing?: boolean
   /** Display timestamp for live/mock-only steps. Persisted transcripts use their raw ts. */
   time?: string
   text: string
