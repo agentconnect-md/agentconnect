@@ -1,3 +1,8 @@
+import {
+  MEMORY_CONTINUATION_SCHEMA,
+  MEMORY_CONTINUATION_SLOTS,
+  MEMORY_CONTINUATION_MAX_BYTES
+} from '../memory/entries/state.js'
 import { randomUUID } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
@@ -909,7 +914,7 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 17
+const SCHEMA_VERSION = 18
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1084,7 +1089,10 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
       );
       DROP TABLE session_gates;
       ALTER TABLE session_gates_by_key RENAME TO session_gates;
-    `)
+    `),
+  async (db) => {
+    await db.exec(MEMORY_CONTINUATION_SCHEMA)
+  }
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1183,6 +1191,7 @@ export class LocalStore {
         .n === 0
     await this.upgradeSchema(freshDatabase)
     const schema = `
+      ${MEMORY_CONTINUATION_SCHEMA}
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
@@ -5901,6 +5910,36 @@ export class LocalStore {
       { value: string } | undefined
     if (!row) throw new Error(`daemon secret ${name} could not be stored`)
     return row.value
+  }
+
+  // Fixed slots bound retained continuation bytes per agent even with concurrent pool members.
+  async putMemoryEntryContinuation(agentId: string, value: string, expiresAt: number): Promise<string> {
+    if (Buffer.byteLength(value) > MEMORY_CONTINUATION_MAX_BYTES)
+      throw new Error('memory continuation exceeds storage budget')
+    const token = randomUUID()
+    await this.transaction(async (tx) => {
+      const rows = (
+        await tx.query('SELECT slot, expiresAt FROM memory_entry_continuation WHERE agentId = ?', [agentId])
+      ).rows as { slot: number; expiresAt: number }[]
+      const used = new Set(rows.map((row) => row.slot))
+      const slot =
+        Array.from({ length: MEMORY_CONTINUATION_SLOTS }, (_, index) => index).find((index) => !used.has(index)) ??
+        rows.sort((a, b) => a.expiresAt - b.expiresAt || a.slot - b.slot)[0]!.slot
+      await tx.query(
+        `INSERT INTO memory_entry_continuation (agentId, slot, token, value, expiresAt)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT (agentId, slot) DO UPDATE SET
+        token = excluded.token, value = excluded.value, expiresAt = excluded.expiresAt`,
+        [agentId, slot, token, value, expiresAt]
+      )
+    })
+    return token
+  }
+
+  async getMemoryEntryContinuation(agentId: string, token: string, now: number): Promise<string | undefined> {
+    const row = (await this.db
+      .prepare('SELECT value FROM memory_entry_continuation WHERE agentId = ? AND token = ? AND expiresAt > ?')
+      .get(agentId, token, now)) as { value: string } | undefined
+    return row?.value
   }
 
   /** Remember a control-plane frame this review attempt still owes, so a lost ack is replayed. */

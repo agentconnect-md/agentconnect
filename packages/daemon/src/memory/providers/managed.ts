@@ -1,3 +1,4 @@
+import { managedMemoryEntries } from '../entries/managed.js'
 import type { MemoryEntry } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../../config/config-schema.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
@@ -84,6 +85,10 @@ export class ManagedMemoryProvider implements MemoryProvider {
   // managed support; adding a real native-memory feature requires a registry entry.
   runtimeEnv(runtime: RuntimeDef, effectiveEnv: NodeJS.ProcessEnv = {}, runtimeId?: string): Record<string, string> {
     return disabledRuntimeMemoryEnv(runtime, effectiveEnv, runtimeId)
+  }
+
+  entryView(scope: MemoryScope) {
+    return managedMemoryEntries(this.readRoots(scope), scope.agentId)
   }
 
   async ensure(scope: MemoryScope, agentName: string): Promise<void> {

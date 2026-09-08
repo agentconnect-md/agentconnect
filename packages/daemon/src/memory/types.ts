@@ -1,3 +1,4 @@
+import type { MemoryEntriesView } from './entries/contract.js'
 import type { MemoryFs } from './fs.js'
 /** The L0 memory contract: the `MemoryProvider` port plus its scope, result, admin-surface
  *  and error types. Implementations and factories live in `provider.ts`, which re-exports
@@ -146,6 +147,9 @@ export type MemoryAdminSurface = FileMemoryAdmin | RecordMemoryAdmin | null
  */
 export interface MemoryProvider {
   readonly kind: MemoryProviderKind
+
+  // Additive read contract; native and none keep their existing lifecycle and file compatibility view.
+  entryView?(scope: MemoryScope): Promise<MemoryEntriesView | null>
 
   /** Env delta to merge into the runtime child so its OWN memory goes where this
    *  provider wants it: `managed` disables it; `native` redirects it under the

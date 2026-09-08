@@ -259,3 +259,33 @@ describe.skipIf(process.platform !== 'linux')('the descriptor-bound executor (po
     expect(handled).toEqual({ ok: true, value: [{ name: 'link', kind: 'other' }] })
   })
 })
+
+describe.each(['local', 'shim', 'descriptor'] as const)('exclusive memory create: %s', (kind) => {
+  it.skipIf(kind === 'descriptor' && process.platform !== 'linux')(
+    'publishes exactly one concurrent creator without replacing its bytes',
+    async () => {
+      let fs: MemoryFs
+      if (kind === 'local') fs = new LocalMemoryFs(tempRoot())
+      else if (kind === 'shim') {
+        const fixture = pod()
+        roots.push(fixture.mount)
+        fs = fixture.fs
+      } else {
+        const mount = tempRoot()
+        fs = new ShimMemoryFs(shimRequester(mount, createFdMemoryFsExecutor(mount)), join(mount, 'home'))
+      }
+      const outcomes = await Promise.allSettled(
+        Array.from({ length: 8 }, (_, i) => fs.writeFile('memory/identity', String(i), { ifAbsent: true }))
+      )
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1)
+      for (const outcome of outcomes)
+        if (outcome.status === 'rejected') expect(outcome.reason).toBeInstanceOf(MemoryConflictError)
+      const before = await fs.readFile('memory/identity')
+      await expect(fs.writeFile('memory/identity', 'replacement', { ifAbsent: true })).rejects.toBeInstanceOf(
+        MemoryConflictError
+      )
+      expect(await fs.readFile('memory/identity')).toEqual(before)
+      expect((await fs.readdir('memory')).map((entry) => entry.name)).toEqual(['identity'])
+    }
+  )
+})

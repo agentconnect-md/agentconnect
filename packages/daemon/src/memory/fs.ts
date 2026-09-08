@@ -72,6 +72,8 @@ export interface MemoryFsEntry {
 }
 
 export interface MemoryFsWriteOptions {
+  // Publish only if the target is absent; never fall back to replacement.
+  ifAbsent?: boolean
   /** Non-empty ⇒ the target's current mtime must equal it (a brand-new file never matches). */
   ifMatchMtime?: string
   mode?: number
@@ -236,8 +238,10 @@ export async function atomicWriteContainedMemoryFile(
   destination: string,
   content: string | Uint8Array,
   ifMatchMtime?: string,
-  mode?: number
+  mode?: number,
+  ifAbsent = false
 ): Promise<MemoryFsFileStat> {
+  if (ifAbsent && ifMatchMtime) throw new MemoryPathError('choose exclusive create or conditional replacement')
   const parts = containedParts(root, destination)
   const parent = (await walkContained(root, parts.slice(0, -1), true))!
   const target = join(parent, parts[parts.length - 1]!)
@@ -264,7 +268,14 @@ export async function atomicWriteContainedMemoryFile(
       }
     }
     if ((await fsp.realpath(parent)) !== parent) await rejectEscape(parent, true)
-    await publishOverTarget(temp, target)
+    if (ifAbsent) {
+      try {
+        await fsp.link(temp, target)
+      } catch (error) {
+        if (isErrno(error, 'EEXIST')) throw new MemoryConflictError('the memory file already exists')
+        throw error
+      }
+    } else await publishOverTarget(temp, target)
   } finally {
     await fsp.rm(temp, { force: true }).catch(() => {})
   }
@@ -327,7 +338,8 @@ export class LocalMemoryFs implements MemoryFs {
       join(this.root, ...parts),
       content,
       options.ifMatchMtime,
-      options.mode
+      options.mode,
+      options.ifAbsent
     )
   }
 
