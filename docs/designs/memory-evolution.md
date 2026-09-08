@@ -7,6 +7,8 @@
 
 ---
 
+The proposed [unified memory interface](unified-memory-interface.md) extends this lifecycle with common entry operations, a bounded context catalog, and shared mutation semantics. It preserves the plugin ABI and storage choices; the current file/record surfaces remain compatibility contracts until that proposal is implemented.
+
 ## 1. Background and Current State
 
 The daemon provides **directory-based, per-agent long-term memory**
