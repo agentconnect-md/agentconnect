@@ -312,9 +312,14 @@ copy simply runs again from the start and overwrites by path. No staging prefix,
 marker file, no partial-tree question. Staging and the pre-adoption backup stay behind,
 each belonging to the host or the adoption that made it; the source tree is never
 deleted. The daemon then rebuilds the session boundary as any memory change does. The
-CP refuses `control-plane` → `daemon` — there is no way back, and the console offers
-the selector one way only. `daemon` stays the default for now; making `control-plane`
-the default is a later decision, not this one.
+reverse, `control-plane` → `daemon`, is not a migration: the CP refuses it as a plain
+binding change and accepts it only as a forced one, which keeps nothing — the CP drops
+the agent's rows and its change log, and the daemon starts from an empty tree, the
+pre-switch local tree archived aside rather than resurrected (a snapshot from before
+the switch is not the memory the agent has been using since). The console offers the
+selector one way and the forced return behind its own confirmation; on the pool there
+is no return at all, since `daemon` is refused there. `daemon` stays the default for
+now; making `control-plane` the default is a later decision, not this one.
 
 **Moves.** A `control-plane` agent's memory is not daemon-local any more, so the
 hard-cutover move carries it by doing nothing: the target reads the same rows. A
@@ -836,8 +841,8 @@ type MemoryConfig =
 - `home` (§3.2.1) defaults to `daemon`. The CP writes the resolved value on create so
   a later placement change never flips it implicitly; an agent placed on the
   install-wide pool must carry `control-plane`, and the console fixes the selector
-  there. `home` changes one way only, `daemon` → `control-plane`, and that change
-  migrates the tree (§3.2.1); the CP refuses the reverse.
+  there. `home` migrates one way only, `daemon` → `control-plane` (§3.2.1); the
+  reverse is accepted only as a forced change and keeps no memory.
 - `connectionId` must belong to the agent's organization, and the caller must
   be authorized to use it. The CP does not accept per-agent
   `endpoint/apiKey/command`.
