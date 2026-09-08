@@ -979,4 +979,28 @@ describe('MemoryPanel memory home', () => {
     expect(vi.mocked(listAgentMemory).mock.calls.length).toBeGreaterThan(lists)
     expect(vi.mocked(fetchAgentMemoryFull).mock.calls.length).toBeGreaterThan(reads)
   })
+
+  it('lists the channel folders again once a copy that refused the read has cleared', async () => {
+    // During the copy the daemon refuses the channel read; the picker must not stay empty after completion.
+    vi.mocked(fetchAgentMemoryChannels).mockRejectedValueOnce(new ApiError('memory unavailable', 503))
+    await mount({ memoryHome: 'control-plane', memoryHomeMigration: 'pending', memoryScope: 'channel' })
+    const before = vi.mocked(fetchAgentMemoryChannels).mock.calls.length
+    vi.mocked(fetchAgentMemoryChannels).mockResolvedValueOnce({
+      channels: [{ channelKey: 'slack:C1', channel: 'general', transportScope: null }]
+    })
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId={AGENT_ID}
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+          memoryHome="control-plane"
+          memoryScope="channel"
+        />
+      )
+    })
+    expect(vi.mocked(fetchAgentMemoryChannels).mock.calls.length).toBeGreaterThan(before)
+    expect(container?.textContent).toContain('general')
+  })
 })

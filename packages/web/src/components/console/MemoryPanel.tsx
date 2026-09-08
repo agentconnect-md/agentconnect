@@ -651,7 +651,7 @@ export function MemoryPanel({
     return () => {
       live = false
     }
-  }, [agentId, persistedProvider, persistedSettings.scope, persistedSettings.home])
+  }, [agentId, persistedProvider, persistedSettings.scope, persistedSettings.home, homeMigrationPending])
 
   const select = (name: string) => {
     if (name === selected) {
