@@ -25,11 +25,12 @@ import {
   readMemoryFile,
   regenerateMemoryIndexHoldingLock,
   renderMemoryIndex,
-  writeMemoryFile,
   memoryChannelKey
 } from '../src/memory/store.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/memory/distill.js'
 import { createMemoryProvider } from '../src/memory/providers/factory.js'
+import { localMemoryHome, sidecarMemoryHistory } from '../src/memory/home.js'
+import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 
 const fs = () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-fm-')))
 
@@ -125,8 +126,8 @@ describe('generated memory index', () => {
   it('rebuilds MEMORY.md from topic descriptions, sorted, and refreshes on change', async () => {
     const f = fs()
     await ensureMemory(f, 'bot')
-    await writeMemoryFile(f, 'zeta.md', '---\ndescription: last one\n---\nz\n', undefined, 'tool')
-    await writeMemoryFile(f, 'alpha.md', '---\ndescription: first one\n---\na\n', undefined, 'tool')
+    await writeWithSidecar(f, 'zeta.md', '---\ndescription: last one\n---\nz\n', undefined, 'tool')
+    await writeWithSidecar(f, 'alpha.md', '---\ndescription: first one\n---\na\n', undefined, 'tool')
 
     const index = await readMemoryFile(f, 'MEMORY.md')
     expect(index).toContain('- [alpha](alpha.md) — first one')
@@ -135,7 +136,7 @@ describe('generated memory index', () => {
     expect(index).toContain('generated')
 
     // Editing a description re-renders the entry rather than duplicating it.
-    await writeMemoryFile(f, 'alpha.md', '---\ndescription: renamed\n---\na\n', undefined, 'tool')
+    await writeWithSidecar(f, 'alpha.md', '---\ndescription: renamed\n---\na\n', undefined, 'tool')
     const updated = await readMemoryFile(f, 'MEMORY.md')
     expect(updated).toContain('- [alpha](alpha.md) — renamed')
     expect(updated).not.toContain('first one')
@@ -144,13 +145,13 @@ describe('generated memory index', () => {
   it('leaves a legacy hand-written index alone until a described topic exists', async () => {
     const f = fs()
     await ensureMemory(f, 'bot')
-    await writeMemoryFile(f, 'MEMORY.md', '# bot memory\n\nmy own notes\n', undefined, 'tool')
+    await writeWithSidecar(f, 'MEMORY.md', '# bot memory\n\nmy own notes\n', undefined, 'tool')
     // A headerless topic gives nothing to generate from, so the index is untouched.
-    await writeMemoryFile(f, 'plain.md', 'no header here\n', undefined, 'tool')
+    await writeWithSidecar(f, 'plain.md', 'no header here\n', undefined, 'tool')
     expect(await readMemoryFile(f, 'MEMORY.md')).toContain('my own notes')
 
     // The first described topic migrates it to the generated form.
-    await writeMemoryFile(f, 'described.md', '---\ndescription: has one\n---\nx\n', undefined, 'tool')
+    await writeWithSidecar(f, 'described.md', '---\ndescription: has one\n---\nx\n', undefined, 'tool')
     const index = await readMemoryFile(f, 'MEMORY.md')
     expect(index).toContain('- [described](described.md) — has one')
     expect(index).toContain('# bot memory') // the agent's own heading is preserved
@@ -160,11 +161,11 @@ describe('generated memory index', () => {
   it('clears an entry when its description is removed, instead of freezing stale text', async () => {
     const f = fs()
     await ensureMemory(f, 'bot')
-    await writeMemoryFile(f, 'a.md', '---\ndescription: original text\n---\na\n', undefined, 'tool')
+    await writeWithSidecar(f, 'a.md', '---\ndescription: original text\n---\na\n', undefined, 'tool')
     expect(await readMemoryFile(f, 'MEMORY.md')).toContain('original text')
 
     // Dropping the last description must not leave the index frozen with it.
-    await writeMemoryFile(f, 'a.md', '---\ntype: project\n---\na\n', undefined, 'tool')
+    await writeWithSidecar(f, 'a.md', '---\ntype: project\n---\na\n', undefined, 'tool')
     const index = await readMemoryFile(f, 'MEMORY.md')
     expect(index).not.toContain('original text')
     expect(index).toContain('- [a](a.md)')
@@ -176,7 +177,7 @@ describe('generated memory index', () => {
     const description = 'x'.repeat(4_000)
     // Enough described topics that the naive index would blow past the write cap.
     for (let i = 0; i < 80; i++) {
-      await writeMemoryFile(f, `topic-${i}.md`, `---\ndescription: ${description}\n---\nbody\n`, undefined, 'tool')
+      await writeWithSidecar(f, `topic-${i}.md`, `---\ndescription: ${description}\n---\nbody\n`, undefined, 'tool')
     }
     const index = await readMemoryFile(f, 'MEMORY.md')
     expect(Buffer.byteLength(index)).toBeLessThanOrEqual(MAX_MEMORY_FILE_BYTES)
@@ -186,7 +187,7 @@ describe('generated memory index', () => {
   it('readMemory accepts the [[link]] form the agent sees in a body', async () => {
     const f = fs()
     await ensureMemory(f, 'bot')
-    await writeMemoryFile(f, 'deploys.md', '---\ndescription: d\n---\nport 4242\n', undefined, 'tool')
+    await writeWithSidecar(f, 'deploys.md', '---\ndescription: d\n---\nport 4242\n', undefined, 'tool')
     expect(await readMemoryFile(f, '[[deploys]]')).toContain('port 4242')
     expect(await readMemoryFile(f, 'deploys')).toContain('port 4242')
   })
@@ -194,7 +195,7 @@ describe('generated memory index', () => {
 
 describe('memory graph (one hop)', () => {
   const write = (f: ReturnType<typeof fs>, topic: string, description: string, body: string) =>
-    writeMemoryFile(f, topic, `---\ndescription: ${description}\n---\n${body}\n`, undefined, 'tool')
+    writeWithSidecar(f, topic, `---\ndescription: ${description}\n---\n${body}\n`, undefined, 'tool')
 
   it('reports outgoing links and backlinks, each with its description', async () => {
     const f = fs()
@@ -241,7 +242,7 @@ describe('memory graph through the live provider path', () => {
   // directly is not enough: this is the path production actually takes.
   const dispatcher = (dir: string) =>
     createMemoryProvider({
-      memoryFsFor: () => new LocalMemoryFs(dir),
+      memoryHomePortsFor: () => localMemoryHome(new LocalMemoryFs(dir)),
       providerKindFor: () => 'managed' as const
     } as never)
 
@@ -295,7 +296,7 @@ describe('dream adoption and index ownership', () => {
     await f.writeFile('memory/MEMORY.md', '# bot memory\n\nthe dream wrote this by hand\n', {})
     await f.writeFile('memory/a.md', '---\ndescription: from the dream\n---\na\n', {})
 
-    await regenerateMemoryIndexHoldingLock(f, 'dream')
+    await regenerateMemoryIndexHoldingLock(f, 'dream', { history: sidecarMemoryHistory(f) })
     const index = await readMemoryFile(f, 'MEMORY.md')
     expect(index).toContain('- [a](a.md) — from the dream')
     expect(index).not.toContain('the dream wrote this by hand')
@@ -308,7 +309,7 @@ describe('dream adoption and index ownership', () => {
     await f.writeFile('memory/MEMORY.md', '# bot memory\n\ncurated by the dream\n', {})
     await f.writeFile('memory/a.md', 'no header here\n', {})
 
-    await regenerateMemoryIndexHoldingLock(f, 'dream')
+    await regenerateMemoryIndexHoldingLock(f, 'dream', { history: sidecarMemoryHistory(f) })
     expect(await readMemoryFile(f, 'MEMORY.md')).toContain('curated by the dream')
   })
 })
@@ -380,7 +381,7 @@ describe('a description survives the real write path', () => {
     const nasty = 'he said "ship it", path C:\\tmp — see #2'
     // Exactly what a model writes through the shared tool surface: a header it wrote,
     // stored by the ordinary write path.
-    await writeMemoryFile(f, 'quoted.md', `${buildMemoryHeader({ description: nasty })}fact\n`, undefined, 'distill')
+    await writeWithSidecar(f, 'quoted.md', `${buildMemoryHeader({ description: nasty })}fact\n`, undefined, 'distill')
 
     const created = await readMemoryFile(f, 'quoted.md')
     expect(parseMemoryFrontmatter(created).header.description).toBe(nasty)
@@ -429,7 +430,7 @@ describe('the reviewed index is the adopted index', () => {
     const f = fs()
     await ensureMemory(f, 'bot')
     for (const e of entries) {
-      await writeMemoryFile(f, e.topic, `---\ndescription: ${e.description}\n---\nbody\n`, undefined, 'dream')
+      await writeWithSidecar(f, e.topic, `---\ndescription: ${e.description}\n---\nbody\n`, undefined, 'dream')
     }
     const liveIndex = await readMemoryFile(f, 'MEMORY.md')
 
@@ -453,7 +454,7 @@ describe('every writer stores safe frontmatter', () => {
     for (const source of ['tool', 'distill', 'dream', 'console'] as const) {
       const f = fs()
       await ensureMemory(f, 'bot')
-      await writeMemoryFile(f, 'topic.md', `---\ndescription: ${nasty}\n---\nbody\n`, undefined, source)
+      await writeWithSidecar(f, 'topic.md', `---\ndescription: ${nasty}\n---\nbody\n`, undefined, source)
 
       const stored = await readMemoryFile(f, 'topic.md')
       expect(stored).toContain(`description: ${JSON.stringify(nasty)}`)
@@ -464,11 +465,11 @@ describe('every writer stores safe frontmatter', () => {
   it('is a no-op for a header that is already safe, so rewrites do not churn', async () => {
     const f = fs()
     await ensureMemory(f, 'bot')
-    await writeMemoryFile(f, 'plain.md', '---\ndescription: how we ship\n---\nbody\n', undefined, 'tool')
+    await writeWithSidecar(f, 'plain.md', '---\ndescription: how we ship\n---\nbody\n', undefined, 'tool')
     const first = await readMemoryFile(f, 'plain.md')
     expect(first).toContain('description: how we ship') // still unquoted
 
-    await writeMemoryFile(f, 'plain.md', first, undefined, 'tool')
+    await writeWithSidecar(f, 'plain.md', first, undefined, 'tool')
     const second = await readMemoryFile(f, 'plain.md')
     // Only `modified` may differ; the description must not gain quoting or escapes.
     expect(second).toContain('description: how we ship')
@@ -519,7 +520,7 @@ describe('values that only stay strings while quoted', () => {
   it('survives a write/read cycle for a numeric-looking description', async () => {
     const f = fs()
     await ensureMemory(f, 'bot')
-    await writeMemoryFile(f, 'n.md', '---\ndescription: "2026"\n---\nbody\n', undefined, 'dream')
+    await writeWithSidecar(f, 'n.md', '---\ndescription: "2026"\n---\nbody\n', undefined, 'dream')
     expect(parseMemoryFrontmatter(await readMemoryFile(f, 'n.md')).header.description).toBe('2026')
   })
 })
@@ -542,7 +543,7 @@ describe('values whose BYTES change when emitted bare', () => {
     const f = fs()
     await ensureMemory(f, 'bot')
     const value = 'first\nsecond'
-    await writeMemoryFile(f, 'multi.md', `---\ndescription: ${JSON.stringify(value)}\n---\nbody\n`, undefined, 'dream')
+    await writeWithSidecar(f, 'multi.md', `---\ndescription: ${JSON.stringify(value)}\n---\nbody\n`, undefined, 'dream')
     const stored = await readMemoryFile(f, 'multi.md')
     expect(stored.match(/^description:/gm)).toHaveLength(1)
     expect(parseMemoryFrontmatter(stored).header.description).toBe(value)

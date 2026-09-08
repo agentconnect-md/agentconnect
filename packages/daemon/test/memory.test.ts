@@ -7,10 +7,8 @@ import {
   ensureMemory,
   readIndex,
   readMemoryFile,
-  writeMemoryFile,
   appendHistory,
   listMemory,
-  listMemoryHistory,
   memoryDir,
   memoryTopicName,
   withMemoryDirLock,
@@ -31,6 +29,8 @@ import { createMemoryReader, MemoryViolationError } from '../src/cp/memory-reade
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import { MEMORY_TOOLS } from '../src/memory/tools.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
+import { listSidecarHistory, writeWithSidecar } from './fixtures/memory-sidecar.js'
+import { localMemoryHome } from '../src/memory/home.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
 
@@ -46,7 +46,7 @@ describe('memory/store (directory model)', () => {
     expect(existsSync(indexPath(dir))).toBe(true)
     expect(readFileSync(indexPath(dir), 'utf8')).toContain('# bot-a memory')
     // second call must not overwrite existing content
-    await writeMemoryFile(local(dir), MEMORY_INDEX, 'kept')
+    await writeWithSidecar(local(dir), MEMORY_INDEX, 'kept')
     await ensureMemory(local(dir), 'bot-a')
     expect(readFileSync(indexPath(dir), 'utf8')).toBe('kept')
   })
@@ -54,8 +54,8 @@ describe('memory/store (directory model)', () => {
   it('reads/writes the index and topic files', async () => {
     const dir = newDir()
     expect(await readMemoryFile(local(dir), MEMORY_INDEX)).toBe('') // missing ⇒ ''
-    await writeMemoryFile(local(dir), MEMORY_INDEX, '# index\n- [deploys](deploys.md)')
-    await writeMemoryFile(local(dir), 'deploys.md', '# deploys\nrun make ship')
+    await writeWithSidecar(local(dir), MEMORY_INDEX, '# index\n- [deploys](deploys.md)')
+    await writeWithSidecar(local(dir), 'deploys.md', '# deploys\nrun make ship')
     expect(await readMemoryFile(local(dir), MEMORY_INDEX)).toContain('deploys.md')
     expect(await readMemoryFile(local(dir), 'deploys.md')).toBe('# deploys\nrun make ship')
   })
@@ -63,16 +63,16 @@ describe('memory/store (directory model)', () => {
   it('listMemory returns the index first, then topics; skips .tmp', async () => {
     const dir = newDir()
     expect(await listMemory(local(dir))).toEqual([]) // missing dir ⇒ []
-    await writeMemoryFile(local(dir), 'zeta.md', 'z')
-    await writeMemoryFile(local(dir), MEMORY_INDEX, 'i')
-    await writeMemoryFile(local(dir), 'alpha.md', 'a')
+    await writeWithSidecar(local(dir), 'zeta.md', 'z')
+    await writeWithSidecar(local(dir), MEMORY_INDEX, 'i')
+    await writeWithSidecar(local(dir), 'alpha.md', 'a')
     const names = (await listMemory(local(dir))).map((f) => f.name)
     expect(names).toEqual([MEMORY_INDEX, 'alpha.md', 'zeta.md']) // index first, then alphabetical
   })
 
   it('readIndex truncates a huge index to the inject cap', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), MEMORY_INDEX, 'x'.repeat(MAX_INDEX_INJECT_BYTES + 5000))
+    await writeWithSidecar(local(dir), MEMORY_INDEX, 'x'.repeat(MAX_INDEX_INJECT_BYTES + 5000))
     const injected = await readIndex(local(dir))
     expect(Buffer.byteLength(injected)).toBeLessThanOrEqual(MAX_INDEX_INJECT_BYTES)
     expect(injected).toContain('truncated')
@@ -80,7 +80,7 @@ describe('memory/store (directory model)', () => {
 
   it('readIndex truncates before a complete UTF-8 code point', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), MEMORY_INDEX, '🚀'.repeat(MAX_INDEX_INJECT_BYTES))
+    await writeWithSidecar(local(dir), MEMORY_INDEX, '🚀'.repeat(MAX_INDEX_INJECT_BYTES))
     const injected = await readIndex(local(dir))
     expect(Buffer.byteLength(injected)).toBeLessThanOrEqual(MAX_INDEX_INJECT_BYTES)
     expect(injected).not.toContain('\uFFFD')
@@ -100,32 +100,34 @@ describe('memory/store (directory model)', () => {
   it('reserves .history from ordinary managed-memory reads and writes', async () => {
     const dir = newDir()
     await expect(readMemoryFile(local(dir), MEMORY_HISTORY_FILENAME)).rejects.toBeInstanceOf(MemoryPathError)
-    await expect(writeMemoryFile(local(dir), MEMORY_HISTORY_FILENAME, 'forged provenance')).rejects.toBeInstanceOf(
+    await expect(writeWithSidecar(local(dir), MEMORY_HISTORY_FILENAME, 'forged provenance')).rejects.toBeInstanceOf(
       MemoryPathError
     )
   })
 
   it('rejects a write over the size budget (MemoryTooLargeError)', async () => {
     const dir = newDir()
-    await expect(writeMemoryFile(local(dir), 'big.md', 'x'.repeat(MAX_MEMORY_FILE_BYTES + 1))).rejects.toBeInstanceOf(
+    await expect(writeWithSidecar(local(dir), 'big.md', 'x'.repeat(MAX_MEMORY_FILE_BYTES + 1))).rejects.toBeInstanceOf(
       MemoryTooLargeError
     )
     // at the limit is fine
-    await expect(writeMemoryFile(local(dir), 'ok.md', 'x'.repeat(MAX_MEMORY_FILE_BYTES))).resolves.toBeTruthy()
+    await expect(writeWithSidecar(local(dir), 'ok.md', 'x'.repeat(MAX_MEMORY_FILE_BYTES))).resolves.toBeTruthy()
   })
 
   it('enforces the ifMatchMtime precondition (optimistic concurrency)', async () => {
     const dir = newDir()
-    const first = await writeMemoryFile(local(dir), 'notes.md', 'v1')
+    const first = await writeWithSidecar(local(dir), 'notes.md', 'v1')
     // a stale mtime is rejected
-    await expect(writeMemoryFile(local(dir), 'notes.md', 'v2', '1999-01-01T00:00:00.000Z')).rejects.toBeInstanceOf(
+    await expect(writeWithSidecar(local(dir), 'notes.md', 'v2', '1999-01-01T00:00:00.000Z')).rejects.toBeInstanceOf(
       MemoryConflictError
     )
     // the current mtime succeeds
-    await expect(writeMemoryFile(local(dir), 'notes.md', 'v2', first.mtime)).resolves.toBeTruthy()
+    await expect(writeWithSidecar(local(dir), 'notes.md', 'v2', first.mtime)).resolves.toBeTruthy()
     expect(await readMemoryFile(local(dir), 'notes.md')).toBe('v2')
     // a precondition on a brand-new (absent) file with a non-empty mtime is a conflict
-    await expect(writeMemoryFile(local(dir), 'fresh.md', 'x', 'some-mtime')).rejects.toBeInstanceOf(MemoryConflictError)
+    await expect(writeWithSidecar(local(dir), 'fresh.md', 'x', 'some-mtime')).rejects.toBeInstanceOf(
+      MemoryConflictError
+    )
   })
 
   it('does not follow a pre-planted predictable temp symlink', async () => {
@@ -138,7 +140,7 @@ describe('memory/store (directory model)', () => {
     symlinkSync(outside, join(memoryDir(dir), 'notes.md.tmp'))
     symlinkSync(outsideHistory, join(memoryDir(dir), MEMORY_HISTORY_FILENAME))
 
-    await writeMemoryFile(local(dir), 'notes.md', 'updated')
+    await writeWithSidecar(local(dir), 'notes.md', 'updated')
 
     expect(readFileSync(outside, 'utf8')).toBe('keep')
     expect(readFileSync(outsideHistory, 'utf8')).toBe('keep-history')
@@ -174,8 +176,8 @@ describe('memory/store (.history change log)', () => {
 
   it('records add then update in order, with before absent on add and present on update', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), 'notes.md', 'v1')
-    await writeMemoryFile(local(dir), 'notes.md', 'v2')
+    await writeWithSidecar(local(dir), 'notes.md', 'v1')
+    await writeWithSidecar(local(dir), 'notes.md', 'v2')
     const log = readHistory(dir)
     expect(log).toHaveLength(2)
     expect(log[0]).toMatchObject({ path: 'notes.md', event: 'add', after: 'v1', scope: 'agent', source: 'tool' })
@@ -185,8 +187,8 @@ describe('memory/store (.history change log)', () => {
 
   it('attributes the source (tool default vs console)', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), 'a.md', 'x') // default source
-    await writeMemoryFile(local(dir), 'b.md', 'y', undefined, 'console')
+    await writeWithSidecar(local(dir), 'a.md', 'x') // default source
+    await writeWithSidecar(local(dir), 'b.md', 'y', undefined, 'console')
     const log = readHistory(dir)
     expect(log.find((r) => r.path === 'a.md')?.source).toBe('tool')
     expect(log.find((r) => r.path === 'b.md')?.source).toBe('console')
@@ -195,7 +197,7 @@ describe('memory/store (.history change log)', () => {
   it('truncates an over-cap before/after snapshot (flagged), keeping the line bounded', async () => {
     const dir = newDir()
     const big = 'x'.repeat(MAX_HISTORY_VALUE_BYTES + 500)
-    await writeMemoryFile(local(dir), 'big.md', big)
+    await writeWithSidecar(local(dir), 'big.md', big)
     const rec = readHistory(dir)[0]!
     expect(rec.truncated).toBe(true)
     expect(rec.after.endsWith('…')).toBe(true)
@@ -204,8 +206,8 @@ describe('memory/store (.history change log)', () => {
 
   it('does not surface .history as a topic in listMemory', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), MEMORY_INDEX, 'i')
-    await writeMemoryFile(local(dir), 'topic.md', 't')
+    await writeWithSidecar(local(dir), MEMORY_INDEX, 'i')
+    await writeWithSidecar(local(dir), 'topic.md', 't')
     const names = (await listMemory(local(dir))).map((f) => f.name)
     expect(names).toEqual([MEMORY_INDEX, 'topic.md']) // .history excluded
     expect(existsSync(join(memoryDir(dir), MEMORY_HISTORY_FILENAME))).toBe(true) // but it exists
@@ -267,7 +269,7 @@ describe('memory/store (.history change log)', () => {
       })
     )
 
-    await expect(listMemoryHistory(local(dir), 'notes.md', undefined, 5)).resolves.toMatchObject({
+    await expect(listSidecarHistory(local(dir), 'notes.md', undefined, 5)).resolves.toMatchObject({
       events: [{ after: 'v1' }]
     })
     expect(readFileSync(outside, 'utf8')).toBe('keep')
@@ -275,18 +277,18 @@ describe('memory/store (.history change log)', () => {
 
   it('pages one file newest first without interleaved topic changes', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), 'notes.md', 'v1')
-    await writeMemoryFile(local(dir), 'other.md', 'unrelated')
+    await writeWithSidecar(local(dir), 'notes.md', 'v1')
+    await writeWithSidecar(local(dir), 'other.md', 'unrelated')
     for (let version = 2; version <= 7; version += 1) {
-      await writeMemoryFile(local(dir), 'notes.md', `v${version}`)
+      await writeWithSidecar(local(dir), 'notes.md', `v${version}`)
     }
 
-    const newest = await listMemoryHistory(local(dir), 'notes.md', undefined, 5)
+    const newest = await listSidecarHistory(local(dir), 'notes.md', undefined, 5)
     expect(newest.events.map((event) => event.after)).toEqual(['v7', 'v6', 'v5', 'v4', 'v3'])
     expect(newest.nextCursor).toBeDefined()
     expect(newest.events.every((event) => event.path === 'notes.md')).toBe(true)
 
-    const older = await listMemoryHistory(local(dir), 'notes.md', newest.nextCursor, 5)
+    const older = await listSidecarHistory(local(dir), 'notes.md', newest.nextCursor, 5)
     expect(older.events.map((event) => event.after)).toEqual(['v2', 'v1'])
     expect(older.nextCursor).toBeUndefined()
   })
@@ -294,7 +296,7 @@ describe('memory/store (.history change log)', () => {
   it('retains the newest 100 changes for each memory file by default', async () => {
     const dir = newDir()
     for (let version = 0; version < MAX_HISTORY_VERSIONS_PER_FILE + 3; version += 1) {
-      await writeMemoryFile(local(dir), 'notes.md', `v${version}`)
+      await writeWithSidecar(local(dir), 'notes.md', `v${version}`)
     }
 
     const log = readHistory(dir)
@@ -321,7 +323,7 @@ describe('memory/store (.history change log)', () => {
     expect(Buffer.byteLength(oversized)).toBeGreaterThan(MAX_HISTORY_FILE_BYTES)
     writeFileSync(historyPath, oversized)
 
-    const page = await listMemoryHistory(local(dir), 'topic-549.md', undefined, 5)
+    const page = await listSidecarHistory(local(dir), 'topic-549.md', undefined, 5)
     const compacted = readFileSync(historyPath, 'utf8')
     const retained = readHistory(dir)
     expect(page.events).toHaveLength(1)
@@ -353,7 +355,7 @@ describe('memory/store (.history change log)', () => {
 
   it('serializes history reads behind a dream-style directory mutation', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), 'notes.md', 'v1')
+    await writeWithSidecar(local(dir), 'notes.md', 'v1')
     let entered!: () => void
     let release!: () => void
     const enteredLock = new Promise<void>((resolve) => (entered = resolve))
@@ -376,7 +378,7 @@ describe('memory/store (.history change log)', () => {
     await enteredLock
 
     let settled = false
-    const read = listMemoryHistory(local(dir), 'notes.md', undefined, 5).then((page) => {
+    const read = listSidecarHistory(local(dir), 'notes.md', undefined, 5).then((page) => {
       settled = true
       return page
     })
@@ -390,7 +392,8 @@ describe('memory/store (.history change log)', () => {
 })
 
 describe('cp/memory-reader', () => {
-  const reader = (dir: string | undefined) => createMemoryReader(() => (dir === undefined ? undefined : local(dir)))
+  const reader = (dir: string | undefined) =>
+    createMemoryReader(() => (dir === undefined ? undefined : localMemoryHome(local(dir))))
 
   it('list returns exists:false for an empty/missing memory dir', async () => {
     const rep = await reader(newDir()).list({ agentId: 'bot-a' })
@@ -399,8 +402,8 @@ describe('cp/memory-reader', () => {
 
   it('list returns the files once written', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), MEMORY_INDEX, 'i')
-    await writeMemoryFile(local(dir), 'deploys.md', 'd')
+    await writeWithSidecar(local(dir), MEMORY_INDEX, 'i')
+    await writeWithSidecar(local(dir), 'deploys.md', 'd')
     const rep = await reader(dir).list({ agentId: 'bot-a' })
     expect(rep.exists).toBe(true)
     expect(rep.entries.map((e) => e.name)).toEqual([MEMORY_INDEX, 'deploys.md'])
@@ -413,7 +416,7 @@ describe('cp/memory-reader', () => {
 
   it('read returns a topic file slice with size/mtime/nextOffset', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), 'deploys.md', '# mem\nhello')
+    await writeWithSidecar(local(dir), 'deploys.md', '# mem\nhello')
     const rep = await reader(dir).read({ agentId: 'bot-a', path: 'deploys.md', offset: 0, limit: 65536 })
     expect(rep.exists).toBe(true)
     expect(rep.content).toBe('# mem\nhello')
@@ -431,8 +434,8 @@ describe('cp/memory-reader', () => {
 
   it('returns bounded managed history pages through the dedicated reader method', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), 'deploys.md', 'v1')
-    await writeMemoryFile(local(dir), 'deploys.md', 'v2', undefined, 'console')
+    await writeWithSidecar(local(dir), 'deploys.md', 'v1')
+    await writeWithSidecar(local(dir), 'deploys.md', 'v2', undefined, 'console')
 
     const page = await reader(dir).history({ agentId: 'bot-a', path: 'deploys.md', limit: 5 })
     expect(page).toMatchObject({
@@ -459,7 +462,7 @@ describe('cp/memory-reader', () => {
 
   it('surfaces a stale ifMatchMtime as MemoryConflictError on write', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), MEMORY_INDEX, 'v1')
+    await writeWithSidecar(local(dir), MEMORY_INDEX, 'v1')
     await expect(
       reader(dir).write({ agentId: 'bot-a', path: MEMORY_INDEX, content: 'v2', ifMatchMtime: 'stale' })
     ).rejects.toBeInstanceOf(MemoryConflictError)
@@ -467,9 +470,9 @@ describe('cp/memory-reader', () => {
 
   it('routes legacy file frames through the selected file provider', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), MEMORY_INDEX, 'managed content must stay hidden')
+    await writeWithSidecar(local(dir), MEMORY_INDEX, 'managed content must stay hidden')
     const writes: Array<{ path: string; content: string; ifMatch?: string; source?: string }> = []
-    const files = createMemoryReader(() => local(dir), {
+    const files = createMemoryReader(() => localMemoryHome(local(dir)), {
       adminSurfaceForAgent: () => ({
         shape: 'files',
         list: async () => [
@@ -513,7 +516,7 @@ describe('cp/memory-reader', () => {
 
   it('routes an external provider through records and blocks the underlying file surface', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), MEMORY_INDEX, 'must stay hidden')
+    await writeWithSidecar(local(dir), MEMORY_INDEX, 'must stay hidden')
     const record = {
       id: 'record-1',
       text: 'deploy in sea',
@@ -521,7 +524,7 @@ describe('cp/memory-reader', () => {
       version: 'v1'
     }
     let updatedVersion: string | undefined
-    const records = createMemoryReader(() => local(dir), {
+    const records = createMemoryReader(() => localMemoryHome(local(dir)), {
       adminSurfaceForAgent: () => ({
         shape: 'records',
         capabilities: new Set(['recall', 'list', 'get', 'create', 'update', 'delete', 'history'] as const),
@@ -564,7 +567,7 @@ describe('cp/memory-reader', () => {
   })
 
   it('hides unsupported record actions at the router boundary', async () => {
-    const records = createMemoryReader(() => local(newDir()), {
+    const records = createMemoryReader(() => localMemoryHome(local(newDir())), {
       adminSurfaceForAgent: () => ({
         shape: 'records',
         capabilities: new Set(['recall', 'capture'] as const),
@@ -599,7 +602,7 @@ describe('memory MCP tools (executeTool)', () => {
     ({
       // gatewayFor returns undefined — a memory-only agent has no Slack connection.
       gatewayFor: () => undefined,
-      memory: createManagedMemoryProvider(() => local(dir)),
+      memory: createManagedMemoryProvider(() => localMemoryHome(local(dir))),
       recordOutbound: () => {},
       now: () => 0
     }) as unknown as OpsDeps
@@ -671,7 +674,7 @@ describe('memory MCP tools (executeTool)', () => {
 
   it('readMemory defaults to the index', async () => {
     const dir = newDir()
-    await writeMemoryFile(local(dir), MEMORY_INDEX, 'the index')
+    await writeWithSidecar(local(dir), MEMORY_INDEX, 'the index')
     const read = (await executeTool(ctx, 'readMemory', {}, depsFor(dir))) as { path: string; content: string }
     expect(read.path).toBe('MEMORY.md')
     expect(read.content).toBe('the index')
@@ -745,7 +748,7 @@ describe('memory MCP tools (executeTool)', () => {
 
 describe('memory/provider (ManagedMemoryProvider)', () => {
   const provider = (dir: string | undefined) =>
-    createManagedMemoryProvider(() => (dir === undefined ? undefined : local(dir)))
+    createManagedMemoryProvider(() => (dir === undefined ? undefined : localMemoryHome(local(dir))))
   const scope = { agentId: 'bot-a' }
 
   it('kind is managed', () => {

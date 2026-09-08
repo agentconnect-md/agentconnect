@@ -15,7 +15,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import { DreamStateError, DreamViolationError } from '../../dream/runner.js'
 import type { DreamReader } from '../dream-reader.js'
-import { MemorySandboxUnavailableError } from '../memory-reader.js'
+import { MemoryHomeUnavailableError } from '../memory-reader.js'
 import type { ControlHandler, ControlWire } from './context.js'
 
 export interface DreamControlDeps {
@@ -125,8 +125,8 @@ function dreamError(wire: ControlWire, corr: string, op: string, err: unknown): 
     wire.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
     return
   }
-  // A cluster agent's staging is on its sandbox volume: asleep is transient, and carries the reason.
-  if (err instanceof MemorySandboxUnavailableError) {
+  // The home is out of reach — a cluster agent's staging on a sleeping pod, or a `control-plane` store behind a missing connection: transient, and it carries the reason.
+  if (err instanceof MemoryHomeUnavailableError) {
     wire.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
     return
   }

@@ -52,7 +52,7 @@ import { agentSandboxSubject } from '../k8s/sandbox-identity.js'
 import { createSandboxKeepAlive } from './sandbox-keepalive.js'
 import type { SystemMetrics } from '../metrics/system-metrics.js'
 import type { ReadinessGate } from '../readiness.js'
-import type { MemoryFs } from '../memory/store.js'
+import type { MemoryHomePorts } from '../memory/home.js'
 import type { DreamRunner } from '../dream/runner.js'
 import type { CodeHostNoteProjector } from '../gitlab/note-projection.js'
 
@@ -145,7 +145,9 @@ export interface CpClientSeamHost {
   memory(): AgentMemoryAdminResolver
   dreamRunner(): DreamRunner
   runtimeCommands(): RuntimeCommandsCache
-  memoryFsFor(agentId: string): MemoryFs | undefined
+  memoryHomePortsFor(agentId: string): MemoryHomePorts | undefined
+  /** Drain the managed captures deferred while a memory home was out of reach — a READY connection is a reachable `control-plane` home. */
+  wakeMemoryOutbox(): void
   gitCommitIdentity(): GitCommitIdentity | undefined
   sessionThreadUrl(session: SessionRecord): string | undefined
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
@@ -264,6 +266,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
           host.log().warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
         )
       host.cpClient()?.emitMemoryConnectionFacts(host.memoryConnections()?.facts() ?? [])
+      // A READY connection is a reachable `control-plane` memory home: distill the turns that waited for it.
+      host.wakeMemoryOutbox()
       await host.replayHookTerminalReports()
       await host.replayChannelSnapshots()
       // Only snapshots written to the durable outbox by this build are
@@ -399,7 +403,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         host.dutyCoordinator().dutyEnforced() && (await host.dutyCoordinator().claimDutyForTrigger(id)).granted,
       log: host.log()
     }),
-    memoryReader: createMemoryReader((id) => host.memoryFsFor(id), host.memory()),
+    memoryReader: createMemoryReader((id) => host.memoryHomePortsFor(id), host.memory()),
     dreamReader: createDreamReader(host.dreamRunner()),
     localSkillsReader: createLocalSkillsReader(
       host.workspaces(),

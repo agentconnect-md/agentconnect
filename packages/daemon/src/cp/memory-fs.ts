@@ -1,5 +1,5 @@
-// The `control-plane` memory home: the shim client over the daemon's CP connection (memory-evolution.md §3.2.1).
-// Nothing selects it yet — `resolveMemoryHomePorts` still chooses between the local port and the sandbox port.
+// The `control-plane` memory home: the shim client over the daemon's CP connection (memory-evolution.md §3.2.1), which
+// `resolveMemoryHomePorts` selects as `live` for a managed binding whose `home` is `control-plane`, gated at activation.
 import { AGENT_MEMORY_STORE_V1_FEATURE, type MemoryFsReply, type MemoryStoreReq } from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
 import { MemoryHomeUnavailableError, memoryRelSegments, type MemoryFs } from '../memory/fs.js'

@@ -1,6 +1,6 @@
 // The `control-plane` home's change log (memory-evolution.md §3.2.1): the daemon still composes every record and sends
 // it AFTER the write as a best-effort `memory/history/append` batch — provenance never fails the write — and never
-// reads the log back, since the CP answers the console from its own table. Nothing selects it yet, like `CpMemoryFs`.
+// reads the log back, since the CP answers the console from its own table. `resolveMemoryHomePorts` selects it beside `CpMemoryFs`.
 import {
   AGENT_MEMORY_STORE_V1_FEATURE,
   MEMORY_HISTORY_APPEND_MAX_RECORDS,

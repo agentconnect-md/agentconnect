@@ -13,6 +13,7 @@ import {
 } from '../src/memory-plugin/client.js'
 import { MemoryConflictError, MemoryTooLargeError } from '../src/memory/store.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
+import { localMemoryHome } from '../src/memory/home.js'
 
 const connectionA = '11111111-1111-4111-8111-111111111111'
 const connectionB = '22222222-2222-4222-8222-222222222222'
@@ -179,7 +180,7 @@ describe('ExternalMemoryProvider', () => {
     const h = harness()
     let current = binding(connectionB)
     const dispatcher = createMemoryProvider({
-      memoryFsFor: () => new LocalMemoryFs('/tmp/agent'),
+      memoryHomePortsFor: () => localMemoryHome(new LocalMemoryFs('/tmp/agent')),
       agentDirByAgent: () => '/tmp/agent',
       runtimeFor: () => undefined,
       providerKindFor: () => 'external',

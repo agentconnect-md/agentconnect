@@ -35,6 +35,7 @@ import type { MemoryFs } from '../src/memory/fs.js'
 import { sidecarMemoryHistory, type MemoryHomePorts } from '../src/memory/home.js'
 import { pod } from './fixtures/memory-fs-pod.js'
 import { WAIT } from './wait-support.js'
+import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
 /** One tree for both roles and the sidecar sink, the way the daemon resolves a home today. */
@@ -339,7 +340,7 @@ describe('DreamRunner pipeline', () => {
     // topic the model never rewrote is simply gone, because staging replaces the store.
     const { dir, store, runner } = await setup({
       stagedWrite: async (stagedStore) => {
-        await writeMemoryFile(
+        await writeWithSidecar(
           stagedStore,
           'deploys.md',
           '---\ndescription: how we ship\n---\n\n- ship from main\n',
@@ -385,7 +386,7 @@ describe('DreamRunner pipeline', () => {
     // the proposal is refused rather than reviewed.
     const { dir, store, runner } = await setup({
       stagedWrite: async (stagedStore) => {
-        await writeMemoryFile(stagedStore, 'smuggled.md', 'written with the runtime file tool\n', undefined, 'dream')
+        await writeWithSidecar(stagedStore, 'smuggled.md', 'written with the runtime file tool\n', undefined, 'dream')
         return [] // ...and reported by nobody: no bound tool call happened
       }
     })
@@ -576,7 +577,7 @@ describe('DreamRunner pipeline', () => {
     // forward self-reference is safe.
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     await ensureMemory(local(dir), 'bot')
-    await writeMemoryFile(local(dir), 'prefs.md', '- seed\n', undefined, 'tool')
+    await writeWithSidecar(local(dir), 'prefs.md', '- seed\n', undefined, 'tool')
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
@@ -740,7 +741,7 @@ describe('DreamRunner adoption', () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     const { fs, root } = pod()
     await ensureMemory(fs, 'bot')
-    await writeMemoryFile(fs, 'prefs.md', '- uses tabs\n', undefined, 'tool')
+    await writeWithSidecar(fs, 'prefs.md', '- uses tabs\n', undefined, 'tool')
     let bound = false
     let holds = 0
     let maxHolds = 0
@@ -947,7 +948,7 @@ describe('DreamRunner adoption', () => {
       historyFor: sidecarMemoryHistory
     }
     await ensureMemory(ports.live, 'bot')
-    await writeMemoryFile(ports.live, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
+    await writeWithSidecar(ports.live, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
     const store = new FakeStore()
     const inputDirs: string[] = []
     const runner = new DreamRunner({
@@ -1052,7 +1053,7 @@ describe('DreamRunner adoption', () => {
     // A dream stages into a real memory store now, so its files live under `memory/`.
     const out = join(dir, 'memory-dreams', started.dreamId, 'memory')
     const stagedKeep = await readFile(join(out, 'keep.md'), 'utf8')
-    await writeMemoryFile(local(dir), 'keep.md', stagedKeep, undefined, 'tool')
+    await writeWithSidecar(local(dir), 'keep.md', stagedKeep, undefined, 'tool')
     const OLD = new Date('2020-01-01T00:00:00.000Z')
     for (const name of ['keep.md', 'prefs.md', MEMORY_INDEX]) {
       await utimes(join(memoryDir(dir), name), OLD, OLD).catch(() => {})
@@ -1110,7 +1111,7 @@ describe('DreamRunner adoption', () => {
         { path: 'fresh.md', content: '- newly learned fact' }
       ]
     })
-    await writeMemoryFile(local(dir), 'obsolete.md', '- no longer relevant\n', undefined, 'tool')
+    await writeWithSidecar(local(dir), 'obsolete.md', '- no longer relevant\n', undefined, 'tool')
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 
@@ -1192,7 +1193,7 @@ describe('DreamRunner adoption', () => {
     // the new store. The marker must be present in the final live store.
     await Promise.allSettled([
       runner.adopt('a1', started.dreamId, false),
-      writeMemoryFile(local(dir), 'marker.md', '- concurrent write\n', undefined, 'console')
+      writeWithSidecar(local(dir), 'marker.md', '- concurrent write\n', undefined, 'console')
     ])
     expect(await readMemoryFile(local(dir), 'marker.md')).toContain('concurrent write')
   })
@@ -1202,7 +1203,7 @@ describe('DreamRunner adoption', () => {
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 
-    await writeMemoryFile(local(dir), 'prefs.md', '- console edit after snapshot\n', undefined, 'console')
+    await writeWithSidecar(local(dir), 'prefs.md', '- console edit after snapshot\n', undefined, 'console')
     await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
 
     const adopted = await runner.adopt('a1', started.dreamId, true)
@@ -1244,7 +1245,7 @@ describe('DreamRunner adoption', () => {
       policy: { enabled: true, autoAdopt: true },
       // Hold the extraction open so a console write lands inside the dream window.
       extract: async () => {
-        await writeMemoryFile(local(dir), 'notes.md', '- human note mid-dream\n', undefined, 'console')
+        await writeWithSidecar(local(dir), 'notes.md', '- human note mid-dream\n', undefined, 'console')
         return PROPOSAL
       }
     })
@@ -1267,7 +1268,7 @@ describe('DreamRunner adoption', () => {
     const { dir, store, runner } = await setup({})
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- distilled after\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- distilled after\n', undefined, 'distill')
 
     const dream = store.dreams.get(started.dreamId)!
     // Same counts (so the count checks still pass), different daemon process.
@@ -1290,7 +1291,7 @@ describe('DreamRunner adoption', () => {
     await settle(store, b.dreamId)
 
     await runner.adopt('a1', a.dreamId, false)
-    await writeMemoryFile(
+    await writeWithSidecar(
       local(dir),
       'prefs.md',
       '- Uses tabs, not spaces (2026-07-24).\n- later distilled\n',
@@ -1311,7 +1312,7 @@ describe('DreamRunner adoption', () => {
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 
-    await writeMemoryFile(local(dir), 'notes.md', '- human note\n', undefined, 'console')
+    await writeWithSidecar(local(dir), 'notes.md', '- human note\n', undefined, 'console')
     // Erase the console row from the log, leaving only the distill one.
     const historyPath = join(memoryDir(dir), MEMORY_HISTORY_FILENAME)
     const kept = (await readFile(historyPath, 'utf8'))
@@ -1319,7 +1320,7 @@ describe('DreamRunner adoption', () => {
       .filter((line) => !line.includes('"source":"console"'))
       .join('\n')
     await writeFile(historyPath, kept, 'utf8')
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- distilled later\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- distilled later\n', undefined, 'distill')
 
     await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
     expect(await readMemoryFile(local(dir), 'notes.md')).toContain('human note')
@@ -1333,7 +1334,7 @@ describe('DreamRunner adoption', () => {
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- one more distilled line\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- one more distilled line\n', undefined, 'distill')
     await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
   })
 
@@ -1345,7 +1346,7 @@ describe('DreamRunner adoption', () => {
     // Per-turn capture landed a NEW fact while the dream ran. The digest now
     // differs, but every post-snapshot .history row is distill-sourced, so the
     // fence must rebase rather than refuse.
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- prefers pnpm over npm\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- prefers pnpm over npm\n', undefined, 'distill')
 
     const adopted = await runner.adopt('a1', started.dreamId, false)
     expect(adopted.status).toBe('adopted')
@@ -1363,8 +1364,8 @@ describe('DreamRunner adoption', () => {
 
     // A distill write is rebasable, but the console write in the same window is
     // not — a mixed window must refuse rather than silently drop the edit.
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- distilled\n', undefined, 'distill')
-    await writeMemoryFile(local(dir), 'notes.md', '- a human wrote this\n', undefined, 'console')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- distilled\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'notes.md', '- a human wrote this\n', undefined, 'console')
 
     await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
     expect(await readMemoryFile(local(dir), 'notes.md')).toContain('a human wrote this')
@@ -1376,7 +1377,7 @@ describe('DreamRunner adoption', () => {
     await settle(store, started.dreamId)
 
     // The distiller re-states, in its own words, the very fact the dream wrote.
-    await writeMemoryFile(
+    await writeWithSidecar(
       local(dir),
       'prefs.md',
       '- uses tabs\n- Uses tabs, not spaces (2026-07-24).\n',
@@ -1567,7 +1568,7 @@ describe('DreamRunner production security hold', () => {
   it('blocks every staged-content operation without changing files or metadata', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-held-'))
     await ensureMemory(local(dir), 'bot')
-    await writeMemoryFile(local(dir), 'prefs.md', '- live value\n', undefined, 'tool')
+    await writeWithSidecar(local(dir), 'prefs.md', '- live value\n', undefined, 'tool')
 
     const dreamId = 'drm-held'
     const candidateId = '11111111-1111-4111-8111-111111111111'
@@ -1782,7 +1783,7 @@ describe('DreamRunner store persistence', () => {
   it('the real runner persists snapshotWrites end to end', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     await ensureMemory(local(dir), 'bot')
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n', undefined, 'tool')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n', undefined, 'tool')
     const store = await LocalStore.open(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
@@ -2038,7 +2039,7 @@ describe('capture/adoption serialization', () => {
 
     // Fire capture and adoption concurrently at the same store.
     const [, adoptResult] = await Promise.allSettled([
-      writeMemoryFile(local(dir), 'captured.md', '- a captured fact\n', undefined, 'distill'),
+      writeWithSidecar(local(dir), 'captured.md', '- a captured fact\n', undefined, 'distill'),
       runner.adopt('a1', started.dreamId, false)
     ])
 

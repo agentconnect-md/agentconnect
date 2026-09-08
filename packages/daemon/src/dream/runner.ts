@@ -30,7 +30,7 @@ import {
   MAX_INDEX_INJECT_BYTES,
   MAX_MEMORY_FILE_BYTES,
   MEMORY_DIRNAME,
-  MemorySandboxUnavailableError,
+  MemoryHomeUnavailableError,
   listMemory,
   memoryHistoryRecord,
   memoryWriteMarks,
@@ -184,8 +184,7 @@ export interface DreamLifecycleEvent {
 export interface DreamRunnerDeps {
   /** The agent's LOCAL root (accepted skills publish under it); undefined for an unknown agent. */
   agentDirByAgent(agentId: string): string | undefined
-  /** The agent's two memory ports — `live` for the store, `staging` for `memory-dreams/` — or undefined for an
-   *  unknown agent. May refuse with `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not running. */
+  /** The agent's two memory ports — `live` for the store, `staging` for `memory-dreams/` — or undefined for an unknown agent. May refuse with `MemoryHomeUnavailableError` while the home is out of reach. */
   memoryHomePortsFor(agentId: string): MemoryHomePorts | undefined
   /** The agent's dreaming policy, or undefined when dreaming is not enabled
    *  (missing binding, non-managed provider, or enabled:false). */
@@ -348,9 +347,8 @@ export class DreamRunner {
       for (const dream of await this.deps.store.supersededDreams()) {
         if (!this.deps.agentDirByAgent(dream.agentId)) continue
         void this.removeStoreStaging(dream.agentId, dream).catch((err) => {
-          // A cluster agent's tree is unreachable while its sandbox sleeps; the staging is a few
-          // files on its own volume, so leaving it is not worth a warning per boot.
-          if (err instanceof MemorySandboxUnavailableError) return
+          // An agent's home may be out of reach at boot (its sandbox asleep, the CP not yet READY); the staging is a few files, so leaving it is not worth a warning per boot.
+          if (err instanceof MemoryHomeUnavailableError) return
           this.deps.log.warn(
             `dream ${dream.dreamId}: could not remove superseded store staging (${err instanceof Error ? err.message : 'unknown'})`
           )

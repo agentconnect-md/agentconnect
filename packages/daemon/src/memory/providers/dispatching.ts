@@ -2,7 +2,8 @@ import type { AgentMemoryBinding, CaptureReceipt, ExternalMemoryBinding, MemoryE
 import type { RuntimeDef } from '../../config/config-schema.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { MEMORY_TOOLS } from '../tools.js'
-import type { MemoryFs, MemoryWriteSource } from '../store.js'
+import type { MemoryWriteSource } from '../store.js'
+import type { MemoryHomePorts } from '../home.js'
 import {
   MemoryProviderUnavailableError,
   type MemoryAdminSurface,
@@ -29,8 +30,8 @@ import {
 
 /** The daemon-side resolvers the dispatcher routes on. */
 export interface MemoryProviderDeps {
-  /** The port over the agent's MANAGED memory tree — the daemon's one placement decision. */
-  memoryFsFor: (agentId: string) => MemoryFs | undefined
+  /** The ports over the agent's MANAGED memory home — the daemon's one placement decision. */
+  memoryHomePortsFor: (agentId: string) => MemoryHomePorts | undefined
   /** The agent's LOCAL root: the runtime's own (native) memory is redirected under it. */
   agentDirByAgent: (agentId: string) => string | undefined
   runtimeFor: (agentId: string) => RuntimeDef | undefined
@@ -65,7 +66,11 @@ export class DispatchingMemoryProvider implements MemoryProvider {
     this.providerKindFor = deps.providerKindFor
     this.externalBindingFor = deps.externalBindingFor ?? (() => undefined)
     this.externalDeps = deps.externalDeps
-    this.managed = new ManagedMemoryProvider(deps.memoryFsFor, deps.autoDistillFor ?? (() => false), deps.extract)
+    this.managed = new ManagedMemoryProvider(
+      deps.memoryHomePortsFor,
+      deps.autoDistillFor ?? (() => false),
+      deps.extract
+    )
     this.native = new NativeMemoryProvider(deps.agentDirByAgent, deps.runtimeFor)
     this.none = new NoMemoryProvider()
   }

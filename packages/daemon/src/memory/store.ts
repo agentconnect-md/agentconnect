@@ -25,13 +25,7 @@ import {
   MemoryFileHistoryEvent as MemoryFileHistoryEventSchema,
   type MemoryFileHistoryEvent
 } from '@agentconnect.md/protocol'
-import {
-  MemoryConflictError,
-  MemoryPathError,
-  MemoryTooLargeError,
-  type MemoryFs,
-  type MemoryFsFileStat
-} from './fs.js'
+import { MemoryPathError, MemoryTooLargeError, type MemoryFs, type MemoryFsFileStat } from './fs.js'
 
 export {
   MemoryConflictError,
@@ -107,6 +101,14 @@ export interface MemoryHistorySink {
   carryInto(replacement: string): Promise<void>
   /** Page the log back on this daemon; absent when the home answers the console itself (no local history to read). */
   list?(relPath: string, cursor: string | undefined, limit: number): Promise<ManagedMemoryHistoryPage>
+}
+
+/** Raised when this daemon is asked to page a change log its home keeps elsewhere (the CP's table): a routing bug, never an empty page. */
+export class MemoryHistoryNotLocalError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MemoryHistoryNotLocalError'
+  }
 }
 
 export interface MemoryHistoryRetentionLimits {
@@ -405,7 +407,7 @@ export class SidecarMemoryHistorySink implements MemoryHistorySink {
   }
 
   list(relPath: string, cursor: string | undefined, limit: number): Promise<ManagedMemoryHistoryPage> {
-    return listMemoryHistory(this.fs, relPath, cursor, limit)
+    return pageSidecarHistory(this.fs, relPath, cursor, limit)
   }
 }
 
@@ -441,21 +443,32 @@ export function memoryHistoryRecord(
   }
 }
 
-/**
- * Page one file's managed-memory history newest first. The cursor is the stable ID
- * of the next event, so appends and retention cannot shift or duplicate older pages.
- *
- * Invalid/corrupt lines are skipped. History is provenance rather than the source
- * of truth, so one torn or legacy row must not make every valid row unreadable.
- */
+// Page one file's change log through the store's sink, newest first. A home that keeps the log itself (the CP's table)
+// hands out a sink without `list`, and the CP answers the console from its own rows: a daemon-side page of it is a
+// routing bug that must show as one, never as an empty page.
 export async function listMemoryHistory(
+  history: MemoryHistorySink,
+  relPath: string,
+  cursor: string | undefined,
+  limit: number
+): Promise<ManagedMemoryHistoryPage> {
+  if (!history.list) {
+    throw new MemoryHistoryNotLocalError(
+      "this store's change log is kept by its memory home and answered from there, not paged on the daemon"
+    )
+  }
+  return history.list(relPath, cursor, limit)
+}
+
+// The sidecar's page: the cursor is the stable id of the next event, so appends and retention cannot shift or duplicate
+// older pages; invalid or torn lines are skipped, since provenance must not make every valid row unreadable.
+async function pageSidecarHistory(
   fs: MemoryFs,
   relPath: string,
   cursor: string | undefined,
   limit: number
 ): Promise<ManagedMemoryHistoryPage> {
-  // Apply the same containment/flat-path validation as ordinary memory reads,
-  // even though `relPath` is used only as a filter below.
+  // The same containment/flat-path validation as an ordinary memory read, though `relPath` is only a filter below.
   memoryTopicName(relPath)
 
   return withMemoryDirLock(fs, async () => {
@@ -558,43 +571,33 @@ function bumpWriteMarks(fs: MemoryFs, source: MemoryWriteSource): void {
   writeMarks.set(key, marks)
 }
 
-/** Overwrite a memory file with `content` (creating the dir if needed). Atomic
- *  (tmp + rename) so a concurrent read never sees a partial file. Hands `history`
- *  (the sidecar unless a home says otherwise) one record of the add/update, its
- *  bounded `before`/`after` snapshot, and the `source`.
- *
- *  - Rejects content over {@link MAX_MEMORY_FILE_BYTES} ({@link MemoryTooLargeError}).
- *  - `ifMatchMtime` (optimistic concurrency): when given, the current file's mtime
- *    must equal it, else {@link MemoryConflictError} — so a console edit can't
- *    clobber a newer write. A brand-new file (no mtime) matches `ifMatchMtime`
- *    only when the caller passes none (or the empty string). */
+// Overwrite a memory file with `content` (creating the dir if needed), atomically, so a concurrent read never sees a
+// partial file; rejects content over `MAX_MEMORY_FILE_BYTES` (`MemoryTooLargeError`). A non-empty `ifMatchMtime` must
+// equal the current file's mtime, else `MemoryConflictError` (a brand-new file matches only an absent one). The
+// `history` sink — the home's choice, named by every caller so no write can fall back to the sidecar by omission —
+// receives one record of the add/update with its bounded `before`/`after` snapshot and the `source`.
 export function writeMemoryFile(
   fs: MemoryFs,
   relPath: string,
   content: string,
-  ifMatchMtime?: string,
-  source: MemoryWriteSource = 'tool',
-  history: MemoryHistorySink = new SidecarMemoryHistorySink(fs)
+  ifMatchMtime: string | undefined,
+  source: MemoryWriteSource,
+  history: MemoryHistorySink
 ): Promise<{ size: number; mtime: string }> {
   // Serialize every write behind the shared per-dir lock so it can't interleave
   // with a dream adoption's fence-and-swap (nor another write).
   return withMemoryDirLock(fs, () => writeMemoryFileHoldingLock(fs, relPath, content, ifMatchMtime, source, history))
 }
 
-/**
- * The write itself, WITHOUT taking the memory-dir lock — for a caller that
- * already holds it and needs several writes to be one critical section (the
- * distiller's topic+index batch: an adoption slipping between those two writes
- * would be overwritten by the batch's stale index). The lock is not reentrant,
- * so calling {@link writeMemoryFile} from inside it would deadlock.
- */
+// The write itself, WITHOUT taking the memory-dir lock — for a caller that already holds it and needs several writes to
+// be one critical section; the lock is not reentrant, so calling `writeMemoryFile` from inside it would deadlock.
 export async function writeMemoryFileHoldingLock(
   fs: MemoryFs,
   relPath: string,
   content: string,
   ifMatchMtime: string | undefined,
   source: MemoryWriteSource,
-  history: MemoryHistorySink = new SidecarMemoryHistorySink(fs)
+  history: MemoryHistorySink
 ): Promise<{ size: number; mtime: string }> {
   const topic = memoryTopicName(relPath)
   // Keep a written header truthful (`name` from the filename, fresh `modified`).
@@ -681,7 +684,7 @@ export function renderMemoryIndex(entries: MemoryIndexEntry[], heading = '# Memo
 export async function regenerateMemoryIndexHoldingLock(
   fs: MemoryFs,
   source: MemoryWriteSource,
-  opts: { force?: boolean; history?: MemoryHistorySink } = {}
+  opts: { force?: boolean; history: MemoryHistorySink }
 ): Promise<void> {
   const entries: { topic: string; name: string; description: string }[] = []
   for (const file of await listMemory(fs)) {
@@ -710,8 +713,7 @@ export async function regenerateMemoryIndexHoldingLock(
 
   const st = await fs.writeFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`, next, {})
   try {
-    const history = opts.history ?? new SidecarMemoryHistorySink(fs)
-    await history.append([memoryHistoryRecord(MEMORY_INDEX, current?.content, next, st.mtime, source)])
+    await opts.history.append([memoryHistoryRecord(MEMORY_INDEX, current?.content, next, st.mtime, source)])
   } catch {
     // Provenance is best-effort, exactly as in the topic write above.
   }
