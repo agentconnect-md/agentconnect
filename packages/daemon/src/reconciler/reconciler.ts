@@ -33,10 +33,14 @@ function hostSpawnSig(a: Agent): string {
     // memory — see memoryProviderFor), so a provider change must respawn the host.
     // An external connection switch also changes the trusted scope/client captured
     // by the host. Recall/capture limits stay out: those policy-only edits are hot.
+    // A managed home's place and its pending copy decide what a session starts with (memory-evolution.md §3.2.1):
+    // the flip, its completion, and the forced return each rebuild the session boundary.
     memory:
       a.memory?.provider === 'external'
         ? { provider: 'external', connectionId: a.memory.connectionId }
-        : a.memory?.provider,
+        : a.memory?.provider === 'managed'
+          ? { provider: 'managed', home: a.memory.home, homeMigration: a.memory.homeMigration }
+          : a.memory?.provider,
     env: a.runtimeOverrides?.env,
     // Secrets are baked into the child env at spawn (agentChildEnv) and
     // materialized as config files (config-file-env.ts) — a value edit that

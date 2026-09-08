@@ -29,7 +29,9 @@ import {
   type MemoryIndexEntry,
   MAX_INDEX_INJECT_BYTES,
   MAX_MEMORY_FILE_BYTES,
+  MEMORY_BACKUPS_DIRNAME as BACKUPS_DIRNAME,
   MEMORY_DIRNAME,
+  MEMORY_DREAMS_DIRNAME as DREAMS_DIRNAME,
   MemoryHomeUnavailableError,
   listMemory,
   memoryHistoryRecord,
@@ -247,8 +249,6 @@ const LAST_SUCCESSFUL_DREAM_SCAN = 50
 // activity since the last successful dream" (no operator config), but a first
 // dream — or a long-idle agent — must not mine an unbounded corpus.
 const MAX_AUTO_SESSION_WINDOW = 100
-const DREAMS_DIRNAME = 'memory-dreams'
-const BACKUPS_DIRNAME = 'memory-backups'
 /** A dream stages into a real memory store (`<dream>/memory/`), so every store helper
  *  — listing, index generation, the memory tools — works on it unchanged. Dreams
  *  staged before that lived in `output/`; those keep resolving for review and adoption. */

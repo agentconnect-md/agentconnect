@@ -408,6 +408,7 @@ import {
   type MemoryHomeDeps,
   type MemoryHomePorts
 } from './memory/home.js'
+import { MemoryHomeMigrator, archiveMemoryTreeAside, memoryHomeReturnedToDaemon } from './memory/home-migration.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
@@ -1186,6 +1187,15 @@ export class Daemon {
   private memoryConnections?: CpMemoryConnectionRegistry
   /** Durable reply-after-delivery capture pump. Bodies remain in LocalStore. */
   private memoryOutbox?: MemoryCaptureOutbox
+  // The one-way memory home migration (memory-evolution.md §3.2.1): runs for every held agent whose binding still
+  // carries the CP's `homeMigration: 'pending'`, re-run from the start on CP READY, its completion mirrored below.
+  private readonly memoryHomeMigrations = new MemoryHomeMigrator({
+    agents: () => this.heldManagedMemoryAgents(),
+    homes: () => ({ ...this.memoryHomeDeps(), cp: this.cpClient }),
+    withMemoryHome: (agentId, work) => this.withMemoryHome(agentId, work),
+    onMigrated: (agentId) => this.onMemoryHomeMigrated(agentId),
+    log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
+  })
   private cpClient?: CpClient
   private remoteWebchatGrants?: RemoteWebchatGrantManager
   private managedSkillCache?: ManagedSkillCache
@@ -2477,14 +2487,7 @@ export class Daemon {
     this.memoryOutbox = new MemoryCaptureOutbox(
       this.store,
       withManagedDistill(this.memoryConnections!, {
-        agentIds: () =>
-          [...this.agents.values()]
-            .filter(
-              (agent) =>
-                memoryKindOf(agent) === 'managed' &&
-                (!this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agent.id))
-            )
-            .map((agent) => agent.id),
+        agentIds: () => this.heldManagedMemoryAgents().map((agent) => agent.id),
         // "The home is reachable", not "the pod is bound": the CP READY with the feature for a `control-plane` tree.
         reachable: (agentId) => {
           const agent = this.agents.get(agentId)
@@ -3532,6 +3535,9 @@ export class Daemon {
       if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
         this.permissions.disableChatPermissionSurfaces(a.id)
       }
+      // A forced return of the memory home archives the pre-switch tree BEFORE the binding is live: while the home was
+      // still `control-plane`, nothing on this disk was being written, so the move races no writer.
+      if (previous && memoryHomeReturnedToDaemon(previous, a)) await this.archiveMemoryHomeAside(a as LoadedAgent)
       // ALWAYS publish fresh config first, so live reads — output.mode (per dispatch),
       // per-session cwd/tools, routing (mergedRules reads this.agents) — see the new config.
       this.agents.set(a.id, a as LoadedAgent)
@@ -3639,6 +3645,8 @@ export class Daemon {
     // capabilities. No-op when nothing changed. Optional call: tests inject
     // partial cpClient fakes (same as emitDaemonRuntimes).
     this.cpClient?.updateCapabilities?.()
+    // A binding that arrived with the CP's migration marker starts its copy now; one whose marker moved on is forgotten.
+    this.memoryHomeMigrations.reconcile()
   }
 
   /**
@@ -3804,6 +3812,51 @@ export class Daemon {
   /** Where a memory home is reached from: this member's sandbox plane (under `--k8s`) and its CP connection. */
   private memoryHomeDeps(): MemoryHomeDeps {
     return { sandbox: this.k8sPlane, cp: this.cpClient, log: this.log }
+  }
+
+  /** The managed-memory agents this member serves right now — under duty, only the ones it holds. */
+  private heldManagedMemoryAgents(): LoadedAgent[] {
+    return [...this.agents.values()].filter(
+      (agent) =>
+        memoryKindOf(agent) === 'managed' && (!this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agent.id))
+    )
+  }
+
+  // Authorized background work over an agent's `daemon`-home tree, like a turn: under --k8s wake and bind the sandbox
+  // (the tree, or the dream host and its staging, live there) and hold it against the idle sweep for the job's
+  // duration; a local agent's home is always up.
+  private async withMemoryHome<T>(agentId: string, work: () => Promise<T>): Promise<T> {
+    const plane = this.k8sPlane
+    if (!plane) return work()
+    return plane.withSandbox(agentId, async () => {
+      await plane.ensureChannel(agentId)
+      return work()
+    })
+  }
+
+  // The CP recorded the copy: mirror its clear on the local replica now — the next resolution serves the CP tree — and
+  // let reconcile rebuild the session boundary, as it does for any memory-binding change.
+  private async onMemoryHomeMigrated(agentId: string): Promise<void> {
+    if (this.cpAgents?.settleMemoryHomeMigration(agentId)) await this.flushReconcile()
+  }
+
+  // The forced return (memory-evolution.md §3.2.1): the CP has dropped its rows, so the tree this disk kept from before
+  // the switch moves aside and the agent starts from an empty one. Nothing to move on the pool, where the tree never
+  // lived on this disk; a failed move is logged, never a reason to keep the binding from applying.
+  private async archiveMemoryHomeAside(agent: LoadedAgent): Promise<void> {
+    if (this.k8sPlane) return
+    try {
+      const archive = await archiveMemoryTreeAside(agent.dir, new Date(this.clock.now()))
+      if (archive) {
+        this.log.info(
+          `memory: agent "${agent.id}" returned its memory home to this daemon; the pre-switch tree is archived at ${archive}`
+        )
+      }
+    } catch (err) {
+      this.log.error(
+        `memory: agent "${agent.id}" returned its memory home to this daemon, but the pre-switch tree could not be archived aside: ${formatErr(err)}`
+      )
+    }
   }
 
   /** The ports every managed-memory consumer is built on — `live` for the store, `staging` for `memory-dreams/`, the change-log sink — decided by the agent's `home` and this member's placement; undefined for an unknown agent, and it throws `MemoryHomeUnavailableError` while the home is out of reach. */
@@ -6069,17 +6122,7 @@ export class Daemon {
       withSkillAcceptance: async (agentId, publish) => {
         return this.withWorkspaceFileWrite(agentId, publish)
       },
-      // A dream is authorized background work like a turn: under --k8s wake and bind the sandbox
-      // (the memory tree and the dream host both live there) and hold it against the idle sweep
-      // for the job's duration; a local agent's home is always up.
-      withMemoryHome: async (agentId, work) => {
-        const plane = this.k8sPlane
-        if (!plane) return work()
-        return plane.withSandbox(agentId, async () => {
-          await plane.ensureChannel(agentId)
-          return work()
-        })
-      },
+      withMemoryHome: (agentId, work) => this.withMemoryHome(agentId, work),
       onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
     })
@@ -17757,6 +17800,7 @@ export class Daemon {
       runtimeCommands: () => this.runtimeCommands,
       memoryHomePortsFor: (agentId) => this.memoryHomePortsFor(agentId),
       wakeMemoryOutbox: () => this.memoryOutbox?.wake(),
+      wakeMemoryHomeMigrations: () => this.memoryHomeMigrations.wake(),
       gitCommitIdentity: () => this.gitCommitIdentity,
       sessionThreadUrl: (session) => this.sessionThreadUrl(session),
       childSessionStatusProbe: (probe) => this.collab.childSessionStatusProbe(probe),
@@ -18739,6 +18783,8 @@ export class Daemon {
     while (this.agentLifecycleTails.size > 0) {
       await Promise.all([...this.agentLifecycleTails.values()])
     }
+    // A memory home copy stops between files and reports nothing; the CP's marker keeps it pending for the next start.
+    await this.memoryHomeMigrations.stop().catch((e) => errors.push(e))
     // Stop the body-bearing capture pump before closing its verified clients or
     // SQLite store. Unfinished operations remain durable for restart recovery.
     await Promise.resolve(this.memoryOutbox?.stop()).catch((e) => errors.push(e))

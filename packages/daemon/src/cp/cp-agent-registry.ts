@@ -189,6 +189,18 @@ export class CpAgentRegistry {
     return decision
   }
 
+  // The CP accepted `memory/home/migrated` and cleared `homeMigration` durably; mirror that on the replica now, so the
+  // next resolution serves the CP tree without waiting for the push that carries the cleared binding (it applies as a
+  // newer revision with the same content). False when the binding carries no marker to drop.
+  settleMemoryHomeMigration(agentId: string): boolean {
+    const agent = this.active.get(agentId)
+    if (agent?.memory?.provider !== 'managed' || agent.memory.homeMigration !== 'pending') return false
+    const { homeMigration: _cleared, ...memory } = agent.memory
+    this.active.set(agentId, { ...agent, memory })
+    this.onChange()
+    return true
+  }
+
   remove(agentId: string): void {
     assertSafeLifecycleId(agentId)
     const agent = this.active.get(agentId) ?? this.detached.get(agentId)

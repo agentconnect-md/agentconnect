@@ -148,6 +148,8 @@ export interface CpClientSeamHost {
   memoryHomePortsFor(agentId: string): MemoryHomePorts | undefined
   /** Drain the managed captures deferred while a memory home was out of reach — a READY connection is a reachable `control-plane` home. */
   wakeMemoryOutbox(): void
+  /** Re-run every pending memory home migration from the start — its copy and completion report ride this connection. */
+  wakeMemoryHomeMigrations(): void
   gitCommitIdentity(): GitCommitIdentity | undefined
   sessionThreadUrl(session: SessionRecord): string | undefined
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
@@ -268,6 +270,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       host.cpClient()?.emitMemoryConnectionFacts(host.memoryConnections()?.facts() ?? [])
       // A READY connection is a reachable `control-plane` memory home: distill the turns that waited for it.
       host.wakeMemoryOutbox()
+      host.wakeMemoryHomeMigrations()
       await host.replayHookTerminalReports()
       await host.replayChannelSnapshots()
       // Only snapshots written to the durable outbox by this build are

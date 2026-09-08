@@ -66,6 +66,11 @@ export const MAX_MEMORY_FILE_BYTES = 256_000
  *  (who/what/when changed a file). Dotfile so it never surfaces as a topic. */
 export const MEMORY_HISTORY_FILENAME = '.history'
 
+/** Dream staging beside the live store (`<root>/memory-dreams/<dreamId>/`), which belongs to the extraction host, never the home. */
+export const MEMORY_DREAMS_DIRNAME = 'memory-dreams'
+/** The retained pre-adoption copy of the store (`<root>/memory-backups/`), the undo path for the last dream. */
+export const MEMORY_BACKUPS_DIRNAME = 'memory-backups'
+
 /** Cap on a `before`/`after` snapshot stored in a history line — keeps a single log
  *  entry bounded even for a large file. Over this, the snapshot is truncated (with a
  *  `…` marker) rather than omitted, so the line stays small but still human-readable. */
@@ -386,6 +391,14 @@ async function compactHistoryFile(fs: MemoryFs): Promise<void> {
   const canonical = canonicalizeMemoryHistory(raw)
   if (canonical === raw) return
   await fs.writeFile(HISTORY_PATH, canonical, { mode: 0o600 })
+}
+
+// One store's whole change log, oldest first, every record carrying a durable id: the sidecar is compacted first (a
+// no-op on a canonical file), so a legacy row is given its id on disk before anyone copies it and a re-read yields
+// the same rows. The caller holds the store's memory-dir lock.
+export async function readMemoryHistoryHoldingLock(fs: MemoryFs): Promise<MemoryHistoryRecord[]> {
+  await compactHistoryFile(fs)
+  return parseHistory(await readHistoryRaw(fs)).records
 }
 
 /** The sidecar sink: `<root>/memory/.history`, rewritten once per append, the fixed retention applied in the same pass. */

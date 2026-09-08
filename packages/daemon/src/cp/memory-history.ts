@@ -50,6 +50,11 @@ function failureReason(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err)
 }
 
+/** Where the CP files a store's change log, from the store's port root: under the directory that holds its files (`memory`, `channels/<key>/memory`), the root the CP's `memory/history` read filters on. */
+export function cpMemoryHistoryRoot(storeRoot: string): string {
+  return joinTreeRoot(joinTreeRoot(CP_MEMORY_TREE_ROOT, storeRoot), MEMORY_DIRNAME)
+}
+
 // The sink over the CP. `root` is the store's port root in `CpMemoryFs` coordinates (`.` for the agent's tree,
 // `channels/<key>` for a channel store); the log is filed under the directory that holds the store's files — `memory`,
 // `channels/<key>/memory` — which is the root the CP's `memory/history` read filters on, so a page finds what a batch wrote.
@@ -62,7 +67,7 @@ export class CpMemoryHistorySink implements MemoryHistorySink {
     root: string = CP_MEMORY_TREE_ROOT,
     private readonly log: Pick<Logger, 'warn'>
   ) {
-    this.root = joinTreeRoot(joinTreeRoot(CP_MEMORY_TREE_ROOT, root), MEMORY_DIRNAME)
+    this.root = cpMemoryHistoryRoot(root)
   }
 
   /** Best-effort: the write already happened, so any failure is one warn line naming what went unrecorded, never a rejection. */

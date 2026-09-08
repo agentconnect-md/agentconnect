@@ -65,12 +65,21 @@ function sandboxAsleep(agentId: string): MemorySandboxUnavailableError {
   return new MemorySandboxUnavailableError(`agent "${agentId}" has no running sandbox, so its memory cannot be reached`)
 }
 
-/** The tree the agent's pod holds, or this disk without a plane: the `daemon` home's store, and every home's dream staging. */
-function sandboxOrLocalPort(agent: MemoryHomeAgent, sandbox: SandboxMemoryFsSource | undefined): MemoryFs {
+/** The tree the agent's pod holds, or this disk without a plane: the `daemon` home's store, every home's dream staging, and the source of the one-way migration. */
+export function daemonHomeMemoryFs(agent: MemoryHomeAgent, sandbox: SandboxMemoryFsSource | undefined): MemoryFs {
   if (!sandbox) return new LocalMemoryFs(agent.dir)
   const fs = sandbox.memoryFsFor(agent.id)
   if (!fs) throw sandboxAsleep(agent.id)
   return fs
+}
+
+/** Whether the binding still carries the CP's migration marker: the copy has not been reported complete. */
+export function memoryHomeMigrationPending(agent: Pick<MemoryHomeAgent, 'memory'>): boolean {
+  return (
+    agent.memory?.provider === 'managed' &&
+    agent.memory.home === 'control-plane' &&
+    agent.memory.homeMigration === 'pending'
+  )
 }
 
 // Why the agent's memory home is out of reach right now, or undefined when it can be served: the activation gate
@@ -85,8 +94,8 @@ export function memoryHomeUnavailable(
     return deps.sandbox && !deps.sandbox.memoryFsFor(agent.id) ? sandboxAsleep(agent.id) : undefined
   }
   const home = `agent "${agent.id}" keeps its memory in the Control Plane, which`
-  // Step ④ stamps `homeMigration: 'pending'` on a flipped binding and step ⑧ clears it after the copy: no CP tree is served before the copy exists.
-  if ((agent.memory as { homeMigration?: 'pending' } | undefined)?.homeMigration === 'pending') {
+  // The CP stamps `homeMigration: 'pending'` on a flipped binding and the migration clears it after the copy: no CP tree is served before the copy exists.
+  if (memoryHomeMigrationPending(agent)) {
     return new MemoryHomeUnavailableError('migrating', `${home} is still receiving the copy of its tree`)
   }
   if (!deps.cp?.connected()) return new MemoryHomeUnavailableError('connection', `${home} is unreachable`)
@@ -100,7 +109,7 @@ export function memoryHomeUnavailable(
 // agent's sandbox volume, reachable exactly while the pod is bound. A `control-plane` home puts `live` and the sink on
 // the CP connection without touching any pod, and leaves `staging` where the extraction host can see it.
 export function resolveMemoryHomePorts(agent: MemoryHomeAgent, deps: MemoryHomeDeps): MemoryHomePorts {
-  if (memoryHomeOf(agent) !== 'control-plane') return localMemoryHome(sandboxOrLocalPort(agent, deps.sandbox))
+  if (memoryHomeOf(agent) !== 'control-plane') return localMemoryHome(daemonHomeMemoryFs(agent, deps.sandbox))
   const unavailable = memoryHomeUnavailable(agent, deps)
   if (unavailable) throw unavailable
   const cp = deps.cp!
@@ -109,7 +118,7 @@ export function resolveMemoryHomePorts(agent: MemoryHomeAgent, deps: MemoryHomeD
     live,
     // Looked up on use, not at activation: the store never needs the pod, and a review of a draft on the pool still wakes it.
     get staging(): MemoryFs {
-      return sandboxOrLocalPort(agent, deps.sandbox)
+      return daemonHomeMemoryFs(agent, deps.sandbox)
     },
     // A store under `live` logs to the CP table in its own coordinates; a staged store, never in the CP, keeps its sidecar.
     historyFor: (store) =>
