@@ -1909,15 +1909,14 @@ export class Daemon {
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
           // Which sockets this agent's pod needs, and where this daemon serves them — both are on
           // the daemon's own filesystem, so without a tunnel they exist nowhere the pod can reach.
-          // `mcp` is served for every pod agent because any session may carry tools and the
-          // listener belongs to the pod's lifetime, while the spec that dials it is decided per
-          // session; a managed-credential workspace — github-app or gitlab — adds the helper socket.
-          // An id this daemon holds no agent for gets neither: the member's own runtime probe is
-          // the case, and its channel is granted `probe` alone, so asking would only be refused.
+          // `mcp` for every pod agent: any session may carry tools and the listener lives as long as the pod.
+          // `gitcred` follows the credential marker, the predicate the pod gitconfig and the local carve use,
+          // so a scratch agent gets it; tunnels open once per pod, so the repo list would strand a late grant.
+          // An unknown id gets neither: the member's own runtime probe is granted `probe` alone.
           tunnelsFor: (agentId) => {
             const agent = this.agents.get(agentId)
             if (!agent) return []
-            return this.workspaces.usesManagedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
+            return this.workspaces.helperBackedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
           },
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
