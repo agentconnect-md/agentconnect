@@ -86,10 +86,7 @@ describe('toolsForIntegrations', () => {
     'updateCanvas',
     'listBookmarks',
     'addBookmark',
-    'removeBookmark',
-    'readList',
-    'addListItem',
-    'updateListItem'
+    'removeBookmark'
   ]
 
   it('injects each port-gated tool only into a session ON a platform that declares the port', () => {

@@ -1178,11 +1178,17 @@ column's TYPE, and Slack publishes no schema endpoint for a list. So the columns
 from the rows a read returns and handed back with them — the read is not a convenience before
 the write, it is the only source of the ids and types the write needs.
 
-The two `lists:*` scopes are the one family NOT in `SLACK_BOT_SCOPES`. Slack Lists is a
-paid-plan feature: a free workspace can neither offer the scope in an app's config nor grant
-it, and since that list is the required set, asking for it would refuse every free-plan install
-outright. The tools stay declared on the port and answer `missing_scope` where the grant is
-absent — an installation-shaped gap, not a platform-shaped one.
+That family is currently DARK, and the reason is worth recording. Slack Lists is a paid-plan
+feature, so a free workspace can neither offer `lists:read` / `lists:write` in an app's config
+nor grant them — and `SLACK_BOT_SCOPES` is the set an installation must hold, so asking for
+them there does not degrade a free-plan install, it refuses one. The scopes came out of that
+list, and the `lists` port flag came out with them: a port declares what THIS DEPLOYMENT can
+reach, and a tool no installation can call is worse than absent, because it costs every Slack
+session's tool list and answers `missing_scope` when a model tries it. The implementations stay
+put. Both come back together with optional scopes (`oauth_config.scopes.bot_optional`), which
+Slack presents separately at install and adds to the token afterwards; a port flag is answered
+before a connection exists, so a per-installation gate additionally needs the grant — `Bot.grantedScopes`,
+which the CP records and the daemon is not told — to reach the tool build.
 
 Three scopes in that same change have NO caller and say so: `channels:join`, `team:read`, and
 `users:read.email`. That is a deliberate exception to the scope-arrives-with-its-feature rule,

@@ -158,7 +158,8 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       scheduledMessages: true,
       canvas: true,
       bookmarks: true,
-      lists: true,
+      // NO `lists`: the manifest stopped asking for the paid-plan-only `lists:*`, so the three tools
+      // would reach no installation. The implementations stay; the flag returns with the scope.
       attachmentReadTool: SLACK_ATTACHMENT_TOOL
     }
   ],

@@ -1289,6 +1289,8 @@ export const ALL_TOOL_NAMES = [
       .concat([...EXTERNAL_MEMORY_TOOL_NAMES])
       // The pre-promotion review name: no longer injected, still dispatched for warm sessions.
       .concat(['submitGithubReview'])
+      // The list names: no longer injected (their scope left the manifest), still dispatched the same way.
+      .concat(['readList', 'addListItem', 'updateListItem'])
   )
 ]
 
