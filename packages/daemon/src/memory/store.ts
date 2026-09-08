@@ -35,6 +35,7 @@ import {
 
 export {
   MemoryConflictError,
+  MemoryHomeUnavailableError,
   MemoryPathError,
   MemorySandboxUnavailableError,
   MemoryTooLargeError,

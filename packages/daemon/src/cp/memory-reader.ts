@@ -52,6 +52,7 @@ import {
   MemoryPathError,
   MemoryTooLargeError,
   MemoryConflictError,
+  MemoryHomeUnavailableError,
   MemorySandboxUnavailableError,
   type MemoryFs
 } from '../memory/store.js'
@@ -66,7 +67,13 @@ export class MemoryViolationError extends Error {
   }
 }
 
-export { MemoryPathError, MemoryTooLargeError, MemoryConflictError, MemorySandboxUnavailableError }
+export {
+  MemoryPathError,
+  MemoryTooLargeError,
+  MemoryConflictError,
+  MemoryHomeUnavailableError,
+  MemorySandboxUnavailableError
+}
 
 export interface MemoryReader {
   channels(req: MemoryChannelsReq): Promise<MemoryChannelsPage>

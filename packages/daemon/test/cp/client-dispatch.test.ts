@@ -1094,3 +1094,75 @@ describe('CpClient dispatch', () => {
     expect(rep.corr).toBe(f.id)
   })
 })
+
+describe('CpClient memory/store (D→C REQ)', () => {
+  const op = { op: 'memory-read', root: '.', rel: 'memory/index.md', offset: 0, limit: 1024 } as const
+
+  it('names the agent, stamps its org, and unwraps memory/store/ok', async () => {
+    const { client, t } = await readyClient(
+      { orgForAgent: (agentId) => (agentId === CRON_AGENT_ID ? 'org-1' : undefined) },
+      ['agent-memory-store-v1'],
+      'frame'
+    )
+    const pending = client.memoryStore({ agentId: CRON_AGENT_ID, op })
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    expect(req).toMatchObject({ type: 'memory/store', orgId: 'org-1', payload: { agentId: CRON_AGENT_ID, op } })
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope('memory/store/ok', { ok: true, value: { exists: false } }, { corr: req.id, orgId: 'org-1' })
+      )
+    )
+    await expect(pending).resolves.toEqual({ ok: true, value: { exists: false } })
+  })
+
+  it('refuses before sending when the CP never advertised the feature, and surfaces an error REP by code', async () => {
+    const older = await readyClient({}, [])
+    await expect(older.client.memoryStore({ agentId: CRON_AGENT_ID, op })).rejects.toMatchObject({
+      code: 'INTERNAL',
+      retryable: false
+    })
+    expect(older.t.sent).toHaveLength(0)
+
+    const { client, t } = await readyClient({}, ['agent-memory-store-v1'])
+    const pending = client.memoryStore({ agentId: CRON_AGENT_ID, op })
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'error',
+          { code: 'SCOPE_DENIED', message: 'agent is not served here', retryable: false },
+          { corr: req.id }
+        )
+      )
+    )
+    await expect(pending).rejects.toMatchObject({ code: 'SCOPE_DENIED', retryable: false })
+  })
+
+  it('sends an op exactly once — a late reply must never append a chunk twice — and fails on one deadline', async () => {
+    const { client, t, clock } = await readyClient({}, ['agent-memory-store-v1'])
+    const stores = () => t.sent.filter((raw) => JSON.parse(raw).type === 'memory/store')
+    const pending = client.memoryStore({ agentId: CRON_AGENT_ID, op })
+    await tick()
+    // Well past the default ack timeout and its retransmissions: still the one frame.
+    clock.advance(29_000)
+    expect(stores()).toHaveLength(1)
+    clock.advance(1_000)
+    await expect(pending).rejects.toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(stores()).toHaveLength(1)
+  })
+
+  it('fails fast off the legal states instead of queueing on a dead socket', async () => {
+    const { client, t } = await readyClient({}, ['agent-memory-store-v1'])
+    expect(client.connected()).toBe(true)
+    t.simulateClose(1006, 'gone')
+    await tick()
+    expect(client.connected()).toBe(false)
+    await expect(client.memoryStore({ agentId: CRON_AGENT_ID, op })).rejects.toMatchObject({
+      code: 'INTERNAL',
+      retryable: true
+    })
+    expect(t.sent).toHaveLength(0)
+  })
+})
