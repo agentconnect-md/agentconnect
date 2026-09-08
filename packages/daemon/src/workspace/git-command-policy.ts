@@ -3,6 +3,7 @@ export const ALLOWED_GIT_SUBCOMMANDS = new Set([
   'add',
   'branch',
   'check-ref-format',
+  'checkout',
   'clean',
   'clone',
   'commit',
@@ -36,6 +37,20 @@ const REFUSED_ARGUMENT = [
 
 // These spellings reach execution only for the named subcommand.
 const REFUSED_SUBCOMMAND_ARGUMENT: Record<string, RegExp[]> = {
+  // Admitted only for the workspace sync's `checkout --no-track -B <branch> <ref>`; every form that discards or restores files stays out.
+  checkout: [
+    /^-f$/,
+    /^--force$/,
+    /^--$/,
+    /^-m$/,
+    /^--merge$/,
+    /^-p$/,
+    /^--patch$/,
+    /^--ours$/,
+    /^--theirs$/,
+    /^--orphan/,
+    /^--detach$/
+  ],
   clone: [/^-u/],
   config: [/^-e$/, /^--edit/]
 }
