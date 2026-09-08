@@ -1,15 +1,5 @@
 import { spawn } from 'node:child_process'
-import {
-  chmodSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmdirSync,
-  unlinkSync
-} from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
 import { SANDBOX_TEMP_DIR_ENV } from './sandbox-temp.js'
@@ -68,8 +58,8 @@ function childTempDir(writeRoots: string[], privateHome: string): string {
   return tempDir
 }
 
-// SRT 0.0.73's cwd-anchored mandatory-deny names (`DANGEROUS_FILES` / `getDangerousDirectories()`, not exported). Until the scan moved to the private HOME, bwrap left these behind in the checkout as zero-byte mount points that outlived any ungraceful exit.
-const LEGACY_MOUNT_POINT_FILES = [
+// SRT 0.0.73's cwd-anchored mandatory-deny names (`DANGEROUS_FILES` / `getDangerousDirectories()`, not exported). Until the scan moved to the private HOME, bwrap left each missing one behind in the checkout as a zero-byte mount-point FILE (a directory name included) that outlived any ungraceful exit.
+const LEGACY_MOUNT_POINT_NAMES = [
   '.gitconfig',
   '.gitmodules',
   '.bashrc',
@@ -78,27 +68,22 @@ const LEGACY_MOUNT_POINT_FILES = [
   '.zprofile',
   '.profile',
   '.ripgreprc',
-  '.mcp.json'
+  '.mcp.json',
+  '.vscode',
+  '.idea',
+  '.claude/commands',
+  '.claude/agents'
 ]
-const LEGACY_MOUNT_POINT_DIRS = ['.vscode', '.idea', '.claude/commands', '.claude/agents', '.claude']
 
-/** Remove the old scan's leftovers from the checkout root: only a zero-byte regular file or an empty directory of those exact names, so real content is never touched. Best-effort. */
+/** Remove the old scan's leftovers from the checkout root: only a zero-byte regular file of those exact names — never a directory (an empty `.claude` may be a prepared install target) and never real content. Best-effort. */
 export function removeLegacyMountPoints(cwd: string): void {
-  for (const name of LEGACY_MOUNT_POINT_FILES) {
+  for (const name of LEGACY_MOUNT_POINT_NAMES) {
     try {
       const path = join(cwd, name)
-      if (lstatSync(path).isFile() && lstatSync(path).size === 0) unlinkSync(path)
+      const stat = lstatSync(path)
+      if (stat.isFile() && stat.size === 0) unlinkSync(path)
     } catch {
       // absent, or not ours to touch
-    }
-  }
-  // Leaves before their parent: `.claude` itself goes only once its two protected children are gone.
-  for (const name of LEGACY_MOUNT_POINT_DIRS) {
-    try {
-      const path = join(cwd, name)
-      if (lstatSync(path).isDirectory() && readdirSync(path).length === 0) rmdirSync(path)
-    } catch {
-      // absent, non-empty, or not ours to touch
     }
   }
 }

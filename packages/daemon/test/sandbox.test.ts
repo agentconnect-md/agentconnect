@@ -651,24 +651,30 @@ describe('sandbox temp directories', () => {
 })
 
 describe('removeLegacyMountPoints', () => {
-  it('removes only the zero-byte files and empty directories the old workspace-anchored SRT scan left behind', () => {
+  it('removes only the zero-byte mount-point files the old workspace-anchored SRT scan left behind', () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-legacy-mounts-'))
     try {
-      for (const name of ['.bashrc', '.gitconfig', '.mcp.json']) writeFileSync(join(root, name), '')
-      mkdirSync(join(root, '.claude', 'agents'), { recursive: true })
-      mkdirSync(join(root, '.claude', 'commands'), { recursive: true })
-      mkdirSync(join(root, '.vscode'))
-      // Real content of a protected name, and a directory with something in it, are the checkout's own.
+      for (const name of ['.bashrc', '.gitconfig', '.mcp.json', '.idea']) writeFileSync(join(root, name), '')
+      // bwrap made the directory names files too, under a `.claude` it had to create.
+      mkdirSync(join(root, '.claude'))
+      writeFileSync(join(root, '.claude', 'agents'), '')
+      writeFileSync(join(root, '.claude', 'commands'), '')
+      // Real content of a protected name, a populated directory, and an EMPTY directory (a prepared
+      // skills install target) are the checkout's own.
       writeFileSync(join(root, '.gitmodules'), '[submodule "x"]\n')
+      mkdirSync(join(root, '.vscode'))
       writeFileSync(join(root, '.vscode', 'settings.json'), '{}')
+      mkdirSync(join(root, 'prepared', '.claude'), { recursive: true })
       writeFileSync(join(root, 'README.md'), '')
 
       removeLegacyMountPoints(root)
+      removeLegacyMountPoints(join(root, 'prepared'))
 
-      expect(existsSync(join(root, '.bashrc'))).toBe(false)
-      expect(existsSync(join(root, '.gitconfig'))).toBe(false)
-      expect(existsSync(join(root, '.mcp.json'))).toBe(false)
-      expect(existsSync(join(root, '.claude'))).toBe(false)
+      for (const name of ['.bashrc', '.gitconfig', '.mcp.json', '.idea', '.claude/agents', '.claude/commands']) {
+        expect(existsSync(join(root, name))).toBe(false)
+      }
+      expect(statSync(join(root, '.claude')).isDirectory()).toBe(true)
+      expect(statSync(join(root, 'prepared', '.claude')).isDirectory()).toBe(true)
       expect(readFileSync(join(root, '.gitmodules'), 'utf8')).toBe('[submodule "x"]\n')
       expect(existsSync(join(root, '.vscode', 'settings.json'))).toBe(true)
       // An unrelated zero-byte file is not on the list and stays.
