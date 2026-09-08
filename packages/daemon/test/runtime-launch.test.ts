@@ -23,6 +23,7 @@ import { sandboxTempDirFor, SANDBOX_TEMP_DIR_ENV } from '../src/acp/sandbox-temp
 import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
 import { runtimeMemoryCapabilities } from '../src/memory/runtime/capabilities.js'
 import { MemoryProviderUnavailableError } from '../src/memory/provider.js'
+import { normalizeSandboxMounts } from '../src/runtimes/read-roots.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 
 function fixture(): { scopeDir: string; cwd: string; hostHome: string } {
@@ -387,7 +388,7 @@ describe('prepareRuntimeLaunch', () => {
 
     // The same rule as every other exception: a root that IS a protected boundary reopens it wholesale.
     expect(() => prepareRuntimeLaunch({ ...base, trustedOperatorWriteRoots: [hostHome] })).toThrow(
-      /security\.sandboxWriteRoots entry .* would reopen protected path/
+      /sandbox\.mounts .* would reopen protected path/
     )
     expect(() => prepareRuntimeLaunch({ ...base, trustedOperatorWriteRoots: [dirname(scopeDir)] })).toThrow(
       /would reopen protected path/
@@ -494,6 +495,10 @@ describe('prepareRuntimeLaunch', () => {
     const { scopeDir, hostHome, key, sessionDir, cwd, primaryGit, cloneGit, secondaryGit } = sessionCloneFixture()
     const store = join(hostHome, '.local', 'share', 'pnpm', 'store')
     mkdirSync(store, { recursive: true })
+    const mounts = normalizeSandboxMounts([
+      { source: dirname(store), target: dirname(store), readOnly: true },
+      { source: store, target: store, readOnly: false }
+    ])
 
     const launch = prepareRuntimeLaunch({
       runtimeId: 'codex-acp',
@@ -507,7 +512,8 @@ describe('prepareRuntimeLaunch', () => {
       credentialPlatform: 'linux',
       // What the daemon hands a session host: the session directory alone (workspace-manager.ts).
       trustedWorkspaceWriteRoots: [sessionDir],
-      trustedOperatorWriteRoots: [store],
+      trustedRuntimeReadRoots: mounts.map((mount) => mount.source),
+      trustedOperatorWriteRoots: mounts.filter((mount) => !mount.readOnly).map((mount) => mount.source),
       trustedPrimaryCheckout: join(scopeDir, 'workspace'),
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
@@ -534,7 +540,9 @@ describe('prepareRuntimeLaunch', () => {
     expect(table).not.toContain(realpathSync(primaryGit))
     // An operator-declared shared store is reopened at both layers: the outer boundary and the inner Codex profile.
     expect(coveredBy(policy.filesystem.allowWrite, realpathSync(store))).toBe(true)
+    expect(coveredBy(policy.filesystem.allowWrite, realpathSync(dirname(store)))).toBe(false)
     expect(table).toContain(`"${realpathSync(store)}" = "write"`)
+    expect(table).not.toContain(`"${realpathSync(dirname(store))}" = "write"`)
   })
 
   // §11: the session's HOME lives under its leaf, so runtime state, temp and package caches are the session's alone and go with it.

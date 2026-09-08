@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from '../src/config/load-config.js'
-import { McpServerDefSchema, RuntimeDefSchema, sessionRetentionMs } from '../src/config/config-schema.js'
+import { ConfigSchema, McpServerDefSchema, RuntimeDefSchema, sessionRetentionMs } from '../src/config/config-schema.js'
 import { CP_URL_ENV, WORKSPACE_GIT_ORIGINS_ENV } from '@agentconnect.md/protocol'
 
 function tmpRoot(config: unknown): string {
@@ -77,10 +77,30 @@ describe('loadConfig', () => {
     expect(cfg.runtimes!.claude!.command).toBe('npx')
     expect(cfg.security.isolateAccountApps).toBe(true)
     expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['*'])
+    expect(cfg.sandbox).toEqual({ backend: 'srt', mounts: [] })
     expect(cfg.features.turnFinalContextRefresh).toBe(true)
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
     expect(cfg.sessions.retention).toBe('7d') // #485 session retention defaults on
+  })
+
+  it('defaults explicit mounts to read-only without selecting another backend', () => {
+    const cfg = ConfigSchema.parse({
+      version: 1,
+      sandbox: { mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain' }] }
+    })
+    expect(cfg.sandbox).toEqual({
+      backend: 'srt',
+      mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain', readOnly: true }]
+    })
+  })
+
+  it('rejects an unimplemented sandbox backend', () => {
+    expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } })).toThrow()
+  })
+
+  it.each(['sandboxReadRoots', 'sandboxWriteRoots'])('rejects removed security.%s rather than ignoring it', (field) => {
+    expect(() => ConfigSchema.parse({ version: 1, security: { [field]: [] } })).toThrow(field)
   })
 
   // An in-cluster daemon is born with no config file and no key: the deployment injects the

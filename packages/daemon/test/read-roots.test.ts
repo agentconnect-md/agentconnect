@@ -4,8 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   resolveTrustedExecutable,
-  sandboxReadRoots,
-  sandboxWriteRoots,
+  normalizeSandboxMounts,
   trustedRuntimeReadRoots
 } from '../src/runtimes/read-roots.js'
 
@@ -46,7 +45,7 @@ describe('trusted runtime read roots', () => {
     expect(resolveTrustedExecutable('runtime', { PATH: bin })).toBe(realpathSync(cli))
   })
 
-  it('carves daemon-wide security.sandboxReadRoots into every runtime, expanding ~ against the host HOME', () => {
+  it('exposes normalized operator mount sources to every runtime', () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-daemon-roots-'))
     temporaryRoots.push(root)
     const home = join(root, 'host-home')
@@ -55,10 +54,17 @@ describe('trusted runtime read roots', () => {
     mkdirSync(toolchain, { recursive: true })
     mkdirSync(nodeInstall, { recursive: true })
 
+    const mounts = normalizeSandboxMounts(
+      [
+        { source: '~/.rustup/toolchains/stable/bin', target: toolchain, readOnly: true },
+        { source: nodeInstall, target: nodeInstall, readOnly: true }
+      ],
+      { HOME: home }
+    )
     const roots = trustedRuntimeReadRoots({
       runtime: { command: process.execPath, args: [], env: [] },
       hostEnv: { PATH: dirname(process.execPath), HOME: home },
-      readRoots: ['~/.rustup/toolchains/stable/bin', nodeInstall]
+      readRoots: mounts.map((mount) => mount.source)
     })
 
     expect(roots).toContain(realpathSync(toolchain))
@@ -72,26 +78,54 @@ describe('trusted runtime read roots', () => {
         hostEnv: { PATH: dirname(process.execPath) },
         readRoots: [join(tmpdir(), 'ac-missing-daemon-root-does-not-exist')]
       })
-    ).toThrow(/security\.sandboxReadRoots entry does not exist/)
-    expect(() => sandboxReadRoots(['relative/toolchain'], { HOME: tmpdir() })).toThrow(
-      /security\.sandboxReadRoots entry must be absolute/
-    )
+    ).toThrow(/sandbox\.mounts source does not exist/)
   })
 
-  it('normalizes security.sandboxWriteRoots like the read roots, and rejects a missing or relative one', () => {
+  it('coalesces canonical mounts with write access winning while preserving nested paths', () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-daemon-write-roots-'))
     temporaryRoots.push(root)
     const home = join(root, 'host-home')
-    const store = join(home, '.local', 'share', 'pnpm', 'store')
+    const toolchain = join(home, 'toolchain')
+    const store = join(toolchain, 'cache')
+    const alias = join(root, 'cache-link')
     mkdirSync(store, { recursive: true })
+    symlinkSync(store, alias, 'junction')
 
-    expect(sandboxWriteRoots(['~/.local/share/pnpm/store'], { HOME: home })).toEqual([realpathSync(store)])
-    expect(() => sandboxWriteRoots([join(root, 'no-such-store')], { HOME: home })).toThrow(
-      /security\.sandboxWriteRoots entry does not exist/
+    const mounts = [
+      { source: '~/toolchain', target: toolchain, readOnly: true },
+      { source: alias, target: store, readOnly: true },
+      { source: store, target: alias, readOnly: false }
+    ]
+    const expected = [
+      { source: realpathSync(toolchain), target: realpathSync(toolchain), readOnly: true },
+      { source: realpathSync(store), target: realpathSync(store), readOnly: false }
+    ]
+    for (const entries of [mounts, [...mounts].reverse()]) {
+      const normalized = normalizeSandboxMounts(entries, { HOME: home })
+      expect(normalized).toHaveLength(2)
+      expect(normalized).toEqual(expect.arrayContaining(expected))
+    }
+  })
+
+  it('accepts an existing file mount and rejects missing, relative, or remapped paths', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-daemon-mount-paths-'))
+    temporaryRoots.push(root)
+    const file = join(root, 'toolchain.conf')
+    writeFileSync(file, 'test configuration')
+    const mount = { source: file, target: file, readOnly: true }
+    expect(normalizeSandboxMounts([mount])).toEqual([
+      { source: realpathSync(file), target: realpathSync(file), readOnly: true }
+    ])
+    expect(() => normalizeSandboxMounts([{ ...mount, source: join(root, 'missing') }])).toThrow(
+      /sandbox\.mounts source does not exist/
     )
-    expect(() => sandboxWriteRoots(['relative/store'], { HOME: home })).toThrow(
-      /security\.sandboxWriteRoots entry must be absolute/
+    expect(() => normalizeSandboxMounts([{ ...mount, source: 'relative/toolchain' }])).toThrow(
+      /sandbox\.mounts source must be absolute/
     )
+    expect(() => normalizeSandboxMounts([{ ...mount, target: 'relative/toolchain' }])).toThrow(
+      /sandbox\.mounts target must be absolute/
+    )
+    expect(() => normalizeSandboxMounts([{ ...mount, target: root }])).toThrow(/same|equal|remap/i)
   })
 
   it('rejects relative operator read roots', () => {

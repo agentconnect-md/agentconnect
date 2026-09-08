@@ -158,7 +158,7 @@ export function composeRuntimeLaunch(opts: {
   /** Additional daemon-owned code/socket/config paths required by trusted
    * descendants such as the AgentConnect MCP bridge. */
   runtimeReadRoots?: string[]
-  /** Operator-declared `security.sandboxWriteRoots`, already normalized. */
+  /** Operator-declared writable `sandbox.mounts`, already normalized. */
   runtimeWriteRoots?: string[]
   trustedWorkspaceWriteRoots?: string[]
   trustedPrimaryCheckout?: string

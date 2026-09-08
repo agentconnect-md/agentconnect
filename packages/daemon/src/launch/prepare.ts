@@ -195,7 +195,7 @@ export interface PreparedRuntimeLaunch {
     /** Highest-precedence Claude settings that keep project/local settings from
      * redirecting the trusted parent to an attacker-selected credential profile. */
     claudeProtectedSettings?: ClaudeProtectedSettings
-    /** Operator-declared `security.sandboxWriteRoots`, canonical: the runtime-native tool sandboxes reopen them too. */
+    /** Operator-declared writable `sandbox.mounts`, canonical: the runtime-native tool sandboxes reopen them too. */
     sharedWriteRoots?: string[]
   }
 }
@@ -245,7 +245,7 @@ export function prepareRuntimeLaunch(opts: {
    * Every entry is revalidated as a strict descendant of scopeDir. */
   trustedWorkspaceWriteRoots?: string[]
   trustedPrimaryCheckout?: string
-  /** Operator-declared host dirs (`security.sandboxWriteRoots`) reopened writable: a shared package store, never the daemon's own. */
+  /** Operator-declared host dirs (writable `sandbox.mounts`) reopened writable: a shared package store, never the daemon's own. */
   trustedOperatorWriteRoots?: string[]
   /** Test seam. Shared login remains Linux-only with the sandbox rollout. */
   credentialPlatform?: NodeJS.Platform
@@ -458,7 +458,7 @@ export function prepareRuntimeLaunch(opts: {
   )
   // An operator write root follows the exception rule: it may sit below the hidden host HOME (a pnpm store does), never equal or contain HOME, daemon state, an agent root, or shared temp.
   const operatorWriteRoots = compactReadRoots(
-    (opts.trustedOperatorWriteRoots ?? []).map((path) => validateException(path, 'security.sandboxWriteRoots entry'))
+    (opts.trustedOperatorWriteRoots ?? []).map((path) => validateException(path, 'writable sandbox.mounts source'))
   )
   const agentRoot = safeRoot(opts.scopeDir, 'agent root')
   const trustedWorkspaceWriteRoots = compactReadRoots(

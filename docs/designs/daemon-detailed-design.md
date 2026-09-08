@@ -135,8 +135,8 @@ The daemon does not implement these, but interacts with them through the section
 | `--agent <name>`                 | Selector                       | Select by `agent.id`: single-agent `run` ignoring status, or disambiguate `chat`.                                                                  |
 | `--max-agents <n>`               | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
 | `--require-sandbox`              | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
-| n/a (config only)                | `security.sandboxReadRoots`    | Host toolchain dirs carved read-only into every sandbox; see the config example below.                                                             |
-| n/a (config only)                | `security.sandboxWriteRoots`   | Host package-manager stores carved writable into every sandbox, shared by every session; see the config example below.                             |
+| n/a (config only)                | `sandbox.backend`              | Select the local sandbox backend; defaults to `srt`, currently the only supported value.                                                           |
+| n/a (config only)                | `sandbox.mounts`               | Operator-owned host path mappings; `readOnly` defaults to true. SRT requires equal normalized source and target paths.                             |
 | `--k8s`                          | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
 | `--key-server <url>`             | `KEY_SERVER`                   | Cloud-only service for session-scoped model credentials, http or https as the deployment chooses; see [key-server.md](key-server.md).              |
 | `--key-server-token-path <path>` | `KEY_SERVER_TOKEN_PATH`        | File re-read as the key-server bearer token on every request.                                                                                      |
@@ -322,29 +322,19 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
     // Linux SRT/bwrap sandbox. macOS and Windows are not supported in this rollout.
     "requireSandbox": false,
 
-    // Host directories carved read-only into EVERY sandbox, for toolchains the
-    // agent needs but the runtime-scoped read set would otherwise hide (nvm's
-    // node, a rustup toolchain, ...). `~/` expands against the daemon's HOME;
-    // each entry must exist or startup fails. Caches still land in the
-    // per-session private HOME. Name the toolchain dir itself, never a parent
-    // that also holds credentials (~/.cargo/credentials.toml, ~/.npmrc).
-    "sandboxReadRoots": [],
-
-    // Host directories carved WRITABLE into EVERY sandbox, so sessions share one
-    // package-manager store instead of each downloading its own (pnpm's store,
-    // corepack's cache; point the runtime at them with the agent's env: pnpm 11
-    // reads pnpm_config_store_dir and ignores the npm_config_ prefix, pnpm 10 the
-    // reverse; corepack reads COREPACK_HOME). Same expansion and existence rule as
-    // sandboxReadRoots. This is a deliberate hole in per-session isolation: what one
-    // session's install writes, the next session runs. Name the store itself, never
-    // HOME or a parent holding credentials.
-    "sandboxWriteRoots": [],
-
     // Origins that daemon-managed workspace clone/pull may target. Default ["*"]
     // admits any valid https/ssh origin; exact entries (scheme and non-default
     // port are part of the match, no partial wildcards or paths) tighten it, and
     // [] disables remote Git workspaces entirely.
     "workspaceGitAllowedOrigins": ["https://github.com", "ssh://github.com"]
+  },
+
+  // ---------- Local sandbox backend and shared host directories ----------
+  "sandbox": {
+    "backend": "srt", // Default and currently the only supported backend.
+    // Entries: { source, target, readOnly }; readOnly defaults to true.
+    // SRT requires existing paths and equal normalized source/target paths.
+    "mounts": []
   },
 
   // Daemon-local config.json / agent.json are secret-bearing files: CP API keys and
@@ -381,10 +371,11 @@ agent directories and higher custom parents are left unchanged.
 
 ### Linux ACP runtime sandbox
 
-The proposed [sandbox backend extension](daemon-sandbox-backends.md) adds
-configurable microsandbox execution and a shared mounts configuration while
-preserving SRT as the default. The behavior below describes the current SRT
-implementation.
+`sandbox.backend` defaults to `srt`, currently the only supported backend.
+Operator-owned filesystem access is configured through `sandbox.mounts`.
+The [sandbox backend design](daemon-sandbox-backends.md) documents this
+configuration and the proposed microsandbox extension. The behavior below
+describes the current SRT implementation.
 
 AgentConnect currently enables runtime sandboxing on Linux only. The daemon uses
 the exact-pinned `@anthropic-ai/sandbox-runtime` package, backed by `bubblewrap`,
@@ -402,13 +393,12 @@ An enabled sandbox gives the runtime a private HOME, hides daemon-owned agent
 metadata and the host source from which that runtime state was seeded, and
 re-allows reads only for the workspace, private HOME, managed memory,
 `run/config-files`, `.agentconnect/runtime-policy`, trusted runtime installation
-roots, any operator-declared `security.sandboxReadRoots` (host toolchains such as
-nvm's node or a rustup toolchain, carved read-only into every sandbox regardless
+roots, any operator-declared `sandbox.mounts` (host toolchains such as
+nvm's node or a rustup toolchain, made readable in every sandbox regardless
 of runtime), and the runtime's selected host credential path. Writes are limited to
 the workspace, private HOME, managed memory, SRT temporary storage, that
-credential path, and any operator-declared `security.sandboxWriteRoots` (a shared
-package-manager store, reopened by the same exception rule as a read root). Outbound
-domains are approved by a provider callback and Unix sockets remain
+credential path, and mounts with `readOnly: false` (such as a shared
+package-manager store). Outbound domains are approved by a provider callback and Unix sockets remain
 compatibility-open during this rollout. Proxy-aware HTTP(S) clients retain web
 egress, and the provider sets `NODE_USE_ENV_PROXY=1` so Node's built-in `fetch`
 and `http` clients (corepack downloading a pinned package manager, for one) join
@@ -417,6 +407,16 @@ agent-started local server and other clients that ignore the proxy environment
 are not yet compatibility guarantees; issue #312 tracks those boundaries. SRT's
 temporary directory is redirected below the private HOME and its shared
 `/tmp/claude` fallback is hidden.
+
+Mounts default to read-only. SRT expands host `~` and normalizes both paths;
+`source` and `target` must resolve to the same existing host path. Remapping a
+host path to a different target is rejected. Writable mounts also extend the
+runtime-native tool sandbox's write permissions, so the actual package-manager
+process can use them. Configure the package manager to use the target path;
+mounts do not change its settings. These paths are shared across sessions,
+and their host contents survive session cleanup. Replace the removed
+`security.sandboxReadRoots` and `security.sandboxWriteRoots` fields manually as
+shown in [the conversion table](daemon-sandbox-backends.md#shared-mounts-and-manual-conversion).
 
 The Claude ACP parent is trusted to manage the host Claude login. By default,
 AgentConnect resolves the host config directory from `CLAUDE_CONFIG_DIR`, falling

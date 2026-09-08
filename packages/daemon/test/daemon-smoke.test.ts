@@ -52,6 +52,17 @@ function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', ico
 describe('Daemon (no Slack, injected ACP host)', () => {
   it('sandboxes a host only when the agent opts in — skills are not force-sandboxed (#36)', async () => {
     const root = scaffold()
+    const toolchain = join(root, 'shared-toolchain')
+    const cache = join(toolchain, 'cache')
+    mkdirSync(cache, { recursive: true })
+    const config = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))
+    config.sandbox = {
+      mounts: [
+        { source: toolchain, target: toolchain },
+        { source: cache, target: cache, readOnly: false }
+      ]
+    }
+    writeFileSync(join(root, 'config.json'), JSON.stringify(config))
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
       root,
@@ -72,6 +83,11 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect((daemon as any).agentRunsInSandbox(agent)).toBe(true)
       const sandboxed = (daemon as any).ensureHost('bot-a', (daemon as any).cfg)
       expect((sandboxed as any).opts.sandbox).toMatchObject({ mechanism: 'bwrap' })
+      const sandbox = (sandboxed as any).opts.sandbox
+      expect(sandbox.allowReadRoots).toContain(realpathSync(toolchain))
+      expect(sandbox.writable).toContain(realpathSync(cache))
+      expect(sandbox.writable).not.toContain(realpathSync(toolchain))
+      expect(sandbox.sharedWriteRoots).toEqual([realpathSync(cache)])
     } finally {
       await daemon.stop().catch(() => undefined)
       const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
@@ -92,36 +108,21 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     ).rejects.toThrow(/daemon startup refused.*requireSandbox.*no supported Linux SRT\/bwrap/)
   })
 
-  it('refuses daemon startup when security.sandboxReadRoots names a directory that does not exist', async () => {
+  it.each([true, false])('refuses daemon startup for a missing mount (readOnly=%s)', async (readOnly) => {
     const root = scaffold()
+    const source = join(root, 'no-such-mount')
     writeFileSync(
       join(root, 'config.json'),
       JSON.stringify({
         version: 1,
         controlPlane: { enabled: false },
-        security: { sandboxReadRoots: [join(root, 'no-such-toolchain')] }
+        sandbox: { mounts: [{ source, target: source, readOnly }] }
       })
     )
 
     await expect(
       new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null }).start()
-    ).rejects.toThrow(/security\.sandboxReadRoots entry does not exist/)
-  })
-
-  it('refuses daemon startup when security.sandboxWriteRoots names a directory that does not exist', async () => {
-    const root = scaffold()
-    writeFileSync(
-      join(root, 'config.json'),
-      JSON.stringify({
-        version: 1,
-        controlPlane: { enabled: false },
-        security: { sandboxWriteRoots: [join(root, 'no-such-store')] }
-      })
-    )
-
-    await expect(
-      new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null }).start()
-    ).rejects.toThrow(/security\.sandboxWriteRoots entry does not exist/)
+    ).rejects.toThrow(/sandbox\.mounts source does not exist/)
   })
 
   it('does not force the skill sandbox or fail closed when the host has no sandbox mechanism (#36)', async () => {

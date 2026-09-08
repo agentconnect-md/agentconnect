@@ -28,7 +28,7 @@ export interface AcpSandboxLaunch {
   /** SDK flag settings that pin protected parent-only profile selection after
    * Claude merges workspace-controlled settings. */
   claudeProtectedSettings?: ClaudeProtectedSettings
-  /** Operator-declared `security.sandboxWriteRoots`, reopened in the runtime-native tool sandbox as well. */
+  /** Operator-declared writable `sandbox.mounts`, reopened in the runtime-native tool sandbox as well. */
   sharedWriteRoots?: string[]
 }
 

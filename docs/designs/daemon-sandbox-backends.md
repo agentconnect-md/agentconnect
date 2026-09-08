@@ -1,12 +1,12 @@
 # Daemon Sandbox Backends
 
-**Status: Proposed.** This document defines configurable self-hosted sandbox
-backends; it does not describe shipped configuration.
+**Status: Partially implemented.** `sandbox.backend: "srt"` and `sandbox.mounts`
+are implemented. SRT is currently the only accepted backend. The microsandbox
+backend, image selection, Docker, networking, and VM lifecycle remain proposed.
 
-The daemon continues to default to SRT. Operators can select microsandbox and
-configure its image, resources, mounts, and networking. The initial priority is a
-usable development environment: independent sessions, ordinary network access,
-Docker and Compose, and predictable stop/start behavior.
+The daemon continues to default to SRT. The proposed microsandbox backend adds
+image, resource, and networking configuration for independent session development
+environments with Docker, Compose, and predictable stop/start behavior.
 
 This extends [daemon configuration and lifecycle](daemon-detailed-design.md) and
 uses the existing [execution-driver seam](cluster-spawn-and-shim.md#1-why-a-seam-at-all).
@@ -15,8 +15,8 @@ Control Plane does not carry ACP or provider request traffic.
 
 ## 1. Configuration and ownership
 
-Add a daemon-owned `sandbox` object to `~/.agentconnect/config.json`. The minimal
-configuration preserves today's backend:
+The daemon-owned `sandbox` object in `~/.agentconnect/config.json` defaults to
+`{ "backend": "srt", "mounts": [] }`. The minimal configuration is:
 
 ```json
 {
@@ -26,7 +26,8 @@ configuration preserves today's backend:
 }
 ```
 
-An illustrative microsandbox configuration is:
+The following microsandbox configuration is proposed and is not accepted by the
+current schema:
 
 ```json
 {
@@ -61,54 +62,53 @@ An illustrative microsandbox configuration is:
 }
 ```
 
-Values above are example resource allocations, not measured minimums. New fields
-are strictly validated; they are not an untyped pass-through to a vendor SDK.
+Values above are example resource allocations, not measured minimums. Future VM
+fields will be strictly validated rather than passed untyped to a vendor SDK.
 
-| Setting                        | Proposed meaning                                                                                                                                                                                                                                                                                                            |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox.backend`              | `srt` by default; `microsandbox` selects the VM implementation for sandboxed launches.                                                                                                                                                                                                                                      |
-| `security.requireSandbox`      | Keeps its current role: require sandboxed execution for every agent. It checks the selected backend rather than hardcoding SRT.                                                                                                                                                                                             |
-| Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents.                                                                                                                                                                            |
-| `sandbox.microsandbox.image`   | Optional OCI reference. Omitted uses the runtime image reference in new release-generated metadata bundled with the daemon. An explicit image wins; a development build without metadata requires one. Record the resolved digest.                                                                                          |
-| `cpus`, `memoryMiB`, `diskGiB` | Per-session CPU allocation, memory limit, and disk capacity. Validate against backend support and daemon capacity.                                                                                                                                                                                                          |
-| `docker`                       | Start an independent Docker daemon inside each VM. Requires Docker tools in the selected image; never means mounting the host Docker socket. Default false until the Docker-enabled shared image and workload checks are delivered.                                                                                         |
-| `sandbox.mounts`               | Shared operator-owned filesystem mappings for both backends; defaults to `[]`. Each entry has `source`, `target`, and `readOnly` (default `true`). SRT requires the same host path on both sides; microsandbox supports a different guest target. Session workspace, HOME, and runtime state are provisioned automatically. |
-| `network.access`               | `development` allows public, private-network, and host connectivity subject to mandatory control/admin exclusions; `public` allows public egress and required daemon endpoints; `none` disables external egress. Default `development`. Remote model use requires connectivity.                                             |
-| `network.ports`                | Guest service ports exposed through daemon-assigned host ports. `host: 0` requests an available port. The backend binds and verifies the mapping; retry allocation conflicts and release mappings on teardown.                                                                                                              |
-| `network.outboundProxy`        | Optional host-side SOCKS URL for microsandbox's outbound transport.                                                                                                                                                                                                                                                         |
+| Setting                        | Meaning and delivery status                                                                                                                                                                                                                                                                                       |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox.backend`              | Implemented: `srt` is the default and only accepted value. Proposed: `microsandbox` selects the VM implementation for sandboxed launches.                                                                                                                                                                         |
+| `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent. SRT is currently the only supported backend.                                                                                                                                                                                                      |
+| Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents.                                                                                                                                                                  |
+| `sandbox.microsandbox.image`   | Proposed: optional OCI reference. Omitted uses the runtime image reference in new release-generated metadata bundled with the daemon. An explicit image wins; a development build without metadata requires one. Record the resolved digest.                                                                      |
+| `cpus`, `memoryMiB`, `diskGiB` | Proposed: per-session CPU allocation, memory limit, and disk capacity. Validate against backend support and daemon capacity.                                                                                                                                                                                      |
+| `docker`                       | Proposed: start an independent Docker daemon inside each VM. Requires Docker tools in the selected image; never means mounting the host Docker socket. Default false until the Docker-enabled shared image and workload checks are delivered.                                                                     |
+| `sandbox.mounts`               | Implemented: operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `readOnly` (default `true`). SRT requires equal normalized host paths. Proposed: microsandbox consumes the same list with guest targets. Session workspace, HOME, and runtime state remain automatically provisioned. |
+| `network.access`               | Proposed: `development` allows public, private-network, and host connectivity subject to mandatory control/admin exclusions; `public` allows public egress and required daemon endpoints; `none` disables external egress. Default `development`. Remote model use requires connectivity.                         |
+| `network.ports`                | Proposed: guest service ports exposed through daemon-assigned host ports. `host: 0` requests an available port. The backend binds and verifies the mapping; retry allocation conflicts and release mappings on teardown.                                                                                          |
+| `network.outboundProxy`        | Proposed: optional host-side SOCKS URL for microsandbox's outbound transport.                                                                                                                                                                                                                                     |
 
-### Shared mounts and configuration migration
+### Shared mounts and manual conversion
 
-Move operator-owned paths out of `security.sandboxReadRoots` and
-`security.sandboxWriteRoots` into `sandbox.mounts`. Both backend adapters consume
-this one normalized list; mounts are not nested under `sandbox.microsandbox`.
+`sandbox.mounts` replaces `security.sandboxReadRoots` and
+`security.sandboxWriteRoots`. The old fields are removed; the daemon does not
+automatically migrate or retain a compatibility path for them. Convert existing
+configuration manually using this table, then remove the old fields:
 
-| Previous entry                                          | Migrated entry                                                                                |
+| Previous entry                                          | Entry to add to `sandbox.mounts`                                                              |
 | ------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `security.sandboxReadRoots: ["/opt/toolchain"]`         | `{ "source": "/opt/toolchain", "target": "/opt/toolchain", "readOnly": true }`                |
 | `security.sandboxWriteRoots: ["/srv/agent-cache/pnpm"]` | `{ "source": "/srv/agent-cache/pnpm", "target": "/srv/agent-cache/pnpm", "readOnly": false }` |
 
-Convert existing configuration to the new list and remove the two legacy fields
-when migration succeeds. Expand host `~`, require existing absolute sources,
-and resolve symlinks using the current root normalization. Coalesce duplicate
-legacy paths; a path previously declared writable remains writable. Runtime
-launch preparation consumes only the migrated list, not two parallel policies.
-Existing protected-path checks remain in effect.
+Keep a previously writable path writable when converting duplicate legacy
+entries. Launch preparation consumes only `sandbox.mounts`. Normalization expands
+host `~`, requires existing absolute sources, and resolves symlinks using the
+current root normalization. Existing protected-path checks remain in effect.
 After normalization, reject different sources mapped to the same target; merge
 permissions only for entries with the same source and target.
 
 Access remains additive: a read-only entry adds read access; it does not revoke
-write access already granted by a workspace or writable mount. Normalize overlaps
-to the same effective access for both backends, and retain writable children of
-read-only parents rather than collapsing all nested paths into one entry.
+write access already granted by a workspace or writable mount. Retain writable
+children of read-only parents rather than collapsing all nested paths into one entry.
+The proposed VM backend must preserve the same effective access.
 
 SRT uses the configured paths at their host locations: its filesystem rules do
 not rename a host path inside the sandbox. Normalize `source` and `target` as
 host paths and require them to be equal. A mapping such as
 `/srv/agent-cache/pnpm` to `/cache/pnpm` fails validation for SRT. The same mapping
-is valid for microsandbox, where `target` is an absolute guest path. Migrated
-same-path entries therefore work with either backend; operators can choose new
-guest targets when switching to microsandbox.
+will be supported by microsandbox, where `target` is an absolute guest path.
+The shared configuration list is kept outside the future
+`sandbox.microsandbox` object.
 
 For example, SRT uses the same common configuration shape:
 
@@ -136,11 +136,14 @@ operator-owned mounts without deleting their host contents.
 
 Configuration is machine-local desired state. Agent configuration can select a
 runtime and request sandboxing, but cannot supply backend executables, images,
-or mounts. Future backends add a typed
-configuration member and an implementation at the existing execution-plane
+or mounts. Future backends add a typed configuration member and an implementation at the existing execution-plane
 composition point. Do not add speculative backend branches throughout ACP.
 
-### Availability and changes
+### Proposed VM availability and changes
+
+The following availability and lifecycle requirements belong to the future VM
+backend. Current configuration accepts only SRT and preserves its existing
+availability checks and optional/required sandbox behavior.
 
 Probe the selected backend with an actual launch/command, not only binary
 detection. On Linux, microsandbox requires usable KVM; checking `/dev/kvm` alone
@@ -150,7 +153,7 @@ but a requested microsandbox launch must fail explicitly. It must not silently
 fall back to SRT or an ordinary host process. Existing optional-SRT fallback
 semantics are unchanged by this proposal.
 
-This release adds no new backend for Linux hosts without usable KVM. They can
+The proposed VM release adds no new backend for Linux hosts without usable KVM. They can
 keep SRT, including fail-closed startup with `security.requireSandbox=true`. The
 new VM boundary requires bare metal or a VM exposing nested virtualization;
 Podman/runsc with systrap remains a future no-KVM option, not a hidden fallback.
@@ -320,30 +323,32 @@ Lifecycle and configuration-reuse rules are documented
 
 ## 4. Delivery and acceptance
 
-This is a design-only change. Implement in independently reviewable steps:
+Delivery is split into independently reviewable steps:
 
-1. **Configuration and capability reporting:** retain SRT defaults; add the typed
-   backend choice, shared mounts and legacy-root migration, real availability
-   checks, release image metadata, and explicit no-KVM behavior. Preserve the pool
-   and unsandboxed-agent paths.
-2. **microsandbox execution:** integrate the image, disk, ACP streams, workspace
-   and Git/file operations, declared ports with admin exclusions, and stop/start.
+1. **Implemented — SRT configuration and mounts:** add `sandbox.backend: "srt"`
+   and `sandbox.mounts`, remove legacy security roots, and apply mount permissions
+   to SRT and native tools. Existing configuration is converted manually. Preserve
+   the pool and unsandboxed-agent paths.
+2. **Proposed — microsandbox execution:** add the VM backend choice, availability
+   checks, release image metadata, and explicit no-KVM behavior. Integrate disk,
+   ACP streams, workspace and Git/file operations, declared ports with admin exclusions, and stop/start.
    Add the shared image's optional Docker/Compose support.
-3. **Developer experience and measurement:** run real projects and add dynamic
-   preview forwarding separately. Change the default only after compatibility
+3. **Proposed — developer experience and measurement:** run real projects and add
+   dynamic preview forwarding separately. Change the default only after compatibility
    and resource measurements support it.
 
-Use a small integration matrix:
+The SRT configuration/mount checks apply to the implemented slice; VM, image,
+Docker, networking, lifecycle, and performance evidence remain future gates:
 
-| Area                       | Required evidence                                                                                                                                                                                                                                                                                 |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Existing behavior          | Default SRT, required/optional sandbox policy, and Kubernetes execution remain usable. No-KVM behavior is explicit.                                                                                                                                                                               |
-| Mounts                     | Legacy roots migrate to the shared list with equivalent access. SRT accepts identical paths and rejects remapping; microsandbox maps guest targets. Verify read-only and writable paths from native tools, nested/duplicate entries, package-cache use, and host-data preservation on retirement. |
-| Image and complete session | Bundled release image selection and explicit overrides work; image preparation, ACP initialize/new/load, output, cancellation, cleanup, and a real native-tool turn succeed.                                                                                                                      |
-| Docker                     | Compose and Testcontainers work, including DNS, random ports, bind mounts, build cache, and cleanup helpers. Two sessions use the same internal ports.                                                                                                                                            |
-| Networking                 | Git/npm, an allowed host database, web preview and WebSockets work. Registered control/admin endpoints are unreachable through gateway and host address aliases, including when SOCKS is configured.                                                                                              |
-| Lifecycle                  | Idle stop preserves work/cache; start re-establishes ACP; daemon restart fences old hosts; dirty/unpushed work prevents destructive retirement.                                                                                                                                                   |
-| Performance                | Measure cold image preparation, warm disk clone, stopped-session restart, ACP-ready latency, and Git/install/build duration. At 1/10/20 sessions, record whole-environment memory, peaks, disk growth, CPU limits, and cleanup. Record reflink versus sparse-copy behavior.                       |
+| Area                       | Required evidence                                                                                                                                                                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Existing behavior          | Default SRT, required/optional sandbox policy, and Kubernetes execution remain usable. No-KVM behavior is explicit.                                                                                                                                                                                           |
+| Mounts                     | Manually converted roots preserve access. SRT accepts equal normalized paths and rejects remapping; read-only is the default and writable mounts reach native tools. Verify nested/duplicate entries and package-cache access. Future VM checks cover guest targets and host-data preservation on retirement. |
+| Image and complete session | Bundled release image selection and explicit overrides work; image preparation, ACP initialize/new/load, output, cancellation, cleanup, and a real native-tool turn succeed.                                                                                                                                  |
+| Docker                     | Compose and Testcontainers work, including DNS, random ports, bind mounts, build cache, and cleanup helpers. Two sessions use the same internal ports.                                                                                                                                                        |
+| Networking                 | Git/npm, an allowed host database, web preview and WebSockets work. Registered control/admin endpoints are unreachable through gateway and host address aliases, including when SOCKS is configured.                                                                                                          |
+| Lifecycle                  | Idle stop preserves work/cache; start re-establishes ACP; daemon restart fences old hosts; dirty/unpushed work prevents destructive retirement.                                                                                                                                                               |
+| Performance                | Measure cold image preparation, warm disk clone, stopped-session restart, ACP-ready latency, and Git/install/build duration. At 1/10/20 sessions, record whole-environment memory, peaks, disk growth, CPU limits, and cleanup. Record reflink versus sparse-copy behavior.                                   |
 
 Keep plain Podman/crun and Docker Sandboxes as labeled comparison arms where
 useful. Compare actual agent sessions before deciding latency or density targets.

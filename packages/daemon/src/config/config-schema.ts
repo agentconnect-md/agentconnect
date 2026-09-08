@@ -125,6 +125,15 @@ export const StdioMemoryPluginDefSchema = z
   })
 export type StdioMemoryPluginDef = z.infer<typeof StdioMemoryPluginDefSchema>
 
+const SandboxMountSchema = z
+  .object({
+    source: z.string().min(1),
+    target: z.string().min(1),
+    readOnly: z.boolean().default(true)
+  })
+  .strict()
+export type SandboxMount = z.infer<typeof SandboxMountSchema>
+
 export const ConfigSchema = z.object({
   version: z.literal(1),
   daemonId: z.string().optional(),
@@ -159,6 +168,13 @@ export const ConfigSchema = z.object({
   // Agent/tenant configuration can reference a key but can never supply a
   // command, path, args, or secret environment target.
   memoryPlugins: z.record(MemoryPluginCommandRef, StdioMemoryPluginDefSchema).optional(),
+  sandbox: z
+    .object({
+      backend: z.literal('srt').default('srt'),
+      mounts: z.array(SandboxMountSchema).default([])
+    })
+    .strict()
+    .default({ backend: 'srt', mounts: [] }),
   security: z
     .object({
       // Prevent ACP runtimes from implicitly inheriting apps/connectors attached
@@ -169,20 +185,15 @@ export const ConfigSchema = z.object({
       // Linux SRT/bwrap is available and every agent runs sandboxed; the
       // console locks the per-agent option on. false leaves it agent-selectable.
       requireSandbox: z.boolean().default(false),
-      // Operator-owned host dirs (toolchains such as nvm's node or a rustup toolchain) carved read-only into every sandbox.
-      sandboxReadRoots: z.array(z.string()).default([]),
-      // Operator-owned host dirs carved WRITABLE into every sandbox: package-manager stores (pnpm's store, corepack's cache) every session shares, so a PR's install lands in one place. Nothing here is verified by the daemon — whatever a sandboxed turn writes, the next session reads.
-      sandboxWriteRoots: z.array(z.string()).default([]),
       // Operator-owned remote-origin policy for daemon-managed workspace clone/pull. Default
       // ['*'] admits any https/ssh origin; exact scheme+host+port entries tighten it, and []
       // disables remote Git workspaces entirely.
       workspaceGitAllowedOrigins: z.array(WorkspaceGitOrigin).default([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
     })
+    .strict()
     .default({
       isolateAccountApps: true,
       requireSandbox: false,
-      sandboxReadRoots: [],
-      sandboxWriteRoots: [],
       workspaceGitAllowedOrigins: [...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS]
     }),
   // Relay roster the CP last published (shared-bot-relay.md §5). Persisted whole so
