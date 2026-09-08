@@ -269,7 +269,7 @@ export function FilesPanel({
     outcome === 'none'
       ? 'Not a git checkout — no branch or file status'
       : outcome === 'asleep'
-        ? 'Git status not available — this agent’s sandbox is not running'
+        ? 'Git status unavailable — this agent’s sandbox could not answer'
         : outcome === 'unavailable'
           ? 'Git status unavailable — the daemon may be offline'
           : null
