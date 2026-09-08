@@ -34,6 +34,8 @@
  * design leaves them (§12 — webchat is core end to end).
  */
 
+import type { ElicitCardFacet } from './elicit-card.js'
+
 /** A turn's INPUTS, as a platform sees them. Deliberately limited to the
  *  triggering event and the two rendering switches: a surface may read what its
  *  own platform delivered, never core turn machinery — that limit is what keeps
@@ -77,6 +79,12 @@ export interface TurnOutputContext<TMessage> {
 export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
   /** Diagnostic label; never parsed. */
   readonly platform: string
+  /** How this surface COLLECTS an elicitation answer — the in-chat card, its reduction, and the
+   *  rewrite that settles it. Absent ⇒ the surface has no such control and the ask is declined
+   *  with a notice. Reached via {@link TurnOutputRegistry.exact}, like {@link onSuppress}: a
+   *  webchat / hook / dream turn renders through the core surface but must not inherit its
+   *  platform's cards. */
+  readonly elicitCards?: ElicitCardFacet
   /** Build this turn's converger. A fresh one per turn, so a config change
    *  applies from the next turn rather than mid-stream. */
   createConverger(ctx: TurnOutputContext<TMessage>): TConv

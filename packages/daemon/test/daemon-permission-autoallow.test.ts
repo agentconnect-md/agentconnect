@@ -96,6 +96,16 @@ describe('noneSuppressedApprovalSurface — Slack `none` live turns only', () =>
     }
   })
 
+  // #1794 gap 6: a platform with a Layer-2 elicitation-card facet has an in-chat card `none`
+  // takes away too, so the fact is passed in rather than read off Slack's permission chrome.
+  it('is true for a `none` turn on any platform whose surface has an elicitation card', () => {
+    expect(noneSuppressedApprovalSurface('none', { platform: 'telegram' }, true)).toBe(true)
+    expect(noneSuppressedApprovalSurface('none', { platform: 'telegram' }, false)).toBe(false)
+    // Still not a live IM turn, whatever the surface offers.
+    expect(noneSuppressedApprovalSurface('none', { platform: 'telegram', headless: true }, true)).toBe(false)
+    expect(noneSuppressedApprovalSurface('minimal', { platform: 'telegram' }, true)).toBe(false)
+  })
+
   it('is false for every other output mode (delivery-only, no execution change)', () => {
     for (const mode of ['minimal', 'low', 'medium', 'high']) {
       expect(noneSuppressedApprovalSurface(mode, { platform: 'slack' })).toBe(false)

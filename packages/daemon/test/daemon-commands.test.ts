@@ -14,6 +14,7 @@ import { Daemon } from '../src/daemon.js'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { elicitOptionToken } from '../src/slack/render.js'
+import { slackElicitCards } from '../src/platforms/slack/elicit-card.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -1970,7 +1971,9 @@ describe('Slack interactive status bar', () => {
       propName: 'language',
       kind: 'enum',
       approval: false,
-      surface: 'slack',
+      // #1794 gap 6: the record names no platform — the Layer-2 facet that posted the card does.
+      surface: 'chat',
+      facet: slackElicitCards,
       conn: { updateBlocks, workspaceId: () => 'T1' },
       channel: 'C1',
       ts: 'card-2',
@@ -2019,7 +2022,9 @@ describe('Slack interactive status bar', () => {
         }
       ],
       approval: false,
-      surface: 'slack',
+      // #1794 gap 6: the record names no platform — the Layer-2 facet that posted the card does.
+      surface: 'chat',
+      facet: slackElicitCards,
       conn: { updateBlocks, workspaceId: () => 'T1' },
       channel: 'C1',
       ts: 'card-3',

@@ -121,16 +121,20 @@ export function approvalRequestSummary(parts: ApprovalRequestParts): string {
  * surface. Permission requests still enter the Agent-editor queue; this flag only prevents
  * a chat-side card from being rendered for the turn.
  *
- * Scoped narrowly to the surface `none` actually removes: an interactive card renders ONLY
- * on Slack (see `onAcpPermission`), and only for a live user turn. So this is true iff the
- * turn is `none` AND on Slack AND not webchat/headless. Telegram/Discord/Feishu have no card
- * surface, so `none` removes nothing there; webchat/headless are non-IM transports.
- * Computed once at dispatch (frozen for the turn) so a mid-turn mode flip can't desync it
- * from the connection it was derived from.
+ * Scoped narrowly to the surface `none` actually removes: a live user turn on a platform that
+ * HAS an in-chat card at all. `hasChatInputCards` is that fact, and it is passed in rather than
+ * looked up because it now has two independent sources — Slack's permission-approval chrome
+ * (`turnChromeFor(...).chatInputCards`) and any platform's Layer-2 elicitation-card facet — and
+ * either one means `none` removed something. Discord and Feishu still have neither, so `none`
+ * removes nothing there; webchat/headless are non-IM transports. Computed once at dispatch
+ * (frozen for the turn) so a mid-turn mode flip can't desync it from the connection it was
+ * derived from.
  */
 export function noneSuppressedApprovalSurface(
   mode: string,
-  turn: { platform: string; webchat?: unknown; headless?: boolean }
+  turn: { platform: string; webchat?: unknown; headless?: boolean },
+  hasChatInputCards = false
 ): boolean {
-  return mode === 'none' && turnChromeFor(turn.platform).chatInputCards === true && !turn.webchat && !turn.headless
+  const surfaced = hasChatInputCards || turnChromeFor(turn.platform).chatInputCards === true
+  return mode === 'none' && surfaced && !turn.webchat && !turn.headless
 }

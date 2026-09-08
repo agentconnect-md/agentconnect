@@ -68,6 +68,20 @@ describe('daemon platform registry (audit F16)', () => {
     ].map((pool: { name: string }) => pool.name.split('/')[0]!)
     expect(sorted([...new Set(poolPlatforms)])).toEqual(composed)
   })
+
+  it('pins which surfaces declare an elicitation card, and lets no other origin inherit one', () => {
+    // #1794 gap 6: the facet is OPTIONAL, so this is not a drift check against `platformIds()` —
+    // it is the pin on today's true set. Discord and Feishu are the third and fourth implementers
+    // and get their own changes; adding one must fail here first.
+    const daemon = new Daemon({ root: bareRoot() }) as any
+    const withCards = platformIds().filter((id: string) => daemon.turnSurfaces.exact(id)?.elicitCards)
+    expect(withCards).toEqual(['slack', 'telegram'])
+    // Exact lookup, so a webchat / hook / dream turn rendering through the core (Slack) surface
+    // does not inherit Slack's cards — webchat's own card is core-owned.
+    for (const origin of ['webchat', 'hook', 'dream']) {
+      expect(daemon.turnSurfaces.exact(origin)).toBeUndefined()
+    }
+  })
 })
 
 describe('observed-membership platforms (audit F17)', () => {

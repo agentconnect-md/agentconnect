@@ -26,16 +26,21 @@ import type { AcpPermissionPolicyEvent } from '../acp/acp-host.js'
 import type { DaemonEvaluationHooks } from '../evaluation/daemon-hooks.js'
 import { SlackConnection } from '../slack/connection.js'
 import type { InteractionActor } from '../platforms/contract.js'
+import type {
+  ElicitCardAsk,
+  ElicitCardFacet,
+  ElicitCardHandle,
+  ElicitCardHost,
+  ElicitCardMark,
+  ElicitCardSettlement
+} from '../platforms/elicit-card.js'
 import {
   buildApprovalDmIntro,
   buildElicitationCard,
   buildElicitDmUnanswerableCard,
-  buildElicitationFormCard,
   buildElicitationResolvedCard,
   buildPermissionCard,
   buildPermissionResolvedCard,
-  buildUrlConsentCard,
-  buildUrlConsentResolvedCard,
   clampTo,
   elicitCardShape,
   elicitForm,
@@ -54,7 +59,6 @@ import {
   multiSelectAccepts,
   numberAccepts,
   SLACK_DM_ELICIT_SURFACE,
-  SLACK_ELICIT_SURFACE,
   textAccepts,
   WEBCHAT_ELICIT_SURFACE
 } from '../slack/render.js'
@@ -112,15 +116,17 @@ interface ClosedGate {
 }
 
 /** Which surface an interactive elicitation card was posted to, and what it takes to settle it
- *  there: Slack rewrites its message in place; webchat appends a second stream event. */
+ *  there: a chat surface rewrites its own message through the facet that posted it; webchat
+ *  appends a second stream event. The chat arm names no platform — the facet does, and the
+ *  handle's three fields are the coordinates BOTH chat surfaces identify a posted card by. */
 type PendingElicitSurface =
-  | { surface: 'slack'; conn: SlackConnection; channel: string; ts?: string }
+  | ({ surface: 'chat'; facet: ElicitCardFacet } & ElicitCardHandle)
   | { surface: 'webchat'; wc: NonNullable<Pending['webchat']> }
 
 /** What the surface a card was posted to renders — re-deriving its target has to ask the same
  *  question the post did, or a card could be read back as a field its surface never showed. */
 function surfaceOf(rec: PendingElicitSurface): ElicitSurface {
-  return rec.surface === 'webchat' ? WEBCHAT_ELICIT_SURFACE : SLACK_ELICIT_SURFACE
+  return rec.surface === 'webchat' ? WEBCHAT_ELICIT_SURFACE : rec.facet.reduction
 }
 
 /** How a settled card names the answer: the chosen option's LABEL, or every chosen label for a
@@ -133,6 +139,22 @@ function chosenLabel(target: ElicitTarget | null, value: string | string[] | num
   if (typeof value === 'number') return String(value)
   if (!Array.isArray(value)) return clampTo(label(value), 200)
   return value.length ? value.map(label).join(', ') : 'Nothing selected'
+}
+
+/** One card's settlement, as its own surface re-renders it: the label, plus the ask it re-renders
+ *  from and whether that ask was a consent. Pure. */
+function elicitSettlement(
+  params: CreateElicitationRequest,
+  consent: boolean,
+  label: ElicitCardLabel
+): ElicitCardSettlement {
+  return {
+    params,
+    consent,
+    mark: label.mark,
+    text: label.text,
+    ...(label.fallback !== undefined ? { fallback: label.fallback } : {})
+  }
 }
 
 /** Whether a submitted answer has the SHAPE this kind is answered with — the arity check a card
@@ -174,17 +196,34 @@ function formAnswerLabel(
   return parts.length ? clampTo(parts.join(' · '), 200) : 'Nothing filled in'
 }
 
+/** How a card the turn ended under is labelled: nothing was decided, so it says so. */
+const ELICIT_CANCELLED: ElicitCardLabel = { mark: 'waiting', text: 'Cancelled', fallback: 'Cancelled' }
+
+/** How a card is re-labelled once chat approval is no longer allowed: the ask is still open, but
+ *  only an Agent editor can settle it now. */
+const ELICIT_EDITOR_ONLY: ElicitCardLabel = {
+  mark: 'blocked',
+  text: 'Ask an Agent editor to allow it',
+  fallback: 'Permission requires an Agent editor'
+}
+
 /** How many consented URL elicitations wait for an `elicitation/complete` that may never come. */
 const CONSENTED_URL_ELICIT_CAP = 64
 
-/** How a settled Slack consent card labels each outcome. "Opened" is deliberately not "Done":
- *  consent is all the tap proves, and only the agent's own `elicitation/complete` says more. */
-const URL_CONSENT_DECISION = {
-  accepted: ':white_check_mark: Opened',
-  dismissed: ':no_entry_sign: Dismissed',
-  cancelled: ':hourglass: Cancelled',
-  completed: ':white_check_mark: Completed'
-} as const
+/** How a settled consent card labels each outcome — the MARK and the words, so each surface
+ *  spells the mark its own way. "Opened" is deliberately not "Done": consent is all the tap
+ *  proves, and only the agent's own `elicitation/complete` says more. */
+const URL_CONSENT_DECISION: Record<'accepted' | 'dismissed' | 'cancelled' | 'completed', ElicitCardLabel> = {
+  accepted: { mark: 'answered', text: 'Opened' },
+  dismissed: { mark: 'dismissed', text: 'Dismissed' },
+  cancelled: { mark: 'waiting', text: 'Cancelled' },
+  completed: { mark: 'answered', text: 'Completed' }
+}
+
+/** How a settled card is labelled, before the ask it re-renders from is known: the mark, the words
+ *  beside it, and the notification fallback — absent when the rendered decision doubles as one,
+ *  which is what a consent card's settlement has always sent. */
+type ElicitCardLabel = { mark: ElicitCardMark; text: string; fallback?: string }
 
 /** `elicitation/complete` carries no session, so a consented card is keyed by its ACP id within
  *  the agent host that raised it — two agents may hold the same id concurrently. */
@@ -204,9 +243,6 @@ type PendingElicit = PendingElicitSurface & {
    *  Confirm-bearing one — the fields it rendered, in schema order. Absent ⇒ a one-tap button
    *  row, answered by a scalar as it always was. */
   form?: ElicitTarget[]
-  /** Set beside `form` on a SLACK form card: the opaque session target its actions block carries,
-   *  so a relay-forwarded Confirm routes back to this daemon. It names nothing about the reader. */
-  sessionTarget?: string
   /** Set only for a URL-mode consent card: the ACP `elicitationId` and the exact URL shown.
    *  Present ⇒ `propName`/`kind`/`form` mean nothing — the card has no field, and its only
    *  answers are consent (this same URL back) or Dismiss. */
@@ -225,12 +261,13 @@ type ElicitRow = { channel: string; thread: string; ts: string; sender: string; 
 /** The turn's platform surfaces a permission or elicitation card renders through. */
 export interface PermissionSurfaceHost {
   enqueueApply(p: Pending, action: DaemonRenderAction): void
-  /** Post a chronological boundary card serialized on the turn's apply chain. */
-  postCardSerialized(
-    p: Pending,
-    post: (conn: SlackConnection) => Promise<string | undefined>
-  ): Promise<string | undefined>
+  /** Post a chronological boundary card serialized on the turn's apply chain. The connection is
+   *  opaque: an elicitation-card facet casts it to its own, as every Layer-2 applier already does. */
+  postCardSerialized(p: Pending, post: (conn: unknown) => Promise<string | undefined>): Promise<string | undefined>
   httpSlackSessionTarget(p: Pick<Pending, 'plan'>): string | undefined
+  /** `platform`'s Layer-2 elicitation-card facet, EXACT (no core fallback) — undefined when this
+   *  surface cannot collect an answer, which is the whole of what core needs to know about it. */
+  elicitCardFacet(platform: string): ElicitCardFacet | undefined
   maskAgentSecrets<T>(agentId: string, payload: T): T
   logSessionAction(verb: string, sessionKey: string, actor?: InteractionActor): void
   /** Tell the CP a session started or stopped waiting on a human (slack-approval-dm.md §7); fire-and-forget. */
@@ -332,10 +369,16 @@ export class PermissionCoordinator {
    *  labelled once that post finally returns — recorded by the settlement, consumed by the
    *  posting path, which would otherwise stamp every such card Cancelled (#1794). Bounded by
    *  the posting path deleting its own entry on every exit. */
-  private readonly settledBeforePost = new Map<string, { decision: string; fallback: string }>()
+  private readonly settledBeforePost = new Map<string, ElicitCardLabel>()
 
   /** Sessions the CP currently believes are waiting, keyed by `pendingTurnKey` — emit only on a change. */
   private readonly awaitingApproval = new Map<string, { owner: HostKey; agentId: string; sessionId: string }>()
+
+  /** The two core capabilities an elicitation-card facet is allowed to reach, and nothing wider. */
+  private readonly elicitCardHost: ElicitCardHost = {
+    postCardSerialized: (turn, post) => this.host.postCardSerialized(turn as Pending, post),
+    sessionTarget: (turn) => this.host.httpSlackSessionTarget(turn as Pending)
+  }
 
   constructor(private readonly host: PermissionHost) {}
 
@@ -603,7 +646,7 @@ export class PermissionCoordinator {
     const blocks = buildPermissionCard(requestId, params, this.host.httpSlackSessionTarget(p))
     const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
     const ts = await this.host.postCardSerialized(p, (slack) =>
-      slack.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
+      (slack as SlackConnection).postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
         ...(slackAgentIdentityOptions(p.plan) ?? {}),
         chrome: true
       })
@@ -948,22 +991,14 @@ export class PermissionCoordinator {
           id: req.requestId,
           allowed: decidedAllow
         })
-        // Only a Slack card is rewritten here: an editor decision settles approvals, and
-        // an approval elicitation never lands on the webchat surface.
-        if (elicitation.surface === 'slack' && elicitation.ts) {
-          const decision =
+        // Only a chat card is rewritten here: an editor decision settles approvals, and an
+        // approval elicitation never lands on the webchat surface.
+        if (elicitation.surface === 'chat' && elicitation.ts) {
+          const label: ElicitCardLabel =
             req.decision === 'allow'
-              ? ':white_check_mark: Allowed by Agent editor'
-              : ':no_entry_sign: Denied by Agent editor'
-          void elicitation.conn
-            .updateBlocks(
-              elicitation.channel,
-              elicitation.ts,
-              buildElicitationResolvedCard(elicitation.params, decision),
-              'Permission resolved',
-              true
-            )
-            .catch(() => {})
+              ? { mark: 'answered', text: 'Allowed by Agent editor', fallback: 'Permission resolved' }
+              : { mark: 'dismissed', text: 'Denied by Agent editor', fallback: 'Permission resolved' }
+          elicitation.facet.settle(elicitation, elicitSettlement(elicitation.params, false, label))
         }
         elicitation.resolve(req.decision === 'allow' ? { action: 'accept' } : { action: 'cancel' })
         return { ok: true }
@@ -1146,16 +1181,8 @@ export class PermissionCoordinator {
         .catch(() => {})
     }
     for (const pending of this.pendingElicits.values()) {
-      if (pending.agentId !== agentId || !pending.approval || pending.surface !== 'slack' || !pending.ts) continue
-      void pending.conn
-        .updateBlocks(
-          pending.channel,
-          pending.ts,
-          buildElicitationResolvedCard(pending.params, ':lock: Ask an Agent editor to allow it'),
-          'Permission requires an Agent editor',
-          true
-        )
-        .catch(() => {})
+      if (pending.agentId !== agentId || !pending.approval || pending.surface !== 'chat' || !pending.ts) continue
+      pending.facet.settle(pending, elicitSettlement(pending.params, false, ELICIT_EDITOR_ONLY))
     }
   }
 
@@ -1391,30 +1418,68 @@ export class PermissionCoordinator {
         ? await this.awaitWebchatUrlElicitation(agentId, sessionId, params, p, p.webchat, url)
         : await this.awaitWebchatElicitation(agentId, sessionId, params, p, p.webchat)
     }
-    const conn = p.conn
-    if (!turnChromeFor(p.plan.platform).chatInputCards || !(conn instanceof SlackConnection))
-      return this.noticeUnrenderableElicit(p, params, isApproval)
-    // A second SURFACE for #1810's URL mode: the notice is only for an ask Slack still cannot render.
-    if (url) return await this.awaitSlackUrlElicitation(agentId, sessionId, params, p, conn, url)
+    // A platform name is never core knowledge (integration-plugin-architecture.md): the turn
+    // surface's own elicitation-card facet says whether this chat can collect an answer, and the
+    // lookup is EXACT so a hook or dream turn rendering through the core surface does not inherit
+    // Slack's cards. No connection means no surface at all, headless included.
+    const facet = p.conn ? this.host.elicitCardFacet(p.plan.platform) : undefined
+    if (!facet) return this.noticeUnrenderableElicit(p, params, isApproval)
+    // A second SURFACE for #1810's URL mode: the notice is only for an ask this chat still cannot
+    // render. A consent card is never an approval, so it takes the approval-free path.
+    if (url) return await this.awaitChatElicitation(agentId, sessionId, params, p, facet, { url }, false)
     if (params.mode === 'url') return this.noticeUnrenderableElicit(p, params, isApproval)
-    // ONE reduction decides the card's shape (#1794's Slack column). Anything the reader has to
-    // fill in before submitting — several questions, a question with its own free-text box, a
-    // multi-select, a typed box — is a card of `input` blocks with one Confirm; only a lone
-    // single-select or boolean, which one tap answers, keeps its row of buttons below. An approval
-    // is allow/deny by construction, so it is always the button row: chat approval has no shape
-    // for a filled-in field, and its own bookkeeping lives on the button path.
-    const form = elicitForm(params, SLACK_ELICIT_SURFACE)
+    // ONE reduction decides the card's shape (#1794), against THIS surface's own declaration.
+    // Anything the reader has to fill in before submitting — several questions, a question with
+    // its own free-text box, a multi-select, a typed box — is a card of inputs with one Confirm;
+    // only a lone single-select or boolean, which one tap answers, keeps its row of buttons below.
+    // An approval is allow/deny by construction, so it is always the button row: chat approval has
+    // no shape for a filled-in field, and its own bookkeeping lives on the button path.
+    const form = elicitForm(params, facet.reduction)
     if (!form) return this.noticeUnrenderableElicit(p, params, isApproval)
-    if (elicitCardShape(form) === 'inputs') {
-      if (isApproval) return this.noticeUnrenderableElicit(p, params, isApproval)
-      return await this.awaitSlackFormElicitation(agentId, sessionId, params, p, conn, form)
-    }
-    const target = form[0]!
+    if (isApproval && elicitCardShape(form) === 'inputs') return this.noticeUnrenderableElicit(p, params, isApproval)
+    return await this.awaitChatElicitation(agentId, sessionId, params, p, facet, { form }, isApproval)
+  }
+
+  /**
+   * Post ONE elicitation card on the turn's own chat surface and park the resolver until it is
+   * answered, dismissed, or the turn ends.
+   *
+   * The three Slack paths this replaces — the one-tap button row, the filled-in card with its
+   * Confirm, and URL mode's consent card — differed only in which card was built and what the
+   * record carried, so the facet builds the card and what is left here is everything that is NOT
+   * platform-shaped: the record, the mid-post settlement race, and the approval bookkeeping.
+   *
+   * A card this surface has no control for is declined with the notice every other unrenderable
+   * ask gets: `build` returns null and nothing is posted or recorded as open.
+   */
+  private async awaitChatElicitation(
+    agentId: string,
+    sessionId: string,
+    params: CreateElicitationRequest,
+    p: Pending,
+    facet: ElicitCardFacet,
+    shape: { form?: ElicitTarget[]; url?: { elicitationId: string; url: string } },
+    isApproval: boolean
+  ): Promise<CreateElicitationResponse | undefined> {
+    const { form, url } = shape
     const requestId = randomUUID()
-    const blocks = buildElicitationCard(requestId, params, this.host.httpSlackSessionTarget(p), SLACK_ELICIT_SURFACE)
-    if (!blocks) return this.noticeUnrenderableElicit(p, params, isApproval)
-    const cardMessage = (params as { message?: string }).message?.trim() || 'The agent needs your input'
-    const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
+    // A card whose fields have to be filled in answers with a RECORD, and a consent card has no
+    // field at all: both carry the one-tap card's field shape unused, and neither path reads it.
+    const inputs = !!form && elicitCardShape(form) === 'inputs'
+    const defaulted = url ? 'The agent needs you to open a link' : 'The agent needs your input'
+    const message = (params as { message?: string }).message?.trim() || defaulted
+    const fallback = (params as { message?: string }).message ?? defaulted
+    const ask: ElicitCardAsk = {
+      requestId,
+      params,
+      message,
+      fallback,
+      ...(form ? { form } : {}),
+      ...(url ? { url } : {})
+    }
+    const draft = facet.build(this.elicitCardHost, p, ask)
+    if (draft === null || draft === undefined) return this.noticeUnrenderableElicit(p, params, isApproval)
+    const target = form?.[0]
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
     this.pendingElicits.set(requestId, {
@@ -1422,15 +1487,25 @@ export class PermissionCoordinator {
       agentId,
       sessionId,
       params,
-      propName: target.propName,
-      kind: target.kind,
+      propName: inputs || url ? '' : (target?.propName ?? ''),
+      kind: inputs || url ? 'text' : (target?.kind ?? 'text'),
+      ...(inputs && form ? { form } : {}),
+      ...(url ? { url } : {}),
       approval: isApproval,
-      surface: 'slack',
-      conn,
+      surface: 'chat',
+      facet,
+      conn: p.conn,
       channel: p.plan.channel,
       // An MCP approval keeps its durable record in `permission_requests` and its own console
       // surface, so it is not also a transcript card.
-      ...(isApproval ? {} : this.recordElicitCard(p, elicitCardPayload(requestId, cardMessage, params, form))),
+      ...(isApproval
+        ? {}
+        : this.recordElicitCard(
+            p,
+            url
+              ? elicitUrlCardPayload(requestId, message, url.url)
+              : elicitCardPayload(requestId, message, params, form ?? [])
+          )),
       resolve: resolveResult
     })
     this.syncApprovalActivity(p.hostKey, sessionId)
@@ -1455,40 +1530,27 @@ export class PermissionCoordinator {
       this.recordedWrites.delete(requestId)
       if (!this.pendingElicits.has(requestId)) return await result
     }
-    const ts = await this.host.postCardSerialized(p, (sc) =>
-      sc.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
-        ...(slackAgentIdentityOptions(p.plan) ?? {}),
-        chrome: true
-      })
-    )
+    const ts = await facet.send(this.elicitCardHost, p, ask, draft)
     const live = this.pendingElicits.get(requestId)
-    // Settled mid-post — say how it actually ended. A tap can reach the daemon before Slack has
-    // answered the post that carried it, and calling that answer Cancelled contradicts what the
-    // reader just did; the settlement left its own label here (#1794).
+    // Settled mid-post — the card must stop offering an answer nobody awaits, and must say how it
+    // actually ended. A tap can reach the daemon before the platform has answered the post that
+    // carried it, and calling that answer Cancelled contradicts what the reader just did; the
+    // settlement left its own label here (#1794).
     if (!live) {
       const settled = this.takeSettledBeforePost(requestId)
-      if (ts)
-        void conn
-          .updateBlocks(
-            p.plan.channel,
-            ts,
-            buildElicitationResolvedCard(params, settled.decision),
-            settled.fallback,
-            true
-          )
-          .catch(() => {})
+      if (ts) facet.settle({ conn: p.conn, channel: p.plan.channel, ts }, elicitSettlement(params, !!url, settled))
       return await result
     }
     if (!ts) {
       this.pendingElicits.delete(requestId)
       this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
       if (isApproval) await this.resolveStoredPermissionRequest(agentId, requestId, 'expired')
-      // A card Slack never took is closed on the row too, or it would read as open forever.
+      // A card the platform never took is closed on the row too, or it would read as open forever.
       this.settleElicitRow(live, 'cancelled')
       live.resolve({ action: 'cancel' })
       return await result
     }
-    if (live.surface === 'slack') live.ts = ts
+    if (live.surface === 'chat') live.ts = ts
     return isApproval ? await this.trackHumanApprovalWait(p, result) : await result
   }
 
@@ -1694,140 +1756,6 @@ export class PermissionCoordinator {
     return await result
   }
 
-  /** Slack's peer of {@link awaitWebchatUrlElicitation}: post the CONSENT card and park the
-   *  resolver until the reader taps Open link or Dismiss. Nothing here fetches the URL — the tap
-   *  hands it to the reader's browser, which is what keeps the page out of the model's context —
-   *  so the only thing this seam decides is whether they agreed to go there. A card this surface
-   *  cannot build falls back to the same decline notice every other unrenderable ask gets. */
-  private async awaitSlackUrlElicitation(
-    agentId: string,
-    sessionId: string,
-    params: CreateElicitationRequest,
-    p: Pending,
-    conn: SlackConnection,
-    url: { elicitationId: string; url: string }
-  ): Promise<CreateElicitationResponse | undefined> {
-    const requestId = randomUUID()
-    const blocks = buildUrlConsentCard(requestId, params, this.host.httpSlackSessionTarget(p))
-    if (!blocks) return this.noticeUnrenderableElicit(p, params, false)
-    const message = (params as { message?: string }).message?.trim() || 'The agent needs you to open a link'
-    const fallback = (params as { message?: string }).message ?? 'The agent needs you to open a link'
-    let resolveResult!: (res: CreateElicitationResponse) => void
-    const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
-    this.pendingElicits.set(requestId, {
-      owner: p.hostKey,
-      agentId,
-      sessionId,
-      params,
-      // A URL card has no field; these are the record's unused shape, never read on this path.
-      propName: '',
-      kind: 'text',
-      url,
-      approval: false,
-      surface: 'slack',
-      conn,
-      channel: p.plan.channel,
-      ...this.recordElicitCard(p, elicitUrlCardPayload(requestId, message, url.url)),
-      resolve: resolveResult
-    })
-    this.syncApprovalActivity(p.hostKey, sessionId)
-    const ts = await this.host.postCardSerialized(p, (sc) =>
-      sc.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
-        ...(slackAgentIdentityOptions(p.plan) ?? {}),
-        chrome: true
-      })
-    )
-    const live = this.pendingElicits.get(requestId)
-    // Settled mid-post — the card must stop offering a consent nobody awaits, and must say how it
-    // actually ended: a consent that beat this post left its own label, and calling that Cancelled
-    // would contradict the credential page the reader really did open (#1794).
-    if (!live) {
-      const settled = this.takeSettledBeforePost(requestId)
-      if (ts) this.rewriteSlackCard(conn, p.plan.channel, ts, params, settled.decision, settled.fallback, true)
-      return await result
-    }
-    if (!ts) {
-      this.pendingElicits.delete(requestId)
-      this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
-      // A card Slack never took is closed on the row too, or it would read as open forever.
-      this.settleElicitRow(live, 'cancelled')
-      live.resolve({ action: 'cancel' })
-      return await result
-    }
-    if (live.surface === 'slack') live.ts = ts
-    return await result
-  }
-
-  /**
-   * Slack's peer of {@link awaitWebchatElicitation}: post the card whose fields are `input` blocks
-   * in the message itself — the question, one input per field, Confirm and Dismiss — and park the
-   * resolver until Confirm is tapped, Dismiss is tapped, or the turn ends.
-   *
-   * A form no card can hold (an enum option value past Slack's select cap, a minimum length past
-   * an input's) is declined with the same notice every other unrenderable ask gets: the builder
-   * returns null and nothing is posted.
-   */
-  private async awaitSlackFormElicitation(
-    agentId: string,
-    sessionId: string,
-    params: CreateElicitationRequest,
-    p: Pending,
-    conn: SlackConnection,
-    form: ElicitTarget[]
-  ): Promise<CreateElicitationResponse | undefined> {
-    const requestId = randomUUID()
-    const sessionTarget = this.host.httpSlackSessionTarget(p)
-    const blocks = buildElicitationFormCard(requestId, params, form, sessionTarget)
-    if (!blocks) return this.noticeUnrenderableElicit(p, params, false)
-    const cardMessage = (params as { message?: string }).message?.trim() || 'The agent needs your input'
-    const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
-    let resolveResult!: (res: CreateElicitationResponse) => void
-    const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
-    this.pendingElicits.set(requestId, {
-      owner: p.hostKey,
-      agentId,
-      sessionId,
-      params,
-      // A form answers with a RECORD keyed by property name, so these two carry nothing: they
-      // are the single-field card's shape, and the form path never reads either.
-      propName: '',
-      kind: 'text',
-      form,
-      ...(sessionTarget ? { sessionTarget } : {}),
-      approval: false,
-      surface: 'slack',
-      conn,
-      channel: p.plan.channel,
-      ...this.recordElicitCard(p, elicitCardPayload(requestId, cardMessage, params, form)),
-      resolve: resolveResult
-    })
-    this.syncApprovalActivity(p.hostKey, sessionId)
-    const ts = await this.host.postCardSerialized(p, (sc) =>
-      sc.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
-        ...(slackAgentIdentityOptions(p.plan) ?? {}),
-        chrome: true
-      })
-    )
-    const live = this.pendingElicits.get(requestId)
-    // Settled mid-post — the card must stop offering an answer nobody awaits, and must say how it
-    // actually ended rather than assume the turn was cancelled (#1794).
-    if (!live) {
-      const settled = this.takeSettledBeforePost(requestId)
-      if (ts) this.rewriteSlackCard(conn, p.plan.channel, ts, params, settled.decision, settled.fallback, false)
-      return await result
-    }
-    if (!ts) {
-      this.pendingElicits.delete(requestId)
-      this.syncApprovalActivity(p.hostKey, sessionId, { id: requestId })
-      // A card Slack never took is closed on the row too, or it would read as open forever.
-      this.settleElicitRow(live, 'cancelled')
-      live.resolve({ action: 'cancel' })
-      return await result
-    }
-    if (live.surface === 'slack') live.ts = ts
-    return await result
-  }
-
   /**
    * The field list a live card's `input` blocks were built from, re-derived from its OWN params
    * rather than read back off the record (#1815) — the same reduction, on the same surface, so it
@@ -1855,7 +1783,7 @@ export class PermissionCoordinator {
     actor?: InteractionActor
   }): Promise<void> {
     const rec = this.pendingElicits.get(a.requestId)
-    if (!rec || rec.surface !== 'slack' || !rec.form) return
+    if (!rec || rec.surface !== 'chat' || !rec.form) return
     const form = this.cardForm(rec)
     if (!form) return
     const submission = elicitFormSubmission(rec.params, form, a.fields)
@@ -1870,23 +1798,6 @@ export class PermissionCoordinator {
       value: submission.answer ?? {},
       ...(a.actor ? { actor: a.actor } : {})
     })
-  }
-
-  /** Rewrite a settled Slack card in place, best effort — the ACP resolution never depends on it.
-   *  A consent card keeps its own shape so the settled message still records the URL. */
-  private rewriteSlackCard(
-    conn: SlackConnection,
-    channel: string,
-    ts: string,
-    params: CreateElicitationRequest,
-    decision: string,
-    fallback: string,
-    consent: boolean
-  ): void {
-    const blocks = consent
-      ? buildUrlConsentResolvedCard(params, decision)
-      : buildElicitationResolvedCard(params, decision)
-    void conn.updateBlocks(channel, ts, blocks, fallback, true).catch(() => {})
   }
 
   /** Settle a URL-mode consent card. `accept` means only that the user agreed to OPEN the URL —
@@ -1906,7 +1817,7 @@ export class PermissionCoordinator {
     // an answer was one it actually rendered. A Slack button carries that option as its position
     // (#1794), which is what keeps a URL too long for a button `value` from losing its card;
     // webchat's card carries the URL itself.
-    const consented = a.value === (rec.surface === 'slack' ? elicitOptionToken(0) : rec.url.url)
+    const consented = a.value === (rec.surface === 'chat' ? elicitOptionToken(0) : rec.url.url)
     if (!consented && a.value !== null) return
     this.pendingElicits.delete(requestId)
     this.syncApprovalActivity(rec.owner, rec.sessionId, { id: requestId, allowed: consented })
@@ -1915,8 +1826,8 @@ export class PermissionCoordinator {
     rec.resolve({ action: consented ? 'accept' : 'decline' })
   }
 
-  /** Say on the card's own surface how a consent card ended: webchat appends a stream event,
-   *  Slack rewrites the message. Best effort on both — the ACP resolution never depends on it. */
+  /** Say on the card's own surface how a consent card ended: webchat appends a stream event, a
+   *  chat surface rewrites the message. Best effort on both — no ACP resolution depends on it. */
   private settleUrlElicit(
     rec: PendingElicit,
     requestId: string,
@@ -1928,8 +1839,7 @@ export class PermissionCoordinator {
       this.emitWebchatElicitResolved(rec, requestId, outcome, label)
       return
     }
-    const decision = URL_CONSENT_DECISION[outcome]
-    this.settleSlackCard(rec, requestId, decision, decision, true)
+    this.settleChatCard(rec, requestId, true, URL_CONSENT_DECISION[outcome])
   }
 
   /** Park a consented card's coordinates so a later `elicitation/complete` can find it. Oldest
@@ -2033,7 +1943,7 @@ export class PermissionCoordinator {
     // an answer, exactly as `elicitFormSubmission` reads a Confirm. A form answer came through
     // that function, which resolved it already, and webchat carries literals: neither is remapped.
     const resolved: ElicitAnswer =
-      rec.surface === 'slack' && !rec.form && target && typeof a.value === 'string'
+      rec.surface === 'chat' && !rec.form && target && typeof a.value === 'string'
         ? elicitOptionLiteral(target, a.value)
         : a.value
     // A position naming no option this card offered is refused with the same words, and the card
@@ -2068,48 +1978,46 @@ export class PermissionCoordinator {
       return
     }
     if (rec.approval && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
-      if (rec.surface === 'slack' && rec.ts) {
-        void rec.conn
-          .updateBlocks(
-            rec.channel,
-            rec.ts,
-            buildElicitationResolvedCard(rec.params, ':lock: Ask an Agent editor to allow it'),
-            'Permission requires an Agent editor',
-            true
-          )
-          .catch(() => {})
-      }
+      if (rec.surface === 'chat') rec.facet.settle(rec, elicitSettlement(rec.params, false, ELICIT_EDITOR_ONLY))
       return
     }
     let res: CreateElicitationResponse
-    let decision: string
-    // What the settled card says the answer WAS — the webchat label, and the Slack decision's tail.
+    let mark: ElicitCardMark
+    // What the settled card says the answer WAS — the webchat label, and the decision's own tail.
     let answered: string | undefined
+    // What the card's own words say beside the mark, which is not always the label: a scalar
+    // answer's decision echoes the VALUE, where the row's label names the option.
+    let decisionText: string
     if (answer === null) {
       res = { action: 'decline' }
-      decision = ':no_entry_sign: Dismissed'
+      mark = 'dismissed'
+      decisionText = 'Dismissed'
     } else if (isFormAnswer(answer)) {
       if (!form) return
       // A form's accepted content is the whole record: every answered field under its own name.
       res = { action: 'accept', content: elicitFormContent(form, answer) }
       answered = formAnswerLabel(rec.params, form, answer)
-      decision = `:white_check_mark: ${answered}`
+      mark = 'answered'
+      decisionText = answered
     } else if (Array.isArray(answer)) {
       // The array property's accepted content is the chosen list itself.
       res = { action: 'accept', content: { [rec.propName]: answer } }
       answered = chosenLabel(target, answer)
-      decision = `:white_check_mark: ${answered}`
+      mark = 'answered'
+      decisionText = answered
     } else {
       // The accepted content carries the schema's own type: a boolean for a boolean field and a
       // real number for a numeric one, never the string the wire happened to spell it with.
       const value = rec.kind === 'boolean' ? answer === 'true' : answer
       res = { action: 'accept', content: { [rec.propName]: value } }
       answered = chosenLabel(target, answer)
-      decision = `:white_check_mark: ${rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : String(answer)}`
+      mark = 'answered'
+      decisionText = rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : String(answer)
     }
     if (rec.approval) {
-      // Approval elicitations only ever take the Slack card path (chat approval requires it).
-      const team = rec.surface === 'slack' ? rec.conn.workspaceId() : undefined
+      // A chat approval's actor id is scoped the way its own surface scopes one (undefined where
+      // the surface's ids are already global), so a recorded resolver is unique either way.
+      const team = rec.surface === 'chat' ? rec.facet.answerScope?.(rec) : undefined
       const by = a.actor
         ? { resolvedBy: team ? `slack:${team}:${a.actor.userId}` : null, resolvedByName: a.actor.name ?? null }
         : undefined
@@ -2129,7 +2037,7 @@ export class PermissionCoordinator {
     this.settleElicitRow(rec, outcome, answered)
     if (rec.surface === 'webchat') {
       this.emitWebchatElicitResolved(rec, a.requestId, outcome, answered)
-    } else this.settleSlackCard(rec, a.requestId, decision, 'Input received', false)
+    } else this.settleChatCard(rec, a.requestId, false, { mark, text: decisionText, fallback: 'Input received' })
     rec.resolve(res)
   }
 
@@ -2205,29 +2113,29 @@ export class PermissionCoordinator {
     )
   }
 
-  /** Label a Slack card whose post is still in flight. The message has no `ts` yet, so there is
-   *  nothing to rewrite — the label is left for the posting path, which would otherwise call
-   *  every such card Cancelled (#1794). The row is settled either way: it needs no `ts`. */
-  private settleSlackCard(
-    rec: PendingElicit & { surface: 'slack' },
+  /** Rewrite a settled chat card through the facet that posted it, or — when its post is still in
+   *  flight and there is no message to rewrite — leave the label for the posting path, which would
+   *  otherwise call every such card Cancelled (#1794). The row is settled either way: it needs no
+   *  message id. Best effort: no ACP resolution depends on the rewrite. */
+  private settleChatCard(
+    rec: PendingElicit & { surface: 'chat' },
     requestId: string,
-    decision: string,
-    fallback: string,
-    consent: boolean
+    consent: boolean,
+    label: ElicitCardLabel
   ): void {
     if (rec.ts) {
-      this.rewriteSlackCard(rec.conn, rec.channel, rec.ts, rec.params, decision, fallback, consent)
+      rec.facet.settle(rec, elicitSettlement(rec.params, consent, label))
       return
     }
-    this.settledBeforePost.set(requestId, { decision, fallback })
+    this.settledBeforePost.set(requestId, label)
   }
 
   /** How a card the posting path found already settled must read. A settlement that beat the post
    *  left its own label here; anything else really was the turn ending, which is Cancelled. */
-  private takeSettledBeforePost(requestId: string): { decision: string; fallback: string } {
+  private takeSettledBeforePost(requestId: string): ElicitCardLabel {
     const settled = this.settledBeforePost.get(requestId)
     this.settledBeforePost.delete(requestId)
-    return settled ?? { decision: ':hourglass: Cancelled', fallback: 'Cancelled' }
+    return settled ?? ELICIT_CANCELLED
   }
 
   /** Post one daemon-authored line on the card's OWN surface — a notice, so it lands where every
@@ -2261,7 +2169,7 @@ export class PermissionCoordinator {
       else {
         this.settleElicitRow(rec, 'cancelled')
         if (rec.surface === 'webchat') this.emitWebchatElicitResolved(rec, id, 'cancelled')
-        else this.settleSlackCard(rec, id, ':hourglass: Cancelled', 'Cancelled', false)
+        else this.settleChatCard(rec, id, false, ELICIT_CANCELLED)
       }
       rec.resolve({ action: 'cancel' })
     }

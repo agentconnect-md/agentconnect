@@ -151,11 +151,13 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     attributionFooterEnabled: showFooter && turnChromeFor(msg.platform).attributionFooter === true,
     // True only when `none` removed THIS turn's chat-input permission card surface. Frozen for
     // the turn so a mid-turn mode flip cannot desync policy from the cleared connection.
-    approvalSurfaceSuppressed: noneSuppressedApprovalSurface(mode, {
-      platform: msg.platform,
-      webchat,
-      headless: msg.headless
-    }),
+    approvalSurfaceSuppressed: noneSuppressedApprovalSurface(
+      mode,
+      { platform: msg.platform, webchat, headless: msg.headless },
+      // §7.3: a platform with an elicitation-card facet has an in-chat card `none` takes away,
+      // exactly as Slack's permission chrome does. EXACT, so webchat/hook/dream inherit none.
+      turnSurfaces.exact(msg.platform)?.elicitCards !== undefined
+    ),
     suppressReplyConn,
     // Cold/warm is captured BEFORE sessions.handle(), which boots the host via hostFor().
     // A pod that is not up yet outranks both: it is the wait the user is actually about to sit through.
