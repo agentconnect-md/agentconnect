@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import {
+  AGENT_MEMORY_STORE_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
@@ -171,6 +172,9 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
 
     // routingEpoch re-issued as-is (convergence, not bump).
     expect(snap.routingEpoch).toBe(7)
+
+    // memory-evolution.md §3.2.1: the whole `memory/store` family is served, so a `control-plane` home may activate.
+    expect(snap.serverFeatures).toContain(AGENT_MEMORY_STORE_V1_FEATURE)
 
     // assignments: exactly the one active row for this daemon, as a RouteAssign.
     expect(snap.assignments).toHaveLength(1)

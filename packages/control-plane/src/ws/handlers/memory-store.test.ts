@@ -6,7 +6,7 @@ import { PlacementResolver } from '../../orchestrator/placementResolver.js'
 import { systemClock } from '../../domain/clock.js'
 import type { DaemonId } from '../../domain/ids.js'
 import { MemoryStoreTooLargeError } from '../../agent-memory/paths.js'
-import { handleMemoryHistoryAppend, handleMemoryStore } from './memory-store.js'
+import { handleMemoryHistoryAppend, handleMemoryHomeMigrated, handleMemoryStore } from './memory-store.js'
 
 const DAEMON = 'd0d0d0d0-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -37,7 +37,10 @@ const cpHome = { provider: 'managed', home: 'control-plane' }
 function deps(overrides: Partial<Record<keyof DaemonWsDeps, unknown>> = {}): DaemonWsDeps {
   return {
     log: { error: vi.fn() },
-    agent: { get: async () => ({ id: AGENT, orgId: ORG, placementKind: 'daemon', daemonId: DAEMON, memory: cpHome }) },
+    agent: {
+      get: async () => ({ id: AGENT, orgId: ORG, placementKind: 'daemon', daemonId: DAEMON, memory: cpHome }),
+      settleMemoryHomeMigration: vi.fn(async () => 'cleared')
+    },
     agentMemoryStore: { apply: vi.fn(async () => ({ ok: true, value: { exists: false } })) },
     agentMemoryHistory: { append: vi.fn(async () => undefined) },
     ...overrides
@@ -208,5 +211,80 @@ describe('handleMemoryHistoryAppend', () => {
       d
     )
     expect(c.sendError).toHaveBeenCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
+  })
+
+  it('stores the root normalized and answers an escaping root as BAD_PAYLOAD', async () => {
+    const d = deps()
+    const c = conn()
+    await handleMemoryHistoryAppend(
+      frame('memory/history/append', { agentId: AGENT, root: './memory/', records: [record] }),
+      c,
+      d
+    )
+    const append = (d.agentMemoryHistory as { append: ReturnType<typeof vi.fn> }).append
+    expect(append.mock.calls[0]![2]).toBe('memory')
+
+    const bad = conn()
+    await handleMemoryHistoryAppend(
+      frame('memory/history/append', { agentId: AGENT, root: '../elsewhere', records: [record] }),
+      bad,
+      deps()
+    )
+    expect(bad.sendError).toHaveBeenCalledWith(expect.any(String), 'BAD_PAYLOAD', expect.any(String), false)
+  })
+})
+
+describe('handleMemoryHomeMigrated', () => {
+  const migrated = () => frame('memory/home/migrated', { agentId: AGENT })
+  type Settle = { settleMemoryHomeMigration: ReturnType<typeof vi.fn> }
+
+  it('clears the flag under the store fence and answers accepted; a second report is the same success', async () => {
+    const d = deps()
+    const c = conn()
+    await handleMemoryHomeMigrated(migrated(), c, d)
+    expect((d.agent as unknown as Settle).settleMemoryHomeMigration).toHaveBeenCalledWith(ORG, AGENT)
+    expect(c.replyTo).toHaveBeenCalledWith(expect.anything(), 'memory/home/migrated/ok', { accepted: true })
+  })
+
+  it('refuses a daemon that does not serve the agent, and one whose home is not the Control Plane', async () => {
+    const other = conn()
+    const pool = { id: AGENT, orgId: ORG, placementKind: 'set', daemonId: null, setId: POOL_SET, memory: cpHome }
+    await handleMemoryHomeMigrated(
+      migrated(),
+      other,
+      deps({ agent: { get: async () => pool }, placementResolver: holderOf({ [AGENT]: ['other-daemon'] }) })
+    )
+    expect(other.sendError).toHaveBeenCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
+
+    const daemonHome = conn()
+    await handleMemoryHomeMigrated(
+      migrated(),
+      daemonHome,
+      deps({
+        agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, memory: { provider: 'managed' } }) }
+      })
+    )
+    expect(daemonHome.sendError).toHaveBeenCalledWith(
+      expect.any(String),
+      'SCOPE_DENIED',
+      'the agent memory home is not the Control Plane',
+      false
+    )
+  })
+
+  it('answers CONFLICT when the home moved on between the read and the atomic clear', async () => {
+    const c = conn()
+    await handleMemoryHomeMigrated(
+      migrated(),
+      c,
+      deps({
+        agent: {
+          get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON, memory: cpHome }),
+          settleMemoryHomeMigration: async () => 'conflict'
+        }
+      })
+    )
+    expect(c.sendError).toHaveBeenCalledWith(expect.any(String), 'CONFLICT', expect.any(String), false)
+    expect(c.replyTo).not.toHaveBeenCalled()
   })
 })

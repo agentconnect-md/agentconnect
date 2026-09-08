@@ -815,6 +815,8 @@ export interface AgentSkillSourceFence {
 export interface AgentUpdateOpts {
   authorizeMcpServers?: (currentlyHeld: readonly string[]) => void
   skillSources?: AgentSkillSourceFence
+  /** The forced return of a memory home to the daemon: the agent's CP tree and change log go in the same transaction. */
+  dropManagedMemoryHome?: true
 }
 
 export interface AgentCreateOpts {
@@ -852,6 +854,9 @@ export interface AgentRepo {
    *  Org-fenced: throws {@link AgentMissing} when `agentId` does not exist in
    *  `orgId` — a cross-org id is indistinguishable from a missing row. */
   update(orgId: OrgId, agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord>
+  /** Clear `homeMigration` once the daemon reports the copy done (memory-evolution.md §3.2.1), atomically against the
+   *  binding it reads: `conflict` when the home is no longer the Control Plane; an already-clear flag is `cleared`. */
+  settleMemoryHomeMigration(orgId: OrgId, agentId: AgentId): Promise<'cleared' | 'conflict' | 'missing'>
   /** Compare-and-set a workspace edit. The caller has already drained/proved
    *  an owning daemon when one exists. Org-fenced: a cross-org id misses the
    *  CAS exactly like a stale expectation (null). */
@@ -5879,6 +5884,8 @@ export interface AgentMemoryFileRepo {
   utimes(agentId: AgentId, path: string, mtime: Date): Promise<void>
   /** Delete up to `limit` staged rows older than `before` — what an abandoned append sequence left. */
   sweepStaged(before: Date, limit: number): Promise<number>
+  /** Every row of the agent — the forced return to a daemon home; the store service refuses `rm` of the root on purpose. */
+  deleteTree(agentId: AgentId): Promise<void>
 }
 
 /** One change-log record as stored: the wire event plus the store `root` it belongs to. */
@@ -5900,6 +5907,15 @@ export interface AgentMemoryHistoryRetention {
   maxBytesPerRoot: number
 }
 
+/** One stored change-log record, as the console's `memory/history` page carries it. */
+export type AgentMemoryHistoryRecord = AgentMemoryHistoryInput
+
+/** One newest-first page of a file's change log; `nextCursor` is the id of the next not-yet-returned record. */
+export interface AgentMemoryHistoryPage {
+  records: AgentMemoryHistoryRecord[]
+  nextCursor?: string
+}
+
 /** The `agent_memory_history` table: insert a batch, then retain by deleting — newest N per file, then a byte cap per store. */
 export interface AgentMemoryHistoryRepo {
   append(
@@ -5909,6 +5925,16 @@ export interface AgentMemoryHistoryRepo {
     records: AgentMemoryHistoryInput[],
     retention: AgentMemoryHistoryRetention
   ): Promise<void>
+  /** Page one file's records newest first; `cursor` names the record the page starts at, and an evicted one is an empty page. */
+  page(
+    agentId: AgentId,
+    root: string,
+    path: string,
+    cursor: string | undefined,
+    limit: number
+  ): Promise<AgentMemoryHistoryPage>
+  /** Every record of the agent — the forced return to a daemon home. */
+  deleteTree(agentId: AgentId): Promise<void>
 }
 
 // ── External-memory plugin control plane (memory-evolution M-5A) ──

@@ -11,6 +11,8 @@ import type {
   AgentMemoryFileRepo,
   AgentMemoryFileSlice,
   AgentMemoryHistoryInput,
+  AgentMemoryHistoryPage,
+  AgentMemoryHistoryRecord,
   AgentMemoryHistoryRepo,
   AgentMemoryHistoryRetention,
   AgentMemoryRenameOutcome
@@ -210,6 +212,39 @@ export class PgAgentMemoryFileRepo implements AgentMemoryFileRepo {
       )
     `)
   }
+
+  async deleteTree(agentId: AgentId): Promise<void> {
+    await withAmbientTx(this.db, async (tx) => {
+      await lockTree(tx, `agent-memory:${agentId}`)
+      await tx.$executeRaw(Prisma.sql`DELETE FROM "agent_memory_file" WHERE "agentId" = ${agentId}::uuid`)
+    })
+  }
+}
+
+type HistoryRow = {
+  id: string
+  path: string
+  event: 'add' | 'update' | 'delete'
+  before: string | null
+  after: string
+  at: Date
+  source: 'tool' | 'console' | 'distill' | 'dream'
+  truncated: boolean | null
+  bytes: number
+}
+
+function toRecord(row: HistoryRow): AgentMemoryHistoryRecord {
+  return {
+    id: row.id,
+    path: row.path,
+    event: row.event,
+    ...(row.before !== null ? { before: row.before } : {}),
+    after: row.after,
+    at: row.at,
+    source: row.source,
+    ...(row.truncated !== null ? { truncated: row.truncated } : {}),
+    bytes: row.bytes
+  }
 }
 
 export class PgAgentMemoryHistoryRepo implements AgentMemoryHistoryRepo {
@@ -259,6 +294,41 @@ export class PgAgentMemoryHistoryRepo implements AgentMemoryHistoryRepo {
           ) summed WHERE "running" > ${retention.maxBytesPerRoot}::bigint
         )
       `)
+    })
+  }
+
+  async page(
+    agentId: AgentId,
+    root: string,
+    path: string,
+    cursor: string | undefined,
+    limit: number
+  ): Promise<AgentMemoryHistoryPage> {
+    // The cursor is the record the page starts at (the daemon's sidecar semantics); one extra row tells whether more follow.
+    const anchor = cursor
+      ? await this.db.$queryRaw<{ at: Date; seq: bigint }[]>(Prisma.sql`
+          SELECT "at", "seq" FROM "agent_memory_history"
+          WHERE "id" = ${cursor}::uuid AND "agentId" = ${agentId}::uuid AND "root" = ${root} AND "path" = ${path}
+        `)
+      : undefined
+    if (anchor && !anchor[0]) return { records: [] }
+    const bound = anchor?.[0]
+      ? Prisma.sql`AND ("at", "seq") <= (${anchor[0].at}::timestamptz, ${anchor[0].seq}::bigint)`
+      : Prisma.empty
+    const rows = await this.db.$queryRaw<HistoryRow[]>(Prisma.sql`
+      SELECT "id", "path", "event", "before", "after", "at", "source", "truncated", "bytes"
+      FROM "agent_memory_history"
+      WHERE "agentId" = ${agentId}::uuid AND "root" = ${root} AND "path" = ${path} ${bound}
+      ORDER BY "at" DESC, "seq" DESC LIMIT ${limit + 1}::int
+    `)
+    const next = rows[limit]
+    return { records: rows.slice(0, limit).map(toRecord), ...(next ? { nextCursor: next.id } : {}) }
+  }
+
+  async deleteTree(agentId: AgentId): Promise<void> {
+    await withAmbientTx(this.db, async (tx) => {
+      await lockTree(tx, `agent-memory-history:${agentId}`)
+      await tx.$executeRaw(Prisma.sql`DELETE FROM "agent_memory_history" WHERE "agentId" = ${agentId}::uuid`)
     })
   }
 }

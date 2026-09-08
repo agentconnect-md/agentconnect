@@ -454,6 +454,22 @@ export class PgAgentRepo implements AgentRepo {
     return this.transaction(async (tx) => this.updateInTx(tx, orgId, agentId, patch, opts))
   }
 
+  settleMemoryHomeMigration(orgId: OrgId, agentId: AgentId): Promise<'cleared' | 'conflict' | 'missing'> {
+    return this.transaction(async (tx) => {
+      // The row lock makes the read and the clear one step, so a concurrent edit cannot slip between them.
+      const rows = await tx.$queryRaw<Array<{ runtimeOverrides: unknown; orgId: string }>>(
+        Prisma.sql`SELECT "runtimeOverrides", "orgId" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+      )
+      if (!rows[0] || rows[0].orgId !== orgId) return 'missing'
+      const memory = (rows[0].runtimeOverrides as RuntimeOverrides | null)?.memory
+      if (memory?.provider !== 'managed' || memory.home !== 'control-plane') return 'conflict'
+      if (memory.homeMigration === undefined) return 'cleared'
+      const { homeMigration: _done, ...settled } = memory
+      await this.updateInTx(tx, orgId, agentId, { memory: settled })
+      return 'cleared'
+    })
+  }
+
   private async updateInTx(
     tx: Prisma.TransactionClient,
     orgId: OrgId,

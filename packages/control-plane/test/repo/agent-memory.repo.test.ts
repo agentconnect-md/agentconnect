@@ -162,4 +162,48 @@ describe('agent_memory_history (real Postgres)', () => {
     })
     expect(await prisma.agentMemoryHistory.count({ where: { agentId } })).toBe(4)
   })
+
+  it('pages one file newest first from an inclusive cursor, per store; an evicted cursor is an empty page', async () => {
+    const repo = new PgAgentMemoryHistoryRepo(prisma)
+    const agentId = await agent()
+    const t = NOW.getTime()
+    const a = [record('a.md', t + 1), record('a.md', t + 2), record('a.md', t + 3), record('a.md', t + 4)]
+    const keep = { maxVersionsPerFile: 100, maxBytesPerRoot: 10_000 }
+    await repo.append(agentId, DEF_ORG, 'memory', [...a, record('b.md', t + 5)], keep)
+    await repo.append(agentId, DEF_ORG, 'channels/x/memory', [record('a.md', t + 6)], keep)
+
+    const first = await repo.page(agentId, 'memory', 'a.md', undefined, 2)
+    expect(first.records.map((r) => r.id)).toEqual([a[3]!.id, a[2]!.id])
+    expect(first.nextCursor).toBe(a[1]!.id)
+    const second = await repo.page(agentId, 'memory', 'a.md', first.nextCursor, 2)
+    expect(second.records.map((r) => r.id)).toEqual([a[1]!.id, a[0]!.id])
+    expect(second.nextCursor).toBeUndefined()
+    expect((await repo.page(agentId, 'memory', 'b.md', undefined, 5)).records.map((r) => r.path)).toEqual(['b.md'])
+    expect((await repo.page(agentId, 'channels/x/memory', 'a.md', undefined, 5)).records).toHaveLength(1)
+    // A cursor that retention evicted (or that names another file) starts no page: the daemon's sidecar rule.
+    expect(await repo.page(agentId, 'memory', 'a.md', randomUUID(), 2)).toEqual({ records: [] })
+    expect(await repo.page(agentId, 'memory', 'b.md', a[0]!.id, 2)).toEqual({ records: [] })
+    expect(first.records[0]).toMatchObject({ event: 'update', after: 'x', source: 'tool', at: new Date(t + 4) })
+  })
+
+  it('deleteTree drops every row of the agent in both tables and nothing of another agent', async () => {
+    const files = new PgAgentMemoryFileRepo(prisma)
+    const history = new PgAgentMemoryHistoryRepo(prisma)
+    const gone = await agent()
+    const kept = AgentId(randomUUID())
+    await seedAgent(prisma, kept, { daemonId: DAEMON })
+    for (const id of [gone, kept]) {
+      await publish(files, id, 'memory/MEMORY.md', 'x', NOW)
+      await history.append(id, DEF_ORG, 'memory', [record('MEMORY.md', NOW.getTime())], {
+        maxVersionsPerFile: 100,
+        maxBytesPerRoot: 10_000
+      })
+    }
+    await files.deleteTree(gone)
+    await history.deleteTree(gone)
+    expect(await prisma.agentMemoryFile.count({ where: { agentId: gone } })).toBe(0)
+    expect(await prisma.agentMemoryHistory.count({ where: { agentId: gone } })).toBe(0)
+    expect(await prisma.agentMemoryFile.count({ where: { agentId: kept } })).toBe(1)
+    expect(await prisma.agentMemoryHistory.count({ where: { agentId: kept } })).toBe(1)
+  })
 })

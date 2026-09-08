@@ -42,6 +42,7 @@ import type {
 import type { SecretCipher } from '../../secrets/cipher.js'
 import type { AgentId, OrgId } from '../../domain/ids.js'
 import { PgAgentRepo } from './agent.repo.js'
+import { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './agent-memory.repo.js'
 import { applySealedSecretPatch, sealSecretPatch } from './agent-secret.repo.js'
 import { assertEnvironmentAdmissible, snapshotAgentEnvironments } from './organization-environment-fence.js'
 
@@ -98,6 +99,11 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
       // later re-read sees its entry and refuses — or it queues behind, and then sees
       // these rows committed and refuses itself. Either way exactly one survives.
       if (sealed) await applySealedSecretPatch(tx, orgId, agentId, sealed)
+      // The forced return of a memory home: the CP tree and its change log go with the binding, or neither does.
+      if (opts?.dropManagedMemoryHome) {
+        await new PgAgentMemoryFileRepo(tx).deleteTree(agentId)
+        await new PgAgentMemoryHistoryRepo(tx).deleteTree(agentId)
+      }
       // The row update last: it stamps lastModifiedAt, advances configRevision, and
       // runs the fence over the definition INCLUDING the secrets above — so the
       // audit advance, the secret rows, and the validation commit (or roll back) as

@@ -149,7 +149,9 @@ export async function provisionPresetAgents(
           placementKind: 'set' as const,
           setId: pool.setId,
           runtime: pool.runtime,
-          ...(pool.model ? { model: pool.model } : {})
+          ...(pool.model ? { model: pool.model } : {}),
+          // The pool keeps agent memory in the Control Plane (memory-evolution.md §3.2.1), resolved at birth as on create.
+          memory: { provider: 'managed' as const, home: 'control-plane' as const }
         }
       : {}),
     ...(skills.length > 0 ? { skills } : {}),

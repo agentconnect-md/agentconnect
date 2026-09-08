@@ -691,7 +691,11 @@ describe('PUT /agents/:id/daemon — the pool as a placement target', () => {
     await seedMoveDaemons()
     await seedPoolMember()
     const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    // The pool keeps memory in the Control Plane; a daemon-home agent is refused the move (agents.memory-home tests).
+    await seedAgent(prisma, agentId, {
+      daemonId: SOURCE,
+      runtimeOverrides: { memory: { provider: 'managed', home: 'control-plane' } }
+    })
     const control = new MoveControlSpy()
     running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
 
@@ -840,7 +844,7 @@ describe('PUT /agents/:id/daemon — converting a member-pinned agent to the poo
     await seedMoveDaemons()
     await seedPoolMember()
     const agentId = randomUUID()
-    await seedAgent(prisma, agentId)
+    await seedAgent(prisma, agentId, { runtimeOverrides: { memory: { provider: 'managed', home: 'control-plane' } } })
     // Pinned to the MEMBER, which is the shape today's pool agents actually have.
     await prisma.agent.update({ where: { id: agentId }, data: { daemonId: MEMBER } })
     const control = new MoveControlSpy()
@@ -870,7 +874,10 @@ describe('PUT /agents/:id/daemon — converting a member-pinned agent to the poo
     await seedMoveDaemons()
     await seedPoolMember()
     const agentId = randomUUID()
-    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    await seedAgent(prisma, agentId, {
+      daemonId: SOURCE,
+      runtimeOverrides: { memory: { provider: 'managed', home: 'control-plane' } }
+    })
     const control = new MoveControlSpy()
     running = buildHttpApp(prisma, undefined, poolLive, control as unknown as ControlSender)
 
@@ -895,7 +902,7 @@ describe('PUT /agents/:id/daemon — a two-hop move back onto the pool (#1093)',
     await seedMoveDaemons()
     await seedPoolMember()
     const agentId = randomUUID()
-    await seedAgent(prisma, agentId)
+    await seedAgent(prisma, agentId, { runtimeOverrides: { memory: { provider: 'managed', home: 'control-plane' } } })
     await prisma.agent.update({
       where: { id: agentId },
       data: { placementKind: 'set', setId: await poolSetId(prisma), daemonId: null }

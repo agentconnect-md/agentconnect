@@ -25,7 +25,7 @@ import {
 import { AgentMemoryStoreService } from '../../src/agent-memory/store.service.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { systemClock } from '../../src/domain/clock.js'
-import { handleMemoryHistoryAppend, handleMemoryStore } from '../../src/ws/handlers/index.js'
+import { handleMemoryHistoryAppend, handleMemoryHomeMigrated, handleMemoryStore } from '../../src/ws/handlers/index.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -538,5 +538,79 @@ describe('memory/history/append', () => {
       [false, 'memory', 'topics/a.md', 'update', 'a', 'b', 'tool', DEFAULT_ORG_ID]
     ])
     expect(rows[0]!.bytes).toBe(Buffer.byteLength(JSON.stringify({ ...batch[0], id }) + '\n'))
+  })
+})
+
+describe('memory/home/migrated', () => {
+  const PENDING = { memory: { provider: 'managed', home: 'control-plane', homeMigration: 'pending' } }
+
+  async function migrated(daemonId: string, agentId: string, over: Partial<DaemonWsDeps> = {}): Promise<Answer> {
+    const frame = {
+      v: 1,
+      id: randomUUID(),
+      ts: new Date().toISOString(),
+      type: 'memory/home/migrated',
+      orgId: DEFAULT_ORG_ID,
+      payload: { agentId }
+    } as AnyFrame
+    const replyTo = vi.fn()
+    const sendError = vi.fn()
+    await handleMemoryHomeMigrated(
+      frame,
+      { daemonId, orgId: null, replyTo, sendError } as unknown as DaemonConnection,
+      {
+        ...deps(),
+        ...over
+      }
+    )
+    if (sendError.mock.calls.length > 0) {
+      const [, code, message] = sendError.mock.calls[0] as [string, string, string]
+      return { error: { code, message } }
+    }
+    return { reply: replyTo.mock.calls[0]![2] as MemoryFsReply }
+  }
+
+  const binding = async (agentId: string) =>
+    ((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).runtimeOverrides as { memory: unknown }).memory
+
+  it('clears the pending flag on the binding, idempotently, under the store fence', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, OTHER_DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, runtimeOverrides: PENDING })
+    expect(await migrated(OTHER_DAEMON, agentId)).toMatchObject({ error: { code: 'SCOPE_DENIED' } })
+    expect(await binding(agentId)).toEqual(PENDING.memory)
+
+    expect(await migrated(DAEMON, agentId)).toEqual({ reply: { accepted: true } })
+    expect(await binding(agentId)).toEqual({ provider: 'managed', home: 'control-plane' })
+    // A retried copy reports twice; the second report finds nothing to clear and is the same success.
+    expect(await migrated(DAEMON, agentId)).toEqual({ reply: { accepted: true } })
+    expect(await binding(agentId)).toEqual({ provider: 'managed', home: 'control-plane' })
+  })
+
+  it('SCOPE_DENIED for a daemon home, and CONFLICT when the home moved on under the report', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      daemonId: DAEMON,
+      runtimeOverrides: { memory: { provider: 'managed', home: 'daemon' } }
+    })
+    expect(await migrated(DAEMON, agentId)).toEqual({
+      error: { code: 'SCOPE_DENIED', message: 'the agent memory home is not the Control Plane' }
+    })
+    // The verdict read saw the Control Plane, the row says the daemon: the atomic clear is what decides.
+    const repo = new PgAgentRepo(prisma)
+    const stale = {
+      ...repo,
+      get: async (orgId: string, id: string) => {
+        const agent = await repo.get(orgId as never, id as never)
+        return agent ? { ...agent, memory: PENDING.memory } : null
+      },
+      settleMemoryHomeMigration: repo.settleMemoryHomeMigration.bind(repo)
+    }
+    expect(await migrated(DAEMON, agentId, { agent: stale as unknown as DaemonWsDeps['agent'] })).toEqual({
+      error: { code: 'CONFLICT', message: 'the agent memory home is no longer the Control Plane' }
+    })
+    expect(await binding(agentId)).toEqual({ provider: 'managed', home: 'daemon' })
   })
 })
