@@ -539,8 +539,7 @@ export class WorkspaceManager {
    */
   /** The secondary root the console browses, in the coordinates that hold it (a pod mount under --k8s). */
   async consoleSecondaryRoot(agent: Agent, repoFullName: string): Promise<SecondaryWorkspaceRoot | undefined> {
-    const wanted = repoKey(repoFullName)
-    const root = this.secondaryRootsFor(agent).find((entry) => repoKey(entry.repoFullName) === wanted)
+    const root = this.consoleRootNamed(agent, repoFullName)
     if (!root) return undefined
     const recorded = parseSecondaryMaterialization(
       await this.fsFor(agent.id).readFile(join(dirname(root.path), SECONDARY_MATERIALIZATION_FILE))
@@ -548,6 +547,17 @@ export class WorkspaceManager {
     // Identity is the numeric repo id, exactly as materialization checks it: a subtree left by a
     // DIFFERENT repository that once held this slug attests nothing about this root's branch.
     return recorded !== undefined && attestsRoot(recorded, root) ? { ...root, branch: recorded.branch } : root
+  }
+
+  /** The root a console selector names. The selector carries no provider, so a name both hosts hold is
+   *  resolved by its exact text, and one that is still ambiguous is refused rather than routed to
+   *  whichever root sorted first — a read or a push must never land on the other host's repository. */
+  private consoleRootNamed(agent: Agent, repoFullName: string): SecondaryWorkspaceRoot | undefined {
+    const wanted = repoKey(repoFullName)
+    const matches = this.secondaryRootsFor(agent).filter((entry) => repoKey(entry.repoFullName) === wanted)
+    if (matches.length <= 1) return matches[0]
+    const exact = matches.filter((entry) => entry.repoFullName === repoFullName.trim())
+    return exact.length === 1 ? exact[0] : undefined
   }
 
   /** The primary clone's `owner/repo`, when it names github.com — an App-backed URL is canonicalized
