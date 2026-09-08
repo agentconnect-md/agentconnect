@@ -617,14 +617,16 @@ export type ElicitKind = 'enum' | 'boolean' | 'multi-enum' | 'text' | 'number'
  *  surface has not claimed on either count, so a kind (or an option list) reaches a surface only
  *  once that surface claims it, and a form it cannot show whole is declined rather than trimmed.
  *  Every surface limit belongs here: a limit left inside a card builder is one the reduction
- *  cannot see, which is exactly how an over-long option list used to be quietly cut to fit. */
+ *  cannot see, which is exactly how an over-long option list used to be quietly cut to fit. An
+ *  option's own LENGTH is not among them any more — a Slack card carries positions rather than
+ *  values ({@link elicitOptionToken}), so no surface refuses a long one (#1794). */
 export interface ElicitSurface {
   kinds: ReadonlySet<ElicitKind>
   /** Per-kind option limits, because one surface's controls do not all hold the same list: on
-   *  Slack a row of buttons and a select menu differ in BOTH how many options they take and how
-   *  long an option's wire value may be. A kind absent from the map is unlimited on both counts —
-   *  webchat renders them all. Widening one kind's limit never widens another's. */
-  optionLimits?: Partial<Record<ElicitKind, { maxOptions?: number; maxOptionValue?: number }>>
+   *  Slack a row of buttons and a select menu do not take the same number of options. A kind
+   *  absent from the map is unlimited — webchat renders them all. Widening one kind's limit
+   *  never widens another's. */
+  optionLimits?: Partial<Record<ElicitKind, { maxOptions?: number }>>
 }
 
 /** Slack allows 25 elements in one `actions` block and wraps them across lines, so the card can
@@ -632,11 +634,47 @@ export interface ElicitSurface {
  *  declined: no card is built from a slice of it, which is what made a pick a misreported answer. */
 const SLACK_ELICIT_MAX_BUTTONS = 24
 
-/** Slack's own cap on a select menu's `options`, and on one option's `value` — the second is why
- *  #1813 refused a `static_select` for single-select, where a button's 2000 fits any enum value.
- *  A multi-select has no button to fall back to, so an option value this long declines instead. */
+/** Slack's own cap on a select menu's `options`. */
 const SLACK_SELECT_MAX_OPTIONS = 100
-const SLACK_SELECT_VALUE_CAP = 75
+
+const ELICIT_OPTION_TOKEN_PREFIX = 'ac_o'
+
+/** The value one option carries ON A SLACK CARD: its POSITION in the field the card rendered,
+ *  never the option's own value. Slack caps an option object's `value` at 75 characters and a
+ *  button's at 2000, so an enum of paths, ids or a long URL could not carry its own answer and
+ *  was declined outright (#1794). A position always fits, and it resolves without a lookup table
+ *  to keep: the same trick {@link elicitFormBlockId} already uses for a field's block id, and
+ *  safe for the same reason — the daemon re-derives the field list from the card's own params
+ *  (#1815), so the position names the very option that was offered. Every Slack card carries
+ *  positions, so a token can never be mistaken for a literal one of its own options spells. */
+export function elicitOptionToken(index: number): string {
+  return `${ELICIT_OPTION_TOKEN_PREFIX}${index}`
+}
+
+/** The option one carried card value stands for, or null when it names none this field offered —
+ *  the server-side half of {@link elicitOptionToken}, and the only way a Slack answer becomes a
+ *  literal again. Pure. */
+export function elicitOptionLiteral(target: ElicitTarget, carried: string): string | null {
+  if (!carried.startsWith(ELICIT_OPTION_TOKEN_PREFIX)) return null
+  const digits = carried.slice(ELICIT_OPTION_TOKEN_PREFIX.length)
+  if (!/^\d+$/.test(digits)) return null
+  return target.options[Number(digits)]?.value ?? null
+}
+
+/** The literals a card's carried option value(s) stand for — `carried` unchanged for a field that
+ *  offers no options, and null when one of them names no option this field rendered, which is the
+ *  same verdict `fieldAccepts` reaches for an unoffered value. Pure. */
+export function elicitCardValues(target: ElicitTarget, carried: string | string[]): string | string[] | null {
+  if (!target.options.length) return carried
+  if (!Array.isArray(carried)) return elicitOptionLiteral(target, carried)
+  const out: string[] = []
+  for (const one of carried) {
+    const literal = elicitOptionLiteral(target, one)
+    if (literal === null) return null
+    out.push(literal)
+  }
+  return out
+}
 
 /** Slack renders a lone single-select or boolean as a row of buttons — one tap answers it — and
  *  every other shape as `input` blocks in the message with one Confirm, since a select, a
@@ -647,7 +685,7 @@ export const SLACK_ELICIT_SURFACE: ElicitSurface = {
   kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum', 'text', 'number']),
   optionLimits: {
     enum: { maxOptions: SLACK_ELICIT_MAX_BUTTONS },
-    'multi-enum': { maxOptions: SLACK_SELECT_MAX_OPTIONS, maxOptionValue: SLACK_SELECT_VALUE_CAP }
+    'multi-enum': { maxOptions: SLACK_SELECT_MAX_OPTIONS }
   }
 }
 
@@ -958,8 +996,7 @@ function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurfa
   // card built from part of it would report the reader's pick as their answer to the question.
   const fits = (kind: ElicitKind, options: readonly { value: string }[]) => {
     const limits = surface.optionLimits?.[kind]
-    if (limits?.maxOptions !== undefined && options.length > limits.maxOptions) return false
-    return limits?.maxOptionValue === undefined || options.every((o) => o.value.length <= limits.maxOptionValue!)
+    return limits?.maxOptions === undefined || options.length <= limits.maxOptions
   }
   const found: ElicitTarget[] = []
   for (const [name, prop] of Object.entries(p.requestedSchema?.properties ?? {})) {
@@ -1295,16 +1332,20 @@ const SLACK_MAX_SELECTED_ELEMENTS: ReadonlySet<string> = new Set([
   'multi_channels_select'
 ])
 
-/** Slack's own caps on one `actions` block's elements and on an option object's `value`. */
+/** Slack's own caps on one `actions` block's elements, on an option object's `value`, and on an
+ *  interactive element's own `value`. Every Slack card carries positions rather than agent-authored
+ *  strings ({@link elicitOptionToken}), so nothing we build should reach either value cap — which
+ *  is exactly why they are asserted rather than assumed. */
 const SLACK_ACTIONS_MAX_ELEMENTS = 25
 const SLACK_OPTION_VALUE_CAP = 75
+const SLACK_ACTION_VALUE_CAP = 2000
 
 /** Every Slack rule this file has paid for, checked over one card's blocks: the element types a
  *  block type refuses, the per-element option caps, `max_selected_items` only where it exists,
- *  an `input` block's mandatory element, an option value past Slack's cap, and block ids unique
- *  within the message. Returns the reasons Slack would reject the card, empty when it would take
- *  it. Exported and asserted over every card we build, because our own JSON looks valid to us
- *  right up until Slack sees it — which is the only reason #1825 shipped. Pure. */
+ *  an `input` block's mandatory element, an option value or an element `value` past Slack's own
+ *  cap, and block ids unique within the message. Returns the reasons Slack would reject the card,
+ *  empty when it would take it. Exported and asserted over every card we build, because our own
+ *  JSON looks valid to us right up until Slack sees it — the only reason #1825 shipped. Pure. */
 export function slackCardViolations(blocks: readonly unknown[]): string[] {
   const bad: string[] = []
   const seen = new Set<string>()
@@ -1331,6 +1372,7 @@ export function slackCardViolations(blocks: readonly unknown[]): string[] {
  *  everything-optional, since the point is to inspect JSON that may be wrong. */
 interface SlackElementShape {
   type?: string
+  value?: unknown
   options?: { value?: unknown }[]
   initial_options?: { value?: unknown }[]
   initial_option?: { value?: unknown }
@@ -1360,14 +1402,18 @@ function slackElementViolations(el: SlackElementShape, at: string): string[] {
   for (const o of values)
     if (typeof o?.value === 'string' && o.value.length > SLACK_OPTION_VALUE_CAP)
       bad.push(`${at}: an option value is ${o.value.length} characters, past ${SLACK_OPTION_VALUE_CAP}`)
+  // A button's own `value` — the cap that silently cost a long consent URL its whole card.
+  if (typeof el.value === 'string' && el.value.length > SLACK_ACTION_VALUE_CAP)
+    bad.push(`${at}: a value is ${el.value.length} characters, past ${SLACK_ACTION_VALUE_CAP}`)
   return bad
 }
 
 /**
  * Build the ONE-TAP elicitation card: the agent's `message` and one actions row carrying EVERY
  * {@link elicitTarget} option as a button, plus Dismiss. The choice rides each option's `value`
- * (`<requestId>|<optionValue>`). Only a single-select or a boolean is answered this way — one tap
- * IS the answer there, where every other kind needs something filled in first and takes the
+ * (`<requestId>|<optionToken>`, see {@link elicitOptionToken}). Only a single-select or a boolean
+ * is answered this way — one tap IS the answer there, where every other kind needs something
+ * filled in first and takes the
  * `input` blocks of {@link buildElicitationFormCard} ({@link elicitCardShape} decides). Returns
  * null when the form can't be rendered on `surface` (caller declines): a kind or an option list
  * it does not claim, which the reduction has already refused. Nothing here trims a list to fit.
@@ -1390,7 +1436,7 @@ export function buildElicitationCard(
     type: 'button',
     action_id: `${ELICIT_ACTION_PREFIX}:${i}`,
     text: { type: 'plain_text', text: o.label, emoji: true },
-    value: encodePermValue(requestId, o.value)
+    value: encodePermValue(requestId, elicitOptionToken(i))
   }))
   buttons.push(elicitDismissButton(requestId) as (typeof buttons)[number])
   return [
@@ -1439,9 +1485,10 @@ const SLACK_HINT_TEXT_CAP = 2000
  *  numbers, each carrying the schema's own bounds so Slack refuses on the card what the daemon
  *  would refuse anyway. A checkbox list gets no `max_selected_items` (Slack has no such property
  *  there): its bounds are said in the block's hint and enforced when the answer comes back, which
- *  is where they were always binding. Null ⇒ this field cannot BE an input block — an option value
- *  past Slack's 75-char cap, or a minimum length past what an input holds — and the whole card is
- *  then withheld rather than posted with a field the reader cannot answer honestly. Pure. */
+ *  is where they were always binding. Null ⇒ this field cannot BE an input block — no options at
+ *  all, or a minimum length past what an input holds — and the whole card is then withheld rather
+ *  than posted with a field the reader cannot answer honestly. An option's own length is no longer
+ *  such a reason: every option carries its POSITION ({@link elicitOptionToken}). Pure. */
 function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> | null {
   const action_id = ELICIT_FORM_INPUT_ACTION as string
   if (target.kind === 'text') {
@@ -1466,15 +1513,15 @@ function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> |
       ...(typeof target.defaultValue === 'number' ? { initial_value: String(target.defaultValue) } : {})
     }
   }
-  const options = target.options.map((o) => ({
+  const options = target.options.map((o, i) => ({
     text: { type: 'plain_text', text: o.label, emoji: true },
-    value: o.value
+    value: elicitOptionToken(i)
   }))
-  if (!options.length || options.some((o) => o.value.length > SLACK_SELECT_VALUE_CAP)) return null
+  if (!options.length) return null
   const short = options.length <= SLACK_CHOICE_MAX_OPTIONS
   if (target.kind === 'multi-enum') {
     const seeded = Array.isArray(target.defaultValue) ? new Set(target.defaultValue) : null
-    const initial = seeded ? options.filter((o) => seeded.has(o.value)) : []
+    const initial = seeded ? options.filter((_, i) => seeded.has(target.options[i]!.value)) : []
     if (short)
       return { type: 'checkboxes', action_id, options, ...(initial.length ? { initial_options: initial } : {}) }
     return {
@@ -1488,7 +1535,8 @@ function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> |
   }
   // A boolean's `default` is a real boolean, so its option value is the string the card spells it with.
   const seed = target.kind === 'boolean' ? String(target.defaultValue) : target.defaultValue
-  const initial = options.find((o) => o.value === seed)
+  const seedIndex = target.options.findIndex((o) => o.value === seed)
+  const initial = seedIndex < 0 ? undefined : options[seedIndex]
   if (short) return { type: 'radio_buttons', action_id, options, ...(initial ? { initial_option: initial } : {}) }
   return {
     type: 'static_select',
@@ -1604,8 +1652,9 @@ export interface ElicitFormSubmission {
 /**
  * Decode one Confirm's raw field state into the typed record a form card answers with, re-derived
  * against the FORM THAT WAS RENDERED rather than trusted from the wire (#1815): each value is read
- * under its field's own block id, given the schema's own type — a real number for `number`/
- * `integer`, a list for a multi-select — and checked by {@link fieldAccepts}. A blank optional
+ * under its field's own block id, resolved from the position the card carried it as, given the
+ * schema's own type — a real number for `number`/`integer`, a list for a multi-select — and
+ * checked by {@link fieldAccepts}. A blank optional
  * input is simply absent; a missing REQUIRED field, a value of the wrong shape, and a value the
  * field does not admit each come back as that field's error, so one bad field refuses the whole
  * answer instead of being silently dropped. Pure.
@@ -1630,18 +1679,27 @@ export function elicitFormSubmission(
       if (required.has(target.propName)) errors[blockId] = 'This field is required.'
       continue
     }
+    // A Slack card's options carry their POSITION, so the literals come back through the field
+    // the card rendered ({@link elicitCardValues}) before anything is checked — that is what lets
+    // an option's value be a path, an id or a URL at all (#1794). One carried value naming no
+    // option this field offered refuses the field, exactly as an unoffered literal would.
+    const carried = elicitCardValues(target, raw)
+    if (carried === null) {
+      errors[blockId] = elicitFormFieldError(target)
+      continue
+    }
     const shaped =
       target.kind === 'multi-enum'
-        ? Array.isArray(raw)
-          ? raw
+        ? Array.isArray(carried)
+          ? carried
           : undefined
-        : Array.isArray(raw)
+        : Array.isArray(carried)
           ? undefined
           : target.kind === 'number'
-            ? NUMERIC_REPLY_RE.test(raw.trim())
-              ? Number(raw.trim())
+            ? NUMERIC_REPLY_RE.test(carried.trim())
+              ? Number(carried.trim())
               : undefined
-            : raw
+            : carried
     if (shaped === undefined || !fieldAccepts(target, shaped)) errors[blockId] = elicitFormFieldError(target)
     else answer[target.propName] = shaped
   }
@@ -1670,10 +1728,6 @@ export function elicitFormRefusalNotice(
   }
   return clampTo(`${ELICIT_ANSWER_REFUSED} ${parts.join(' ')}`, ELICIT_MESSAGE_CAP)
 }
-
-/** Slack's own limit on an interactive element's `value`. A URL longer than this cannot ride a
- *  button, so its card is not built at all rather than posted with a truncated consent. */
-const SLACK_ACTION_VALUE_CAP = 2000
 
 /** What a consent card shows about its URL: the REAL host, so a lookalike or a userinfo prefix
  *  cannot pass itself off as one, and what to warn about. Both checks are on the host alone — a
@@ -1710,10 +1764,12 @@ function consentUrlParts(url: string): { host: string; warnings: string[] } | nu
  *  but deliberately NOT followable as text — Slack autolinks a bare URL, and a reader who left
  *  through that autolink would deliver no interaction, so the card would hang unanswered. The
  *  button's `url` field both opens the page and still sends Slack's interaction, which is what
- *  makes consent observable; its `value` carries the URL back so the answer is re-derived against
- *  the card that offered it. Returns null — the caller then declines with a notice — when this is
- *  not a URL-mode ask, when the URL is not one a card may offer, or when it will not fit a Slack
- *  button `value`. Pure; the daemon never fetches the URL. */
+ *  makes consent observable; its `value` carries the card's ONE option back ({@link
+ *  elicitOptionToken}), which the daemon resolves to this same URL, so the answer is re-derived
+ *  against the card that offered it. The URL itself never rides the button: Slack caps a `value`
+ *  at 2000 and `elicitUrl` admits 2048, so a long OAuth `state` used to lose the card entirely
+ *  (#1794). Returns null — the caller then declines with a notice — when this is not a URL-mode
+ *  ask or the URL is not one a card may offer. Pure; the daemon never fetches the URL. */
 export function buildUrlConsentCard(
   requestId: string,
   params: CreateElicitationRequest,
@@ -1722,8 +1778,7 @@ export function buildUrlConsentCard(
   const url = elicitUrl(params)
   const parts = url && consentUrlParts(url.url)
   if (!url || !parts) return null
-  const value = encodePermValue(requestId, url.url)
-  if (value.length > SLACK_ACTION_VALUE_CAP) return null
+  const value = encodePermValue(requestId, elicitOptionToken(0))
   const detail = [
     'Opens in your browser. This agent never sees that page or anything you type on it.',
     `Host: \`${escapeSlackMrkdwn(parts.host)}\``,

@@ -101,7 +101,10 @@ import { useCommandAutocomplete } from '@/components/console/useCommandAutocompl
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
+  elicitCard,
   ELICIT_LANE,
+  elicitStepKey,
+  liveElicitKeys,
   NOTICE_LANE,
   PLAN_LANE,
   WORK_LANES,
@@ -402,9 +405,31 @@ function ComposerSendButton({
 }
 
 // One agent-turn step rendered from a real transcript message. Maps the daemon
-// transcript kind (text | tool | reasoning | plan) onto the existing lane styling.
+// transcript kind (text | tool | reasoning | plan | elicit) onto the existing lane styling.
 function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string): FmtStep {
   const k = (m.kind || 'text').toLowerCase()
+  // A recorded elicitation card (#1794). It renders through the SAME component a live card does,
+  // just without an `onAnswer` — a reader loading the conversation later sees the question, what
+  // was offered and what was answered, with every control inert. A row whose body cannot be read
+  // falls through to plain text, which is at least the question itself.
+  if (k === 'elicit') {
+    const card = elicitCard(m.body)
+    if (card)
+      return {
+        lane: ELICIT_LANE,
+        laneColor: 'var(--text-tertiary)',
+        dot: 'var(--text-disabled)',
+        weight: 400,
+        textColor: 'var(--text-primary)',
+        codeColor: 'var(--text-secondary)',
+        text: m.text,
+        code: '',
+        files: [],
+        elicit: card,
+        time: formatTranscriptRowTime(m),
+        ...(platform ? { platform } : {})
+      }
+  }
   if (k === 'plan') {
     return {
       lane: PLAN_LANE,
@@ -660,7 +685,14 @@ const ELICIT_OUTCOME: Record<
     label: () => 'Cancelled'
   },
   // URL mode's second settlement: the agent reported the flow behind an opened link finished.
-  completed: { icon: 'check', color: 'var(--green-500)', edge: 'border-l-(--green-500)', label: () => 'Completed' }
+  completed: { icon: 'check', color: 'var(--green-500)', edge: 'border-l-(--green-500)', label: () => 'Completed' },
+  // Persisted cards only: the ask no surface here had a control for, so nothing was ever offered.
+  unrenderable: {
+    icon: 'x',
+    color: 'var(--text-tertiary)',
+    edge: 'border-l-(--border-strong)',
+    label: () => "Couldn't be answered here"
+  }
 }
 
 /** How a consent card reads its URL: the three display parts, so the HOST can be emphasized
@@ -3821,10 +3853,24 @@ export default function SessionDetailView() {
     }
     return undefined
   }
+  // #1794's two halves meet on a reload: a pending webchat card is BOTH a transcript row and the
+  // `elicitation` event the cold attach replays, and the two render independently — one question,
+  // two answerable cards, and a settlement that only reaches the live one. A card carries no
+  // `postId`, so `reconcilePersistedLiveSteps`' exact-post arm cannot retire it; its identity is
+  // its OWNER plus its request. The LIVE copy wins while that replay stands: it is the one that
+  // can be answered, and the one `elicitation_resolved` collapses. Once the turn's live steps are
+  // retired the persisted row takes over, carrying the outcome it was rewritten with. Empty on a
+  // Slack-origin session, which streams no cards and so only ever has the persisted copy.
+  const liveCards = liveElicitKeys(liveSteps, session.agentId)
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
     for (const m of visibleMsgs ?? []) {
+      if (liveCards.size > 0 && (m.kind || '').toLowerCase() === 'elicit') {
+        const persisted = elicitCard(m.body)
+        const owner = conversationSourceAgentByMessageRef.current.get(m) ?? m.sender
+        if (persisted && liveCards.has(elicitStepKey(owner, persisted.requestId))) continue
+      }
       const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
       const sourceTurnKey = conversationSourceTurnByMessageRef.current.get(m)
       // A merged conversation stamps every row with the platform of the source

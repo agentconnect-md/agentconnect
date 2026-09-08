@@ -25,6 +25,7 @@ import {
   elicitCardShape,
   elicitFieldExpectation,
   elicitFormBlockId,
+  elicitOptionToken,
   elicitRequiredProps,
   elicitTarget,
   elicitUrl,
@@ -1591,7 +1592,7 @@ describe('elicitation card', () => {
     expect(elicitTarget(inverted, WEBCHAT_ELICIT_SURFACE)).toBeNull()
   })
 
-  it('renders titled enum (oneOf) as buttons carrying requestId|const, plus Dismiss', () => {
+  it('renders titled enum (oneOf) as buttons carrying requestId|optionToken, plus Dismiss', () => {
     const req = form({
       lang: {
         type: 'string',
@@ -1607,7 +1608,12 @@ describe('elicitation card', () => {
     const btns = blocks[1].elements
     expect(btns.map((b: any) => b.text.text)).toEqual(['Python', 'TypeScript', 'Dismiss'])
     expect(btns[0].action_id).toBe(`${ELICIT_ACTION_PREFIX}:0`)
-    expect(btns.slice(0, 2).map((b: any) => b.value)).toEqual(['elicit-1|py', 'elicit-1|ts'])
+    // The POSITION, not the value: Slack caps a `value`, and the daemon re-derives the option
+    // from the card's own params anyway (#1794).
+    expect(btns.slice(0, 2).map((b: any) => b.value)).toEqual([
+      `elicit-1|${elicitOptionToken(0)}`,
+      `elicit-1|${elicitOptionToken(1)}`
+    ])
     expect(btns[2].action_id).toBe(ELICIT_DISMISS_ACTION)
     expect(btns[2].value).toBe('elicit-1')
   })
@@ -1619,7 +1625,7 @@ describe('elicitation card', () => {
     const blocks = buildElicitationCard('elicit-7', form({ pick: { type: 'string', enum: seven } })) as any[]
     const btns = blocks[1].elements
     expect(btns.map((b: any) => b.text.text)).toEqual([...seven, 'Dismiss'])
-    expect(btns.slice(0, 7).map((b: any) => b.value)).toEqual(seven.map((v) => `elicit-7|${v}`))
+    expect(btns.slice(0, 7).map((b: any) => b.value)).toEqual(seven.map((_, i) => `elicit-7|${elicitOptionToken(i)}`))
     expect(btns.map((b: any) => b.action_id)).toEqual([
       ...seven.map((_, i) => `${ELICIT_ACTION_PREFIX}:${i}`),
       ELICIT_DISMISS_ACTION
@@ -1835,13 +1841,14 @@ describe('elicitation card', () => {
     expect(select.type).toBe('checkboxes')
     expect(select.max_selected_items).toBeUndefined()
     expect(blocks[1].hint.text).toBe('Select 1 to 2.')
+    // The label is the reader's half; the value is the option's POSITION (#1794).
     expect(select.options.map((o: any) => [o.text.text, o.value])).toEqual([
-      ['Red', '#FF0000'],
-      ['Green', '#00FF00']
+      ['Red', elicitOptionToken(0)],
+      ['Green', elicitOptionToken(1)]
     ])
     // Seeded from the schema's `default`, so an untouched Confirm submits what the card shows.
     expect(select.initial_options).toEqual([
-      { text: { type: 'plain_text', text: 'Green', emoji: true }, value: '#00FF00' }
+      { text: { type: 'plain_text', text: 'Green', emoji: true }, value: elicitOptionToken(1) }
     ])
     expect([confirm.action_id, confirm.value]).toEqual([ELICIT_CONFIRM_ACTION, 'elicit-1'])
     expect([dismiss.action_id, dismiss.value]).toEqual([ELICIT_DISMISS_ACTION, 'elicit-1'])
@@ -1856,8 +1863,8 @@ describe('elicitation card', () => {
     expect(select.initial_options).toBeUndefined()
   })
 
-  // A select holds 100 options where an actions row of buttons holds 24, and caps one option's
-  // `value` at 75 chars where a button's is 2000 — so the limits are per kind, not per surface.
+  // A select holds 100 options where an actions row of buttons holds 24 — so the limits are per
+  // kind, not per surface. An option's own LENGTH is no longer one of them (#1794).
   it('declines a multi-select past Slack’s own select limits', () => {
     const items = (n: number) => ({ type: 'string', enum: Array.from({ length: n }, (_, i) => `o${i}`) })
     const at = form({ colors: { type: 'array', items: items(100) } })
@@ -1869,10 +1876,13 @@ describe('elicitation card', () => {
     // 25 buttons is past the actions row, but well inside the select — one kind's cap is its own.
     expect(elicitTarget(form({ pick: { type: 'string', enum: items(25).enum } }), SLACK_ELICIT_SURFACE)).toBeNull()
     expect(elicitTarget(form({ colors: { type: 'array', items: items(25) } }), SLACK_ELICIT_SURFACE)).not.toBeNull()
-    // A value Slack's select cannot carry: declined whole, never posted with the option cut.
+    // A value past what a Slack option object carries used to decline the whole form; it now
+    // rides its position, so the card renders and its option values are all short (#1794).
     const long = form({ colors: { type: 'array', items: { type: 'string', enum: ['ok', 'x'.repeat(76)] } } })
-    expect(elicitTarget(long, SLACK_ELICIT_SURFACE)).toBeNull()
-    expect(buildElicitationCard('elicit-long', long)).toBeNull()
+    expect(elicitTarget(long, SLACK_ELICIT_SURFACE)?.options).toHaveLength(2)
+    const longCard = buildElicitationCard('elicit-long', long) as any[]
+    expect(slackCardViolations(longCard)).toEqual([])
+    expect(longCard[1].element.options.map((o: any) => o.value)).toEqual([elicitOptionToken(0), elicitOptionToken(1)])
     // Webchat's own list is unlimited on both counts, exactly as before.
     expect(elicitTarget(over, WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(101)
     expect(elicitTarget(long, WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(2)
@@ -2486,13 +2496,17 @@ describe('buildUrlConsentCard', () => {
       .map((b: any) => b.text.text as string)
       .join('\n')
 
-  it('refuses a non-URL ask, a scheme no tab may take, and a URL too long for a Slack value', () => {
+  it('refuses a non-URL ask and a scheme no tab may take, but not a URL Slack could not carry', () => {
     expect(buildUrlConsentCard('r1', { mode: 'form', message: 'x' } as any)).toBeNull()
     expect(buildUrlConsentCard('r1', urlReq({ url: 'javascript:alert(1)' }))).toBeNull()
-    // Slack caps a button `value` at 2000; a URL that cannot ride one has no observable consent.
-    expect(buildUrlConsentCard('r1', urlReq({ url: `https://x.test/${'a'.repeat(1990)}` }))).toBeNull()
     // A backtick cannot sit inside the code span that keeps the URL unfollowable.
     expect(buildUrlConsentCard('r1', urlReq({ url: 'https://x.test/a`b' }))).toBeNull()
+    // Slack caps a button `value` at 2000 and `elicitUrl` admits 2048, so a long OAuth `state`
+    // used to lose its card and fall back to a notice. The button now carries the card's one
+    // option instead of the URL, so the card survives (#1794).
+    const long = buildUrlConsentCard('r1', urlReq({ url: `https://x.test/${'a'.repeat(1990)}` }))!
+    expect(slackCardViolations(long)).toEqual([])
+    expect((long[2] as any).elements[0].value).toBe(`r1|${elicitOptionToken(0)}`)
   })
 
   it('escapes the mrkdwn metacharacters a URL carries, so the reader sees its real bytes', () => {

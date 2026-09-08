@@ -626,10 +626,10 @@ export interface PlanBody {
   entries: { content: string; status: string; priority?: string }[]
 }
 
-// One transcript message (`GET /sessions/:id/messages`, proxied live from the
-// owning daemon). `kind` is the daemon transcript kind: text | tool | reasoning | plan.
-// `body` carries a ToolBody on a tool row and a PlanBody on a plan row; it is absent
-// on text/reasoning rows, and on plan rows from a daemon or CP predating them.
+// One transcript message (`GET /sessions/:id/messages`, proxied live from the owning daemon).
+// `kind` is the daemon transcript kind: text | tool | reasoning | plan | elicit. `body` carries a
+// ToolBody on a tool row, a PlanBody on a plan row and an ElicitBody on an elicit row; it is
+// absent on text/reasoning rows, and on rows from a daemon or CP predating them.
 export interface SessionMessageDto {
   seq: number
   sender: string
@@ -649,7 +649,7 @@ export interface SessionMessageDto {
   toolCallId?: string // ties the row to its full body (session/tool-body key)
   toolStatus?: string // ACP ToolCallStatus — drives the console status badge
   toolKind?: string // ACP ToolKind — drives the console icon
-  body?: string // JSON.stringify(ToolBody) on a tool row, PlanBody on a plan row, UserTurnBody on a text row; may be a truncated-but-VALID-JSON preview
+  body?: string // JSON.stringify(ToolBody) on a tool row, PlanBody on a plan row, ElicitBody on an elicit row, UserTurnBody on a text row; may be a truncated-but-VALID-JSON preview
   bodyTruncated?: boolean // preview was shrunk for the frame; full body via fetchToolBody
   bodyBytes?: number // full (untruncated) body byte length
 }

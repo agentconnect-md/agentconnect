@@ -13,6 +13,7 @@ import {
 import { Daemon } from '../src/daemon.js'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
+import { elicitOptionToken } from '../src/slack/render.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -1979,7 +1980,8 @@ describe('Slack interactive status bar', () => {
       await (daemon as any).handleRelayMsg(
         action({
           msgId: 'action-elicit',
-          payload: { kind: 'elicitation-choice', requestId: 'elicit-1', value: 'TypeScript' }
+          // A Slack card carries the option's POSITION, never its value (#1794).
+          payload: { kind: 'elicitation-choice', requestId: 'elicit-1', value: elicitOptionToken(0) }
         }),
         () => {}
       )
@@ -2027,7 +2029,11 @@ describe('Slack interactive status bar', () => {
       await (daemon as any).handleRelayMsg(
         action({
           msgId: 'action-elicit-confirm',
-          payload: { kind: 'elicitation-confirm', requestId: 'elicit-2', fields: { ac_elicit_f0: ['lint', 'test'] } }
+          payload: {
+            kind: 'elicitation-confirm',
+            requestId: 'elicit-2',
+            fields: { ac_elicit_f0: [elicitOptionToken(0), elicitOptionToken(1)] }
+          }
         }),
         () => {}
       )

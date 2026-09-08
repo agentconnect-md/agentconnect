@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { PermissionCoordinator, type PermissionHost } from '../src/permissions/coordinator.js'
 import type { SlackConnection } from '../src/slack/connection.js'
+import { elicitOptionToken } from '../src/slack/render.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { pendingTurnKey, type Pending } from '../src/daemon/turn-types.js'
@@ -194,11 +195,14 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
     const requestId = requestIdOf(w.route)
 
+    // A DM card is a Slack button row, so its taps carry each option's POSITION (#1794): a
+    // literal, and a position past the list, are both answers this card never offered.
     await w.coordinator.handleElicitChoice({ requestId, value: 'always', actor: { userId: 'U1' } })
+    await w.coordinator.handleElicitChoice({ requestId, value: elicitOptionToken(9), actor: { userId: 'U1' } })
     expect(w.conn.updateBlocks).not.toHaveBeenCalled()
     expect((await w.store.listPermissionRequests(AGENT))[0]!.status).toBe('pending')
 
-    await w.coordinator.handleElicitChoice({ requestId, value: 'session', actor: { userId: 'U1' } })
+    await w.coordinator.handleElicitChoice({ requestId, value: elicitOptionToken(1), actor: { userId: 'U1' } })
     await expect(answered).resolves.toEqual({ action: 'accept', content: { pick: 'session' } })
     await w.store.close()
   })

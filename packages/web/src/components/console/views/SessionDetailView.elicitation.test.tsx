@@ -181,8 +181,9 @@ async function render() {
 }
 
 const text = () => container?.textContent ?? ''
-const buttonNamed = (label: string) =>
-  [...(container?.querySelectorAll('button') ?? [])].find((b) => b.textContent === label)
+const buttonsNamed = (label: string) =>
+  [...(container?.querySelectorAll('button') ?? [])].filter((b) => b.textContent === label)
+const buttonNamed = (label: string) => buttonsNamed(label)[0]
 
 beforeEach(() => {
   wire.messages = []
@@ -909,5 +910,54 @@ describe('the agent’s URL-mode consent card', () => {
     expect(text()).toContain('https://billing.example.com/tokens')
     for (const a of container?.querySelectorAll('a') ?? [])
       expect(a.getAttribute('href') ?? '').not.toContain('billing.example.com')
+  })
+})
+
+// A reload while a card is pending is where #1794's two halves meet: the transcript row the
+// daemon recorded, and the `elicitation` event `pgAttach` replays for the same still-open
+// request. Rendered independently they were one question with two answerable cards, and a
+// settlement that reached only one of them.
+describe('a reload with a webchat card still pending', () => {
+  /** The card's own transcript row — the same request, recorded still open. */
+  const ROW = {
+    seq: 1,
+    sender: 'agent-1',
+    ts: '1700000001',
+    kind: 'elicit',
+    text: 'Which branch should I cut from?',
+    body: JSON.stringify({
+      requestId: 'elicit-1',
+      message: 'Which branch should I cut from?',
+      options: CARD.elicit.options
+    })
+  }
+
+  it('renders exactly ONE card, and it is the answerable one', async () => {
+    wire.messages = [ROW]
+    live.steps = [CARD]
+    await render()
+
+    expect(buttonsNamed('main')).toHaveLength(1)
+    expect(buttonsNamed('Dismiss')).toHaveLength(1)
+    expect(buttonNamed('main')?.disabled).toBe(false)
+
+    await act(async () => {
+      buttonNamed('main')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // One card, so one answer — never the same question answered twice.
+    expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', 'main', 'conv-1']])
+  })
+
+  it('collapses to the live settlement, leaving no unanswered twin behind it', async () => {
+    // The row is still the OPEN copy: `elicitation_resolved` settles the live step, and the
+    // transcript is not re-read while the turn is busy.
+    wire.messages = [ROW]
+    live.steps = [{ ...CARD, elicit: { ...CARD.elicit, outcome: 'accepted', answerLabel: 'main' } }]
+    await render()
+
+    expect(text()).toContain('Which branch should I cut from?')
+    expect(buttonsNamed('main')).toHaveLength(0)
+    expect(buttonsNamed('Dismiss')).toHaveLength(0)
+    expect(live.answered).toEqual([])
   })
 })

@@ -1,4 +1,5 @@
 import type { PlanBody } from '@/lib/api'
+import type { ElicitBody } from '@/lib/data'
 
 // 2b chat style: an agent turn shows its spoken answer (MSG/DONE lanes) as plain
 // text and collapses its "work" — reasoning (THINK/PLAN), tool calls (TOOL), and
@@ -42,6 +43,57 @@ export function planEntries(body: string | undefined): PlanEntry[] {
   } catch {
     return []
   }
+}
+
+/** Every outcome this console can READ off a persisted card. A newer daemon's unknown verdict is
+ *  dropped rather than rendered, which shows the card as unsettled — the one direction that is
+ *  never a wrong verdict. The question itself comes from the row's `text`, not the body. */
+const ELICIT_OUTCOMES = new Set(['accepted', 'dismissed', 'cancelled', 'completed', 'unrenderable'])
+
+/** Parse an `elicit` row's `body` into the card it recorded. Null for everything that is not a
+ *  readable card — no body at all (a daemon or control plane predating the row), malformed JSON,
+ *  a payload with no request id — and the caller then falls back to rendering the row's own text,
+ *  which is at least the question, rather than a card with nothing in it. */
+export function elicitCard(body: string | undefined): ElicitBody | null {
+  if (!body) return null
+  try {
+    const parsed = JSON.parse(body) as Partial<ElicitBody>
+    if (typeof parsed?.requestId !== 'string' || !parsed.requestId) return null
+    const outcome =
+      typeof parsed.outcome === 'string' && ELICIT_OUTCOMES.has(parsed.outcome) ? parsed.outcome : undefined
+    return {
+      ...parsed,
+      requestId: parsed.requestId,
+      options: Array.isArray(parsed.options) ? parsed.options : [],
+      ...(outcome ? { outcome } : { outcome: undefined })
+    }
+  } catch {
+    return null
+  }
+}
+
+/** One elicitation card's identity across the two places it can be rendered from: the agent that
+ *  owns the request, and the request itself. A uuid request id could stand alone, but identity
+ *  here is (owner, request) and saying so keeps a future non-unique id from silently colliding. */
+export function elicitStepKey(agentId: string | undefined, requestId: string): string {
+  return `${agentId ?? ''}\u0000${requestId}`
+}
+
+/** Every card the LIVE stream is currently carrying. On a reload a pending webchat card arrives
+ *  twice — once as its transcript row (#1794) and once as the replayed `elicitation` event — and
+ *  the live copy is the one that can still be answered and the one `elicitation_resolved` settles,
+ *  so this is what the transcript's twin is dropped against. Empty for every surface that streams
+ *  no cards at all, which is the Slack-origin case. */
+export function liveElicitKeys(
+  live: readonly { lane?: string; agentId?: string; elicit?: { requestId: string } }[],
+  ownerAgentId?: string
+): Set<string> {
+  const keys = new Set<string>()
+  for (const step of live) {
+    if (!step.elicit?.requestId) continue
+    keys.add(elicitStepKey(step.agentId ?? ownerAgentId, step.elicit.requestId))
+  }
+  return keys
 }
 
 /** Split an agent turn's collapsed work steps into the counts the summary reports:

@@ -561,6 +561,42 @@ describe('LocalStore', () => {
     await s.close()
   })
 
+  it('an elicitation card is one upserted row the replay never returns', async () => {
+    const s = await store()
+    await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '1', sender: 'U1', kind: 'text', text: 'ask' })
+    const card = { requestId: 'elicit-1', message: 'Which branch?', options: [{ value: 'main', label: 'main' }] }
+    await s.upsertElicit({
+      channel: 'C1',
+      thread: 'T',
+      ts: '2',
+      sender: 'bot',
+      text: card.message,
+      body: JSON.stringify(card)
+    })
+    // The settlement rewrites the SAME row rather than appending a second one below the reply.
+    await s.upsertElicit({
+      channel: 'C1',
+      thread: 'T',
+      ts: '2',
+      sender: 'bot',
+      text: card.message,
+      body: JSON.stringify({ ...card, outcome: 'accepted', answerLabel: 'main' })
+    })
+    await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '3', sender: 'bot', kind: 'text', text: 'answer' })
+
+    // The card is read-only history: the runtime already had its answer over ACP, so re-feeding
+    // the row as conversation would ask the same question again.
+    expect((await s.transcriptSince('C1', 'T', null, 'bot-a')).map((e) => e.text)).toEqual(['ask', 'answer'])
+    const rows = (await s.threadTranscript('C1', 'T')) as { kind: string; text: string; body?: string | null }[]
+    expect(rows.map((r) => [r.kind, r.text])).toEqual([
+      ['text', 'ask'],
+      ['elicit', 'Which branch?'],
+      ['text', 'answer']
+    ])
+    expect(JSON.parse(rows[1]!.body!)).toEqual({ ...card, outcome: 'accepted', answerLabel: 'main' })
+    await s.close()
+  })
+
   it('replay returns only text rows; the full activity log returns all kinds in order', async () => {
     const s = await store()
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '1', sender: 'U1', kind: 'text', text: 'ask' })
