@@ -18,7 +18,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
-import { removeLegacyMountPoints } from '../src/acp/sandbox-runtime-provider.js'
+import { removeLegacyMountPoints, seedProtectedHomeEntries } from '../src/acp/sandbox-runtime-provider.js'
 import {
   sandboxWrap,
   sandboxBoundary,
@@ -712,6 +712,42 @@ describe('removeLegacyMountPoints', () => {
       expect(existsSync(join(root, '.bashrc'))).toBe(false)
     } finally {
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('seedProtectedHomeEntries', () => {
+  it('creates every SRT-protected name as a real empty entry and leaves existing ones alone', () => {
+    const home = mkdtempSync(join(tmpdir(), 'ac-seed-home-'))
+    try {
+      writeFileSync(join(home, '.gitconfig'), '[user]\n\tname = kept\n')
+      mkdirSync(join(home, '.claude'))
+      writeFileSync(join(home, '.claude', 'settings.json'), '{}')
+
+      seedProtectedHomeEntries(home)
+      seedProtectedHomeEntries(home) // idempotent
+
+      for (const name of [
+        '.bashrc',
+        '.bash_profile',
+        '.zshrc',
+        '.zprofile',
+        '.profile',
+        '.ripgreprc',
+        '.mcp.json',
+        '.gitmodules'
+      ]) {
+        const stat = statSync(join(home, name))
+        expect(stat.isFile()).toBe(true)
+        expect(stat.size).toBe(0)
+      }
+      for (const name of ['.vscode', '.idea', '.claude/commands', '.claude/agents']) {
+        expect(statSync(join(home, name)).isDirectory()).toBe(true)
+      }
+      expect(readFileSync(join(home, '.gitconfig'), 'utf8')).toBe('[user]\n\tname = kept\n')
+      expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).toBe('{}')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
     }
   })
 })

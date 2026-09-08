@@ -1,5 +1,14 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
 import { SANDBOX_TEMP_DIR_ENV } from './sandbox-temp.js'
@@ -58,8 +67,8 @@ function childTempDir(writeRoots: string[], privateHome: string): string {
   return tempDir
 }
 
-// SRT 0.0.73's cwd-anchored mandatory-deny names (`DANGEROUS_FILES` / `getDangerousDirectories()`, not exported). Until the scan moved to the private HOME, bwrap left each missing one behind in the checkout as a zero-byte mount-point FILE (a directory name included) that outlived any ungraceful exit.
-const LEGACY_MOUNT_POINT_NAMES = [
+// SRT 0.0.73's cwd-anchored mandatory-deny names (`DANGEROUS_FILES` / `getDangerousDirectories()`, not exported): the files, and the directories it denies as a whole.
+const SRT_PROTECTED_FILES = [
   '.gitconfig',
   '.gitmodules',
   '.bashrc',
@@ -68,12 +77,30 @@ const LEGACY_MOUNT_POINT_NAMES = [
   '.zprofile',
   '.profile',
   '.ripgreprc',
-  '.mcp.json',
-  '.vscode',
-  '.idea',
-  '.claude/commands',
-  '.claude/agents'
+  '.mcp.json'
 ]
+const SRT_PROTECTED_DIRS = ['.vscode', '.idea', '.claude/commands', '.claude/agents']
+
+// Until the scan moved to the private HOME, bwrap left each missing name behind in the checkout as a zero-byte mount-point FILE (a directory name included) that outlived any ungraceful exit.
+const LEGACY_MOUNT_POINT_NAMES = [...SRT_PROTECTED_FILES, ...SRT_PROTECTED_DIRS]
+
+/** Give SRT's scan real, empty entries to protect in the private HOME, so it binds each read-only in place instead of stubbing a missing one with `/dev/null`. That stub is unreadable inside the sandbox (bwrap binds carry `nodev`), and Debian's bash sources `~/.bashrc` from any `bash -c` whose stdin is a socket — every Node pipe — so the stub turned into a `Permission denied` on stderr at every launch. The HOME is the daemon's own, so an empty rc file there is nobody's untracked file. Idempotent; an entry that already exists, a symlink included, is left alone. */
+export function seedProtectedHomeEntries(home: string): void {
+  for (const name of SRT_PROTECTED_DIRS) {
+    try {
+      mkdirSync(join(home, name), { recursive: true, mode: 0o700 })
+    } catch {
+      // exists as something else, or not ours to create
+    }
+  }
+  for (const name of SRT_PROTECTED_FILES) {
+    try {
+      writeFileSync(join(home, name), '', { flag: 'wx', mode: 0o600 })
+    } catch {
+      // already present in any form
+    }
+  }
+}
 
 /** The listed names Git tracks in `cwd` — the repository's own files, whatever their size. Empty when `cwd` is no checkout or git is unavailable. */
 function trackedLegacyNames(cwd: string): Set<string> {
@@ -152,11 +179,12 @@ export async function runSandboxRuntimeProvider(argv: string[], opts: { offline?
       throw new Error('private HOME must be an explicit SRT write root')
     }
     removeLegacyMountPoints(sandboxCwd)
+    seedProtectedHomeEntries(privateHome)
     // SRT's Linux mandatory-deny scan is anchored at its own process.cwd() (the cwd argument to
     // wrapWithSandboxArgv plays no part in it), and for a missing name it has bwrap create a zero-byte
     // mount point there. Its names are HOME's — shell rc files, `.gitconfig`, `.mcp.json` — so anchor
-    // the scan at the private HOME, where they belong and where a placeholder is nobody's untracked
-    // file, instead of the checkout. The checkouts' `.git/config` and `.git/hooks` are denied
+    // the scan at the private HOME, where they belong and where the entries above are real files of
+    // ours, instead of the checkout. The checkouts' `.git/config` and `.git/hooks` are denied
     // explicitly by the launch (launch/prepare.ts), so nothing depends on scanning the workspace.
     process.chdir(privateHome)
     const privateTmp = childTempDir(writeRoots, privateHome)
