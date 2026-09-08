@@ -230,7 +230,7 @@ function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) 
 
 /** The refresh outcome — the failure banner and the manifest/authorization
  *  notice, in the order they render under the row today. */
-function SlackCardNotice({ bot }: { bot: BotDto }) {
+function SlackCardNotice({ bot, onDelete }: { bot: BotDto; onDelete?: (bot: BotDto) => void }) {
   const card = useSlackBotCard()
   const entry = card.entryFor(bot.id)
   if (!entry) return null
@@ -250,6 +250,7 @@ function SlackCardNotice({ bot }: { bot: BotDto }) {
           builtin={bot.prebuilt}
           reinstalling={card.reinstallingBot(bot.id)}
           onReinstall={bot.prebuilt ? () => card.reinstallBuiltin(bot) : undefined}
+          onDelete={onDelete ? () => onDelete(bot) : undefined}
         />
       )}
     </>
@@ -260,18 +261,39 @@ function SlackRefreshNotice({
   result,
   builtin,
   reinstalling,
-  onReinstall
+  onReinstall,
+  onDelete
 }: {
   result: SlackBotRefreshDto
   builtin?: boolean
   reinstalling?: boolean
   onReinstall?: () => void
+  onDelete?: () => void
 }) {
-  const { needsAttention, message: defaultMessage, action } = slackRefreshNoticeState(result)
+  const {
+    needsAttention,
+    message: defaultMessage,
+    action,
+    scopeFragment,
+    offerDelete
+  } = slackRefreshNoticeState(result)
+  const [copied, setCopied] = useState(false)
   const message =
     builtin && result.authorization === 'invalid'
       ? 'Slack rejected this workspace authorization. Reinstall the app to reconnect it.'
       : defaultMessage
+  // A builtin app is the deployment's: a rejected authorization is reinstalled, never forgotten here.
+  const deletable = offerDelete && !builtin && !!onDelete
+  const copyScopes = async () => {
+    if (!scopeFragment) return
+    try {
+      await navigator.clipboard.writeText(scopeFragment)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* clipboard unavailable (insecure context) — the list stays selectable in the notice */
+    }
+  }
 
   return (
     <div
@@ -287,20 +309,34 @@ function SlackRefreshNotice({
           <span className="mono ml-1 text-[11px]">Missing: {result.missingScopes.join(', ')}</span>
         )}
       </span>
-      {action?.label === 'Reinstall workspace' && onReinstall ? (
-        <button
-          type="button"
-          className="lnk flex-none border-0 bg-transparent p-0"
-          disabled={reinstalling}
-          onClick={onReinstall}
-        >
-          {reinstalling ? 'Reinstalling…' : action.label}
-        </button>
-      ) : action ? (
-        <a href={action.href} target="_blank" rel="noopener noreferrer" className="lnk flex-none">
-          {action.label}
-        </a>
-      ) : null}
+      {(scopeFragment || action || deletable) && (
+        <span className="flex flex-none items-center gap-3">
+          {scopeFragment && (
+            <button type="button" className="lnk border-0 bg-transparent p-0" onClick={() => void copyScopes()}>
+              {copied ? 'Copied' : 'Copy scopes'}
+            </button>
+          )}
+          {action?.label === 'Reinstall workspace' && onReinstall ? (
+            <button
+              type="button"
+              className="lnk border-0 bg-transparent p-0"
+              disabled={reinstalling}
+              onClick={onReinstall}
+            >
+              {reinstalling ? 'Reinstalling…' : action.label}
+            </button>
+          ) : action ? (
+            <a href={action.href} target="_blank" rel="noopener noreferrer" className="lnk">
+              {action.label}
+            </a>
+          ) : null}
+          {deletable && (
+            <button type="button" className="lnk border-0 bg-transparent p-0" onClick={onDelete}>
+              Delete app
+            </button>
+          )}
+        </span>
+      )}
     </div>
   )
 }

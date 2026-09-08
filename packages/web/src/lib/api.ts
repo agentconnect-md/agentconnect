@@ -925,7 +925,8 @@ export interface BotDto {
 
 export interface SlackBotRefreshDto {
   manifest: 'synced' | 'manual_update_required' | 'unknown'
-  authorization: 'current' | 'reinstall_required' | 'invalid' | 'app_mismatch' | 'unknown'
+  /** `app_deleted`: Slack rejected the token AND the caller's config token no longer lists the app. */
+  authorization: 'current' | 'reinstall_required' | 'invalid' | 'app_deleted' | 'app_mismatch' | 'unknown'
   missingScopes: string[]
   settingsUrl: string
   manifestUrl: string

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SlackBotRefreshDto } from '@/lib/api'
-import { slackRefreshNoticeState } from './refresh-notice'
+import { slackManifestScopeFragment, slackRefreshNoticeState } from './refresh-notice'
 
 const refreshResult = (overrides: Partial<SlackBotRefreshDto> = {}): SlackBotRefreshDto => ({
   manifest: 'synced',
@@ -13,12 +13,20 @@ const refreshResult = (overrides: Partial<SlackBotRefreshDto> = {}): SlackBotRef
   ...overrides
 })
 
+describe('slackManifestScopeFragment', () => {
+  it('renders one quoted, comma-terminated item per line so it pastes right after the bot array opener', () => {
+    expect(slackManifestScopeFragment(['commands', 'im:read'])).toBe('"commands",\n"im:read",')
+  })
+})
+
 describe('slackRefreshNoticeState', () => {
   it('does not request manifest review when workspace permissions already match', () => {
     expect(slackRefreshNoticeState(refreshResult({ manifest: 'manual_update_required' }))).toEqual({
       needsAttention: false,
       message: 'Workspace permissions match AgentConnect’s requirements.',
-      action: null
+      action: null,
+      scopeFragment: null,
+      offerDelete: false
     })
   })
 
@@ -26,7 +34,9 @@ describe('slackRefreshNoticeState', () => {
     expect(slackRefreshNoticeState(refreshResult())).toEqual({
       needsAttention: false,
       message: 'Slack app configuration and workspace permissions are up to date.',
-      action: null
+      action: null,
+      scopeFragment: null,
+      offerDelete: false
     })
   })
 
@@ -41,22 +51,25 @@ describe('slackRefreshNoticeState', () => {
     })
   })
 
-  it('offers only permission updates when the requested scopes are not synced', () => {
+  it('sends a short grant the manifest could not be synced for to the manifest editor, with the scopes to paste', () => {
     expect(
       slackRefreshNoticeState(
         refreshResult({
           manifest: 'manual_update_required',
           authorization: 'reinstall_required',
-          missingScopes: ['chat:write.customize']
+          missingScopes: ['chat:write.customize', 'lists:read']
         })
       )
     ).toMatchObject({
       needsAttention: true,
-      message: 'Add the missing scopes in Slack’s OAuth & Permissions page, then reinstall the app.',
+      message:
+        'Add the missing scopes to the app manifest in Slack — copy them and paste the list at the top of oauth_config.scopes.bot — then reinstall the app.',
       action: {
-        href: 'https://app.slack.com/app-settings/T0123/A0123/oauth',
-        label: 'Update permissions'
-      }
+        href: 'https://app.slack.com/app-settings/T0123/A0123/app-manifest',
+        label: 'Open App Manifest'
+      },
+      scopeFragment: '"chat:write.customize",\n"lists:read",',
+      offerDelete: false
     })
   })
 
@@ -71,11 +84,12 @@ describe('slackRefreshNoticeState', () => {
       action: {
         href: 'https://api.slack.com/apps/A0123/install-on-team?',
         label: 'Reinstall workspace'
-      }
+      },
+      scopeFragment: null
     })
   })
 
-  it('offers only reinstallation when Slack rejects the stored token', () => {
+  it('offers reinstallation AND forgetting the bot when Slack rejects the stored token', () => {
     expect(
       slackRefreshNoticeState(
         refreshResult({
@@ -91,7 +105,20 @@ describe('slackRefreshNoticeState', () => {
       action: {
         href: 'https://api.slack.com/apps/A0123/install-on-team?',
         label: 'Reinstall workspace'
-      }
+      },
+      offerDelete: true
+    })
+  })
+
+  it('offers only forgetting the bot when the app itself was deleted in Slack', () => {
+    expect(
+      slackRefreshNoticeState(refreshResult({ manifest: 'manual_update_required', authorization: 'app_deleted' }))
+    ).toEqual({
+      needsAttention: true,
+      message: 'This app no longer exists in Slack — it was deleted there. Delete it here to clean up.',
+      action: null,
+      scopeFragment: null,
+      offerDelete: true
     })
   })
 })

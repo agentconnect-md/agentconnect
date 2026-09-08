@@ -1778,7 +1778,8 @@ export const BotListDto = z.array(BotDto)
  * actually granted bot scopes. URLs are public Slack settings deep links only. */
 export const SlackBotRefreshDto = z.object({
   manifest: z.enum(['synced', 'manual_update_required', 'unknown']),
-  authorization: z.enum(['current', 'reinstall_required', 'invalid', 'app_mismatch', 'unknown']),
+  /** `app_deleted`: Slack rejected the token AND the caller's config token no longer lists the app. */
+  authorization: z.enum(['current', 'reinstall_required', 'invalid', 'app_deleted', 'app_mismatch', 'unknown']),
   missingScopes: z.array(z.string()),
   settingsUrl: z.string(),
   manifestUrl: z.string(),

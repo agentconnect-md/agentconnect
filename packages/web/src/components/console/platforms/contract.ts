@@ -494,8 +494,10 @@ export interface WebBotSettingsFragments {
      *  reducer, slack/refresh-notice.ts:19-62) AND the refresh FAILURE banner
      *  beside it (:1372-1379), which is card state the host has no other way
      *  to render. Rendered under the row, outside the expanded-channels
-     *  guard, exactly where both sit today. */
-    CardNotice?: ComponentType<{ bot: BotDto }>
+     *  guard, exactly where both sit today. `onDelete` opens the host's own
+     *  delete dialog and is passed only while the row's delete is offered
+     *  (a free bot, a writer) — a dead credential's notice can point at it. */
+    CardNotice?: ComponentType<{ bot: BotDto; onDelete?: (bot: BotDto) => void }>
   }
   /** Wording for the two host-rendered row sentences. See
    *  {@link WebBotCardCopy}; absent ⇒ both provider-free host defaults. */

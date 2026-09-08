@@ -528,7 +528,7 @@ function BotsCard({
                   {botErr.msg}
                 </div>
               )}
-              {CardNotice && <CardNotice bot={b} />}
+              {CardNotice && <CardNotice bot={b} onDelete={free && canWrite ? onDelete : undefined} />}
               {open && (
                 <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
                   {channels.length > 0 ? (
