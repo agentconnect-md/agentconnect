@@ -58,13 +58,33 @@ const integrationIdField = optionalString('integrationId')
  *  supported indefinitely: every published example and every warm ACP session teaches it, and
  *  the object form only adds delivery options on top of it. */
 const AGENT_ID = z.string(AGENT_TARGET_SHAPE_ERROR).min(1, 'sendMessage: `toAgent` must be a non-empty agent id')
-const AGENT_TARGET_OBJECT = z.strictObject(
-  {
-    agentId: requiredString('agentId'),
-    needsReply: z.boolean('sendMessage: `toAgent.needsReply` must be a boolean').nullish()
-  },
-  branchKeyError('agent target `toAgent`', ['agentId', 'needsReply'])
-)
+/** `toAgent.deadlineMs` bounds. The floor only rules out values that would fire before the child
+ *  can plausibly start; the ceiling is a day, past which a wake is noise rather than a recovery. */
+export const REPLY_DEADLINE_MIN_MS = 1_000
+export const REPLY_DEADLINE_MAX_MS = 86_400_000
+
+const AGENT_TARGET_OBJECT = z
+  .strictObject(
+    {
+      agentId: requiredString('agentId'),
+      needsReply: z.boolean('sendMessage: `toAgent.needsReply` must be a boolean').nullish(),
+      deadlineMs: z
+        .int('sendMessage: `toAgent.deadlineMs` must be an integer number of milliseconds')
+        .min(
+          REPLY_DEADLINE_MIN_MS,
+          `sendMessage: \`toAgent.deadlineMs\` must be between ${REPLY_DEADLINE_MIN_MS} and ${REPLY_DEADLINE_MAX_MS}`
+        )
+        .max(
+          REPLY_DEADLINE_MAX_MS,
+          `sendMessage: \`toAgent.deadlineMs\` must be between ${REPLY_DEADLINE_MIN_MS} and ${REPLY_DEADLINE_MAX_MS}`
+        )
+        .nullish()
+    },
+    branchKeyError('agent target `toAgent`', ['agentId', 'needsReply', 'deadlineMs'])
+  )
+  .refine((target) => target.deadlineMs == null || target.needsReply === true, {
+    error: 'sendMessage: `toAgent.deadlineMs` requires `needsReply: true` — there is no report to wait for'
+  })
 const AGENT_TARGET = z.union([AGENT_ID, AGENT_TARGET_OBJECT])
 
 /** `toUser`: one id works for every delivery form; a non-empty array is reserved for one visible
@@ -104,12 +124,16 @@ export const SEND_MESSAGE_BRANCHES = {
 }
 
 /** Normalize `toAgent`. `undefined` ⇒ this is not an agent target. */
-function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: boolean } {
+function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: boolean; deadlineMs?: number } {
   if (value === undefined || value === null) return {}
   if (typeof value === 'string') return { toAgent: parseArgs(AGENT_ID, value) }
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error(AGENT_TARGET_SHAPE_ERROR)
   const target = parseArgs(AGENT_TARGET_OBJECT, value)
-  return { toAgent: target.agentId, ...(target.needsReply === true ? { needsReply: true } : {}) }
+  return {
+    toAgent: target.agentId,
+    ...(target.needsReply === true ? { needsReply: true } : {}),
+    ...(target.deadlineMs != null ? { deadlineMs: target.deadlineMs } : {})
+  }
 }
 
 /** Normalize `toUser` to the id list both delivery forms work from. */
@@ -157,6 +181,9 @@ export interface MessageAgentReq {
    *  has failed (`toAgent.needsReply`). The daemon turns this into a standing directive on the
    *  child's session — it is NOT part of the delivered message text. */
   needsReply?: boolean
+  /** Wake the caller after this many ms if the `needsReply` report has not arrived. Silence is
+   *  otherwise not an event, so an awaiting caller can never re-prompt on its own (#800). */
+  replyDeadlineMs?: number
   /**
    * send-message-routing-rework.md §3.2: the daemon-minted id shared by this wake and the
    * visible post that accompanied it. Present only on the paired `toAgent + channel` form;
@@ -189,6 +216,9 @@ export interface MessageAgentResult {
   delivered: boolean
   targetSession: string
   reason?: string
+  /** Present only when a requested `deadlineMs` was NOT armed, so the caller does not wait on a
+   *  wake that will never come. Today the one case is a target served by another daemon. */
+  deadlineIgnored?: string
 }
 
 /**
@@ -214,6 +244,13 @@ export interface ReplyToSessionReq {
   text: string
   /** Optional correlationId override (advanced). Normally inherited from the origin turn. */
   correlationId?: string
+  /**
+   * Daemon-internal origin, for a reply the DAEMON itself sends on a child's behalf. Never
+   * reachable from the tool surface. The #800 deadline needs it: it fires when a child may
+   * never have started, so there is no session row and no active turn to authorize against —
+   * but the daemon recorded the parent when it armed the deadline.
+   */
+  trustedOriginSessionId?: string
 }
 
 /** The result of a SessionTarget reply. `delivered:false` carries a typed reason
@@ -408,7 +445,7 @@ export async function sendMessage(
   // user DM; providing `channel` selects a channel-root post. Branch-specific validation
   // below keeps ignored/mixed fields out even when a caller bypasses the advertised JSON
   // Schema (as unit tests and older clients can).
-  const { toAgent, needsReply } = parseAgentTarget(args.toAgent)
+  const { toAgent, needsReply, deadlineMs } = parseAgentTarget(args.toAgent)
   const toUsers = parseUserTargets(args.toUser)
   const channel = parseArgs(channelField, args.channel)
   const attachmentName = parseArgs(attachmentField, args.attachment)
@@ -456,6 +493,7 @@ export async function sendMessage(
           text: message,
           channel: channel ?? ctx.channel,
           ...(needsReply ? { needsReply: true } : {}),
+          ...(deadlineMs !== undefined ? { replyDeadlineMs: deadlineMs } : {}),
           // §3.1: no `channel` ⇒ the postless form, whose child is headless.
           ...(channel === undefined ? { postless: true } : {})
         }
@@ -752,13 +790,25 @@ export async function sendMessage(
     ...(wake !== undefined ? { wake } : {}),
     ...(post !== undefined ? { post } : {}),
     ...(childSessionId !== undefined ? { childSessionId } : {}),
+    // A requested deadline that was NOT armed changes the advice, not just a field: telling the
+    // caller to end its turn and wait is exactly the indefinite strand this feature prevents.
     ...(childSessionId !== undefined && needsReply
-      ? {
-          reply: { requested: true, state: 'awaiting' as const },
-          nextAction: 'finish-turn-and-wait' as const,
-          message:
-            'Message delivered. The agent will reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
-        }
+      ? wake?.deadlineIgnored !== undefined
+        ? {
+            reply: { requested: true, state: 'awaiting' as const },
+            deadlineIgnored: wake.deadlineIgnored,
+            nextAction: 'wait' as const,
+            message:
+              `Message delivered, but NO deadline was armed (${wake.deadlineIgnored}) — nothing will wake you ` +
+              'if the agent never replies. Do not wait indefinitely: check on it yourself with ' +
+              '`viewSessionStatus` on `childSessionId`, and decide when to give up or proceed without its answer.'
+          }
+        : {
+            reply: { requested: true, state: 'awaiting' as const },
+            nextAction: 'finish-turn-and-wait' as const,
+            message:
+              'Message delivered. The agent will reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
+          }
       : {}),
     ...(notices.length ? { notice: notices.join(' ') } : {})
   }

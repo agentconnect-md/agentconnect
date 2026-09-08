@@ -1977,6 +1977,58 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(calls[0]!.text).toBe('take this over')
   })
 
+  it('forwards toAgent.deadlineMs as the trusted reply deadline', async () => {
+    const { deps: d, calls } = wakeDeps()
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { toAgent: { agentId: 'peer-1', needsReply: true, deadlineMs: 60_000 }, message: 'vote now' },
+      d
+    )
+    expect(calls[0]!.replyDeadlineMs).toBe(60_000)
+    expect(calls[0]!.text).toBe('vote now')
+  })
+
+  it('tells the caller NOT to just wait when a requested deadline was not armed', async () => {
+    const { deps: d } = wakeDeps()
+    const inner = d.messageAgent!
+    d.messageAgent = async (req) => ({ ...(await inner(req)), deadlineIgnored: 'target_on_another_daemon' })
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { toAgent: { agentId: 'peer-1', needsReply: true, deadlineMs: 60_000 }, message: 'vote now' },
+      d
+    )) as Record<string, unknown>
+    expect(res.deadlineIgnored).toBe('target_on_another_daemon')
+    // The whole point: never the "end your turn and wait" advice, which would strand it.
+    expect(res.nextAction).toBe('wait')
+    expect(String(res.message)).toContain('NO deadline was armed')
+    expect(String(res.message)).toContain('viewSessionStatus')
+  })
+
+  it('rejects a deadline without needsReply, and one outside the accepted range', async () => {
+    const { deps: d } = wakeDeps()
+    await expect(
+      executeTool(ctx, 'sendMessage', { toAgent: { agentId: 'peer-1', deadlineMs: 60_000 }, message: 'x' }, d)
+    ).rejects.toThrow(/requires `needsReply: true`/)
+    await expect(
+      executeTool(
+        ctx,
+        'sendMessage',
+        { toAgent: { agentId: 'peer-1', needsReply: true, deadlineMs: 5 }, message: 'x' },
+        d
+      )
+    ).rejects.toThrow(/must be between/)
+    await expect(
+      executeTool(
+        ctx,
+        'sendMessage',
+        { toAgent: { agentId: 'peer-1', needsReply: true, deadlineMs: 1.5 }, message: 'x' },
+        d
+      )
+    ).rejects.toThrow(/integer number of milliseconds/)
+  })
+
   it('leaves needsReply absent for the bare-string form and for an explicit false', async () => {
     const { deps: d, calls } = wakeDeps()
     await executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', message: 'a' }, d)

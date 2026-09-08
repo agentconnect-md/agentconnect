@@ -45,7 +45,12 @@ export interface NightCollectionRefereeConfig {
   wolfB: WebchatSeat
   seer: WebchatSeat
   doctor: WebchatSeat
+  /** #800 deadline attached to every night call. Absent ⇒ the pre-deadline behavior. */
+  deadlineMs?: number
 }
+
+/** The marker text of the daemon's deadline wake, as the referee sees it. */
+export const DEADLINE_NOTICE = '[needsReply deadline]'
 
 const instruction = (task: string, marker: string): string =>
   `${task} Answer with a single line that starts exactly with \`${marker}\` — nothing before it. ` +
@@ -62,6 +67,9 @@ export class NightCollectionReferee implements ScriptedBrain {
   readonly issued: IssuedCall[] = []
   /** Marker → number of onPrompt() calls whose text contained the reply. */
   readonly markerSightings = new Map<NightMarker, number>()
+  /** Deadline wakes seen, and the re-prompts they let the referee send unaided (#800). */
+  deadlineNotices = 0
+  readonly rePrompted = new Set<NightMarker>()
   private nightIssued = false
   private relayIssued = false
   private closed = false
@@ -109,11 +117,44 @@ export class NightCollectionReferee implements ScriptedBrain {
         )
       )
     }
+    // #800: the deadline wake is the ONLY thing that reaches a referee whose child went
+    // silent, and it is what makes an unaided re-prompt possible.
+    if (text.includes(DEADLINE_NOTICE)) {
+      this.deadlineNotices += 1
+      for (const [alias, purpose] of this.seatPurposes()) {
+        if (!text.includes(alias) || this.rePrompted.has(purpose)) continue
+        this.rePrompted.add(purpose)
+        calls.push(
+          this.needsReplyCall(
+            this.seatFor(purpose),
+            purpose,
+            instruction(`You did not answer. Send your night action now.`, MARKERS[purpose])
+          )
+        )
+      }
+    }
     if (!this.closed && text.includes(MARKERS.verdict)) {
       this.closed = true
       reply = 'The night is resolved.'
     }
     return { calls, reply }
+  }
+
+  private seatFor(purpose: NightMarker): WebchatSeat {
+    return purpose === 'proposal'
+      ? this.cfg.wolfA
+      : purpose === 'verdict'
+        ? this.cfg.wolfB
+        : purpose === 'seer'
+          ? this.cfg.seer
+          : this.cfg.doctor
+  }
+
+  private seatPurposes(): [string, NightMarker][] {
+    return (['proposal', 'verdict', 'seer', 'doctor'] as NightMarker[]).map((purpose) => [
+      this.seatFor(purpose).agentId,
+      purpose
+    ])
   }
 
   onCallResult(outcome: BrainCallOutcome): void {
@@ -133,7 +174,14 @@ export class NightCollectionReferee implements ScriptedBrain {
     this.issued.push({ to: seat.agentId, purpose, needsReply: true, delivered: false })
     return {
       tool: 'sendMessage',
-      args: { toAgent: { agentId: seat.agentId, needsReply: true }, message }
+      args: {
+        toAgent: {
+          agentId: seat.agentId,
+          needsReply: true,
+          ...(this.cfg.deadlineMs !== undefined ? { deadlineMs: this.cfg.deadlineMs } : {})
+        },
+        message
+      }
     }
   }
 }

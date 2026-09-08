@@ -126,6 +126,20 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
                       'is told to report back into this session (done or failed) when it completes. Defaults to ' +
                       'false, which is fire-and-forget — the peer’s answer stays in its own conversation and you ' +
                       'learn nothing, not even that it failed.'
+                  },
+                  deadlineMs: {
+                    type: 'integer',
+                    minimum: 1000,
+                    maximum: 86400000,
+                    description:
+                      'Optional, and only with `needsReply: true`. Wake THIS session after this many milliseconds ' +
+                      'if the peer’s report has not arrived, so you can re-prompt, escalate, or proceed without ' +
+                      'it. Without it, a peer that simply never answers produces no event at all and you wait ' +
+                      'forever. The wake says only that nothing arrived — it never invents a reply. A report that ' +
+                      'arrives first cancels it. Use it whenever you are collecting answers you intend to act on, ' +
+                      'and allow generous time for the peer to do the work — tens of seconds to minutes is normal. ' +
+                      'If the result comes back with `deadlineIgnored`, no deadline was armed and nothing will ' +
+                      'wake you — check on the peer yourself with `viewSessionStatus` instead.'
                   }
                 },
                 ['agentId']
