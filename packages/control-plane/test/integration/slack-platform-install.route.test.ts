@@ -249,8 +249,10 @@ describe('GET /integrations/slack/platform/callback', () => {
       url: `${ORG}/bots/${bot!.id}/slack/refresh`
     })
     expect(refreshed.statusCode).toBe(200)
+    // No config token here, so the deployment app's manifest is unverified and claimed nothing about.
     expect(refreshed.json()).toMatchObject({
-      manifest: 'synced',
+      manifest: 'manual_update_required',
+      manifestMissingScopes: [],
       authorization: 'current',
       missingScopes: []
     })
