@@ -11,7 +11,13 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
 import type { FastifyInstance } from 'fastify'
-import type { RcVerifyResult, RdAck, RdMsgWebchat, WebchatRemoteMcpEntitlement } from '@agentconnect.md/protocol'
+import type {
+  RcVerifyResult,
+  RdAck,
+  RdChat,
+  RdMsgWebchat,
+  WebchatRemoteMcpEntitlement
+} from '@agentconnect.md/protocol'
 import { createRelayBrowserServer, RELAY_WEBCHAT_WS_PATH } from './relay-browser-server.js'
 import { WebchatRouter } from './webchat-router.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -196,6 +202,77 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
     expect((await nextFrame(ws, 'done')).done).toMatchObject({ conversationId: RESUME })
     ws.close()
   })
+
+  it.each(['sender', 'viewer'] as const)(
+    'streams to both conversation tabs and keeps the other subscribed when the %s closes',
+    async (closing) => {
+      const { base, router, sent } = await start()
+      const sender = await dial(base, '?token=sender')
+      await nextFrame(sender, 'ready')
+      const viewer = await dial(base, '?token=viewer')
+      await nextFrame(viewer, 'ready')
+      const tabs = { sender, viewer }
+      sender.send(JSON.stringify({ text: 'hello agent', turnId: AGENT }))
+      await nextFrame(sender, 'ack')
+
+      const frames: RdChat[] = ['Hello', ' from', ' the agent'].map((text, index) => ({
+        chatId: RESUME,
+        seq: index,
+        event: {
+          kind: 'output',
+          output: {
+            conversationId: RESUME,
+            turnId: AGENT,
+            agentId: AGENT,
+            index,
+            event: { kind: 'message', text }
+          }
+        }
+      }))
+      frames.push({
+        chatId: RESUME,
+        seq: frames.length,
+        event: {
+          kind: 'done',
+          done: { conversationId: RESUME, turnId: AGENT, agentId: AGENT, lastIndex: frames.length - 1 }
+        }
+      })
+      for (const frame of frames) router.deliver(frame)
+      for (const tab of [sender, viewer]) {
+        expect(await nextFrame(tab, 'done')).toEqual({
+          type: 'done',
+          done: { conversationId: RESUME, turnId: AGENT, agentId: AGENT, lastIndex: 2 }
+        })
+        expect(tab.frames).toEqual(
+          frames.slice(0, -1).map((frame) => ({
+            type: 'output',
+            output: frame.event.kind === 'output' ? frame.event.output : undefined
+          }))
+        )
+        tab.frames.length = 0
+      }
+
+      const post = {
+        postId: DAEMON,
+        conversationId: RESUME,
+        author: { kind: 'agent' as const, agentId: AGENT },
+        text: 'Hello from the agent',
+        at: 1_000
+      }
+      router.deliverPost({ conversationId: RESUME, agentId: AGENT, post })
+      expect(await nextFrame(sender, 'post')).toEqual({ type: 'post', post })
+      expect(await nextFrame(viewer, 'post')).toEqual({ type: 'post', post })
+
+      tabs[closing].close()
+      await vi.waitFor(() => expect(sent.some((message) => message.payload.op === 'close')).toBe(true))
+      const remaining = closing === 'sender' ? viewer : sender
+      expect(router.size()).toBe(1)
+      router.deliver(frames.at(-1)!)
+      expect((await nextFrame(remaining, 'done')).done).toMatchObject({ turnId: AGENT, lastIndex: 2 })
+      remaining.close()
+      await vi.waitFor(() => expect(router.size()).toBe(0))
+    }
+  )
 
   it('uses only the CP-verified entitlement even when browser fields try to override it', async () => {
     const forged = {
