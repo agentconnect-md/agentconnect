@@ -1,27 +1,24 @@
-/**
- * The webchat turn-output surface: the ACP-update → `WebchatEvent` mapping the turn
- * engine streams through a turn's sink, plus the two transcript helpers that share it.
- * Pure functions over the turn's webchat state (and, where a row is written, the store),
- * called directly by the turn engine.
- */
+// Webchat output mapping and canonical transcript helpers used by the turn engine.
 import type { SessionImageAttachment, WebchatEvent } from '@agentconnect.md/protocol'
 import type { LocalStore } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { isNoResponsePrefix } from '../session/no-response.js'
 import { planEntriesOf } from '../session/plan-entries.js'
+import { flattenUnsafeLinks } from '../messages/agent-links.js'
+import { agentMessageId } from '../messages/message-boundary.js'
+import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { chunkText } from './chunk.js'
 import type { Pending } from '../daemon/turn-types.js'
 
-/** One turn's live webchat state — the sink, its output cursor, and the sentinel hold. */
+/** One turn's live sink, output cursor, and buffered Markdown message. */
 export type WebchatTurnOutput = NonNullable<Pending['webchat']>
 
-/**
- * Map one ACP SessionUpdate to a WebchatEvent and stream it through the sink (→ relay
- * `rd/chat`, webchat's "send"). Only the streamable kinds map; usage and the rest are
- * handled elsewhere or dropped. A single event whose inline text would
- * blow the 256 KiB frame cap is split across multiple chunks, each with its own `index`.
- */
-export function emitWebchatUpdate(wc: WebchatTurnOutput, update: any): void {
+/** Map streamable ACP updates into indexed webchat events below the relay frame limit. */
+export function emitWebchatUpdate(
+  wc: WebchatTurnOutput,
+  update: any,
+  resolveFileLink?: WorkspaceFileLinkResolver
+): void {
   const emit = (event: WebchatEvent): void => {
     wc.sink.output({
       conversationId: wc.conversationId,
@@ -30,26 +27,27 @@ export function emitWebchatUpdate(wc: WebchatTurnOutput, update: any): void {
       event
     })
   }
+  const messageId = update?.sessionUpdate === 'agent_message_chunk' ? agentMessageId(update) : ''
+  const boundary =
+    (messageId && wc.messageId && messageId !== wc.messageId) ||
+    ['agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'].includes(update?.sessionUpdate)
+  if (boundary && !isNoResponsePrefix(wc.replyText.trim())) flushHeldWebchatText(wc, resolveFileLink)
+  if (messageId) wc.messageId = messageId
   switch (update?.sessionUpdate) {
     case 'agent_message_chunk': {
       const text = update.content?.type === 'text' ? (update.content.text ?? '') : ''
       if (text) {
-        wc.replyText += text // recorded once at turn end (no Slack post boundary)
-        // Response-choice hold (product-conventions §No-response control marker):
-        // while the whole accumulated body could still be the bare sentinel,
-        // keep it off the live stream — an agent silently declining a
-        // conversation-wide activation must not flash AC_NO_RESPONSE into the
-        // browser. Everything is released the instant the body diverges.
-        if (wc.messageEmitted) {
-          for (const t of chunkText(text)) emit({ kind: 'message', text: t })
-        } else {
-          wc.heldText += text
-          if (!isNoResponsePrefix(wc.heldText.trim())) {
-            const held = wc.heldText
-            wc.heldText = ''
-            wc.messageEmitted = true
-            for (const t of chunkText(held)) emit({ kind: 'message', text: t })
-          }
+        wc.replyText += text
+        wc.heldText += text
+        // Keep the sentinel and any Markdown that later chunks could turn into a file link off the stream.
+        if (!wc.messageEmitted && isNoResponsePrefix(wc.replyText.trim())) return
+        const linkStart = wc.heldText.search(/[!<[\]]/)
+        const end = (linkStart < 0 ? wc.heldText : wc.heldText.slice(0, linkStart)).trimEnd().length
+        const ready = wc.heldText.slice(wc.heldTextOffset ?? 0, end)
+        wc.heldTextOffset = end
+        if (ready) {
+          wc.messageEmitted = true
+          for (const t of chunkText(ready)) emit({ kind: 'message', text: t })
         }
       }
       return
@@ -154,18 +152,22 @@ export async function appendWebchatTextRow(
   return fallback
 }
 
-/** Release stream text held back by the no-response sentinel check once the
- *  turn is known to be a real reply (it diverged only at the very end, e.g. a
- *  body shorter than the sentinel). */
-export function flushHeldWebchatText(wc: WebchatTurnOutput): void {
+/** Resolve one complete Markdown message before releasing its held suffix and recording the canonical reply. */
+export function flushHeldWebchatText(wc: WebchatTurnOutput, resolveFileLink?: WorkspaceFileLinkResolver): void {
   if (!wc.heldText) return
-  const held = wc.heldText
+  const rendered = flattenUnsafeLinks(wc.heldText, { resolveFileLink })
+  const held = rendered.slice(wc.heldTextOffset ?? 0)
+  wc.replyText = wc.replyText.slice(0, -wc.heldText.length) + rendered
   wc.heldText = ''
+  wc.heldTextOffset = 0
+  if (!held) return
   wc.messageEmitted = true
-  wc.sink.output({
-    conversationId: wc.conversationId,
-    turnId: wc.turnId,
-    index: wc.index++,
-    event: { kind: 'message', text: held }
-  })
+  for (const text of chunkText(held)) {
+    wc.sink.output({
+      conversationId: wc.conversationId,
+      turnId: wc.turnId,
+      index: wc.index++,
+      event: { kind: 'message', text }
+    })
+  }
 }

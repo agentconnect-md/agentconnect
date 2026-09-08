@@ -108,6 +108,7 @@ const PILL_OFF = `${PILL_BASE} bg-transparent text-(--text-secondary) hover:text
 export function SessionViewer({
   agentId,
   sessionId,
+  repo,
   path,
   mode = 'file',
   diffRefreshTick = 0,
@@ -118,6 +119,8 @@ export function SessionViewer({
   agentId: string
   /** ACP session id selecting that session's isolated worktree; omit for the agent's primary checkout. Pass it only for a session whose `workspaceIsolation` is `'session'` — the daemon answers a shared-workspace sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline". */
   sessionId?: string
+  /** An authorized secondary repository; omit for the primary workspace. */
+  repo?: string
   /** Workspace-relative path of the file to read. Changing it starts a fresh read; an older slice can never land in the newer one. */
   path: string
   /** Which read is on screen. It lives in the URL beside `file` (§4), so the caller owns it and this pane reports the pill instead of holding a second copy. */
@@ -151,7 +154,7 @@ export function SessionViewer({
     if (!fileWanted) return
     const requestId = ++requestRef.current
     setRead(PENDING)
-    fetchWorkspaceFile(agentId, { path, ...(sessionId ? { sessionId } : {}) }).then(
+    fetchWorkspaceFile(agentId, { path, ...(sessionId ? { sessionId } : {}), ...(repo ? { repo } : {}) }).then(
       (f) =>
         setRead((r) =>
           requestId === requestRef.current ? { ...r, loading: false, file: f, content: f.content ?? '' } : r
@@ -166,7 +169,7 @@ export function SessionViewer({
     return () => {
       requestRef.current += 1
     }
-  }, [agentId, sessionId, path, reloadTick, fileWanted])
+  }, [agentId, sessionId, repo, path, reloadTick, fileWanted])
 
   // One entry per read, so switching Diff → File → Diff redraws instead of re-reading. Keyed by the WHOLE read — checkout, worktree, path, scope, retry — not by the scope alone: the caller remounts this pane on a path change today, and a cache that relied on that would paint one path's diff under another's heading the day it stops.
   const [diffs, setDiffs] = useState<Record<string, DiffRead>>({})
@@ -174,7 +177,7 @@ export function SessionViewer({
   const diffScope = SCOPE_OF[mode]
   const wantDiff = mode !== 'file'
   // A newline joins the parts because a POSIX path may contain a space: two different reads must not collide on one key. Both ticks ride the key — the pane's own Retry and its own writes, and the caller's "the index moved under you" — so an invalidated diff is a NEW read rather than a mutated entry.
-  const diffKey = [agentId, sessionId ?? '', path, diffScope, diffTick, diffRefreshTick].join('\n')
+  const diffKey = [agentId, sessionId ?? '', repo ?? '', path, diffScope, diffTick, diffRefreshTick].join('\n')
   // Which reads this mount has already issued, so an effect firing again for an unrelated reason does not re-issue one that is already in flight.
   const askedRef = useRef(new Set<string>())
   useEffect(() => {
@@ -183,7 +186,12 @@ export function SessionViewer({
     askedRef.current.add(diffKey)
     setDiffs((current) => ({ ...current, [diffKey]: DIFF_PENDING }))
     // Deliberately NOT cancelled on cleanup. `diffKey` already names the read, so a late answer can only land on its own entry — while cancelling stranded it: leaving diff mode tore the read down, and coming back short-circuited on `askedRef`, so the pane span on a spinner with no Retry until the scope or the path changed.
-    fetchWorkspaceGitDiff(agentId, { path, scope: diffScope, ...(sessionId ? { sessionId } : {}) }).then(
+    fetchWorkspaceGitDiff(agentId, {
+      path,
+      scope: diffScope,
+      ...(sessionId ? { sessionId } : {}),
+      ...(repo ? { repo } : {})
+    }).then(
       (d) => setDiffs((current) => ({ ...current, [diffKey]: { ...DIFF_PENDING, loading: false, diff: d } })),
       (e) =>
         setDiffs((current) => ({
@@ -191,7 +199,7 @@ export function SessionViewer({
           [diffKey]: { ...DIFF_PENDING, loading: false, err: msg(e), errStatus: statusOf(e), errCode: codeOf(e) }
         }))
     )
-  }, [agentId, sessionId, path, diffScope, diffKey, wantDiff])
+  }, [agentId, sessionId, repo, path, diffScope, diffKey, wantDiff])
   const retryDiff = () => setDiffTick((tick) => tick + 1)
   // The header's Stage file / Unstage file (§4). One in flight at a time, and its failure is a footer line rather than a lost press.
   const [moving, setMoving] = useState(false)
@@ -209,7 +217,7 @@ export function SessionViewer({
     setMoveErr(null)
     try {
       const write = mode === 'staged' ? unstageWorkspacePaths : stageWorkspacePaths
-      await write(agentId, { paths: [path], ...(sessionId ? { sessionId } : {}) })
+      await write(agentId, { paths: [path], ...(sessionId ? { sessionId } : {}), ...(repo ? { repo } : {}) })
       // The reply's fresh status has no home in this pane, so the panel that owns the lists is told instead; the diff under the reader is re-read because it just changed by definition.
       setDiffTick((tick) => tick + 1)
       onIndexChanged?.()
@@ -231,7 +239,12 @@ export function SessionViewer({
     const at = nextOffset
     const readMtime = file?.mtime ?? null
     setRead((r) => ({ ...r, loadingMore: true, moreNote: null }))
-    fetchWorkspaceFile(agentId, { path, offset: at, ...(sessionId ? { sessionId } : {}) }).then(
+    fetchWorkspaceFile(agentId, {
+      path,
+      offset: at,
+      ...(sessionId ? { sessionId } : {}),
+      ...(repo ? { repo } : {})
+    }).then(
       (f) =>
         setRead((r) => {
           if (requestId !== requestRef.current) return r

@@ -42,8 +42,38 @@ import {
   uploadMyProfilePicture,
   uploadOrgIcon,
   usageWindow,
-  fetchUsage
+  fetchUsage,
+  fetchWorkspaceGitDiff,
+  stageWorkspacePaths,
+  unstageWorkspacePaths
 } from './api'
+
+describe('workspace viewer repository scope', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  it('forwards the repository on diff reads and both index mutations', async () => {
+    const fetcher = vi.fn<typeof fetch>(
+      async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    )
+    vi.stubGlobal('fetch', fetcher)
+    setApiOrgId('org-1')
+    const scope = { sessionId: 'session-1', repo: 'acme/secondary' }
+
+    await fetchWorkspaceGitDiff('agent-1', { path: 'notes.md', ...scope })
+    await stageWorkspacePaths('agent-1', { paths: ['notes.md'], ...scope })
+    await unstageWorkspacePaths('agent-1', { paths: ['notes.md'], ...scope })
+
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    for (const [url] of fetcher.mock.calls) {
+      const query = new URL(String(url), 'https://example.test').searchParams
+      expect(query.get('sessionId')).toBe('session-1')
+      expect(query.get('repo')).toBe('acme/secondary')
+    }
+  })
+})
 
 describe('session facet Agent labels', () => {
   afterEach(() => vi.unstubAllGlobals())

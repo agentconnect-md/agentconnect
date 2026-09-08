@@ -2,6 +2,7 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import type { WireFeishuCardActionTarget } from '@agentconnect.md/protocol'
 import { AgentMessageRun } from '../messages/message-boundary.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
+import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 import { extractToolOutput } from '../session/tool-output.js'
@@ -413,7 +414,10 @@ export class FeishuConverger {
   // The runtime's own message identity, which is the only boundary a speak-only run offers.
   private readonly messages = new AgentMessageRun()
 
-  constructor(private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high') {}
+  constructor(
+    private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
+    private readonly resolveFileLink?: WorkspaceFileLinkResolver
+  ) {}
 
   onStart(): FeishuAction[] {
     return this.mode === 'none' ? [] : [{ kind: 'card-start' }]
@@ -437,7 +441,9 @@ export class FeishuConverger {
     // The pending buffer is the raw card's suffix; previously completed messages remain visible.
     const raw =
       held === undefined ? this.cardText : this.cardText.slice(0, this.cardText.length - this.buf.length + held)
-    return this.mode === 'none' || isNoResponsePrefix(raw.trim()) ? '' : flattenUnsafeLinks(raw)
+    return this.mode === 'none' || isNoResponsePrefix(raw.trim())
+      ? ''
+      : flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
   }
 
   /** Return one cumulative CardKit element update and mark that snapshot as emitted. */
@@ -463,7 +469,7 @@ export class FeishuConverger {
     const stream = includeStream ? this.streamUpdate(true) : []
     if (!this.recordDirty || !this.buf.trim()) return stream
     if (isNoResponsePrefix(this.buf.trim())) return []
-    const text = flattenUnsafeLinks(this.buf)
+    const text = flattenUnsafeLinks(this.buf, { resolveFileLink: this.resolveFileLink })
     this.recordDirty = false
     if (!text.trim()) return stream
     return [
@@ -477,7 +483,7 @@ export class FeishuConverger {
   private drainReasoning(): FeishuAction[] {
     if (!this.reasoningDirty) return []
     this.reasoningDirty = false
-    const text = flattenUnsafeLinks(this.reasoningBuf)
+    const text = flattenUnsafeLinks(this.reasoningBuf, { resolveFileLink: this.resolveFileLink })
     return text.trim() ? [{ kind: 'reasoning', text: renderReasoning(text) }] : []
   }
 
@@ -493,7 +499,7 @@ export class FeishuConverger {
     if (isNoResponsePrefix(trimmed)) return []
     const cut = boundary ? this.buf.length : (referenceBufferStart(this.buf) ?? this.buf.length)
     if (cut === 0) return includeStream ? this.streamUpdate(boundary) : []
-    const text = flattenUnsafeLinks(this.buf.slice(0, cut))
+    const text = flattenUnsafeLinks(this.buf.slice(0, cut), { resolveFileLink: this.resolveFileLink })
     this.buf = this.buf.slice(cut)
     if (boundary) this.cardBoundary = true
     const stream = includeStream ? this.streamUpdate(boundary) : []
@@ -619,7 +625,7 @@ export class FeishuConverger {
   /** Turn end: persist the last body window and replace the streaming entity with the
    * completed answer. Optional shared attribution stays inside that same final card. */
   onFinal(attribution?: ReplyAttributionInfo): FeishuAction[] {
-    this.cardText = flattenUnsafeLinks(this.cardText)
+    this.cardText = flattenUnsafeLinks(this.cardText, { resolveFileLink: this.resolveFileLink })
     const display = this.cardText.trim()
     if (isNoResponseBody(display)) {
       this.buf = ''
@@ -639,7 +645,7 @@ export class FeishuConverger {
   /** Prompt failure after the card has started: preserve any useful runtime-authored
    * error text, otherwise append one concise failure line, then close the card. */
   onFailure(reason: string, attribution?: ReplyAttributionInfo): FeishuAction[] {
-    this.cardText = flattenUnsafeLinks(this.cardText)
+    this.cardText = flattenUnsafeLinks(this.cardText, { resolveFileLink: this.resolveFileLink })
     const display = this.cardText.trim()
     if (isNoResponseBody(display)) {
       this.buf = ''

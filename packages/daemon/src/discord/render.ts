@@ -1,6 +1,7 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
+import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { AgentMessageRun } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
@@ -309,7 +310,10 @@ export class DiscordConverger {
   // The runtime's own message identity, which is the only boundary a speak-only run offers.
   private readonly messages = new AgentMessageRun()
 
-  constructor(private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high') {}
+  constructor(
+    private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
+    private readonly resolveFileLink?: WorkspaceFileLinkResolver
+  ) {}
 
   /** True while body text OR reasoning is pending — the daemon (re)arms the idle-flush timer on it. */
   hasBuffered(): boolean {
@@ -340,7 +344,7 @@ export class DiscordConverger {
     // A partial response-control marker must not flash in the live reply before onFinal drops it.
     if (!trimmed || isNoResponsePrefix(trimmed)) return []
     const raw = complete ? this.buf : this.buf.slice(0, referenceBufferStart(this.buf))
-    const text = flattenUnsafeLinks(raw)
+    const text = flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
     return text.trim() ? [{ kind: 'live-reply', text: this.liveDisplay(text) }] : []
   }
 
@@ -360,7 +364,7 @@ export class DiscordConverger {
     // Hold while the body may still be / is the bare sentinel — a suppressed reply must not be
     // recorded or shown; onFinal makes the final drop. Non-sentinel bodies close normally.
     if (isNoResponsePrefix(this.buf.trim())) return []
-    const text = flattenUnsafeLinks(this.buf)
+    const text = flattenUnsafeLinks(this.buf, { resolveFileLink: this.resolveFileLink })
     this.recordDirty = false
     if (!text.trim()) return []
     return [
@@ -374,7 +378,7 @@ export class DiscordConverger {
   private drainReasoning(): DiscordAction[] {
     if (!this.reasoningDirty) return []
     this.reasoningDirty = false
-    const text = flattenUnsafeLinks(this.reasoningBuf)
+    const text = flattenUnsafeLinks(this.reasoningBuf, { resolveFileLink: this.resolveFileLink })
     return text.trim() ? [{ kind: 'reasoning', text: renderReasoning(text) }] : []
   }
 
@@ -407,7 +411,7 @@ export class DiscordConverger {
   }
 
   private emitBody(raw: string): DiscordAction[] {
-    const text = flattenUnsafeLinks(raw)
+    const text = flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
     if (!text.trim()) return []
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.

@@ -388,6 +388,7 @@ import { z } from 'zod'
 import { isNoResponseBody } from './session/no-response.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
+import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
 import { TaskViolationError } from './cp/task-reader.js'
@@ -940,7 +941,8 @@ export class Daemon {
       const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
         platform: 'slack',
         elicitCards: slackElicitCards,
-        createConverger: (ctx) => new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? []),
+        createConverger: (ctx) =>
+          new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? [], ctx.resolveFileLink),
         initialTurnState: (ctx): SlackTurnState => {
           const recipient = slackStreamRecipient(ctx.message)
           return recipient ? { recipient } : {}
@@ -987,7 +989,7 @@ export class Daemon {
         // reply chain is the ONLY way back into this session; a DM already has one
         // implicit thread. Gated on showFooter, the delivery-chrome switch.
         createConverger: (ctx) =>
-          new TelegramConverger(ctx.mode as never, { continueHint: ctx.showFooter && !ctx.isDm }),
+          new TelegramConverger(ctx.mode as never, { continueHint: ctx.showFooter && !ctx.isDm }, ctx.resolveFileLink),
         initialTurnState: (ctx): TelegramTurnState => {
           const replyTo = this.telegramReplyTarget(ctx.message)
           return replyTo !== undefined ? { replyTo } : {}
@@ -996,13 +998,13 @@ export class Daemon {
       })
       registry.register({
         platform: 'discord',
-        createConverger: (ctx) => new DiscordConverger(ctx.mode as never),
+        createConverger: (ctx) => new DiscordConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: () => ({}),
         apply: (p, action) => this.applyDiscordAction(p, action as DiscordAction)
       })
       registry.register({
         platform: 'feishu',
-        createConverger: (ctx) => new FeishuConverger(ctx.mode as never),
+        createConverger: (ctx) => new FeishuConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: (): FeishuTurnState => ({}),
         apply: (p, action) => this.applyFeishuAction(p, action as FeishuAction),
         // Suppression teardown: stop the stream timer and cancel the CardKit
@@ -10947,15 +10949,7 @@ export class Daemon {
     // output mode — `conv` (built below, once the session key is known) only decides
     // what reaches Slack, never the transcript.
     const rec = new TranscriptRecorder()
-    // Daemon-side rendering only (not ACP); a fresh converger is built per turn, so a change
-    // applies from the next turn on, not mid-turn (see `mode`, resolved inside the plan).
-    const conv = plan.turnSurface.createConverger(plan.turnCtx)
     const replyConn = plan.suppressReplyConn ? undefined : this.replyConnFor(agentId, integrationId)
-    // slack-streaming-turn-output.md §3.1: the axis is decided here, from a synchronous
-    // capability read, because the converger is built before chat.startStream can be tried.
-    // The call itself is deferred to the turn's first task — a turn that runs no tools never
-    // opens a stream and is byte-identical to today.
-    if (conv instanceof OutputConverger && this.slackStreamingEligible(plan, replyConn)) conv.enableStreaming()
     // ONE lookup for the platform egress transport: the lease below and the port the output
     // surface emits through are the SAME object. Resolving it twice — once to lease, once at
     // turn-state seeding — leaves a window where reconciliation rebinds the integration
@@ -10967,7 +10961,14 @@ export class Daemon {
     // each copy once. Seeded HERE, before `openSession`, because the sandbox-bootstrap notice
     // below emits on this turn's `index` and must not collide with the reply's.
     const pendingWebchat = webchat
-      ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
+      ? Object.assign(webchat, {
+          index: 0,
+          replyText: '',
+          heldText: '',
+          heldTextOffset: 0,
+          messageId: undefined,
+          messageEmitted: false
+        })
       : undefined
     // Admission is the displacement point: a sibling session's turn is cancelled before this
     // turn opens its (possibly cold) session, not after buildPending.
@@ -11035,7 +11036,17 @@ export class Daemon {
       run.entry.agentId,
       this.clock.now()
     )
-    const p = this.buildPending(run, { conv, rec, sessionId, outwardSessionId, webchat: pendingWebchat })
+    const resolveFileLink = await this.turnWorkspaceFileLinkResolver(run, sessionId, outwardSessionId)
+    const conv = plan.turnSurface.createConverger({ ...plan.turnCtx, resolveFileLink })
+    if (conv instanceof OutputConverger && this.slackStreamingEligible(plan, replyConn)) conv.enableStreaming()
+    const p = this.buildPending(run, {
+      conv,
+      rec,
+      sessionId,
+      outwardSessionId,
+      resolveFileLink,
+      webchat: pendingWebchat
+    })
     // Every turn re-stashes the stored title (fallback or runtime): the connection dedupes
     // repeats, and re-pushing heals a rename lost to a restart or an unregistered thread.
     // Substituted at push time — a first-message fallback carries raw `<@U…>` mentions, and
@@ -11417,6 +11428,54 @@ export class Daemon {
     }
   }
 
+  /** Resolve only viewer-addressable roots after this turn's runtime session and workspace have opened. */
+  private async turnWorkspaceFileLinkResolver(
+    run: TurnRun,
+    sessionId: string,
+    outwardSessionId: string
+  ): Promise<WorkspaceFileLinkResolver | undefined> {
+    const agent = this.agents.get(run.entry.agentId)
+    const host = run.entry.selectedHost?.host ?? this.hostForOwner(this.sessionOwnerKey(run.entry.agentId, run.key))
+    const cwd = host?.sessionCwd?.(sessionId)
+    if (!agent || !cwd) return undefined
+    try {
+      const session = await this.store.getSession(run.key)
+      if (!session) return undefined
+      const scopeSessionId = session.workspaceIsolation === 'session' ? outwardSessionId : undefined
+      const scope = createWorkspaceScope({
+        workspaces: this.workspaces,
+        agentOf: (id) => this.agents.get(id),
+        sessionOf: (id, outwardId) => this.store.getSessionByOutwardId(outwardId, id),
+        runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
+      })
+      const roots: Array<{ path: string; repo?: string }> = []
+      for (const repo of [undefined, ...this.workspaces.secondaryRoots(agent).map((root) => root.repoFullName)]) {
+        const location = await scope.location(agent.id, scopeSessionId, repo)
+        if (!location) continue
+        try {
+          const path = this.workspaces.sandboxMode
+            ? location.root
+            : this.workspaces.canonicalWorkspacePath(agent.id, location.root)
+          roots.push({ path, ...(repo === undefined ? {} : { repo }) })
+        } catch {
+          // An absent or retired checkout cannot supply a working file link.
+        }
+      }
+      if (!roots.length) return undefined
+      return createWorkspaceFileLinkResolver({
+        sessionUrl: this.sessionLink(
+          outwardSessionId,
+          this.sessionLinkSource(run.plan.platform, run.plan.integrationId)
+        ),
+        agentId: agent.id,
+        cwd,
+        roots
+      })
+    } catch {
+      return undefined
+    }
+  }
+
   /** Build this turn's live record from its plan and register it as the session's Pending turn. */
   private buildPending(
     run: TurnRun,
@@ -11425,6 +11484,7 @@ export class Daemon {
       rec: TranscriptRecorder
       sessionId: string
       outwardSessionId: string
+      resolveFileLink?: WorkspaceFileLinkResolver
       webchat: Pending['webchat']
     }
   ): Pending {
@@ -11465,9 +11525,11 @@ export class Daemon {
       builtinSystemToolCallIds: new Set(),
       acpSessionId: sessionId,
       outwardSessionId,
+      ...(turn.resolveFileLink ? { resolveFileLink: turn.resolveFileLink } : {}),
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
       turnState: plan.turnSurface.initialTurnState({
         ...plan.turnCtx,
+        ...(turn.resolveFileLink ? { resolveFileLink: turn.resolveFileLink } : {}),
         ...(run.egressConn ? { egress: run.egressConn } : {})
       }),
       conn: run.replyConn,
@@ -12059,6 +12121,8 @@ export class Daemon {
         // reset the sentinel hold so the replacement gets its own check.
         p.webchat.replyText = ''
         p.webchat.heldText = ''
+        p.webchat.heldTextOffset = 0
+        delete p.webchat.messageId
         p.webchat.messageEmitted = false
         p.reply.text = ''
       }
@@ -12097,6 +12161,8 @@ export class Daemon {
           // would leave the stream open and the composer stuck busy.
           p.webchat.replyText = ''
           p.webchat.heldText = ''
+          p.webchat.heldTextOffset = 0
+          delete p.webchat.messageId
           if (!p.webchat.doneSent) {
             p.webchat.doneSent = true
             p.webchat.sink.output({
@@ -12217,14 +12283,16 @@ export class Daemon {
       // agent): drop the held stream text — nothing was ever streamed — and
       // commit no canonical post or transcript reply row.
       p.webchat.heldText = ''
+      p.webchat.heldTextOffset = 0
+      delete p.webchat.messageId
       p.reply.text = ''
     } else if (trimmedWebchatReply) {
       // A real reply that never diverged from the sentinel prefix mid-stream
       // (shorter than the sentinel) is still held — release it before commit.
-      webchatTurnOutput.flushHeldWebchatText(p.webchat)
+      webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
       // A continuation turn records its reply at the platform post boundary instead
       // (appending here would duplicate the row), and its roster is fixed at one.
-      if (!p.webchat.continuation) {
+      if (!p.webchat.continuation && p.webchat.replyText.trim()) {
         // Shares the strictly-monotonic clock with the inbound user message so a fast
         // turn can't stamp both with the same ms and lose the reply to the unique index.
         // The ts the row actually lands on (post-collision-bump) doubles as the reply
@@ -12449,12 +12517,13 @@ export class Daemon {
       // Continuation: release any held stream text; the platform branch below owns the
       // visible notice + transcript, and the terminal-error `done` waits behind its
       // apply-chain drain so the console cannot admit a next turn mid-flush.
-      webchatTurnOutput.flushHeldWebchatText(p.webchat)
+      webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
     } else if (p.webchat) {
-      // Reply text (including a runtime's mirrored error text) already streamed to
-      // the client via onAcpUpdate; the terminal done frame carries the reason.
-      // Record what streamed so the session reads back with it, like the success
-      // path does — the sink is a live transport with no post boundary of its own.
+      // Release a held partial reply before surfaceTurnFailure closes the browser stream.
+      const trimmedPartialReply = p.webchat.replyText.trim()
+      if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
+        webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
+      }
       await this.surfaceTurnFailure(err, {
         agentId,
         agentName: plan.agentName,
@@ -12470,9 +12539,7 @@ export class Daemon {
         thread: msg.thread,
         statusThread: plan.statusThread
       })
-      const trimmedPartialReply = p.webchat.replyText.trim()
-      if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
-        webchatTurnOutput.flushHeldWebchatText(p.webchat)
+      if (p.webchat.replyText.trim() && !isNoResponseBody(p.webchat.replyText.trim())) {
         const partialPostId = randomUUID()
         const replyTs = await webchatTurnOutput.appendWebchatTextRow(
           this.store,
@@ -14185,7 +14252,7 @@ export class Daemon {
     // per mapped chunk, instead of driving the Slack renderer — but still records the
     // full activity log below, so a webchat session reads back like any other.
     // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
-    if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update)
+    if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update, p.resolveFileLink)
     if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.plan.stageAnswer && isAnswerChunk)) {
       // Segment commit: a boundary the live renderer flushes on delivers the staged text
       // ahead of it, so "say → work → say more" reaches the channel as it happens (the
