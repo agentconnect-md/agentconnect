@@ -5,8 +5,9 @@
  * runner, the CP memory reader) is a DIRECTORY abstraction over this port, so where the tree lives
  * is a placement decision, not a policy one: a local agent's home is `<agent.dir>` on this daemon's
  * disk (`LocalMemoryFs`), a cluster agent's is one root on its sandbox volume reached through the
- * shim (`shim/memory-fs-channel.ts`), and a later home is another implementation. Paths are relative
- * to the root; the root itself is absolute in the coordinates of the filesystem that holds it.
+ * shim (`shim/memory-fs-channel.ts`), and a `control-plane` home is that same client over the CP
+ * connection (`cp/memory-fs.ts`). Paths are relative to the root; the root itself is in the
+ * coordinates of whatever holds the tree — absolute on a disk, tree-relative on the CP.
  *
  * SECURITY (local): the daemon is outside the agent's sandbox, so a symlink planted in the writable
  * memory dir must not redirect a read or a write. Every operation canonicalises the parent chain one
@@ -42,11 +43,25 @@ export class MemoryConflictError extends Error {
   }
 }
 
-/** Raised when a cluster agent's memory home is on a sandbox that is not running — one resolution, no local fallback. */
-export class MemorySandboxUnavailableError extends Error {
-  readonly reason = 'sandbox-unavailable' as const
-  constructor(message: string) {
+/** Why a home is out of reach: no bound pod, or the CP connection, its feature, or this member's duty is missing. */
+export type MemoryHomeUnavailableReason = 'sandbox-unavailable' | 'connection' | 'feature' | 'scope-denied'
+
+/** Raised when an agent's memory home cannot be reached — one resolution, never a fallback to this member's disk. */
+export class MemoryHomeUnavailableError extends Error {
+  constructor(
+    readonly reason: MemoryHomeUnavailableReason,
+    message: string
+  ) {
     super(message)
+    this.name = 'MemoryHomeUnavailableError'
+  }
+}
+
+/** The sandbox home's case: a cluster agent's memory sits on a pod that is not running. */
+export class MemorySandboxUnavailableError extends MemoryHomeUnavailableError {
+  declare readonly reason: 'sandbox-unavailable'
+  constructor(message: string) {
+    super('sandbox-unavailable', message)
     this.name = 'MemorySandboxUnavailableError'
   }
 }

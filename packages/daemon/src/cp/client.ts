@@ -58,6 +58,8 @@ import type {
   KnowledgeSearchOk,
   KnowledgeListReq,
   KnowledgeListOk,
+  MemoryStoreReq,
+  MemoryFsReply,
   OrgSkillsReq,
   OrgSkillsOk,
   OrganizationSuggestionsSyncReq,
@@ -77,6 +79,7 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  AGENT_MEMORY_STORE_V1_FEATURE,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
   checkInboundFrameOrg,
   checkReplyFrameOrg,
@@ -922,8 +925,13 @@ export class CpClient {
     return rep.payload as WebchatMcpGrantRevoked
   }
 
+  /** The §2.1 legal-state gate every request checks: READY or DRAINING, over a live transport. */
+  connected(): boolean {
+    return (this.state === 'READY' || this.state === 'DRAINING') && this.transport !== undefined
+  }
+
   private requireReady(op: string): void {
-    if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
+    if (!this.connected()) {
       throw new WireError('INTERNAL', `control plane unreachable for ${op} (client ${this.state})`, true)
     }
   }
@@ -1114,6 +1122,20 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected knowledge/search/ok, got ${rep.type}`, false)
     }
     return rep.payload as KnowledgeSearchOk
+  }
+
+  // `memory/store` (D→C REQ): one op against the named agent's CP-homed tree (memory-evolution.md §3.2.1), gated like
+  // `knowledgeSearch`. The typed refusals ride inside the reply; an error REP (`SCOPE_DENIED`, ...) rejects by its code.
+  async memoryStore(payload: MemoryStoreReq): Promise<MemoryFsReply> {
+    this.requireReady('memory/store')
+    if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not serve the memory store', false)
+    }
+    const rep = await this.request('memory/store', payload)
+    if (rep.type !== 'memory/store/ok') {
+      throw new WireError('INTERNAL', `expected memory/store/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as MemoryFsReply
   }
 
   async knowledgeList(payload: KnowledgeListReq): Promise<KnowledgeListOk> {
