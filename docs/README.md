@@ -112,6 +112,7 @@ the picture it draws.
 
 ### Runtimes and fleet
 
+- [daemon-sandbox-backends.md](designs/daemon-sandbox-backends.md) — Daemon sandbox backend configuration, shared mounts, and development-environment tradeoffs.
 - [k8s-daemon-pool.md](designs/k8s-daemon-pool.md) — Multi-org cloud daemons and the duty ledger.
 - [cluster-spawn-and-shim.md](designs/cluster-spawn-and-shim.md) — Running ACP runtimes in sandbox pods, and the in-sandbox shim.
 - [cloud-data-plane-postgres.md](designs/cloud-data-plane-postgres.md) — PostgreSQL as the cloud daemon's durable store.
