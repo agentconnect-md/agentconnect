@@ -150,16 +150,16 @@ const sinkOver = (link: FakeLink, root?: string) =>
   new CpMemoryHistorySink(link, AGENT, root, { warn: (msg) => link.warnings.push(msg) })
 
 describe('CpMemoryHistorySink (the sink over the CP connection)', () => {
-  it('names the agent and the tree-relative root — the agent tree, or a channel store in CpMemoryFs coordinates', async () => {
+  it('names the agent and the directory holding the store — memory/ under the agent tree, or under a channel store', async () => {
     const link = fakeLink()
     await sinkOver(link).append([record('notes.md', 'v1')])
-    // The store's own port names the root the sink must name; its ops never run here.
+    // The store's port root is what the sink is given; it files the log under that root's memory/ dir. No ops run here.
     const storeLink = { connected: () => true, supportsServerFeature: () => true, memoryStore: async () => neverOp() }
     const channelStore = channelMemoryRoot(new CpMemoryFs(storeLink, AGENT), 'general-abc123')
     await sinkOver(link, channelStore.root).append([record('notes.md', 'v1')])
     expect(link.requests.map((req) => [req.agentId, req.root])).toEqual([
-      [AGENT, '.'],
-      [AGENT, 'channels/general-abc123']
+      [AGENT, 'memory'],
+      [AGENT, 'channels/general-abc123/memory']
     ])
     expect(link.warnings).toEqual([])
   })
@@ -218,7 +218,7 @@ describe('CpMemoryHistorySink (the sink over the CP connection)', () => {
     const closed = fakeLink({ connected: () => false })
     await sinkOver(closed).append(rows)
     expect(closed.requests).toEqual([])
-    expect(closed.warnings).toEqual([expect.stringContaining('1 memory change-log record(s) for . not recorded')])
+    expect(closed.warnings).toEqual([expect.stringContaining('1 memory change-log record(s) for memory not recorded')])
     expect(closed.warnings[0]).toContain('the connection is down')
 
     const older = fakeLink({ supportsServerFeature: () => false })
