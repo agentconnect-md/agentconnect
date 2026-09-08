@@ -185,6 +185,18 @@ describe('Webchat workspace file links', () => {
     expect(wc.replyText).toBe(message())
   })
 
+  it.each([
+    ['an inline image', ['![report](/workspace/report.png)'], ''],
+    ['a split image prefix', ['!', '[report](/workspace/report.png)'], ''],
+    ['a reference image', ['!', '[report][file]\n\n[file]: /workspace/report.png'], '\n\n']
+  ])('keeps the live viewer link intact when rewriting %s', (_label, chunks, suffix) => {
+    const { wc, message } = live()
+    for (const chunk of chunks) emitWebchatUpdate(wc, text(chunk), resolveFileLink)
+    flushHeldWebchatText(wc, resolveFileLink)
+    expect(wc.replyText).toBe(`[\`report.png\`](<${fileUrl}>)${suffix}`)
+    expect(message()).toBe(wc.replyText)
+  })
+
   it.each([thought('thinking'), toolCall('t1', 'Read report'), plan([{ content: 'Read report', status: 'pending' }])])(
     'resolves the held message before a $sessionUpdate boundary',
     (boundary) => {

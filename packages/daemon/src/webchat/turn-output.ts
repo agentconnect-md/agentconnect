@@ -41,7 +41,7 @@ export function emitWebchatUpdate(
         wc.heldText += text
         // Keep the sentinel and any Markdown that later chunks could turn into a file link off the stream.
         if (!wc.messageEmitted && isNoResponsePrefix(wc.replyText.trim())) return
-        const linkStart = wc.heldText.search(/[<[\]]/)
+        const linkStart = wc.heldText.search(/[!<[\]]/)
         const end = (linkStart < 0 ? wc.heldText : wc.heldText.slice(0, linkStart)).trimEnd().length
         const ready = wc.heldText.slice(wc.heldTextOffset ?? 0, end)
         wc.heldTextOffset = end
