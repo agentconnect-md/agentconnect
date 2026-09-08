@@ -62,6 +62,8 @@ import type {
   MemoryFsReply,
   MemoryHistoryAppendReq,
   MemoryHistoryAppendOk,
+  MemoryHomeMigratedReq,
+  MemoryHomeMigratedOk,
   OrgSkillsReq,
   OrgSkillsOk,
   OrganizationSuggestionsSyncReq,
@@ -1165,6 +1167,24 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected memory/history/append/ok, got ${rep.type}`, false)
     }
     return rep.payload as MemoryHistoryAppendOk
+  }
+
+  // `memory/home/migrated` (D→C REQ): the one-way copy of this agent's tree is complete — one send on one deadline, like
+  // `memoryStore`. A repeated report is the same success on the CP, so a lost reply is retried by the caller, never here.
+  async memoryHomeMigrated(payload: MemoryHomeMigratedReq): Promise<MemoryHomeMigratedOk> {
+    this.requireReady('memory/home/migrated')
+    if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not serve the memory store', false)
+    }
+    const frame = this.scopedFrame('memory/home/migrated', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: MEMORY_STORE_TIMEOUT_MS
+    })
+    if (rep.type !== 'memory/home/migrated/ok') {
+      throw new WireError('INTERNAL', `expected memory/home/migrated/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as MemoryHomeMigratedOk
   }
 
   async knowledgeList(payload: KnowledgeListReq): Promise<KnowledgeListOk> {

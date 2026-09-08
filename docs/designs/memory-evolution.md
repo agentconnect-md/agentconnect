@@ -319,7 +319,9 @@ the provider still does not (§6, §9).** The binding change is the trigger: whe
 owning daemon applies a binding whose `home` became `control-plane`, it copies `memory/`
 and `channels/` once through the two ports (`copyMemoryTree(from, to)`, under the
 directory lock), the change log with them — sidecar lines become rows, one batch,
-bounded by the sidecar cap — and reports completion on a frame of its own,
+bounded by the sidecar cap; unlike a write's sink these batches are not best-effort,
+since a batch that fails leaves the copy pending and the re-run sends the same ids,
+which the CP takes once — and reports completion on a frame of its own,
 `memory/home/migrated` → `memory/home/migrated/ok`, which the CP records on the
 binding; it is not an op in the store set, because it is not a file operation. The
 record is the CP-owned `homeMigration: 'pending'` the binding carries from the flip
@@ -339,7 +341,9 @@ binding change (409) and accepts it only as a forced one (`force: true` on the a
 edit), which keeps nothing — the CP drops
 the agent's rows and its change log, and the daemon starts from an empty tree, the
 pre-switch local tree archived aside rather than resurrected (a snapshot from before
-the switch is not the memory the agent has been using since). The console offers the
+the switch is not the memory the agent has been using since): `memory/`, `channels/`
+and `memory-backups/` move under `<agent dir>/memory-archive-<timestamp>/` beside
+them, and `memory-dreams/` stays, since staging belongs to the host. The console offers the
 selector one way and the forced return behind its own confirmation; on the pool there
 is no return at all, since `daemon` is refused there. `daemon` stays the default for
 now; making `control-plane` the default is a later decision, not this one.

@@ -1138,6 +1138,58 @@ describe('CpClient dispatch', () => {
   })
 })
 
+describe('CpClient memory/home/migrated (D→C REQ)', () => {
+  it('names the agent, stamps its org, unwraps memory/home/migrated/ok, and surfaces CONFLICT by code', async () => {
+    const { client, t } = await readyClient(
+      { orgForAgent: (agentId) => (agentId === CRON_AGENT_ID ? 'org-1' : undefined) },
+      ['agent-memory-store-v1'],
+      'frame'
+    )
+    const pending = client.memoryHomeMigrated({ agentId: CRON_AGENT_ID })
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    expect(req).toMatchObject({ type: 'memory/home/migrated', orgId: 'org-1', payload: { agentId: CRON_AGENT_ID } })
+    t.pushInbound(
+      JSON.stringify(buildEnvelope('memory/home/migrated/ok', { accepted: true }, { corr: req.id, orgId: 'org-1' }))
+    )
+    await expect(pending).resolves.toEqual({ accepted: true })
+
+    // The home moved on since the flip: the CP's refusal arrives as itself, for the caller to stop on.
+    const moved = client.memoryHomeMigrated({ agentId: CRON_AGENT_ID })
+    await tick()
+    const second = JSON.parse(t.sent[1]!)
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'error',
+          { code: 'CONFLICT', message: 'the agent memory home is no longer the Control Plane', retryable: false },
+          { corr: second.id }
+        )
+      )
+    )
+    await expect(moved).rejects.toMatchObject({ code: 'CONFLICT', retryable: false })
+  })
+
+  it('refuses before sending when the CP never advertised the feature, and sends exactly once on one deadline', async () => {
+    const older = await readyClient({}, [])
+    await expect(older.client.memoryHomeMigrated({ agentId: CRON_AGENT_ID })).rejects.toMatchObject({
+      code: 'INTERNAL',
+      retryable: false
+    })
+    expect(older.t.sent).toHaveLength(0)
+
+    const { client, t, clock } = await readyClient({}, ['agent-memory-store-v1'])
+    const reports = () => t.sent.filter((raw) => JSON.parse(raw).type === 'memory/home/migrated')
+    const pending = client.memoryHomeMigrated({ agentId: CRON_AGENT_ID })
+    await tick()
+    clock.advance(29_000)
+    expect(reports()).toHaveLength(1)
+    clock.advance(1_000)
+    await expect(pending).rejects.toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(reports()).toHaveLength(1)
+  })
+})
+
 describe('CpClient memory/store (D→C REQ)', () => {
   const op = { op: 'memory-read', root: '.', rel: 'memory/index.md', offset: 0, limit: 1024 } as const
 
