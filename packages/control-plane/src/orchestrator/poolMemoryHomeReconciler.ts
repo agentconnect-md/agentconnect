@@ -17,6 +17,21 @@ export interface PoolMemoryHomeSummary {
   failed: number
 }
 
+/** Where a binding stands for the flip: `flip` when its home is the daemon, else the summary bucket it lands in. */
+function verdict(memory: AgentMemoryBinding | null): 'flip' | 'already' | 'skipped' {
+  const home = managedMemoryHomeOf(memory)
+  // A provider without a managed tree has no home to move.
+  if (home === null) return 'skipped'
+  return home === 'control-plane' ? 'already' : 'flip'
+}
+
+/** Raised from under the row lock when the binding changed since the scan and no longer needs the flip. */
+class NothingToFlip extends Error {
+  constructor(readonly verdict: 'already' | 'skipped') {
+    super('nothing to flip')
+  }
+}
+
 /** The patch that moves a managed binding home: its policy fields kept, `home` set, the CP-owned flag left to the rule. */
 function flipInput(current: AgentMemoryBinding | null): ManagedMemoryBindingInput {
   if (current?.provider !== 'managed') return { provider: 'managed', home: 'control-plane' }
@@ -43,23 +58,30 @@ export class PoolMemoryHomeReconciler {
     const members = await this.deps.memberSets.memberIdsOf(pool)
     const pinned = await Promise.all(members.map((daemonId) => this.deps.agents.listForDaemon(DaemonId(daemonId))))
     for (const agent of [...(await this.deps.agents.listForSet(pool)), ...pinned.flat()]) {
-      const home = managedMemoryHomeOf(agent.memory)
-      // A provider without a managed tree has no home to move.
-      if (home === null) {
-        summary.skipped++
-        continue
-      }
-      if (home === 'control-plane') {
-        summary.already++
+      // The scan is the cheap filter; the verdict that counts is taken again under the row lock below.
+      const scanned = verdict(agent.memory)
+      if (scanned !== 'flip') {
+        summary[scanned]++
         continue
       }
       try {
-        // The route's own row-locked write, so the rule module decides the binding (`homeMigration: 'pending'`).
+        // The route's own row-locked write, so the rule module decides the binding (`homeMigration: 'pending'`). The
+        // input is derived from the LOCKED binding: an edit that landed since the scan is honored, never overwritten.
         const flipped = await this.deps.agents.update(
           agent.orgId,
           agent.id,
           {},
-          { memoryHome: { input: flipInput(agent.memory), onPool: true, force: false } }
+          {
+            memoryHome: {
+              input: (locked) => {
+                const now = verdict(locked)
+                if (now !== 'flip') throw new NothingToFlip(now)
+                return flipInput(locked)
+              },
+              onPool: true,
+              force: false
+            }
+          }
         )
         // Pushed like a PATCH, so the holding member learns of the flip now; an offline one re-syncs on reconnect.
         await this.deps.delivery.upsert(flipped, (err, daemonId) =>
@@ -67,6 +89,10 @@ export class PoolMemoryHomeReconciler {
         )
         summary.flipped++
       } catch (err) {
+        if (err instanceof NothingToFlip) {
+          summary[err.verdict]++
+          continue
+        }
         summary.failed++
         this.deps.log.warn({ err, agentId: agent.id }, 'pool-memory-home: flip failed — will retry next boot')
       }

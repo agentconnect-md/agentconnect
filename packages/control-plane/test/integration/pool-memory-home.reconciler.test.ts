@@ -131,6 +131,39 @@ describe('PoolMemoryHomeReconciler', () => {
     expect(spy.upserts).toEqual([])
   })
 
+  it('honors an edit that lands between the scan and the row lock instead of overwriting it', async () => {
+    await seedPoolMember(prisma, MEMBER)
+    const switched = await seed(null, { pool: true })
+    const repoliced = await seed({ ...DAEMON_HOME, autoDistill: true }, { pool: true })
+    await seedDutyGroup(prisma, randomUUID(), MEMBER, [switched, repoliced], { confirmed: true })
+    const spy = new ControlSpy()
+    running = buildHttpApp(prisma, undefined, live, spy as unknown as ControlSender)
+    const { repos, agentDelivery } = running.deps
+    // A user's edit commits after the scan read the row and before the flip takes the lock.
+    const raced: Record<string, Record<string, unknown>> = {
+      [switched]: { provider: 'none' },
+      [repoliced]: { ...DAEMON_HOME, autoDistill: false }
+    }
+    const agents: typeof repos.agent = Object.assign(Object.create(repos.agent), {
+      update: async (...args: Parameters<typeof repos.agent.update>) => {
+        const [orgId, agentId] = args
+        await repos.agent.update(orgId, agentId, { memory: raced[agentId] as never })
+        return repos.agent.update(...args)
+      }
+    })
+    const reconciler = new PoolMemoryHomeReconciler({
+      agents,
+      memberSets: repos.memberSet,
+      delivery: agentDelivery,
+      log
+    })
+
+    expect(await reconciler.run()).toEqual({ flipped: 1, already: 0, skipped: 1, failed: 0 })
+    expect(await storedMemory(switched)).toEqual({ provider: 'none' })
+    expect(await storedMemory(repoliced)).toEqual({ ...PENDING, autoDistill: false })
+    expect(spy.upserts.map((u) => u.agentId)).toEqual([repoliced])
+  })
+
   it('is idempotent: a second pass changes nothing and pushes nothing', async () => {
     await seedPoolMember(prisma, MEMBER)
     const bare = await seed(null, { pool: true })
