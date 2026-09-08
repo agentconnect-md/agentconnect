@@ -21,24 +21,21 @@ import {
   organizationSuggestionCanonical
 } from '@agentconnect.md/protocol'
 import { memoryNameForTopic, parseMemoryFrontmatter } from '../memory/frontmatter.js'
-import type { MemoryHomePorts } from '../memory/fs.js'
+import type { MemoryHomePorts } from '../memory/home.js'
 import {
   MEMORY_INDEX,
   renderMemoryIndex,
   regenerateMemoryIndexHoldingLock,
   type MemoryIndexEntry,
-  MEMORY_HISTORY_FILENAME,
   MAX_INDEX_INJECT_BYTES,
   MAX_MEMORY_FILE_BYTES,
   MEMORY_DIRNAME,
   MemorySandboxUnavailableError,
-  clampMemoryHistoryValue,
-  enforceMemoryHistoryRetentionHoldingLock,
   listMemory,
+  memoryHistoryRecord,
   memoryWriteMarks,
   recordExternalMemoryMutation,
   readMemoryFile,
-  snapshotMemoryHistoryHoldingLock,
   type MemoryFs,
   type MemoryHistoryRecord,
   withMemoryDirLock
@@ -1150,12 +1147,13 @@ export class DreamRunner {
 
   /**
    * Adopt a completed dream (design §6). Serialized per agent (the lock) against
-   * concurrent starts, adopts, and discards. The replacement store — including
-   * the carried-over `.history` plus one `source:"dream"` provenance row per
-   * changed file — is built entirely in a sibling temp directory FIRST, so `memory/` is
-   * never a half-written tree: the visible window is a single rename, and a
-   * failure rolls the previous store back. Fenced against post-snapshot writes
-   * unless `force`.
+   * concurrent starts, adopts, and discards. The replacement store is built
+   * entirely in a sibling temp directory FIRST, so `memory/` is never a
+   * half-written tree: the visible window is a single rename, and a failure rolls
+   * the previous store back. The change log follows the store's sink: a sidecar
+   * is carried into the replacement before the swap, and one `source:"dream"`
+   * row per changed file is appended after it. Fenced against post-snapshot
+   * writes unless `force`.
    *
    * The non-force fence is authoritative *under the shared memory-dir lock*: the
    * replacement is built first (no touch to `memory/`), then the digest is
@@ -1171,6 +1169,7 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     const ports = this.portsFor(agentId)
     const { live, staging } = ports
+    const history = ports.historyFor(live)
     return this.withLock(agentId, async () => {
       this.assertNotAbandoned(dreamId)
       const dream = await this.getDream(agentId, dreamId)
@@ -1207,7 +1206,7 @@ export class DreamRunner {
       const at = this.nowIso()
 
       // 1) Build the proposed files in a temp sibling dir. `memory/` is
-      //    untouched. History is added later under the shared lock so every
+      //    untouched. The change set is taken later under the shared lock so every
       //    `before` snapshot describes the exact store the swap replaces.
       const replacement = `.memory.adopting-${dreamId}`
       await live.rm(replacement)
@@ -1244,11 +1243,9 @@ export class DreamRunner {
             }
           }
 
-          // Canonicalize the exact live history before adding adoption rows. A
-          // legacy final row without a newline (or a torn tail) must not absorb
-          // the first dream row. Build a full add/update/delete change set from
-          // the store that is about to be replaced, skipping unchanged files.
-          let history = await snapshotMemoryHistoryHoldingLock(live)
+          // The full add/update/delete change set of the store about to be replaced, unchanged files skipped; it
+          // reaches the sink only once the swap has happened (provenance follows the write, never precedes it).
+          const records: MemoryHistoryRecord[] = []
           const beforeByPath = new Map(liveFiles.map((file) => [file.name, file.content]))
           const afterFiles = (await live.readdir(replacement))
             .filter((entry) => entry.kind === 'file' && stagedPathOk(entry.name))
@@ -1262,23 +1259,10 @@ export class DreamRunner {
             const before = beforeByPath.get(path)
             const after = afterByPath.get(path)
             if (before === after) continue
-
-            const beforeClamped = before === undefined ? undefined : clampMemoryHistoryValue(before)
-            const afterClamped = clampMemoryHistoryValue(after ?? '')
-            const record: MemoryHistoryRecord = {
-              id: randomUUID(),
-              path,
-              event: before === undefined ? 'add' : after === undefined ? 'delete' : 'update',
-              ...(beforeClamped ? { before: beforeClamped.value } : {}),
-              after: afterClamped.value,
-              at,
-              scope: 'agent',
-              source: 'dream',
-              ...(beforeClamped?.truncated || afterClamped.truncated ? { truncated: true } : {})
-            }
-            history += JSON.stringify(record) + '\n'
+            records.push(memoryHistoryRecord(path, before, after, at, 'dream'))
           }
-          await live.writeFile(join(replacement, MEMORY_HISTORY_FILENAME), history, { mode: 0o600 })
+          // A log kept inside the store (the sidecar) would go with the swap: the sink copies it into the replacement first.
+          await history.carryInto(replacement)
 
           // Preserve the "last meaningfully changed" time of files the dream left
           // byte-for-byte unchanged. The whole store is rebuilt into `replacement`
@@ -1313,15 +1297,14 @@ export class DreamRunner {
           // snapshot must fence on this adoption rather than classify it as
           // distill-only drift and roll over it.
           recordExternalMemoryMutation(live, 'dream')
+          // Provenance after the write, never failing it: one `dream` row per changed file, still under the lock.
+          await history.append(records).catch(() => {})
           // The adopted store has a hand-authored MEMORY.md while ordinary writes
           // regenerate it from the topic descriptions — two writers with no defined
           // precedence. Settle it here, inside the same lock: if the adopted topics
           // give the generator anything to work with, it owns the index from now on
           // instead of silently replacing the dream's copy at some later write.
-          await regenerateMemoryIndexHoldingLock(live, 'dream').catch(() => {})
-          // Dream adoption copies history as part of the atomic store swap, so
-          // tighten that copied/appended sidecar before releasing the same lock.
-          await enforceMemoryHistoryRetentionHoldingLock(live).catch(() => {})
+          await regenerateMemoryIndexHoldingLock(live, 'dream', { history }).catch(() => {})
 
           // The backup is the undo path for THIS adoption; older ones superseded.
           if (hadLiveStore) {

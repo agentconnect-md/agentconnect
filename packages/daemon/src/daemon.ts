@@ -402,7 +402,7 @@ import {
   type PreparedExternalMemoryCapture
 } from './memory/provider.js'
 import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './memory/store.js'
-import { resolveMemoryFs, resolveMemoryHomePorts, type MemoryHomePorts } from './memory/fs.js'
+import { resolveMemoryFs, resolveMemoryHomePorts, type MemoryHomePorts } from './memory/home.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'

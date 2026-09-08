@@ -143,6 +143,7 @@ export class ManagedMemoryProvider implements MemoryProvider {
       list: (scope) => this.list(scope),
       read: (scope, path) => this.read(scope, path),
       write: (scope, path, content, ifMatch, source) => this.write(scope, path, content, ifMatch, source),
+      // Pages the sidecar; a home whose sink has no `list` (the CP's) answers the console itself — no local history here.
       history: (scope, req) => listMemoryHistory(this.activeRoot(scope), req.path, req.cursor, req.limit)
     }
   }

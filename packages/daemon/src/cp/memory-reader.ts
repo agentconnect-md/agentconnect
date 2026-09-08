@@ -134,6 +134,7 @@ export function createMemoryReader(
           const result = await writeMemoryFile(dirFor(scope.agentId), path, content, ifMatch, source)
           return { ok: true, path, ...result }
         },
+        // Pages the sidecar; a home whose sink has no `list` (the CP's) answers the console itself — no local history here.
         history: async (scope, req) => listMemoryHistory(dirFor(scope.agentId), req.path, req.cursor, req.limit)
       }
     )

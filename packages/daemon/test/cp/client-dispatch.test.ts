@@ -1166,3 +1166,48 @@ describe('CpClient memory/store (D→C REQ)', () => {
     expect(t.sent).toHaveLength(0)
   })
 })
+
+describe('CpClient memory/history/append (D→C REQ)', () => {
+  const record = {
+    id: '99999999-9999-4999-8999-999999999999',
+    path: 'notes.md',
+    event: 'add',
+    after: 'v1',
+    at: '2026-01-01T00:00:00.000Z',
+    scope: 'agent',
+    source: 'tool'
+  } as const
+  const batch = { agentId: CRON_AGENT_ID, root: '.', records: [record] }
+
+  it('names the agent, stamps its org, and unwraps memory/history/append/ok', async () => {
+    const { client, t } = await readyClient(
+      { orgForAgent: (agentId) => (agentId === CRON_AGENT_ID ? 'org-1' : undefined) },
+      ['agent-memory-store-v1'],
+      'frame'
+    )
+    const pending = client.memoryHistoryAppend(batch)
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    expect(req).toMatchObject({ type: 'memory/history/append', orgId: 'org-1', payload: batch })
+    t.pushInbound(
+      JSON.stringify(buildEnvelope('memory/history/append/ok', { accepted: true }, { corr: req.id, orgId: 'org-1' }))
+    )
+    await expect(pending).resolves.toEqual({ accepted: true })
+  })
+
+  it('refuses before sending without the feature, sends exactly once, and fails on one deadline', async () => {
+    const older = await readyClient({}, [])
+    await expect(older.client.memoryHistoryAppend(batch)).rejects.toMatchObject({ code: 'INTERNAL', retryable: false })
+    expect(older.t.sent).toHaveLength(0)
+
+    const { client, t, clock } = await readyClient({}, ['agent-memory-store-v1'])
+    const appends = () => t.sent.filter((raw) => JSON.parse(raw).type === 'memory/history/append')
+    const pending = client.memoryHistoryAppend(batch)
+    await tick()
+    clock.advance(29_000)
+    expect(appends()).toHaveLength(1)
+    clock.advance(1_000)
+    await expect(pending).rejects.toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(appends()).toHaveLength(1)
+  })
+})

@@ -3,7 +3,7 @@
  *
  * Every managed-memory writer and reader (`memory/store.ts`, the memory provider, the dream
  * runner, the CP memory reader) is a DIRECTORY abstraction over this port, so where the tree lives
- * is a placement decision, not a policy one: a local agent's home is `<agent.dir>` on this daemon's
+ * is a placement decision (`memory/home.ts`), not a policy one: a local agent's home is `<agent.dir>` on this daemon's
  * disk (`LocalMemoryFs`), a cluster agent's is one root on its sandbox volume reached through the
  * shim (`shim/memory-fs-channel.ts`), and a `control-plane` home is that same client over the CP
  * connection (`cp/memory-fs.ts`). Paths are relative to the root; the root itself is in the
@@ -413,49 +413,4 @@ export class LocalMemoryFs implements MemoryFs {
       // best-effort: a vanished file keeps whatever mtime it has
     }
   }
-}
-
-/** The sandbox plane as the factory sees it: the port over a bound sandbox volume, or nothing. */
-export interface SandboxMemoryFsSource {
-  memoryFsFor(agentId: string): MemoryFs | undefined
-}
-
-/** The two ports the dream runner works over; today both are the same instance (memory-evolution.md §3.2.1). */
-export interface MemoryHomePorts {
-  /** The live store: `memory/`, `channels/`, `memory-backups/`, and the adoption temp dir beside them. */
-  live: MemoryFs
-  /** Dream staging (`memory-dreams/`), on the filesystem the extraction host runs in — its root is the host's cwd. */
-  staging: MemoryFs
-}
-
-/**
- * The ONE decision about where an agent's managed memory tree lives. With a sandbox plane (every
- * agent of a `--k8s` daemon runs in a pod) it is the port over the agent's sandbox volume, reachable
- * exactly while the pod is bound — no fallback to this member's disk, since a duty move would leave
- * the memory behind; without one, the local port over the agent dir. A later home moves `live`
- * alone; `staging` stays where the extraction host can see it.
- */
-export function resolveMemoryHomePorts(
-  agent: { id: string; dir: string },
-  sandbox: SandboxMemoryFsSource | undefined
-): MemoryHomePorts {
-  if (!sandbox) {
-    const fs = new LocalMemoryFs(agent.dir)
-    return { live: fs, staging: fs }
-  }
-  const fs = sandbox.memoryFsFor(agent.id)
-  if (!fs) {
-    throw new MemorySandboxUnavailableError(
-      `agent "${agent.id}" has no running sandbox, so its memory cannot be reached`
-    )
-  }
-  return { live: fs, staging: fs }
-}
-
-/** The live store alone, for the consumers that never touch dream staging (the provider, the CP memory reader). */
-export function resolveMemoryFs(
-  agent: { id: string; dir: string },
-  sandbox: SandboxMemoryFsSource | undefined
-): MemoryFs {
-  return resolveMemoryHomePorts(agent, sandbox).live
 }
