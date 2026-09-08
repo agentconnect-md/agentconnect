@@ -313,9 +313,10 @@ export class Mem0CloudClient {
 
   async list(input: MemoryPluginListInput, apiKey: string, signal?: AbortSignal) {
     const page = pageCursor(input.cursor)
+    const limit = Math.min(input.limit, 20)
     const raw = await this.request(
       'list',
-      `/v3/memories/?page=${page}&page_size=${input.limit}`,
+      `/v3/memories/?page=${page}&page_size=${limit}`,
       apiKey,
       {
         method: 'POST',
@@ -327,7 +328,7 @@ export class Mem0CloudClient {
     const records: CanonicalMemoryRecord[] = []
     const ids = new Set<string>()
     for (const item of response.results) {
-      if (records.length >= input.limit || records.length >= 20) break
+      if (records.length >= limit) break
       const record = recordFromResult(item, input.context.scope)
       if (!record || ids.has(record.id)) continue
       ids.add(record.id)

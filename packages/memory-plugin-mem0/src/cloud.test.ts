@@ -321,3 +321,45 @@ describe('Mem0 Cloud V3 plugin contract', () => {
     await client.close()
   })
 })
+
+describe('Mem0 Cloud enumeration budgets', () => {
+  it.each([1, 20, 50, 100])('enumerates every record with requested limit %i', async (limit) => {
+    const sizes: number[] = []
+    const rows = Array.from({ length: 37 }, (_, i) => ({ id: `memory-${i}`, memory: `Fact ${i}` }))
+    const upstream = await startUpstream((req, res) => {
+      const url = new URL(req.url!, 'http://localhost')
+      const size = Number(url.searchParams.get('page_size'))
+      const page = Number(url.searchParams.get('page'))
+      sizes.push(size)
+      const start = (page - 1) * size
+      send(res, 200, {
+        results: rows.slice(start, start + size),
+        next: start + size < rows.length ? 'https://example.com/memories?page=next' : null,
+        previous: null,
+        count: rows.length
+      })
+    })
+    const client = new Mem0CloudClient({ baseUrl: upstream.url })
+    const ids: string[] = []
+    let cursor: string | undefined
+    do {
+      const output = await client.list(
+        {
+          context: {
+            requestId: 'enumeration',
+            connection: { id: 'test', config: {} },
+            scope: { kind: 'agent', key: 'ac:agent:bot-a' }
+          },
+          limit,
+          ...(cursor ? { cursor } : {})
+        },
+        'test-key'
+      )
+      ids.push(...output.records.map((record) => record.id))
+      cursor = output.nextCursor
+      expect(sizes.length).toBeLessThanOrEqual(rows.length)
+    } while (cursor)
+    expect(ids).toEqual(rows.map((row) => row.id))
+    expect(sizes.every((size) => size === Math.min(limit, MEM0_CLOUD_MANIFEST.limits.maxBatchItems))).toBe(true)
+  })
+})
