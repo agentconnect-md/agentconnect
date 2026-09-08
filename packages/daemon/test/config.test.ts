@@ -96,7 +96,46 @@ describe('loadConfig', () => {
   })
 
   it('rejects an unimplemented sandbox backend', () => {
-    expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } })).toThrow()
+    expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'docker' } })).toThrow()
+  })
+
+  it('requires an explicit microsandbox image and defaults its resource allocation', () => {
+    expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } })).toThrow(
+      'sandbox.microsandbox.image'
+    )
+    for (const image of [undefined, '', '  ']) {
+      expect(() =>
+        ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox', microsandbox: { image } } })
+      ).toThrow()
+    }
+    expect(
+      ConfigSchema.parse({
+        version: 1,
+        sandbox: { backend: 'microsandbox', microsandbox: { image: 'registry.example.test/runtime:test' } }
+      }).sandbox
+    ).toEqual({
+      backend: 'microsandbox',
+      mounts: [],
+      microsandbox: { image: 'registry.example.test/runtime:test', cpus: 2, memoryMiB: 2048, diskGiB: 10 }
+    })
+  })
+
+  it.each([
+    ['cpus', 255],
+    ['memoryMiB', 0xffffffff],
+    ['diskGiB', Math.floor(0xffffffff / 1024)]
+  ])('bounds microsandbox %s to positive integers supported by the backend', (field, max) => {
+    const config = (value: number) => ({
+      version: 1,
+      sandbox: {
+        backend: 'microsandbox',
+        microsandbox: { image: 'registry.example.test/runtime:test', [field]: value }
+      }
+    })
+    for (const value of [0, -1, 1.5, Number(max) + 1]) {
+      expect(() => ConfigSchema.parse(config(value))).toThrow()
+    }
+    expect(() => ConfigSchema.parse(config(Number(max)))).not.toThrow()
   })
 
   it.each(['sandboxReadRoots', 'sandboxWriteRoots'])('rejects removed security.%s rather than ignoring it', (field) => {

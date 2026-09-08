@@ -4,7 +4,8 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '../acp/sandbox.js'
 import { prepareSandboxTempDir, SANDBOX_TEMP_DIR_ENV } from '../acp/sandbox-temp.js'
 import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
-import type { RuntimeDef } from '../config/config-schema.js'
+import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
+import { prepareMicrosandboxLaunch } from '../microsandbox/launch.js'
 import { compactReadRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import {
@@ -179,6 +180,7 @@ export interface PreparedRuntimeLaunch {
    *  was confined or nothing was found. Logged at spawn so a stale grant is visible after the fact. */
   gitMetadataWriteRoots: string[]
   runtimeHome?: string
+  microsandbox?: { mounts: SandboxMount[]; workspaceRoot: string }
   sandbox?: {
     mechanism: SandboxMechanism
     writable: string[]
@@ -258,7 +260,16 @@ export function prepareRuntimeLaunch(opts: {
    * hostPackageCacheEnv). A probe never runs a model turn; an agent launch must not
    * get this, so its confined tool use cannot write another runtime's install tree. */
   hostPackageCache?: boolean
+  microsandbox?: {
+    mounts: SandboxMount[]
+    guestEntry: string
+    trustedSessionDir?: string
+    trustedMounts?: SandboxMount[]
+  }
 }): PreparedRuntimeLaunch {
+  if (opts.runInSandbox && opts.microsandbox) {
+    return prepareMicrosandboxLaunch({ ...opts, ...opts.microsandbox })
+  }
   const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   // A confined session's own directory (§11), read before anything branches: the tier is the session's and
   // does not follow the boundary, so an unsandboxed launch of one still runs against its clones, not the agent's.

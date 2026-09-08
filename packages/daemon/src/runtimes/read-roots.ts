@@ -1,8 +1,8 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
-import type { McpServerDef, RuntimeDef, SandboxMount } from '../config/config-schema.js'
+import { basename, dirname, isAbsolute, join, parse, posix, relative, resolve, sep } from 'node:path'
+import type { McpServerDef, RuntimeDef, SandboxBackend, SandboxMount } from '../config/config-schema.js'
 import { resolveCommandPath } from './probe.js'
 
 /**
@@ -47,18 +47,40 @@ function existingRoot(path: string, env: NodeJS.ProcessEnv, label = 'trusted run
   return realpathSync(expanded)
 }
 
-/** SRT exposes canonical host paths in place; duplicate writable grants take precedence. */
+function guestMountTarget(path: string): string {
+  if (!posix.isAbsolute(path) || path.includes('\0')) {
+    throw new Error(`sandbox.mounts target must be an absolute POSIX guest path: ${path}`)
+  }
+  const target = posix.normalize(path).replace(/\/$/, '')
+  if (!target) throw new Error('sandbox.mounts target must not be the guest root')
+  return target
+}
+
+/** Canonical host sources use host targets for SRT and guest coordinates for microsandbox. */
 export function normalizeSandboxMounts(
   mounts: readonly SandboxMount[],
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  backend: SandboxBackend = 'srt'
 ): SandboxMount[] {
   const normalized = new Map<string, SandboxMount>()
   for (const mount of mounts) {
     const source = existingRoot(mount.source, env, 'sandbox.mounts source')
-    const target = existingRoot(mount.target, env, 'sandbox.mounts target')
-    if (source !== target) throw new Error(`sandbox.mounts requires source and target to be the same path for srt`)
-    const previous = normalized.get(source)
-    normalized.set(source, { source, target, readOnly: mount.readOnly && (previous?.readOnly ?? true) })
+    const target =
+      backend === 'srt' ? existingRoot(mount.target, env, 'sandbox.mounts target') : guestMountTarget(mount.target)
+    if (backend === 'srt' && source !== target) {
+      throw new Error('sandbox.mounts requires source and target to be the same path for srt')
+    }
+    if (backend === 'microsandbox') {
+      const stat = statSync(source)
+      if (!stat.isFile() && !stat.isDirectory()) {
+        throw new Error(`sandbox.mounts source must be a file or directory for microsandbox: ${source}`)
+      }
+    }
+    const previous = normalized.get(target)
+    if (previous && previous.source !== source) {
+      throw new Error(`sandbox.mounts cannot map different sources to the same target: ${target}`)
+    }
+    normalized.set(target, { source, target, readOnly: mount.readOnly && (previous?.readOnly ?? true) })
   }
   return [...normalized.values()]
 }

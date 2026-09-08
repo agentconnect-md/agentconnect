@@ -87,6 +87,34 @@ function quietHost(): AcpHost {
 }
 
 describe('runChat', () => {
+  it('rejects microsandbox before selecting, probing, or launching a runtime', async () => {
+    const files = scaffold()
+    writeFileSync(
+      files.configPath,
+      JSON.stringify({
+        version: 1,
+        sandbox: { backend: 'microsandbox', microsandbox: { image: 'runtime:test' } }
+      })
+    )
+    const resolveCatalog = vi.fn()
+    const probeRuntimes = vi.fn()
+    const hostFactory = vi.fn()
+
+    await expect(
+      runChat({
+        ...files,
+        agentsDir: join(files.root, 'missing-agents'),
+        message: 'hi',
+        resolveCatalog,
+        probeRuntimes,
+        hostFactory
+      })
+    ).rejects.toThrow('chat does not support microsandbox yet')
+    expect(resolveCatalog).not.toHaveBeenCalled()
+    expect(probeRuntimes).not.toHaveBeenCalled()
+    expect(hostFactory).not.toHaveBeenCalled()
+  })
+
   it('single-shot: discovers the lone agent, spawns runtime, streams the echoed reply', async () => {
     const { agentsDir, configPath, root } = scaffold()
     const out = capture()

@@ -293,7 +293,7 @@ export class WorkspaceManager {
   // coalescing is the intent. For a cluster workspace the same path is a DIFFERENT filesystem per
   // agent, so coalescing there would hand one agent the other's clone; the agent id disambiguates.
   cloneKey(agentId: string, cwd: string): string {
-    return this.gitRunnerResolver?.(agentId, cwd) ? `${agentId}\u0000${cwd}` : cwd
+    return this.sandboxMountFor(agentId) ? `${agentId}\u0000${cwd}` : cwd
   }
 
   async withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
