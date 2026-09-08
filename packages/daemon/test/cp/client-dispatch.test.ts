@@ -935,6 +935,28 @@ describe('CpClient dispatch', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('memory/history failed'))
   })
 
+  it('refuses a daemon home on a pool member with pool-daemon-home, the same 503 shape as every other home reason', async () => {
+    const { t } = await readyClient({
+      memoryReader: {
+        list: async () => {
+          throw new MemoryHomeUnavailableError(
+            'pool-daemon-home',
+            'agent "a1" has a daemon memory home, but the pool keeps memory in the Control Plane: waiting for the binding to be flipped (homeMigration)'
+          )
+        }
+      } as any
+    })
+    const list = JSON.parse(frame('memory/list', { agentId: 'a1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(list))
+    await tick()
+    const refused = JSON.parse(t.sent[0]!)
+    expect(refused.type).toBe('error')
+    expect(refused.corr).toBe(list.id)
+    expect(refused.payload.code).toBe('BAD_PAYLOAD')
+    expect(refused.payload.details).toEqual({ reason: 'pool-daemon-home' })
+    expect(refused.payload.message).toContain('homeMigration')
+  })
+
   it('maps an unknown-agent workspace git violation to BAD_PAYLOAD', async () => {
     const { t } = await readyClient({
       workspaceGit: {

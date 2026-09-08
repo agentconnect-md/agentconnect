@@ -188,7 +188,7 @@ describe('SessionManager', () => {
       workspace: {
         mode: 'git-repo',
         path: repoRoot,
-        gitRepo: 'https://github.com/sentioxyz/production.git',
+        gitRepo: 'https://github.com/acme/infra.git',
         gitBranch: 'main',
         agentDir: 'agents/node-operator',
         pullOnNewSession: false,
@@ -557,6 +557,21 @@ describe('SessionManager', () => {
     const metaArg = host.newSession.mock.calls[0][3] as string
     expect(metaArg).toMatch(/^# Agent/)
     expect(metaArg).not.toContain('SENTINEL_MEMORY_LINE')
+
+    // A stale `daemon` binding on a pool member (step ⑩b) is the same degradation under its own reason: the agent runs
+    // without memory until the CP's flip arrives, rather than not at all.
+    const stale = new MemoryHomeUnavailableError(
+      'pool-daemon-home',
+      'agent "bot-a" has a daemon memory home, but the pool keeps memory in the Control Plane: waiting for the binding to be flipped (homeMigration)'
+    )
+    unreachable.ensure = vi.fn(async () => {
+      throw stale
+    })
+    host.newSession.mockClear()
+    const staleTurn = await sm.handle('bot-a', msg({ ts: '100.2', text: 'still here too', channel: 'C-stale' }))
+    expect(staleTurn.blocks.at(-1)).toEqual({ type: 'text', text: '[U1] still here too' })
+    expect(onMemoryHomeUnavailable).toHaveBeenLastCalledWith('bot-a', stale)
+    expect(host.newSession.mock.calls[0][3] as string).not.toContain('SENTINEL_MEMORY_LINE')
 
     // Only an unreachable home degrades; any other failure of the seeding still fails the turn.
     const broken = createManagedMemoryProvider(() => localMemoryHome(local(agent.dir)))

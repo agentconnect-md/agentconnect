@@ -130,8 +130,9 @@ function memoryError(wire: ControlWire, corr: string, op: string, err: unknown):
     wire.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
     return
   }
-  // The home is out of reach — a sleeping sandbox, or a `control-plane` tree behind a missing connection, feature, or
-  // migration copy: every reason is "not now" for the console, so it is refused WITH the reason and the CP answers 503
+  // The home is out of reach — a sleeping sandbox, a `control-plane` tree behind a missing connection, feature, or
+  // migration copy, or a `daemon` home on a pool member awaiting the CP's flip: every reason is "not now" for the
+  // console, so it is refused WITH the reason and the CP answers 503
   // (for `sandbox-unavailable` with the code the console wakes on, #1077) — never a 400 that would stop the retry.
   if (err instanceof MemoryHomeUnavailableError) {
     wire.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })

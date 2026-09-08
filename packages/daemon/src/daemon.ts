@@ -3068,7 +3068,9 @@ export class Daemon {
           `memory recall degraded for agent ${agentId}: ${error instanceof Error ? error.name : 'unknown'}`
         ),
       onMemoryHomeUnavailable: (agentId, error) =>
-        this.log.warn(`memory home unreachable for agent ${agentId} (${error.reason}): session starts without memory`),
+        this.log.warn(
+          `memory home unreachable for agent ${agentId} (${error.reason}): session starts without memory — ${error.message}`
+        ),
       onMemoryRecallInjected: (_agentId, bytes) => defaultMemoryPluginMetrics.recallInjected(bytes),
       onMemoryRecallEvent: (agentId, event) =>
         this.evalHooks.emit({

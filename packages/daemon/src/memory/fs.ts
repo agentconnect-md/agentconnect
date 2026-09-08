@@ -43,9 +43,9 @@ export class MemoryConflictError extends Error {
   }
 }
 
-/** Why a home is out of reach: no bound pod; the CP connection, its feature, or this member's duty missing; or a migration copy still pending. */
+/** Why a home is out of reach: no bound pod; the CP connection, its feature, or this member's duty missing; a migration copy still pending; or a `daemon` home on a pool member, which keeps memory in the CP. */
 export type MemoryHomeUnavailableReason =
-  'sandbox-unavailable' | 'connection' | 'feature' | 'scope-denied' | 'migrating'
+  'sandbox-unavailable' | 'connection' | 'feature' | 'scope-denied' | 'migrating' | 'pool-daemon-home'
 
 /** Raised when an agent's memory home cannot be reached — one resolution, never a fallback to this member's disk. */
 export class MemoryHomeUnavailableError extends Error {
