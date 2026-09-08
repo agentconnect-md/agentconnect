@@ -2,6 +2,8 @@
 
 **Status:** Implemented.
 
+For the proposed common managed/external entry interface and context workflow, see [Unified Memory Operations and Context](unified-memory-interface.md). That proposal does not change the implemented storage behavior described here.
+
 Agent memory is isolated per agent, lives outside the workspace, and is
 selected through a provider-neutral lifecycle. The implementation authority is
 `packages/daemon/src/memory/provider.ts`; see
