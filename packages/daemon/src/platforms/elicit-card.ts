@@ -103,6 +103,11 @@ export interface ElicitCardHost {
   /** The opaque routing target a relay-forwarded interaction carries back to THIS daemon. A
    *  surface whose ingress is daemon-owned needs none and ignores it. */
   sessionTarget(turn: ElicitCardTurn): string | undefined
+  /** This turn's OPAQUE platform state slot (§7.3) — the very object the platform's `apply`
+   *  reads. A card is one of the turn's posts, so it must anchor exactly as the turn's other
+   *  posts do; handing the same slot over is what keeps one platform to ONE anchoring
+   *  mechanism, rather than a card re-deriving an anchor of its own. Core never reads it. */
+  turnState(turn: ElicitCardTurn): unknown
 }
 
 /** One chat surface's elicitation-card facet. Registered on that platform's

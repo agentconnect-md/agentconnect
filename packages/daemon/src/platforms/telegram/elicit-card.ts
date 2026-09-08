@@ -38,6 +38,7 @@ import type {
 } from '../elicit-card.js'
 import type { InlineButton, TelegramConnection } from '../../telegram/connection.js'
 import { TELEGRAM_MESSAGE_LIMIT } from '../../telegram/render.js'
+import type { TelegramTurnState } from './turn-output.js'
 import { clampTo, elicitCardShape, elicitOptionToken, type ElicitKind, type ElicitSurface } from '../../slack/render.js'
 
 /**
@@ -64,9 +65,20 @@ const TELEGRAM_ELICIT_PREFIX = 'ac_el'
 /** The token a Dismiss button carries. Not a position, because Dismiss answers no option. */
 const TELEGRAM_ELICIT_DISMISS = 'x'
 
-/** How much of the question one card carries, leaving the whole settlement line room inside
- *  Telegram's message limit — a rewrite must never be refused for length after the ask fit. */
-const TELEGRAM_ELICIT_MESSAGE_CAP = TELEGRAM_MESSAGE_LIMIT - 300
+/**
+ * How much of the ANSWER a settled card echoes back. The decision core supplies is not bounded —
+ * a scalar's is `String(answer)`, and an enum option's value can be a path, an id or a long URL —
+ * so the surface that renders it is what bounds it. What the READER sees is clamped; what the
+ * AGENT receives is not (#1844's rule), because the accepted content is built from the raw answer
+ * and never from this text.
+ */
+const TELEGRAM_ELICIT_DECISION_CAP = 300
+
+/** How much of the question one card carries: whatever is left once the settlement line is
+ *  reserved, so the rewrite still fits after the ask did. Derived from the decision cap rather
+ *  than written beside it — the two drifting apart is exactly how a settlement stops landing.
+ *  The 8 covers the mark, the space and the newline with room to spare. */
+const TELEGRAM_ELICIT_MESSAGE_CAP = TELEGRAM_MESSAGE_LIMIT - TELEGRAM_ELICIT_DECISION_CAP - 8
 
 /** How Telegram spells each settlement mark. Literal emoji: a Telegram message has no shortcode
  *  vocabulary, so Slack's `:white_check_mark:` would reach the reader as its own source text. */
@@ -158,8 +170,17 @@ export const telegramElicitCards: ElicitCardFacet = {
     draft: ElicitCardDraft
   ): Promise<string | undefined> {
     const d = draft as TelegramElicitDraft
+    // The card anchors exactly as every other post of this turn does — through the turn's own
+    // state slot, the same `replyTo` `applyTelegramAction` reads. `threadTs` alone is not an
+    // anchor off a forum: `postCard` only turns a NUMERIC thread into `message_thread_id`, so a
+    // `tg:<root>` supergroup session would drop the card at the chat root, and a reader replying
+    // to it would root a fresh reply chain on the card instead of continuing this session.
+    const { replyTo } = host.turnState(turn) as TelegramTurnState
     return await host.postCardSerialized(turn, (conn) =>
-      (conn as TelegramConnection).postCard(turn.plan.channel, d.text, d.buttons, { threadTs: turn.plan.thread })
+      (conn as TelegramConnection).postCard(turn.plan.channel, d.text, d.buttons, {
+        threadTs: turn.plan.thread,
+        ...(replyTo !== undefined ? { replyTo } : {})
+      })
     )
   },
 
@@ -168,7 +189,13 @@ export const telegramElicitCards: ElicitCardFacet = {
     const messageId = Number(handle.ts)
     if (!Number.isInteger(messageId)) return
     const message = (card.params as { message?: string }).message?.trim() || 'The agent needs your input'
-    const text = `${telegramElicitText(message)}\n${TELEGRAM_ELICIT_MARK[card.mark]} ${card.text}`
+    const decision = `${TELEGRAM_ELICIT_MARK[card.mark]} ${clampTo(card.text, TELEGRAM_ELICIT_DECISION_CAP)}`
+    // Belt to the reserve's braces. The reserve only holds while both halves are bounded, and an
+    // edit refused for length lands AFTER ACP accepted and the pending record went — there is
+    // nothing left to retry against, so the card would keep offering buttons that answer nothing.
+    // Clamping by UTF-16 length is conservative: Telegram's 4096 counts CODEPOINTS, of which a
+    // JS string never has more than it has units (verified live 2026-09-08).
+    const text = clampTo(`${telegramElicitText(message)}\n${decision}`, TELEGRAM_MESSAGE_LIMIT)
     // An empty keyboard is what drops the buttons; the answered card stays readable in the chat.
     void (handle.conn as TelegramConnection).editCard(handle.channel, messageId, text, []).catch(() => {})
   }

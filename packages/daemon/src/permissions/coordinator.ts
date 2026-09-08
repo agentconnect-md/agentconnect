@@ -79,7 +79,7 @@ import {
   permissionRequestParts,
   type ApprovalRequestParts
 } from '../daemon/tool-classification.js'
-import { pendingTurnKey, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
+import { pendingTurnKey, turnState, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
 
 /** The union of a turn's explicit human-approval waits, measured here and nowhere else.
  *  Regeneration budgets subtract it while retaining runtime/tool work time; `depth` counts
@@ -377,7 +377,8 @@ export class PermissionCoordinator {
   /** The two core capabilities an elicitation-card facet is allowed to reach, and nothing wider. */
   private readonly elicitCardHost: ElicitCardHost = {
     postCardSerialized: (turn, post) => this.host.postCardSerialized(turn as Pending, post),
-    sessionTarget: (turn) => this.host.httpSlackSessionTarget(turn as Pending)
+    sessionTarget: (turn) => this.host.httpSlackSessionTarget(turn as Pending),
+    turnState: (turn) => turnState(turn as Pending)
   }
 
   constructor(private readonly host: PermissionHost) {}

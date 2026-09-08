@@ -88,7 +88,7 @@ describe('what Telegram declares it can collect, and what it declines', () => {
   })
 
   it('builds nothing for a URL consent, a multi-field form, or an optionless field', () => {
-    const host = { postCardSerialized: async () => undefined, sessionTarget: () => undefined }
+    const host = { postCardSerialized: async () => undefined, sessionTarget: () => undefined, turnState: () => ({}) }
     const turn = { plan: { platform: 'telegram', channel: '-100', statusThread: 'T', agentName: 'a' } }
     const ask = { requestId: REQUEST_ID, params: form(BRANCH), message: 'q', fallback: 'q' }
     // URL mode: an inline `url` button fires no callback_query, so a consent could never be recorded.
@@ -112,25 +112,32 @@ describe('what Telegram declares it can collect, and what it declines', () => {
 interface Harness {
   daemon: any
   conn: any
-  cards: { text: string; buttons: InlineButton[][] }[]
+  cards: { text: string; buttons: InlineButton[][]; opts: { threadTs?: string; replyTo?: number } }[]
   edits: { text: string; buttons: InlineButton[][] }[]
   acked: string[]
   notices: () => string[]
 }
 
-function telegramTurn(): Harness {
+/** @param turn the turn's THREAD coordinate and its Telegram reply anchor — a plain supergroup
+ *   session is `tg:<root>` (non-numeric, so it is no forum topic) and anchors by `replyTo`. */
+function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness {
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
   daemon.store = {
     getSessionByAcpIdForAgent: () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: () => new Map(),
     upsertElicit: vi.fn(async () => {})
   }
-  const cards: { text: string; buttons: InlineButton[][] }[] = []
+  const cards: { text: string; buttons: InlineButton[][]; opts: { threadTs?: string; replyTo?: number } }[] = []
   const edits: { text: string; buttons: InlineButton[][] }[] = []
   const acked: string[] = []
   const conn = Object.create(TelegramConnection.prototype)
-  conn.postCard = async (_c: string, text: string, buttons: InlineButton[][]) => {
-    cards.push({ text, buttons })
+  conn.postCard = async (
+    _c: string,
+    text: string,
+    buttons: InlineButton[][],
+    opts: { threadTs?: string; replyTo?: number } = {}
+  ) => {
+    cards.push({ text, buttons, opts })
     return '4242'
   }
   conn.editCard = async (_c: string, _id: number, text: string, buttons: InlineButton[][]) => {
@@ -148,11 +155,14 @@ function telegramTurn(): Harness {
       statusThread: 'T1',
       agentName: 'agent',
       isDm: false,
-      approvalSurfaceSuppressed: false
+      approvalSurfaceSuppressed: false,
+      ...(turn.thread !== undefined ? { thread: turn.thread } : {})
     },
     hostKey: 'agent-1',
     outwardSessionId: 'sess-1',
     conn,
+    // §7.3's opaque per-turn slot, seeded exactly as `initialTurnState` seeds it.
+    turnState: { ...(turn.replyTo !== undefined ? { replyTo: turn.replyTo } : {}) },
     chrome: {},
     reply: { text: '', attemptText: '', attemptAnswerUpdates: [] },
     signals: { applyChain: Promise.resolve() },
@@ -240,6 +250,57 @@ describe('a Telegram turn posts an elicitation card and settles it in place', ()
     await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
     expect(h.cards).toEqual([])
     expect(h.notices()[0]).toContain("this chat can't collect an answer for")
+  })
+
+  // review-bot P2 on #1853. `postCard` only turns a NUMERIC thread into `message_thread_id`, so
+  // off a forum `threadTs` anchors nothing: a `tg:<root>` supergroup card would land at the chat
+  // root, and a reader replying to it would root a FRESH reply chain on the card rather than
+  // continue this session — which the card's transcript row cannot repair, since its ts is
+  // synthetic. The anchor is the turn's own state slot, the one `applyTelegramAction` reads.
+  it('anchors the card to the turn on a non-forum session, where the thread is no anchor', async () => {
+    const h = telegramTurn({ thread: 'tg:100', replyTo: 100 })
+    await raise(h, form(BRANCH, ['branch']))
+    expect(h.cards[0]!.opts.replyTo).toBe(100)
+    expect(h.cards[0]!.opts.threadTs).toBe('tg:100')
+  })
+
+  it('still posts a forum-topic card into its topic, which IS an anchor', async () => {
+    const h = telegramTurn({ thread: '77', replyTo: 512 })
+    await raise(h, form(BRANCH, ['branch']))
+    expect(h.cards[0]!.opts.threadTs).toBe('77')
+    expect(h.cards[0]!.opts.replyTo).toBe(512)
+  })
+
+  // review-bot P2 on #1853. The question reserve only holds while the DECISION is bounded too,
+  // and core's is not: a scalar's decision is `String(answer)`, and an enum option's value can be
+  // a long URL. The edit runs AFTER ACP accepted and the pending record went, so a rewrite refused
+  // for length can never be retried — the card would keep offering buttons that answer nothing.
+  it('keeps a settlement inside the message limit when the answer is a long value', async () => {
+    const h = telegramTurn()
+    // The reviewer's own numbers: a question long enough to hit the reserve (so the card is the
+    // full 3,799) plus a 621-character option value, which used to assemble to 4,423.
+    const url = `https://auth.example.com/callback?${'q'.repeat(587)}`
+    expect(url).toHaveLength(621)
+    const req = form(
+      {
+        pick: { type: 'string', oneOf: [{ const: url, title: 'Choose URL' }], title: 'Destination' }
+      },
+      ['pick']
+    )
+    ;(req as { message?: string }).message = 'Q'.repeat(4000)
+    const { requestId, result } = await raise(h, req)
+    // The ask itself already fits: the question is clamped with the settlement line reserved.
+    expect(h.cards[0]!.text.length).toBeLessThanOrEqual(4096)
+
+    await h.daemon.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
+    // What the AGENT receives is the WHOLE value — #1844's rule: the reader's view is clamped,
+    // the accepted content never is.
+    await expect(result).resolves.toEqual({ action: 'accept', content: { pick: url } })
+    expect(h.edits).toHaveLength(1)
+    expect(h.edits[0]!.text.length).toBeLessThanOrEqual(4096)
+    // And the verdict SURVIVES the clamp — a settlement whose mark got cut off would be a card
+    // that still reads as open, which is the failure this guards against.
+    expect(h.edits[0]!.text).toContain('✅')
   })
 
   it('cancels an abandoned card and says so on the card itself', async () => {
