@@ -1,5 +1,5 @@
-// The memory home selection (memory-evolution.md §3.2.1): a `daemon` home is unchanged on every placement, a
-// `control-plane` home puts the store and its change log on the CP connection behind three activation gates, every
+// The memory home selection (memory-evolution.md §3.2.1): a `daemon` home is unchanged on a self-hosted daemon and not
+// served on a pool member, a `control-plane` home puts the store and its change log on the CP connection behind three activation gates, every
 // writer and reader goes through the ports, and the console reads a CP-homed tree without asking for the pod.
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdtempSync, promises as fsp, rmSync } from 'node:fs'
@@ -23,6 +23,7 @@ import {
   type MemoryFs
 } from '../src/memory/fs.js'
 import {
+  daemonHomeMemoryFs,
   memoryHomeUnavailable,
   resolveMemoryHomePorts,
   type CpMemoryHomeLink,
@@ -126,15 +127,46 @@ describe('resolveMemoryHomePorts — the one selection', () => {
       expect(memoryHomeUnavailable(agent, { cp, log })).toBeUndefined()
     }
 
+    // A `none` binding carries no home: on a pool member it still answers for its pod, as before.
     const { fs } = pod()
-    const agent = agentWith(managed('daemon'))
-    const bound = resolveMemoryHomePorts(agent, { sandbox: { memoryFsFor: () => fs }, cp, log })
-    expect(bound.live).toBe(fs)
-    expect(bound.staging).toBe(fs)
-    expect(bound.historyFor(fs)).toBeInstanceOf(SidecarMemoryHistorySink)
+    const none = agentWith({ provider: 'none' } as AgentMemoryBinding)
+    expect(resolveMemoryHomePorts(none, { sandbox: { memoryFsFor: () => fs }, cp, log }).live).toBe(fs)
     const asleep = { sandbox: { memoryFsFor: () => undefined }, cp, log }
-    expect(() => resolveMemoryHomePorts(agent, asleep)).toThrow(MemorySandboxUnavailableError)
-    expect(memoryHomeUnavailable(agent, asleep)?.reason).toBe('sandbox-unavailable')
+    expect(() => resolveMemoryHomePorts(none, asleep)).toThrow(MemorySandboxUnavailableError)
+    expect(memoryHomeUnavailable(none, asleep)?.reason).toBe('sandbox-unavailable')
+  })
+
+  it('does not serve a daemon home on a pool member: the store answers pool-daemon-home until the CP flips the binding, staging stays on the volume', () => {
+    // Step ④ refuses `daemon` for a pool-placed agent and step ⑩a flips every existing one at CP boot, so a `--k8s`
+    // member seeing one holds a stale boot-window binding: the CP tree is the home, this volume is not — bound or not.
+    const cp = fakeCp()
+    const { fs } = pod()
+    const sandbox = { memoryFsFor: vi.fn((): MemoryFs | undefined => fs) }
+    for (const memory of [managed('daemon'), undefined]) {
+      const agent = agentWith(memory)
+      const stale = memoryHomeUnavailable(agent, { sandbox, cp, log })
+      expect(stale?.reason).toBe('pool-daemon-home')
+      expect(stale?.message).toContain('homeMigration')
+      expect(stale?.message).toContain('Control Plane')
+      const ports = resolveMemoryHomePorts(agent, { sandbox, cp, log })
+      expect(reasonOf(() => ports.live)).toBe('pool-daemon-home')
+      // The sandbox volume remains the pool's dream-staging root and the migration's source, whatever the home says.
+      expect(ports.staging).toBe(fs)
+      expect(ports.historyFor(fs)).toBeInstanceOf(SidecarMemoryHistorySink)
+      expect(daemonHomeMemoryFs(agent, sandbox)).toBe(fs)
+      // Not a pod question: an unbound pod does not change the answer, and the CP connection is never consulted.
+      const asleep = { sandbox: { memoryFsFor: () => undefined }, cp, log }
+      expect(memoryHomeUnavailable(agent, asleep)?.reason).toBe('pool-daemon-home')
+      expect(reasonOf(() => resolveMemoryHomePorts(agent, asleep).live)).toBe('pool-daemon-home')
+      cp.up = false
+      expect(memoryHomeUnavailable(agent, { sandbox, cp, log })?.reason).toBe('pool-daemon-home')
+      cp.up = true
+    }
+    // Self-hosted, the same binding is the local tree it always was.
+    const local = agentWith(managed('daemon'))
+    expect(memoryHomeUnavailable(local, { cp, log })).toBeUndefined()
+    expect(resolveMemoryHomePorts(local, { cp, log }).live.root).toBe(local.dir)
+    expect(cp.ops).toEqual([])
   })
 
   it('puts a control-plane home on the CP connection and leaves staging beside the extraction host', () => {

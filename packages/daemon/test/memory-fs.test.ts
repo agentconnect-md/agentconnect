@@ -5,6 +5,7 @@ import { join, parse } from 'node:path'
 import {
   LocalMemoryFs,
   MemoryConflictError,
+  MemoryHomeUnavailableError,
   MemoryPathError,
   MemorySandboxUnavailableError,
   type MemoryFs
@@ -202,17 +203,25 @@ describe('ShimMemoryFs over the read capability (the port over a sandbox volume)
 })
 
 describe('resolveMemoryFs (the one placement decision)', () => {
-  it('gives a local agent the local port, a bound cluster agent the shim port, and refuses an unbound one', () => {
+  it('gives a local agent the local port, and does not serve a daemon home on a pool member, bound or not', () => {
     const agent = { id: 'bot-a', dir: tempRoot() }
     const log = { warn: () => {} }
     const local = resolveMemoryFs(agent, { log })
     expect(local).toBeInstanceOf(LocalMemoryFs)
     expect(local.root).toBe(agent.dir)
+    // The pool keeps memory in the Control Plane: a `daemon` home there is a stale binding awaiting the CP's flip.
     const { fs } = pod()
-    expect(resolveMemoryFs(agent, { sandbox: { memoryFsFor: () => fs }, log })).toBe(fs)
-    expect(() => resolveMemoryFs(agent, { sandbox: { memoryFsFor: () => undefined }, log })).toThrow(
-      MemorySandboxUnavailableError
-    )
+    for (const sandbox of [{ memoryFsFor: () => fs }, { memoryFsFor: () => undefined }]) {
+      const refusal = (() => {
+        try {
+          resolveMemoryFs(agent, { sandbox, log })
+        } catch (err) {
+          return err
+        }
+      })()
+      expect(refusal).toBeInstanceOf(MemoryHomeUnavailableError)
+      expect((refusal as MemoryHomeUnavailableError).reason).toBe('pool-daemon-home')
+    }
   })
 })
 

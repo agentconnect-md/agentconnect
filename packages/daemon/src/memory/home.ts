@@ -1,6 +1,6 @@
 // Where an agent's managed memory lives — the ONE placement decision — as the file ports plus the change-log sink
-// (memory-evolution.md §3.2.1). A `daemon` home is this disk or the bound sandbox volume with the sidecar as its sink; a
-// `control-plane` home is `CpMemoryFs` over the CP connection with `CpMemoryHistorySink`, gated here at activation.
+// (memory-evolution.md §3.2.1). A `daemon` home is this disk with the sidecar as its sink, and is not served on a pool
+// member; a `control-plane` home is `CpMemoryFs` over the CP connection with `CpMemoryHistorySink`, gated here at activation.
 import {
   AGENT_MEMORY_STORE_V1_FEATURE,
   type AgentMemoryBinding,
@@ -82,15 +82,27 @@ export function memoryHomeMigrationPending(agent: Pick<MemoryHomeAgent, 'memory'
   )
 }
 
+/** A managed binding placed on a pool member with `home: daemon`: the CP refuses that placement and flips every pool agent, so it is a stale boot-window binding, never served as a home. */
+function poolDaemonHome(agent: MemoryHomeAgent, deps: MemoryHomeDeps): MemoryHomeUnavailableError | undefined {
+  if (!deps.sandbox || (agent.memory?.provider ?? 'managed') !== 'managed' || memoryHomeOf(agent) !== 'daemon') return
+  return new MemoryHomeUnavailableError(
+    'pool-daemon-home',
+    `agent "${agent.id}" has a daemon memory home, but the pool keeps memory in the Control Plane: waiting for the binding to be flipped (homeMigration)`
+  )
+}
+
 // Why the agent's memory home is out of reach right now, or undefined when it can be served: the activation gate
 // `resolveMemoryHomePorts` refuses on, and the memory capture outbox's reachability predicate. One resolution, never a
-// fallback to this member's disk — a `daemon` home on a pool member needs its pod bound; a `control-plane` home needs
-// the CP connection READY and advertising `agent-memory-store-v1`, and no migration copy still pending against it.
+// fallback to this member's disk — a `daemon` home is not served on a pool member at all (the CP flips it, and until
+// then it is `pool-daemon-home`); a `control-plane` home needs the CP connection READY and advertising
+// `agent-memory-store-v1`, and no migration copy still pending against it.
 export function memoryHomeUnavailable(
   agent: MemoryHomeAgent,
   deps: MemoryHomeDeps
 ): MemoryHomeUnavailableError | undefined {
   if (memoryHomeOf(agent) !== 'control-plane') {
+    const stale = poolDaemonHome(agent, deps)
+    if (stale) return stale
     return deps.sandbox && !deps.sandbox.memoryFsFor(agent.id) ? sandboxAsleep(agent.id) : undefined
   }
   const home = `agent "${agent.id}" keeps its memory in the Control Plane, which`
@@ -105,11 +117,25 @@ export function memoryHomeUnavailable(
   return undefined
 }
 
-// The selection. A `daemon` home is one tree for both roles — the local port over the agent dir, or the port over the
-// agent's sandbox volume, reachable exactly while the pod is bound. A `control-plane` home puts `live` and the sink on
-// the CP connection without touching any pod, and leaves `staging` where the extraction host can see it.
+// The selection. A `daemon` home is one tree for both roles on a self-hosted daemon — the local port over the agent
+// dir; on a pool member it is not served (`pool-daemon-home`), the sandbox volume being only dream staging and the
+// migration's source there. A `control-plane` home puts `live` and the sink on the CP connection without touching any
+// pod, and leaves `staging` where the extraction host can see it.
 export function resolveMemoryHomePorts(agent: MemoryHomeAgent, deps: MemoryHomeDeps): MemoryHomePorts {
-  if (memoryHomeOf(agent) !== 'control-plane') return localMemoryHome(daemonHomeMemoryFs(agent, deps.sandbox))
+  if (memoryHomeOf(agent) !== 'control-plane') {
+    const stale = poolDaemonHome(agent, deps)
+    if (!stale) return localMemoryHome(daemonHomeMemoryFs(agent, deps.sandbox))
+    // The store is refused on use; the sandbox volume still serves as dream staging, so a draft there can be reviewed or discarded.
+    return {
+      get live(): MemoryFs {
+        throw stale
+      },
+      get staging(): MemoryFs {
+        return daemonHomeMemoryFs(agent, deps.sandbox)
+      },
+      historyFor: sidecarMemoryHistory
+    }
+  }
   const unavailable = memoryHomeUnavailable(agent, deps)
   if (unavailable) throw unavailable
   const cp = deps.cp!
