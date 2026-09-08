@@ -1777,7 +1777,10 @@ export const BotListDto = z.array(BotDto)
  * manifest into an existing Slack app and checking the workspace installation's
  * actually granted bot scopes. URLs are public Slack settings deep links only. */
 export const SlackBotRefreshDto = z.object({
-  manifest: z.enum(['synced', 'manual_update_required', 'unknown']),
+  /** `deployment_update_required`: a built-in app's manifest, audited read-only, lacks required scopes; the Setup Server fixes it. */
+  manifest: z.enum(['synced', 'manual_update_required', 'deployment_update_required', 'unknown']),
+  /** The required bot scopes the manifest does not declare (`deployment_update_required` only). */
+  manifestMissingScopes: z.array(z.string()),
   authorization: z.enum(['current', 'reinstall_required', 'invalid', 'app_mismatch', 'unknown']),
   /** Slack's own code behind `invalid` (`invalid_auth`, `token_revoked`, …): the diagnosis, since `invalid_auth` also answers an IP-allowlisted caller. Null otherwise. */
   rejection: z.string().nullable(),

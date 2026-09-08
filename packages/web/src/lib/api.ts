@@ -924,7 +924,10 @@ export interface BotDto {
 }
 
 export interface SlackBotRefreshDto {
-  manifest: 'synced' | 'manual_update_required' | 'unknown'
+  /** `deployment_update_required`: a built-in app's manifest, audited read-only, lacks required scopes; the Setup Server fixes it. */
+  manifest: 'synced' | 'manual_update_required' | 'deployment_update_required' | 'unknown'
+  /** The required bot scopes the manifest does not declare (`deployment_update_required` only). */
+  manifestMissingScopes: string[]
   authorization: 'current' | 'reinstall_required' | 'invalid' | 'app_mismatch' | 'unknown'
   /** Slack's own code behind `invalid` (`invalid_auth`, `token_revoked`, …); null otherwise. */
   rejection: string | null

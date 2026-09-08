@@ -90,9 +90,10 @@ class CountingConfigApi implements SlackConfigApi {
       }
     }
   }
+  exportResult: SlackManifestExportResult = { ok: true, manifest: { display_information: { name: 'Kept' } } }
   async exportApp(configToken: string): Promise<SlackManifestExportResult> {
     this.exportCalls.push(configToken)
-    return { ok: true, manifest: { display_information: { name: 'Kept' } } }
+    return this.exportResult
   }
   async updateApp(configToken: string): Promise<SlackManifestUpdateResult> {
     this.updateCalls.push(configToken)
@@ -308,6 +309,91 @@ describe('providerToolingCredentials — the Settings→Bots manifest refresh', 
 
     expect(res.statusCode).toBe(200)
     expect(res.json().manifest).toBe('unknown')
+    expect(api.exportCalls).toEqual([])
+  })
+})
+
+describe('the Settings→Bots refresh audits a built-in app instead of syncing it', () => {
+  /** A platform (deployment) bot row, as a workspace install leaves it: no funnel, no xapp. */
+  async function platformBot(appId: string): Promise<string> {
+    const botId = randomUUID()
+    await prisma.bot.create({
+      data: {
+        id: botId,
+        orgId: DEFAULT_ORG_ID,
+        platform: 'slack',
+        name: 'AgentConnect (Acme)',
+        prebuilt: true,
+        transport: 'http',
+        slackAppId: appId,
+        teamId: 'T1'
+      }
+    })
+    await prisma.botSecret.create({ data: { botId, botToken: 'xoxb-platform', appToken: null, signingSecret: 'ss' } })
+    return botId
+  }
+  const verifierFor = (appId: string) => async () => ({
+    status: 'ok' as const,
+    name: 'AgentConnect',
+    appId,
+    teamId: 'T1',
+    teamName: 'Acme',
+    scopes: [...SLACK_BOT_SCOPES]
+  })
+
+  it("reports 'deployment_update_required' with the undeclared scopes, and never writes the deployment app", async () => {
+    const { app, api } = withFunnel()
+    const botId = await platformBot('A0PLATFORM1')
+    app.platformStubs.verifySlackBot = verifierFor('A0PLATFORM1')
+    await storeConfig(app, {
+      accessToken: 'xoxe.xoxp-fresh',
+      refreshToken: 'xoxe-refresh',
+      accessExpiresAt: new Date(Date.now() + HOUR)
+    })
+    api.exportResult = {
+      ok: true,
+      manifest: {
+        oauth_config: { scopes: { bot: SLACK_BOT_SCOPES.filter((s) => s !== 'lists:read' && s !== 'im:read') } }
+      }
+    }
+
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      manifest: 'deployment_update_required',
+      manifestMissingScopes: ['im:read', 'lists:read'],
+      authorization: 'current'
+    })
+    expect(api.exportCalls).toEqual(['xoxe.xoxp-fresh'])
+    expect(api.updateCalls).toEqual([])
+  })
+
+  it("reports 'synced' only when the export declares every required scope", async () => {
+    const { app, api } = withFunnel()
+    const botId = await platformBot('A0PLATFORM2')
+    app.platformStubs.verifySlackBot = verifierFor('A0PLATFORM2')
+    await storeConfig(app, {
+      accessToken: 'xoxe.xoxp-fresh',
+      refreshToken: 'xoxe-refresh',
+      accessExpiresAt: new Date(Date.now() + HOUR)
+    })
+    api.exportResult = { ok: true, manifest: { oauth_config: { scopes: { bot: [...SLACK_BOT_SCOPES] } } } }
+
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })
+
+    expect(res.json()).toMatchObject({ manifest: 'synced', manifestMissingScopes: [] })
+    expect(api.updateCalls).toEqual([])
+  })
+
+  it('claims nothing about the manifest without a config token', async () => {
+    const { app, api } = withFunnel()
+    const botId = await platformBot('A0PLATFORM3')
+    app.platformStubs.verifySlackBot = verifierFor('A0PLATFORM3')
+
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })
+
+    expect(res.json()).toMatchObject({ manifest: 'manual_update_required', manifestMissingScopes: [] })
     expect(api.exportCalls).toEqual([])
   })
 })

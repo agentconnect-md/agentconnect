@@ -23,16 +23,23 @@ export function slackManifestScopeFragment(scopes: readonly string[]): string {
  * uncertainty into a persistent warning. Explicit manifest failures remain
  * actionable, and authorization failures always take priority over manifest UI.
  */
-export function slackRefreshNoticeState(result: SlackBotRefreshDto): SlackRefreshNoticeState {
-  const needsAttention = result.authorization !== 'current' || result.manifest === 'unknown'
+export function slackRefreshNoticeState(
+  result: SlackBotRefreshDto,
+  // A built-in app's manifest is the deployment's: its short grant is fixed by the platform reinstall, never by hand.
+  { builtin = false }: { builtin?: boolean } = {}
+): SlackRefreshNoticeState {
+  const deploymentStale = result.manifest === 'deployment_update_required'
+  const needsAttention = result.authorization !== 'current' || result.manifest === 'unknown' || deploymentStale
   // A short grant we could not sync is fixed in Slack's MANIFEST editor: the OAuth picker hides scopes by plan, the manifest takes them all.
-  const manualScopes = result.authorization === 'reinstall_required' && result.manifest !== 'synced'
+  const manualScopes = !builtin && result.authorization === 'reinstall_required' && result.manifest !== 'synced'
   let action: SlackRefreshNoticeState['action'] = null
 
   if (result.authorization === 'invalid') {
     action = { href: result.reinstallUrl, label: 'Reinstall workspace' }
   } else if (result.authorization === 'app_mismatch') {
     action = { href: result.settingsUrl, label: 'Open Slack' }
+  } else if (deploymentStale) {
+    action = { href: result.manifestUrl, label: 'Open App Manifest' }
   } else if (result.authorization === 'reinstall_required') {
     action = manualScopes
       ? { href: result.manifestUrl, label: 'Open App Manifest' }
@@ -52,6 +59,12 @@ export function slackRefreshNoticeState(result: SlackBotRefreshDto): SlackRefres
     message = `Slack rejected the stored bot token (${result.rejection ?? 'invalid'}). Reinstall the app if needed, then recreate this integration with the current Bot User OAuth Token.`
   } else if (result.authorization === 'app_mismatch') {
     message = 'The stored bot token belongs to a different Slack app. Recreate this integration with matching tokens.'
+  } else if (deploymentStale) {
+    message = `This app's manifest is missing scopes AgentConnect requires. Update it from the Setup Server (Slack → Apply update), or paste the copied list into oauth_config.scopes.bot in the App Manifest editor${
+      result.authorization === 'reinstall_required' ? ', then reinstall the workspace' : ''
+    }.`
+  } else if (result.authorization === 'reinstall_required' && builtin) {
+    message = 'Reinstall the workspace to grant the missing scopes.'
   } else if (result.authorization === 'reinstall_required' && !manualScopes) {
     message = 'Slack app configuration is synced. Reinstall it to grant the missing scopes.'
   } else if (result.authorization === 'reinstall_required') {
@@ -71,7 +84,10 @@ export function slackRefreshNoticeState(result: SlackBotRefreshDto): SlackRefres
     needsAttention,
     message,
     action,
-    scopeFragment:
-      manualScopes && result.missingScopes.length > 0 ? slackManifestScopeFragment(result.missingScopes) : null
+    scopeFragment: manualScopes
+      ? slackManifestScopeFragment(result.missingScopes)
+      : deploymentStale
+        ? slackManifestScopeFragment(result.manifestMissingScopes)
+        : null
   }
 }
