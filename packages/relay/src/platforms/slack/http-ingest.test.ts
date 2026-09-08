@@ -4,17 +4,13 @@ import {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
-  ELICIT_FORM_CALLBACK_ID,
   ELICIT_FORM_INPUT_ACTION,
-  ELICIT_OPEN_ACTION,
-  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SHARED_AGENT_SELECT_ACTION_ID,
   SHARED_CONFIG_ACTION_ID,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
   SLACK_STATUS_ACTION,
   elicitFormBlockId,
-  encodeElicitFormMetadata,
   encodeSlackStatusOverflowValue,
   encodeSharedSlackStatusTarget
 } from '@agentconnect.md/protocol'
@@ -22,7 +18,6 @@ import {
   normalizeSlackMessage,
   parseHttpSlackAgentSelection,
   parseHttpSlackAgentSwitch,
-  parseHttpSlackElicitFormSubmit,
   parseHttpSlackSessionAction,
   httpSlackAgentOptions,
   SlackHttpIngest,
@@ -212,10 +207,10 @@ describe('parseHttpSlackSessionAction', () => {
     ).toBeNull()
   })
 
-  // A multi-select card's Confirm carries the selection out of its OWN payload's message state,
-  // so what the relay forwards is the state the tapping reader confirmed. A selection CHANGE is
-  // acked and dropped: nothing is tracked between the two interactions.
-  it('routes a multi-select card’s Confirm with the selection its own payload carried', () => {
+  // A form card's Confirm carries every field out of its OWN payload's message state, so what the
+  // relay forwards is what the tapping reader had filled in. An `input` block raises no
+  // interaction of its own, so there is no field CHANGE to forward and nothing is tracked.
+  it('routes a form card’s Confirm with the fields its own payload carried', () => {
     const parseConfirm = (state?: unknown, value = 'elicit-3') =>
       parseHttpSlackSessionAction(
         body(ELICIT_CONFIRM_ACTION, {
@@ -231,59 +226,37 @@ describe('parseHttpSlackSessionAction', () => {
           ...(state !== undefined ? { state } : {})
         } as Partial<SlackInteractiveBody>)
       )
-    const stateWith = (selected_options: { value?: unknown }[], block = ENCODED_TARGET) => ({
-      values: { [block]: { [`${ELICIT_SELECT_ACTION}:elicit-3`]: { selected_options } } }
+    const stateWith = (selected_options: { value?: unknown }[], block = elicitFormBlockId(0)) => ({
+      values: { [block]: { [ELICIT_FORM_INPUT_ACTION]: { selected_options } } }
     })
 
     expect(parseConfirm(stateWith([{ value: 'lint' }, { value: 'test' }]))).toMatchObject({
       target: TARGET,
       kind: 'elicitation-confirm',
       requestId: 'elicit-3',
-      values: ['lint', 'test']
+      fields: { [elicitFormBlockId(0)]: ['lint', 'test'] }
     })
-    // Found by ACTION id, so it does not matter which block Slack grouped the select into.
+    // Only OUR blocks are read: a block the card did not render is not one of its fields.
     expect(parseConfirm(stateWith([{ value: 'lint' }], 'some-other-block'))).toMatchObject({
       kind: 'elicitation-confirm',
-      values: ['lint']
+      fields: {}
     })
-    // An emptied select is a real answer; NO state for it is not one, and forwards nothing.
-    expect(parseConfirm(stateWith([]))).toMatchObject({ kind: 'elicitation-confirm', values: [] })
-    expect(parseConfirm({ values: {} })).toBeNull()
-    expect(parseConfirm()).toBeNull()
-    expect(parseConfirm(stateWith([{}]))).toBeNull()
-    // Another card's state cannot answer this Confirm: the key is this request's select.
-    expect(parseConfirm(stateWith([{ value: 'lint' }]), 'elicit-9')).toBeNull()
-
-    // A selection change is not a session action at all — the relay acks it and keeps nothing.
-    expect(
-      parseHttpSlackSessionAction(
-        body(`${ELICIT_SELECT_ACTION}:elicit-3`, {
-          actions: [
-            {
-              action_id: `${ELICIT_SELECT_ACTION}:elicit-3`,
-              action_ts: '1720000000.000600',
-              block_id: ENCODED_TARGET
-            }
-          ],
-          view: undefined
-        })
-      )
-    ).toBeNull()
+    // An emptied select is a real answer; a Confirm with no state at all forwards an empty
+    // record, which the daemon refuses against the card's own `required` set.
+    expect(parseConfirm(stateWith([]))).toMatchObject({
+      kind: 'elicitation-confirm',
+      fields: { [elicitFormBlockId(0)]: [] }
+    })
+    expect(parseConfirm({ values: {} })).toMatchObject({ kind: 'elicitation-confirm', fields: {} })
+    expect(parseConfirm()).toMatchObject({ kind: 'elicitation-confirm', fields: {} })
+    expect(parseConfirm(stateWith([{}]))).toMatchObject({ kind: 'elicitation-confirm', fields: {} })
   })
 
-  // The reviewer's scenario, in order: A selects lint, B selects test, then A taps Confirm. With
-  // a per-card record of the last selection seen, A's Confirm submitted B's pick — every value in
-  // it a valid option, so no whitelist could catch it. Neither change is forwarded at all now,
-  // and A's Confirm carries the state A tapped it on, so processing order decides nothing.
-  it('answers A’s Confirm with A’s own selection after B changed the card', () => {
-    const selectBody = (user: string) =>
-      body(`${ELICIT_SELECT_ACTION}:elicit-3`, {
-        user: { id: user },
-        actions: [
-          { action_id: `${ELICIT_SELECT_ACTION}:elicit-3`, action_ts: '1720000000.000600', block_id: ENCODED_TARGET }
-        ],
-        view: undefined
-      })
+  // The reviewer's scenario, in order: A fills the card in, B changes it, then A taps Confirm.
+  // With a per-card record of the last state seen, A's Confirm submitted B's entries — every value
+  // in it a valid option, so no whitelist could catch it. Nothing is tracked between interactions
+  // now, and A's Confirm carries the state A tapped it on, so processing order decides nothing.
+  it('answers A’s Confirm with A’s own entries after B changed the card', () => {
     const confirmBody = (user: string, values: string[]) =>
       ({
         ...body(ELICIT_CONFIRM_ACTION, {
@@ -300,39 +273,35 @@ describe('parseHttpSlackSessionAction', () => {
         }),
         state: {
           values: {
-            [ENCODED_TARGET]: {
-              [`${ELICIT_SELECT_ACTION}:elicit-3`]: { selected_options: values.map((value) => ({ value })) }
+            [elicitFormBlockId(0)]: {
+              [ELICIT_FORM_INPUT_ACTION]: { selected_options: values.map((value) => ({ value })) }
             }
           }
         }
       }) as SlackInteractiveBody
 
-    // A selects, then B selects: two interactions, neither of them an answer to forward.
-    expect(parseHttpSlackSessionAction(selectBody('U-A'))).toBeNull()
-    expect(parseHttpSlackSessionAction(selectBody('U-B'))).toBeNull()
-    // A confirms. What is forwarded is the selection A's own payload carried, not B's.
     expect(parseHttpSlackSessionAction(confirmBody('U-A', ['lint']))).toMatchObject({
       kind: 'elicitation-confirm',
       requestId: 'elicit-3',
-      values: ['lint'],
+      fields: { [elicitFormBlockId(0)]: ['lint'] },
       userId: 'U-A'
     })
     expect(parseHttpSlackSessionAction(confirmBody('U-B', ['test']))).toMatchObject({
       kind: 'elicitation-confirm',
-      values: ['test'],
+      fields: { [elicitFormBlockId(0)]: ['test'] },
       userId: 'U-B'
     })
   })
 
   // Two Confirms on one card are two answers: a redelivery of either must dedup against itself,
   // never against the other, or the second answer would be dropped as a duplicate.
-  it('gives each confirmed selection its own msgId', () => {
+  it('gives each confirmed answer its own msgId', () => {
     const confirm = (values: string[]) => ({
       target: TARGET,
       interactionId: JSON.stringify([ELICIT_CONFIRM_ACTION, '1']),
       kind: 'elicitation-confirm' as const,
       requestId: 'elicit-3',
-      values
+      fields: { [elicitFormBlockId(0)]: values }
     })
     const one = httpSlackActionMsgId('B1', confirm(['lint']))
     expect(httpSlackActionMsgId('B1', confirm(['lint']))).toBe(one)
@@ -389,107 +358,6 @@ describe('parseHttpSlackSessionAction', () => {
         view: { private_metadata: ENCODED_TARGET }
       })
     ).toBeNull()
-  })
-})
-
-// A multi-field card's two interactions (#1794's Slack column). Answer carries only the trigger
-// id: the DAEMON builds and opens the view on its own bot token, so the relay renders no part of
-// that modal and holds nothing of it. The submission carries the fields keyed by block id, which
-// is also how the daemon's per-field errors come back.
-describe('the multi-field elicitation form’s Slack interactions', () => {
-  it('forwards the Answer tap as elicitation-open, with the trigger id and nothing else', () => {
-    const parsed = parseHttpSlackSessionAction(
-      body(ELICIT_OPEN_ACTION, {
-        actions: [
-          {
-            action_id: ELICIT_OPEN_ACTION,
-            action_ts: '1720000000.000800',
-            block_id: ENCODED_TARGET,
-            value: 'elicit-4'
-          }
-        ],
-        view: undefined,
-        user: { id: 'U-ALICE' }
-      })
-    )
-    expect(parsed).toMatchObject({
-      target: TARGET,
-      kind: 'elicitation-open',
-      requestId: 'elicit-4',
-      triggerId: 'trigger-1',
-      userId: 'U-ALICE'
-    })
-    // The one-shot trigger id stays OUT of the dedup identity (as open-config's does), so trigger
-    // material never reaches a log or a key — and a redelivery still dedups against itself.
-    expect(httpSlackActionMsgId('bot', parsed!)).toBe(
-      httpSlackActionMsgId('bot', { ...parsed!, triggerId: 'another-trigger' } as never)
-    )
-    // No trigger is nothing to open.
-    expect(
-      parseHttpSlackSessionAction(
-        body(ELICIT_OPEN_ACTION, {
-          trigger_id: undefined,
-          actions: [{ action_id: ELICIT_OPEN_ACTION, action_ts: '1', block_id: ENCODED_TARGET, value: 'elicit-4' }],
-          view: undefined
-        })
-      )
-    ).toBeNull()
-  })
-
-  it('reads the submitted view state into elicitation-submit, keyed by block id', () => {
-    const submit = parseHttpSlackElicitFormSubmit({
-      type: 'view_submission',
-      trigger_id: 'trigger-submit',
-      user: { id: 'U-BOB' },
-      view: {
-        callback_id: ELICIT_FORM_CALLBACK_ID,
-        private_metadata: encodeElicitFormMetadata({ requestId: 'elicit-5', target: ENCODED_TARGET }),
-        state: {
-          values: {
-            [elicitFormBlockId(0)]: { [ELICIT_FORM_INPUT_ACTION]: { selected_option: { value: 'main' } } },
-            [elicitFormBlockId(1)]: { [ELICIT_FORM_INPUT_ACTION]: { value: 'ship it' } }
-          }
-        }
-      }
-    })
-    expect(submit).toMatchObject({
-      target: TARGET,
-      kind: 'elicitation-submit',
-      requestId: 'elicit-5',
-      fields: { [elicitFormBlockId(0)]: 'main', [elicitFormBlockId(1)]: 'ship it' },
-      userId: 'U-BOB'
-    })
-    // The submitted fields ARE part of the identity: a corrected resubmission is a second answer.
-    expect(httpSlackActionMsgId('bot', submit!)).not.toBe(
-      httpSlackActionMsgId('bot', { ...submit!, fields: { [elicitFormBlockId(0)]: 'develop' } })
-    )
-  })
-
-  it('is not one of ours without our callback id, a decodable metadata, or a receipt', () => {
-    const meta = encodeElicitFormMetadata({ requestId: 'elicit-5', target: ENCODED_TARGET })
-    const view = { callback_id: ELICIT_FORM_CALLBACK_ID, private_metadata: meta }
-    expect(parseHttpSlackElicitFormSubmit({ type: 'view_submission', trigger_id: 't', view })).toMatchObject({
-      kind: 'elicitation-submit'
-    })
-    expect(parseHttpSlackElicitFormSubmit({ type: 'block_actions', trigger_id: 't', view })).toBeNull()
-    expect(
-      parseHttpSlackElicitFormSubmit({
-        type: 'view_submission',
-        trigger_id: 't',
-        view: { callback_id: SHARED_CONFIG_ACTION_ID, private_metadata: meta }
-      })
-    ).toBeNull()
-    expect(parseHttpSlackElicitFormSubmit({ type: 'view_submission', trigger_id: 't', view: {} })).toBeNull()
-    // The direct Socket Mode modal carries no session target, so its submission is not routable
-    // here at all — and it never arrives here, since that path has no relay.
-    expect(
-      parseHttpSlackElicitFormSubmit({
-        type: 'view_submission',
-        trigger_id: 't',
-        view: { callback_id: ELICIT_FORM_CALLBACK_ID, private_metadata: encodeElicitFormMetadata({ requestId: 'e' }) }
-      })
-    ).toBeNull()
-    expect(parseHttpSlackElicitFormSubmit({ type: 'view_submission', view })).toBeNull()
   })
 })
 
@@ -570,7 +438,6 @@ describe('SlackHttpIngest.handleInteraction', () => {
     onSetChannelAgent: vi.fn(),
     onSelectThreadAgent: vi.fn(),
     onSessionAction: vi.fn(),
-    onElicitFormSubmit: vi.fn(async () => ''),
     onSessionShortcut: vi.fn(() => false),
     onSessionStopped: vi.fn(),
     log: silentLog,
@@ -602,33 +469,6 @@ describe('SlackHttpIngest.handleInteraction', () => {
     })
     expect(result).toBe('')
     expect(onSelectThreadAgent).toHaveBeenCalledWith('C123', '1720000000.000100', AGENT_ID)
-  })
-
-  it('puts the daemon’s form verdict on the 200 body — the one interaction Slack waits for', async () => {
-    const onElicitFormSubmit = vi.fn<SlackHttpIngestDeps['onElicitFormSubmit']>(async () => ({
-      response_action: 'errors',
-      errors: { ac_elicit_f0: 'nope' }
-    }))
-    const ingest = new SlackHttpIngest(
-      'bot',
-      { botToken: 'xoxb', signingSecret: 's' },
-      ingestDeps({ onElicitFormSubmit })
-    )
-    const result = await ingest.handleInteraction({
-      type: 'view_submission',
-      trigger_id: 'trigger-submit',
-      view: {
-        callback_id: ELICIT_FORM_CALLBACK_ID,
-        private_metadata: encodeElicitFormMetadata({ requestId: 'elicit-5', target: ENCODED_TARGET }),
-        state: { values: { [elicitFormBlockId(0)]: { [ELICIT_FORM_INPUT_ACTION]: { value: 'main' } } } }
-      }
-    })
-    expect(result).toEqual({ response_action: 'errors', errors: { ac_elicit_f0: 'nope' } })
-    expect(onElicitFormSubmit).toHaveBeenCalledTimes(1)
-    expect(onElicitFormSubmit.mock.calls[0]![0]).toMatchObject({
-      requestId: 'elicit-5',
-      fields: { [elicitFormBlockId(0)]: 'main' }
-    })
   })
 
   it('forwards a message shortcut with the selected conversation coordinates', async () => {
@@ -669,7 +509,6 @@ describe('SlackHttpIngest channel membership events', () => {
     onSetChannelAgent: vi.fn(),
     onSelectThreadAgent: vi.fn(),
     onSessionAction: vi.fn(),
-    onElicitFormSubmit: vi.fn(async () => ''),
     onSessionShortcut: vi.fn(() => false),
     onSessionStopped: vi.fn(),
     webClientFactory: () => web as never,
@@ -920,7 +759,6 @@ describe('SlackHttpIngest message events', () => {
         onSetChannelAgent: vi.fn(),
         onSelectThreadAgent: vi.fn(),
         onSessionAction: vi.fn(),
-        onElicitFormSubmit: vi.fn(async () => ''),
         onSessionShortcut: vi.fn(() => false),
         onSessionStopped: vi.fn(),
         webClientFactory: () => web as never,

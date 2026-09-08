@@ -500,12 +500,10 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       { kind: 'permission-choice', requestId: 'perm-1', optionId: 'allow_once' },
       { kind: 'elicitation-choice', requestId: 'elicit-1', value: 'TypeScript' },
       { kind: 'elicitation-choice', requestId: 'elicit-2', value: null },
-      { kind: 'elicitation-confirm', requestId: 'elicit-3', values: ['lint'] },
-      { kind: 'elicitation-open', requestId: 'elicit-4', triggerId: 'trigger-3' },
-      { kind: 'elicitation-submit', requestId: 'elicit-5', fields: { ac_elicit_f0: 'main', ac_elicit_f1: ['lint'] } },
+      { kind: 'elicitation-confirm', requestId: 'elicit-5', fields: { ac_elicit_f0: 'main', ac_elicit_f1: ['lint'] } },
       // An EMPTY record is a real submission: a form of nothing but optional fields, all left
       // alone, and the daemon's own accept check is what decides whether that is an answer.
-      { kind: 'elicitation-submit', requestId: 'elicit-6', fields: {} }
+      { kind: 'elicitation-confirm', requestId: 'elicit-6', fields: {} }
     ]
     for (const payload of actions) {
       expect(RdSlackAction.safeParse(payload).success).toBe(true)
@@ -524,17 +522,16 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       }).success
     ).toBe(false)
     expect(RdSlackAction.safeParse({ kind: 'agent-session-stopped', channelId: 'C123' }).success).toBe(false)
-    // A modal cannot be opened without a trigger, and no form is wider than the card cap.
-    expect(RdSlackAction.safeParse({ kind: 'elicitation-open', requestId: 'e-1', triggerId: '' }).success).toBe(false)
+    // No form is wider than the card cap.
     const wideForm = Object.fromEntries(
       Array.from({ length: ELICIT_FORM_WIRE_FIELD_CAP + 1 }, (_, i) => [`ac_elicit_f${i}`, 'x'])
     )
-    expect(RdSlackAction.safeParse({ kind: 'elicitation-submit', requestId: 'e-1', fields: wideForm }).success).toBe(
+    expect(RdSlackAction.safeParse({ kind: 'elicitation-confirm', requestId: 'e-1', fields: wideForm }).success).toBe(
       false
     )
     // A field answers with a string or a list of them — never a number or a nested object, both
     // of which Slack's own view state cannot produce.
-    expect(RdSlackAction.safeParse({ kind: 'elicitation-submit', requestId: 'e-1', fields: { a: 3 } }).success).toBe(
+    expect(RdSlackAction.safeParse({ kind: 'elicitation-confirm', requestId: 'e-1', fields: { a: 3 } }).success).toBe(
       false
     )
     // Envelope-level identity stays schema-enforced.

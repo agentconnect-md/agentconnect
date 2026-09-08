@@ -360,28 +360,16 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('cancel') }),
   z.object({ kind: z.literal('permission-choice'), requestId: z.string().min(1), optionId: z.string() }),
   z.object({ kind: z.literal('elicitation-choice'), requestId: z.string().min(1), value: z.string().nullable() }),
-  // A Slack multi-select card's Confirm: a `multi_static_select` never submits on its own, so the
-  // reader taps a button, and `values` is the selection read out of THAT tap's own message state
-  // (`selectedOptionsFromState`). Carrying the snapshot is what makes the verb self-contained —
-  // no selection is tracked between interactions, so one reader's pick can never be submitted as
-  // another's answer, and the ordering of two interactions cannot change what is confirmed. The
-  // relay forwards no selection CHANGE at all: it acks Slack and keeps nothing. A daemon
-  // predating the verb rejects the whole action, so the card stays live.
+  // An input-block card's Confirm: a select, a checkbox list and a typed box each never submit on
+  // their own, so the reader taps a button and `fields` is every field read out of THAT tap's own
+  // message state (`elicitFormViewValues`), keyed by the field's own block id. Carrying the
+  // snapshot is what makes the verb self-contained — nothing is tracked between interactions, so
+  // one reader's entries can never be submitted as another's answer, and the ordering of two
+  // interactions cannot change what is confirmed. The relay forwards no field CHANGE at all: it
+  // acks Slack and keeps nothing. A blank optional input is simply absent, and the record is
+  // re-validated whole against the card, so nothing here is trusted.
   z.object({
     kind: z.literal('elicitation-confirm'),
-    requestId: z.string().min(1),
-    values: z.array(z.string()).max(100)
-  }),
-  // A MULTI-FIELD card's Answer button. Only the trigger id crosses: the relay never renders or
-  // holds the view — the daemon owns the card's schema and opens the modal on the same bot token
-  // it posted the card with, exactly as `open-config` above has always opened the status modal.
-  z.object({ kind: z.literal('elicitation-open'), requestId: z.string().min(1), triggerId: z.string().min(1) }),
-  // That modal's `view_submission`, keyed by the field's own block id so the daemon's per-field
-  // verdict can ride back under the same keys (`RdAck.response`, a `response_action: errors`
-  // payload the relay surfaces verbatim on Slack's 200). A blank optional input is simply
-  // absent — the record is re-validated whole against the card, so nothing here is trusted.
-  z.object({
-    kind: z.literal('elicitation-submit'),
     requestId: z.string().min(1),
     fields: z
       .record(z.string().min(1).max(200), z.union([z.string(), z.array(z.string()).max(100)]))

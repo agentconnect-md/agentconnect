@@ -27,28 +27,22 @@ import { SlackConnection } from '../slack/connection.js'
 import type { InteractionActor } from '../platforms/contract.js'
 import {
   buildApprovalDmIntro,
-  buildElicitFormClosedModal,
   buildElicitationCard,
   buildElicitationFormCard,
-  buildElicitationFormModal,
   buildElicitationResolvedCard,
   buildPermissionCard,
   buildPermissionResolvedCard,
   buildUrlConsentCard,
   buildUrlConsentResolvedCard,
   clampTo,
-  decodeSlackReplyValue,
-  ELICIT_REPLY_KINDS,
+  elicitCardShape,
   elicitFieldLabel,
   elicitForm,
   elicitFormFieldLabel,
   elicitFormAccepts,
-  elicitFormClosedResponse,
   elicitFormContent,
-  elicitFormErrorResponse,
+  elicitFormRefusalNotice,
   elicitFormSubmission,
-  elicitReplyAnswer,
-  elicitReplyExpectation,
   elicitRequiredProps,
   elicitTarget,
   elicitUrl,
@@ -57,7 +51,6 @@ import {
   numberAccepts,
   SLACK_DM_ELICIT_SURFACE,
   SLACK_ELICIT_SURFACE,
-  stripLeadingSelfMention,
   textAccepts,
   WEBCHAT_ELICIT_SURFACE
 } from '../slack/render.js'
@@ -77,10 +70,6 @@ import {
   type ApprovalRequestParts
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
-import { slackTsFromMsgId } from '../daemon/helpers.js'
-import { isTrustedHumanTurn } from '../daemon/loop-guard-scope.js'
-import { transcriptChannelKey } from '../store/local-store.js'
-import type { NormalizedMessage } from '../messages/normalized.js'
 
 /** The union of a turn's explicit human-approval waits, measured here and nowhere else.
  *  Regeneration budgets subtract it while retaining runtime/tool work time; `depth` counts
@@ -243,51 +232,6 @@ function consentedUrlKey(owner: HostKey, elicitationId: string): string {
   return `${owner}\x00${elicitationId}`
 }
 
-/** Where a reply-answered Slack card takes its answer from — the whole interception, held on the
- *  card's own record so it can never outlive it. `conversation` is the platform plus the turn's
- *  transcript channel, so another Slack app watching the same channel is a different
- *  conversation; `thread` is the turn's own thread, so another thread of that channel is not the
- *  answer either. A DM session ALSO takes a top-level message there, since a DM reader answers
- *  where they are talking rather than in a thread. `requesterId` is the turn's requester when it
- *  is known — the only person the card then waits for. */
-interface ElicitReplyTarget {
-  conversation: string
-  thread: string
-  dm: boolean
-  requesterId?: string
-}
-
-/** The conversation half of {@link ElicitReplyTarget}, from either side: a live turn's plan or an
- *  inbound message. Both spell the channel the way the transcript does, scope included. */
-function elicitReplyConversation(platform: string, transcriptChannel: string): string {
-  return `${platform}\x00${transcriptChannel}`
-}
-
-/** Is this message a reply INTO someone else's thread, rather than a root of its own?
- *
- *  Slack normalization sets `thread` to `thread_ts ?? ts`, so it is never absent and a top-level
- *  message carries its OWN id there — which is exactly how a root is told apart from a reply,
- *  once you compare the two rather than test for absence. Derived here rather than preserved as a
- *  new normalized field: nothing was lost in normalization, `thread` has some forty readers whose
- *  meaning must not shift under them, and a new wire field would need a skew window on both
- *  ingress paths for a fact already in hand. */
-function isThreadReply(msg: NormalizedMessage): boolean {
-  return msg.thread !== undefined && msg.thread !== slackTsFromMsgId(msg.msgId)
-}
-
-/** The reply target a live turn's card takes: its own conversation and thread, and its requester
- *  where the turn names one. `unknown` is not a person — a turn whose author could not be
- *  identified waits for anyone in the thread instead, which is what the card then says. */
-function elicitReplyTargetFor(p: Pending): ElicitReplyTarget {
-  const requester = p.plan.requesterId
-  return {
-    conversation: elicitReplyConversation(p.plan.platform, p.plan.transcriptChannel),
-    thread: p.plan.statusThread,
-    dm: p.plan.isDm === true,
-    ...(requester && requester !== 'unknown' ? { requesterId: requester } : {})
-  }
-}
-
 /** One outstanding `elicitation/create` awaiting a human answer. */
 type PendingElicit = PendingElicitSurface & {
   owner: HostKey
@@ -296,21 +240,17 @@ type PendingElicit = PendingElicitSurface & {
   params: CreateElicitationRequest
   propName: string
   kind: ElicitKind
-  /** Set only for a MULTI-field form card — webchat's, or Slack's Answer-button-plus-modal —
-   *  the fields it rendered, in schema order. Absent ⇒ the single-field card, answered by a
-   *  scalar or a list as it always was. */
+  /** Set on every card whose fields are `input` blocks — webchat's multi-field card and Slack's
+   *  Confirm-bearing one — the fields it rendered, in schema order. Absent ⇒ a one-tap button
+   *  row, answered by a scalar as it always was. */
   form?: ElicitTarget[]
-  /** Set beside `form` on a SLACK form card: the opaque session target its modal carries in
-   *  `private_metadata`, so a relay-forwarded submission routes back to this daemon. It is the
-   *  same value the card's own `block_id` carries, and it names nothing about the reader. */
+  /** Set beside `form` on a SLACK form card: the opaque session target its actions block carries,
+   *  so a relay-forwarded Confirm routes back to this daemon. It names nothing about the reader. */
   sessionTarget?: string
   /** Set only for a URL-mode consent card: the ACP `elicitationId` and the exact URL shown.
    *  Present ⇒ `propName`/`kind`/`form` mean nothing — the card has no field, and its only
    *  answers are consent (this same URL back) or Dismiss. */
   url?: { elicitationId: string; url: string }
-  /** Set only for a card answered by a THREAD REPLY ({@link ELICIT_REPLY_KINDS}) — the reply this
-   *  card takes as its answer. Absent on every card whose answer is a tap. */
-  reply?: ElicitReplyTarget
   approval: boolean
   resolve: (res: CreateElicitationResponse) => void
 }
@@ -1473,27 +1413,21 @@ export class PermissionCoordinator {
     // A second SURFACE for #1810's URL mode: the notice is only for an ask Slack still cannot render.
     if (url) return await this.awaitSlackUrlElicitation(agentId, sessionId, params, p, conn, url)
     if (params.mode === 'url') return this.noticeUnrenderableElicit(p, params, isApproval)
-    // A form asking more than one QUESTION cannot be a row of buttons: an `actions` block holds
-    // no inputs at all, so it becomes an Answer button plus a modal — the one shape on this
-    // surface that needs one (#1794's Slack column). An approval never takes it: allow/deny is a
-    // single enum, and chat approval's own bookkeeping lives on the single-field path below.
-    const form = isApproval ? null : elicitForm(params, SLACK_ELICIT_SURFACE)
-    if (form && form.filter((t) => !t.customAnswerFor).length > 1)
+    // ONE reduction decides the card's shape (#1794's Slack column). Anything the reader has to
+    // fill in before submitting — several questions, a question with its own free-text box, a
+    // multi-select, a typed box — is a card of `input` blocks with one Confirm; only a lone
+    // single-select or boolean, which one tap answers, keeps its row of buttons below. An approval
+    // is allow/deny by construction, so it is always the button row: chat approval has no shape
+    // for a filled-in field, and its own bookkeeping lives on the button path.
+    const form = elicitForm(params, SLACK_ELICIT_SURFACE)
+    if (!form) return this.noticeUnrenderableElicit(p, params, isApproval)
+    if (elicitCardShape(form) === 'inputs') {
+      if (isApproval) return this.noticeUnrenderableElicit(p, params, isApproval)
       return await this.awaitSlackFormElicitation(agentId, sessionId, params, p, conn, form)
-    const target = elicitTarget(params, SLACK_ELICIT_SURFACE)
-    if (!target) return this.noticeUnrenderableElicit(p, params, isApproval)
-    // A `text`/`number` card has nothing to tap: the reader answers by replying in the thread,
-    // and the card says whose reply it waits for. An approval never takes this shape — allow/deny
-    // is an enum — so the interception only ever belongs to a plain question.
-    const reply = ELICIT_REPLY_KINDS.has(target.kind) ? elicitReplyTargetFor(p) : undefined
+    }
+    const target = form[0]!
     const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
-    const blocks = buildElicitationCard(
-      requestId,
-      params,
-      this.host.httpSlackSessionTarget(p),
-      SLACK_ELICIT_SURFACE,
-      reply?.requesterId ? `<@${reply.requesterId}>` : undefined
-    )
+    const blocks = buildElicitationCard(requestId, params, this.host.httpSlackSessionTarget(p), SLACK_ELICIT_SURFACE)
     if (!blocks) return this.noticeUnrenderableElicit(p, params, isApproval)
     const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
     let resolveResult!: (res: CreateElicitationResponse) => void
@@ -1505,7 +1439,6 @@ export class PermissionCoordinator {
       params,
       propName: target.propName,
       kind: target.kind,
-      ...(reply ? { reply } : {}),
       approval: isApproval,
       surface: 'slack',
       conn,
@@ -1776,15 +1709,13 @@ export class PermissionCoordinator {
   }
 
   /**
-   * Slack's peer of {@link awaitWebchatElicitation}: post the multi-field card — the question, a
-   * line naming what will be asked, an Answer button and Dismiss — and park the resolver until
-   * the modal behind Answer is submitted, Dismiss is tapped, or the turn ends. The fields live in
-   * the modal because Slack's `actions` block holds none, and the modal itself is built on demand
-   * from these same `params`, so nothing pre-rendered is stored anywhere.
+   * Slack's peer of {@link awaitWebchatElicitation}: post the card whose fields are `input` blocks
+   * in the message itself — the question, one input per field, Confirm and Dismiss — and park the
+   * resolver until Confirm is tapped, Dismiss is tapped, or the turn ends.
    *
-   * A form no modal can hold (an enum option value past Slack's select cap, a minimum length past
-   * an input's) is declined with the same notice every other unrenderable ask gets — checked HERE,
-   * before the card is posted, so the reader is never offered an Answer button with no modal.
+   * A form no card can hold (an enum option value past Slack's select cap, a minimum length past
+   * an input's) is declined with the same notice every other unrenderable ask gets: the builder
+   * returns null and nothing is posted.
    */
   private async awaitSlackFormElicitation(
     agentId: string,
@@ -1796,9 +1727,8 @@ export class PermissionCoordinator {
   ): Promise<CreateElicitationResponse | undefined> {
     const requestId = `elicit-${++this.elicitSeq}`
     const sessionTarget = this.host.httpSlackSessionTarget(p)
-    if (!buildElicitationFormModal(requestId, params, form, sessionTarget))
-      return this.noticeUnrenderableElicit(p, params, false)
     const blocks = buildElicitationFormCard(requestId, params, form, sessionTarget)
+    if (!blocks) return this.noticeUnrenderableElicit(p, params, false)
     const fallback = (params as { message?: string }).message ?? 'The agent needs your input'
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
@@ -1843,55 +1773,47 @@ export class PermissionCoordinator {
   }
 
   /**
-   * Open a live form card's modal (SlackDeps.onElicitFormOpen, and the relay's
-   * `elicitation-open`). The view is BUILT HERE, from the card's own params, on both ingress
-   * paths — so the two produce the same modal by construction, and the relay never holds,
-   * renders or caches any part of it. Opened on the card's OWN connection, which is the bot
-   * token that posted it.
-   *
-   * A request id with no live form card — already answered, dismissed, cancelled, or simply
-   * never ours — opens the closed modal instead of nothing at all: a stale client still shows
-   * the Answer button, and this is the difference between an explanation and a dead button.
+   * The field list a live card's `input` blocks were built from, re-derived from its OWN params
+   * rather than read back off the record (#1815) — the same reduction, on the same surface, so it
+   * is the very list the card rendered. Null when this card has no inputs to submit.
    */
-  async openElicitFormModal(a: { requestId: string; triggerId: string; conn: SlackConnection }): Promise<void> {
-    const rec = this.pendingElicits.get(a.requestId)
-    const form = rec?.form && rec.surface === 'slack' ? elicitForm(rec.params, surfaceOf(rec)) : null
-    const view = rec && form ? buildElicitationFormModal(a.requestId, rec.params, form, rec.sessionTarget) : null
-    // A closed card is told on the connection the tap arrived through: the record that would
-    // have named one is exactly what is missing.
-    await a.conn.openView(a.triggerId, view ?? buildElicitFormClosedModal())
+  private cardForm(rec: PendingElicit): ElicitTarget[] | null {
+    return rec.form ? elicitForm(rec.params, surfaceOf(rec)) : null
   }
 
   /**
-   * Answer a form card from its modal's `view_submission` (SlackDeps.onElicitFormSubmit, and the
-   * relay's `elicitation-submit`). The whole record is re-derived against the form THAT CARD
-   * rendered, exactly as webchat's is (#1807) and as every tapped option is (#1815): the rendered
-   * property set, every `required` name present, an omitted optional field allowed, each value
-   * valid for its own field. One bad field refuses the submission with that field's own error and
-   * leaves the card live — Dismiss stays the only explicit refusal.
+   * Answer a form card from its Confirm tap (SlackDeps.onElicitFormSubmit, and the relay's
+   * `elicitation-confirm`). `fields` is the message state that tap carried, so it is what THIS
+   * reader had filled in; nothing is held between a field change and the Confirm. The whole
+   * record is re-derived against the form THAT CARD rendered, exactly as webchat's is (#1807) and
+   * as every tapped option is (#1815): the rendered property set, every `required` name present,
+   * an omitted optional field allowed, each value valid for its own field.
    *
-   * Resolves to the response Slack is given: undefined closes the modal, `errors` keeps it open,
-   * and an already-settled card is replaced by the closed view — which is what a SECOND reader
-   * sees when someone else's submission got there first.
+   * One bad field refuses the whole answer, says which in the thread — a message card has no
+   * modal to hand the errors back to — and leaves the card LIVE, which is the same verdict every
+   * other surface's re-derivation reaches. Dismiss stays the only explicit refusal.
    */
   async submitElicitForm(a: {
     requestId: string
     fields: Record<string, string | string[]>
     actor?: InteractionActor
-  }): Promise<Record<string, unknown> | undefined> {
+  }): Promise<void> {
     const rec = this.pendingElicits.get(a.requestId)
-    const form = rec?.form && rec.surface === 'slack' ? elicitForm(rec.params, surfaceOf(rec)) : null
-    if (!rec || !form) return elicitFormClosedResponse()
+    if (!rec || rec.surface !== 'slack' || !rec.form) return
+    const form = this.cardForm(rec)
+    if (!form) return
     const submission = elicitFormSubmission(rec.params, form, a.fields)
-    if (submission.errors) return elicitFormErrorResponse(submission.errors)
-    // No await between the check above and the settlement below, so two concurrent submissions
-    // cannot both pass: the loser finds no record and is answered with the closed view.
+    if (submission.errors) {
+      this.noticeInTurn(rec, elicitFormRefusalNotice(rec.params, form, submission.errors))
+      return
+    }
+    // No await between the check above and the settlement below, so two concurrent Confirms
+    // cannot both pass: the loser finds no record at all.
     await this.handleElicitChoice({
       requestId: a.requestId,
       value: submission.answer ?? {},
       ...(a.actor ? { actor: a.actor } : {})
     })
-    return undefined
   }
 
   /** Rewrite a settled Slack card in place, best effort — the ACP resolution never depends on it.
@@ -2033,7 +1955,7 @@ export class PermissionCoordinator {
     if (rec.url) return await this.handleUrlElicitConsent(a.requestId, { ...rec, url: rec.url }, a)
     // A FORM card is answered by a record and nothing else, and every other card by a scalar
     // or a list — re-derived from the card's own params, exactly as `target` is below.
-    const form = rec.form ? elicitForm(rec.params, surfaceOf(rec)) : null
+    const form = this.cardForm(rec)
     if (rec.form && !form) return
     if (a.value !== null && isFormAnswer(a.value) !== !!form) return
     // Each kind takes one shape of answer and no other: a list for a multi-select, a number
@@ -2130,106 +2052,6 @@ export class PermissionCoordinator {
     rec.resolve(res)
   }
 
-  /** A tapped Confirm on a multi-select card (SlackDeps.onElicitConfirm). `values` is the
-   *  selection carried by that tap's own Slack payload, so it is the state THIS reader confirmed:
-   *  no selection is held between interactions, which is what keeps one reader's pick from being
-   *  submitted as another's answer and makes the order two interactions arrive in irrelevant. It
-   *  is a relayed value like any other, so it goes through the same answer path a button tap
-   *  takes — `multiSelectAccepts` re-derives it against the card, and a selection outside
-   *  `minItems`/`maxItems` is refused there with the card left live. */
-  async confirmElicitSelection(a: { requestId: string; values: string[]; actor?: InteractionActor }): Promise<void> {
-    const rec = this.pendingElicits.get(a.requestId)
-    if (!rec || rec.surface !== 'slack' || rec.kind !== 'multi-enum' || rec.url || rec.form) return
-    await this.handleElicitChoice({
-      requestId: a.requestId,
-      value: a.values,
-      ...(a.actor ? { actor: a.actor } : {})
-    })
-  }
-
-  /**
-   * A thread reply, while a `text`/`number` card is live, IS that card's answer rather than a new
-   * turn (issue #1794's Slack column): sending a message is what typing something already is on
-   * Slack. Called from BOTH Slack ingress paths — relay-forwarded and direct socket — before
-   * either dispatches or queues, since the ACP prompt is still blocked while the card waits.
-   *
-   * Returns true when the reply was consumed: accepted, or refused with the reason said in the
-   * thread and the card LEFT LIVE, which is the same "drop it and leave the card live" verdict
-   * every other surface's re-derivation reaches — Dismiss is the only explicit refusal. Returns
-   * false for a message that is not this card's answer, which then stays an ordinary one.
-   *
-   * Nothing is remembered here: the interception is the pending card's own `reply` target, so it
-   * is released the instant the card settles, is dismissed, or the turn ends (`releaseElicits`).
-   */
-  async answerElicitReply(msg: NormalizedMessage): Promise<boolean> {
-    // Only a human's own words answer a question — a bot echo, an automation, and this daemon's
-    // own posts all reach the same ingress. An EDIT of an earlier message never gets here at all:
-    // Slack ingress drops edit wrappers, so re-typing a past message is not an answer either.
-    if (!isTrustedHumanTurn(msg)) return false
-    // A reply that shares a file is not a typed answer, and consuming it would drop the file:
-    // it stays an ordinary message, and the card stays live for a reply that IS one.
-    if (msg.attachments?.length) return false
-    const conversation = elicitReplyConversation(msg.platform, transcriptChannelKey(msg.channel, msg.transportScope))
-    const matched: { requestId: string; rec: PendingElicit; target: ElicitTarget }[] = []
-    for (const [requestId, rec] of this.pendingElicits) {
-      const reply = rec.reply
-      if (!reply || reply.conversation !== conversation) continue
-      // The turn's OWN thread — another thread of the same channel is another conversation, word
-      // for word. A DM session ALSO takes a root message, since that is where its reader talks.
-      if (isThreadReply(msg) ? msg.thread !== reply.thread : !reply.dm) continue
-      // The requester answers their own turn; a card that could name none takes anyone in the
-      // thread. Anyone else is not answering it — their message stays an ordinary one.
-      if (reply.requesterId !== undefined && reply.requesterId !== msg.sender.id) continue
-      const target = elicitTarget(rec.params, surfaceOf(rec))
-      if (target && ELICIT_REPLY_KINDS.has(target.kind)) matched.push({ requestId, rec, target })
-    }
-    if (!matched.length) return false
-    // Two open questions in one thread cannot both be answered by one reply, and picking either
-    // would tell one runtime the reader answered a question they did not. Name the ambiguity and
-    // take nothing: the reader can dismiss one, or wait for one to settle.
-    if (matched.length > 1) {
-      this.sayElicitReplyAmbiguous(matched.map((m) => m.rec))
-      return false
-    }
-    const { requestId, rec, target } = matched[0]!
-    // What the reader actually typed, in two pure steps before any schema check: the one piece of
-    // addressing that is chrome rather than value comes off (`@bot 42` is 42), then Slack's own
-    // representation of a link is decoded (`<mailto:a@b|a@b>` is a@b), since neither is the
-    // reader's answer and both would fail validation forever. The bot id comes from the card's
-    // OWN connection, so both ingresses read the same identity, and an unresolved one (a
-    // send-only connection before `auth.test`) strips nothing.
-    const addressed = stripLeadingSelfMention(msg.text, rec.surface === 'slack' ? rec.conn.botUserId : undefined)
-    // Re-derived against the card that asked, exactly as a tapped option is (#1815).
-    const answer = elicitReplyAnswer(target, decodeSlackReplyValue(addressed))
-    if (answer === null) {
-      this.sayElicitReplyRefused(rec, target)
-      return true
-    }
-    await this.handleElicitChoice({
-      requestId,
-      value: answer,
-      actor: { userId: msg.sender.id, ...(msg.sender.name ? { name: msg.sender.name } : {}) }
-    })
-    return true
-  }
-
-  /** Say that a reply cannot answer any of the several questions open in this thread, leaving
-   *  every one of them live. ONE line per reply rather than one per card — they share the thread,
-   *  and it is the thread that is ambiguous — spoken through the first card whose turn is still
-   *  live. */
-  private sayElicitReplyAmbiguous(recs: readonly PendingElicit[]): void {
-    const text =
-      `${recs.length} questions are open in this thread, so a reply cannot answer any of them — ` +
-      'dismiss all but one, or let one settle, and the next reply answers that one.'
-    for (const rec of recs) if (this.noticeInTurn(rec, text)) return
-  }
-
-  /** Say why a reply could not be the answer, leaving the card live: an invalid reply is not a
-   *  refusal, so it does not consume the question. Dismiss remains the only one. */
-  private sayElicitReplyRefused(rec: PendingElicit, target: ElicitTarget): void {
-    this.noticeInTurn(rec, `That reply isn't ${elicitReplyExpectation(target)} — the question is still open.`)
-  }
-
   /** Post one daemon-authored line into a pending card's own turn — a notice, so it lands where
    *  every other one does. False when that turn is already gone, or when the surface refused it.
    *  Best effort by construction: no elicitation outcome depends on it. */
@@ -2239,7 +2061,7 @@ export class PermissionCoordinator {
     try {
       this.host.enqueueApply(p, { kind: 'notice', text })
     } catch (err) {
-      this.host.log().warn(`elicitation reply notice not delivered for ${rec.sessionId}: ${formatErr(err)}`)
+      this.host.log().warn(`elicitation notice not delivered for ${rec.sessionId}: ${formatErr(err)}`)
       return false
     }
     return true

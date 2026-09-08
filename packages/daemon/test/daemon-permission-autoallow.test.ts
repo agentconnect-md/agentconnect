@@ -11,11 +11,12 @@ import { LocalStore } from '../src/store/local-store.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
 import { SlackConnection } from '../src/slack/connection.js'
 import {
-  ELICIT_OPEN_ACTION,
-  ELICIT_SELECT_ACTION,
+  ELICIT_CONFIRM_ACTION,
   elicitForm,
+  elicitFormBlockId,
   elicitTarget,
   SLACK_ELICIT_SURFACE,
+  slackCardViolations,
   WEBCHAT_ELICIT_SURFACE
 } from '../src/slack/render.js'
 
@@ -743,7 +744,7 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
     const [requestId] = (daemon as any).permissions.pendingElicits.keys()
     // A browser card carries its own answer, so Slack's Confirm verb is not its wire.
-    await (daemon as any).permissions.confirmElicitSelection({ requestId, values: ['lint'] })
+    await (daemon as any).permissions.submitElicitForm({ requestId, fields: { [elicitFormBlockId(0)]: ['lint'] } })
     expect((daemon as any).permissions.pendingElicits.size).toBe(1)
     await (daemon as any).permissions.handleElicitChoice({
       requestId,
@@ -824,7 +825,7 @@ describe('a Slack card offers every option or none', () => {
 // two readers of one card, and two interactions in any order, cannot answer for each other.
 
 describe('a Slack multi-select card confirms the selection it was sent', () => {
-  const selectOf = (posted: any[][]) => posted[0]!.at(-1)!.elements[0]
+  const selectOf = (posted: any[][]) => posted[0]!.find((b: any) => b.type === 'input')!.element
   /** The one live card's request id, once its posted `ts` is on the record — a settle before that
    *  has no message to rewrite, which is the card path's own pre-existing race (#1821), not ours. */
   const liveCard = async (daemon: any): Promise<string> => {
@@ -834,7 +835,11 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     return requestId
   }
   const confirm = (daemon: any, requestId: string, values: string[], actor?: { userId: string }) =>
-    daemon.permissions.confirmElicitSelection({ requestId, values, ...(actor ? { actor } : {}) })
+    daemon.permissions.submitElicitForm({
+      requestId,
+      fields: { [elicitFormBlockId(0)]: values },
+      ...(actor ? { actor } : {})
+    })
 
   it('cards a select plus Confirm, and accepts the confirmed list', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
@@ -845,16 +850,23 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
       multiElicitation({ minItems: 1, maxItems: 2 })
     )
     const requestId = await liveCard(daemon)
+    // The select is an INPUT block of its own — Slack refuses a multi-select inside `actions`
+    // and drops the WHOLE message — and Confirm plus Dismiss keep the routing actions block.
+    expect(slackCardViolations(posted[0]!)).toEqual([])
+    expect(selectOf(posted).type).toBe('checkboxes')
+    expect(selectOf(posted).action_id).toBe('ac_elicit_input')
     const elements = posted[0]!.at(-1)!.elements as any[]
-    expect(elements.map((e) => e.type)).toEqual(['multi_static_select', 'button', 'button'])
-    expect(elements.slice(1).map((e) => e.text.text)).toEqual(['Confirm', 'Dismiss'])
-    expect(selectOf(posted).action_id).toBe(`${ELICIT_SELECT_ACTION}:${requestId}`)
+    expect(elements.map((e) => [e.type, e.text.text])).toEqual([
+      ['button', 'Confirm'],
+      ['button', 'Dismiss']
+    ])
+    expect(elements[0].action_id).toBe(ELICIT_CONFIRM_ACTION)
     expect(updated).toHaveLength(0) // nothing has answered it yet
 
     await confirm(daemon, requestId, ['lint', 'build'])
     await expect(answered).resolves.toEqual({ action: 'accept', content: { checks: ['lint', 'build'] } })
     // The settled card names the chosen option LABELS, as #1801 settled a browser card.
-    expect(updated[0]![0].text.text).toContain(':white_check_mark: lint, build')
+    expect(updated[0]![0].text.text).toContain(':white_check_mark: checks: lint, build')
   })
 
   // The bug this shape exists to prevent: a per-card record of "the last selection seen" is
@@ -944,7 +956,7 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     expect(elicitTarget(over, WEBCHAT_ELICIT_SURFACE)?.options).toHaveLength(101)
   })
 
-  it('ignores a Confirm aimed at a card that is not a multi-select', async () => {
+  it('ignores a Confirm aimed at a card that has no fields to submit', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const { updated } = slackPending(daemon)
     const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', enumElicitation(['a', 'b']))
@@ -1358,7 +1370,7 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     expect(cardEvents(sink)[1]).toEqual({ kind: 'elicitation_resolved', requestId, outcome: 'dismissed' })
   })
 
-  it('takes the MODAL path on a Slack turn rather than a single-field card', async () => {
+  it('takes the INPUT-BLOCK path on a Slack turn rather than a single-field card', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending: any = installPending(daemon)
     pending.plan.platform = 'slack'
@@ -1375,8 +1387,11 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
 
     void (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation(['branch', 'note']))
     await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    // The card carries an Answer button, never the fields — the modal behind it asks both.
-    await vi.waitFor(() => expect(JSON.stringify(posted[0])).toContain(ELICIT_OPEN_ACTION))
+    // The card carries both fields as `input` blocks and ONE Confirm — never one per question.
+    await vi.waitFor(() => expect(JSON.stringify(posted[0])).toContain(ELICIT_CONFIRM_ACTION))
+    expect((posted[0] as any[]).filter((b: any) => b.type === 'input')).toHaveLength(2)
+    expect((posted[0] as any[]).filter((b: any) => b.type === 'actions')).toHaveLength(1)
+    expect(slackCardViolations(posted[0] as any[])).toEqual([])
     // Unchanged where it matters: the per-field reduction still needs one field that satisfies
     // `required` alone, and there is none here.
     expect(elicitTarget(twoFieldElicitation(['branch', 'note']), SLACK_ELICIT_SURFACE)).toBeNull()
@@ -1749,310 +1764,5 @@ describe('Slack renders and settles a URL-mode consent card', () => {
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     expect(JSON.stringify(posted[0])).not.toContain('sk-live-DEADBEEF')
     await (daemon as any).permissions.releaseElicits('agent-1', 's1')
-  })
-})
-
-// ── a single text / number field, answered by a thread reply (issue #1794, Slack column) ────
-// Slack's own way to type something is to send a message, so the card has nothing to type into
-// and the next reply in the turn's thread IS the answer. The hard part is that such a reply
-// would otherwise start a new turn: while the card is live the ACP prompt is still blocked, so
-// ingress intercepts it before dispatch — and the interception is the pending card itself, so it
-// is gone the moment the card settles or the turn ends.
-
-describe('a Slack text/number card is answered by a reply in its thread', () => {
-  /** A Slack turn plus the notices its refusals post, and the card's live request id. */
-  const slackReplyTurn = (daemon: any) => {
-    const surface = slackPending(daemon)
-    // A real connection resolves this at `auth.test`, on the send-only (relay-managed) path too.
-    surface.pending.conn.botUserId = 'UBOT'
-    const notices: string[] = []
-    daemon.enqueueApply = (_p: unknown, action: any) => {
-      if (action.kind === 'notice') notices.push(action.text as string)
-    }
-    return { ...surface, notices }
-  }
-  const liveCard = async (daemon: any): Promise<string> => {
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.size).toBe(1))
-    const [requestId] = daemon.permissions.pendingElicits.keys()
-    await vi.waitFor(() => expect(daemon.permissions.pendingElicits.get(requestId).ts).toBe('ts-1'))
-    return requestId
-  }
-  /** A human reply in the turn's own thread, as ingress normalizes it. */
-  const reply = (text: string, over: Record<string, unknown> = {}) =>
-    ({
-      msgId: 'slack:test:200',
-      traceId: '200',
-      source: 'user',
-      platform: 'slack',
-      channel: 'test',
-      thread: 'test',
-      sender: { id: 'turn-user', isBot: false, name: 'Turn User' },
-      text,
-      mentionedBots: [],
-      isDm: false,
-      ...over
-    }) as any
-  const answer = (daemon: any, text: string, over: Record<string, unknown> = {}): Promise<boolean> =>
-    daemon.permissions.answerElicitReply(reply(text, over))
-
-  // One reply cannot answer two open questions, and picking either would tell one runtime the
-  // reader answered something they did not — the same lie a shared selection told on #1825.
-  it('answers neither of two questions open in one thread, and says why', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { notices } = slackReplyTurn(daemon)
-    void (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation({ minLength: 1 }))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
-    void (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation({ minLength: 1 }))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(2))
-
-    // Taken as neither answer, and left an ordinary message.
-    expect(await answer(daemon, 'add-retries')).toBe(false)
-    expect((daemon as any).permissions.pendingElicits.size).toBe(2)
-    expect(notices).toEqual([
-      '2 questions are open in this thread, so a reply cannot answer any of them — dismiss all ' +
-        'but one, or let one settle, and the next reply answers that one.'
-    ])
-
-    // One dismissed leaves exactly one question in the thread, and the next reply answers it.
-    const [firstId] = (daemon as any).permissions.pendingElicits.keys()
-    await (daemon as any).permissions.handleElicitChoice({ requestId: firstId, value: null })
-    expect(await answer(daemon, 'add-retries')).toBe(true)
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
-  })
-
-  it('drops a leading mention of the asker, which addresses it rather than answering it', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { notices } = slackReplyTurn(daemon)
-    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', numberElicitation({ minimum: 0 }))
-    await liveCard(daemon)
-
-    // Everything that is NOT this one shape stays part of the answer, so none of these is a
-    // number: guessing which other PART of a message is the value is how an answer comes back
-    // wrong. Each is refused with the reason and the card stays live.
-    expect(await answer(daemon, '<@U-someone-else> 42')).toBe(true)
-    expect(await answer(daemon, '42 <@UBOT>')).toBe(true)
-    expect(await answer(daemon, 'ping <@UBOT> 42')).toBe(true)
-    expect(await answer(daemon, '<@UBOT> <@UBOT> 42')).toBe(true)
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
-    expect(notices).toHaveLength(4)
-
-    expect(await answer(daemon, '<@UBOT> 42')).toBe(true)
-    await expect(answered).resolves.toEqual({ action: 'accept', content: { retries: 42 } })
-  })
-
-  it('keeps a text answer’s own words, minus only that one leading address', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    slackReplyTurn(daemon)
-    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation({ minLength: 3 }))
-    await liveCard(daemon)
-    expect(await answer(daemon, '<@UBOT>: add-retries')).toBe(true)
-    await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'add-retries' } })
-  })
-
-  it('cards the question, what is expected and whom it awaits, then takes the reply', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { posted, updated } = slackReplyTurn(daemon)
-    const answered = (daemon as any).permissions.onAcpElicit(
-      'agent-1',
-      's1',
-      textElicitation({ minLength: 3, maxLength: 40 })
-    )
-    await liveCard(daemon)
-    const blocks = posted[0]!
-    expect(blocks[0].text.text).toBe(':speech_balloon: What should I name the branch?')
-    expect(blocks[1].elements[0].text).toBe(
-      'Reply in this thread with some text, 3 to 40 characters long. Waiting for <@turn-user>.'
-    )
-    // Nothing to type into on the card — Dismiss is the only control it carries.
-    expect(blocks[2].elements.map((e: any) => e.text.text)).toEqual(['Dismiss'])
-    expect(updated).toHaveLength(0)
-
-    expect(await answer(daemon, 'add-retries')).toBe(true)
-    await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'add-retries' } })
-    // The settled card records the answer the way every other surface does: the reader's own
-    // words back (#1803's `chosenLabel`), which is also what the thread already shows.
-    expect(updated[0]![0].text.text).toContain(':white_check_mark: add-retries')
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
-  })
-
-  it('answers a numeric field with a real number, not the string that spelled it', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    slackReplyTurn(daemon)
-    const answered = (daemon as any).permissions.onAcpElicit(
-      'agent-1',
-      's1',
-      numberElicitation({ minimum: 1, maximum: 5 })
-    )
-    await liveCard(daemon)
-    expect(await answer(daemon, ' 3 ')).toBe(true)
-    const res = await answered
-    expect(res).toEqual({ action: 'accept', content: { retries: 3 } })
-    expect(typeof (res as any).content.retries).toBe('number')
-  })
-
-  it('says why an invalid reply is not the answer, and leaves the card live', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { updated, notices } = slackReplyTurn(daemon)
-    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', numberElicitation({ minimum: 1 }))
-    await liveCard(daemon)
-
-    // Consumed (it was meant as the answer) but not spent: an invalid reply is not a refusal,
-    // so the question stays open and Dismiss remains the only way to say no.
-    expect(await answer(daemon, 'lots')).toBe(true)
-    expect(await answer(daemon, '0')).toBe(true)
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
-    expect(updated).toHaveLength(0)
-    expect(notices).toEqual([
-      "That reply isn't a number, 1 or more — the question is still open.",
-      "That reply isn't a number, 1 or more — the question is still open."
-    ])
-
-    expect(await answer(daemon, '7')).toBe(true)
-    await expect(answered).resolves.toEqual({ action: 'accept', content: { retries: 7 } })
-  })
-
-  it('takes the requester’s reply and leaves every other message an ordinary one', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { notices } = slackReplyTurn(daemon)
-    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation())
-    await liveCard(daemon)
-
-    // Someone other than the turn's requester is not answering it — the card names who it waits
-    // for, and their message stays a message.
-    expect(await answer(daemon, 'add-retries', { sender: { id: 'U-other', isBot: false } })).toBe(false)
-    // Another thread of the same channel is another conversation, even one word for word.
-    expect(await answer(daemon, 'add-retries', { thread: 'other-thread' })).toBe(false)
-    // A root channel post is not a reply in the thread either — and its `thread` is its own ts,
-    // which is the shape normalization really produces.
-    expect(await answer(daemon, 'add-retries', { msgId: 'slack:test:200', thread: '200' })).toBe(false)
-    // Another Slack app watching the same channel is a different conversation.
-    expect(await answer(daemon, 'add-retries', { transportScope: 'slack:other-app' })).toBe(false)
-    // A bot's message never answers a question — including this daemon's own posts.
-    expect(await answer(daemon, 'add-retries', { sender: { id: 'B1', isBot: true } })).toBe(false)
-    // A reply that shares a file is not a typed answer, and consuming it would drop the file.
-    expect(
-      await answer(daemon, 'add-retries', {
-        attachments: [{ id: 'F1', name: 'log.txt', mimeType: 'text/plain', sourceUrl: 'https://x' }]
-      })
-    ).toBe(false)
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
-    expect(notices).toEqual([]) // none of them was an attempt to answer, so none is refused
-
-    expect(await answer(daemon, 'add-retries')).toBe(true)
-    await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'add-retries' } })
-  })
-
-  it('waits for anyone in the thread when the turn identifies no requester', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { pending, posted } = slackReplyTurn(daemon)
-    pending.plan.requesterId = 'unknown'
-    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation())
-    await liveCard(daemon)
-    expect(posted[0]![1].elements[0].text).toContain('Anyone in this thread can answer.')
-    expect(await answer(daemon, 'add-retries', { sender: { id: 'U-other', isBot: false } })).toBe(true)
-    await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'add-retries' } })
-  })
-
-  // The shape Slack normalization ACTUALLY produces: `thread` is `thread_ts ?? ts`, so it is
-  // never absent and a root message carries its OWN ts there. Testing for absence made the DM
-  // exception dead code — the card was as unanswerable as if it had never been written.
-  it('takes a DM session’s ROOT message, whose thread is its own timestamp', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { pending } = slackReplyTurn(daemon)
-    pending.plan.isDm = true
-    pending.plan.statusThread = '100.001'
-    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation())
-    await liveCard(daemon)
-
-    // Still not ANY thread of that conversation: a reply under another root is another question.
-    expect(await answer(daemon, 'add-retries', { msgId: 'slack:test:300.001', thread: '250.001', isDm: true })).toBe(
-      false
-    )
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
-
-    // The reviewer's reproduction: card at 100.001, a later top-level answer at 200.001.
-    expect(await answer(daemon, 'add-retries', { msgId: 'slack:test:200.001', thread: '200.001', isDm: true })).toBe(
-      true
-    )
-    await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'add-retries' } })
-  })
-
-  // A `format`ted field asks for exactly the two things Slack rewrites on the way back out, so
-  // without decoding, a reader following the card's own instruction is refused forever.
-  it('reads a link answer out of Slack’s own markup for it', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    slackReplyTurn(daemon)
-    const uri = (daemon as any).permissions.onAcpElicit(
-      'agent-1',
-      's1',
-      textElicitation({ format: 'uri' }, 'Which page should I open?')
-    )
-    await liveCard(daemon)
-    expect(await answer(daemon, '<https://example.com/>')).toBe(true)
-    await expect(uri).resolves.toEqual({ action: 'accept', content: { name: 'https://example.com/' } })
-
-    // `<dest|label>`: the destination is the part BEFORE the pipe, and a `mailto:` scheme is
-    // Slack's spelling of an address rather than part of it.
-    const email = (daemon as any).permissions.onAcpElicit(
-      'agent-1',
-      's1',
-      textElicitation({ format: 'email' }, 'Who should I notify?')
-    )
-    await liveCard(daemon)
-    expect(await answer(daemon, '<mailto:reader@example.com|reader@example.com>')).toBe(true)
-    await expect(email).resolves.toEqual({ action: 'accept', content: { name: 'reader@example.com' } })
-  })
-
-  // Decoding is not extracting: unwrapping ONE link is recovering what the reader typed, while
-  // picking a link out of a sentence is a judgement about which PART of it is the value.
-  it('leaves a link inside prose alone, and never takes a label for the value', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { notices } = slackReplyTurn(daemon)
-    const answered = (daemon as any).permissions.onAcpElicit(
-      'agent-1',
-      's1',
-      textElicitation({ format: 'uri' }, 'Which page should I open?')
-    )
-    await liveCard(daemon)
-
-    // Prose carrying a link is not one link: refused with the reason, and the card stays live.
-    expect(await answer(daemon, 'try <https://example.com/> first')).toBe(true)
-    expect((daemon as any).permissions.pendingElicits.size).toBe(1)
-    expect(notices).toHaveLength(1)
-
-    // A labelled link IS one link, and its value is the destination — the label is display text
-    // Slack added, and answering with it would report something the reader never gave.
-    expect(await answer(daemon, '<https://example.com/|the docs page>')).toBe(true)
-    await expect(answered).resolves.toEqual({ action: 'accept', content: { name: 'https://example.com/' } })
-    expect(notices).toHaveLength(1)
-  })
-
-  it('releases the interception on Dismiss and on turn end — a later reply is conversation', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { updated } = slackReplyTurn(daemon)
-    const dismissed = (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation())
-    const firstId = await liveCard(daemon)
-    await (daemon as any).permissions.handleElicitChoice({ requestId: firstId, value: null })
-    await expect(dismissed).resolves.toEqual({ action: 'decline' })
-    expect(updated[0]![0].text.text).toContain(':no_entry_sign: Dismissed')
-    expect(await answer(daemon, 'add-retries')).toBe(false)
-
-    const abandoned = (daemon as any).permissions.onAcpElicit('agent-1', 's1', textElicitation())
-    await liveCard(daemon)
-    await (daemon as any).permissions.releaseElicits('agent-1', 's1')
-    await expect(abandoned).resolves.toEqual({ action: 'cancel' })
-    expect(await answer(daemon, 'add-retries')).toBe(false)
-    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
-  })
-
-  it('leaves a card whose answer is a TAP untouched by a thread reply', async () => {
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    slackReplyTurn(daemon)
-    const answered = (daemon as any).permissions.onAcpElicit('agent-1', 's1', formElicitation())
-    const requestId = await liveCard(daemon)
-    // An enum card holds no reply target, so a reply naming one of its options is not its answer.
-    expect(await answer(daemon, 'main')).toBe(false)
-    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'main' })
-    await expect(answered).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
   })
 })

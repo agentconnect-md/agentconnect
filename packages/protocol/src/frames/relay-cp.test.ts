@@ -1,11 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   ELICIT_FORM_INPUT_ACTION,
-  decodeElicitFormMetadata,
   elicitFormBlockId,
   elicitFormBlockIndex,
   elicitFormViewValues,
-  encodeElicitFormMetadata,
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_DAEMON_DRAINING,
   HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER,
@@ -1070,11 +1068,11 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
   })
 })
 
-describe('the elicitation form modal’s own Slack codecs', () => {
-  it('round-trips the block id, and reads exactly our own field state out of a view', () => {
+describe('the elicitation form card’s own Slack codecs', () => {
+  it('round-trips the block id, and reads exactly our own field state out of a payload', () => {
     expect(elicitFormBlockId(0)).toBe('ac_elicit_f0')
     expect(elicitFormBlockIndex(elicitFormBlockId(12))).toBe(12)
-    // Not ours, or not an index: nothing this modal rendered.
+    // Not ours, or not an index: nothing this card rendered.
     expect(elicitFormBlockIndex('agent_block')).toBeNull()
     expect(elicitFormBlockIndex('ac_elicit_fx')).toBeNull()
     expect(
@@ -1101,20 +1099,6 @@ describe('the elicitation form modal’s own Slack codecs', () => {
       [elicitFormBlockId(6)]: []
     })
     expect(elicitFormViewValues(undefined)).toEqual({})
-  })
-
-  it('round-trips the view metadata and refuses anything that is not one', () => {
-    expect(decodeElicitFormMetadata(encodeElicitFormMetadata({ requestId: 'elicit-1', target: 'tgt' }))).toEqual({
-      requestId: 'elicit-1',
-      target: 'tgt'
-    })
-    // The direct Socket Mode path needs no routing hint: the connection that received the
-    // submission is the one that posted the card.
-    expect(decodeElicitFormMetadata(encodeElicitFormMetadata({ requestId: 'elicit-1' }))).toEqual({
-      requestId: 'elicit-1'
-    })
-    for (const bad of ['', 'not json', '{}', '{"v":2,"r":"x"}', '{"v":1,"r":""}', '{"v":1,"r":"x","t":3}'])
-      expect(decodeElicitFormMetadata(bad)).toBeNull()
   })
 })
 
