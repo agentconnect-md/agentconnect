@@ -188,10 +188,9 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 FROM node:24-bookworm-slim AS daemon
 WORKDIR /app/packages/daemon
 ENV NODE_ENV=production \
-  AC_K8S_SHIM_HOST=0.0.0.0 \
+  # The port the daemon DIALS on a ready sandbox pod's IP — the shim listens there, not here.
   AC_K8S_SHIM_PORT=8085 \
-  # The kubelet is the supervisor: it restarts the container, and an in-pod
-  # self-upgrade would exit for a version the cluster never asked for.
+  # The kubelet is the supervisor: it restarts the container, so an in-pod self-upgrade would exit for a version the cluster never asked for.
   AGENTCONNECT_SUPERVISOR=k8s
 
 # git is load-bearing even here: a self-hosted agent on this daemon still clones
@@ -223,9 +222,6 @@ RUN groupadd --gid 10002 daemon-user \
 ENV HOME=/var/lib/agentconnect
 USER 10002:10002
 
-# The shim callback endpoint. Sandboxes dial IN to this; the daemon never dials
-# into a sandbox, which is what lets a sandbox keep zero inbound rules.
-EXPOSE 8085
 # tini so a SIGTERM reaches the daemon and its drain actually runs — without it
 # PID 1 ignores the signal and every rollout ends in SIGKILL mid-drain.
 ENTRYPOINT ["/usr/bin/tini", "--"]
