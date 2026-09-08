@@ -18,6 +18,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
+import { removeLegacyMountPoints, seedProtectedHomeEntries } from '../src/acp/sandbox-runtime-provider.js'
 import {
   sandboxWrap,
   sandboxBoundary,
@@ -645,6 +646,108 @@ describe('sandbox temp directories', () => {
       expect(existsSync(tempDir)).toBe(false)
     } finally {
       rmSync(agentDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('removeLegacyMountPoints', () => {
+  it('removes only the zero-byte mount-point files the old workspace-anchored SRT scan left behind', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-legacy-mounts-'))
+    try {
+      for (const name of ['.bashrc', '.gitconfig', '.mcp.json', '.idea']) writeFileSync(join(root, name), '')
+      // bwrap made the directory names files too, under a `.claude` it had to create.
+      mkdirSync(join(root, '.claude'))
+      writeFileSync(join(root, '.claude', 'agents'), '')
+      writeFileSync(join(root, '.claude', 'commands'), '')
+      // Real content of a protected name, a populated directory, and an EMPTY directory (a prepared
+      // skills install target) are the checkout's own.
+      writeFileSync(join(root, '.gitmodules'), '[submodule "x"]\n')
+      mkdirSync(join(root, '.vscode'))
+      writeFileSync(join(root, '.vscode', 'settings.json'), '{}')
+      mkdirSync(join(root, 'prepared', '.claude'), { recursive: true })
+      writeFileSync(join(root, 'README.md'), '')
+
+      removeLegacyMountPoints(root)
+      removeLegacyMountPoints(join(root, 'prepared'))
+
+      for (const name of ['.bashrc', '.gitconfig', '.mcp.json', '.idea', '.claude/agents', '.claude/commands']) {
+        expect(existsSync(join(root, name))).toBe(false)
+      }
+      expect(statSync(join(root, '.claude')).isDirectory()).toBe(true)
+      expect(statSync(join(root, 'prepared', '.claude')).isDirectory()).toBe(true)
+      expect(readFileSync(join(root, '.gitmodules'), 'utf8')).toBe('[submodule "x"]\n')
+      expect(existsSync(join(root, '.vscode', 'settings.json'))).toBe(true)
+      // An unrelated zero-byte file is not on the list and stays.
+      expect(existsSync(join(root, 'README.md'))).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves a zero-byte file alone when the repository tracks it', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-legacy-tracked-'))
+    try {
+      const git = (args: string[]) =>
+        execFileSync('git', args, {
+          cwd: root,
+          stdio: 'ignore',
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: 'T',
+            GIT_AUTHOR_EMAIL: 't@e',
+            GIT_COMMITTER_NAME: 'T',
+            GIT_COMMITTER_EMAIL: 't@e'
+          }
+        })
+      git(['init', '-q', '--initial-branch=main'])
+      writeFileSync(join(root, '.gitmodules'), '')
+      git(['add', '.gitmodules'])
+      git(['commit', '-q', '-m', 'empty submodule list'])
+      // A leftover beside it is still swept.
+      writeFileSync(join(root, '.bashrc'), '')
+
+      removeLegacyMountPoints(root)
+
+      expect(existsSync(join(root, '.gitmodules'))).toBe(true)
+      expect(existsSync(join(root, '.bashrc'))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('seedProtectedHomeEntries', () => {
+  it('creates every SRT-protected name as a real empty entry and leaves existing ones alone', () => {
+    const home = mkdtempSync(join(tmpdir(), 'ac-seed-home-'))
+    try {
+      writeFileSync(join(home, '.gitconfig'), '[user]\n\tname = kept\n')
+      mkdirSync(join(home, '.claude'))
+      writeFileSync(join(home, '.claude', 'settings.json'), '{}')
+
+      seedProtectedHomeEntries(home)
+      seedProtectedHomeEntries(home) // idempotent
+
+      for (const name of [
+        '.bashrc',
+        '.bash_profile',
+        '.zshrc',
+        '.zprofile',
+        '.profile',
+        '.ripgreprc',
+        '.mcp.json',
+        '.gitmodules'
+      ]) {
+        const stat = statSync(join(home, name))
+        expect(stat.isFile()).toBe(true)
+        expect(stat.size).toBe(0)
+      }
+      for (const name of ['.vscode', '.idea', '.claude/commands', '.claude/agents']) {
+        expect(statSync(join(home, name)).isDirectory()).toBe(true)
+      }
+      expect(readFileSync(join(home, '.gitconfig'), 'utf8')).toBe('[user]\n\tname = kept\n')
+      expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).toBe('{}')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
     }
   })
 })

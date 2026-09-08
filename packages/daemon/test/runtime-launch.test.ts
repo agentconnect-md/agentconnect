@@ -165,8 +165,8 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.env.DOCKER_HOST).toBeUndefined()
     expect(launch.env.BUILDKIT_HOST).toBe('tcp://builder.example.test:1234')
     expect(launch.sandbox?.mechanism).toBe('bwrap')
-    expect(statSync(join(cwd, '.claude')).isDirectory()).toBe(true)
-    expect(existsSync(join(cwd, '.claude', 'settings.json'))).toBe(false)
+    // The launch leaves the checkout alone: Claude's config lives in the private HOME, and SRT's mandatory scan is anchored there too.
+    expect(existsSync(join(cwd, '.claude'))).toBe(false)
     expect(existsSync(launch.sandbox!.settingsPath)).toBe(true)
     const settings = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
     const canonicalHostHome = realpathSync(hostHome)
