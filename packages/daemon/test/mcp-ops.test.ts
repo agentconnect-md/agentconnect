@@ -1985,6 +1985,29 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(calls[1]!.needsReply).toBeUndefined()
   })
 
+  it.each(['true', 'True', 'TRUE', 'tRuE'])('normalizes string needsReply=%s to true', async (needsReply) => {
+    const { deps: d, calls } = wakeDeps()
+    await executeTool(ctx, 'sendMessage', { toAgent: { agentId: 'peer-1', needsReply }, message: 'report back' }, d)
+    expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', needsReply: true })
+  })
+
+  it.each(['false', 'False', 'FALSE', 'fAlSe'])('normalizes string needsReply=%s to false', async (needsReply) => {
+    const { deps: d, calls } = wakeDeps()
+    await executeTool(ctx, 'sendMessage', { toAgent: { agentId: 'peer-1', needsReply }, message: 'fire and forget' }, d)
+    expect(calls[0]!.needsReply).toBeUndefined()
+  })
+
+  it('parses a JSON-stringified structured toAgent target', async () => {
+    const { deps: d, calls } = wakeDeps()
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { toAgent: '{"agentId":"peer-1","needsReply":"True"}', message: 'report back' },
+      d
+    )
+    expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', needsReply: true })
+  })
+
   it('the object toAgent form still composes with a visible channel post', async () => {
     const { deps: d, calls, gw } = wakeDeps()
     const res = (await executeTool(
@@ -2002,7 +2025,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
   it.each([
     { toAgent: {}, label: 'an object with no agentId' },
     { toAgent: { agentId: 'peer-1', urgent: true }, label: 'an unknown option' },
-    { toAgent: { agentId: 'peer-1', needsReply: 'yes' }, label: 'a non-boolean needsReply' },
+    { toAgent: { agentId: 'peer-1', needsReply: 'yes' }, label: 'an unsupported string needsReply' },
     { toAgent: ['peer-1'], label: 'an array' },
     { toAgent: 42, label: 'a number' }
   ])('rejects $label for toAgent instead of silently dropping it', async ({ toAgent }) => {
@@ -2010,6 +2033,15 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     await expect(executeTool(ctx, 'sendMessage', { toAgent, message: 'x' }, d)).rejects.toThrow()
     expect(calls).toHaveLength(0)
   })
+
+  it.each(['{', '{"agentId":"peer-1"', '{"agentId":"peer-1","needsReply":"maybe"}'])(
+    'rejects malformed or ambiguous JSON-stringified toAgent: %s',
+    async (toAgent) => {
+      const { deps: d, calls } = wakeDeps()
+      await expect(executeTool(ctx, 'sendMessage', { toAgent, message: 'x' }, d)).rejects.toThrow()
+      expect(calls).toHaveLength(0)
+    }
+  )
 })
 
 // viewSessionStatus is the read counterpart of a SessionTarget reply: the identity + coords come

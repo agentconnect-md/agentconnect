@@ -61,11 +61,22 @@ const AGENT_ID = z.string(AGENT_TARGET_SHAPE_ERROR).min(1, 'sendMessage: `toAgen
 const AGENT_TARGET_OBJECT = z.strictObject(
   {
     agentId: requiredString('agentId'),
-    needsReply: z.boolean('sendMessage: `toAgent.needsReply` must be a boolean').nullish()
+    needsReply: z
+      .union([
+        z.boolean('sendMessage: `toAgent.needsReply` must be a boolean'),
+        z.string().regex(/^(?:true|false)$/i, 'sendMessage: `toAgent.needsReply` must be a boolean')
+      ])
+      .nullish()
   },
   branchKeyError('agent target `toAgent`', ['agentId', 'needsReply'])
 )
 const AGENT_TARGET = z.union([AGENT_ID, AGENT_TARGET_OBJECT])
+
+function normalizeNeedsReply(value: boolean | string | null | undefined): boolean | undefined {
+  if (value === true) return true
+  if (typeof value === 'string' && value.toLowerCase() === 'true') return true
+  return undefined
+}
 
 /** `toUser`: one id works for every delivery form; a non-empty array is reserved for one visible
  *  channel-root post that @-mentions every listed member. */
@@ -106,10 +117,32 @@ export const SEND_MESSAGE_BRANCHES = {
 /** Normalize `toAgent`. `undefined` ⇒ this is not an agent target. */
 function parseAgentTarget(value: unknown): { toAgent?: string; needsReply?: boolean } {
   if (value === undefined || value === null) return {}
-  if (typeof value === 'string') return { toAgent: parseArgs(AGENT_ID, value) }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed.startsWith('{')) {
+      let decoded: unknown
+      try {
+        decoded = JSON.parse(trimmed)
+      } catch {
+        throw new Error(AGENT_TARGET_SHAPE_ERROR)
+      }
+      if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded)) {
+        throw new Error(AGENT_TARGET_SHAPE_ERROR)
+      }
+      const target = parseArgs(AGENT_TARGET_OBJECT, decoded)
+      return {
+        toAgent: target.agentId,
+        ...(normalizeNeedsReply(target.needsReply) === true ? { needsReply: true } : {})
+      }
+    }
+    return { toAgent: parseArgs(AGENT_ID, value) }
+  }
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error(AGENT_TARGET_SHAPE_ERROR)
   const target = parseArgs(AGENT_TARGET_OBJECT, value)
-  return { toAgent: target.agentId, ...(target.needsReply === true ? { needsReply: true } : {}) }
+  return {
+    toAgent: target.agentId,
+    ...(normalizeNeedsReply(target.needsReply) === true ? { needsReply: true } : {})
+  }
 }
 
 /** Normalize `toUser` to the id list both delivery forms work from. */

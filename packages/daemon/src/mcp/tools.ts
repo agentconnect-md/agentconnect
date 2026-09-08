@@ -120,9 +120,13 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
                       'platform member id such as Slack `U…`.'
                   },
                   needsReply: {
-                    type: 'boolean',
+                    oneOf: [
+                      { type: 'boolean' },
+                      { type: 'string', pattern: '^(?:[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee])$' }
+                    ],
                     description:
-                      'Set true whenever you expect an answer, a result, or a completion signal: the woken session ' +
+                      'Set true whenever you expect an answer, a result, or a completion signal. Boolean values are ' +
+                      'preferred; case-insensitive string values "true"/"false" are accepted for compatibility. The woken session ' +
                       'is told to report back into this session (done or failed) when it completes. Defaults to ' +
                       'false, which is fire-and-forget — the peer’s answer stays in its own conversation and you ' +
                       'learn nothing, not even that it failed.'
