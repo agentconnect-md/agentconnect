@@ -469,53 +469,59 @@ describe('the daemon runs it', () => {
       stop: vi.fn().mockResolvedValue(undefined)
     }) as never
 
-  it('starts the copy when a pending binding arrives, serves the CP tree once accepted, and archives the tree on the forced return', async () => {
-    const root = daemonRoot()
-    const agentDir = join(root, 'agents', AGENT)
-    await seedSource(agentDir)
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: inertHost })
-    await daemon.start()
-    const cp = fakeCp()
-    const seam = daemon as unknown as {
-      cpClient: unknown
-      cpConfigApply(): { applyAgentUpsert(upsert: { agentId: string; spec: AgentSpec }): Promise<unknown> }
-      agents: Map<string, { memory?: AgentMemoryBinding }>
-      memory: {
-        write(
-          scope: { agentId: string },
-          path: string,
-          content: string,
-          ifMatch?: string,
-          source?: 'tool'
-        ): Promise<unknown>
+  // Not on Windows: the daemon's agent-config watcher holds a handle on every directory beneath the agent dir, and
+  // Windows refuses to move a directory with open handles beneath it — the flat `memory/` moves, `channels/` does not.
+  // The archive itself is covered on every platform above; releasing the watcher's grip is the watcher's own change.
+  it.skipIf(process.platform === 'win32')(
+    'starts the copy when a pending binding arrives, serves the CP tree once accepted, and archives the tree on the forced return',
+    async () => {
+      const root = daemonRoot()
+      const agentDir = join(root, 'agents', AGENT)
+      await seedSource(agentDir)
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: inertHost })
+      await daemon.start()
+      const cp = fakeCp()
+      const seam = daemon as unknown as {
+        cpClient: unknown
+        cpConfigApply(): { applyAgentUpsert(upsert: { agentId: string; spec: AgentSpec }): Promise<unknown> }
+        agents: Map<string, { memory?: AgentMemoryBinding }>
+        memory: {
+          write(
+            scope: { agentId: string },
+            path: string,
+            content: string,
+            ifMatch?: string,
+            source?: 'tool'
+          ): Promise<unknown>
+        }
       }
+      // The connection as the homes see it, plus the lifecycle calls the daemon makes on it at shutdown.
+      seam.cpClient = Object.assign(cp, { stop: async () => {}, emitMemoryConnectionFacts: () => {} })
+
+      // The CP's push: the binding flipped, and it carries the marker. The trigger is applying it.
+      const upsert = (memory: AgentMemoryBinding) =>
+        seam.cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec: { name: 'bot-a', memory } as AgentSpec })
+      await upsert(pending())
+      await vi.waitFor(() => expect(cp.migrated).toEqual([{ agentId: AGENT }]))
+      expect(snapshot(cp.tree)).toEqual(carried(snapshot(agentDir)))
+      // Accepted: the marker is dropped locally, ahead of the CP's next push, so the CP tree is what gets served.
+      await vi.waitFor(() =>
+        expect(seam.agents.get(AGENT)?.memory).toEqual({ provider: 'managed', home: 'control-plane' })
+      )
+      await seam.memory.write({ agentId: AGENT }, 'after.md', '- lives in the Control Plane\n', undefined, 'tool')
+      expect(readFileSync(join(cp.tree, 'memory', 'after.md'), 'utf8')).toContain('lives in the Control Plane')
+      expect(existsSync(join(agentDir, 'memory', 'after.md'))).toBe(false)
+
+      // The forced return: the CP dropped its rows; the pre-switch tree on this disk moves aside, nothing is resurrected.
+      await upsert({ provider: 'managed', home: 'daemon' })
+      expect(existsSync(join(agentDir, 'memory'))).toBe(false)
+      expect(existsSync(join(agentDir, 'channels'))).toBe(false)
+      expect(existsSync(join(agentDir, 'memory-backups'))).toBe(false)
+      const archives = readdirSync(agentDir).filter((name) => name.startsWith('memory-archive-'))
+      expect(archives).toHaveLength(1)
+      expect(existsSync(join(agentDir, archives[0]!, 'memory', 'deploys.md'))).toBe(true)
+      expect(existsSync(join(agentDir, 'memory-dreams', 'drm-1', 'memory', 'MEMORY.md'))).toBe(true)
+      await daemon.stop()
     }
-    // The connection as the homes see it, plus the lifecycle calls the daemon makes on it at shutdown.
-    seam.cpClient = Object.assign(cp, { stop: async () => {}, emitMemoryConnectionFacts: () => {} })
-
-    // The CP's push: the binding flipped, and it carries the marker. The trigger is applying it.
-    const upsert = (memory: AgentMemoryBinding) =>
-      seam.cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec: { name: 'bot-a', memory } as AgentSpec })
-    await upsert(pending())
-    await vi.waitFor(() => expect(cp.migrated).toEqual([{ agentId: AGENT }]))
-    expect(snapshot(cp.tree)).toEqual(carried(snapshot(agentDir)))
-    // Accepted: the marker is dropped locally, ahead of the CP's next push, so the CP tree is what gets served.
-    await vi.waitFor(() =>
-      expect(seam.agents.get(AGENT)?.memory).toEqual({ provider: 'managed', home: 'control-plane' })
-    )
-    await seam.memory.write({ agentId: AGENT }, 'after.md', '- lives in the Control Plane\n', undefined, 'tool')
-    expect(readFileSync(join(cp.tree, 'memory', 'after.md'), 'utf8')).toContain('lives in the Control Plane')
-    expect(existsSync(join(agentDir, 'memory', 'after.md'))).toBe(false)
-
-    // The forced return: the CP dropped its rows; the pre-switch tree on this disk moves aside, nothing is resurrected.
-    await upsert({ provider: 'managed', home: 'daemon' })
-    expect(existsSync(join(agentDir, 'memory'))).toBe(false)
-    expect(existsSync(join(agentDir, 'channels'))).toBe(false)
-    expect(existsSync(join(agentDir, 'memory-backups'))).toBe(false)
-    const archives = readdirSync(agentDir).filter((name) => name.startsWith('memory-archive-'))
-    expect(archives).toHaveLength(1)
-    expect(existsSync(join(agentDir, archives[0]!, 'memory', 'deploys.md'))).toBe(true)
-    expect(existsSync(join(agentDir, 'memory-dreams', 'drm-1', 'memory', 'MEMORY.md'))).toBe(true)
-    await daemon.stop()
-  })
+  )
 })
