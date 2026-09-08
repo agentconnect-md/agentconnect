@@ -1098,12 +1098,17 @@ binding's new path and then correctly rejected by the consumer's echo check.
 Both writes join one configuration-ordering domain and bump each affected
 agent's revision exactly once, so a spec never carries half a rename.
 
-One half is deliberately not built yet: an authorized additional GitLab project
-receives credentials but is not materialized as a secondary workspace root. The
-existing root layout is `owner/repo` and clones from github.com, which a
-namespaced GitLab path cannot express and a GitLab project must not be fetched
-from. Until that layout is provider-aware, GitLab entries are skipped when
-roots are built rather than cloned from the wrong host.
+An authorized additional GitLab project is also a secondary workspace root,
+materialized and handed to sessions exactly as a GitHub one is
+([multi-repository-workspaces.md](multi-repository-workspaces.md)). Two things
+differ, both because the row's text is not a placeable `owner/repo`: the root
+is cloned from the spec's own instance (§24.4) at the project's namespaced path
+under the `.git` rule of §13.2, with the repo-local helper pinned to that
+instance; and its subtree is keyed by the numeric project id —
+`repos/_gitlab/<id>/` — so a path of any depth fits and a rename converges the
+checkout's origin in place instead of retiring it. The session still sees the
+project by its path: the standing context and the console name a root by
+`repoFullName`, never by its directory.
 
 Every broker request is re-resolved by:
 

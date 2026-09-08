@@ -3,10 +3,10 @@
  *
  * Two independent selectors ride every workspace REQ. `sessionId` picks a session's isolated Git
  * worktree instead of the checkout; `repo` picks one of the agent's AUTHORIZED additional
- * repositories — its secondary root under `<agentRoot>/repos/<owner>/<repo>` — instead of the
- * primary workspace (multi-repository-workspaces.md). They compose: a `repo` with a `sessionId`
- * is that root's own `worktrees/<sid>`, keyed by the SAME session id the primary's worktree uses,
- * because isolation applies to every root uniformly.
+ * repositories — its secondary root under `<agentRoot>/repos/<owner>/<repo>`, or `repos/_gitlab/<id>`
+ * for a GitLab project — instead of the primary workspace (multi-repository-workspaces.md). They
+ * compose: a `repo` with a `sessionId` is that root's own `worktrees/<sid>`, keyed by the SAME
+ * session id the primary's worktree uses, because isolation applies to every root uniformly.
  *
  * One resolver for the file reader and the git seam, as before: the directory the console browses
  * and the one it commits must be the same directory, and describing them two different ways is what
@@ -121,7 +121,7 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
               repo: root.cloneUrl,
               branch: root.branch,
               githubApp: true,
-              remoteProvider: 'github',
+              remoteProvider: root.provider,
               ...(root.managed ? { managed: root.managed } : {})
             }
           : undefined

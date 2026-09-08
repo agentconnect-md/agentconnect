@@ -493,7 +493,10 @@ export class GithubReviewOrchestrator {
     if (this.githubWorkspaceMatches(agent, github)) return 'primary'
     const hookRepo = githubRepoKey(github.repoFullName)
     if (hookRepo === undefined) return undefined
-    const row = (agent.workspace.additionalRepos ?? []).find((entry) => githubRepoKey(entry.repoFullName) === hookRepo)
+    // A GitLab project of the same path is not this hook's repository, so only GitHub rows may answer.
+    const row = (agent.workspace.additionalRepos ?? []).find(
+      (entry) => (entry.provider ?? 'github') === 'github' && githubRepoKey(entry.repoFullName) === hookRepo
+    )
     return row ? { repoFullName: row.repoFullName } : undefined
   }
 
