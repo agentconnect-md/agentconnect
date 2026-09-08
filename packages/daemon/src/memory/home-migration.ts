@@ -13,7 +13,7 @@ import {
   type MemoryHomeMigratedReq
 } from '@agentconnect.md/protocol'
 import { CP_MEMORY_TREE_ROOT, CpMemoryFs } from '../cp/memory-fs.js'
-import { packMemoryHistoryBatches } from '../cp/memory-history.js'
+import { cpMemoryHistoryRoot, packMemoryHistoryBatches } from '../cp/memory-history.js'
 import type { Logger } from '../log.js'
 import { MemoryHomeUnavailableError, MemoryPathError, MemoryTooLargeError, type MemoryFs } from './fs.js'
 import {
@@ -143,14 +143,18 @@ export async function copyMemoryTree(
   return report
 }
 
-/** The migration's batches are not a write's best-effort ones: a failed batch fails the copy, and the re-run sends the same ids, which the CP takes once. */
+// One store's log to the CP, filed where `CpMemoryHistorySink` files a live write's (`cpMemoryHistoryRoot`), so the
+// console's page finds it. Unlike a write's best-effort sink, a failed batch fails the copy: the re-run sends the same
+// ids, which the CP takes once.
 export async function sendMemoryHistory(
   link: CpMemoryMigrationLink,
   agentId: string,
-  root: string,
+  storeRoot: string,
   records: readonly MemoryHistoryRecord[]
 ): Promise<void> {
-  for (const batch of packMemoryHistoryBatches(agentId, root, records)) await link.memoryHistoryAppend(batch)
+  for (const batch of packMemoryHistoryBatches(agentId, cpMemoryHistoryRoot(storeRoot), records)) {
+    await link.memoryHistoryAppend(batch)
+  }
 }
 
 /** The forced return, `control-plane` → `daemon` on a managed binding: the CP has dropped its rows, and nothing local may be resurrected. */
@@ -165,6 +169,25 @@ export function memoryHomeReturnedToDaemon(
 /** The archive directory beside the tree, stamped without the characters a Windows path refuses. */
 export function memoryArchiveDirname(at: Date): string {
   return `memory-archive-${at.toISOString().replace(/[:.]/g, '-')}`
+}
+
+const WINDOWS_RENAME_RETRIES = 10
+const WINDOWS_RENAME_DELAY_MS = 100
+const WINDOWS_TRANSIENT_FS_ERRORS = new Set(['EACCES', 'EBUSY', 'EPERM'])
+
+// Windows refuses to rename a directory while another handle (a watcher's, a scanner's) is briefly open inside it — a
+// race POSIX never has — so the move is retried a bounded number of times, as the workspace manager's directory swap is.
+async function renameAside(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fsp.rename(from, to)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      const transient = process.platform === 'win32' && code !== undefined && WINDOWS_TRANSIENT_FS_ERRORS.has(code)
+      if (!transient || attempt >= WINDOWS_RENAME_RETRIES) throw err
+      await new Promise((resolve) => setTimeout(resolve, WINDOWS_RENAME_DELAY_MS))
+    }
+  }
 }
 
 // Move the live store aside — `memory/`, `channels/`, `memory-backups/` under `<agent dir>/memory-archive-<stamp>/` —
@@ -182,7 +205,7 @@ export async function archiveMemoryTreeAside(agentDir: string, at: Date): Promis
       throw err
     }
     if (!moved) await fsp.mkdir(archive)
-    await fsp.rename(source, join(archive, name))
+    await renameAside(source, join(archive, name))
     moved = true
   }
   return moved ? archive : undefined

@@ -26,6 +26,7 @@ import {
   type MemoryHistoryAppendOk,
   type MemoryHomeMigratedOk
 } from '@agentconnect.md/protocol'
+import { CpMemoryHistorySink } from '../src/cp/memory-history.js'
 import { Daemon } from '../src/daemon.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import type { MemoryHomeAgent } from '../src/memory/home.js'
@@ -52,10 +53,20 @@ import { pathExecutor, pod } from './fixtures/memory-fs-pod.js'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const CHANNEL = 'general-abc'
 const STAMP = '2026-01-02T03:04:05.000Z'
+/** Where the CP files each store's change log: the directory holding the store's files, which its `memory/history` read filters on. */
+const AGENT_LOG_ROOT = 'memory'
+const CHANNEL_LOG_ROOT = `channels/${CHANNEL}/memory`
 
 const dirs: string[] = []
 afterAll(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  // Best-effort: on Windows a daemon root can still be held for a moment after `stop()`, and a leftover temp dir is no failure.
+  for (const dir of dirs.splice(0)) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      /* left for the OS to reclaim */
+    }
+  }
 })
 
 function newDir(prefix = 'ac-migrate-'): string {
@@ -227,10 +238,14 @@ describe('the one-way copy', () => {
     expect(snapshot(cp.tree)).toEqual(carried(before))
     expect(snapshot(cp.tree)['memory/deploys.md']).toMatch(/^---\ndescription: how we ship\n/)
     expect((await fsp.stat(join(cp.tree, 'memory', 'deploys.md'))).mtime.toISOString()).toBe(STAMP)
-    // The change log: the agent store's rows under `.`, the channel's under its own root, the ids the daemon minted.
+    // The change log: filed where the sink files a live write's — the directory holding each store's files, which is the
+    // root the CP's page reads — with the ids the daemon minted.
+    const quiet = { warn: () => {} }
+    expect(AGENT_LOG_ROOT).toBe(new CpMemoryHistorySink(cp, AGENT, '.', quiet).root)
+    expect(CHANNEL_LOG_ROOT).toBe(new CpMemoryHistorySink(cp, AGENT, `channels/${CHANNEL}`, quiet).root)
     expect(rowsByRoot(cp)).toEqual({
-      '.': sidecarIds(dir),
-      [`channels/${CHANNEL}`]: sidecarIds(dir, 'channels', CHANNEL)
+      [AGENT_LOG_ROOT]: sidecarIds(dir),
+      [CHANNEL_LOG_ROOT]: sidecarIds(dir, 'channels', CHANNEL)
     })
     // The source is frozen: byte for byte what it was.
     expect(snapshot(dir)).toEqual(before)
@@ -275,17 +290,17 @@ describe('the one-way copy', () => {
     migrator.wake()
     await vi.waitFor(() => expect(delays).toEqual([5, 5]))
     expect(cp.migrated).toEqual([])
-    expect(rowsByRoot(cp)).toEqual({ '.': sidecarIds(dir) })
+    expect(rowsByRoot(cp)).toEqual({ [AGENT_LOG_ROOT]: sidecarIds(dir) })
 
-    // Third time: everything lands. Overwriting by path gave the same tree, and the resent `.` batch the same rows.
+    // Third time: everything lands. Overwriting by path gave the same tree, and the resent agent batch the same rows.
     migrator.wake()
     await vi.waitFor(() => expect(migrated).toEqual([AGENT]))
     expect(cp.migrated).toHaveLength(1)
     expect(snapshot(cp.tree)).toEqual(carried(snapshot(dir)))
     const expectedIds = [...sidecarIds(dir), ...sidecarIds(dir, 'channels', CHANNEL)]
     expect(rowsByRoot(cp)).toEqual({
-      '.': sidecarIds(dir),
-      [`channels/${CHANNEL}`]: sidecarIds(dir, 'channels', CHANNEL)
+      [AGENT_LOG_ROOT]: sidecarIds(dir),
+      [CHANNEL_LOG_ROOT]: sidecarIds(dir, 'channels', CHANNEL)
     })
     // Every id the CP ever saw is one the sidecars hold: the ids are the daemon's, so its dedup keeps exactly those rows.
     const sent = cp.appends.flatMap((batch) => batch.records.map((record) => record.id))
