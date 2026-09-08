@@ -130,10 +130,10 @@ export function githubMentionUsage(agentName: string, teamOwner?: string | null)
 /** The default create-form selection: pull requests only. */
 export const GH_DEFAULT_FAMILIES: readonly GhFamily[] = ['pull_request']
 
-/** The cadence a create surface opens a new subject on — a change proposal and a deployment on every
- *  update (a deployment watch is about how it ends), the rest on the opening. */
+/** The cadence a create surface opens a new subject on — a change proposal on every update, the rest
+ *  on the opening (a deployment's every-status cadence fires once per state and is opted into). */
 export function githubDefaultTriggerMode(fam: GhFamily): GhTriggerMode {
-  return fam === 'pull_request' || fam === 'deployment' ? 'every' : 'first'
+  return fam === 'pull_request' ? 'every' : 'first'
 }
 
 /** The comment subscription that rides updated/mention-only modes for thread families. */

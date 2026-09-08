@@ -91,7 +91,7 @@ function githubHook(partial: Record<string, unknown>): unknown {
   }
 }
 
-// acme/api is watched for BOTH subjects; acme/web only for issues.
+// acme/api is watched for EVERY offered subject; acme/web only for issues.
 const PR_ROW = githubHook({
   id: 'hook-pr',
   repoId: '1',
@@ -107,6 +107,14 @@ const ISSUES_ROW = githubHook({
   repoFullName: 'acme/api',
   family: 'issues',
   events: ['issues:*', 'issue_comment:created']
+})
+const DEPLOY_ROW = githubHook({
+  id: 'hook-deploy',
+  repoId: '1',
+  name: 'acme/api',
+  repoFullName: 'acme/api',
+  family: 'deployment',
+  events: ['deployment:created']
 })
 const WEB_ISSUES_ROW = githubHook({
   id: 'hook-web',
@@ -166,7 +174,7 @@ function triggerOrder(scope: HTMLElement): string[] {
 }
 
 beforeEach(() => {
-  mocks.hooks = [ISSUES_ROW, PR_ROW, WEB_ISSUES_ROW]
+  mocks.hooks = [ISSUES_ROW, PR_ROW, DEPLOY_ROW, WEB_ISSUES_ROW]
   mocks.createGithubHook.mockReset()
   mocks.createGithubHook.mockResolvedValue({ id: 'hook-new' })
   mocks.openModal.mockReset()
@@ -180,15 +188,16 @@ afterEach(async () => {
 })
 
 describe('AgentDetailView, code-host repository blocks', () => {
-  it('keeps a repository two rows and names it once', async () => {
+  it('keeps a repository one row per family and names it once', async () => {
     const scope = await render()
-    // Two families ⇒ two rows, and exactly one of them names the repo (once per responsive tree).
+    // Three families ⇒ three rows, and exactly one of them names the repo (once per responsive tree).
     expect(repoNames(scope, 'acme/api')).toHaveLength(2)
     expect(repoNames(scope, 'acme/web')).toHaveLength(2)
-    // Repos sorted by name, a repo's rows adjacent, change proposals before issues.
+    // Repos sorted by name, a repo's rows adjacent, change proposals before issues before deployments.
     expect(triggerOrder(scope)).toEqual([
       'Trigger for acme/api PRs',
       'Trigger for acme/api Issues',
+      'Trigger for acme/api Deploys',
       'Trigger for acme/web Issues'
     ])
   })
@@ -199,6 +208,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
     // Every row's own X is the only removal — a repo goes away one family at a time.
     expect(byTitle(scope, 'Stop watching PRs')).toHaveLength(1)
     expect(byTitle(scope, 'Stop watching Issues')).toHaveLength(2)
+    expect(byTitle(scope, 'Stop watching Deploys')).toHaveLength(1)
   })
 
   it('deletes just one family from the per-row control', async () => {
@@ -225,7 +235,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
 
   it('offers a + menu only on a repository missing a family, inline on its first row', async () => {
     const scope = await render()
-    // acme/api watches both offered subjects, so only acme/web carries the + (once per responsive tree).
+    // acme/api watches every offered subject, so only acme/web carries the + (once per responsive tree).
     const triggers = byTitle(scope, 'Watch another subject')
     expect(triggers).toHaveLength(2)
     for (const trigger of triggers) {
@@ -234,6 +244,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
     // The menu (body-portaled) lists only what is missing.
     await act(async () => triggers[0]!.click())
     expect(menuItem('Add Pull requests')).toBeTruthy()
+    expect(menuItem('Add Deployments')).toBeTruthy()
     expect(menuItem('Add Issues')).toBeUndefined()
   })
 

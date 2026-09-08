@@ -28,8 +28,8 @@ describe('GH_TRIGGER_LABEL', () => {
     expect(githubDefaultTriggerMode('issues')).toBe('first')
     expect(githubDefaultTriggerMode('push')).toBe('first')
     expect(GH_TRIGGER_LABEL[githubDefaultTriggerMode('issues')]).toBe('opened')
-    // A deployment watch is about how it ends, so it opens on every status.
-    expect(githubDefaultTriggerMode('deployment')).toBe('every')
+    // A deployment opens on creation too — every-status is one turn per state, so it is opted into.
+    expect(githubDefaultTriggerMode('deployment')).toBe('first')
   })
 
   it('spells the cadences out for the create surfaces', () => {
