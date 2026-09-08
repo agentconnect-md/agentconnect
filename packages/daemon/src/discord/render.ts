@@ -1,6 +1,6 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
-import { flattenUnsafeLinks } from '../messages/agent-links.js'
+import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
 import { AgentMessageRun } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
@@ -330,17 +330,18 @@ export class DiscordConverger {
    *  the whole buffer, paragraph break or not — otherwise the runtime's own error text is
    *  dropped and replaced by the generic failure notice. */
   flushTerminal(): DiscordAction[] {
-    if (this.mode === 'minimal') return this.liveRefresh()
+    if (this.mode === 'minimal') return this.liveRefresh(true)
     return [...this.drainReasoning(), ...this.flush()]
   }
 
   /** minimal: refresh the single in-place `live-reply` with the current segment. */
-  private liveRefresh(): DiscordAction[] {
+  private liveRefresh(complete = false): DiscordAction[] {
     const trimmed = this.buf.trim()
-    // Hold the live reply while the body could still be the bare response-control marker, so a
-    // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
+    // A partial response-control marker must not flash in the live reply before onFinal drops it.
     if (!trimmed || isNoResponsePrefix(trimmed)) return []
-    return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
+    const raw = complete ? this.buf : this.buf.slice(0, referenceBufferStart(this.buf))
+    const text = flattenUnsafeLinks(raw)
+    return text.trim() ? [{ kind: 'live-reply', text: this.liveDisplay(text) }] : []
   }
 
   /** minimal: a Discord message caps at 2000 chars; head-clamp the live view when longer
@@ -361,6 +362,7 @@ export class DiscordConverger {
     if (isNoResponsePrefix(this.buf.trim())) return []
     const text = flattenUnsafeLinks(this.buf)
     this.recordDirty = false
+    if (!text.trim()) return []
     return [
       { kind: 'live-reply', text: this.liveDisplay(text) },
       ...chunkForDiscord(text, DISCORD_MESSAGE_LIMIT).map(
@@ -372,7 +374,8 @@ export class DiscordConverger {
   private drainReasoning(): DiscordAction[] {
     if (!this.reasoningDirty) return []
     this.reasoningDirty = false
-    return [{ kind: 'reasoning', text: renderReasoning(flattenUnsafeLinks(this.reasoningBuf)) }]
+    const text = flattenUnsafeLinks(this.reasoningBuf)
+    return text.trim() ? [{ kind: 'reasoning', text: renderReasoning(text) }] : []
   }
 
   private flush(): DiscordAction[] {
@@ -405,6 +408,7 @@ export class DiscordConverger {
 
   private emitBody(raw: string): DiscordAction[] {
     const text = flattenUnsafeLinks(raw)
+    if (!text.trim()) return []
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.
     const recordOnly = this.mode === 'none'

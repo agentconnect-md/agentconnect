@@ -695,6 +695,19 @@ describe('OutputConverger', () => {
     expect(c.hasBuffered()).toBe(true) // still buffered, not dropped
   })
 
+  it('holds a reference across idle flushes until its later host-path definition can be flattened', () => {
+    const c = new OutputConverger('medium')
+    const chunk = (text: string) =>
+      c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } as any)
+    chunk('Earlier paragraph.\n\nRead [the digest][r].\n\n')
+    expect(c.flushBuffered()).toEqual([{ kind: 'post', text: 'Earlier paragraph.\n\n' }])
+    chunk('[r]: /home/agent/out.md\n\n')
+    expect(c.flushBuffered()).toEqual([])
+    const posts = c.onFinal().filter((action) => action.kind === 'post')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]?.text.trim()).toBe('Read the digest (`out.md`).')
+  })
+
   it('flushTerminal drains a body with no paragraph break — the turn never reaches onFinal', () => {
     const c = new OutputConverger('medium')
     // A runtime that narrates its terminal error then rejects the prompt: one line, no break.

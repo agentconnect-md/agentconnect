@@ -139,6 +139,12 @@ agent finishes the text block (a tool call, a plan, a thinking step), or until t
 ends. Splits the reader already expects — a completed text block before the agent starts
 working, or a body longer than the platform's per-message limit — are unaffected.
 
+A Markdown reference can depend on a link definition near the end of the same text
+block. Once a paragraph contains a reference, a definition, or bracketed text that could
+become a reference, it and the following text stay together until the agent finishes that
+text block. Earlier paragraphs continue streaming normally, including in live previews,
+so an incomplete link definition cannot expose a local file target before it is resolved.
+
 ## A cold sandbox pod is announced, not waited out in silence
 
 A turn whose agent runs in the cluster and has no pod up yet must first claim (or resume) a

@@ -113,6 +113,93 @@ describe('flattenUnsafeLinks', () => {
     expect(flattenUnsafeLinks('run `[x](/a/b.md)` then [y](/a/c.md)')).toBe('run `[x](/a/b.md)` then y (`c.md`)')
   })
 
+  describe('reference-style links', () => {
+    it('flattens full, collapsed and shortcut references and removes their shared host definition', () => {
+      const text =
+        'See [the digest][DAILY   REPORT], [daily report][], and [daily report].\n\n' +
+        '[Daily report]: </home/agent/digest.md> "Draft"'
+
+      expect(flattenUnsafeLinks(text).trimEnd()).toBe(
+        'See the digest (`digest.md`), daily report (`digest.md`), and daily report (`digest.md`).'
+      )
+    })
+
+    it('preserves safe references and their original definitions byte for byte', () => {
+      const text =
+        'See [the docs][DOCS], [docs][], [docs], and [email].\n\n' +
+        '[DoCs]: <https://example.test/docs?a=1&b=2>\n  "Original title"\n' +
+        '[email]: mailto:agent@example.test\n'
+
+      expect(flattenUnsafeLinks(text)).toBe(text)
+    })
+
+    it.each(['FILE:///home/agent/out.md', 'file:/home/agent/out.md', 'C:\\Users\\agent\\out.md'])(
+      'removes file targets from references in chat and code-host replies: %s',
+      (target) => {
+        const text = `[report][r]\n\n[r]: ${target}`
+        expect(flattenUnsafeLinks(text).trimEnd()).toBe('report (`out.md`)')
+        expect(flattenUnsafeLinks(text, { resolvesRelativeTargets: true }).trimEnd()).toBe('report (`out.md`)')
+      }
+    )
+
+    it('keeps decoded backticks in a filename inside inline code', () => {
+      expect(flattenUnsafeLinks('[report][r]\n\n[r]: /home/agent/a&#96;b.md').trimEnd()).toBe('report (``a`b.md``)')
+    })
+
+    it('preserves code samples, escaped brackets and unresolved prose while rewriting a real reference', () => {
+      const sample = [
+        '`[r]` and \\[r] and [unresolved].',
+        '',
+        '```md',
+        '[file][r]',
+        '[r]: /home/agent/example.md',
+        '```',
+        '',
+        '    [file][r]',
+        '    [r]: /home/agent/indented.md'
+      ].join('\n')
+      const text = `${sample}\n\nActual [file][r].\n\n[r]: /home/agent/out.md`
+
+      expect(flattenUnsafeLinks(text).trimEnd()).toBe(`${sample}\n\nActual file (\`out.md\`).`)
+    })
+
+    it.each([
+      {
+        definitions: '[r]: https://example.test/report\n[r]: /home/agent/private.md',
+        expectedBody: '[report][r]'
+      },
+      {
+        definitions: '[r]: /home/agent/private.md\n[r]: https://example.test/report',
+        expectedBody: 'report (`private.md`)'
+      }
+    ])(
+      'resolves duplicate labels using the first definition and removes host targets: $definitions',
+      ({ definitions, expectedBody }) => {
+        const result = flattenUnsafeLinks(`[report][r]\n\n${definitions}`)
+
+        expect(result.split('\n')[0]).toBe(expectedBody)
+        expect(result).toContain('[r]: https://example.test/report')
+        expect(result).not.toContain('/home/')
+      }
+    )
+
+    it('flattens both targets of a reference image linked to a host file', () => {
+      const text = '[![chart][img]][report]\n\n[img]: /tmp/chart.png\n[report]: /home/agent/report.html'
+
+      expect(flattenUnsafeLinks(text).trimEnd()).toBe('`chart.png` (`report.html`)')
+    })
+
+    it('keeps a safe outer reference linked after flattening its image label', () => {
+      const text = '[![chart][img]][report]\n\n[img]: /tmp/chart.png\n[report]: https://example.test/report'
+      const result = flattenUnsafeLinks(text)
+
+      expect(result).toContain('[`chart.png`][report]')
+      expect(result).toContain('[report]: https://example.test/report')
+      expect(result).not.toContain('/tmp/')
+      expect(result).not.toContain('[img]')
+    })
+  })
+
   describe('on a surface that resolves relative targets itself', () => {
     const onCodeHost = (text: string) => flattenUnsafeLinks(text, { resolvesRelativeTargets: true })
 
@@ -125,6 +212,13 @@ describe('flattenUnsafeLinks', () => {
 
     it('still flattens a host-absolute target, which resolves nowhere and names the daemon host', () => {
       expect(onCodeHost('wrote [the report](/home/sentio/workspace/report.md)')).toBe('wrote the report (`report.md`)')
+    })
+
+    it('keeps repository and fragment references while removing a host reference from the same reply', () => {
+      const safe = '[doc][] and [section].\n\n[doc]: docs/design.md\n[section]: #caveats'
+      const result = onCodeHost(`${safe}\n\nSaved [report][host].\n\n[host]: file:///home/agent/report.md`)
+
+      expect(result.trimEnd()).toBe(`${safe}\n\nSaved report (\`report.md\`).`)
     })
   })
 
