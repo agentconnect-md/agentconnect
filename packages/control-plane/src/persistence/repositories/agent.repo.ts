@@ -617,7 +617,13 @@ export class PgAgentRepo implements AgentRepo {
       // `memory/home/migrated` recorded since the caller read the agent is what this write sees, not the caller's copy.
       if (opts?.memoryHome) {
         const { input, onPool, force } = opts.memoryHome
-        const change = resolveMemoryBindingOnUpdate(cur?.memory ?? null, input, onPool, force)
+        const locked = cur?.memory ?? null
+        const change = resolveMemoryBindingOnUpdate(
+          locked,
+          typeof input === 'function' ? input(locked) : input,
+          onPool,
+          force
+        )
         if (change.kind === 'refused') throw new MemoryHomeRefusedError(change.refused, change.message)
         if (change.kind === 'write') {
           if (change.memory === null) delete next.memory
@@ -1096,6 +1102,15 @@ export class PgAgentRepo implements AgentRepo {
   async listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]> {
     const rows = await this.db.agent.findMany({
       where: { daemonId, placementKind: 'daemon' },
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
+  async listForSet(setId: string): Promise<AgentRecord[]> {
+    const rows = await this.db.agent.findMany({
+      where: { setId, placementKind: 'set' },
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })

@@ -362,8 +362,10 @@ reachable", not "the pod is bound". Established sessions are unaffected. No loca
 cache in this step.
 
 **Rollout.** CP first (table, frames, feature), daemon second (adapter, copy,
-refusal). Existing pool agents are flipped by the CP in the same release — every agent
-placed on the install-wide pool gets `home: control-plane` — and the member holding
+refusal). Existing pool agents are flipped by the CP in the same release — a pass that
+runs at every CP boot, idempotent, gives every agent placed on the install-wide pool
+`home: control-plane` through the ordinary update path, so the flip reaches the member
+like any other edit — and the member holding
 each one runs the same one-way migration on its next activation, the source being the
 sandbox volume through the shim: it binds the pod, copies whatever the volume holds
 (an empty tree, if the sandbox was reclaimed in between) and reports completion the

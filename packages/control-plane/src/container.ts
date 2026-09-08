@@ -202,6 +202,7 @@ import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.
 import { registerPoolMetrics } from './observability/pool-metrics.js'
 import { registerOrgMetrics } from './observability/org-metrics.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
+import { PoolMemoryHomeReconciler } from './orchestrator/poolMemoryHomeReconciler.js'
 import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
 import { PlacementResolver, type ResolvableAgent } from './orchestrator/placementResolver.js'
 import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
@@ -1657,6 +1658,14 @@ export function buildContainer(
   // the sweep converges to a no-op after its first complete run.
   const presetBackfill = config.PRESET_AGENTS_ENABLED ? new PresetAgentBackfill(prisma, http.log) : undefined
 
+  // The memory-home rollout flip (memory-evolution.md §3.2.1): one idempotent pass per boot, armed by startBackground().
+  const poolMemoryHome = new PoolMemoryHomeReconciler({
+    agents: repos.agent,
+    memberSets: repos.memberSet,
+    delivery: agentDelivery,
+    log: http.log
+  })
+
   // Relay failover sweep (shared-bot-relay.md §5): deletes `relay` rows whose
   // heartbeat lapsed and re-fans the shrunk roster to daemons. Same lifecycle as
   // the cron reaper (armed by startBackground, never in tests).
@@ -2322,6 +2331,7 @@ export function buildContainer(
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
       void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
+      void poolMemoryHome.run().catch((err) => http.log.error({ err }, 'pool-memory-home: pass failed'))
     },
     async shutdown() {
       cronRunReaper.stop()

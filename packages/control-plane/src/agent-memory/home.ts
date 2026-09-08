@@ -45,9 +45,10 @@ export class MemoryHomeRefusedError extends Error {
   }
 }
 
-/** What a caller hands the row-locked write: the submitted binding and the two facts the resolution needs. */
+/** What a caller hands the row-locked write: the submitted binding and the two facts the resolution needs. A function
+ *  receives the binding as it is under the lock, for a caller whose patch depends on it (the boot-time pool flip). */
 export interface MemoryHomeUpdate {
-  input: MemoryBindingInput | null
+  input: MemoryBindingInput | null | ((current: AgentMemoryBinding | null) => MemoryBindingInput | null)
   onPool: boolean
   force: boolean
 }
