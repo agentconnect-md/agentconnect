@@ -137,7 +137,7 @@ import {
 } from './router/routing-rule.js'
 import { CpRoutingLayer } from './router/cp-routing-layer.js'
 import { SlackConnection, type SlackAppFactory, type SlackStatusOptions } from './slack/connection.js'
-import { TelegramConnection } from './telegram/connection.js'
+import { TelegramConnection, type TelegramCallback } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
@@ -185,6 +185,7 @@ import {
   slackStreamRecipient,
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
+import { slackElicitCards } from './platforms/slack/elicit-card.js'
 import type { ReplyAttributionInfo } from './messages/attribution.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import { mentionedUserIds, substituteUserMentions } from './slack/mentions.js'
@@ -435,6 +436,7 @@ import {
   applyTelegramAction as applyTelegramActionExternal,
   type TelegramTurnState
 } from './platforms/telegram/turn-output.js'
+import { parseTelegramElicit, telegramElicitCards } from './platforms/telegram/elicit-card.js'
 import { applyDiscordAction as applyDiscordActionExternal } from './platforms/discord/turn-output.js'
 import { applyFeishuAction as applyFeishuActionExternal, type FeishuTurnState } from './platforms/feishu/turn-output.js'
 import { LinearConnection } from './platforms/linear/connection.js'
@@ -925,6 +927,7 @@ export class Daemon {
     (() => {
       const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
         platform: 'slack',
+        elicitCards: slackElicitCards,
         createConverger: (ctx) => new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? []),
         initialTurnState: (ctx): SlackTurnState => {
           const recipient = slackStreamRecipient(ctx.message)
@@ -967,6 +970,7 @@ export class Daemon {
       })
       registry.register({
         platform: 'telegram',
+        elicitCards: telegramElicitCards,
         // The continue-the-topic hint only earns its space in a group, where the
         // reply chain is the ONLY way back into this session; a DM already has one
         // implicit thread. Gated on showFooter, the delivery-chrome switch.
@@ -1596,7 +1600,7 @@ export class Daemon {
       handleElicitChoice: (a) => this.permissions.handleElicitChoice(a),
       handleElicitFormSubmit: (a) => void this.permissions.submitElicitForm(a),
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
-      handleTelegramCallback: (cb, conn) => this.commands.handleTelegramCallback(cb, conn),
+      handleTelegramCallback: (cb, conn) => this.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
         this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
       slackThreadSessions: (shortcut, srcIntegrationIds) =>
@@ -8929,6 +8933,7 @@ export class Daemon {
       memoryExtractionInFlight: (turnKey) => this.memoryExtractionCollectors.has(turnKey),
       enqueueApply: (p, action) => this.enqueueApply(p, action),
       postCardSerialized: (p, post) => this.postCardSerialized(p, post),
+      elicitCardFacet: (platform) => this.turnSurfaces.exact(platform)?.elicitCards,
       httpSlackSessionTarget: (p) => this.httpSlackSessionTarget(p),
       maskAgentSecrets: <T>(agentId: string, payload: T): T => this.maskAgentSecrets(agentId, payload),
       logSessionAction: (verb, sessionKey, actor) => this.commands.logSessionAction(verb, sessionKey, actor),
@@ -13522,9 +13527,9 @@ export class Daemon {
   private async postLiveChromeBoundarySerialized<T>(
     p: Pending,
     messageType: LiveChromeBoundaryMessageType,
-    post: (conn: SlackConnection) => Promise<T | undefined>
+    post: (conn: unknown) => Promise<T | undefined>
   ): Promise<T | undefined> {
-    const conn = p.conn as SlackConnection
+    const conn = p.conn
     let result: T | undefined
     const step = p.signals.applyChain.then(async () => {
       result = await post(conn)
@@ -13539,9 +13544,30 @@ export class Daemon {
     return result
   }
 
+  /**
+   * Route one tapped Telegram inline-keyboard button. Two schemes share the keyboard: an
+   * elicitation card's `ac_el:<requestId>:<token>` and the session-control cards' `<kind>:<index>`,
+   * so this tries the elicitation codec first and falls through — the two are disjoint by prefix,
+   * and neither decoder ever sees data the other minted.
+   *
+   * Anyone who can see a card may answer it, so there is no per-person gate here; the tap is
+   * acked either way, or the client's spinner never clears. An answer the card refuses says so
+   * in the chat through the coordinator's own notice, exactly as a Slack tap's does.
+   */
+  private async handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): Promise<void> {
+    const tap = parseTelegramElicit(cb.data)
+    if (!tap) return await this.commands.handleTelegramCallback(cb, conn)
+    void conn.answerCallback(cb.id)
+    await this.permissions.handleElicitChoice({
+      requestId: tap.requestId,
+      value: tap.token,
+      actor: { userId: cb.userId }
+    })
+  }
+
   private async postCardSerialized(
     p: Pending,
-    post: (conn: SlackConnection) => Promise<string | undefined>
+    post: (conn: unknown) => Promise<string | undefined>
   ): Promise<string | undefined> {
     return await this.postLiveChromeBoundarySerialized(p, 'human-input-card', post).catch(() => undefined)
   }

@@ -93,6 +93,8 @@ async function world(over?: {
     memoryExtractionInFlight: () => false,
     enqueueApply: vi.fn(),
     postCardSerialized: vi.fn(async () => undefined),
+    // The approval DM is its own surface; no in-channel elicitation card is posted from here.
+    elicitCardFacet: () => undefined,
     httpSlackSessionTarget: () => undefined,
     maskAgentSecrets: (_agentId, payload) => payload,
     logSessionAction: vi.fn(),

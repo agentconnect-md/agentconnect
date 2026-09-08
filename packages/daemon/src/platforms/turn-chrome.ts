@@ -35,8 +35,11 @@ export interface TurnChrome {
    *  thread panel's header in DMs AND channels — a thread becomes eligible once any
    *  agents.sessions call or a card stream registers it (verified live 2026-08-29). */
   readonly sessionTitle?: boolean
-  /** In-chat human-input cards: permission approvals, MCP-approval
-   *  elicitations, and the generic elicitation card. */
+  /** In-chat PERMISSION-approval cards: `session/request_permission` and the MCP-approval
+   *  elicitation Codex maps onto `elicitation/create`. Narrowed to that half by #1794's gap 6 —
+   *  the GENERIC elicitation card is now a Layer-2 facet (`TurnOutputSurface.elicitCards`), which
+   *  declares the kinds a surface can collect rather than one boolean for "has cards". Approval
+   *  still has a single implementer, so it keeps the flag until a second one shapes its member. */
   readonly chatInputCards?: boolean
   /** Failure notices are posted with a chrome marker (and agent identity) so a
    *  peer daemon's thread backfill skips them. */
