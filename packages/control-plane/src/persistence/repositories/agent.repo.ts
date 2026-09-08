@@ -3,7 +3,7 @@
  */
 import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
-import { redactGitUrlSecrets, type AgentMemoryBinding } from '@agentconnect.md/protocol'
+import { AgentMemoryBinding, redactGitUrlSecrets } from '@agentconnect.md/protocol'
 import type { PrismaLike } from '../prisma.js'
 import type {
   AgentCallPolicy,
@@ -189,6 +189,13 @@ function overridesOf(a: Agent): RuntimeOverrides {
   return (a.runtimeOverrides as RuntimeOverrides | null) ?? {}
 }
 
+// A stored binding predates the fields the schema now defaults (`home`): fill on read what the input path fills on write.
+function storedMemoryBinding(memory: AgentMemoryBinding | undefined): AgentMemoryBinding | null {
+  if (!memory) return null
+  const parsed = AgentMemoryBinding.safeParse(memory)
+  return parsed.success ? parsed.data : memory
+}
+
 // Preset one-shot settle (preset-agents.md §3.2): the FIRST placement of any
 // kind — and an explicit delete — permanently stamps `placementSettledAt`, so
 // M1 auto-placement never fights a user who placed, moved, or removed the
@@ -273,7 +280,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     mcpServers: ov.mcpServers ?? [],
     skills: ov.skills ?? [],
     managedSkills: a.managedSkills,
-    memory: ov.memory ?? null,
+    memory: storedMemoryBinding(ov.memory),
     status: a.status as AgentRecord['status'],
     placementKind: a.placementKind,
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
