@@ -171,6 +171,11 @@ const GH_TRIGGER_TILES: Partial<Record<GhFamily, TriggerTile<GhTriggerMode>[]>> 
     { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'A new issue is filed' },
     { mode: 'labeled', label: GH_TRIGGER_LABEL.labeled, desc: 'A label is applied' },
     { mode: 'mention', label: GH_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
+  ],
+  // A deployment has no thread: nobody opens or @-mentions in it, so two cadences, worded for it.
+  deployment: [
+    { mode: 'first', label: 'created', desc: 'A deployment is created' },
+    { mode: 'every', label: 'any status', desc: 'Every status it reports — in progress, success, failure' }
   ]
 }
 
@@ -224,7 +229,7 @@ function FamilyCards<F extends string, M extends string>({
   familyAttr: 'data-github-family' | 'data-gitlab-family'
   triggerAttr: 'data-github-trigger' | 'data-gitlab-trigger'
   /** Hover copy that goes BEYOND the tile's own subtitle, which the user can already read. */
-  titleOf: (mode: M) => string
+  titleOf: (mode: M, fam: F) => string
   bodyExtra?: (fam: F) => ReactNode
 }) {
   return (
@@ -281,7 +286,10 @@ function FamilyCards<F extends string, M extends string>({
                   <div>
                     <div className="fldlbl mb-2">Trigger when</div>
                     <div
-                      className="grid grid-cols-1 gap-2 desktop:grid-cols-3"
+                      // One column per tile: a two-cadence subject must not leave a hole in a 3-up grid.
+                      className={`grid grid-cols-1 gap-2 ${
+                        tilesOf(row.fam).length === 2 ? 'desktop:grid-cols-2' : 'desktop:grid-cols-3'
+                      }`}
                       role="group"
                       aria-label={`Trigger for ${row.pill}`}
                     >
@@ -293,7 +301,7 @@ function FamilyCards<F extends string, M extends string>({
                             type="button"
                             {...{ [triggerAttr]: `${row.fam}:${tile.mode}` }}
                             aria-pressed={picked}
-                            title={titleOf(tile.mode)}
+                            title={titleOf(tile.mode, row.fam)}
                             className={`flex min-w-0 cursor-pointer items-start gap-[9px] rounded-[9px] border px-3 py-[10px] text-left ${
                               picked
                                 ? 'border-(--brand) bg-(--brand-soft)'
@@ -1818,10 +1826,10 @@ export default function AddIntegrationModal({
                   onPick={(fam, mode) => setGhModes((prev) => ({ ...prev, [fam]: mode }))}
                   familyAttr="data-github-family"
                   triggerAttr="data-github-trigger"
-                  titleOf={(mode) =>
+                  titleOf={(mode, fam) =>
                     mode === 'mention'
                       ? githubMentionUsage(agent.name, ghTeamOwner)
-                      : githubTriggerTooltip(mode, agent.name)
+                      : githubTriggerTooltip(mode, agent.name, fam)
                   }
                   // Reviews and Checks ride the change-proposal subject, so the
                   // format section lives in that card's body and nowhere else.

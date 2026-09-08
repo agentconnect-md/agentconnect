@@ -3,18 +3,19 @@ import type { GithubCommentFamily, GithubHookFamily, HookCommentFamily } from '.
 /**
  * GitHub subscription event model shared by the Add-integration form and the
  * agent-detail pills. A stored row covers exactly ONE family (pull requests /
- * issues / commits) and carries its own TRIGGER MODE ("when"), so a repository
- * watched for both PRs and issues is two rows; the family is immutable, and the
- * row's stored `events` patterns plus its `mentionOnly` flag encode the mode:
+ * issues / deployments / commits) and carries its own TRIGGER MODE ("when"), so a
+ * repository watched for both PRs and issues is two rows; the family is immutable,
+ * and the row's stored `events` patterns plus its `mentionOnly` flag encode the mode:
  *
  *   opened   → `family:opened` for the regular cadence; the relay additionally accepts a later explicit
  *              @mention in the row's thread family (commits have no "first"
  *              — a push subscription is inherently per-push, so `push:*` rides
- *              along unchanged)
+ *              along unchanged; a deployment's "first" is `deployment:created`)
  *   any update → `family:*` + `issue_comment:created` on a thread family, scoped
  *              to that family by `commentFamilies`. The relay ignores
  *              close/reopen and content edits; PR target-branch changes, other
- *              supported updates, and replies run.
+ *              supported updates, and replies run. A deployment row adds
+ *              `deployment_status:*` — every status GitHub posts against it.
  *   labeled  → `issues:labeled` alone. Issues-only, and the one cadence that
  *              subscribes to no replies at all: a label is applied to a thread,
  *              not said in it. A `labelFilter` intersects the issue's CURRENT
@@ -46,6 +47,7 @@ export interface GhFamilyTile {
 const GH_ALL_FAMILIES: GhFamilyTile[] = [
   { fam: 'pull_request', pill: 'PRs', icon: 'git-pull-request', label: 'Pull requests' },
   { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues' },
+  { fam: 'deployment', pill: 'Deploys', icon: 'rocket', label: 'Deployments' },
   { fam: 'push', pill: 'Commits', icon: 'git-commit-horizontal', label: 'Commits' }
 ]
 
@@ -82,8 +84,10 @@ export const GH_TRIGGER_PILL: Record<GhTriggerMode, string> = {
   mention: '@-mention'
 }
 
-/** Label events ride the issues subject alone — a PR row never offers or compiles one. */
+/** Label events ride the issues subject alone — a PR row never offers or compiles one. A deployment
+ *  carries no labels and no thread anyone writes in, so it offers only the two plain cadences. */
 export function githubFamilySupportsMode(fam: GhFamily, mode: GhTriggerMode): boolean {
+  if (fam === 'deployment') return mode === 'first' || mode === 'every'
   return mode !== 'labeled' || fam === 'issues'
 }
 
@@ -92,8 +96,13 @@ export function githubTriggerModes(fam: GhFamily): readonly GhTriggerMode[] {
   return GH_TRIGGER_MODES.filter((mode) => githubFamilySupportsMode(fam, mode))
 }
 
-/** Per-segment hover copy for the trigger bar. */
-export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): string {
+/** Per-segment hover copy for the trigger bar. A deployment has no thread, so its two cadences read differently. */
+export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string, fam?: GhFamily): string {
+  if (fam === 'deployment') {
+    return mode === 'first'
+      ? 'Runs when a deployment is created.'
+      : 'Runs when a deployment is created and on every status it reports (in progress, success, failure, …).'
+  }
   switch (mode) {
     case 'first':
       return `Runs when an issue or PR opens, plus later @${agentName} mentions.`
@@ -121,13 +130,18 @@ export function githubMentionUsage(agentName: string, teamOwner?: string | null)
 /** The default create-form selection: pull requests only. */
 export const GH_DEFAULT_FAMILIES: readonly GhFamily[] = ['pull_request']
 
-/** The cadence a create surface opens a new subject on — a change proposal on every update, the rest on the opening. */
+/** The cadence a create surface opens a new subject on — a change proposal and a deployment on every
+ *  update (a deployment watch is about how it ends), the rest on the opening. */
 export function githubDefaultTriggerMode(fam: GhFamily): GhTriggerMode {
-  return fam === 'pull_request' ? 'every' : 'first'
+  return fam === 'pull_request' || fam === 'deployment' ? 'every' : 'first'
 }
 
 /** The comment subscription that rides updated/mention-only modes for thread families. */
 export const THREAD_COMMENT_EVENT = 'issue_comment:created'
+/** A deployment's opening: GitHub's `deployment` event, always `created`. */
+export const DEPLOYMENT_CREATED_EVENT = 'deployment:created'
+/** The status subscription that rides a deployment row's update mode — one delivery per state GitHub posts. */
+export const DEPLOYMENT_STATUS_EVENT = 'deployment_status:*'
 
 /** Narrow a stored cross-host comment scope to the GitHub families a github hook may carry. */
 export function githubCommentFamilies(families: readonly HookCommentFamily[]): GithubCommentFamily[] {
@@ -152,6 +166,9 @@ export function eventsForFamilies(fams: Iterable<GhFamily>, mode: GhTriggerMode)
   const familyEvents = families.flatMap((fam) => {
     const own = effectiveMode(fam, mode)
     if (own === 'labeled') return [`${fam}:labeled`]
+    if (fam === 'deployment') {
+      return own === 'first' ? [DEPLOYMENT_CREATED_EVENT] : [`${fam}:*`, DEPLOYMENT_STATUS_EVENT]
+    }
     if (own !== 'first' || fam === 'push') return [`${fam}:*`]
     return [`${fam}:opened`]
   })
@@ -198,10 +215,11 @@ export function githubFamilySubscription(fam: GhFamily, mode: GhTriggerMode): Gi
 const LABELED_EVENT = 'issues:labeled'
 
 /** Recover the trigger mode: the mentionOnly flag wins, the bare label
- *  subscription is labeled, and `:opened` ⇒ opened. */
+ *  subscription is labeled, and `:opened` (or a bare deployment opening) ⇒ opened. */
 export function triggerModeOf(h: { events: string[]; mentionOnly: boolean }): GhTriggerMode {
   if (h.mentionOnly) return 'mention'
   if (h.events.length === 1 && h.events[0] === LABELED_EVENT) return 'labeled'
+  if (h.events.length === 1 && h.events[0] === DEPLOYMENT_CREATED_EVENT) return 'first'
   return h.events.some((e) => e.endsWith(':opened')) ? 'first' : 'every'
 }
 

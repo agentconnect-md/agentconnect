@@ -232,18 +232,31 @@ The relay recognizes these subscription event families:
 - `issue_comment`
 - `pull_request_review_comment`
 - `push`
+- `deployment`
+- `deployment_status`
 
 Stored patterns use `family:action`, with `family:*` as a wildcard. Label
 filters require at least one current subject label to match.
 `commentFamilies` distinguishes issue comments from pull-request conversation
 comments because GitHub sends both through `issue_comment`.
 
+`deployment` and `deployment_status` share the `deployment` subject family. A
+status delivery is matched and reported by the state it carries, not by GitHub's
+invariant `created` action: the stored pattern is `deployment_status:<state>`
+(`success`, `failure`, `in_progress`, …) or `deployment_status:*`. Receiving
+either event requires the App's `deployments: read` permission and both event
+subscriptions; an App created before they were added must gain them by hand in
+its settings, because GitHub exposes no API for event subscriptions.
+
 The matcher rejects bot-authored comments and review comments, plus unrelated bot
 events, to prevent self-reply loops and agent-to-agent mention loops. Revision-bearing
 PR events authored by the configured App are admitted as the lifecycle
 exception: same-repository PRs are treated as an internal CI lane and may start review
 without a human-author permission lookup, while fork PRs remain on the maintainer
-workflow-approval path.
+workflow-approval path. Deployments are the other exception: GitHub Actions and
+deployment Apps author nearly all of them, and nothing posts back into a
+deployment, so the bot veto does not apply. Like a push, a deployment has no
+thread actor to authorize and is trusted on the installation gate alone.
 
 Closed, deleted, and reopened issue or pull-request lifecycle events do not start
 turns. Ordinary issue/PR title and body edits are also silent. A PR edit carrying
@@ -342,7 +355,11 @@ repository/pull/head delivery key coalesces multiple workflows for one revision.
 GitHub hooks always use `perThread`. The relay forms the session key from the
 hook's immutable `githubSessionKey` prefix and the issue or pull-request number.
 New rows use a numeric-repository-based prefix, so repository renames do not
-split the conversation.
+split the conversation. A push keys on its ref and a deployment on its
+environment (`prefix#deployments/production`): every deployment to one
+environment continues one session, so the agent that watched the last release
+sees the next, and the daemon's worktrees stay bounded by environments rather
+than by deployments.
 
 The daemon maps this to its normal session identity and resumes the same ACP
 session on later matching events. No GitHub-specific session store exists.
@@ -620,8 +637,8 @@ The Prisma schema is authoritative. The main records are:
 ### One Row per Subject Family
 
 A code-host `HookDef` row covers exactly ONE subject family — `pull_request`,
-`issues` or `push` for GitHub, `merge_request`, `issues` or `push` for GitLab —
-recorded in `family` and unique per `(agentId, kind, repoId, family)`. Watching a
+`issues`, `push` or `deployment` for GitHub, `merge_request`, `issues` or `push`
+for GitLab — recorded in `family` and unique per `(agentId, kind, repoId, family)`. Watching a
 repository for both pull requests and issues is therefore two rows, each with its
 own cadence, label filter and `mentionOnly` gate: pull requests can fire on every
 update while issues fire only on an explicit mention. `family` is immutable, so
@@ -633,7 +650,8 @@ traffic per family — so each row compiles into an ordinary independent rule.
 Three constraints keep those rules from overlapping:
 
 - every stored pattern must belong to the row's family, with `issue_comment` and
-  `pull_request_review_comment` riding the thread family that owns them;
+  `pull_request_review_comment` riding the thread family that owns them and
+  `deployment_status` riding `deployment`;
 - `commentFamilies` may only name the row's own family, and a GitHub row carrying
   an `issue_comment` subscription must set it — left empty it would keep the
   legacy repository-wide meaning and double-fire against its sibling; and
@@ -689,8 +707,12 @@ reporting are rejected.
 
 The agent detail Integrations card lists hooks alongside integrations. Generic
 hook creation reveals the capability URL and optional HMAC secret once. GitHub
-creation uses the App installation and repository picker. Recent runs show
-status, delivery key, duration, and a session deep link.
+creation uses the App installation and repository picker and offers the pull
+request, issue and deployment subjects; a deployment row has two cadences —
+`created` (`deployment:created`) and `any status` (`deployment:*` plus
+`deployment_status:*`) — and no label or mention gate, since nobody writes in a
+deployment. Finer state selection (`deployment_status:failure`) is API-only.
+Recent runs show status, delivery key, duration, and a session deep link.
 
 ## Redelivery and Failure Semantics
 

@@ -351,7 +351,9 @@ const DURABLE_GITHUB_REDELIVERY_EVENTS = new Set([
   'pull_request',
   'issue_comment',
   'pull_request_review_comment',
-  'push'
+  'push',
+  'deployment',
+  'deployment_status'
 ])
 /** Only ordinary GitHub webhook families can be reconstructed from the App's
  * delivery list. Generic webhooks and Check rererequests use the Relay's short

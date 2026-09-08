@@ -1803,11 +1803,11 @@ export default function AgentDetailView() {
                               {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
                               <TriggerSelect
                                 className="w-[126px] flex-none"
-                                // Per family: the label cadence exists on issues alone.
+                                // Per family: the label cadence exists on issues alone, and a deployment reads its own copy.
                                 options={ghRowTriggerModes(h).map((mode) => ({
                                   value: mode,
                                   label: GH_TRIGGER_PILL[mode],
-                                  hint: githubTriggerTooltip(mode, da.name)
+                                  hint: githubTriggerTooltip(mode, da.name, githubHookFamily(h) ?? undefined)
                                 }))}
                                 value={triggerModeOf(h)}
                                 onChange={(mode) => void setHookCadence(h, mode)}

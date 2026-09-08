@@ -31,7 +31,10 @@ describe('hook family — pattern classification', () => {
     expect(familyOfEventPattern('pull_request:*')).toBe('pull_request')
     expect(familyOfEventPattern('merge_request:*')).toBe('merge_request')
     expect(familyOfEventPattern('push:*')).toBe('push')
-    // A diff-line review comment is a pull-request subject…
+    expect(familyOfEventPattern('deployment:created')).toBe('deployment')
+    // A status is posted against a deployment, so it is a deployment subject…
+    expect(familyOfEventPattern('deployment_status:failure')).toBe('deployment')
+    // …as a diff-line review comment is a pull-request subject…
     expect(familyOfEventPattern('pull_request_review_comment:created')).toBe('pull_request')
     // …but GitHub's shared conversation subscription names no subject by itself.
     expect(familyOfEventPattern('issue_comment:created')).toBeNull()
@@ -48,6 +51,11 @@ describe('hook family — pattern classification', () => {
     expect(eventPatternFitsFamily('github', 'issues', 'pull_request_review_comment:created')).toBe(false)
     expect(eventPatternFitsFamily('gitlab', 'merge_request', 'merge_request:*')).toBe(true)
     expect(eventPatternFitsFamily('gitlab', 'merge_request', 'issues:*')).toBe(false)
+    // A deployment status rides the deployment row, and only GitHub has one.
+    expect(eventPatternFitsFamily('github', 'deployment', 'deployment_status:*')).toBe(true)
+    expect(eventPatternFitsFamily('github', 'deployment', 'deployment:created')).toBe(true)
+    expect(eventPatternFitsFamily('github', 'push', 'deployment_status:*')).toBe(false)
+    expect(eventPatternFitsFamily('gitlab', 'deployment', 'deployment_status:*')).toBe(false)
   })
 
   it('knows which families can carry reviews, and which patterns ride the shared subscription', () => {
@@ -55,7 +63,8 @@ describe('hook family — pattern classification', () => {
       ['pull_request', true],
       ['merge_request', true],
       ['issues', false],
-      ['push', false]
+      ['push', false],
+      ['deployment', false]
     ]
     for (const [family, expected] of carries) expect(familyCarriesReviews(family)).toBe(expected)
     expect(hasSharedCommentPattern(['pull_request:*', 'issue_comment:created'])).toBe(true)
@@ -76,6 +85,8 @@ describe('hook family — one-row shape', () => {
       shape({ family: 'issues', events: ['issues:*', 'issue_comment:created'], commentFamilies: ['issues'] })
     ).toBeNull()
     expect(shape({ family: 'push', events: ['push:*'] })).toBeNull()
+    expect(shape({ family: 'deployment', events: ['deployment:created'] })).toBeNull()
+    expect(shape({ family: 'deployment', events: ['deployment:*', 'deployment_status:failure'] })).toBeNull()
     expect(
       shape({
         kind: 'gitlab',
@@ -89,6 +100,9 @@ describe('hook family — one-row shape', () => {
   it('names the offending pattern when it belongs to another family', () => {
     expect(shape({ events: ['pull_request:*', 'issues:opened'] })).toMatch(/"issues:opened".*pull_request family/)
     expect(shape({ family: 'push', events: ['push:*', 'issue_comment:created'] })).toMatch(/issue_comment:created/)
+    // A status belongs to the deployment row, whichever sibling tries to carry it.
+    expect(shape({ family: 'issues', events: ['issues:*', 'deployment_status:*'] })).toMatch(/"deployment_status:\*"/)
+    expect(shape({ family: 'deployment', events: ['deployment:*', 'push:*'] })).toMatch(/"push:\*".*deployment family/)
   })
 
   it('keeps commentFamilies inside the row it scopes', () => {
@@ -110,6 +124,7 @@ describe('hook family — one-row shape', () => {
     expect(shape({ family: 'issues', events: ['issues:*'], reviewPolicy: 'comment' })).toBe(reviews)
     expect(shape({ family: 'issues', events: ['issues:*'], reportingMode: 'check' })).toBe(reviews)
     expect(shape({ family: 'push', events: ['push:*'], gateMode: 'required' })).toBe(reviews)
+    expect(shape({ family: 'deployment', events: ['deployment:*'], reviewPolicy: 'comment' })).toBe(reviews)
     expect(shape({ reviewPolicy: 'full', reportingMode: 'check' })).toBeNull()
     expect(
       shape({ kind: 'gitlab', family: 'merge_request', events: ['merge_request:*'], reviewPolicy: 'full' })

@@ -505,7 +505,7 @@ export function hookRoutes(deps: HttpDeps) {
           tags: [Tag.Hooks],
           summary: 'Create a hook',
           description:
-            'Create a trigger for one agent. `kind:"webhook"` mints an ingress URL (the response carries it plus — when requested — the one-time HMAC signing secret, never retrievable again). `kind:"github"` subscribes a repository covered by one of the organization’s GitHub App installations to issue/PR events. A code-host trigger covers ONE subject `family`, so a repository watched for both pull requests and issues is two triggers, each with its own cadence and mention gate; a second trigger on the same family is a 409.',
+            'Create a trigger for one agent. `kind:"webhook"` mints an ingress URL (the response carries it plus — when requested — the one-time HMAC signing secret, never retrievable again). `kind:"github"` subscribes a repository covered by one of the organization’s GitHub App installations to issue, pull-request, push or deployment events. A code-host trigger covers ONE subject `family`, so a repository watched for both pull requests and issues is two triggers, each with its own cadence and mention gate; a second trigger on the same family is a 409. A `deployment_status:<state>` pattern selects on the status state (`success`, `failure`, …).',
           operationId: 'createHook',
           body: CreateHookBody,
           response: { 200: CreatedHookDto, 400: ErrorDto, 403: ErrorDto, 409: ErrorDto, 429: ErrorDto, 502: ErrorDto }

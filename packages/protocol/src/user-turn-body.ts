@@ -28,7 +28,7 @@ export const CodehostTurnFacts = z.object({
   event: z.string(),
   action: z.string().optional(),
   subject: z.object({
-    kind: z.string().optional(), // issue | pull_request | merge_request | push
+    kind: z.string().optional(), // issue | pull_request | merge_request | push | deployment
     repo: z.string().optional(),
     number: z.number().int().optional(),
     title: z.string().optional(),
@@ -39,6 +39,8 @@ export const CodehostTurnFacts = z.object({
   revision: z.object({ base: z.string().optional(), head: z.string().optional() }).optional(),
   draft: z.boolean().optional(),
   ref: z.string().optional(),
+  /** The target environment of a deployment delivery. */
+  environment: z.string().optional(),
   /** The event body as delivered (an issue/PR description or a comment), already relay-bounded. */
   body: z.string().optional(),
   truncated: z.boolean().optional(),

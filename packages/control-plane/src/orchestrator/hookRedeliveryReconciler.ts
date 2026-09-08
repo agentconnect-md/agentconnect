@@ -5,7 +5,15 @@ import type { GhHookDeliveryPage } from '../github/service.js'
 import type { HookRecord, RelayRecord } from '../persistence/ports.js'
 
 /** The families the relay matches (everything else never produces a run). */
-const SUBSCRIPTION_EVENTS = new Set(['issues', 'pull_request', 'issue_comment', 'pull_request_review_comment', 'push'])
+const SUBSCRIPTION_EVENTS = new Set([
+  'issues',
+  'pull_request',
+  'issue_comment',
+  'pull_request_review_comment',
+  'push',
+  'deployment',
+  'deployment_status'
+])
 /** Redeliveries requested per GUID before giving up (loop breaker). */
 const MAX_ATTEMPTS = 3
 /** Delay before the first sweep of a process — see {@link HookRedeliveryReconciler.start}. */
@@ -76,6 +84,9 @@ export interface ReconcilerLog {
 function hookMatchesEvent(hook: HookRecord, event: string, action: string | null): boolean {
   if ((action === 'closed' || action === 'reopened') && (event === 'issues' || event === 'pull_request')) return false
   if ((event === 'issues' || event === 'pull_request') && action === 'edited') return false
+  // The summary says only `created` for a status; the relay matches on the state it carries, so any
+  // deployment_status pattern is a conservative candidate and the relay's own filter decides.
+  if (event === 'deployment_status') return hook.events.some((pattern) => pattern.startsWith('deployment_status:'))
   const matchesPattern = (candidate: string): boolean =>
     hook.events.includes(`${candidate}:${action ?? ''}`) || hook.events.includes(`${candidate}:*`)
   if (matchesPattern(event)) return true

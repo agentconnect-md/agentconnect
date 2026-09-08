@@ -215,8 +215,8 @@ export type PublishedHookOutput = z.infer<typeof PublishedHookOutput>
 export const HookContext = z.object({
   source: z.enum(HOOK_KINDS),
   // ── github (P2) ──
-  event: z.string().optional(), // 'issues' | 'pull_request' | 'issue_comment'
-  action: z.string().optional(), // 'opened' | 'synchronize' | 'created' | …
+  event: z.string().optional(), // 'issues' | 'pull_request' | 'issue_comment' | 'deployment' | 'deployment_status'
+  action: z.string().optional(), // 'opened' | 'synchronize' | 'created' | … (a deployment_status carries its state here)
   repo: z.string().optional(), // 'owner/repo'
   number: z.number().int().optional(), // issue/PR number
   title: z.string().optional(),
@@ -226,6 +226,10 @@ export const HookContext = z.object({
   labels: z.array(z.string()).optional(),
   htmlUrl: z.string().optional(),
   bodyExcerpt: z.string().optional(), // ≤4 KiB
+  // ── github deployment (no thread: the environment is the subject) ──
+  environment: z.string().optional(), // 'production'
+  ref: z.string().optional(), // the deployed ref, as GitHub names it
+  sha: z.string().optional(), // the deployed commit
   // ── webhook ──
   body: z.string().optional(), // raw body, truncated to ≤64 KiB
   truncated: z.boolean().optional()

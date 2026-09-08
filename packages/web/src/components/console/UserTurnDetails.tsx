@@ -51,6 +51,7 @@ export function CodehostTurnFacts({ facts }: { facts: CodehostFacts }) {
           {revisionText ? <span className="font-mono text-[11.5px]">{revisionText}</span> : ''}
         </FactRow>
         <FactRow label="Ref">{facts.ref ?? ''}</FactRow>
+        <FactRow label="Environment">{facts.environment ?? ''}</FactRow>
         <FactRow label="Draft">{facts.draft === true ? 'yes' : ''}</FactRow>
         <FactRow label="Labels">{facts.labels?.length ? facts.labels.join(', ') : ''}</FactRow>
         <FactRow label="Review">{facts.review ? REVIEW_LABEL[facts.review] : ''}</FactRow>

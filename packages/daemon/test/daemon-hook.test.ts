@@ -4136,6 +4136,66 @@ describe('buildHookMessage', () => {
       expect(push.text).toBe('Pushed to acme/infra')
     })
 
+    it('a deployment is the environment’s session: titled by it, keyed by it, read by its state', async () => {
+      const deploy = (event: 'deployment' | 'deployment_status', action: string, bodyExcerpt?: string) =>
+        ghFire(
+          {
+            event,
+            action,
+            number: undefined,
+            title: undefined,
+            labels: undefined,
+            authorAssociation: undefined,
+            senderLogin: 'github-actions[bot]',
+            htmlUrl: 'https://github.com/acme/infra/actions/runs/1',
+            bodyExcerpt,
+            environment: 'production',
+            ref: 'main',
+            sha: 'c'.repeat(40)
+          },
+          { sessionKey: 'acme/infra#deployments/production', event: `${event}:${action}` }
+        )
+      const created = buildHookMessage(deploy('deployment', 'created', 'Deploy v1.2.3'), 'trace')
+      expect(created).toMatchObject({
+        channel: 'acme/infra',
+        thread: 'deployments/production',
+        threadUrl: 'https://github.com/acme/infra/actions/runs/1',
+        initialSessionTitle: 'Deployment acme/infra → production',
+        text: 'Deployment to production requested'
+      })
+      // Nothing to answer: no reply line, no standing rules, no review — just the facts.
+      expect(created.standingContext).toBeUndefined()
+      expect(created.turnBody?.codehost).toMatchObject({
+        provider: 'github',
+        event: 'deployment:created',
+        subject: { kind: 'deployment', repo: 'acme/infra', url: 'https://github.com/acme/infra/actions/runs/1' },
+        revision: { head: 'c'.repeat(40) },
+        ref: 'main',
+        environment: 'production',
+        body: 'Deploy v1.2.3'
+      })
+      expect(created.turnBody?.codehost?.review).toBeUndefined()
+      expect(created.turnBody?.codehost?.subject.number).toBeUndefined()
+
+      const failed = deploy('deployment_status', 'failure', 'Deploy failed: healthcheck timed out')
+      expect(buildHookMessage(failed, 'trace').text).toBe('Deployment to production failed')
+      expect(buildHookMessage(deploy('deployment_status', 'in_progress'), 'trace').text).toBe(
+        'Deployment to production in progress'
+      )
+      const text = buildHookText(failed)
+      expect(text).toContain('GitHub deployment_status:failure — acme/infra → production')
+      expect(text).toContain('From: github-actions[bot]')
+      expect(text).toContain('Environment: production')
+      expect(text).toContain('Ref: main')
+      expect(text).toContain(`Commit: ${'c'.repeat(40)}`)
+      expect(text).toContain('https://github.com/acme/infra/actions/runs/1')
+      // The description is still third-party text: fenced, never on the header.
+      const beginAt = text.indexOf(UNTRUSTED_CONTENT_BEGIN)
+      expect(beginAt).toBeGreaterThan(text.indexOf('Commit:'))
+      expect(text.slice(beginAt)).toContain('healthcheck timed out')
+      expect(text).not.toContain('The daemon owns the reply')
+    })
+
     it('requires a formal verdict for an authorized explicit PR review mention', async () => {
       const text = buildHookText(
         ghFire(

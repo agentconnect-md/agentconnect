@@ -11,8 +11,8 @@ import type { HookDto } from './api'
 import { GH_FAMILIES, githubHookFamily, type GhFamily } from './github-events'
 import { GL_FAMILIES, gitlabHookFamily, type GlFamily } from './gitlab-events'
 
-// Sibling order for one repo: the change-proposal subject (it carries reviews), then issues, then the held-back push.
-const GH_ROW_ORDER: readonly GhFamily[] = ['pull_request', 'issues', 'push']
+// Sibling order for one repo: the change-proposal subject (it carries reviews), issues, deployments, then the held-back push.
+const GH_ROW_ORDER: readonly GhFamily[] = ['pull_request', 'issues', 'deployment', 'push']
 const GL_ROW_ORDER: readonly GlFamily[] = ['merge_request', 'issues', 'push']
 
 /** One listed subscription: its row, the family it covers (null on a legacy-inert row), and its place in the block. */
