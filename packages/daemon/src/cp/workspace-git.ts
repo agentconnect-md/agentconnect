@@ -7,8 +7,8 @@
  * outcome is proxied to the console (§1/§12), never the repo.
  *
  * DATA vs error: a from-scratch workspace (`isRepo:false`), a dirty tree, a path
- * with no changes, a binary change, or a pull that can't fast-forward (offline,
- * diverged, would clobber local edits) are all normal REPs — the caller renders
+ * with no changes, a binary change, or a refused sync (offline, a local commit the
+ * remote lacks, an edit it would rewrite) are all normal REPs — the caller renders
  * them. So is every way a write can decline: nothing to stage, an empty index, no
  * registered commit identity, a detached HEAD, a branch with no upstream, a
  * rejected push. Only an unknown agentId, a path escaping the workspace, or a
@@ -60,7 +60,7 @@ import {
   canonicalWorkspaceGitUrl,
   gitCommitIdentityEnv,
   GITHUB_CREDENTIAL_SCOPE,
-  pullWorkspaceRef,
+  syncWorkspaceRef,
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
   type ManagedCredentialScope
@@ -78,8 +78,7 @@ import {
 import { LOG_FORMAT, numstatByPath, parseLogZ, parseNameStatusZ, parseNumstatZ } from './workspace-git-parse.js'
 import { REPLY_BUDGET, fitToBudget, utf8Boundary } from '../wire-slice.js'
 
-/** On-demand pull is interactive, so allow more headroom than the 4.5s
- *  best-effort pull at session start (workspace-manager.ts). */
+/** On-demand sync is interactive, so allow more headroom than the 4.5s best-effort sync at session start (workspace-manager.ts). */
 const PULL_TIMEOUT_MS = 20_000
 
 /** A local diff/log/numstat never touches the network, so it either answers
@@ -547,10 +546,10 @@ export function createWorkspaceGit(
 
     async pull(agentId, repo) {
       const root = await rootFor(agentId, undefined, repo)
-      // ff-only: an on-demand pull must never rewrite or clobber the agent's working tree — a
-      // diverged branch / local edits surface as ok:false, not a forced reset. Bounded by a timeout
-      // so an offline remote can't hang the REP, and the controller is built BEFORE the resolution
-      // so the one runner this request uses already carries the signal.
+      // A sync pins the configured branch to the remote and checks it out, carrying uncommitted edits; it
+      // never merges, and an edit it would rewrite or a local commit the remote lacks surfaces as ok:false.
+      // Bounded by a timeout so an offline remote can't hang the REP, and the controller is built BEFORE
+      // the resolution so the one runner this request uses already carries the signal.
       let timer: ReturnType<typeof setTimeout> | undefined
       const abort = new AbortController()
       // Resolved ONCE per request, and `runnerFor` refuses rather than falling back in sandbox mode:
@@ -573,7 +572,7 @@ export function createWorkspaceGit(
           authorized.managed
         )
         timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
-        const res = await pullWorkspaceRef(
+        const res = await syncWorkspaceRef(
           git.withEnv({
             ...workspaceGitLocalEnv(),
             ...pullTarget.env
@@ -582,6 +581,7 @@ export function createWorkspaceGit(
           pullBranch
         )
         const changed = res.files.length
+        const updated = changed > 0 ? `updated ${changed} file${changed === 1 ? '' : 's'}` : 'already in sync'
         return {
           agentId,
           isRepo: true,
@@ -589,11 +589,14 @@ export function createWorkspaceGit(
           changed,
           insertions: res.insertions,
           deletions: res.deletions,
-          detail:
-            changed > 0 ? `Fast-forwarded — updated ${changed} file${changed === 1 ? '' : 's'}.` : 'Already up to date.'
+          detail: res.switchedFrom
+            ? `Switched from ${res.switchedFrom} to ${pullBranch} — ${updated}.`
+            : changed > 0
+              ? `Synced ${pullBranch} — ${updated}.`
+              : 'Already in sync.'
         }
       } catch (err) {
-        return { agentId, isRepo: true, ok: false, detail: scrub(root, (err as Error)?.message ?? 'pull failed') }
+        return { agentId, isRepo: true, ok: false, detail: scrub(root, (err as Error)?.message ?? 'sync failed') }
       } finally {
         if (timer) clearTimeout(timer)
       }

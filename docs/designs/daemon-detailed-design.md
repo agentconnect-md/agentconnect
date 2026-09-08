@@ -540,7 +540,7 @@ This aligns upstream section 6.6 `Agent` / `Integration` / `Workspace` / `CronJo
     "path": "./workspace",
     "gitRepo": "git@github.com:acme/ops.git",
     "gitBranch": "main",
-    "pullOnNewSession": true, // git pull --ff-only before each new session; see packages/daemon/src/workspace/workspace-manager.ts
+    "pullOnNewSession": true, // sync the checkout to the configured remote branch before each new session; see packages/daemon/src/workspace/workspace-manager.ts
     "skills": ["deploy", "rpc-health"]
   },
 
@@ -594,7 +594,7 @@ This aligns upstream section 6.6 `Agent` / `Integration` / `Workspace` / `CronJo
 
 Before a new or reloaded session, Session Manager calls `prepareWorkspace(agent)`:
 
-1. `git-repo`: validate `agentDir`; clone the configured repository and branch if no checkout exists, or run a best-effort `git pull --ff-only` with an approximately 4.5-second timeout when `pullOnNewSession` is enabled. A clone failure is fatal because no checkout exists; a pull failure is nonfatal so offline execution can continue from disk.
+1. `git-repo`: validate `agentDir`; clone the configured repository and branch if no checkout exists, or, when `pullOnNewSession` is enabled, run a best-effort sync with an approximately 4.5-second timeout: fetch the configured branch, point the local branch at the remote tip and check it out, carrying uncommitted edits and never merging (a local commit the remote lacks, or an edit the sync would rewrite, refuses it). A clone failure is fatal because no checkout exists; a refused or offline sync is nonfatal so execution can continue from disk.
 2. `from-scratch`: ensure the workspace directory exists; agent memory is initialized separately under the agent root by `packages/daemon/src/memory/store.ts`.
 3. Return the absolute repository root, validated `agentDir`, or from-scratch directory as the `cwd` for section 7 `session/new` or `session/load`.
 

@@ -152,6 +152,10 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
     if (args[0] === 'status') return worktreeStatus
     if (args[0] === 'rev-list' && args.includes('--count')) return uniqueCommits
     if (args[0] === 'symbolic-ref') return 'dev/alice/quiet-harbor'
+    // What git does when an uncommitted edit touches a file the sync would rewrite: refuses, leaving the checkout as it was.
+    if (args[0] === 'checkout' && args.includes('-B') && pullFails) {
+      throw new Error('Your local changes to the following files would be overwritten by checkout')
+    }
     return ''
   }
   const runner: GitRunner = {
@@ -369,15 +373,20 @@ describe('preparing a cluster git-repo workspace', () => {
     expect(helper[0]!.args.at(-1)).toContain('/opt/agentconnect/bin/git-credential')
   })
 
-  it('pulls an existing checkout instead of cloning over it', async () => {
+  it('syncs an existing checkout instead of cloning over it', async () => {
     checkoutExists = true
     await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)
 
     expect(calls.some((call) => call.args[0] === 'clone')).toBe(false)
-    const pull = calls.find((call) => call.args[0] === 'pull')
-    expect(pull).toMatchObject({ cwd: CHECKOUT })
-    // The pull carries the credential pair, or a private repo's fetch has nothing to authenticate with.
-    expect(pull!.env).toMatchObject({ AC_GITCRED_AGENT: 'agent-cluster' })
+    const fetch = calls.find((call) => call.args[0] === 'fetch')
+    expect(fetch).toMatchObject({ cwd: CHECKOUT })
+    // The fetch carries the credential pair, or a private repo has nothing to authenticate with.
+    expect(fetch!.env).toMatchObject({ AC_GITCRED_AGENT: 'agent-cluster' })
+    // The sync pins the configured branch to the fetched tip and checks it out — never a merge.
+    expect(calls.find((call) => call.args[0] === 'checkout')).toMatchObject({
+      cwd: CHECKOUT,
+      args: ['checkout', '--no-recurse-submodules', '--no-track', '-B', 'main', 'refs/remotes/origin/main']
+    })
     // And the audit ran against the POD's config, not a directory on this disk.
     expect(calls.some((call) => call.cwd === CHECKOUT && call.args.includes('--includes'))).toBe(true)
   })
@@ -404,7 +413,7 @@ describe('preparing a cluster git-repo workspace', () => {
     await expect(workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT)).rejects.toThrow(
       /not a trusted GitHub remote/
     )
-    expect(calls.some((call) => call.args[0] === 'pull')).toBe(false)
+    expect(calls.some((call) => call.args[0] === 'fetch')).toBe(false)
   })
 
   it('empties a partial checkout in the pod when a clone fails, then reports the failure', async () => {
@@ -508,11 +517,11 @@ describe('replacing a cluster workspace in place', () => {
     ).resolves.toBeTypeOf('function')
   })
 
-  it('leaves the marker alone when a divergent branch keeps the volume on the old one', async () => {
-    // `pullWorkspaceRef` pulls INTO the current branch rather than switching, so a configured branch
-    // that has diverged fails ff-only and the volume stays where it was. Recording the new branch
-    // there would tell every later activation that nothing changed, and the agent would run the
-    // wrong branch indefinitely — silently, which is what makes it expensive.
+  it('leaves the marker alone when a refused sync keeps the volume on the old branch', async () => {
+    // `syncWorkspaceRef` switches to the configured branch, but an uncommitted edit it would rewrite
+    // makes git refuse and the volume stays where it was. Recording the new branch there would tell
+    // every later activation that nothing changed, and the agent would run the wrong branch
+    // indefinitely — silently, which is what makes it expensive.
     const agent = await withProvenMarker()
     const moved = { ...agent, workspace: { ...agent.workspace, gitBranch: 'release' } } as Agent
     checkoutExists = true

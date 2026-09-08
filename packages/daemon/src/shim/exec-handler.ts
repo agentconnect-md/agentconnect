@@ -22,6 +22,7 @@ import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
 export const ALLOWED_GIT_SUBCOMMANDS = new Set([
   'branch',
   'check-ref-format',
+  'checkout',
   'clean',
   'clone',
   'config',
@@ -73,6 +74,22 @@ const REFUSED_ARGUMENT = [
  * edits config.
  */
 const REFUSED_SUBCOMMAND_ARGUMENT: Record<string, RegExp[]> = {
+  // Admitted for the workspace sync's `checkout --no-track -B <branch> <ref>` alone: the branch switch that
+  // carries uncommitted edits and lets git refuse an overlap. Every form that would instead discard or
+  // restore working-tree files (force, pathspecs, merge/patch modes) stays out.
+  checkout: [
+    /^-f$/,
+    /^--force$/,
+    /^--$/,
+    /^-m$/,
+    /^--merge$/,
+    /^-p$/,
+    /^--patch$/,
+    /^--ours$/,
+    /^--theirs$/,
+    /^--orphan/,
+    /^--detach$/
+  ],
   clone: [/^-u/],
   config: [/^-e$/, /^--edit/]
 }

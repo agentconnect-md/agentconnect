@@ -23,6 +23,7 @@ import { escapeHtml, highlight, linkifyHtml, loadHljs } from '@/lib/highlight'
 import { resolveWorkspaceMarkdownLink } from '@/components/console/workspace-links'
 import type { WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { isGitWorkspace, type Agent } from '@/lib/data'
+import { gitWriteRequestFailureText } from '@/components/console/dock/git-write'
 import type { MarkdownLinkResolution } from '@/components/console/MarkdownView'
 import {
   FileBrowserBreadcrumb,
@@ -292,7 +293,9 @@ export function WorkspaceFiles({
     if (guide) selectFile(guide.name, guide.name)
   }, [dirs, isMobile])
 
-  // Force a fast-forward pull on the owning daemon, then refresh status + tree.
+  // Sync the checkout to its remote branch on the owning daemon, then refresh status + tree. A
+  // refused sync answers 200 with the reason as data; a status (the agent working in the checkout,
+  // an offline daemon) is explained the way every other console git write explains it.
   const onGitPull = () => {
     if (gitPulling) return
     setGitPulling(true)
@@ -300,12 +303,16 @@ export function WorkspaceFiles({
     workspaceGitPull(agentId, repo ? { repo } : {}).then(
       (r) => {
         setGitPulling(false)
-        setGitMsg(r.detail ?? (r.ok ? 'Pulled.' : 'Pull failed.'))
+        setGitMsg(r.detail ?? (r.ok ? 'Synced.' : 'Sync failed.'))
         if (r.ok) setRefreshTick((n) => n + 1)
       },
-      () => {
+      (e: unknown) => {
         setGitPulling(false)
-        setGitMsg('Pull failed — the daemon may be offline.')
+        setGitMsg(
+          e instanceof ApiError
+            ? gitWriteRequestFailureText(e.status, e.code ?? null)
+            : gitWriteRequestFailureText(null, null)
+        )
       }
     )
   }

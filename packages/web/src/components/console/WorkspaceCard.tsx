@@ -189,7 +189,7 @@ export function WorkspaceCard({
         {isGit && header?.onPull && (
           <button
             className={`iconbtn h-6 w-6 flex-none ${header.pulling ? 'pointer-events-none opacity-50' : ''}`}
-            title="Fast-forward pull from the remote"
+            title="Sync the checkout with its remote branch"
             onClick={header.onPull}
           >
             <Icon name="refresh-cw" size={13} />

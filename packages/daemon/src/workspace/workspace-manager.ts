@@ -33,7 +33,7 @@ import {
   cloneGitEnv,
   gitFor,
   preWarmGitCred,
-  pullWorkspaceRef,
+  syncWorkspaceRef,
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
@@ -1076,7 +1076,7 @@ export class WorkspaceManager {
     writeFileSync(file, JSON.stringify({ version: 1, key }, null, 2) + '\n')
   }
 
-  /** Best-effort ff-only pull of one root's checkout; never block/throw on offline (design §4.3). */
+  /** Best-effort sync of one root's checkout to its configured remote branch; never block/throw on offline (design §4.3). */
   async pullRoot(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
     // github-app: warm the credential cache OUTSIDE the pull budget — a cold cache costs a CP round trip.
     if (root.githubApp) await preWarmGitCred(agentId, 'pull').catch(() => undefined)
@@ -1090,9 +1090,9 @@ export class WorkspaceManager {
         ...workspaceGitLocalEnv(),
         ...pullTarget.env
       })
-      await pullWorkspaceRef(git, pullTarget.remote, root.branch)
+      await syncWorkspaceRef(git, pullTarget.remote, root.branch)
     } catch {
-      // offline / timed out / non-fast-forward: proceed with the on-disk checkout
+      // offline / timed out / refused (a local commit the remote lacks, an edit the sync would rewrite): proceed with the on-disk checkout
     } finally {
       clearTimeout(timer)
     }
@@ -2211,11 +2211,10 @@ export class WorkspaceManager {
           ...workspaceGitLocalEnv(),
           ...pullTarget.env
         })
-        await pullWorkspaceRef(git, pullTarget.remote, agent.workspace.gitBranch)
+        await syncWorkspaceRef(git, pullTarget.remote, agent.workspace.gitBranch)
         pulled = true
       } catch {
-        // offline / timed out / non-fast-forward: proceed with the checkout on the volume, which is
-        // the same degradation the local path accepts.
+        // offline / timed out / refused: proceed with the checkout on the volume, the same degradation the local path accepts.
       } finally {
         clearTimeout(timer)
       }
@@ -2223,15 +2222,15 @@ export class WorkspaceManager {
     // The marker records what the VOLUME holds, and this is the only place that knows — but ONLY when
     // that can be proven, because a marker that overstates is worse than one that lags.
     //
-    // The case that made this precise: a volume on branch A, a configuration that now says a divergent
-    // branch B. `pullWorkspaceRef` pulls INTO the current branch rather than switching, so its ff-only
-    // pull fails, the failure is swallowed as ordinary offline degradation, and the volume stays on A.
-    // Recording B there tells every later activation that nothing changed, and the agent runs the
-    // wrong branch indefinitely — silently, which is the property that makes it expensive.
+    // The case that made this precise: a volume on branch A, a configuration that now says branch B.
+    // `syncWorkspaceRef` switches to B, but a refused sync (an edit it would rewrite, a local commit the
+    // remote lacks) is swallowed as ordinary offline degradation and the volume stays on A. Recording B
+    // there tells every later activation that nothing changed, and the agent runs the wrong branch
+    // indefinitely — silently, which is the property that makes it expensive.
     //
     // Provable means: a fresh clone (its `--branch` decided HEAD), or an existing checkout whose HEAD
     // IS the configured branch AND whose tree is attributable to the configured repository — either
-    // because a stored marker already attests it, or because a pull from it just succeeded. A rewritten
+    // because a stored marker already attests it, or because a sync from it just succeeded. A rewritten
     // origin says nothing about the tree that was already there, and a branch name can match in both
     // repositories, so without one of those two the volume is simply unproven.
     //
@@ -2854,9 +2853,9 @@ export type WorkspacePathClearer = (agentId: string, root: string) => Promise<st
 /**
  * Which branch the pod's checkout is actually on.
  *
- * `pullWorkspaceRef` pulls INTO the current branch rather than switching to the configured one, so
- * this is the only thing that can tell a volume holding the requested branch from one that merely
- * fetched it. Empty when it cannot be established, which counts as "cannot prove it".
+ * A refused `syncWorkspaceRef` leaves the volume on whatever branch it held, so this is the only
+ * thing that can tell a volume holding the requested branch from one that merely fetched it. Empty
+ * when it cannot be established, which counts as "cannot prove it".
  */
 
 /**

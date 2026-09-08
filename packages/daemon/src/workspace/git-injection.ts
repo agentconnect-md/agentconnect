@@ -326,17 +326,68 @@ export async function assertSafeWorkspaceGitConfig(git: GitRunner): Promise<void
   }
 }
 
+/** What a sync moved: the files between the old and new HEAD, and the branch it had to leave. */
+export interface WorkspaceSyncSummary extends GitPullSummary {
+  /** The branch the checkout was on before, when the sync switched it to the configured one. */
+  switchedFrom?: string
+}
+
+// `ins\tdel\tpath` rows; `-` marks a binary file, which counts as a changed file with no line counts.
+function parseNumstat(out: string): GitPullSummary {
+  const summary: GitPullSummary = { files: [], insertions: 0, deletions: 0 }
+  for (const line of out.split('\n')) {
+    const row = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line)
+    if (!row) continue
+    summary.files.push(row[3]!)
+    if (row[1] !== '-') summary.insertions += Number(row[1])
+    if (row[2] !== '-') summary.deletions += Number(row[2])
+  }
+  return summary
+}
+
 /**
- * Pull exactly the daemon-authorized repository and branch. Supplying both
- * operands keeps checkout-controlled branch.*.remote / branch.*.merge config
- * out of daemon-managed network selection; the explicit destination also keeps
- * origin/<branch> current for status. check-ref-format prevents a configured
- * branch from being interpreted as an option or refspec.
+ * Sync the checkout to the daemon-authorized `remote`'s `<branch>`: fetch it, then point the local
+ * branch at the fetched tip and check that out. Never a merge — the local branch ends identical to
+ * the remote one, so history cannot fork; a local commit the remote lacks refuses the sync instead
+ * of being discarded. Uncommitted changes ride along as `git checkout` carries them, and git refuses
+ * when one touches a file the sync would rewrite. Both operands explicit, so checkout-controlled
+ * `branch.*` config never selects the remote; check-ref-format keeps the branch from being read as an option.
  */
-export async function pullWorkspaceRef(git: GitRunner, remote: string, branch: string): Promise<GitPullSummary> {
+export async function syncWorkspaceRef(git: GitRunner, remote: string, branch: string): Promise<WorkspaceSyncSummary> {
   await git.raw(['check-ref-format', '--branch', branch])
-  const refspec = `+refs/heads/${branch}:refs/remotes/origin/${branch}`
-  return git.pull(remote, refspec, ['--ff-only', '--no-recurse-submodules'])
+  const tracking = `refs/remotes/origin/${branch}`
+  await git.raw(['fetch', '--no-recurse-submodules', remote, `+refs/heads/${branch}:${tracking}`])
+  // `--verify` without `--quiet`: a silent exit 1 is resolved by the runner as if the ref existed.
+  const before = await git.raw(['rev-parse', '--verify', 'HEAD']).then(
+    (sha) => sha.trim(),
+    () => undefined
+  )
+  const current = await git.raw(['symbolic-ref', '--short', 'HEAD']).then(
+    (name) => name.trim(),
+    () => undefined
+  )
+  const hasLocalBranch = await git.raw(['rev-parse', '--verify', `refs/heads/${branch}`]).then(
+    () => true,
+    () => false
+  )
+  if (hasLocalBranch) {
+    const unique = (await git.raw(['rev-list', '--count', `refs/heads/${branch}`, `^${tracking}`])).trim()
+    if (unique !== '0') {
+      throw new Error(
+        `local ${branch} has ${unique} commit${unique === '1' ? '' : 's'} the remote does not; push them or move them to another branch, then sync again`
+      )
+    }
+  }
+  await git.raw(['checkout', '--no-recurse-submodules', '--no-track', '-B', branch, tracking])
+  const after = (await git.raw(['rev-parse', '--verify', 'HEAD'])).trim()
+  const moved =
+    before !== undefined && before !== after
+      ? parseNumstat(await git.raw(['diff', '--numstat', before, after]))
+      : undefined
+  return {
+    ...(moved ?? { files: [], insertions: 0, deletions: 0 }),
+    ...(current !== undefined && current !== branch ? { switchedFrom: current } : {})
+  }
 }
 
 /**

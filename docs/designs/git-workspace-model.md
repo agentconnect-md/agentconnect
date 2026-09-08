@@ -395,8 +395,12 @@ made with `branch --no-track` + `symbolic-ref HEAD` + `reset --hard` instead of
 so it keeps the lazy fetch a blobless clone needs), and retirement's
 review-snapshot probe reads the head ref with `show-ref --verify` instead of
 listing the ref root with `for-each-ref`. Widening the inventory is the other
-way to close such a gap, and it is the one that costs something permanent:
-`checkout` was left out.
+way to close such a gap, and it is the one that costs something permanent, so it
+is done narrowly: `checkout` is admitted only for the workspace sync's branch
+switch (`checkout --no-track -B <branch> <ref>`, the two-tree merge that carries
+uncommitted edits and lets Git refuse an overlap, which no admitted subcommand
+reproduces), with every form that would discard or restore working-tree files
+(`-f`, pathspecs, merge and patch modes) refused by the executor itself.
 
 ### The tier a session is born in (decided 2026-09-03)
 
