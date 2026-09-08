@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { AgentSpec } from './agent.js'
 import { AgentMemoryBinding, MemoryConnectionFacts, MemoryConnectionSpec } from './memory-connection.js'
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111'
@@ -132,5 +133,37 @@ describe('external-memory daemon-private frames', () => {
     expect(() =>
       MemoryConnectionFacts.parse({ connections: [{ ...value.connections[0], grantKey: 'must-not-cross-facts' }] })
     ).toThrow()
+  })
+})
+
+describe('managed memory home', () => {
+  it('defaults a managed binding to the daemon home and lets only managed name one', () => {
+    expect(AgentMemoryBinding.parse({ provider: 'managed' })).toEqual({ provider: 'managed', home: 'daemon' })
+    expect(AgentMemoryBinding.parse({ provider: 'managed', scope: 'channel', home: 'control-plane' })).toEqual({
+      provider: 'managed',
+      scope: 'channel',
+      home: 'control-plane'
+    })
+    // A binding written before the field existed still parses, and the runtime providers stay bare.
+    expect(AgentMemoryBinding.parse({ provider: 'none' })).toEqual({ provider: 'none' })
+    expect(AgentMemoryBinding.parse({ provider: 'native', autoDistill: false })).toEqual({
+      provider: 'native',
+      autoDistill: false
+    })
+    for (const bad of [
+      { provider: 'none', home: 'daemon' },
+      { provider: 'managed', home: 'pod' },
+      { provider: 'native', dreaming: { enabled: true } },
+      { provider: 'none', scope: 'channel' }
+    ]) {
+      expect(AgentMemoryBinding.safeParse(bad).success).toBe(false)
+    }
+  })
+
+  it('resolves the home on the AgentSpec a daemon receives', () => {
+    expect(AgentSpec.parse({ name: 'bot', memory: { provider: 'managed' } }).memory).toEqual({
+      provider: 'managed',
+      home: 'daemon'
+    })
   })
 })

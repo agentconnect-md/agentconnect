@@ -155,6 +155,14 @@ import {
   DreamSkillReadReq,
   DreamSkillContent
 } from './frames/memory.js'
+import {
+  MemoryFsReplySchema,
+  MemoryHistoryAppendOk,
+  MemoryHistoryAppendReq,
+  MemoryHomeMigratedOk,
+  MemoryHomeMigratedReq,
+  MemoryStoreReq
+} from './frames/memory-store.js'
 import { LocalSkillsReq, LocalSkillsList } from './frames/skill.js'
 import { RuntimeCommandsReq, RuntimeCommandsList } from './frames/runtime-command.js'
 import {
@@ -425,6 +433,13 @@ export const FRAME_SCHEMAS = {
   'memory/record/delete/result': MemoryRecordDeleteResult,
   'memory/record/history': MemoryRecordHistoryReq,
   'memory/record/history/page': MemoryRecordHistoryPage,
+  // ── managed memory home in the CP (memory-evolution.md §3.2.1) ──
+  'memory/store': MemoryStoreReq,
+  'memory/store/ok': MemoryFsReplySchema,
+  'memory/history/append': MemoryHistoryAppendReq,
+  'memory/history/append/ok': MemoryHistoryAppendOk,
+  'memory/home/migrated': MemoryHomeMigratedReq,
+  'memory/home/migrated/ok': MemoryHomeMigratedOk,
   // ── memory dreaming (managed-store consolidation jobs; REPs carry DreamState) ──
   'memory/dream/start': DreamStartReq,
   'memory/dream/start/ok': DreamState,
@@ -688,6 +703,12 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('memory/record/delete/result', FRAME_SCHEMAS['memory/record/delete/result']),
   frame('memory/record/history', FRAME_SCHEMAS['memory/record/history']),
   frame('memory/record/history/page', FRAME_SCHEMAS['memory/record/history/page']),
+  frame('memory/store', FRAME_SCHEMAS['memory/store']),
+  frame('memory/store/ok', FRAME_SCHEMAS['memory/store/ok']),
+  frame('memory/history/append', FRAME_SCHEMAS['memory/history/append']),
+  frame('memory/history/append/ok', FRAME_SCHEMAS['memory/history/append/ok']),
+  frame('memory/home/migrated', FRAME_SCHEMAS['memory/home/migrated']),
+  frame('memory/home/migrated/ok', FRAME_SCHEMAS['memory/home/migrated/ok']),
   frame('memory/dream/start', FRAME_SCHEMAS['memory/dream/start']),
   frame('memory/dream/start/ok', FRAME_SCHEMAS['memory/dream/start/ok']),
   frame('memory/dream/cancel', FRAME_SCHEMAS['memory/dream/cancel']),

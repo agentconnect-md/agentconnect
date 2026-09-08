@@ -2,6 +2,7 @@ import { FRAME_SCHEMAS, type AnyFrame, type FrameType } from './index.js'
 import { tolerantSchemas } from './tolerant.js'
 import {
   MAX_FRAME_BYTES,
+  REPLY_BUDGET,
   buildEnvelopeRaw,
   decodeEnvelopeWith,
   type BuildOpts,
@@ -21,7 +22,7 @@ import {
  * cannot finish a handshake until it is upgraded too (`tolerant.ts`).
  */
 
-export { MAX_FRAME_BYTES }
+export { MAX_FRAME_BYTES, REPLY_BUDGET }
 export type { BuildOpts, InboundControlExt }
 
 export type DecodeResult = DecodeResultOf<AnyFrame>

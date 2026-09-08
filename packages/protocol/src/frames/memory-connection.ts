@@ -99,30 +99,26 @@ export const DEFAULT_MEMORY_DREAMING_POLICY = {
 export const ManagedMemoryScope = z.enum(['agent', 'channel'])
 export type ManagedMemoryScope = z.infer<typeof ManagedMemoryScope>
 
-const BuiltInMemoryBinding = z
+/** Where a managed tree lives (memory-evolution.md §3.2.1): the daemon's disk, or the Control Plane database. */
+export const ManagedMemoryHome = z.enum(['daemon', 'control-plane'])
+export type ManagedMemoryHome = z.infer<typeof ManagedMemoryHome>
+
+export const ManagedMemoryBinding = z
   .object({
-    provider: z.enum(['none', 'native', 'managed']),
+    provider: z.literal('managed'),
     autoDistill: z.boolean().optional(),
     dreaming: MemoryDreamingPolicy.optional(),
-    scope: ManagedMemoryScope.optional()
+    scope: ManagedMemoryScope.optional(),
+    // Absent on a binding older than the field ⇒ `daemon`, the historical home; the CP stores the resolved value.
+    home: ManagedMemoryHome.default('daemon')
   })
   .strict()
-  .superRefine((binding, ctx) => {
-    if (binding.dreaming && binding.provider !== 'managed') {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['dreaming'],
-        message: 'dreaming is only supported with the managed memory provider'
-      })
-    }
-    if (binding.scope && binding.provider !== 'managed') {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['scope'],
-        message: 'memory scope is only supported with the managed memory provider'
-      })
-    }
-  })
+export type ManagedMemoryBinding = z.infer<typeof ManagedMemoryBinding>
+
+// `none` and `native` carry no managed policy; `autoDistill` stays accepted because stored bindings have carried it.
+const RuntimeMemoryBinding = z
+  .object({ provider: z.enum(['none', 'native']), autoDistill: z.boolean().optional() })
+  .strict()
 
 export const ExternalMemoryBinding = z
   .object({
@@ -137,7 +133,7 @@ export const ExternalMemoryBinding = z
 export type ExternalMemoryBinding = z.infer<typeof ExternalMemoryBinding>
 
 /** Agent-facing provider selection. External bindings carry policy, never endpoints or secrets. */
-export const AgentMemoryBinding = z.union([BuiltInMemoryBinding, ExternalMemoryBinding])
+export const AgentMemoryBinding = z.union([ManagedMemoryBinding, RuntimeMemoryBinding, ExternalMemoryBinding])
 export type AgentMemoryBinding = z.infer<typeof AgentMemoryBinding>
 
 /** Resolve the managed-memory dreaming policy used by the daemon.

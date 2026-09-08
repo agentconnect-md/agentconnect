@@ -603,7 +603,7 @@ describe('SessionManager', () => {
 
   it('starts a fresh ACP session when the memory provider changes', async () => {
     const store = await newStore()
-    let currentAgent: typeof agent = { ...agent, memory: { provider: 'managed' } }
+    let currentAgent: typeof agent = { ...agent, memory: { provider: 'managed', home: 'daemon' } }
     const host = {
       newSession: vi.fn().mockResolvedValueOnce('acp-managed').mockResolvedValueOnce('acp-none'),
       hasSession: vi.fn(() => true)

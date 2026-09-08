@@ -3,11 +3,10 @@
  * workspace and memory readers so both honour the 256 KiB wire cap and never
  * split a UTF-8 character across slices.
  */
-import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import { REPLY_BUDGET } from '@agentconnect.md/protocol'
 
-/** Encoded-payload ceiling, leaving headroom under MAX_FRAME_BYTES for the
- *  envelope (id/ts/type/corr + fencing ext, well under 4 KiB). */
-export const REPLY_BUDGET = MAX_FRAME_BYTES - 4096
+/** The encoded-payload ceiling is protocol's since the memory op set became a wire contract; re-served for local callers. */
+export { REPLY_BUDGET }
 
 /** The encoded size of the payload the wire will carry (JSON.stringify matches
  *  the codec's `encode`), measured in bytes. */

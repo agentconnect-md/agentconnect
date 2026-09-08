@@ -15,6 +15,9 @@ import { Envelope, NIL_UUID, type ControlExt } from './envelope.js'
 /** Soft cap per frame — 256 KiB (protocol §1). Over this → FRAME_TOO_LARGE. */
 export const MAX_FRAME_BYTES = 256 * 1024
 
+/** Encoded-payload ceiling a sender plans slices against: `MAX_FRAME_BYTES` less headroom for the envelope. */
+export const REPLY_BUDGET = MAX_FRAME_BYTES - 4096
+
 /**
  * The optional fencing block read off an inbound frame. Extracted on EVERY
  * wire (the decode core is shared), but only MEANINGFUL on the daemon↔CP wire

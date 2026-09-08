@@ -276,8 +276,17 @@ export interface MemoryDreamingConfig {
  *  `channel` gives each channel its own memory folder (#653). */
 export type ManagedMemoryScope = 'agent' | 'channel'
 
+/** Where the managed tree lives (memory-evolution.md §3.2.1); absent on a binding written before the field existed. */
+export type ManagedMemoryHome = 'daemon' | 'control-plane'
+
 export type AgentMemoryConfig =
-  | { provider: 'managed'; autoDistill?: boolean; dreaming?: MemoryDreamingConfig; scope?: ManagedMemoryScope }
+  | {
+      provider: 'managed'
+      autoDistill?: boolean
+      dreaming?: MemoryDreamingConfig
+      scope?: ManagedMemoryScope
+      home?: ManagedMemoryHome
+    }
   | { provider: 'native' | 'none'; autoDistill?: boolean }
   | {
       provider: 'external'
