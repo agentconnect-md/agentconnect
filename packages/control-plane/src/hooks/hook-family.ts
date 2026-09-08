@@ -9,10 +9,10 @@
  */
 
 /** Every subject family the two code hosts between them subscribe to. */
-export type HookFamily = 'issues' | 'pull_request' | 'merge_request' | 'push'
+export type HookFamily = 'issues' | 'pull_request' | 'merge_request' | 'push' | 'deployment'
 
 /** The families a row of each kind may declare. */
-export const GITHUB_FAMILIES = ['pull_request', 'issues', 'push'] as const
+export const GITHUB_FAMILIES = ['pull_request', 'issues', 'push', 'deployment'] as const
 export const GITLAB_FAMILIES = ['merge_request', 'issues', 'push'] as const
 
 /** Reviews and run reporting exist only on a change-proposal subject. */
@@ -33,9 +33,12 @@ export function familyOfEventPattern(pattern: string): HookFamily | null {
     case 'pull_request':
     case 'merge_request':
     case 'push':
+    case 'deployment':
       return prefix
     case 'pull_request_review_comment':
       return 'pull_request'
+    case 'deployment_status':
+      return 'deployment'
     default:
       return null
   }
@@ -48,6 +51,8 @@ export function eventPatternFitsFamily(kind: 'github' | 'gitlab', family: HookFa
     return kind === 'github' && (family === 'issues' || family === 'pull_request')
   }
   if (prefix === 'pull_request_review_comment') return kind === 'github' && family === 'pull_request'
+  // A status is posted against a deployment, so it rides the deployment row (GitHub only).
+  if (prefix === 'deployment_status') return kind === 'github' && family === 'deployment'
   return prefix === family
 }
 

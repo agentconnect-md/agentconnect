@@ -213,6 +213,28 @@ describe('HookRedeliveryReconciler', () => {
     expect(h.redelivered).toEqual(['1234567890123456789'])
   })
 
+  // GitHub's delivery summary says only `created` for a status; the state the
+  // relay matches on is in the body it never lists. Any status subscription is
+  // therefore a candidate, and the relay's precise filter decides on redelivery.
+  it('offers a deployment_status GUID to any status subscription, and a deployment to its exact pattern', async () => {
+    const watched = make({
+      hooks: [ghHook({ events: ['deployment:created', 'deployment_status:failure'] })],
+      deliveries: [
+        delivery({ id: '1', guid: 'dep', event: 'deployment', action: 'created' }),
+        delivery({ id: '2', guid: 'status', event: 'deployment_status', action: 'created' })
+      ]
+    })
+    await watched.reconciler.tick()
+    expect(watched.redelivered).toEqual(['1', '2'])
+
+    const createdOnly = make({
+      hooks: [ghHook({ events: ['deployment:created'] })],
+      deliveries: [delivery({ id: '3', guid: 'status-unwatched', event: 'deployment_status', action: 'created' })]
+    })
+    await createdOnly.reconciler.tick()
+    expect(createdOnly.redelivered).toEqual([])
+  })
+
   it('conservatively redelivers possible created-cadence summons', async () => {
     const issue = make({
       hooks: [ghHook({ events: ['issues:opened'], commentFamilies: ['issues'] })],

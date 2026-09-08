@@ -4065,7 +4065,7 @@ export type GithubCommentFamily = 'issues' | 'pull_request'
 export type GitlabCommentFamily = 'issues' | 'merge_request'
 /** The subject family ONE code-host row covers: a row is `(agent, repo, family)`,
  *  each with its own cadence and mention gate, and the family is immutable. */
-export type GithubHookFamily = 'pull_request' | 'issues' | 'push'
+export type GithubHookFamily = 'pull_request' | 'issues' | 'push' | 'deployment'
 export type GitlabHookFamily = 'merge_request' | 'issues' | 'push'
 /** The stored union across code hosts; each row carries only its own host's subset. */
 export type HookCommentFamily = GithubCommentFamily | GitlabCommentFamily

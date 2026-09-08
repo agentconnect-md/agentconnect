@@ -14,10 +14,11 @@
  * `installation` / `installation_repositories` events are not matched — they
  * become an `rc/github-installation` doorbell poke and the CP re-pulls the
  * facts from GitHub (decision 11). Subscription events (`issues`,
- * `pull_request`, `issue_comment`) match against the CP-compiled rules by
- * NUMERIC repo id, gated per rule by the org's installation set (decision 6),
- * with a bot-sender veto except for PR revisions authored by this App (decision
- * 10). Same-repository revisions enter the internal CI lane; fork revisions
+ * `pull_request`, `issue_comment`, `push`, `deployment`) match against the
+ * CP-compiled rules by NUMERIC repo id, gated per rule by the org's installation
+ * set (decision 6), with a bot-sender veto except for PR revisions authored by
+ * this App (decision 10) and for deployments, which are machine-authored by
+ * design. Same-repository revisions enter the internal CI lane; fork revisions
  * remain behind workflow approval. Every matching hook fires its own `rd/msg`
  * (msgId is hookId-prefixed, so fan-out of one delivery to several hooks never
  * self-dedups at the daemon).
@@ -54,7 +55,15 @@ export const GITHUB_BODY_LIMIT = 1024 * 1024
 export const GITHUB_BODY_EXCERPT_MAX = 4 * 1024
 
 /** The event families that are matched against hook rules (everything else: 202 no-op). */
-const SUBSCRIPTION_EVENTS = new Set(['issues', 'pull_request', 'issue_comment', 'pull_request_review_comment', 'push'])
+const SUBSCRIPTION_EVENTS = new Set([
+  'issues',
+  'pull_request',
+  'issue_comment',
+  'pull_request_review_comment',
+  'push',
+  'deployment',
+  'deployment_status'
+])
 /** The events that ring the installation doorbell instead of matching. */
 const INSTALLATION_EVENTS = new Set(['installation', 'installation_repositories'])
 
@@ -129,9 +138,37 @@ interface GithubPayload {
   workflow_run?: {
     event?: string
     head_sha?: string
+    html_url?: string
     triggering_actor?: { login?: string }
     pull_requests?: Array<{ number?: number; head?: { sha?: string } }>
   }
+  // deployment deliveries — the environment is the subject; a status carries the state.
+  deployment?: {
+    id?: number
+    sha?: string
+    ref?: string
+    environment?: string
+    description?: string | null
+  }
+  deployment_status?: {
+    state?: string // 'pending' | 'queued' | 'in_progress' | 'waiting' | 'success' | 'failure' | 'error' | 'inactive'
+    description?: string | null
+    target_url?: string | null
+    log_url?: string | null
+    environment_url?: string | null
+  }
+}
+
+/** `deployment` and `deployment_status` — one subject family, no thread, machine-authored by design. */
+export function isGithubDeploymentEvent(event: string): boolean {
+  return event === 'deployment' || event === 'deployment_status'
+}
+
+/** The action a delivery is matched and reported by: GitHub's own, except a status, whose `created`
+ *  never varies — its STATE is the axis a `deployment_status:<state>` subscription selects on. */
+export function githubEventAction(event: string, payload: GithubPayload): string | undefined {
+  if (event === 'deployment_status') return payload.deployment_status?.state ?? payload.action
+  return payload.action
 }
 
 /** The delivery's own repository. `owner.type` is GitHub's signed owner kind. */
@@ -162,7 +199,8 @@ interface GithubSubject {
 export interface GithubMatchCtx {
   event: string // 'issues'
   eventAction: string // 'issues:opened'; action-less events (push) carry just 'push' —
-  // never equal to a stored `family:action` pattern, so they match via `family:*` only
+  // never equal to a stored `family:action` pattern, so they match via `family:*` only;
+  // a deployment_status carries its state ('deployment_status:failure')
   installationId: string | undefined // String(payload.installation.id); absent ⇒ never matches
   labels: string[] // the subject's CURRENT labels (not payload.label)
   senderType: string | undefined // 'User' | 'Bot' | …
@@ -341,7 +379,10 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     return 'no-match'
   // Decision 10: bot-authored comments/review-comments and unrelated bot PRs
   // remain vetoed; only this App's same-repository PR revisions enter review.
-  if (ctx.senderType === 'Bot' && !isConfiguredAppPullRequest(rule, ctx)) return 'no-match'
+  // Deployments are exempt: Actions and deploy Apps author nearly all of them,
+  // and nothing here posts back into a deployment, so no loop can form.
+  if (ctx.senderType === 'Bot' && !isConfiguredAppPullRequest(rule, ctx) && !isGithubDeploymentEvent(ctx.event))
+    return 'no-match'
   // Decision 6(a): the org-attribution gate. An event that cannot prove its
   // installation does not fire.
   if (!ctx.installationId || !rule.github.installationIds.includes(ctx.installationId)) return 'no-match'
@@ -406,8 +447,11 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
     return 'no-match'
 
   // GitHub's relationship labels are descriptive, not an authorization proof: MEMBER and
-  // COLLABORATOR may still hold read only. Every numbered-thread event resolves the live role.
-  return ctx.event === 'push' || isInternalAppPullRequest(rule, ctx) ? 'trusted' : 'needs-authz'
+  // COLLABORATOR may still hold read only. Every numbered-thread event resolves the live role;
+  // a push or a deployment has no thread actor, so the installation gate is its whole proof.
+  return ctx.event === 'push' || isGithubDeploymentEvent(ctx.event) || isInternalAppPullRequest(rule, ctx)
+    ? 'trusted'
+    : 'needs-authz'
 }
 
 /** Truncate on a UTF-8 BYTE budget, cutting at a code-point boundary — the
@@ -429,18 +473,46 @@ function sanitizeTitle(title: string): string {
   return flat.length > 200 ? `${flat.slice(0, 199)}…` : flat
 }
 
+/** A commit id as GitHub writes it; anything else is dropped rather than rendered on the trusted header. */
+const COMMIT_SHA = /^[0-9a-f]{7,64}$/i
+
+/** The first link a payload actually carries — GitHub defaults an omitted status URL to `""`, not null. */
+function firstUrl(...candidates: Array<string | null | undefined>): string | undefined {
+  return candidates.find((candidate): candidate is string => typeof candidate === 'string' && candidate !== '')
+}
+
 /** Build the trimmed envelope shared by every hook this delivery fans out to
  *  (exported for unit tests). Comment fields win over the subject's for
  *  `issue_comment` deliveries — the comment is what fired. Push deliveries have
- *  no subject: the head commit message is the excerpt, the compare URL the link. */
+ *  no subject: the head commit message is the excerpt, the compare URL the link.
+ *  A deployment's excerpt is its (status) description; its link is the status
+ *  log, target or environment URL, else the workflow run that created it. */
 export function buildGithubContext(event: string, payload: GithubPayload): HookContext {
   const subject = payload.issue ?? payload.pull_request
-  const bodySource = payload.comment?.body ?? subject?.body ?? payload.head_commit?.message ?? ''
+  const deployment = isGithubDeploymentEvent(event) ? payload.deployment : undefined
+  const status = event === 'deployment_status' ? payload.deployment_status : undefined
+  const bodySource =
+    payload.comment?.body ??
+    subject?.body ??
+    status?.description ??
+    deployment?.description ??
+    payload.head_commit?.message ??
+    ''
   const excerpt = truncateUtf8(bodySource, GITHUB_BODY_EXCERPT_MAX)
+  const action = githubEventAction(event, payload)
+  const htmlUrl = firstUrl(
+    payload.comment?.html_url,
+    subject?.html_url,
+    payload.compare,
+    status?.log_url,
+    status?.target_url,
+    status?.environment_url,
+    deployment ? payload.workflow_run?.html_url : undefined
+  )
   return {
     source: 'github',
     event,
-    ...(payload.action ? { action: payload.action } : {}),
+    ...(action ? { action } : {}),
     ...(payload.repository?.full_name ? { repo: payload.repository.full_name } : {}),
     ...(subject?.number !== undefined ? { number: subject.number } : {}),
     ...(subject?.title ? { title: sanitizeTitle(subject.title) } : {}),
@@ -450,27 +522,29 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
       ? { authorAssociation: payload.comment?.author_association ?? subject?.author_association }
       : {}),
     ...(subject?.labels ? { labels: subject.labels.map((l) => l.name ?? '').filter(Boolean) } : {}),
-    ...((payload.comment?.html_url ?? subject?.html_url ?? payload.compare)
-      ? { htmlUrl: payload.comment?.html_url ?? subject?.html_url ?? payload.compare }
-      : {}),
+    ...(htmlUrl ? { htmlUrl } : {}),
     ...(excerpt.text ? { bodyExcerpt: excerpt.text } : {}),
+    // The environment and ref ride the daemon's trusted header line, so they get the title's defanging.
+    ...(deployment?.environment ? { environment: sanitizeTitle(deployment.environment) } : {}),
+    ...(deployment?.ref ? { ref: sanitizeTitle(deployment.ref) } : {}),
+    ...(deployment?.sha && COMMIT_SHA.test(deployment.sha) ? { sha: deployment.sha } : {}),
     truncated: excerpt.truncated
   }
 }
 
 /**
  * Cut the body-free, trusted subject/revision envelope for one matched rule.
- * Push has no issue/PR subject and therefore returns undefined: review/check
- * settings are PR-only. A PR issue_comment has no revision in GitHub's payload;
- * it still carries repo/pull identity and the daemon resolves the SHA before
- * the hook/start barrier.
+ * Push and deployment have no issue/PR subject and therefore return undefined:
+ * review/check settings are PR-only. A PR issue_comment has no revision in
+ * GitHub's payload; it still carries repo/pull identity and the daemon resolves
+ * the SHA before the hook/start barrier.
  */
 export function buildTrustedGithubMetadata(
   event: string,
   payload: GithubPayload,
   rule: RcHookAssign
 ): GithubHookMetadata | undefined {
-  if (!rule.github || event === 'push') return undefined
+  if (!rule.github || event === 'push' || isGithubDeploymentEvent(event)) return undefined
   const installationId = payload.installation?.id
   const repoId = payload.repository?.id
   if (installationId === undefined || repoId === undefined || String(repoId) !== rule.github.repoId) return undefined
@@ -987,15 +1061,25 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const repoId = payload.repository?.id
       const subject = payload.issue ?? payload.pull_request
       const rules = repoId === undefined ? [] : deps.table.getByRepoId(String(repoId))
-      // Thread events need a subject number; push ("commits") events need a ref.
-      const thread = subject?.number !== undefined ? String(subject.number) : event === 'push' ? payload.ref : undefined
+      // Thread events need a subject number; push ("commits") events need a ref; a
+      // deployment needs its environment — every deployment there continues one session.
+      const environment = isGithubDeploymentEvent(event) ? payload.deployment?.environment : undefined
+      const thread =
+        subject?.number !== undefined
+          ? String(subject.number)
+          : event === 'push'
+            ? payload.ref
+            : environment
+              ? `deployments/${environment}`
+              : undefined
       if (rules.length === 0 || thread === undefined) return reply.code(202).send({ deliveryKey })
 
       const cleanupEvent = githubThreadWorktreeCleanupEvent(event, payload)
+      const action = githubEventAction(event, payload)
       const ctx: GithubMatchCtx = {
         event,
         // Action-less events (push) stay bare — they only ever match `family:*`.
-        eventAction: cleanupEvent ?? (payload.action ? `${event}:${payload.action}` : event),
+        eventAction: cleanupEvent ?? (action ? `${event}:${action}` : event),
         installationId: payload.installation?.id !== undefined ? String(payload.installation.id) : undefined,
         labels: (subject?.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
         senderType: payload.sender?.type,
@@ -1017,6 +1101,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
               : undefined,
         // push: a summon may sit in ANY pushed commit's message, not just the
         // head (GitHub ships ≤20 in the payload — enough for the mention gate).
+        // A deployment's only authored text is its (status) description.
         mentionText:
           payload.comment?.body ??
           subject?.body ??
@@ -1024,11 +1109,14 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
             ? [payload.head_commit?.message, ...(payload.commits ?? []).map((c) => c.message)]
                 .filter(Boolean)
                 .join('\n') || undefined
-            : undefined)
+            : isGithubDeploymentEvent(event)
+              ? (payload.deployment_status?.description ?? payload.deployment?.description ?? undefined)
+              : undefined)
       }
       const context = buildGithubContext(event, payload)
-      // Session affinity: issue/PR thread (`prefix#42`) or the pushed branch
-      // (`prefix#refs/heads/main`) — the daemon splits on the LAST '#'.
+      // Session affinity: issue/PR thread (`prefix#42`), the pushed branch
+      // (`prefix#refs/heads/main`) or the deployment environment
+      // (`prefix#deployments/production`) — the daemon splits on the LAST '#'.
       // The compiled prefix is immutable across GitHub repository renames.
       const fallbackSessionKeyPrefix = payload.repository?.full_name ?? String(repoId)
       const firedAt = new Date(deps.clock.now()).toISOString()

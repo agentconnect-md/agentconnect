@@ -536,6 +536,34 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       expect(other.statusCode).toBe(200)
     })
 
+    it('POST accepts a deployment subscription, state patterns included, as one more family of the repo', async () => {
+      const agentId = await githubAgent()
+      await seedRelay()
+      await seedInstallation()
+      const a = ghApp()
+
+      const body = ghBody(agentId, {
+        name: 'deploy-hook',
+        family: 'deployment',
+        events: ['deployment:*', 'deployment_status:failure'],
+        commentFamilies: [],
+        labelFilter: []
+      })
+      const created = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: body })
+      expect(created.statusCode).toBe(200)
+      expect(created.json()).toMatchObject({
+        family: 'deployment',
+        events: ['deployment:*', 'deployment_status:failure'],
+        commentFamilies: []
+      })
+      // Beside the issues row of the same repo — the family is the row's identity.
+      const issues = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: ghBody(agentId) })
+      expect(issues.statusCode).toBe(200)
+      const dup = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: body })
+      expect(dup.statusCode).toBe(409)
+      expect((dup.json() as { message: string }).message).toMatch(/already watches acme\/infra \(deployment\)/)
+    })
+
     it('the agents list carries hookKinds marks for enabled triggers', async () => {
       const agentId = await githubAgent()
       await seedRelay()
@@ -865,6 +893,8 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         // A pattern belonging to another family — that family has its own row.
         [{ family: 'pull_request', events: ['pull_request:*', 'issues:opened'] }, /"issues:opened"/],
         [{ family: 'push', events: ['push:*', 'issue_comment:created'] }, /"issue_comment:created"/],
+        // A status rides the deployment row alone.
+        [{ family: 'issues', events: ['issues:*', 'deployment_status:*'] }, /"deployment_status:\*"/],
         // An unscoped issue_comment is the legacy repo-wide meaning: it would
         // double-fire against the sibling row that owns the other thread family.
         [

@@ -118,6 +118,40 @@ function pullPayload(overrides: Record<string, unknown> = {}): Record<string, un
   }
 }
 
+/** A GitHub Actions deployment — the sender is the Actions bot, as it is for nearly every deployment. */
+function deploymentPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    action: 'created',
+    installation: { id: INSTALLATION },
+    repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
+    sender: { login: 'github-actions[bot]', type: 'Bot' },
+    deployment: {
+      id: 9001,
+      sha: 'c'.repeat(40),
+      ref: 'main',
+      task: 'deploy',
+      environment: 'production',
+      description: 'Deploy v1.2.3'
+    },
+    workflow_run: { html_url: 'https://github.com/acme/infra/actions/runs/1' },
+    ...overrides
+  }
+}
+
+/** A status posted against that deployment; GitHub's action is always `created`, the news is `state`. */
+function deploymentStatusPayload(status: Record<string, unknown> = {}): Record<string, unknown> {
+  return deploymentPayload({
+    deployment_status: {
+      state: 'failure',
+      description: 'Deploy failed: healthcheck timed out',
+      log_url: 'https://github.com/acme/infra/actions/runs/1/job/2',
+      target_url: null,
+      environment_url: 'https://app.example.test',
+      ...status
+    }
+  })
+}
+
 function rerequestPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     action: 'rerequested',
@@ -2388,6 +2422,96 @@ describe('github ingress', () => {
         repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         sender: { login: 'alice', type: 'User' }
       })
+      expect(res.statusCode).toBe(202)
+      await flush()
+      expect(h.sent).toHaveLength(0)
+    })
+
+    it('a deployment fires on `deployment:created` with per-environment affinity — bot sender and all', async () => {
+      h.table.upsert(rule({}, { events: ['deployment:created'] }))
+      const res = await post('deployment', deploymentPayload())
+      expect(res.statusCode).toBe(202)
+      await flush()
+      expect(h.sent).toHaveLength(1)
+      const msg = h.sent[0]!
+      if (msg.source !== 'hook') throw new Error('expected hook member')
+      expect(msg.sessionKey).toBe('acme/infra#deployments/production')
+      expect(msg.event).toBe('deployment:created')
+      // No issue/PR subject ⇒ no trusted review metadata, and no number.
+      expect(msg.github).toBeUndefined()
+      expect(msg.context?.number).toBeUndefined()
+      expect(msg.context).toMatchObject({
+        source: 'github',
+        event: 'deployment',
+        action: 'created',
+        repo: 'acme/infra',
+        senderLogin: 'github-actions[bot]',
+        environment: 'production',
+        ref: 'main',
+        sha: 'c'.repeat(40),
+        htmlUrl: 'https://github.com/acme/infra/actions/runs/1',
+        bodyExcerpt: 'Deploy v1.2.3'
+      })
+      // No thread actor: trusted on the installation gate, no live authorization round-trip.
+      expect(h.authzRequests).toHaveLength(0)
+      expect(h.reports[0]?.event).toBe('deployment:created')
+    })
+
+    it('a deployment_status is matched by the state it carries, never by GitHub’s invariant `created`', async () => {
+      h.table.upsert(rule({}, { events: ['deployment_status:failure'] }))
+      await post('deployment_status', deploymentStatusPayload({ state: 'success', description: 'Deployed' }), {
+        headers: { 'x-github-delivery': 'ds-ok' }
+      })
+      await flush()
+      expect(h.sent).toHaveLength(0)
+
+      await post('deployment_status', deploymentStatusPayload(), { headers: { 'x-github-delivery': 'ds-failed' } })
+      await flush()
+      expect(h.sent).toHaveLength(1)
+      const msg = h.sent[0]!
+      if (msg.source !== 'hook') throw new Error('expected hook member')
+      expect(msg.event).toBe('deployment_status:failure')
+      expect(msg.msgId).toBe(`${HOOK}:ds-failed`)
+      // The same environment key as the deployment that opened it.
+      expect(msg.sessionKey).toBe('acme/infra#deployments/production')
+      expect(msg.context).toMatchObject({
+        event: 'deployment_status',
+        action: 'failure',
+        environment: 'production',
+        // The status log wins over the environment URL and the workflow run.
+        htmlUrl: 'https://github.com/acme/infra/actions/runs/1/job/2',
+        bodyExcerpt: 'Deploy failed: healthcheck timed out'
+      })
+      expect(h.reports.map((r) => r.event)).toEqual(['deployment_status:failure'])
+    })
+
+    it('skips the empty-string URLs GitHub defaults omitted status fields to', async () => {
+      h.table.upsert(rule({}, { events: ['deployment_status:*'] }))
+      await post('deployment_status', deploymentStatusPayload({ state: 'success', log_url: '', target_url: '' }), {
+        headers: { 'x-github-delivery': 'ds-env-url' }
+      })
+      await post(
+        'deployment_status',
+        deploymentStatusPayload({ state: 'success', log_url: '', target_url: '', environment_url: '' }),
+        { headers: { 'x-github-delivery': 'ds-run-url' } }
+      )
+      await flush()
+      const urls = h.sent.map((m) => (m.source === 'hook' ? m.context?.htmlUrl : undefined))
+      // The first non-empty link wins: the environment URL, then the workflow run that created the deployment.
+      expect(urls).toEqual(['https://app.example.test', 'https://github.com/acme/infra/actions/runs/1'])
+    })
+
+    it('`deployment_status:*` takes every state; thread and push subscriptions take none', async () => {
+      h.table.upsert(rule({}, { events: ['deployment:*', 'deployment_status:*'] }))
+      h.table.upsert(rule({ hookId: HOOK_B }, { events: ['issues:opened', 'pull_request:*', 'push:*'] }))
+      await post('deployment_status', deploymentStatusPayload({ state: 'in_progress' }))
+      await flush()
+      expect(h.sent.map((m) => m.msgId)).toEqual([`${HOOK}:gh-delivery-1`])
+    })
+
+    it('a deployment delivery without an environment has no session to continue — 202 no-op', async () => {
+      h.table.upsert(rule({}, { events: ['deployment:*'] }))
+      const res = await post('deployment', deploymentPayload({ deployment: { id: 1, sha: 'c'.repeat(40) } }))
       expect(res.statusCode).toBe(202)
       await flush()
       expect(h.sent).toHaveLength(0)

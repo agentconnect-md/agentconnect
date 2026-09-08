@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   commentFamiliesForFamilies,
+  DEPLOYMENT_CREATED_EVENT,
+  DEPLOYMENT_STATUS_EVENT,
   eventsForFamilies,
   GH_FAMILIES,
   GH_TRIGGER_LABEL,
@@ -26,6 +28,8 @@ describe('GH_TRIGGER_LABEL', () => {
     expect(githubDefaultTriggerMode('issues')).toBe('first')
     expect(githubDefaultTriggerMode('push')).toBe('first')
     expect(GH_TRIGGER_LABEL[githubDefaultTriggerMode('issues')]).toBe('opened')
+    // A deployment watch is about how it ends, so it opens on every status.
+    expect(githubDefaultTriggerMode('deployment')).toBe('every')
   })
 
   it('spells the cadences out for the create surfaces', () => {
@@ -40,6 +44,14 @@ describe('githubTriggerModes', () => {
     expect(githubTriggerModes('issues')).toEqual(['first', 'every', 'labeled', 'mention'])
     expect(githubTriggerModes('pull_request')).toEqual(['first', 'every', 'mention'])
     expect(githubTriggerModes('push')).toEqual(['first', 'every', 'mention'])
+  })
+
+  it('offers a deployment only the two plain cadences — nobody labels or @-mentions in one', () => {
+    expect(githubTriggerModes('deployment')).toEqual(['first', 'every'])
+    expect(githubTriggerTooltip('first', 'reviewer', 'deployment')).toBe('Runs when a deployment is created.')
+    expect(githubTriggerTooltip('every', 'reviewer', 'deployment')).toContain('every status it reports')
+    // The family-less form keeps reading as the thread copy.
+    expect(githubTriggerTooltip('first', 'reviewer', 'issues')).toBe(githubTriggerTooltip('first', 'reviewer'))
   })
 })
 
@@ -82,11 +94,11 @@ describe('GH_TRIGGER_PILL', () => {
 
 describe('GH_FAMILIES', () => {
   it('names each subject without promising signals its cadences do not carry', () => {
-    expect(GH_FAMILIES.map(({ label }) => label)).toEqual(['Pull requests', 'Issues'])
+    expect(GH_FAMILIES.map(({ label }) => label)).toEqual(['Pull requests', 'Issues', 'Deployments'])
   })
 
   it('omits the commit (push) family — the subscription flow is held back for now', () => {
-    expect(GH_FAMILIES.map(({ fam }) => fam)).toEqual(['pull_request', 'issues'])
+    expect(GH_FAMILIES.map(({ fam }) => fam)).toEqual(['pull_request', 'issues', 'deployment'])
   })
 
   it('still labels a stored push row the console never offers', () => {
@@ -157,11 +169,34 @@ describe('githubFamilySubscription', () => {
     )
   })
 
+  it('compiles a deployment row to its creation or to creation plus every status, with no reply scope', () => {
+    expect(githubFamilySubscription('deployment', 'first')).toEqual({
+      events: [DEPLOYMENT_CREATED_EVENT],
+      commentFamilies: [],
+      mentionOnly: false
+    })
+    expect(githubFamilySubscription('deployment', 'every')).toEqual({
+      events: ['deployment:*', DEPLOYMENT_STATUS_EVENT],
+      commentFamilies: [],
+      mentionOnly: false
+    })
+    // Cadences a deployment cannot carry narrow to the opening and never set the mention gate.
+    expect(githubFamilySubscription('deployment', 'mention')).toEqual(githubFamilySubscription('deployment', 'first'))
+    expect(githubFamilySubscription('deployment', 'labeled')).toEqual(githubFamilySubscription('deployment', 'first'))
+  })
+
   it('never emits a pattern from another family', () => {
-    for (const fam of ['pull_request', 'issues', 'push'] as const) {
+    for (const fam of ['pull_request', 'issues', 'push', 'deployment'] as const) {
       for (const mode of GH_TRIGGER_MODES) {
         const { events } = githubFamilySubscription(fam, mode)
-        expect(events.every((event) => event.startsWith(`${fam}:`) || event === THREAD_COMMENT_EVENT)).toBe(true)
+        expect(
+          events.every(
+            (event) =>
+              event.startsWith(`${fam}:`) ||
+              event === THREAD_COMMENT_EVENT ||
+              (fam === 'deployment' && event === DEPLOYMENT_STATUS_EVENT)
+          )
+        ).toBe(true)
       }
     }
   })
@@ -176,12 +211,16 @@ describe('githubFamilyCarriesReviews', () => {
 })
 
 describe('commentFamiliesForFamilies', () => {
-  it('keeps the selected issue and PR families while excluding push', () => {
-    expect(commentFamiliesForFamilies(['issues', 'push', 'pull_request'])).toEqual(['issues', 'pull_request'])
+  it('keeps the selected issue and PR families while excluding push and deployment', () => {
+    expect(commentFamiliesForFamilies(['issues', 'push', 'deployment', 'pull_request'])).toEqual([
+      'issues',
+      'pull_request'
+    ])
   })
 
   it('returns an empty scope when no thread family is selected', () => {
     expect(commentFamiliesForFamilies(['push'])).toEqual([])
+    expect(commentFamiliesForFamilies(['deployment'])).toEqual([])
   })
 })
 
@@ -250,6 +289,27 @@ describe('githubHookNeedsNormalization', () => {
     ).toBe(false)
   })
 
+  it('accepts both canonical deployment encodings and flags a hand-written state pattern', () => {
+    expect(
+      githubHookNeedsNormalization({ events: [DEPLOYMENT_CREATED_EVENT], commentFamilies: [], mentionOnly: false })
+    ).toBe(false)
+    expect(
+      githubHookNeedsNormalization({
+        events: ['deployment:*', DEPLOYMENT_STATUS_EVENT],
+        commentFamilies: [],
+        mentionOnly: false
+      })
+    ).toBe(false)
+    // An API-only `deployment_status:failure` row is not what the console writes for "any status".
+    expect(
+      githubHookNeedsNormalization({
+        events: ['deployment:*', 'deployment_status:failure'],
+        commentFamilies: [],
+        mentionOnly: false
+      })
+    ).toBe(true)
+  })
+
   it('accepts a canonical labeled row', () => {
     expect(githubHookNeedsNormalization({ events: ['issues:labeled'], commentFamilies: [], mentionOnly: false })).toBe(
       false
@@ -274,5 +334,13 @@ describe('triggerModeOf', () => {
   it('keeps reading the opened and updated encodings', () => {
     expect(triggerModeOf({ events: ['issues:opened'], mentionOnly: false })).toBe('first')
     expect(triggerModeOf({ events: ['issues:*', THREAD_COMMENT_EVENT], mentionOnly: false })).toBe('every')
+  })
+
+  it('reads a bare deployment opening as created and anything wider as any status', () => {
+    expect(triggerModeOf({ events: [DEPLOYMENT_CREATED_EVENT], mentionOnly: false })).toBe('first')
+    expect(triggerModeOf({ events: ['deployment:*', DEPLOYMENT_STATUS_EVENT], mentionOnly: false })).toBe('every')
+    expect(triggerModeOf({ events: [DEPLOYMENT_CREATED_EVENT, DEPLOYMENT_STATUS_EVENT], mentionOnly: false })).toBe(
+      'every'
+    )
   })
 })

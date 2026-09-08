@@ -2480,10 +2480,11 @@ export const CronListDto = z.array(CronDto)
 
 export const HookSessionModeEnum = z.enum(['perDelivery', 'perThread', 'perSubject', 'shared'])
 
-/** `event:action` with an `event:*` family wildcard; only the three subscribed
- *  families are accepted (the relay routes nothing else to the matcher). The
- *  action part is deliberately loose — a new GitHub action must not 400. */
-export const HookEventPattern = /^(issues|pull_request|issue_comment|pull_request_review_comment|push):([a-z_]+|\*)$/
+/** `event:action` with an `event:*` family wildcard; only the subscribed events are accepted (the relay
+ *  routes nothing else to the matcher). The action part is deliberately loose — a new GitHub action must
+ *  not 400 — and a `deployment_status` action is the status STATE (`success`, `failure`, …). */
+export const HookEventPattern =
+  /^(issues|pull_request|issue_comment|pull_request_review_comment|push|deployment|deployment_status):([a-z_]+|\*)$/
 export const GithubCommentFamily = z.enum(['issues', 'pull_request'])
 const GithubCommentFamilies = z.array(GithubCommentFamily).max(2)
 export const HookReviewPolicyEnum = z.enum(['off', 'comment', 'request_changes', 'full'])
@@ -2517,7 +2518,7 @@ export const CreateWebhookHookBody = HookBodyBase.extend({
 /** The subject family one row covers. A row is `(agent, repo, family)`: each
  *  family carries its own cadence and its own mention gate, so a repository the
  *  agent watches for both PRs and issues is TWO rows. Immutable after create. */
-export const GithubHookFamily = z.enum(['pull_request', 'issues', 'push'])
+export const GithubHookFamily = z.enum(['pull_request', 'issues', 'push', 'deployment'])
 export const GitlabHookFamily = z.enum(['merge_request', 'issues', 'push'])
 
 export const CreateGithubHookBody = HookBodyBase.extend({

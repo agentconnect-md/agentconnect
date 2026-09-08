@@ -108,6 +108,11 @@ function clampSessionTitle(title: string): string {
 function githubSessionTitle(msg: RdMsgHook): string | undefined {
   const context = msg.context
   if (context?.source !== 'github') return undefined
+  // A deployment session is the environment's: every deployment there continues it.
+  if (isGithubDeploymentDelivery(context) && context.environment) {
+    const repo = msg.github?.repoFullName ?? context.repo
+    return clampSessionTitle(`Deployment ${repo ? `${repo} → ` : ''}${context.environment}`)
+  }
 
   const subjectKind =
     msg.github?.subjectKind ??
@@ -159,10 +164,20 @@ function deliveryMessage(body: string): { message: string; rest?: string } {
   return { message: '', rest: body }
 }
 
-/** `issues:opened — acme/infra#42` — the event's one-line identity. */
+/** `deployment` / `deployment_status` — the environment, not a thread, is the subject. */
+function isGithubDeploymentDelivery(c: HookContext): boolean {
+  return c.event === 'deployment' || c.event === 'deployment_status'
+}
+
+/** `issues:opened — acme/infra#42` (or `… — acme/infra → production`) — the event's one-line identity. */
 function githubSubjectLine(c: HookContext): string {
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? 'event')
-  const where = c.number !== undefined ? `${c.repo ?? ''}#${c.number}` : (c.repo ?? '')
+  const where =
+    c.number !== undefined
+      ? `${c.repo ?? ''}#${c.number}`
+      : c.environment
+        ? `${c.repo ? `${c.repo} ` : ''}→ ${c.environment}`
+        : (c.repo ?? '')
   return `${event}${where ? ` — ${where}` : ''}`
 }
 
@@ -321,6 +336,9 @@ function buildGithubHookText(
     ...(github?.baseSha ? [`Base SHA: ${github.baseSha}`] : []),
     ...(github?.headSha ? [`Head SHA: ${github.headSha}`] : []),
     ...(github?.isDraft !== undefined ? [`Draft: ${github.isDraft}`] : []),
+    ...(c.environment ? [`Environment: ${c.environment}`] : []),
+    ...(c.ref ? [`Ref: ${c.ref}`] : []),
+    ...(c.sha ? [`Commit: ${c.sha}`] : []),
     ...(c.htmlUrl ? [c.htmlUrl] : [])
   ].join('\n')
   // Ordinary replies use the display context's number. Inline replies instead
@@ -512,12 +530,14 @@ export function buildHookTurnFacts(msg: RdMsgHook): CodehostTurnFacts | undefine
         ? 'conversation'
         : undefined
   const base = github?.baseSha
-  const head = github?.headSha
+  // A deployment carries no trusted PR metadata; its commit is the deployed one.
+  const head = github?.headSha ?? c.sha
+  const deployment = isGithubDeploymentDelivery(c)
   return {
     provider: 'github',
     ...common,
     subject: {
-      ...(github?.subjectKind ? { kind: github.subjectKind } : {}),
+      ...(github?.subjectKind ? { kind: github.subjectKind } : deployment ? { kind: 'deployment' } : {}),
       ...(github?.repoFullName || c.repo ? { repo: github?.repoFullName ?? c.repo } : {}),
       ...((github?.pullNumber ?? c.number) !== undefined ? { number: github?.pullNumber ?? c.number } : {}),
       ...(c.title ? { title: c.title } : {}),
@@ -525,6 +545,8 @@ export function buildHookTurnFacts(msg: RdMsgHook): CodehostTurnFacts | undefine
     },
     ...(base || head ? { revision: { ...(base ? { base } : {}), ...(head ? { head } : {}) } } : {}),
     ...(github?.isDraft !== undefined ? { draft: github.isDraft } : {}),
+    ...(c.ref ? { ref: c.ref } : {}),
+    ...(c.environment ? { environment: c.environment } : {}),
     ...(review ? { review } : {})
   }
 }
@@ -550,6 +572,19 @@ const ACTION_VERBS: Record<string, string> = {
   rerequested: 'Re-requested checks on',
   requested_action: 'Requested an action on',
   submitted: 'Reviewed'
+}
+
+/** `success` → `succeeded`: a deployment state as a person reads it (the `deployment` event itself is `created`). */
+const DEPLOYMENT_STATE_VERBS: Record<string, string> = {
+  created: 'requested',
+  pending: 'pending',
+  queued: 'queued',
+  waiting: 'waiting for approval',
+  in_progress: 'in progress',
+  success: 'succeeded',
+  failure: 'failed',
+  error: 'errored',
+  inactive: 'marked inactive'
 }
 
 /** `PR #42` / `issue #42` / `MR !77` — the subject as a person would say it. */
@@ -583,6 +618,12 @@ export function hookDisplayText(msg: RdMsgHook): string | undefined {
     // thread segment IS the ref — except under `shared` / `perDelivery` keys, which name no branch.
     const { thread } = splitSessionKey(msg)
     return thread?.startsWith('refs/') ? `Pushed ${thread}` : `Pushed to ${subject}`
+  }
+  if (isGithubDeploymentDelivery(c)) {
+    // "Deployment to production failed" — the state is the news; the environment is where.
+    const where = c.environment ? `to ${c.environment}` : `of ${subject}`
+    const state = c.action ? (DEPLOYMENT_STATE_VERBS[c.action] ?? c.action.replace(/_/g, ' ')) : 'updated'
+    return `Deployment ${where} ${state}`
   }
   const verb = c.action ? ACTION_VERBS[c.action] : undefined
   if (verb) return `${verb} ${subject}${title}`
