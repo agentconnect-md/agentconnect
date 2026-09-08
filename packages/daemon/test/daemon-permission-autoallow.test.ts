@@ -14,6 +14,7 @@ import {
   ELICIT_CONFIRM_ACTION,
   elicitForm,
   elicitFormBlockId,
+  elicitOptionToken,
   elicitTarget,
   SLACK_ELICIT_SURFACE,
   slackCardViolations,
@@ -126,7 +127,8 @@ function installPending(daemon: Daemon): {
     getSessionByAcpIdForAgent: () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: () => new Map([['turn-user', 'Turn User']]),
     createPermissionRequest: vi.fn(),
-    resolvePermissionRequest: vi.fn(() => true)
+    resolvePermissionRequest: vi.fn(() => true),
+    upsertElicit: vi.fn(async () => {})
   }
   const pending = {
     plan: {
@@ -691,6 +693,38 @@ describe('webchat answers a multi-select elicitation with a list', () => {
     })
   })
 
+  // #1794: the card is a transcript row on THIS surface too. Without it a page reload lost the
+  // question and the answer, and a reader who joined later never saw either.
+  it('records the card in the transcript, and rewrites that row with the answer', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    installWebchat(pending)
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', multiElicitation({ minItems: 1 }))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const rows = () => (daemon as any).store.upsertElicit.mock.calls.map(([r]: any[]) => r)
+    const bodies = () => rows().map((r: any) => JSON.parse(r.body))
+    // The row carries the reduced card — the same payload the live event streamed.
+    expect(bodies()[0]).toMatchObject({
+      message: 'Which checks should I run?',
+      options: [
+        { value: 'lint', label: 'lint' },
+        { value: 'test', label: 'test' },
+        { value: 'build', label: 'build' }
+      ],
+      multi: { minItems: 1 }
+    })
+
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+    await (daemon as any).permissions.handleElicitChoice({
+      requestId,
+      value: ['lint'],
+      webchatConversationId: 'conv-1'
+    })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint'] } })
+    expect(rows()[1].ts).toBe(rows()[0].ts)
+    expect(bodies()[1]).toMatchObject({ outcome: 'accepted', answerLabel: 'lint' })
+  })
+
   it('re-checks the browser’s list: bounds, repeats, unoffered values, and the wrong shape', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending: any = installPending(daemon)
@@ -818,7 +852,8 @@ describe('a Slack card offers every option or none', () => {
     const [requestId] = (daemon as any).permissions.pendingElicits.keys()
     const elements = posted[0]![1]!.elements as any[]
     expect(elements.map((e) => e.text.text)).toEqual([...seven, 'Dismiss'])
-    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'g' })
+    // The seventh button carries its POSITION, and the daemon resolves it back (#1794).
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(6) })
     await expect(answered).resolves.toEqual({ action: 'accept', content: { pick: 'g' } })
   })
 
@@ -854,10 +889,14 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     await vi.waitFor(() => expect(daemon.permissions.pendingElicits.get(requestId).ts).toBe('ts-1'))
     return requestId
   }
+  /** The `checks` options in the order {@link multiElicitation} declares them — a Slack card
+   *  carries each option's POSITION rather than its value (#1794), so a Confirm sends these. */
+  const CHECKS = ['lint', 'test', 'build']
+  const carried = (values: string[]) => values.map((v) => elicitOptionToken(CHECKS.indexOf(v)))
   const confirm = (daemon: any, requestId: string, values: string[], actor?: { userId: string }) =>
     daemon.permissions.submitElicitForm({
       requestId,
-      fields: { [elicitFormBlockId(0)]: values },
+      fields: { [elicitFormBlockId(0)]: carried(values) },
       ...(actor ? { actor } : {})
     })
 
@@ -924,7 +963,11 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     await confirm(daemon, requestId, ['lint']) // below minItems
     await confirm(daemon, requestId, ['lint', 'test', 'build']) // above maxItems — Slack's own cap is not the gate
     await confirm(daemon, requestId, ['lint', 'lint']) // a repeat is not two picks
-    await confirm(daemon, requestId, ['lint', 'rm -rf /']) // a relayed value the card never offered
+    await (daemon as any).permissions.submitElicitForm({
+      requestId,
+      // A relayed value the card never offered — and it has no position either.
+      fields: { [elicitFormBlockId(0)]: [elicitOptionToken(0), 'rm -rf /'] }
+    })
     expect((daemon as any).permissions.pendingElicits.size).toBe(1)
     expect(updated).toHaveLength(0)
 
@@ -944,7 +987,7 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
       multiElicitation({ minItems: 1, default: ['test'] })
     )
     const requestId = await liveCard(daemon)
-    expect(selectOf(posted).initial_options.map((o: any) => o.value)).toEqual(['test'])
+    expect(selectOf(posted).initial_options.map((o: any) => o.value)).toEqual([elicitOptionToken(1)])
     await confirm(daemon, requestId, ['test'])
     await expect(answered).resolves.toEqual({ action: 'accept', content: { checks: ['test'] } })
   })
@@ -984,7 +1027,7 @@ describe('a Slack multi-select card confirms the selection it was sent', () => {
     await confirm(daemon, requestId, ['a'])
     expect((daemon as any).permissions.pendingElicits.size).toBe(1)
     expect(updated).toHaveLength(0)
-    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'a' })
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
     await expect(answered).resolves.toEqual({ action: 'accept', content: { pick: 'a' } })
   })
 })
@@ -1004,17 +1047,20 @@ describe('a Slack answer is re-derived against the card that offered it', () => 
     await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
     const [requestId] = (daemon as any).permissions.pendingElicits.keys()
 
+    // Neither a value the card never offered nor a position past the list it did.
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'rm -rf /' })
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(9) })
     expect((daemon as any).permissions.pendingElicits.size).toBe(1) // still live — nothing settled it
     expect(updated).toHaveLength(0)
     // The refusal stands, and the thread hears it — the same words a refused Confirm gets, since
     // the reader cannot tell a rejected tap from a dead button either way (#1794).
     expect(applied.filter((a) => a.kind === 'notice').map((a) => a.text)).toEqual([
+      "That answer wasn't accepted — the question is still open.",
       "That answer wasn't accepted — the question is still open."
     ])
 
     // A Slack tap on a button the card actually carries still resolves, unchanged.
-    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'b' })
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(1) })
     await expect(answered).resolves.toEqual({ action: 'accept', content: { pick: 'b' } })
   })
 
@@ -1025,16 +1071,23 @@ describe('a Slack answer is re-derived against the card that offered it', () => 
     const approval = (daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('call-1'))
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     const [requestId] = (daemon as any).permissions.pendingElicits.keys()
-    // The approval's enum reaches Slack as one button per value, each carrying `<id>|<value>`.
+    // The approval's enum reaches Slack as one button per value, each carrying that option's
+    // POSITION rather than the value itself (#1794).
     const elements = posted[0]![1]!.elements as any[]
-    expect(elements.map((e) => e.value)).toEqual([`${requestId}|once`, `${requestId}|session`, requestId])
+    expect(elements.map((e) => e.value)).toEqual([
+      `${requestId}|${elicitOptionToken(0)}`,
+      `${requestId}|${elicitOptionToken(1)}`,
+      requestId
+    ])
 
-    // A `persist` the schema never enumerated is not an approval this card can report.
+    // A `persist` the schema never enumerated is not an approval this card can report — and
+    // neither is a position past the options it offered.
     await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'always' })
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(9) })
     expect((daemon as any).permissions.pendingElicits.size).toBe(1)
     expect(updated).toHaveLength(0)
 
-    await (daemon as any).permissions.handleElicitChoice({ requestId, value: 'session' })
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(1) })
     await expect(approval).resolves.toEqual({ action: 'accept', content: { persist: 'session' } })
   })
 })
@@ -1654,12 +1707,18 @@ describe('Slack renders and settles a URL-mode consent card', () => {
     expect(text).toContain('Sign in to the billing provider to continue')
 
     const [open, dismiss] = cardButtons(posted[0]!)
-    // Slack's `url` field is what both opens the page and still delivers an interaction.
-    expect(open).toMatchObject({ text: { text: 'Open link' }, url, value: expect.stringContaining(url) })
+    // Slack's `url` field is what both opens the page and still delivers an interaction. The
+    // `value` carries the card's one OPTION rather than the URL, which is what keeps a URL too
+    // long for a Slack button value from losing its card (#1794).
+    expect(open).toMatchObject({
+      text: { text: 'Open link' },
+      url,
+      value: `${await liveSlackCard(daemon)}|${elicitOptionToken(0)}`
+    })
     expect(dismiss).toMatchObject({ text: { text: 'Dismiss' } })
 
     const requestId = await liveSlackCard(daemon)
-    await (daemon as any).permissions.handleElicitChoice({ requestId, value: url })
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
     // Consent resolves the ACP request — with no `content`, since nothing was answered here.
     await expect(result).resolves.toEqual({ action: 'accept' })
     // "Opened" and not "Done": the tap proves consent, never that the flow behind it finished.
@@ -1761,10 +1820,7 @@ describe('Slack renders and settles a URL-mode consent card', () => {
     const { updated } = slackPending(daemon)
     void (daemon as any).permissions.onAcpElicit('agent-1', 's1', urlElicitation())
     const requestId = await liveSlackCard(daemon)
-    await (daemon as any).permissions.handleElicitChoice({
-      requestId,
-      value: 'https://billing.example.com/oauth/authorize?state=xyz'
-    })
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
     await vi.waitFor(() => expect(updated).toHaveLength(1))
     ;(daemon as any).permissions.onAcpElicitComplete('agent-1', 'el-nope')
     ;(daemon as any).permissions.onAcpElicitComplete('agent-2', 'el-1')

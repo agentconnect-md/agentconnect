@@ -1,4 +1,5 @@
 import type { PlanBody } from '@/lib/api'
+import type { ElicitBody } from '@/lib/data'
 
 // 2b chat style: an agent turn shows its spoken answer (MSG/DONE lanes) as plain
 // text and collapses its "work" — reasoning (THINK/PLAN), tool calls (TOOL), and
@@ -41,6 +42,33 @@ export function planEntries(body: string | undefined): PlanEntry[] {
     return (parsed.entries ?? []).filter((entry) => typeof entry?.content === 'string' && entry.content.trim() !== '')
   } catch {
     return []
+  }
+}
+
+/** Every outcome this console can READ off a persisted card. A newer daemon's unknown verdict is
+ *  dropped rather than rendered, which shows the card as unsettled — the one direction that is
+ *  never a wrong verdict. The question itself comes from the row's `text`, not the body. */
+const ELICIT_OUTCOMES = new Set(['accepted', 'dismissed', 'cancelled', 'completed', 'unrenderable'])
+
+/** Parse an `elicit` row's `body` into the card it recorded. Null for everything that is not a
+ *  readable card — no body at all (a daemon or control plane predating the row), malformed JSON,
+ *  a payload with no request id — and the caller then falls back to rendering the row's own text,
+ *  which is at least the question, rather than a card with nothing in it. */
+export function elicitCard(body: string | undefined): ElicitBody | null {
+  if (!body) return null
+  try {
+    const parsed = JSON.parse(body) as Partial<ElicitBody>
+    if (typeof parsed?.requestId !== 'string' || !parsed.requestId) return null
+    const outcome =
+      typeof parsed.outcome === 'string' && ELICIT_OUTCOMES.has(parsed.outcome) ? parsed.outcome : undefined
+    return {
+      ...parsed,
+      requestId: parsed.requestId,
+      options: Array.isArray(parsed.options) ? parsed.options : [],
+      ...(outcome ? { outcome } : { outcome: undefined })
+    }
+  } catch {
+    return null
   }
 }
 

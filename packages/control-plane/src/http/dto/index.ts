@@ -2985,7 +2985,7 @@ export const SessionMessageDto = z.object({
   toolCallId: z.string().optional(),
   toolStatus: z.string().optional(),
   toolKind: z.string().optional(),
-  body: z.string().optional(), // JSON.stringify(ToolBody); may be a truncated-but-valid-JSON preview
+  body: z.string().optional(), // JSON.stringify(ToolBody / PlanBody / ElicitBody); may be a truncated-but-valid-JSON preview
   bodyTruncated: z.boolean().optional(), // preview shrunk for the frame; full body via /sessions/:id/tool-body
   bodyBytes: z.number().optional() // full (untruncated) body byte length
 })

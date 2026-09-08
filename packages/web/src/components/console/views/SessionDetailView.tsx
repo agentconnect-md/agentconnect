@@ -101,6 +101,7 @@ import { useCommandAutocomplete } from '@/components/console/useCommandAutocompl
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
+  elicitCard,
   ELICIT_LANE,
   NOTICE_LANE,
   PLAN_LANE,
@@ -402,9 +403,31 @@ function ComposerSendButton({
 }
 
 // One agent-turn step rendered from a real transcript message. Maps the daemon
-// transcript kind (text | tool | reasoning | plan) onto the existing lane styling.
+// transcript kind (text | tool | reasoning | plan | elicit) onto the existing lane styling.
 function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string): FmtStep {
   const k = (m.kind || 'text').toLowerCase()
+  // A recorded elicitation card (#1794). It renders through the SAME component a live card does,
+  // just without an `onAnswer` — a reader loading the conversation later sees the question, what
+  // was offered and what was answered, with every control inert. A row whose body cannot be read
+  // falls through to plain text, which is at least the question itself.
+  if (k === 'elicit') {
+    const card = elicitCard(m.body)
+    if (card)
+      return {
+        lane: ELICIT_LANE,
+        laneColor: 'var(--text-tertiary)',
+        dot: 'var(--text-disabled)',
+        weight: 400,
+        textColor: 'var(--text-primary)',
+        codeColor: 'var(--text-secondary)',
+        text: m.text,
+        code: '',
+        files: [],
+        elicit: card,
+        time: formatTranscriptRowTime(m),
+        ...(platform ? { platform } : {})
+      }
+  }
   if (k === 'plan') {
     return {
       lane: PLAN_LANE,
@@ -660,7 +683,14 @@ const ELICIT_OUTCOME: Record<
     label: () => 'Cancelled'
   },
   // URL mode's second settlement: the agent reported the flow behind an opened link finished.
-  completed: { icon: 'check', color: 'var(--green-500)', edge: 'border-l-(--green-500)', label: () => 'Completed' }
+  completed: { icon: 'check', color: 'var(--green-500)', edge: 'border-l-(--green-500)', label: () => 'Completed' },
+  // Persisted cards only: the ask no surface here had a control for, so nothing was ever offered.
+  unrenderable: {
+    icon: 'x',
+    color: 'var(--text-tertiary)',
+    edge: 'border-l-(--border-strong)',
+    label: () => "Couldn't be answered here"
+  }
 }
 
 /** How a consent card reads its URL: the three display parts, so the HOST can be emphasized

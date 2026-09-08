@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
+import type { ElicitTarget } from '../src/slack/render.js'
 import { Daemon } from '../src/daemon.js'
 import { TerminalOutputFolder } from '../src/session/terminal-output-folder.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -25,6 +26,7 @@ import {
   elicitForm,
   elicitFormBlockId,
   elicitFormSubmission,
+  elicitOptionToken,
   elicitTarget,
   slackCardViolations
 } from '../src/slack/render.js'
@@ -72,7 +74,9 @@ describe('the in-message card a filled-in answer is given on', () => {
       [elicitFormBlockId(3), 'number_input', true, 'count'],
       [elicitFormBlockId(4), 'radio_buttons', true, 'draft']
     ])
-    expect(inputs[0]!.element.options.map((o: any) => o.value)).toEqual(['main', 'develop'])
+    // The POSITION, not the value: an option value rides {@link elicitOptionToken} on every
+    // Slack card, which is what keeps a long one from costing the whole message (#1794).
+    expect(inputs[0]!.element.options.map((o: any) => o.value)).toEqual([elicitOptionToken(0), elicitOptionToken(1)])
     // `minItems` has no Slack attribute — and `checkboxes` has no `max_selected_items` at all —
     // so the bounds are said as a hint and enforced when the answer comes back.
     expect(inputs[1]!.hint.text).toBe('Select at least 1.')
@@ -81,7 +85,7 @@ describe('the in-message card a filled-in answer is given on', () => {
     expect(inputs[2]!.hint.text).toBe('Anything the reviewer should know')
     expect(inputs[3]!.element).toMatchObject({ is_decimal_allowed: false, min_value: '1', max_value: '9' })
     // A boolean's `default` seeds the control with the option that spells it.
-    expect(inputs[4]!.element.initial_option.value).toBe('true')
+    expect(inputs[4]!.element.initial_option.value).toBe(elicitOptionToken(0))
     // The question is a section, and the FIRST thing on the card.
     expect(card[0]).toMatchObject({ type: 'section' })
     expect(card[0].text.text).toContain('How should I cut the release?')
@@ -128,13 +132,8 @@ describe('the in-message card a filled-in answer is given on', () => {
   })
 
   it('is withheld when a field cannot BE an input block, so no card is ever posted dead', () => {
-    // Slack caps a select option's `value` at 75 characters and an input block has no button to
-    // fall back to (#1813's finding, one surface on).
-    const long = 'x'.repeat(80)
-    const req = form({ branch: { type: 'string', enum: [long, 'dev'] }, note: { type: 'string' } }, ['branch'])
-    expect(elicitForm(req, SLACK_ELICIT_SURFACE)).toHaveLength(2)
-    expect(cardFor(req)).toBeNull()
-    // And a minimum length no input can hold.
+    // A minimum length no input can hold. (An option value past Slack's 75 no longer withholds
+    // anything: the option carries its position instead — #1794.)
     expect(cardFor(form({ a: { type: 'string', minLength: 3500 }, b: { type: 'boolean' } }))).toBeNull()
   })
 })
@@ -192,27 +191,36 @@ describe('a card is a button row exactly when ONE TAP can answer it', () => {
   })
 })
 
+/** What a Slack card carries back for one of a field's options: its POSITION (#1794). A value the
+ *  field never offered has no position, and the token it yields resolves to nothing. */
+const pick = (targets: ElicitTarget[], index: number, value: string) =>
+  elicitOptionToken(targets[index]!.options.findIndex((o) => o.value === value))
+
 describe('a form submission is re-derived against the card that offered it', () => {
   const req = form(EVERY_KIND, ['branch', 'checks'])
   const fields = elicitForm(req, SLACK_ELICIT_SURFACE)!
+  const carried = (index: number, value: string) => pick(fields, index, value)
 
   it('answers with the typed record — real numbers, arrays, the boolean’s own wire value', () => {
     expect(
       elicitFormSubmission(req, fields, {
-        [elicitFormBlockId(0)]: 'main',
-        [elicitFormBlockId(1)]: ['lint', 'test'],
+        [elicitFormBlockId(0)]: carried(0, 'main'),
+        [elicitFormBlockId(1)]: [carried(1, 'lint'), carried(1, 'test')],
         [elicitFormBlockId(2)]: 'ship it',
         [elicitFormBlockId(3)]: '4',
-        [elicitFormBlockId(4)]: 'false'
+        [elicitFormBlockId(4)]: carried(4, 'false')
       })
     ).toEqual({ answer: { branch: 'main', checks: ['lint', 'test'], note: 'ship it', count: 4, draft: 'false' } })
   })
 
   it('accepts an omitted OPTIONAL field and refuses a missing REQUIRED one', () => {
     expect(
-      elicitFormSubmission(req, fields, { [elicitFormBlockId(0)]: 'main', [elicitFormBlockId(1)]: ['lint'] })
+      elicitFormSubmission(req, fields, {
+        [elicitFormBlockId(0)]: carried(0, 'main'),
+        [elicitFormBlockId(1)]: [carried(1, 'lint')]
+      })
     ).toEqual({ answer: { branch: 'main', checks: ['lint'] } })
-    expect(elicitFormSubmission(req, fields, { [elicitFormBlockId(0)]: 'main' })).toEqual({
+    expect(elicitFormSubmission(req, fields, { [elicitFormBlockId(0)]: carried(0, 'main') })).toEqual({
       errors: { [elicitFormBlockId(1)]: 'This field is required.' }
     })
   })
@@ -226,7 +234,10 @@ describe('a form submission is re-derived against the card that offered it', () 
     )
     const target = elicitForm(optional, SLACK_ELICIT_SURFACE)!
     expect(
-      elicitFormSubmission(optional, target, { [elicitFormBlockId(0)]: 'main', [elicitFormBlockId(1)]: [] })
+      elicitFormSubmission(optional, target, {
+        [elicitFormBlockId(0)]: pick(target, 0, 'main'),
+        [elicitFormBlockId(1)]: []
+      })
     ).toEqual({ answer: { branch: 'main' } })
     // A REQUIRED one keeps its own bounds: there an empty selection is a real answer to judge.
     const needed = form({ checks: { type: 'array', minItems: 1, items: EVERY_KIND.checks.items } }, ['checks'])
@@ -236,8 +247,8 @@ describe('a form submission is re-derived against the card that offered it', () 
 
   it('refuses ONE bad field with that field’s own error, rather than dropping it', () => {
     const bad = elicitFormSubmission(req, fields, {
-      [elicitFormBlockId(0)]: 'trunk', // never offered
-      [elicitFormBlockId(1)]: ['lint'],
+      [elicitFormBlockId(0)]: 'trunk', // never offered, so no position stands for it
+      [elicitFormBlockId(1)]: [carried(1, 'lint')],
       [elicitFormBlockId(2)]: 'x'.repeat(50), // past maxLength
       [elicitFormBlockId(3)]: '40' // past maximum
     })
@@ -252,14 +263,14 @@ describe('a form submission is re-derived against the card that offered it', () 
   it('refuses a value of the wrong SHAPE, and ignores a block the form never rendered', () => {
     expect(
       elicitFormSubmission(req, fields, {
-        [elicitFormBlockId(0)]: ['main'], // a list cannot answer a single select
-        [elicitFormBlockId(1)]: ['lint']
+        [elicitFormBlockId(0)]: [carried(0, 'main')], // a list cannot answer a single select
+        [elicitFormBlockId(1)]: [carried(1, 'lint')]
       }).errors
     ).toEqual({ [elicitFormBlockId(0)]: 'Choose one of the options offered.' })
     expect(
       elicitFormSubmission(req, fields, {
-        [elicitFormBlockId(0)]: 'main',
-        [elicitFormBlockId(1)]: ['lint'],
+        [elicitFormBlockId(0)]: carried(0, 'main'),
+        [elicitFormBlockId(1)]: [carried(1, 'lint')],
         [elicitFormBlockId(99)]: 'injected',
         not_ours: 'injected'
       })
@@ -300,7 +311,8 @@ function installPending(daemon: any): any {
     getSessionByAcpIdForAgent: () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: () => new Map(),
     createPermissionRequest: vi.fn(),
-    resolvePermissionRequest: vi.fn(() => true)
+    resolvePermissionRequest: vi.fn(() => true),
+    upsertElicit: vi.fn(async () => {})
   }
   const pending = {
     plan: {
@@ -377,8 +389,10 @@ async function raise(h: Harness, req: CreateElicitationRequest): Promise<{ reque
   return { requestId, result }
 }
 
-const submitFields = (branch: string, note?: string) => ({
-  [elicitFormBlockId(0)]: branch,
+/** What a Confirm on the TWO-field card carries: `branch` is an enum, so the card sends its
+ *  option's POSITION (#1794), never the value itself. */
+const submitFields = (branch: 'main' | 'develop', note?: string) => ({
+  [elicitFormBlockId(0)]: elicitOptionToken(branch === 'main' ? 0 : 1),
   ...(note !== undefined ? { [elicitFormBlockId(1)]: note } : {})
 })
 
@@ -453,8 +467,8 @@ describe('a Slack turn answers a form card from its own Confirm', () => {
 
   it('declines with a notice, and posts no card, when no card can hold the form', async () => {
     const h = slackTurn()
-    const long = 'x'.repeat(80)
-    const req = form({ branch: { type: 'string', enum: [long, 'dev'] }, note: { type: 'string' } }, ['branch'])
+    // A minimum length no Slack input holds — a field the card genuinely cannot render.
+    const req = form({ a: { type: 'string', minLength: 3500 }, note: { type: 'string' } }, ['a'])
     await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
     expect(h.daemon.permissions.pendingElicits.size).toBe(0)
     expect(h.posted).toEqual([])
@@ -494,5 +508,202 @@ describe('both Slack ingress paths settle a form card the same way', () => {
       accepted: true
     })
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
+  })
+})
+
+// ── #1794: a value too long for Slack's own caps no longer costs a card ───────────────────────
+
+/** Three enum values that are paths, each past Slack's 75-character option-value cap. */
+const LONG_PATHS = [
+  `packages/daemon/src/${'a'.repeat(70)}.ts`,
+  `packages/daemon/src/${'b'.repeat(70)}.ts`,
+  `packages/daemon/src/${'c'.repeat(70)}.ts`
+]
+
+describe('an option value past what Slack carries', () => {
+  it('renders the multi-select anyway, and maps the picks back to the real values', async () => {
+    const req = form({ files: { type: 'array', items: { type: 'string', enum: LONG_PATHS } } }, ['files'])
+    // The reduction used to refuse the property outright, so the whole form declined on Slack
+    // while it rendered on webchat.
+    const targets = elicitForm(req, SLACK_ELICIT_SURFACE)
+    expect(targets).not.toBeNull()
+
+    const h = slackTurn()
+    const { requestId, result } = await raise(h, req)
+    const card = h.posted[0] as any[]
+    expect(slackCardViolations(card)).toEqual([])
+    const values = inputsOf(card)[0]!.element.options.map((o: any) => o.value as string)
+    expect(values).toEqual([elicitOptionToken(0), elicitOptionToken(1), elicitOptionToken(2)])
+    // The labels are the reader's half of the card and still name the option, clamped to the 75
+    // characters a Slack label holds — it is only the WIRE value that stopped carrying it.
+    expect(inputsOf(card)[0]!.element.options[0].text.text).toBe(`${LONG_PATHS[0]!.slice(0, 74)}…`)
+
+    await h.daemon.permissions.submitElicitForm({
+      requestId,
+      fields: { [elicitFormBlockId(0)]: [elicitOptionToken(2), elicitOptionToken(0)] }
+    })
+    // #1815 intact: the answer is still re-derived against the card — just through the mapping.
+    await expect(result).resolves.toEqual({
+      action: 'accept',
+      content: { files: [LONG_PATHS[2], LONG_PATHS[0]] }
+    })
+  })
+
+  it('refuses a card value that names no option the field offered', async () => {
+    const h = slackTurn()
+    const { requestId, result } = await raise(h, form(TWO, ['branch']))
+    let settled = false
+    void result.then(() => (settled = true))
+    // A literal where a position belongs, and a position past the list: neither is an answer.
+    await h.daemon.permissions.submitElicitForm({ requestId, fields: { [elicitFormBlockId(0)]: 'develop' } })
+    await h.daemon.permissions.submitElicitForm({ requestId, fields: { [elicitFormBlockId(0)]: elicitOptionToken(9) } })
+    expect(h.notices()).toHaveLength(2)
+    expect(h.notices()[0]).toContain('Base branch: Choose one of the options offered.')
+    expect(settled).toBe(false)
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    await h.daemon.permissions.releaseElicits('agent-1', 's1')
+    await expect(result).resolves.toEqual({ action: 'cancel' })
+  })
+
+  it('keeps a one-tap card answerable when its enum value outruns a button value', async () => {
+    const huge = 'x'.repeat(2_100)
+    const h = slackTurn()
+    const { requestId, result } = await raise(h, form({ pick: { type: 'string', enum: [huge, 'no'] } }, ['pick']))
+    const buttons = (h.posted[0] as any[])[1].elements as any[]
+    expect(slackCardViolations(h.posted[0] as any[])).toEqual([])
+    // The whole message used to be rejected by Slack, so the card never appeared at all.
+    expect(buttons[0].value).toBe(`${requestId}|${elicitOptionToken(0)}`)
+    await h.daemon.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { pick: huge } })
+  })
+})
+
+/** A URL that fits `elicitUrl`'s 2048 but not a Slack button's 2000 — a long OAuth `state`. */
+const LONG_URL = `https://auth.example.com/authorize?state=${'s'.repeat(1_960)}`
+
+const urlAsk = (url: string): CreateElicitationRequest =>
+  ({
+    sessionId: 's1',
+    mode: 'url',
+    message: 'Sign in to continue',
+    url,
+    elicitationId: 'e-1'
+  }) as unknown as CreateElicitationRequest
+
+describe('a consent URL past what a Slack button carries', () => {
+  it('still posts the card, and the tap is still consent for that exact URL', async () => {
+    expect(LONG_URL.length).toBeGreaterThan(1_989)
+    expect(LONG_URL.length).toBeLessThanOrEqual(2_048)
+    const h = slackTurn()
+    const { requestId, result } = await raise(h, urlAsk(LONG_URL))
+    // It used to fall back to the decline notice with no card at all.
+    expect(h.notices()).toEqual([])
+    expect(slackCardViolations(h.posted[0] as any[])).toEqual([])
+    const open = (h.posted[0] as any[])[2].elements[0]
+    expect(open.url).toBe(LONG_URL)
+    expect(open.value).toBe(`${requestId}|${elicitOptionToken(0)}`)
+
+    await h.daemon.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
+    await expect(result).resolves.toEqual({ action: 'accept' })
+    expect(JSON.stringify(h.updated[0])).toContain('Opened')
+  })
+
+  it("takes nothing but that card's own option as consent", async () => {
+    const h = slackTurn()
+    const { requestId, result } = await raise(h, urlAsk(LONG_URL))
+    let settled = false
+    void result.then(() => (settled = true))
+    // The URL itself is no longer what comes back, so it is not consent either.
+    await h.daemon.permissions.handleElicitChoice({ requestId, value: LONG_URL })
+    expect(settled).toBe(false)
+    await h.daemon.permissions.handleElicitChoice({ requestId, value: null })
+    await expect(result).resolves.toEqual({ action: 'decline' })
+  })
+})
+
+describe('a card settled while its own post is still in flight', () => {
+  it('says how it ended rather than calling an accepted consent cancelled', async () => {
+    const h = slackTurn()
+    let releasePost: () => void = () => {}
+    const held = new Promise<void>((resolve) => (releasePost = resolve))
+    h.conn.postBlocks = async (_c: string, blocks: unknown[]) => {
+      h.posted.push(blocks)
+      await held
+      return 'ts-1'
+    }
+    const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', urlAsk('https://auth.example.com/go'))
+    await vi.waitFor(() => expect(h.daemon.permissions.pendingElicits.size).toBe(1))
+    const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
+    // Slack can deliver the tap before it has answered the post that carried it — the card has
+    // no `ts` yet, so nothing can be rewritten at settlement time.
+    await h.daemon.permissions.handleElicitChoice({ requestId, value: elicitOptionToken(0) })
+    expect(h.updated).toEqual([])
+
+    releasePost()
+    await expect(result).resolves.toEqual({ action: 'accept' })
+    await vi.waitFor(() => expect(h.updated).toHaveLength(1))
+    // The channel record has to agree with the credential page the reader really did open.
+    expect(JSON.stringify(h.updated[0])).toContain('Opened')
+    expect(JSON.stringify(h.updated[0])).not.toContain('Cancelled')
+  })
+})
+
+// ── #1794: the card survives a page reload, and is never re-fed to the runtime ────────────────
+
+describe('a card recorded in the transcript', () => {
+  const rows = (h: Harness) => h.daemon.store.upsertElicit.mock.calls.map((c: any[]) => c[0])
+  const bodies = (h: Harness) => rows(h).map((r: any) => JSON.parse(r.body))
+
+  it('records the ask, then rewrites the SAME row with how it ended', async () => {
+    const h = slackTurn()
+    const { requestId, result } = await raise(h, form(TWO, ['branch']))
+    expect(bodies(h)[0]).toMatchObject({
+      requestId,
+      message: 'How should I cut the release?',
+      fields: [
+        { propName: 'branch', label: 'Base branch', kind: 'enum' },
+        { propName: 'note', kind: 'text' }
+      ]
+    })
+    // The reduced card only — the raw requestedSchema is absent here for the same reason it
+    // never reaches a wire.
+    expect(bodies(h)[0]).not.toHaveProperty('requestedSchema')
+    expect(bodies(h)[0].outcome).toBeUndefined()
+
+    await h.daemon.permissions.submitElicitForm({ requestId, fields: submitFields('develop') })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
+    // One row, rewritten: same coordinates, now carrying the outcome and what was answered.
+    expect(rows(h)[1].ts).toBe(rows(h)[0].ts)
+    expect(rows(h)[1].channel).toBe('C1')
+    expect(rows(h)[1].sender).toBe('agent-1')
+    expect(bodies(h)[1]).toMatchObject({ outcome: 'accepted', answerLabel: 'Base branch: develop' })
+  })
+
+  it('records a cancelled card as cancelled, and a dismissed one as dismissed', async () => {
+    const h = slackTurn()
+    const dismissed = await raise(h, form(TWO, ['branch']))
+    await h.daemon.permissions.handleElicitChoice({ requestId: dismissed.requestId, value: null })
+    await expect(dismissed.result).resolves.toEqual({ action: 'decline' })
+    expect(bodies(h).at(-1)).toMatchObject({ outcome: 'dismissed' })
+
+    const abandoned = await raise(h, form(TWO, ['branch']))
+    await h.daemon.permissions.releaseElicits('agent-1', 's1')
+    await expect(abandoned.result).resolves.toEqual({ action: 'cancel' })
+    expect(bodies(h).at(-1)).toMatchObject({ outcome: 'cancelled' })
+    // Two cards, two rows — the second never rewrote the first.
+    expect(new Set(rows(h).map((r: any) => r.ts)).size).toBe(2)
+  })
+
+  it('records an ask nothing could show, which was previously only a live notice', async () => {
+    const h = slackTurn()
+    const req = form({ when: { type: 'string', minLength: 3500 } }, ['when'])
+    await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
+    expect(h.notices()[0]).toContain("this chat can't collect an answer for")
+    expect(bodies(h)).toHaveLength(1)
+    expect(bodies(h)[0]).toMatchObject({
+      message: 'How should I cut the release?',
+      options: [],
+      outcome: 'unrenderable'
+    })
   })
 })

@@ -1175,10 +1175,20 @@ export interface SessionStep {
     /** Present ⇒ a URL-mode CONSENT card: the reader examines this exact URL and opens it in
      *  their own browser tab. Nothing here ever fetches it, and `options` is then empty. */
     url?: string
-    outcome?: 'accepted' | 'dismissed' | 'cancelled' | 'completed'
+    /** How the card ended. Absent while it is live — and, on a PERSISTED card, absent means
+     *  nothing ever settled it. `unrenderable` is persist-only: the ask no surface had a control
+     *  for, which was previously said once in a live notice and then lost. */
+    outcome?: 'accepted' | 'dismissed' | 'cancelled' | 'completed' | 'unrenderable'
+    /** The chosen option's LABEL (the labels joined, for a multi-select or a form) — never the
+     *  accepted content, which is already in the agent's own context. */
     answerLabel?: string
   }
 }
+
+/** The agent's structured question as the transcript PERSISTS it (protocol `ElicitBody`): the
+ *  card plus how it ended, carried as a JSON string in an `elicit` row's `body`. Deliberately the
+ *  same type a live step carries, so one component renders the live card and the recorded one. */
+export type ElicitBody = NonNullable<SessionStep['elicit']>
 
 // Per-session token accounting (protocol `SessionUsage`), metered by the daemon.
 // Token counts are session-cumulative; context/cost are the latest snapshot.

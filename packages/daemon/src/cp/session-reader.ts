@@ -379,6 +379,12 @@ export function createSessionReader(
           if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
           return base
         }
+        // An elicitation card's body is the card itself and likewise has no full-body fetch behind
+        // it: it rides inline or not at all, leaving the row's question to stand alone.
+        if (r.kind === 'elicit') {
+          if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
+          return base
+        }
         if (r.kind !== 'tool') return base
         // Enrich a tool row: surface toolCallId/status/kind + an inline body (verbatim
         // when ≤ 32 KiB, else a valid-JSON preview with bodyTruncated + full byte length).

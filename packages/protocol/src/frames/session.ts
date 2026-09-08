@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { SessionKey } from './route.js'
-import { PlanEntry, WebchatImageAttachment } from './webchat.js'
+import { ElicitCard, PlanEntry, WebchatImageAttachment } from './webchat.js'
 
 /**
  * Session read-back (C→D REQ → REP) — the console's on-demand pulls.
@@ -99,6 +99,30 @@ export type ToolBody = z.infer<typeof ToolBody>
 export const PlanBody = z.object({ entries: z.array(PlanEntry) })
 export type PlanBody = z.infer<typeof PlanBody>
 
+/** How a persisted elicitation card ended. The four the live stream also carries, plus
+ *  `unrenderable` — the ask no surface had a control for, which was only ever a live notice
+ *  (#1839) and so vanished on reload. Absent ⇒ the card was still open when it was recorded,
+ *  which after a daemon restart means nobody ever answered it. */
+export const ElicitOutcome = z.enum(['accepted', 'dismissed', 'cancelled', 'completed', 'unrenderable'])
+export type ElicitOutcome = z.infer<typeof ElicitOutcome>
+
+/**
+ * The agent's structured question, transported as a JSON STRING in `SessionMessage.body` on an
+ * `elicit` row: the card exactly as it was offered, plus how it ended. The row exists so a page
+ * reload — or a reader who joins later — still sees that the question was asked and what was
+ * answered, which the live-only card lost.
+ *
+ * `answerLabel` is the chosen option's LABEL (the labels joined, for a multi-select or a form),
+ * never the accepted content: what a reader needs is what was picked, and the values are already
+ * in the agent's own context. The raw `requestedSchema` is absent for the same reason it never
+ * reaches any wire — the card is the reduction, and the reduction is what was shown.
+ */
+export const ElicitBody = ElicitCard.extend({
+  outcome: ElicitOutcome.optional(),
+  answerLabel: z.string().optional()
+})
+export type ElicitBody = z.infer<typeof ElicitBody>
+
 // The user-turn body schemas live in a bundler-safe leaf (the console validates with them);
 // re-exported here so every wire consumer keeps finding them beside the tool and plan bodies.
 export { CodehostTurnFacts, LinearTurnFacts, UserTurnBody } from '../user-turn-body.js'
@@ -125,14 +149,14 @@ export const SessionMessage = z.object({
   // at origin and identical on every participant's copy, independent of a
   // collision-bumped `ts`. Absent on non-webchat rows and pre-upgrade rows.
   postId: z.string().uuid().optional(),
-  kind: z.string(), // "text" / tool / reasoning / plan / … (daemon transcript kind)
+  kind: z.string(), // "text" / tool / reasoning / plan / elicit / … (daemon transcript kind)
   text: z.string(),
   attachments: z.array(SessionImageAttachment).max(1).optional(),
   // ── body enrichment (optional ⇒ text/reasoning rows and old daemons omit these) ──
   toolCallId: z.string().optional(), // parsed from the ToolBody (tool rows only)
   toolStatus: z.string().optional(), // ACP ToolCallStatus, surfaced for the console badge
   toolKind: z.string().optional(), // ACP ToolKind, surfaced for the console icon
-  body: z.string().optional(), // JSON.stringify(ToolBody) on a tool row, PlanBody on a plan row; a tool body may be a truncated-but-VALID-JSON preview
+  body: z.string().optional(), // JSON.stringify(ToolBody) on a tool row, PlanBody on a plan row, ElicitBody on an elicit row; a tool body may be a truncated-but-VALID-JSON preview
   bodyTruncated: z.boolean().optional(), // preview was shrunk for the frame; full body via session/tool-body
   bodyBytes: z.number().int().optional() // full (untruncated) body byte length
 })

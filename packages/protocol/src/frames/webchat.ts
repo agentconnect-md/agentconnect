@@ -171,6 +171,55 @@ export const ElicitField = z.object({
 })
 export type ElicitField = z.infer<typeof ElicitField>
 
+/** ONE elicitation card, as the daemon reduced it. Both the live event below and the
+ *  transcript row that persists the card (`ElicitBody`) are this shape, so a reader who
+ *  loads the conversation later is shown the very card the reader in the moment answered.
+ *
+ *  The agent asked for a choice (ACP `elicitation/create`, form or url mode) — webchat's own
+ *  in-band card, the peer of the Slack Block Kit one. Deliberately NOT the raw
+ *  `requestedSchema`: the daemon has already reduced the form to its renderable field(s), and
+ *  its options are the only answers the browser may send back (as the `elicitation_choice` op
+ *  keyed by this `requestId`). `message` is agent-authored text, masked before it reaches here.
+ *  Options are UNCAPPED — the Slack button cap is a Slack surface limit and does not follow the
+ *  choice onto this surface. They are also EMPTY for a typed field (`text`/`number`), whose
+ *  card offers nothing to pick. */
+export const ElicitCard = z.object({
+  requestId: z.string().min(1).max(200),
+  message: z.string(),
+  options: ElicitOptions,
+  // Absent ⇒ pick exactly ONE option, the original card. Present ⇒ pick several of the same
+  // options and confirm, and the answer is a list. An added OPTIONAL field rather than a new
+  // event kind on purpose: a relay or browser predating it decodes the event unchanged
+  // (zod strips what it does not know) instead of dropping the frame the way an unknown
+  // kind would, and a daemon predating it simply never sets it.
+  multi: ElicitMulti.optional(),
+  // Present ⇒ the card is a free-text input carrying the schema's own constraints, which the
+  // daemon re-checks on the way back in. Same optional-field reasoning as `multi`, with one
+  // added skew note: an old reader keeps `options` (now empty) and shows a card with nothing
+  // but Dismiss — unanswerable, never wrongly answered. `pattern` reaches here only once the
+  // daemon has cleared it as safe to run.
+  text: ElicitText.optional(),
+  // Present ⇒ a numeric input; `integer` is the schema's `integer` type, not just a bound.
+  number: ElicitNumber.optional(),
+  // The schema's `default`, already checked against the constraints above: the card
+  // pre-populates its control with it (MCP `2025-11-25`), and the reader may answer otherwise.
+  defaultValue: ElicitDefault.optional(),
+  // Present ⇒ the card is a multi-field FORM: one control per field, one submit, and the
+  // answer is a record of value-per-field. The single-field descriptors above are then all
+  // absent — deliberately, and the same closed-failure trade `text` records: an old reader
+  // sees an optionless card it can only Dismiss, rather than a card it could half-fill with
+  // one field's answer that the daemon would then refuse.
+  fields: z.array(ElicitField).min(2).max(ELICIT_FORM_WIRE_FIELD_CAP).optional(),
+  // Present ⇒ the card is a URL-mode CONSENT card (ACP `ElicitationUrlMode`): the reader is
+  // shown this exact URL and opens it in their own browser, and nothing about the page ever
+  // returns here. `options` is then empty and every field descriptor above is absent, so the
+  // same closed skew `text` records holds — an old reader sees a card it can only Dismiss,
+  // which the daemon reads as the spec's `decline`, never as consent. Only http/https reach
+  // here; the daemon declines any other scheme rather than hand a browser an unopenable href.
+  url: z.string().min(1).max(2048).optional()
+})
+export type ElicitCard = z.infer<typeof ElicitCard>
+
 export const WebchatEvent = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('message'), text: z.string() }), // from agent_message_chunk
   z.object({ kind: z.literal('thinking'), text: z.string() }), // from agent_thought_chunk
@@ -218,50 +267,7 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   // only after the fact. There is no relay capability echo to gate on (`rd/hello/ok` carries
   // only `relayId`), so this is the tradeoff rather than an oversight.
   z.object({ kind: z.literal('plan'), entries: z.array(PlanEntry) }),
-  // The agent asked for a choice (ACP `elicitation/create`, form or url mode) — webchat's own
-  // in-band card, the peer of the Slack Block Kit one. Deliberately NOT the raw
-  // `requestedSchema`: the daemon has already reduced the form to its renderable
-  // field(s), and its options are the only answers the browser may send back (as the
-  // `elicitation_choice` op keyed by this `requestId`). `message` is agent-authored text,
-  // masked before it reaches here. Options are UNCAPPED — the Slack 5-button cap is a
-  // Slack surface limit and does not follow the choice onto this surface. They are also
-  // EMPTY for a typed field (`text`/`number`), whose card offers nothing to pick.
-  z.object({
-    kind: z.literal('elicitation'),
-    requestId: z.string().min(1).max(200),
-    message: z.string(),
-    options: ElicitOptions,
-    // Absent ⇒ pick exactly ONE option, the original card. Present ⇒ pick several of the same
-    // options and confirm, and the answer is a list. An added OPTIONAL field rather than a new
-    // event kind on purpose: a relay or browser predating it decodes the event unchanged
-    // (zod strips what it does not know) instead of dropping the frame the way an unknown
-    // kind would, and a daemon predating it simply never sets it.
-    multi: ElicitMulti.optional(),
-    // Present ⇒ the card is a free-text input carrying the schema's own constraints, which the
-    // daemon re-checks on the way back in. Same optional-field reasoning as `multi`, with one
-    // added skew note: an old reader keeps `options` (now empty) and shows a card with nothing
-    // but Dismiss — unanswerable, never wrongly answered. `pattern` reaches here only once the
-    // daemon has cleared it as safe to run.
-    text: ElicitText.optional(),
-    // Present ⇒ a numeric input; `integer` is the schema's `integer` type, not just a bound.
-    number: ElicitNumber.optional(),
-    // The schema's `default`, already checked against the constraints above: the card
-    // pre-populates its control with it (MCP `2025-11-25`), and the reader may answer otherwise.
-    defaultValue: ElicitDefault.optional(),
-    // Present ⇒ the card is a multi-field FORM: one control per field, one submit, and the
-    // answer is a record of value-per-field. The single-field descriptors above are then all
-    // absent — deliberately, and the same closed-failure trade `text` records: an old reader
-    // sees an optionless card it can only Dismiss, rather than a card it could half-fill with
-    // one field's answer that the daemon would then refuse.
-    fields: z.array(ElicitField).min(2).max(ELICIT_FORM_WIRE_FIELD_CAP).optional(),
-    // Present ⇒ the card is a URL-mode CONSENT card (ACP `ElicitationUrlMode`): the reader is
-    // shown this exact URL and opens it in their own browser, and nothing about the page ever
-    // returns here. `options` is then empty and every field descriptor above is absent, so the
-    // same closed skew `text` records holds — an old reader sees a card it can only Dismiss,
-    // which the daemon reads as the spec's `decline`, never as consent. Only http/https reach
-    // here; the daemon declines any other scheme rather than hand a browser an unopenable href.
-    url: z.string().min(1).max(2048).optional()
-  }),
+  ElicitCard.extend({ kind: z.literal('elicitation') }),
   // The same card, settled. Slack rewrites its message in place; this stream is
   // append-only, so the collapse is a second event keyed by the same `requestId`.
   // `label` is the chosen option's label — the chosen labels joined, for a multi-select —

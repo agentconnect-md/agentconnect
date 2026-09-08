@@ -83,7 +83,8 @@ function installPending(daemon: Daemon): any {
     getSessionByAcpIdForAgent: () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: () => new Map(),
     createPermissionRequest: vi.fn(),
-    resolvePermissionRequest: vi.fn(() => true)
+    resolvePermissionRequest: vi.fn(() => true),
+    upsertElicit: vi.fn(async () => {})
   }
   const pending = {
     plan: {

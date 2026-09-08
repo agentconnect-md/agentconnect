@@ -365,11 +365,22 @@ export interface SessionListRow extends SessionRecord {
  *  - `tool`      — an agent tool invocation (label). Audit/UI only.
  *  - `reasoning` — an agent's coalesced thinking block. Audit/UI only.
  *  - `plan`      — the turn's task list (one upserted row, `Plan · n/m` label). Audit/UI only.
- * `tool`/`reasoning`/`plan` are recorded for EVERY turn regardless of the agent's Slack
- * output mode — output mode only gates what reaches the platform, never the transcript.
- * Only `text` and `tool` rows ever rebuild model context; the other two are read-only history.
+ *  - `elicit`    — the agent's structured question and how it ended (one upserted row, the
+ *                  `ElicitBody` in `body`). Audit/UI only, and deliberately so: the runtime
+ *                  already received the answer as the ACP response, so re-feeding the card as
+ *                  conversation on catch-up would ask it again (#1794).
+ * Every one of these is recorded for EVERY turn regardless of the agent's Slack output mode —
+ * output mode only gates what reaches the platform, never the transcript.
+ * Only `text` and `tool` rows ever rebuild model context; the rest are read-only history.
  */
-export type TranscriptKind = 'text' | 'tool' | 'reasoning' | 'plan'
+export type TranscriptKind = 'text' | 'tool' | 'reasoning' | 'plan' | 'elicit'
+
+/** One elicitation card's row identity in the shared `tool_call_id` column, namespaced so it
+ *  cannot be an ACP tool id. Keyed by the card's minted `ts`, not its request id: request ids
+ *  restart with the daemon, and a reused one would rewrite an older card's row. */
+function elicitRowId(ts: string): string {
+  return `elicit:${ts}`
+}
 
 export interface TranscriptEntry {
   channel: string
@@ -4120,6 +4131,69 @@ export class LocalStore {
         [e.sender, e.recipient, ...sharedRecipients],
         this.transcriptRevision
       )
+    }
+  }
+
+  /** Write one elicitation card's row (the question in `text`, the serialized `ElicitBody` in
+   *  `body`). An upsert on the card's own `ts`, which the caller mints once and keeps for the
+   *  life of the request: the ask claims the row and the settlement rewrites it in place, so the
+   *  card holds the position in the turn where it was actually asked rather than reappearing
+   *  below the reply that followed it. `ts` comes from the monotonic internal-event clock, so
+   *  two cards in one thread never share a row. Shares the tool row's `tool_call_id` column as
+   *  its identity, exactly as {@link upsertPlan} does — the value is namespaced and both
+   *  statements are fenced on kind, so a real tool id can never collide with one. */
+  upsertElicit(e: {
+    channel: string
+    thread: string
+    ts: string
+    sender: string
+    text: string
+    body: string
+  }): Promise<void> {
+    const orgId = this.orgFor(e.sender)
+    return this.transcriptMutex.run(() => this.upsertElicitLocked(e, orgId))
+  }
+
+  /** The upsert itself, under {@link transcriptMutex} — see {@link appendTranscriptLocked}. */
+  private async upsertElicitLocked(
+    e: { channel: string; thread: string; ts: string; sender: string; text: string; body: string },
+    orgId: string
+  ): Promise<void> {
+    const revision = this.transcriptRevision + 1
+    const written = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
+      {
+        kind: 'run',
+        sql: `INSERT OR IGNORE INTO transcript
+           (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
+         VALUES (@orgId, @channel, @thread, @ts, @sender, 'elicit', @text, @cardId, @body, @eventTimeUs, @revision)`,
+        params: [
+          {
+            orgId,
+            channel: e.channel,
+            thread: e.thread,
+            ts: e.ts,
+            sender: e.sender,
+            text: e.text,
+            cardId: elicitRowId(e.ts),
+            body: e.body,
+            eventTimeUs: transcriptEventTimeUs(e.ts),
+            revision
+          }
+        ]
+      },
+      {
+        kind: 'run',
+        sql: `UPDATE transcript SET text = ?, body = ?, revision = ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = 'elicit'
+           AND (text IS NOT ? OR body IS NOT ?)`,
+        params: [e.text, e.body, revision, orgId, e.channel, e.thread, e.sender, elicitRowId(e.ts), e.text, e.body]
+      }
+    ])
+    // An unchanged re-write changes neither statement and must not bump the revision a live
+    // console polls on — the same rule the plan upsert follows.
+    if (written.changes.some((changed) => changed > 0)) {
+      this.transcriptRevision = written.revision
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
     }
   }
 
