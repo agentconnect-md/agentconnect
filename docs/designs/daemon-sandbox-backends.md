@@ -256,6 +256,12 @@ sparse copying on the host filesystem. Measure both image preparation and clonin
 Flat disks do not provide native snapshots or rootfs patches; generated launch
 files are written after boot through the guest file API.
 
+Each VM mounts `/run` as tmpfs so process IDs and service sockets cannot survive
+a stop/start while application data remains on the persistent disk. Operator
+mounts cannot replace `/run`. The local guest helper creates its private socket
+directory at `/tmp/agentconnect` as the image's ordinary user; the pool keeps its
+existing `/run/agentconnect` paths.
+
 In pinned version `0.6.17`, starting a retained flat-disk VM still validates the
 OCI image's VMDK cache. The manager therefore runs the official
 `msb pull <image> --materialize all --quiet` before its VM probe, preparing both

@@ -3,7 +3,7 @@ import { basename, dirname, join, relative, sep } from 'node:path'
 import { installMicrosandbox, microsandboxGuestEntry } from './microsandbox/install.js'
 import { prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
-import { microsandboxGitRunner, microsandboxWorkspaceFs } from './microsandbox/guest.js'
+import { MICROSANDBOX_TUNNEL_PATHS, microsandboxGitRunner, microsandboxWorkspaceFs } from './microsandbox/guest.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
 import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
@@ -4000,7 +4000,7 @@ export class Daemon {
     if (agent && this.usesMicrosandbox(agent)) {
       const bridge = this.microsandboxTable?.mcpBridge
       if (!bridge) throw new Error('microsandbox image does not provide the AgentConnect MCP bridge')
-      return buildSandboxMcpServers({ bridge, token })
+      return buildSandboxMcpServers({ bridge, token, socketPath: MICROSANDBOX_TUNNEL_PATHS.mcp })
     }
     if (!this.k8sPlane) {
       return buildMcpServers({

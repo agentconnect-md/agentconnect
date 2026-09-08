@@ -185,7 +185,7 @@ export class MicrosandboxManager {
 
   private spec(environment: MicrosandboxEnvironment): string {
     return stableJson({
-      version: 1,
+      version: 2,
       config: this.options.config,
       environment: { ...environment, mounts: [...environment.mounts].sort((a, b) => a.target.localeCompare(b.target)) },
       sockets: this.options.sockets
@@ -206,6 +206,7 @@ export class MicrosandboxManager {
       .deploymentProfile('single-tenant')
       .detached(true)
       .ephemeral(false)
+      .volume('/run', (volume) => volume.tmpfs())
       .quietLogs()
     for (const mount of mounts) {
       builder.volume(mount.target, (volume) => {

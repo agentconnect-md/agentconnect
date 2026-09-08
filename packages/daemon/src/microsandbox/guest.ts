@@ -7,9 +7,13 @@ import type { WorkspaceFs } from '../workspace/workspace-fs.js'
 
 export const MICROSANDBOX_NODE = '/usr/local/bin/node'
 export const MICROSANDBOX_GUEST_ENTRY = '/opt/agentconnect-local/guest.js'
+export const MICROSANDBOX_TUNNEL_PATHS = {
+  mcp: '/tmp/agentconnect/mcp.sock',
+  gitcred: '/tmp/agentconnect/gitcred.sock'
+} as const
 export const MICROSANDBOX_SOCKET_BRIDGES = [
-  { path: '/run/agentconnect/mcp.sock', port: 5000 },
-  { path: '/run/agentconnect/gitcred.sock', port: 5001 }
+  { path: MICROSANDBOX_TUNNEL_PATHS.mcp, port: 5000 },
+  { path: MICROSANDBOX_TUNNEL_PATHS.gitcred, port: 5001 }
 ] as const
 
 export interface MicrosandboxExecuteOptions {

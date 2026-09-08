@@ -17,13 +17,18 @@ const home = join(root, 'home')
 await mkdir(home)
 await mkdir(join(root, 'microsandbox'))
 if (cacheDir) await symlink(resolve(cacheDir), join(root, 'microsandbox', 'cache'))
-process.env = {
+const sandboxEnv = {
   PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
   HOME: home,
   MSB_HOME: join(root, 'microsandbox'),
   MSB_BACKEND: 'local',
   XDG_CACHE_HOME: join(root, 'cache')
 }
+// Preserve Node's environment proxy so native SDK calls see the same values as child processes.
+for (const key of Object.keys(process.env)) {
+  if (!Object.hasOwn(sandboxEnv, key)) delete process.env[key]
+}
+Object.assign(process.env, sandboxEnv)
 const sdk: typeof import('microsandbox') = await import(
   sdkModule ? pathToFileURL(resolve(sdkModule)).href : 'microsandbox'
 )

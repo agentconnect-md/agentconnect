@@ -9,9 +9,8 @@ import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
 import { compactReadRoots, normalizeSandboxMounts } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
-import { SANDBOX_TUNNEL_PATHS } from '../shim/sandbox-paths.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
-import { MICROSANDBOX_GUEST_ENTRY, MICROSANDBOX_SOCKET_BRIDGES } from './guest.js'
+import { MICROSANDBOX_GUEST_ENTRY, MICROSANDBOX_SOCKET_BRIDGES, MICROSANDBOX_TUNNEL_PATHS } from './guest.js'
 
 const IMAGE_PATH = '/opt/agentconnect/pathbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 const HOST_IPC_ENV = [
@@ -125,6 +124,8 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   automatic.push({ source: guestEntry, target: MICROSANDBOX_GUEST_ENTRY, readOnly: true })
   const configured = normalizeSandboxMounts(opts.mounts, hostEnv, 'microsandbox')
   const ownedTargets = [
+    '/run',
+    '/var/run',
     ...automatic.map((mount) => mount.target),
     ...MICROSANDBOX_SOCKET_BRIDGES.map((bridge) => bridge.path)
   ]
@@ -158,7 +159,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
     throw new Error('microsandbox private XDG runtime path must be a real directory')
   }
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 })
-  env[GITCRED_SOCKET_ENV] = SANDBOX_TUNNEL_PATHS.gitcred
+  env[GITCRED_SOCKET_ENV] = MICROSANDBOX_TUNNEL_PATHS.gitcred
   return {
     env,
     inheritProcessEnv: false,
