@@ -201,7 +201,7 @@ agent through every move and needs no execution unit to be up for a read or a wr
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `daemon` · local daemon (default) | `<agent-root>` on the daemon's disk (`memory/`, `channels/`, `memory-dreams/`, `memory-backups/` beneath it)                                                                                                                                                                             | Always                                                                                                                                                                                                                     |
 | `daemon` · cluster (`--k8s`)      | **Refused.** A `--k8s` daemon fails the activation closed, and the CP rejects the binding for an agent placed on the install-wide pool. The former sandbox-volume home (`<workspace mount>/.agentconnect/memory`, #1078 option A) survives only as the source of the one-time copy below | —                                                                                                                                                                                                                          |
-| `control-plane` · any placement   | The `agent_memory_file` table in the CP database — one row per file keyed `(agentId, path)`, org-fenced, the same layout beneath a virtual root                                                                                                                                          | While the daemon's CP connection is READY; otherwise every read and write refuses with `MemoryHomeUnavailableError` — one resolution, no fallback to the member's disk, the same shape `MemorySandboxUnavailableError` had |
+| `control-plane` · any placement   | The live store only — the `agent_memory_file` table in the CP database, one row per file keyed `(agentId, path)`, org-fenced, the same layout beneath a virtual root. Dream staging and the change log stay off it (below)                                                               | While the daemon's CP connection is READY; otherwise every read and write refuses with `MemoryHomeUnavailableError` — one resolution, no fallback to the member's disk, the same shape `MemorySandboxUnavailableError` had |
 
 **Why the CP is allowed to hold it.** #1078 kept agent memory out of the CP on the
 ground that it only had to survive member replacement. It now also has to survive a
@@ -212,6 +212,41 @@ is transcripts, ACP update streams, attachment bytes and workspace content — t
 unbounded, streaming kinds — not curated, size-capped Markdown. `control-plane` is
 opt-in for self-hosted agents and mandatory on the pool, where the member's root is
 an `emptyDir` and the only other durable place was a volume that a pod had to hold.
+
+**What the home does not carry: drafts and the change log.** `control-plane` moves the
+live store — `memory/`, `channels/`, `memory-backups/`. Two things beneath the same root
+stay off it, each for its own reason, and both were measured before being cut.
+
+_Dream staging (`memory-dreams/<dreamId>/`) stays on the daemon's disk under both homes._
+A dream stages a whole proposed store, so the tree holds one full copy per retained dream:
+on one install's busiest agent, 1.6 MB of live Markdown in 219 files against 12 MB of
+staging in 602 files, and across eleven agents 5.8 MB / 246 files live against
+23.5 MB / 1728 files staged — four times the bytes and seven times the files, written
+directly by the extraction model and mostly discarded. A draft is also the one part of the
+tree that does not need to survive a move: an un-adopted proposal is dropped when the agent
+moves, and `adopt` is the single moment staged content enters the home. Keeping it local is
+what leaves `MemoryFs.root` an honest path — the extraction host's cwd is
+`join(fs.root, inputDir)`, and a database has no directory to run in.
+
+_`.history` becomes an event table, not a file._ The change log is one record per write
+carrying `before`/`after` snapshots capped at `MAX_HISTORY_VALUE_BYTES`, and it is read the
+way a table is read: filtered by path, paged by cursor. As a file it is read and rewritten
+whole on every write and reaches its 2 MiB cap in practice — two of the eleven agents above
+are already there, one with a live tree that is almost nothing else — so on this wire every
+memory write would carry a 2 MiB round trip for a sidecar nobody asked for. Under
+`control-plane` it is its own org-fenced table keyed `(agentId, path)`, appended by the
+`memory/store` handler in the same transaction as the write it records, with retention
+(`MAX_HISTORY_VERSIONS_PER_FILE` and the byte cap) enforced as a delete rather than a
+rewrite. A `daemon` home keeps today's sidecar file; `listMemoryHistory` reads whichever
+the home provides, and the console frame is unchanged.
+
+**Why the port survives the split.** Those two carried the whole case against putting a
+POSIX-shaped op set on this wire. What is left is the memory files themselves: capped at
+`MAX_MEMORY_FILE_BYTES` (256 KB) and averaging about 7 KB across the tree measured above,
+against a `WRITE_CHUNK_BYTES` of 128 KiB — so an ordinary write is one `append` and one
+`commit`, two round trips, and the chunking path is close to unreachable. Reusing the pod's
+op set stays worth its price, and `CpMemoryFs` stays an adapter rather than a third
+implementation.
 
 **The port over the CP.** `CpMemoryFs` is the shim client (`ShimMemoryFs`) over a
 different requester — the daemon's CP connection — so the daemon side is an adapter,
@@ -238,23 +273,23 @@ which the in-process directory lock never was — a member that lost the duty ge
 `agent-memory-store-v1` server feature in `register/ok`; a daemon whose CP lacks it
 refuses to activate a `control-plane` binding with that reason.
 
-**What stays on the daemon.** Everything above the port: the directory lock,
-`.history`, retention, frontmatter normalization, index generation, the write ledger,
-the dream fence. Console traffic is unchanged in this step — the `memory/*` C→D frames
-still go to the owning daemon, which now answers from the CP-backed port instead of
+**What stays on the daemon.** Everything above the port: the directory lock, retention,
+frontmatter normalization, index generation, the write ledger, the dream fence.
+Console traffic is unchanged in this step — the `memory/*` C→D frames still go to the
+owning daemon, which now answers from the CP-backed port instead of
 waking a pod (#1077's wake stays for `daemon`-home cluster trees only until those are
 gone). Answering list/read/history straight from the table, and so with the daemon
-offline, is a later step. Per-file cap stays `MAX_MEMORY_FILE_BYTES`; `.history` is
-rewritten whole per write and may reach its 2 MiB cap — sixteen frames, accepted for
-now, rows are the follow-up if it hurts. The dream runner is unchanged; on the pool its
+offline, is a later step. Per-file cap stays `MAX_MEMORY_FILE_BYTES`. The dream runner is
+unchanged and keeps staging on local disk under either home; on the pool its
 `withMemoryHome` still binds the agent pod, for the extraction host now, not the tree.
 
 **Switching `home` copies; switching provider still does not (§6, §9).** Both homes
 are the same tree, so this is the one binding change that migrates: when the owning
 daemon applies a binding whose `home` differs and the target has no `memory/` yet, it
-copies the whole tree once through the two ports (`copyMemoryTree(from, to)`, under
-the directory lock) into a staging prefix `.home-import/` on the target and then
-renames the top-level entries into place, `memory/` last — so `memory/` present means
+copies the live store once through the two ports (`copyMemoryTree(from, to)`, under the
+directory lock; staging is local to each home and is not copied, and the change log is
+rebuilt as one `home-switch` record per file) into a staging prefix `.home-import/` on
+the target and then renames the top-level entries into place, `memory/` last — so `memory/` present means
 the copy completed, and a retry that finds no `memory/` removes any `.home-import/`
 left by an interrupted attempt and starts over instead of resuming a partial tree.
 The daemon then rebuilds the session boundary as any memory change does. The
@@ -857,7 +892,7 @@ invariant in
 | **M-5C · record product surface (complete)**             | Core entry tools + provider-aware record REST/frames/console, with CRUD/history driven by capability.                                                                                                                     | ⚠️ Same as above                                                           | None                         |
 | **M-5D · dialect/runtime expansion (complete)**          | Mem0 OSS adapter; operator-installed stdio host + daemon-private secret lease.                                                                                                                                            | OSS/local depends on deployment                                            | stdio host                   |
 | **M-6 · shared scope (through data plane)**              | Depends on shared-bot relay; `memory-sync` payload; managed shared-scope sync + conflict semantics; external reuses canonical shared policy.                                                                              | ✅ / explicit external egress                                              | Reuse relay                  |
-| **M-8 · `home: control-plane` (designed, not built)**    | `agent_memory_file` in the CP, `memory/store` D→C pair over the shim op set, `CpMemoryFs` adapter, home switch copy, pool mandates it (§3.2.1).                                                                           | Curated Markdown in the CP by explicit binding; default stays daemon-local | CP table                     |
+| **M-8 · `home: control-plane` (designed, not built)**    | `agent_memory_file` plus the change-log table in the CP, `memory/store` D→C pair over the shim op set, `CpMemoryFs` adapter, home switch copy, dream staging stays daemon-local, pool mandates it (§3.2.1).               | Curated Markdown in the CP by explicit binding; default stays daemon-local | CP table                     |
 | **M-7 · optional retrieval upgrade**                     | BM25 over Markdown; leave vector seam.                                                                                                                                                                                    | ✅                                                                         | None for BM25; vectors later |
 
 The plugin profile remains backend-agnostic, and the Mem0 implementation stays
