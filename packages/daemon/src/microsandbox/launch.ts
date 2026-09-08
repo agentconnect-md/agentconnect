@@ -1,0 +1,158 @@
+import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
+import { sandboxBoundary } from '../acp/sandbox.js'
+import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
+import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { privateRuntimeHomeFor, type PreparedRuntimeLaunch } from '../launch/prepare.js'
+import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
+import { compactReadRoots, normalizeSandboxMounts } from '../runtimes/read-roots.js'
+import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
+import { prepareRuntimeHome, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
+import { SANDBOX_TUNNEL_PATHS } from '../shim/sandbox-paths.js'
+import { SESSIONS_DIR } from '../workspace/session-layout.js'
+import { MICROSANDBOX_GUEST_ENTRY, MICROSANDBOX_SOCKET_BRIDGES } from './guest.js'
+
+const IMAGE_PATH = '/opt/agentconnect/pathbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+const HOST_IPC_ENV = [
+  'SSH_AUTH_SOCK',
+  'SSH_AGENT_PID',
+  'DBUS_SESSION_BUS_ADDRESS',
+  'DBUS_SYSTEM_BUS_ADDRESS',
+  'DISPLAY',
+  'WAYLAND_DISPLAY',
+  'PULSE_SERVER',
+  'PIPEWIRE_REMOTE',
+  'GPG_AGENT_INFO',
+  'GNOME_KEYRING_CONTROL',
+  'SESSION_MANAGER',
+  'TMUX',
+  'VSCODE_IPC_HOOK_CLI',
+  'NOTIFY_SOCKET',
+  'TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE',
+  'DOCKER_HOST',
+  'CONTAINER_HOST',
+  'BUILDKIT_HOST',
+  'PODMAN_HOST'
+]
+
+export interface PrepareMicrosandboxLaunchOptions {
+  runtimeId: string
+  runtime?: RuntimeDef
+  scopeDir: string
+  cwd: string
+  hostKey?: HostKey
+  explicitEnv?: Record<string, string>
+  stateSourceEnv?: NodeJS.ProcessEnv
+  trustedSessionDir?: string
+  trustedWorkspaceWriteRoots?: string[]
+  trustedRuntimeReadRoots?: string[]
+  trustedMounts?: SandboxMount[]
+  mounts: SandboxMount[]
+  guestEntry: string
+}
+
+function contains(root: string, path: string): boolean {
+  const rel = relative(root, path)
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+}
+
+export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions): PreparedRuntimeLaunch & {
+  microsandbox: { mounts: SandboxMount[]; workspaceRoot: string }
+} {
+  if (opts.runtime?.externalExecution) {
+    throw new Error(`runtime "${opts.runtimeId}" executes outside the microsandbox VM`)
+  }
+  const scopeDir = realpathSync(resolve(opts.scopeDir))
+  const hostEnv = opts.stateSourceEnv ?? process.env
+  let runtimeHome =
+    opts.hostKey && hostKeySessionKey(opts.hostKey) !== undefined
+      ? join(scopeDir, SESSIONS_DIR, hostKeyDirName(opts.hostKey), 'home')
+      : privateRuntimeHomeFor(scopeDir, undefined)
+  const sessionDir = opts.trustedSessionDir ? realpathSync(opts.trustedSessionDir) : undefined
+  if (sessionDir) {
+    const parts = relative(scopeDir, sessionDir).split(sep)
+    if (parts.length !== 2 || parts[0] !== SESSIONS_DIR || !parts[1] || !statSync(sessionDir).isDirectory()) {
+      throw new Error('microsandbox session directory must be one existing scopeDir/sessions/<leaf> directory')
+    }
+    runtimeHome = join(sessionDir, 'home')
+  }
+  const boundary = sandboxBoundary({ agentDir: scopeDir, cwd: opts.cwd, runtimeHome })
+  if (sessionDir && !contains(sessionDir, boundary.writable[0]!)) {
+    throw new Error('microsandbox cwd is outside its session directory')
+  }
+  const scopePath = (path: string): string =>
+    sandboxBoundary({ agentDir: scopeDir, cwd: path, runtimeHome }).writable[0]!
+  const writable = [
+    ...boundary.writable,
+    ...(sessionDir ? [sessionDir] : []),
+    ...(opts.trustedWorkspaceWriteRoots ?? []).map(scopePath)
+  ]
+  const configDirs = [join(scopeDir, 'run', 'config-files'), join(scopeDir, '.agentconnect', 'runtime-policy')].map(
+    scopePath
+  )
+  for (const path of [...writable, ...configDirs]) mkdirSync(path, { recursive: true, mode: 0o700 })
+
+  const credentials = prepareSharedRuntimeCredentials({ runtimeId: opts.runtimeId, runtime: opts.runtime, hostEnv })
+  runtimeHome = prepareRuntimeHome(opts.runtimeId, scopeDir, hostEnv, runtimeHome, credentials?.seedExclusions)
+  credentials?.preparePrivateHome(runtimeHome)
+  writable.push(...(credentials?.writablePaths ?? []))
+  const readRoots = (opts.trustedRuntimeReadRoots ?? []).filter((path) => {
+    if (!existsSync(path)) return false
+    const stat = statSync(path)
+    return stat.isFile() || stat.isDirectory()
+  })
+  const automaticSource = (path: string): string => {
+    const source = realpathSync(path)
+    if (contains(source, scopeDir) || (hostEnv.HOME && contains(source, resolve(hostEnv.HOME)))) {
+      throw new Error(`microsandbox automatic mount would expose an entire agent or host HOME: ${source}`)
+    }
+    return source
+  }
+  const writeRoots = compactReadRoots(writable.map(automaticSource))
+  const automatic: SandboxMount[] = [
+    ...compactReadRoots([...configDirs, ...readRoots].map(automaticSource))
+      .filter((path) => !writeRoots.some((write) => contains(write, path)))
+      .map((source) => ({ source, target: source, readOnly: true })),
+    ...writeRoots.map((source) => ({ source, target: source, readOnly: false })),
+    ...normalizeSandboxMounts(opts.trustedMounts ?? [], hostEnv, 'microsandbox').map((mount) => ({
+      ...mount,
+      source: automaticSource(mount.source)
+    }))
+  ]
+  const guestEntry = realpathSync(opts.guestEntry)
+  if (!statSync(guestEntry).isFile()) throw new Error('microsandbox guest entry must be a regular file')
+  automatic.push({ source: guestEntry, target: MICROSANDBOX_GUEST_ENTRY, readOnly: true })
+  const configured = normalizeSandboxMounts(opts.mounts, hostEnv, 'microsandbox')
+  const ownedTargets = [
+    ...automatic.map((mount) => mount.target),
+    ...MICROSANDBOX_SOCKET_BRIDGES.map((bridge) => bridge.path)
+  ]
+  for (const mount of configured) {
+    if (ownedTargets.some((target) => contains(mount.target, target) || contains(target, mount.target))) {
+      throw new Error(`sandbox.mounts target overlaps an automatic microsandbox mount: ${mount.target}`)
+    }
+  }
+
+  const env = { ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, hostEnv), ...credentials?.env }
+  for (const name of HOST_IPC_ENV) delete env[name]
+  for (const { envVar } of opts.runtime ? runtimeExecutableHints(opts.runtime) : []) {
+    if (opts.explicitEnv?.[envVar] === undefined) delete env[envVar]
+  }
+  env.PATH = opts.explicitEnv?.PATH ?? IMAGE_PATH
+  env.TMPDIR = env.TMP = env.TEMP = '/tmp'
+  env.CLAUDE_TMPDIR = env.CLAUDE_CODE_TMPDIR = '/tmp'
+  env.XDG_RUNTIME_DIR = join(runtimeHome, '.run')
+  if (existsSync(env.XDG_RUNTIME_DIR) && !lstatSync(env.XDG_RUNTIME_DIR).isDirectory()) {
+    throw new Error('microsandbox private XDG runtime path must be a real directory')
+  }
+  mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 })
+  env[GITCRED_SOCKET_ENV] = SANDBOX_TUNNEL_PATHS.gitcred
+  return {
+    env,
+    inheritProcessEnv: false,
+    gitMetadataWriteRoots: [],
+    runtimeHome,
+    microsandbox: { mounts: [...automatic, ...configured], workspaceRoot: scopeDir }
+  }
+}

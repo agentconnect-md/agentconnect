@@ -1,5 +1,12 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, relative, sep } from 'node:path'
+import { installMicrosandbox, microsandboxGuestEntry } from './microsandbox/install.js'
+import { prepareMicrosandboxLaunch } from './microsandbox/launch.js'
+import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
+import { microsandboxGitRunner, microsandboxWorkspaceFs } from './microsandbox/guest.js'
+import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
+import { microsandboxSupportMounts } from './microsandbox/support.js'
+import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
@@ -264,7 +271,12 @@ import {
 } from './runtimes/runtime-commands.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
+import {
+  declaredRuntimeCatalog,
+  loadK8sRuntimeTable,
+  type K8sRuntimeAcpSnapshot,
+  type K8sRuntimeTable
+} from './runtimes/k8s-runtimes.js'
 import {
   K8S_PROBE_CLAIM_TTL_MS,
   K8S_PROBE_FRESH_MS,
@@ -1137,6 +1149,11 @@ export class Daemon {
   private readonly clusterIdentityToken?: () => string | undefined
   // The k8s execution plane: shim dialer + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
+  private microsandbox?: MicrosandboxManager
+  private microsandboxTable?: K8sRuntimeTable
+  private microsandboxFailure?: string
+  private microsandboxCatalog?: ResolvedRuntimeCatalog
+  private localRuntimeCatalog?: ResolvedRuntimeCatalog
   // The resolved catalog the probed table is projected onto; it supplies command/args, which the
   // table never does — the table only says which ids this image provides.
   private k8sResolvedCatalog?: ResolvedRuntimeCatalog
@@ -1777,7 +1794,7 @@ export class Daemon {
   async start(): Promise<void> {
     await this.bootReadinessGate()
     const { root, cfg } = this.resolvePathAndConfig()
-    this.sandboxPreflight(cfg)
+    await this.sandboxPreflight(cfg, root)
     await this.startClusterPlanes(root, cfg)
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
@@ -1848,7 +1865,7 @@ export class Daemon {
     })
     this.cfg = cfg
     // Validate operator mounts before startup can create any runtime hosts.
-    cfg.sandbox.mounts = normalizeSandboxMounts(cfg.sandbox.mounts)
+    cfg.sandbox.mounts = normalizeSandboxMounts(cfg.sandbox.mounts, process.env, cfg.sandbox.backend)
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     // §24.4: an excluded origin is named at SPEC admission. All this knows is the operator list —
     // whether a spec names an instance of its own, which stays cloneable either way, is per-agent.
@@ -1861,7 +1878,65 @@ export class Daemon {
   }
 
   /** Phase 3 — report the host sandbox mechanism and refuse a boot that cannot honor requireSandbox. */
-  private sandboxPreflight(cfg: Config): void {
+  private async sandboxPreflight(cfg: Config, root: string): Promise<void> {
+    if (cfg.sandbox.backend === 'microsandbox') {
+      if (this.k8s) throw new Error('sandbox.backend=microsandbox cannot be combined with --k8s')
+      this.workspaces.setGitRunnerResolver((agentId, cwd, abort) => this.microsandboxGit(agentId, cwd, abort))
+      this.workspaces.setFsResolver((agentId) => {
+        const agent = this.agents.get(agentId)
+        if (!agent || !this.usesMicrosandbox(agent)) return undefined
+        return {
+          fs: new MicrosandboxWorkspaceFs(
+            (path) => {
+              const manager = this.microsandbox
+              const environment = manager?.environment(this.microsandboxPlacement(agent, path).id)
+              const mounted = environment?.mounts.some(
+                (mount) =>
+                  !mount.readOnly &&
+                  mount.source === mount.target &&
+                  (path === mount.target || path.startsWith(`${mount.target}${sep}`))
+              )
+              return manager && environment && mounted
+                ? microsandboxWorkspaceFs({
+                    workspaceRoot: environment.workspaceRoot,
+                    execute: (command, args, options) => manager.exec(environment, command, args, options)
+                  })
+                : undefined
+            },
+            async (path) => {
+              const manager = this.microsandbox
+              const environment = manager?.environment(this.microsandboxPlacement(agent, path).id)
+              if (
+                !manager ||
+                !environment?.mounts.some((mount) => !mount.readOnly && mount.source === path && mount.target === path)
+              ) {
+                return false
+              }
+              await manager.suspend(environment.id)
+              return true
+            }
+          )
+        }
+      })
+      this.workspaces.setSessionsDiscarder((agentId, exceptLeaf) => this.discardSessionSandboxes(agentId, exceptLeaf))
+      try {
+        this.microsandbox = await installMicrosandbox({
+          root,
+          config: cfg.sandbox.microsandbox!,
+          sockets: { mcp: mcpSocketPath(root), gitcred: gitcredSocketPath(root) },
+          log: this.log
+        })
+        this.microsandboxTable = await this.microsandbox.prepare()
+        this.log.info('sandbox: microsandbox image and VM startup verified')
+      } catch (error) {
+        await this.microsandbox?.stopAll().catch((stopError: unknown) => this.log.warn(formatErr(stopError)))
+        this.microsandbox = undefined
+        this.microsandboxFailure = formatErr(error)
+        if (cfg.security.requireSandbox) throw new Error(`microsandbox startup refused: ${formatErr(error)}`)
+        this.log.warn(`microsandbox unavailable: ${formatErr(error)}; requested VM launches will be refused`)
+      }
+      return
+    }
     this.logSandboxPreflight()
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error(
@@ -2234,12 +2309,23 @@ export class Daemon {
     // first host start instead, so a host with six logged-in harnesses does not fetch all six here.
     const storedCatalog = await this.installManagedRuntimePackages(
       installedCatalog,
-      discoveredAgents.map((agent) => agent.runtime)
+      discoveredAgents.filter((agent) => !this.usesMicrosandbox(agent)).map((agent) => agent.runtime)
     )
     const { runtimes: installed, entries: installedEntries } = storedCatalog
-    this.runtimeCatalog = storedCatalog
+    this.localRuntimeCatalog = cfg.sandbox.backend === 'microsandbox' ? storedCatalog : undefined
+    if (this.microsandboxTable) {
+      const declared = declaredRuntimeCatalog(resolvedCatalog, this.microsandboxTable)
+      this.microsandboxCatalog = declared.catalog
+      this.k8sDeclaredModels = declared.models
+      this.k8sDeclaredAcp = declared.acp
+      this.runtimeCatalog = {
+        entries: { ...storedCatalog.entries, ...declared.catalog.entries },
+        runtimes: { ...storedCatalog.runtimes, ...declared.catalog.runtimes }
+      }
+    } else this.runtimeCatalog = storedCatalog
     this.refreshAdmittedRuntimes()
     this.runtimeFacts.setInstalled(installedEntries)
+    if (this.microsandboxCatalog) this.runtimeFacts.noteImageCatalog(this.microsandboxCatalog.entries)
     this.log.info(`runtimes ready: ${Object.keys(this.runtimes).join(', ') || '(none)'}`)
     const pendingCurated = Object.keys(installed).filter((id) => installedEntries[id]?.source === 'curated')
     if (pendingCurated.length) this.log.info(`runtimes pending ACP admission: ${pendingCurated.join(', ')}`)
@@ -2320,7 +2406,11 @@ export class Daemon {
 
   /** Install the adapter for a runtime the start-time sweep did not cover — an agent the CP assigned
    *  after boot. The store memoizes, so this resolves once for the runtime and never once per spawn. */
-  private async ensureRuntimeInstalled(runtimeId: string): Promise<void> {
+  private async ensureRuntimeInstalled(runtimeId: string, local = false): Promise<void> {
+    if (local && this.localRuntimeCatalog) {
+      this.localRuntimeCatalog = await this.installManagedRuntimePackages(this.localRuntimeCatalog, [runtimeId])
+      return
+    }
     const entry = this.runtimeCatalog.entries[runtimeId]
     if (!entry || !Daemon.STORE_MANAGED_SOURCES.has(entry.source)) return
     if (!parseNpxLaunch(entry.runtime) && !parseArchiveLaunch(runtimeId, entry)) return
@@ -2421,7 +2511,8 @@ export class Daemon {
     // Model-catalog cache: synchronous last-good hydrate BEFORE the CP client
     // starts, so the register-time facts snapshot already carries models + the
     // capability matrix instead of blanking the CP until the sweep completes.
-    await this.runtimeFacts.hydrateFromCache()
+    // Image runtimes must not inherit model catalogs cached by a previous host execution.
+    await this.runtimeFacts.hydrateFromCache(new Set(Object.keys(this.microsandboxCatalog?.entries ?? {})))
     // The image's declared models are the fresher truth than any cached row, and stay
     // `cached` provenance: no live probe confirmed them, so model gates remain permissive.
     this.runtimeFacts.applyDeclaredFacts(this.k8sDeclaredModels, this.k8sDeclaredAcp)
@@ -3042,7 +3133,7 @@ export class Daemon {
             agentName: agent.displayName?.trim() || agent.name,
             ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
           })
-          servers.push(...this.mcpToolServerSpec(token))
+          servers.push(...this.mcpToolServerSpec(token, agent))
         }
         servers.push(
           ...resolveAgentMcpServers({
@@ -3606,7 +3697,94 @@ export class Daemon {
       executableCommands,
       moduleEntries: [cliEntry, ...nodeExecArgvModuleEntries()],
       paths,
-      readRoots: this.cfg.sandbox.mounts.map((mount) => mount.source)
+      readRoots: this.cfg.sandbox.backend === 'srt' ? this.cfg.sandbox.mounts.map((mount) => mount.source) : []
+    })
+  }
+
+  private usesMicrosandbox(agent: Agent): boolean {
+    return this.cfg.sandbox.backend === 'microsandbox' && this.agentRunsInSandbox(agent)
+  }
+
+  private microsandboxPlacement(
+    agent: LoadedAgent,
+    cwd: string,
+    key?: HostKey
+  ): { id: string; trustedSessionDir?: string } {
+    const parts = relative(agent.dir, cwd).split(sep)
+    if (parts[0] === 'sessions' && /^session-[a-f0-9]{24}$/.test(parts[1] ?? '')) {
+      return { id: `${agent.id}/${parts[1]}`, trustedSessionDir: join(agent.dir, 'sessions', parts[1]!) }
+    }
+    return { id: `${agent.id}/${hostKeyDirName(key)}` }
+  }
+
+  private microsandboxContext(
+    agent: LoadedAgent,
+    cwd: string,
+    key?: HostKey,
+    excludeAgentToolCredentials = false
+  ): {
+    environment: MicrosandboxEnvironment
+    launch: ReturnType<typeof prepareMicrosandboxLaunch>
+  } {
+    if (!this.microsandbox)
+      throw new Error(`microsandbox unavailable: ${this.microsandboxFailure ?? 'not initialized'}`)
+    const runtime = this.microsandboxCatalog?.runtimes[agent.runtime]
+    if (!runtime) throw new Error(`runtime "${agent.runtime}" is not provided by the microsandbox image`)
+    const placement = this.microsandboxPlacement(agent, cwd, key)
+    const github = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
+    const gitlab = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'gitlab'
+    const scope = managedCredentialScope(
+      gitlab ? 'gitlab' : github ? 'github' : undefined,
+      agent.gitlabHost,
+      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
+    )
+    const git =
+      github || gitlab || agent.workspace.mode === 'git-repo'
+        ? sessionGitEnv(
+            agent.id,
+            github || gitlab ? this.gitCommitIdentity : undefined,
+            github || gitlab ? scope : null
+          )
+        : undefined
+    const launch = prepareMicrosandboxLaunch({
+      runtimeId: agent.runtime,
+      runtime,
+      scopeDir: agent.dir,
+      cwd: placement.trustedSessionDir ?? (key && hostKeySessionKey(key) ? cwd : agent.workspace.path),
+      hostKey: key,
+      ...placement,
+      trustedWorkspaceWriteRoots: placement.trustedSessionDir
+        ? [placement.trustedSessionDir]
+        : this.workspaces.trustedWorkspaceWriteRoots(agent),
+      trustedMounts: microsandboxSupportMounts(this.root, git?.GIT_CONFIG_GLOBAL),
+      mounts: this.cfg.sandbox.mounts,
+      guestEntry: microsandboxGuestEntry(this.root)
+    })
+    return { environment: { id: placement.id, ...launch.microsandbox }, launch }
+  }
+
+  private microsandboxGit(agentId: string, cwd?: string, abort?: AbortSignal) {
+    const agent = this.agents.get(agentId)
+    if (!agent || !cwd || !this.usesMicrosandbox(agent)) return undefined
+    if (!this.microsandbox)
+      throw new Error(`microsandbox unavailable: ${this.microsandboxFailure ?? 'not initialized'}`)
+    // The daemon's own parent directory is used to prepare canonical clones before exposing a checkout.
+    if (cwd === agent.dir) return undefined
+    const { environment, launch } = this.microsandboxContext(agent, cwd)
+    return microsandboxGitRunner({
+      workspaceRoot: environment.workspaceRoot,
+      cwd,
+      env: launch.env,
+      abort,
+      execute: (command, args, options) => this.microsandbox!.exec(environment, command, args, options),
+      mapEnv: (env) => ({
+        ...env,
+        ...Object.fromEntries(
+          Object.entries(launch.env).filter(
+            ([name]) => name === 'HOME' || name === 'PATH' || name.startsWith('XDG_') || name === GITCRED_SOCKET_ENV
+          )
+        )
+      })
     })
   }
 
@@ -3623,6 +3801,9 @@ export class Daemon {
    * cache, trusted installer state, and runtime CLI identity together prevents
    * a non-session warmup from spawning with a weaker preparation path. */
   private agentRunsInSandbox(agent: Agent): boolean {
+    if (this.cfg.sandbox.backend === 'microsandbox') {
+      return this.cfg.security.requireSandbox || agent.runInSandbox
+    }
     // Sandbox-optional principle (#36): skills follow the agent's OWN sandbox
     // decision, never a forced fleet-wide requirement. Only the explicit operator
     // `security.requireSandbox` still forces confinement; a trusted/unsandboxed
@@ -3807,7 +3988,12 @@ export class Daemon {
   }
 
   /** That tool server's `session/new` spec, in the coordinates of wherever the runtime runs. */
-  private mcpToolServerSpec(token: string): McpStdioServer[] {
+  private mcpToolServerSpec(token: string, agent?: Agent): McpStdioServer[] {
+    if (agent && this.usesMicrosandbox(agent)) {
+      const bridge = this.microsandboxTable?.mcpBridge
+      if (!bridge) throw new Error('microsandbox image does not provide the AgentConnect MCP bridge')
+      return buildSandboxMcpServers({ bridge, token })
+    }
     if (!this.k8sPlane) {
       return buildMcpServers({
         socketPath: mcpSocketPath(this.root),
@@ -4261,7 +4447,9 @@ export class Daemon {
   } {
     const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(opts.hostKey, sid, u)
-    const runtimeEntry = this.runtimeCatalog.entries[agent.runtime]
+    const micro = opts.runInSandbox && this.cfg.sandbox.backend === 'microsandbox'
+    const catalog = micro ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
+    const runtimeEntry = catalog?.entries[agent.runtime]
     if (runtimeEntry?.source === 'curated') {
       this.curatedRuntimeAdmission.assertLaunch(agent.runtime, runtimeEntry.source)
     }
@@ -4285,8 +4473,11 @@ export class Daemon {
     if (this.opts.hostFactory) {
       return { host: this.opts.hostFactory(agent, onUpdate), configFileState }
     }
-    const runtime = this.runtimes[agent.runtime]
+    const runtime = catalog?.runtimes[agent.runtime]
     if (!runtime) throw new Error(this.runtimeUnavailableMessage(agent.runtime))
+    const microContext = micro
+      ? this.microsandboxContext(agent, opts.cwd, opts.hostKey, opts.excludeAgentToolCredentials === true)
+      : undefined
     // A dream reads only its materialized inputs to produce a memory proposal, so
     // it never needs the agent's TOOL credentials (github-app git helper, gh
     // wrapper, or materialized `*_DATA` config-file secrets like KUBECONFIG /
@@ -4323,7 +4514,7 @@ export class Daemon {
     // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11).
     const memoryAgent =
       memoryKindOf(agent) === 'native' && runInSandbox
-        ? { ...agent, dir: privateRuntimeHomeFor(agent.dir, opts.hostKey) }
+        ? { ...agent, dir: microContext?.launch.runtimeHome ?? privateRuntimeHomeFor(agent.dir, opts.hostKey) }
         : agent
     const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
     // On --k8s the runtime runs in the agent's pod, so the session gitconfig has to be COMPUTED in
@@ -4382,11 +4573,11 @@ export class Daemon {
       }
     }
     // The cluster driver routes every pod launch by AC_AGENT_ID, credentials or not.
-    if (this.k8sPlane) env.AC_AGENT_ID = agent.id
+    if (this.k8sPlane || micro) env.AC_AGENT_ID = agent.id
     const shimDirs = new Set<string>()
     // The gh wrapper is a DAEMON path: prepending it to a pod launch would name a dir the pod
     // never had, and the pod image ships no wrapper (gh there degrades to unauthenticated).
-    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane) {
+    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane && !micro) {
       // gh wrapper (multi-repo #457): PATH prepend + the agent identity the
       // wrapper hands to the hidden token helper. sessionGitEnv supplies the
       // matching runtime-only capability; a user PATH override must not
@@ -4394,7 +4585,7 @@ export class Daemon {
       env.AC_AGENT_ID = agent.id
       shimDirs.add(this.ghBinDir)
     }
-    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane) {
+    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane && !micro) {
       // glab wrapper (§13.3): read-only project tokens for the managed workspace.
       env.AC_AGENT_ID = agent.id
       // §24.4: point the real CLI at the deployment's instance, prefix and port included.
@@ -4402,7 +4593,7 @@ export class Daemon {
       shimDirs.add(this.glabBinDir)
     }
     if (shimDirs.size > 0) {
-      env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? process.env.PATH ?? ''}`
+      env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? microContext?.launch.env.PATH ?? process.env.PATH ?? ''}`
     }
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // OS sandbox decision (issue #312). security.requireSandbox forces every agent
@@ -4417,6 +4608,16 @@ export class Daemon {
     let launchRuntime = runtime
     try {
       const assembled = assembleRuntimeLaunch({
+        ...(microContext
+          ? {
+              microsandbox: {
+                mounts: this.cfg.sandbox.mounts,
+                guestEntry: microsandboxGuestEntry(this.root),
+                trustedMounts: microsandboxSupportMounts(this.root, sessionGitInjection?.GIT_CONFIG_GLOBAL),
+                ...this.microsandboxPlacement(agent, opts.cwd, opts.hostKey)
+              }
+            }
+          : {}),
         runtimeId: agent.runtime,
         runtime,
         provider: memoryKindOf(agent),
@@ -4441,16 +4642,17 @@ export class Daemon {
           if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
           if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
         },
-        runtimeReadRoots: runInSandbox
-          ? () =>
-              this.sandboxRuntimeReadRoots(
-                agent,
-                runtime,
-                sessionGitInjection?.GIT_CONFIG_GLOBAL,
-                githubAppCredentials,
-                gitlabCredentials
-              )
-          : undefined,
+        runtimeReadRoots:
+          runInSandbox && !micro
+            ? () =>
+                this.sandboxRuntimeReadRoots(
+                  agent,
+                  runtime,
+                  sessionGitInjection?.GIT_CONFIG_GLOBAL,
+                  githubAppCredentials,
+                  gitlabCredentials
+                )
+            : undefined,
         runtimeWriteRoots: runInSandbox
           ? this.cfg.sandbox.mounts.filter((mount) => !mount.readOnly).map((mount) => mount.source)
           : undefined,
@@ -4497,6 +4699,12 @@ export class Daemon {
     const constructed: { host?: AcpHost } = {}
     const podSubject = this.k8sPlane ? this.podSubjectFor(agent, opts.hostKey) : undefined
     const host = new AcpHost(launchRuntime, {
+      ...(microContext
+        ? {
+            driver: this.microsandbox!.driverFor({ ...microContext.environment, ...launch.microsandbox }),
+            hostKey: opts.hostKey
+          }
+        : {}),
       // In --k8s the runtime runs in a Sandbox pod — the agent's own, or the session's own for an isolated
       // session's host (§11); everywhere else AcpHost falls back to its LocalDriver, which is what a
       // self-hosted daemon wants.
@@ -4599,7 +4807,7 @@ export class Daemon {
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
-      ...(this.sandboxMechanism ? ['sandbox'] : []),
+      ...((this.cfg.sandbox.backend === 'microsandbox' ? this.microsandbox : this.sandboxMechanism) ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -4968,7 +5176,7 @@ export class Daemon {
         })
         this.releaseMemoryExtractionToken(cacheKey)
         this.memoryExtractionTokens.set(cacheKey, mcpToken)
-        const mcpServers = this.mcpToolServerSpec(mcpToken)
+        const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId))
         sessionId = trusted
           ? await host.newSession(
               cwd,
@@ -5267,6 +5475,12 @@ export class Daemon {
     try {
       host = await this.buildDreamHost(agent, context.inputDir, dreamHostKey, issued)
     } catch (error) {
+      await this.microsandbox
+        ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
+        .then(() => rm(join(agent.dir, 'sessions', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
+        .catch((error: unknown) => {
+          this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
+        })
       removeHostSandboxState(agent.dir, dreamHostKey)
       if (issued) await this.modelSessions.revokeKeyQuietly(issued.grant.keyId)
       throw error
@@ -5279,6 +5493,12 @@ export class Daemon {
       // attacker-influenced context never lingers (dreams are rare). Stopping the
       // child also kills a runtime that ignored `session/cancel`.
       await host.stop().catch(() => {})
+      await this.microsandbox
+        ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
+        .then(() => rm(join(agent.dir, 'sessions', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
+        .catch((error: unknown) => {
+          this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
+        })
       removeHostSandboxState(agent.dir, dreamHostKey)
       if (issued) {
         await this.modelSessions.revokeKey(issued.grant.keyId)
@@ -5426,7 +5646,7 @@ export class Daemon {
         maxTopics: MAX_DREAM_FILES
       }
     })
-    const mcpServers = this.mcpToolServerSpec(mcpToken)
+    const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId))
     try {
       const sessionId = trusted
         ? await host.newSession(
@@ -14145,7 +14365,7 @@ export class Daemon {
         bound && bound.cwd === undefined ? bound.workspace : undefined,
         allowAgentDrain
       )
-      await this.ensureRuntimeInstalled(agent.runtime)
+      if (!this.usesMicrosandbox(agent)) await this.ensureRuntimeInstalled(agent.runtime, true)
       if (this.hostStartGeneration.get(key) !== generation) {
         throw new Error(`host start superseded for ${label}`)
       }
@@ -15139,8 +15359,12 @@ export class Daemon {
     // reconcile must not release admission while clone/pull/install still runs.
     const hostStop = host ? Promise.resolve().then(() => host.stop(deadlineMs)) : Promise.resolve()
     const stop = Promise.allSettled([hostStop, ...supersededStarts])
-      .then(([hostResult]) => {
+      .then(async ([hostResult]) => {
         if (hostResult?.status === 'rejected') throw hostResult.reason
+        if (launch && this.microsandbox) {
+          const agent = this.agents.get(agentId)
+          if (agent) await this.microsandbox.suspend(this.microsandboxPlacement(agent, launch.cwd, key).id)
+        }
       })
       .finally(() => {
         if (this.hostStopping.get(key) === stop) this.hostStopping.delete(key)
@@ -15956,26 +16180,39 @@ export class Daemon {
         this.log.warn(`retention: keeping session ${rec.key} — worktree cleanup failed (${res.error})`)
         continue
       }
-      // Re-check synchronously after the git awaits: a message admitted mid-cleanup
-      // owns the serial gate now, and deleting the row underneath its turn would
-      // orphan the state the turn is about to write. The worktree (if any) is
-      // already gone, but prepareSessionWorkspace recreates it on that same turn.
-      if (await this.sessionRetentionActive(rec)) {
-        active += 1
-        continue
+      const purge = async () => {
+        // Recheck inside the admission fence before destroying a VM or deleting its last session record.
+        if (await this.sessionRetentionActive(rec)) {
+          active += 1
+          return
+        }
+        const sessionHost = this.sessionHostFence(rec.agentId, rec.key)
+        if (this.microsandbox) {
+          try {
+            await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
+            await this.discardSessionSandbox(rec.agentId, rec.key)
+          } catch (err) {
+            failed += 1
+            this.log.warn(`retention: keeping session ${rec.key} — VM cleanup failed (${(err as Error).message})`)
+            return
+          }
+        }
+        // Deleting the row also writes the durable purge receipt for the Control Plane.
+        if (
+          await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })
+        ) {
+          removed += 1
+          if (rec.acpSessionId)
+            this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
+          await this.modelSessions.release(rec.key)
+          if (!this.microsandbox) {
+            await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
+            await this.discardSessionSandbox(rec.agentId, rec.key)
+          }
+        }
       }
-      const sessionHost = this.sessionHostFence(rec.agentId, rec.key)
-      // The purge receipt is written in deleteSession's transaction: the CP holds
-      // the only surviving record of this session, and it must be told that the
-      // content behind it is gone (drained below, durably, on ACK).
-      if (await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })) {
-        removed += 1
-        if (rec.acpSessionId)
-          this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
-        await this.modelSessions.release(rec.key)
-        await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
-        await this.discardSessionSandbox(rec.agentId, rec.key)
-      }
+      if (this.microsandbox) await this.withWorkspaceAdmissionFence(rec.agentId, purge)
+      else await purge()
     }
     this.log.info(
       `retention: session GC removed ${removed}/${expired.length} expired session(s)` +
@@ -16364,6 +16601,7 @@ export class Daemon {
    * failed. The cost is at most one sweep interval of delay after the host goes.
    */
   private async sweepIdleSandboxes(now: number, ttl: number): Promise<void> {
+    await this.microsandbox?.suspendIdle(now - ttl)
     const plane = this.k8sPlane
     if (!plane) return
     for (const { subject, agentId, since } of plane.launched()) {
@@ -16449,6 +16687,11 @@ export class Daemon {
    * the agent exists. One delete, logged on failure; the orphan reconciler collects what is left.
    */
   private async discardClusterSandbox(agentId: string): Promise<void> {
+    if (this.microsandbox) {
+      for (const id of await this.microsandbox.environmentIds()) {
+        if (id.startsWith(`${agentId}/`)) await this.microsandbox.discard(id)
+      }
+    }
     const plane = this.k8sPlane
     if (!plane) return
     try {
@@ -16463,6 +16706,7 @@ export class Daemon {
 
   /** Cluster only: a retired session's pod goes with its row — the claim, and the clones and HOME on its volume (§11). Best effort like the agent's; the orphan reconciler collects a leftover. */
   private async discardSessionSandbox(agentId: string, sessionKey: string): Promise<void> {
+    await this.microsandbox?.discard(`${agentId}/${hostKeyDirName(sessionHostKey(agentId, sessionKey))}`)
     const plane = this.k8sPlane
     if (!plane) return
     const leaf = hostKeyDirName(sessionHostKey(agentId, sessionKey))
@@ -16478,6 +16722,13 @@ export class Daemon {
 
   /** Cluster only: retire every session pod of the agent but the leaf named — a replaced workspace leaves them holding the old repository (§11). */
   private async discardSessionSandboxes(agentId: string, exceptLeaf?: string): Promise<void> {
+    if (this.microsandbox) {
+      for (const id of await this.microsandbox.environmentIds()) {
+        if (id.startsWith(`${agentId}/session-`) && id !== `${agentId}/${exceptLeaf}`) {
+          await this.microsandbox.discard(id)
+        }
+      }
+    }
     const plane = this.k8sPlane
     if (!plane) return
     for (const subject of await plane.driver.sessionClaimSubjects(agentId)) {
@@ -17858,6 +18109,9 @@ export class Daemon {
       store: () => this.store,
       draining: () => this.draining,
       catalog: () => this.runtimeCatalog,
+      localProbeCatalog: () => this.localRuntimeCatalog ?? this.runtimeCatalog,
+      executionLocation: (runtimeId) =>
+        this.k8s || this.microsandboxCatalog?.entries[runtimeId] !== undefined ? 'sandbox' : 'host',
       admittedRuntimes: () => this.runtimes,
       refreshAdmitted: () => this.refreshAdmittedRuntimes(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),
@@ -17866,7 +18120,20 @@ export class Daemon {
       updateCapabilities: () => this.cpClient?.updateCapabilities?.(),
       mcpServerFacts: () => this.mcpServerFactsFromDefs(),
       noteCatalogProbe: (input) => void this.modelCatalogSvc?.noteProbe(input),
-      localizeRuntime: (runtimeId) => this.ensureRuntimeInstalled(runtimeId),
+      localizeRuntime: async (runtimeId) => {
+        await this.ensureRuntimeInstalled(runtimeId)
+        // Host-only installs must stay current in the separate local launch catalog.
+        if (this.localRuntimeCatalog && !this.microsandboxCatalog?.entries[runtimeId]) {
+          const entry = this.runtimeCatalog.entries[runtimeId]
+          if (entry) {
+            this.localRuntimeCatalog.entries[runtimeId] = entry
+            this.localRuntimeCatalog.runtimes[runtimeId] = entry.runtime
+          } else {
+            delete this.localRuntimeCatalog.entries[runtimeId]
+            delete this.localRuntimeCatalog.runtimes[runtimeId]
+          }
+        }
+      },
       launch: () => ({
         k8s: this.k8s,
         fakeHosts: this.opts.hostFactory !== undefined,
@@ -18406,6 +18673,8 @@ export class Daemon {
     // Only now: the shim channel IS the runtimes' transport, so closing it before the drain
     // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
+    await this.microsandbox?.stopAll().catch((error: unknown) => errors.push(error))
+    this.microsandbox = undefined
     await this.k8sPlane?.stop().catch(() => undefined)
     await this.readiness?.stop().catch(() => undefined)
     this.readiness = undefined
