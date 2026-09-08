@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
@@ -75,9 +75,26 @@ const LEGACY_MOUNT_POINT_NAMES = [
   '.claude/agents'
 ]
 
-/** Remove the old scan's leftovers from the checkout root: only a zero-byte regular file of those exact names — never a directory (an empty `.claude` may be a prepared install target) and never real content. Best-effort. */
+/** The listed names Git tracks in `cwd` — the repository's own files, whatever their size. Empty when `cwd` is no checkout or git is unavailable. */
+function trackedLegacyNames(cwd: string): Set<string> {
+  try {
+    const out = execFileSync('git', ['-C', cwd, 'ls-files', '-z', '--', ...LEGACY_MOUNT_POINT_NAMES], {
+      // Read-only and hook-free, but never the host's or the checkout's ambient config routing.
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8'
+    })
+    return new Set(out.split('\0').filter(Boolean))
+  } catch {
+    return new Set()
+  }
+}
+
+/** Remove the old scan's leftovers from the checkout root: only a zero-byte regular file of those exact names that Git does not track — never a directory (an empty `.claude` may be a prepared install target) and never the repository's own file. Best-effort. */
 export function removeLegacyMountPoints(cwd: string): void {
+  const tracked = trackedLegacyNames(cwd)
   for (const name of LEGACY_MOUNT_POINT_NAMES) {
+    if (tracked.has(name)) continue
     try {
       const path = join(cwd, name)
       const stat = lstatSync(path)

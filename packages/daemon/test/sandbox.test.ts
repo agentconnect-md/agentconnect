@@ -683,4 +683,35 @@ describe('removeLegacyMountPoints', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('leaves a zero-byte file alone when the repository tracks it', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-legacy-tracked-'))
+    try {
+      const git = (args: string[]) =>
+        execFileSync('git', args, {
+          cwd: root,
+          stdio: 'ignore',
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: 'T',
+            GIT_AUTHOR_EMAIL: 't@e',
+            GIT_COMMITTER_NAME: 'T',
+            GIT_COMMITTER_EMAIL: 't@e'
+          }
+        })
+      git(['init', '-q', '--initial-branch=main'])
+      writeFileSync(join(root, '.gitmodules'), '')
+      git(['add', '.gitmodules'])
+      git(['commit', '-q', '-m', 'empty submodule list'])
+      // A leftover beside it is still swept.
+      writeFileSync(join(root, '.bashrc'), '')
+
+      removeLegacyMountPoints(root)
+
+      expect(existsSync(join(root, '.gitmodules'))).toBe(true)
+      expect(existsSync(join(root, '.bashrc'))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
