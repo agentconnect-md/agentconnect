@@ -111,7 +111,7 @@ FROM node:24-bookworm-slim AS runtime-sandbox
 
 # Exact pins keep the published runtime table truthful.
 ARG CLAUDE_ACP_VERSION=0.75.1
-ARG CODEX_ACP_VERSION=1.10.0-agentconnect.1
+ARG CODEX_ACP_VERSION=1.10.0-agentconnect.2
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.30
 ARG AGENT_BROWSER_VERSION=0.37.0
 
