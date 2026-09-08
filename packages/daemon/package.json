@@ -59,6 +59,7 @@
     "@opentelemetry/semantic-conventions": "^1.43.0",
     "@slack/bolt": "^5.0.0",
     "@slack/web-api": "^8.1.0",
+    "cborg": "^6.1.2",
     "chokidar": "^5.0.0",
     "commander": "^15.0.0",
     "croner": "^10.0.1",

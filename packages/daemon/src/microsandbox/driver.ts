@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, posix } from 'node:path'
 import { promisify } from 'node:util'
-import type { ExecHandle, ExecSink, Sandbox, SandboxHandle } from 'microsandbox'
+import type { Sandbox, SandboxHandle } from 'microsandbox'
 import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
@@ -11,6 +11,7 @@ import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-run
 import { SinkRelPathSchema } from '../shim/file-sink.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
 import { MICROSANDBOX_GUEST_ENTRY, MICROSANDBOX_NODE } from './guest.js'
+import { openExecStream, type MicrosandboxExecStdin, type MicrosandboxExecStream } from './exec.js'
 
 const runFile = promisify(execFile)
 const STOP_TIMEOUT_MS = 10_000
@@ -48,7 +49,7 @@ export interface MicrosandboxExecResult {
 export interface MicrosandboxManagerOptions {
   root: string
   config: { image: string; cpus: number; memoryMiB: number; diskGiB: number }
-  sdk: Pick<typeof import('microsandbox'), 'Sandbox' | 'SandboxNotFoundError'>
+  sdk: Pick<typeof import('microsandbox'), 'Sandbox' | 'SandboxNotFoundError' | 'AgentClient'>
   msbCommand: { command: string; args: string[] }
   log?: Logger
   sockets: { mcp: string; gitcred: string }
@@ -370,12 +371,13 @@ export class MicrosandboxManager {
   }
 
   private async startBridge(id: string, sandbox: Sandbox): Promise<void> {
-    const handle = await sandbox.execStreamWith(MICROSANDBOX_NODE, (exec) =>
-      exec.args([MICROSANDBOX_GUEST_ENTRY, 'sockets']).stdinPipe().tty(false)
-    )
+    const handle = await openExecStream(this.options.sdk, sandbox, MICROSANDBOX_NODE, [
+      MICROSANDBOX_GUEST_ENTRY,
+      'sockets'
+    ])
     const stdin = await handle.takeStdin()
     if (!stdin) {
-      await handle.kill()
+      await handle.close()
       throw new Error('microsandbox socket bridge did not provide a stream')
     }
     const bridge = new MicrosandboxProcess(
@@ -508,17 +510,13 @@ export class MicrosandboxManager {
         if (!output.success) throw new Error('microsandbox could not protect materialized file permissions')
       }
       options.abort?.throwIfAborted()
-      const handle = await sandbox.execStreamWith(command, (exec) =>
-        exec
-          .args(args)
-          .cwd(options.cwd ?? environment.workspaceRoot)
-          .envs(env)
-          .stdinPipe()
-          .tty(false)
-      )
+      const handle = await openExecStream(this.options.sdk, sandbox, command, args, {
+        cwd: options.cwd ?? environment.workspaceRoot,
+        env
+      })
       const stdin = await handle.takeStdin()
       if (!stdin) {
-        await handle.kill()
+        await handle.close()
         throw new Error('microsandbox did not provide process stdin')
       }
       const runtime = new MicrosandboxProcess(handle, stdin, stderr, () => {
@@ -602,11 +600,12 @@ class MicrosandboxProcess implements SpawnedRuntime {
   private discardOutput = false
   private outputCancelled = false
   private failing?: Promise<void>
+  private finishing?: Promise<void>
   private failure?: unknown
 
   constructor(
-    private readonly handle: ExecHandle,
-    private readonly stdin: ExecSink,
+    private readonly handle: MicrosandboxExecStream,
+    private readonly stdin: MicrosandboxExecStdin,
     private readonly stderr: (data: Uint8Array) => void,
     private readonly release: () => void
   ) {
@@ -644,13 +643,23 @@ class MicrosandboxProcess implements SpawnedRuntime {
     else this.listeners.add(listener)
   }
 
-  closeStdin(): Promise<void> {
-    return this.stdin.close()
+  async closeStdin(): Promise<void> {
+    if (this.finishing) return this.finishing
+    try {
+      await this.stdin.close()
+    } catch (error) {
+      if (this.finishing) return this.finishing
+      throw error
+    }
   }
 
   stop(deadlineMs: number, eofGraceMs = 0): Promise<void> {
+    if (this.finishing) return this.finishing
     if (!this.stopping) {
-      const stopping = this.stopProcess(deadlineMs, eofGraceMs)
+      const stopping = this.stopProcess(deadlineMs, eofGraceMs).catch((error: unknown) => {
+        if (this.finishing) return this.finishing
+        throw error
+      })
       this.stopping = stopping
       void stopping.catch(() => {
         if (this.stopping === stopping) this.stopping = undefined
@@ -674,23 +683,33 @@ class MicrosandboxProcess implements SpawnedRuntime {
       error = new AggregateError([error, killError], 'microsandbox process failure and cleanup failure')
       this.failure = error
     }
-    if (this.finished) return
-    this.output.error(error)
-    this.rejectExit(error)
-    this.finish()
+    await this.finish()
   }
 
-  private finish(): void {
-    this.finished = true
-    this.wakeOutput?.()
-    this.release()
-    for (const listener of this.listeners) listener()
-    this.listeners.clear()
+  private finish(code?: number): Promise<void> {
+    return (this.finishing ??= (async () => {
+      try {
+        await this.handle.close()
+      } catch (error) {
+        this.failure ??= error
+      }
+      if (this.failure !== undefined) {
+        if (!this.outputCancelled) this.output.error(this.failure)
+        this.rejectExit(this.failure)
+      } else {
+        if (!this.outputCancelled) this.output.close()
+        this.finishExit(code!)
+      }
+      this.finished = true
+      this.wakeOutput?.()
+      this.release()
+      for (const listener of this.listeners) listener()
+      this.listeners.clear()
+    })())
   }
 
   private async pump(): Promise<void> {
     for await (const event of this.handle) {
-      if (!event) throw new Error('microsandbox emitted an unsupported process failure event')
       if (event.kind === 'stdout' && !this.discardOutput) {
         while ((this.output.desiredSize ?? 0) <= 0 && !this.discardOutput && !this.finished) {
           await new Promise<void>((resolve) => {
@@ -702,14 +721,7 @@ class MicrosandboxProcess implements SpawnedRuntime {
         this.stderr(event.data)
       } else if (event.kind === 'exited') {
         if (this.finished) return
-        if (this.failure !== undefined) {
-          this.output.error(this.failure)
-          this.rejectExit(this.failure)
-        } else {
-          if (!this.outputCancelled) this.output.close()
-          this.finishExit(event.code)
-        }
-        this.finish()
+        await this.finish(event.code)
         return
       }
     }
