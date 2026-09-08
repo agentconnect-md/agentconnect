@@ -296,21 +296,25 @@ offline, is a later step. Per-file cap stays `MAX_MEMORY_FILE_BYTES`. The dream 
 unchanged and keeps staging beside its extraction host; on the pool its `withMemoryHome`
 still binds the agent pod, for the extraction host and the staging root, not the store.
 
-**Switching `home` copies; switching provider still does not (§6, §9).** Both homes
-are the same tree, so this is the one binding change that migrates: when the owning
-daemon applies a binding whose `home` differs and the target has no `memory/` yet, it
-copies `memory/` and `channels/` once through the two ports (`copyMemoryTree(from, to)`,
-under the directory lock) into a staging prefix `.home-import/` on the target and then
-renames the top-level entries into place, `memory/` last — so `memory/` present means
-the copy completed, and a retry that finds no `memory/` removes any `.home-import/`
-left by an interrupted attempt and starts over instead of resuming a partial tree.
-The change log travels with it — sidecar lines become rows or rows become lines, one
-batch, bounded by the sidecar cap — while staging and the pre-adoption backup do not:
-each belongs to the host or the adoption that made it. The daemon then rebuilds the
-session boundary as any memory change does. The source is never deleted, and a target
-that already holds a tree is resumed as it is — switching back to a home that was used
-before shows that home's tree, not a merge; the console says so next to the selector.
-Both directions work.
+**Changing `home` is one way, `daemon` → `control-plane`, and it migrates; changing
+the provider still does not (§6, §9).** The binding change is the trigger: when the
+owning daemon applies a binding whose `home` became `control-plane`, it copies `memory/`
+and `channels/` once through the two ports (`copyMemoryTree(from, to)`, under the
+directory lock), the change log with them — sidecar lines become rows, one batch,
+bounded by the sidecar cap — and reports completion, which the CP records on the
+binding. Until that record exists the agent's memory is unavailable the way an
+unreachable home is (no standing context, tools answer unavailable, distillation waits
+in the outbox), so nothing writes the target while the copy runs. That is what makes
+the copy restartable by doing nothing clever: the source is frozen from the moment the
+binding flipped — no writer touches a `daemon` tree once the home is `control-plane` —
+and no writer touches the target before the CP holds the completion, so an interrupted
+copy simply runs again from the start and overwrites by path. No staging prefix, no
+marker file, no partial-tree question. Staging and the pre-adoption backup stay behind,
+each belonging to the host or the adoption that made it; the source tree is never
+deleted. The daemon then rebuilds the session boundary as any memory change does. The
+CP refuses `control-plane` → `daemon` — there is no way back, and the console offers
+the selector one way only. `daemon` stays the default for now; making `control-plane`
+the default is a later decision, not this one.
 
 **Moves.** A `control-plane` agent's memory is not daemon-local any more, so the
 hard-cutover move carries it by doing nothing: the target reads the same rows. A
@@ -328,8 +332,11 @@ cache in this step.
 **Rollout.** CP first (table, frames, feature), daemon second (adapter, copy,
 refusal). Existing pool agents are flipped by the CP in the same release — every agent
 placed on the install-wide pool gets `home: control-plane` — and the member holding
-each one copies its tree from the sandbox volume on the next activation. Native
-(runtime) memory follows the runtime's HOME on the pod and is unaffected.
+each one runs the same one-way migration on its next activation, the source being the
+sandbox volume through the shim: it binds the pod, copies whatever the volume holds
+(an empty tree, if the sandbox was reclaimed in between) and reports completion the
+same way. Native (runtime) memory follows the runtime's HOME on the pod and is
+unaffected.
 
 ### 3.3 external — General Memory Plugin
 
@@ -829,7 +836,8 @@ type MemoryConfig =
 - `home` (§3.2.1) defaults to `daemon`. The CP writes the resolved value on create so
   a later placement change never flips it implicitly; an agent placed on the
   install-wide pool must carry `control-plane`, and the console fixes the selector
-  there. Changing `home` is the one binding change that copies memory (§3.2.1).
+  there. `home` changes one way only, `daemon` → `control-plane`, and that change
+  migrates the tree (§3.2.1); the CP refuses the reverse.
 - `connectionId` must belong to the agent's organization, and the caller must
   be authorized to use it. The CP does not accept per-agent
   `endpoint/apiKey/command`.
@@ -907,7 +915,7 @@ invariant in
 | **M-5C · record product surface (complete)**             | Core entry tools + provider-aware record REST/frames/console, with CRUD/history driven by capability.                                                                                                                     | ⚠️ Same as above                                                           | None                         |
 | **M-5D · dialect/runtime expansion (complete)**          | Mem0 OSS adapter; operator-installed stdio host + daemon-private secret lease.                                                                                                                                            | OSS/local depends on deployment                                            | stdio host                   |
 | **M-6 · shared scope (through data plane)**              | Depends on shared-bot relay; `memory-sync` payload; managed shared-scope sync + conflict semantics; external reuses canonical shared policy.                                                                              | ✅ / explicit external egress                                              | Reuse relay                  |
-| **M-8 · `home: control-plane` (designed, not built)**    | `agent_memory_file` plus the change-log table in the CP, `memory/store` D→C pair over the shim op set, `CpMemoryFs` adapter, home switch copy, dream staging stays daemon-local, pool mandates it (§3.2.1).               | Curated Markdown in the CP by explicit binding; default stays daemon-local | CP table                     |
+| **M-8 · `home: control-plane` (designed, not built)**    | `agent_memory_file` plus the change-log table in the CP, `memory/store` D→C pair over the shim op set, `CpMemoryFs` adapter, one-way home migration, dream staging beside the extraction host, pool mandates it (§3.2.1). | Curated Markdown in the CP by explicit binding; default stays daemon-local | CP table                     |
 | **M-7 · optional retrieval upgrade**                     | BM25 over Markdown; leave vector seam.                                                                                                                                                                                    | ✅                                                                         | None for BM25; vectors later |
 
 The plugin profile remains backend-agnostic, and the Mem0 implementation stays
