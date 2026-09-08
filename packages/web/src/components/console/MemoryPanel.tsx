@@ -627,8 +627,9 @@ export function MemoryPanel({
       loadRequest.current += 1
       listRequest.current += 1
     }
-  }, [loadList, loadFile, persistedProvider])
+  }, [loadList, loadFile, persistedProvider, persistedSettings.home, homeMigrationPending])
 
+  // A home change (the forward copy clearing, or the forced return) swaps the tree underneath, so nothing cached survives it.
   // Under channel scope, load the list of channels that have their own memory folder
   // so the viewer can offer a channel selector. Always reset the selection first —
   // the component instance is reused across agent navigations, so a stale channelKey
@@ -650,7 +651,7 @@ export function MemoryPanel({
     return () => {
       live = false
     }
-  }, [agentId, persistedProvider, persistedSettings.scope])
+  }, [agentId, persistedProvider, persistedSettings.scope, persistedSettings.home])
 
   const select = (name: string) => {
     if (name === selected) {

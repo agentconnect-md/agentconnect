@@ -942,4 +942,41 @@ describe('MemoryPanel memory home', () => {
     expect(homePill(host, 'control-plane')).toBeTruthy()
     expect(host.textContent).toContain('Move memory back to the daemon')
   })
+
+  it('drops the cached browser and reads again once the home has changed underneath it', async () => {
+    const host = await mount({ memoryHome: 'control-plane' })
+    const lists = vi.mocked(listAgentMemory).mock.calls.length
+    const reads = vi.mocked(fetchAgentMemoryFull).mock.calls.length
+    await openSettings(host)
+    await clickButton(host, 'Move memory back to the daemon')
+    await act(async () => dialogButton(host, 'Move')?.click())
+    // The agents poll delivers the returned binding; the tree the browser showed is gone with it.
+    await act(async () => {
+      root?.render(
+        <MemoryPanel agentId={AGENT_ID} canEdit memoryProvider="managed" autoDistill={false} memoryHome="daemon" />
+      )
+    })
+    expect(vi.mocked(listAgentMemory).mock.calls.length).toBeGreaterThan(lists)
+    expect(vi.mocked(fetchAgentMemoryFull).mock.calls.length).toBeGreaterThan(reads)
+  })
+
+  it('retries the reads when the pending copy clears', async () => {
+    const host = await mount({ memoryHome: 'control-plane', memoryHomeMigration: 'pending' })
+    const lists = vi.mocked(listAgentMemory).mock.calls.length
+    const reads = vi.mocked(fetchAgentMemoryFull).mock.calls.length
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId={AGENT_ID}
+          canEdit
+          memoryProvider="managed"
+          autoDistill={false}
+          memoryHome="control-plane"
+        />
+      )
+    })
+    expect(host.querySelector('[data-memory-home-status]')).toBeNull()
+    expect(vi.mocked(listAgentMemory).mock.calls.length).toBeGreaterThan(lists)
+    expect(vi.mocked(fetchAgentMemoryFull).mock.calls.length).toBeGreaterThan(reads)
+  })
 })
