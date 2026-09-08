@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { parse as parseYaml } from 'yaml'
@@ -37,10 +37,10 @@ const local = (dir: string) => new LocalMemoryFs(dir)
 /** One tree for both roles, the way the daemon resolves a home today. */
 const home = (fs: MemoryFs): MemoryHomePorts => ({ live: fs, staging: fs })
 
-/** The same port, noting every root-relative path it is asked for (a subdir's paths are prefixed). */
+/** The same port, noting every root-relative path it is asked for, `/`-separated on every platform (a subdir's paths are prefixed). */
 function recording(fs: MemoryFs, touched: string[], prefix = ''): MemoryFs {
   const note = (rel: string): void => {
-    touched.push(join(prefix, rel))
+    touched.push(join(prefix, rel).split(sep).join('/'))
   }
   return {
     key: fs.key,
