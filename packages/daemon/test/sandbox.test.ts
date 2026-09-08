@@ -209,10 +209,62 @@ describe('sandboxBoundary', () => {
   })
 })
 
-// Behavioral regression for the /proc escape (#799): with a PID namespace the daemon's
-// own PID must NOT be visible inside the sandbox, so /proc/<daemon-pid>/root/... cannot
-// be used to reach the daemon's writable mount namespace. Runs only where bwrap exists
-// (Linux CI); skipped elsewhere.
+describe('bwrap mount permissions', () => {
+  it.skipIf(detectSandbox() !== 'bwrap').each([false, true])(
+    'preserves nested mount permissions with an explicit parent write deny: %s',
+    (denyParentWrite) => {
+      const root = mkdtempSync(join(tmpdir(), 'ac-sbx-mounts-'))
+      const workspace = join(root, 'workspace')
+      const home = join(root, 'home')
+      const parent = join(root, 'protected')
+      const hiddenRoot = join(parent, 'hidden')
+      const tools = join(hiddenRoot, 'tools')
+      const cache = join(tools, 'cache')
+      const hidden = join(hiddenRoot, 'unmounted')
+      try {
+        for (const path of [workspace, home, cache, hidden]) mkdirSync(path, { recursive: true })
+        writeFileSync(join(tools, 'read-marker'), 'readable')
+        writeFileSync(join(hidden, 'hidden-marker'), 'hidden')
+        writeFileSync(join(cache, 'write-marker'), 'initial')
+        const writable = [workspace, home, cache, ...(denyParentWrite ? [root] : [])]
+        const settingsPath = writeSandboxSettings(root, 'mounts', {
+          writable,
+          denyRead: [hiddenRoot],
+          denyWrite: denyParentWrite ? [parent] : [],
+          allowRead: [workspace, home, tools, cache],
+          gitSafeDirectories: [workspace]
+        })
+        const script = `
+        const fs = await import('node:fs');
+        const assert = (await import('node:assert/strict')).default;
+        const [tools, cache, hidden, denyParentWrite] = process.argv.slice(1);
+        assert.equal(fs.readFileSync(tools + '/read-marker', 'utf8'), 'readable');
+        assert.throws(() => fs.writeFileSync(tools + '/forbidden', 'no'));
+        const write = () => fs.writeFileSync(cache + '/write-marker', 'writable');
+        if (denyParentWrite === 'true') assert.throws(write);
+        else write();
+        assert.throws(() => fs.readFileSync(hidden + '/hidden-marker', 'utf8'));
+      `
+        const { cmd, args } = sandboxWrap(
+          process.execPath,
+          ['--input-type=module', '-e', script, tools, cache, hidden, String(denyParentWrite)],
+          {
+            mechanism: 'bwrap',
+            writable,
+            settingsPath,
+            cwd: workspace
+          }
+        )
+        execFileSync(cmd, args, { env: { ...process.env, HOME: home }, timeout: 30_000, stdio: 'pipe' })
+        expect(readFileSync(join(cache, 'write-marker'), 'utf8')).toBe(denyParentWrite ? 'initial' : 'writable')
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
+})
+
+// The PID namespace blocks /proc/<daemon-pid>/root escapes into the host mount namespace (#799).
 describe('bwrap PID isolation', () => {
   const hasBwrap = detectSandbox() === 'bwrap'
 

@@ -36,6 +36,7 @@ RUN printf 'fetch-retries=5\nfetch-retry-maxtimeout=600000\nfetch-retry-mintimeo
 
 # .pnpmfile.mjs is checksummed INTO the lockfile, so a frozen install without it is refused.
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .pnpmfile.mjs tsconfig.base.json ./
+COPY patches/ patches/
 COPY scripts/ scripts/
 COPY packages/protocol/package.json packages/protocol/
 COPY packages/connection/package.json packages/connection/

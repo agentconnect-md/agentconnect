@@ -10,6 +10,9 @@ overrides:
 
 pnpmfileChecksum: sha256-yhrtow4uYXdBwgBbzJFJ4wA8s3O9UECr9QpwYpWeDfE=
 
+patchedDependencies:
+  '@anthropic-ai/sandbox-runtime@0.0.73': 8d318761e3fbe2013d84060bb87cb50dfdb7132b08996f61207239173f20ccc6
+
 importers:
 
   .:
@@ -290,7 +293,7 @@ importers:
         version: link:../protocol
       '@anthropic-ai/sandbox-runtime':
         specifier: 0.0.73
-        version: 0.0.73
+        version: 0.0.73(patch_hash=8d318761e3fbe2013d84060bb87cb50dfdb7132b08996f61207239173f20ccc6)
       '@larksuiteoapi/node-sdk':
         specifier: ^1.71.1
         version: 1.73.0
@@ -9027,7 +9030,7 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.201
     optional: true
 
-  '@anthropic-ai/sandbox-runtime@0.0.73':
+  '@anthropic-ai/sandbox-runtime@0.0.73(patch_hash=8d318761e3fbe2013d84060bb87cb50dfdb7132b08996f61207239173f20ccc6)':
     dependencies:
       '@pondwader/socks5-server': 1.0.10
       commander: 12.1.0

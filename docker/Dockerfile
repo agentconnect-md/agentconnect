@@ -44,6 +44,7 @@ RUN printf 'fetch-retries=5\nfetch-retry-maxtimeout=600000\nfetch-retry-mintimeo
 # by the root `prepare` hook.
 FROM base AS manifests
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .pnpmfile.mjs ./
+COPY patches/ patches/
 COPY scripts/ scripts/
 COPY packages/activation-policy/package.json packages/activation-policy/
 COPY packages/message/package.json packages/message/
