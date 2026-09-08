@@ -185,6 +185,7 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         return {
           manifest,
           authorization,
+          rejection: checked?.status === 'invalid' ? checked.error : null,
           missingScopes,
           ...slackAppLinks(bot.slackAppId, appIdentityMatches && checked?.status === 'ok' ? checked.teamId : null)
         }

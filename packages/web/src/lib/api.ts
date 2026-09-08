@@ -926,6 +926,8 @@ export interface BotDto {
 export interface SlackBotRefreshDto {
   manifest: 'synced' | 'manual_update_required' | 'unknown'
   authorization: 'current' | 'reinstall_required' | 'invalid' | 'app_mismatch' | 'unknown'
+  /** Slack's own code behind `invalid` (`invalid_auth`, `token_revoked`, …); null otherwise. */
+  rejection: string | null
   missingScopes: string[]
   settingsUrl: string
   manifestUrl: string

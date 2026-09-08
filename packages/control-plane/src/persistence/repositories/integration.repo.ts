@@ -381,7 +381,11 @@ export class PgBotRepo implements BotRepo {
   async delete(orgId: OrgId, id: BotId): Promise<void> {
     // Org-fenced delete: FK cascade drops bot_secret, Restrict blocks while
     // installed, and a cross-org id throws the same P2025 as an absent row.
-    await this.db.bot.delete({ where: { id, orgId } })
+    // Revoked memberships are dead rows no list ever shows; they leave with the bot.
+    await withAmbientTx(this.db, async (tx) => {
+      await tx.integration.deleteMany({ where: { botId: id, status: 'revoked', bot: { orgId } } })
+      await tx.bot.delete({ where: { id, orgId } })
+    })
   }
 }
 

@@ -1779,6 +1779,8 @@ export const BotListDto = z.array(BotDto)
 export const SlackBotRefreshDto = z.object({
   manifest: z.enum(['synced', 'manual_update_required', 'unknown']),
   authorization: z.enum(['current', 'reinstall_required', 'invalid', 'app_mismatch', 'unknown']),
+  /** Slack's own code behind `invalid` (`invalid_auth`, `token_revoked`, …): the diagnosis, since `invalid_auth` also answers an IP-allowlisted caller. Null otherwise. */
+  rejection: z.string().nullable(),
   missingScopes: z.array(z.string()),
   settingsUrl: z.string(),
   manifestUrl: z.string(),

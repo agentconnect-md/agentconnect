@@ -201,7 +201,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       let verified = false
       app.platformStubs.verifySlackBot = async () => {
         verified = true
-        return { status: 'invalid' }
+        return { status: 'invalid', error: 'invalid_auth' }
       }
       app.platformStubs.verifyFeishuBot = async () => {
         verified = true
@@ -913,7 +913,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST rejects a bot token Slack refuses (400) and stores nothing', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
-    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid' })
+    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid', error: 'invalid_auth' })
 
     const res = await app.app.inject({
       method: 'POST',
@@ -1364,6 +1364,33 @@ describe('bot roster (GET/DELETE /bots)', () => {
     expect(await prisma.botSecret.findUnique({ where: { botId: created.botId } })).toBeNull()
   })
 
+  it('DELETE /bots takes a revoked membership along instead of tripping on it', async () => {
+    const agentId = await placedAgent()
+    const { app } = withSpy()
+    const created = (
+      await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations`,
+        payload: { name: 'pulled-bot', platform: 'slack', agentId, slack: SLACK }
+      })
+    ).json() as { id: string; botId: string }
+
+    // The workspace pulls the app (rc/bot-revoked): the install flips to revoked, which no list shows.
+    await app.deps.httpBot.revokeBot(created.botId, 'app_uninstalled')
+    const listed = (await app.app.inject({ method: 'GET', url: `${ORG}/bots` })).json() as {
+      id: string
+      agentIds: string[]
+      revokedAt: string | null
+    }[]
+    expect(listed.find((b) => b.id === created.botId)).toMatchObject({ agentIds: [], revokedAt: expect.any(String) })
+
+    // The row reads free, so the console offers the delete; the Restrict FK must not fail it.
+    const del = await app.app.inject({ method: 'DELETE', url: `${ORG}/bots/${created.botId}` })
+    expect(del.statusCode).toBe(204)
+    expect(await prisma.integration.count({ where: { botId: created.botId } })).toBe(0)
+    expect(await prisma.bot.findUnique({ where: { id: created.botId } })).toBeNull()
+  })
+
   it('POST Slack refresh preserves exported fields, syncs required config, and reports current scopes', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
@@ -1418,6 +1445,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
     expect(res.json()).toEqual({
       manifest: 'synced',
       authorization: 'current',
+      rejection: null,
       missingScopes: [],
       settingsUrl: 'https://api.slack.com/apps/A0TESTAPP1',
       manifestUrl: 'https://app.slack.com/app-settings/T0TESTTEAM1/A0TESTAPP1/app-manifest',
@@ -1464,6 +1492,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
     expect(res.json()).toEqual({
       manifest: 'manual_update_required',
       authorization: 'current',
+      rejection: null,
       missingScopes: [],
       settingsUrl: 'https://api.slack.com/apps/A0MANUAL01',
       manifestUrl: 'https://app.slack.com/app-settings/T0MANUAL01/A0MANUAL01/app-manifest',

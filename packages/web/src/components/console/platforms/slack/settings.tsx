@@ -267,11 +267,22 @@ function SlackRefreshNotice({
   reinstalling?: boolean
   onReinstall?: () => void
 }) {
-  const { needsAttention, message: defaultMessage, action } = slackRefreshNoticeState(result)
+  const { needsAttention, message: defaultMessage, action, scopeFragment } = slackRefreshNoticeState(result)
+  const [copied, setCopied] = useState(false)
   const message =
     builtin && result.authorization === 'invalid'
       ? 'Slack rejected this workspace authorization. Reinstall the app to reconnect it.'
       : defaultMessage
+  const copyScopes = async () => {
+    if (!scopeFragment) return
+    try {
+      await navigator.clipboard.writeText(scopeFragment)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* clipboard unavailable (insecure context) — the list stays selectable in the notice */
+    }
+  }
 
   return (
     <div
@@ -287,20 +298,29 @@ function SlackRefreshNotice({
           <span className="mono ml-1 text-[11px]">Missing: {result.missingScopes.join(', ')}</span>
         )}
       </span>
-      {action?.label === 'Reinstall workspace' && onReinstall ? (
-        <button
-          type="button"
-          className="lnk flex-none border-0 bg-transparent p-0"
-          disabled={reinstalling}
-          onClick={onReinstall}
-        >
-          {reinstalling ? 'Reinstalling…' : action.label}
-        </button>
-      ) : action ? (
-        <a href={action.href} target="_blank" rel="noopener noreferrer" className="lnk flex-none">
-          {action.label}
-        </a>
-      ) : null}
+      {(scopeFragment || action) && (
+        <span className="flex flex-none items-center gap-3">
+          {scopeFragment && (
+            <button type="button" className="lnk border-0 bg-transparent p-0" onClick={() => void copyScopes()}>
+              {copied ? 'Copied' : 'Copy scopes'}
+            </button>
+          )}
+          {action?.label === 'Reinstall workspace' && onReinstall ? (
+            <button
+              type="button"
+              className="lnk border-0 bg-transparent p-0"
+              disabled={reinstalling}
+              onClick={onReinstall}
+            >
+              {reinstalling ? 'Reinstalling…' : action.label}
+            </button>
+          ) : action ? (
+            <a href={action.href} target="_blank" rel="noopener noreferrer" className="lnk">
+              {action.label}
+            </a>
+          ) : null}
+        </span>
+      )}
     </div>
   )
 }

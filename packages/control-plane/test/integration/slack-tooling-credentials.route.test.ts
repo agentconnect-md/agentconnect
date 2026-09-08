@@ -409,9 +409,10 @@ describe('the §9 DI collapse keeps its read-through seam', () => {
       authorization: 'reinstall_required'
     })
 
-    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid' })
+    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid', error: 'invalid_auth' })
     expect((await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })).json()).toMatchObject({
-      authorization: 'invalid'
+      authorization: 'invalid',
+      rejection: 'invalid_auth'
     })
   })
 })

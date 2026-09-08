@@ -299,7 +299,9 @@ describe('slack validateConfig (route parity: integrations.ts slack arm)', () =>
   })
 
   it('refuses a rejected bot token with the route’s 400 copy', async () => {
-    const provider = createSlackCpProvider({ verifyBot: vi.fn(async () => ({ status: 'invalid' as const })) })
+    const provider = createSlackCpProvider({
+      verifyBot: vi.fn(async () => ({ status: 'invalid' as const, error: 'invalid_auth' }))
+    })
     expect(await provider.validateConfig(CREDS, 'socket')).toEqual({
       ok: false,
       status: 400,
