@@ -33,8 +33,13 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
     let content = ''
     let label = ''
     if ('children' in node) {
-      for (const child of node.children) {
-        const rendered = render(child)
+      const children = node.children.map((child) => ({ child, rendered: render(child) }))
+      const changed = children.some(
+        ({ child, rendered }) => rendered !== text.slice(child.position!.start.offset!, child.position!.end.offset!)
+      )
+      for (const { child, rendered: result } of children) {
+        // Literal syntax beside a rewritten link must not become an active outer link on the platform.
+        const rendered = changed && child.type === 'text' ? escapeLiteralOpeners(result) : result
         content += text.slice(cursor, child.position!.start.offset!) + rendered
         label += rendered
         cursor = child.position!.end.offset!
@@ -57,6 +62,11 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
     return visible ? `${visible} (${inlineCode(display)})` : inlineCode(display)
   }
   return render(tree)
+}
+
+/** Preserve existing escapes while keeping literal bracket and autolink openers inert. */
+function escapeLiteralOpeners(text: string): string {
+  return text.replace(/\\.|[<[]/g, (token) => (token.length === 1 ? `\\${token}` : token))
 }
 
 /** Hold a whole Markdown block when later definitions could still change its references. */

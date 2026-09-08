@@ -4,6 +4,7 @@ import { OutputConverger } from '../src/slack/render.js'
 import { TelegramConverger } from '../src/telegram/render.js'
 import { DiscordConverger } from '../src/discord/render.js'
 import { FeishuConverger } from '../src/feishu/render.js'
+import { GithubReplyCollector } from '../src/github/poster.js'
 
 const chunk = (text: string): SessionUpdate => ({
   sessionUpdate: 'agent_message_chunk',
@@ -23,6 +24,12 @@ describe.each([
   { name: 'Discord', create: (mode: 'low' | 'minimal') => new DiscordConverger(mode) },
   { name: 'Feishu', create: (mode: 'low' | 'minimal') => new FeishuConverger(mode) }
 ])('$name reference delivery', ({ create }) => {
+  it('does not activate an outer host link when its nested link is flattened', () => {
+    const c = create('low')
+    c.onUpdate(chunk('[report [source](/home/agent/source.md)](/home/agent/report.md)'))
+    expect(bodies(c.onFinal())).toContain('\\[report source (`source.md`)](/home/agent/report.md)')
+  })
+
   it.each(['final', 'terminal'])(
     'holds incomplete reference definitions out of previews until %s completion',
     (completion) => {
@@ -47,4 +54,10 @@ describe.each([
       expect(bodies(c.onFinal())).toEqual([])
     }
   )
+})
+
+it('removes a newly activated host link from the shared code-host reply', () => {
+  const reply = new GithubReplyCollector()
+  reply.onUpdate(chunk('[report [source](/home/agent/source.md)](/home/agent/report.md)'))
+  expect(reply.finalText()).toBe('\\[report source (`source.md`)](/home/agent/report.md)')
 })
