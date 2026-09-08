@@ -22,6 +22,7 @@ import {
   MEMORY_HISTORY_FILENAME,
   MEMORY_INDEX,
   MAX_MEMORY_FILE_BYTES,
+  listMemory,
   memoryDir,
   type MemoryHistoryRecord
 } from '../src/memory/store.js'
@@ -29,10 +30,31 @@ import { LocalMemoryFs, MemorySandboxUnavailableError } from '../src/memory/fs.j
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
 import { storeDigest } from '../src/dream/dreamer.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
-import type { MemoryFs } from '../src/memory/fs.js'
+import type { MemoryFs, MemoryHomePorts } from '../src/memory/fs.js'
 import { pod } from './fixtures/memory-fs-pod.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
+/** One tree for both roles, the way the daemon resolves a home today. */
+const home = (fs: MemoryFs): MemoryHomePorts => ({ live: fs, staging: fs })
+
+/** The same port, noting every root-relative path it is asked for (a subdir's paths are prefixed). */
+function recording(fs: MemoryFs, touched: string[], prefix = ''): MemoryFs {
+  const note = (rel: string): void => {
+    touched.push(join(prefix, rel))
+  }
+  return {
+    key: fs.key,
+    root: fs.root,
+    subdir: (rel) => recording(fs.subdir(rel), touched, join(prefix, rel)),
+    readFile: (rel, encoding) => (note(rel), fs.readFile(rel, encoding)),
+    writeFile: (rel, content, options) => (note(rel), fs.writeFile(rel, content, options)),
+    readdir: (rel) => (note(rel), fs.readdir(rel)),
+    mkdir: (rel) => (note(rel), fs.mkdir(rel)),
+    rename: (from, to) => (note(from), note(to), fs.rename(from, to)),
+    rm: (rel) => (note(rel), fs.rm(rel)),
+    utimes: (rel, mtime) => (note(rel), fs.utimes(rel, mtime))
+  }
+}
 
 const silent = { info() {}, warn() {} }
 
@@ -166,7 +188,7 @@ async function setup(opts: {
   const prompts: { systemPrompt: string; prompt: string; inputDir: string }[] = []
   const runner = new DreamRunner({
     agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-    memoryFsFor: (id) => (id === 'a1' ? root : undefined),
+    memoryHomePortsFor: (id) => (id === 'a1' ? home(root) : undefined),
     dreamingPolicyFor: () => opts.policy ?? { enabled: true },
     operationPolicy: opts.operationPolicy ?? 'test-only',
     store,
@@ -373,7 +395,7 @@ describe('DreamRunner pipeline', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? fs : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(fs) : undefined),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'test-only',
       store,
@@ -471,7 +493,7 @@ describe('DreamRunner pipeline', () => {
     const sources = vi.spyOn(store, 'dreamSessionSources')
     const runner = new DreamRunner({
       agentDirByAgent,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor,
       store,
       extract,
@@ -517,7 +539,7 @@ describe('DreamRunner pipeline', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'test-only',
       store,
@@ -548,7 +570,7 @@ describe('DreamRunner pipeline', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'test-only',
       store,
@@ -709,10 +731,10 @@ describe('DreamRunner adoption', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => {
+      memoryHomePortsFor: (id) => {
         if (id !== 'a1') return undefined
         if (!bound) throw new MemorySandboxUnavailableError('agent "a1" has no running sandbox')
-        return fs
+        return home(fs)
       },
       // The daemon's seam: `ensureChannel` + `withSandbox` — bind, then count the hold the idle sweep reads.
       withMemoryHome: async (_agentId, work) => {
@@ -762,7 +784,7 @@ describe('DreamRunner adoption', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? fs : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(fs) : undefined),
       dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
       operationPolicy: 'test-only',
       store,
@@ -799,7 +821,7 @@ describe('DreamRunner adoption', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? fs : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(fs) : undefined),
       dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
       operationPolicy: 'test-only',
       store,
@@ -845,7 +867,7 @@ describe('DreamRunner adoption', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(local(dir)) : undefined),
       // The snapshot's acquisition succeeds; the run's rejects before its callback starts (a wake that failed).
       withMemoryHome: async (_agentId, work) => {
         acquisitions += 1
@@ -893,6 +915,62 @@ describe('DreamRunner adoption', () => {
     // Every touch crossed the shim channel; the member's own agent dir holds no memory at all.
     expect(requester.frames.length).toBeGreaterThan(0)
     expect(await readdir(dir)).toEqual([])
+  })
+
+  it('stages through the staging port and swaps through the live port when the two are different trees', async () => {
+    // The shape a store home other than the daemon's disk will have: staging stays beside the
+    // extraction host, and nothing under memory-dreams/ reaches the store's tree (memory-evolution.md §3.2.1).
+    const liveDir = await mkdtemp(join(tmpdir(), 'ac-dream-live-'))
+    const stagingDir = await mkdtemp(join(tmpdir(), 'ac-dream-staging-'))
+    const liveTouched: string[] = []
+    const stagingTouched: string[] = []
+    const ports: MemoryHomePorts = {
+      live: recording(local(liveDir), liveTouched),
+      staging: recording(local(stagingDir), stagingTouched)
+    }
+    await ensureMemory(ports.live, 'bot')
+    await writeMemoryFile(ports.live, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
+    const store = new FakeStore()
+    const inputDirs: string[] = []
+    const runner = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? liveDir : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? ports : undefined),
+      dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'test-only',
+      store,
+      extract: async (_agentId, _systemPrompt, _prompt, _signal, context) => {
+        inputDirs.push(context.inputDir)
+        return { output: PROPOSAL, memoryTopics: await writeStagedProposal(context.stagedStore) }
+      },
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    expect((await settle(store, started.dreamId)).status).toBe('completed')
+
+    // The extraction host's cwd and every staged byte are on the staging tree; the live tree has no staging.
+    expect(inputDirs).toEqual([join(stagingDir, 'memory-dreams', started.dreamId, 'input')])
+    expect(await readdir(stagingDir)).toEqual(['memory-dreams'])
+    expect(await readdir(liveDir)).not.toContain('memory-dreams')
+
+    // Review reads staging; adoption reads it once more and then writes only through live.
+    const token = await runner.stagedStoreReviewToken('a1', started.dreamId)
+    expect(token).not.toBeNull()
+    expect((await runner.stagedRead('a1', started.dreamId, 'prefs.md'))?.content).toContain('Uses tabs, not spaces')
+    expect((await runner.adopt('a1', started.dreamId, false, token!)).status).toBe('adopted')
+
+    expect(stagingTouched.every((rel) => rel === 'memory-dreams' || rel.startsWith('memory-dreams/'))).toBe(true)
+    expect(liveTouched.some((rel) => rel.startsWith('memory-dreams'))).toBe(false)
+    expect(liveTouched.some((rel) => rel.startsWith(`.memory.adopting-${started.dreamId}`))).toBe(true)
+    expect((await readdir(liveDir)).sort()).toEqual(['memory', 'memory-backups'])
+    expect(await readdir(stagingDir)).toEqual(['memory-dreams'])
+    // The adopted store is the reviewed proposal, byte for byte.
+    const adoptedFiles = await Promise.all(
+      (await listMemory(ports.live)).map(async (file) => ({
+        name: file.name,
+        content: await readMemoryFile(ports.live, file.name)
+      }))
+    )
+    expect(storeDigest(adoptedFiles)).toBe(token)
   })
 
   it('preserves the mtime of files the dream left unchanged, refreshing only changed ones', async () => {
@@ -1302,7 +1380,7 @@ describe('DreamRunner crash recovery', () => {
     })
     await new DreamRunner({
       agentDirByAgent: () => undefined,
-      memoryFsFor: () => undefined,
+      memoryHomePortsFor: () => undefined,
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
@@ -1332,7 +1410,7 @@ describe('DreamRunner crash recovery', () => {
     const failures: string[] = []
     const runner = new DreamRunner({
       agentDirByAgent: () => undefined,
-      memoryFsFor: () => undefined,
+      memoryHomePortsFor: () => undefined,
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
@@ -1408,7 +1486,7 @@ describe('DreamRunner crash recovery', () => {
 
     await new DreamRunner({
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
-      memoryFsFor: (agentId) => (agentId === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (agentId) => (agentId === 'a1' ? home(local(dir)) : undefined),
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
@@ -1472,7 +1550,7 @@ describe('DreamRunner production security hold', () => {
     const before = JSON.stringify(await store.getDream('a1', dreamId))
     const runner = new DreamRunner({
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
-      memoryFsFor: (agentId) => (agentId === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (agentId) => (agentId === 'a1' ? home(local(dir)) : undefined),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'blocked',
       store,
@@ -1560,7 +1638,7 @@ describe('DreamRunner production security hold', () => {
     const supersededDreams = vi.spyOn(store, 'supersededDreams')
     const runner = new DreamRunner({
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
-      memoryFsFor: (agentId) => (agentId === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (agentId) => (agentId === 'a1' ? home(local(dir)) : undefined),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'blocked',
       store,
@@ -1648,7 +1726,7 @@ describe('DreamRunner store persistence', () => {
     const store = await LocalStore.open(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'test-only',
       store,
@@ -1966,7 +2044,7 @@ describe('DreamRunner skill mining (D-3)', () => {
     await ensureMemory(local(dir), 'bot')
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(local(dir)) : undefined),
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
       operationPolicy: 'test-only',
       store,
@@ -2001,7 +2079,7 @@ describe('DreamRunner skill mining (D-3)', () => {
     const prompts: string[] = []
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }), // mineSkills off
       operationPolicy: 'test-only',
       store,
@@ -2135,7 +2213,7 @@ describe('DreamRunner skill mining — review findings', () => {
     let inputDir = ''
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
       operationPolicy: 'test-only',
       store,
@@ -2172,7 +2250,7 @@ describe('DreamRunner skill mining — review findings', () => {
     const prompts: string[] = []
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }), // mining off
       operationPolicy: 'test-only',
       store,

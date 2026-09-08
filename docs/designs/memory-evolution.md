@@ -232,8 +232,9 @@ filesystem the extraction host can see, which is what keeps `MemoryFs.root` an h
 path — the host's cwd is `join(fs.root, inputDir)`, and a database has no directory to run
 in: the daemon's disk for a local agent (`LocalMemoryFs`), and for a cluster agent the
 sandbox volume through the shim (`ShimMemoryFs`) — #1078's option-A root, narrowed to
-`memory-dreams/`. So `resolveMemoryFs` hands the dream runner two ports, `live` and
-`staging`, and the runner already splits along that line: it reads the store snapshot
+`memory-dreams/`. So `resolveMemoryHomePorts` hands the dream runner two ports, `live` and
+`staging` (`MemoryHomePorts`; `resolveMemoryFs` stays the live-only resolver for the provider
+and the CP memory reader), and the runner already splits along that line: it reads the store snapshot
 through `live`, materializes `input/` through `staging` and passes `staging`'s root as
 the cwd (pod-absolute on the pool), and `adopt` reads the staged files through `staging`,
 builds `.memory.adopting-<dreamId>` through `live` and swaps by rename inside `live` alone
