@@ -25,6 +25,12 @@ describe('fitToBudget', () => {
     expect(fitToBudget(buf, buf.length)).toEqual({ end: buf.length, content: 'hello wörld' })
   })
 
+  it('keeps a leading U+FEFF: a slice is bytes, and a BOM at a chunk boundary is mid-file', () => {
+    const buf = encode('\uFEFFhello')
+    expect(fitToBudget(buf, buf.length)).toEqual({ end: 8, content: '\uFEFFhello' })
+    expect(fitToBudget(buf, 3)).toEqual({ end: 3, content: '\uFEFF' })
+  })
+
   it('shrinks escape-heavy text under the budget without splitting a character', () => {
     const text = ''.repeat(REPLY_BUDGET / 4) + '😀'.repeat(REPLY_BUDGET / 8)
     const buf = encode(text)

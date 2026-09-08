@@ -3,7 +3,8 @@
 import { REPLY_BUDGET } from './wire.js'
 
 const textEncoder = new TextEncoder()
-const textDecoder = new TextDecoder()
+// `ignoreBOM` keeps a leading U+FEFF in the output the way `Buffer.toString('utf8')` did; a slice is bytes, not a document.
+const textDecoder = new TextDecoder('utf-8', { ignoreBOM: true })
 
 /** The encoded size of the payload the wire will carry (JSON.stringify matches the codec's `encode`), in bytes. */
 export function encodedBytes(payload: unknown): number {
