@@ -3,15 +3,12 @@ import {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
-  ELICIT_FORM_CALLBACK_ID,
   ELICIT_FORM_FIELD_CAP,
   ELICIT_FORM_INPUT_ACTION,
-  ELICIT_OPEN_ACTION,
-  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   SLACK_STATUS_ACTION,
   elicitFormBlockId,
-  encodeElicitFormMetadata,
+  elicitFormBlockIndex,
   encodePermValue,
   encodeSlackStatusOverflowValue
 } from '@agentconnect.md/protocol'
@@ -19,17 +16,11 @@ export {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
-  ELICIT_FORM_CALLBACK_ID,
-  ELICIT_OPEN_ACTION,
-  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
-  decodeElicitFormMetadata,
   decodePermValue,
   elicitFormBlockId,
   elicitFormViewValues,
   encodePermValue,
-  selectedOptionsFromState,
-  type SlackBlockActionsState,
   type SlackViewState
 } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
@@ -647,11 +638,11 @@ const SLACK_ELICIT_MAX_BUTTONS = 24
 const SLACK_SELECT_MAX_OPTIONS = 100
 const SLACK_SELECT_VALUE_CAP = 75
 
-/** Slack renders single-select and boolean as a row of buttons, multi-select as a
- *  `multi_static_select` plus a Confirm button — the select cannot submit on its own — and a
- *  `text`/`number` field as a question answered by REPLYING in the thread, since sending a
- *  message is what typing something already is on Slack. The option-taking controls carry
- *  different lists, which is why the limits are per kind rather than one number for the surface. */
+/** Slack renders a lone single-select or boolean as a row of buttons — one tap answers it — and
+ *  every other shape as `input` blocks in the message with one Confirm, since a select, a
+ *  checkbox list and a typed box all need something filled in before they can submit. The
+ *  option-taking controls carry different lists, which is why the limits are per kind rather than
+ *  one number for the surface. */
 export const SLACK_ELICIT_SURFACE: ElicitSurface = {
   kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum', 'text', 'number']),
   optionLimits: {
@@ -661,10 +652,9 @@ export const SLACK_ELICIT_SURFACE: ElicitSurface = {
 }
 
 /** The approval DM's card is a button row whose taps settle through the editor path, which holds
- *  no per-card selection — so a multi-select could be shown there but never confirmed, and it is
- *  withheld rather than posted dead. A `text`/`number` field is withheld for the same reason from
- *  the other end: a DM has no session thread whose replies are intercepted as the answer, so the
- *  card would ask for a reply nothing reads. Otherwise exactly the in-channel Slack surface. */
+ *  no per-card state — so every kind that needs a Confirm to submit could be shown there but never
+ *  confirmed, and all of them are withheld rather than posted dead. What is left is exactly the
+ *  one-tap half of the in-channel Slack surface. */
 export const SLACK_DM_ELICIT_SURFACE: ElicitSurface = {
   kinds: new Set<ElicitKind>(['enum', 'boolean']),
   optionLimits: { enum: { maxOptions: SLACK_ELICIT_MAX_BUTTONS } }
@@ -1174,14 +1164,8 @@ export function numberAccepts(target: ElicitTarget, value: number): boolean {
   return target.maximum === undefined || value <= target.maximum
 }
 
-/** The kinds a Slack card holds no control for and answers with a THREAD REPLY instead
- *  (issue #1794's Slack column): sending a message is what typing something already is there,
- *  where an `input` block with `dispatch_action` costs an interaction per change and buys
- *  nothing. Read by the card builder and by the ingress interception, so the two agree. */
-export const ELICIT_REPLY_KINDS: ReadonlySet<ElicitKind> = new Set<ElicitKind>(['text', 'number'])
-
-/** How a reply-answered card names the shape a `format` asks for — plain words, with an example
- *  where the shape is not one, because the reader has to type it from the card alone. */
+/** How a card names the shape a `format` asks for — plain words, with an example where the shape
+ *  is not one, because the reader has to type it from the card alone. */
 const FORMAT_EXPECTATION: Record<ElicitFormat, string> = {
   email: 'an email address',
   uri: 'a link',
@@ -1189,10 +1173,9 @@ const FORMAT_EXPECTATION: Record<ElicitFormat, string> = {
   'date-time': 'a date and time, like 2026-09-07T09:30:00Z'
 }
 
-/** What a reply-answered card asks for, in plain words and never in schema vocabulary — shown on
- *  the card and repeated when a reply does not fit, so the reader is told the same thing twice
- *  rather than two different things. Pure. */
-export function elicitReplyExpectation(target: ElicitTarget): string {
+/** What a typed field asks for, in plain words and never in schema vocabulary — said when an
+ *  entry does not fit, so the reader is told the shape rather than the schema keyword. Pure. */
+export function elicitFieldExpectation(target: ElicitTarget): string {
   if (target.kind === 'number') {
     const noun = target.integer ? 'a whole number' : 'a number'
     const { minimum: min, maximum: max } = target
@@ -1219,68 +1202,9 @@ export function elicitReplyExpectation(target: ElicitTarget): string {
   return parts.join(', ')
 }
 
-/** Slack's mention token for one user, at the very START of a message: the modern `<@U…>` and
- *  the legacy `<@U…|name>`, plus the punctuation a reader puts after an address. */
-const LEADING_MENTION_RE = /^\s*<@([A-Z0-9]+)(?:\|[^>]*)?>[ \t]*[:,]?[ \t]*/
-
-/** A reply's text with a LEADING mention of the ASKING bot removed: "@bot 42" is 42, because
- *  addressing the bot is chrome rather than value. Only that token, only this bot's own id —
- *  a mention of anyone else, a second mention, or one anywhere but the front is content, and
- *  guessing which PART of a message is the answer is how a typed answer comes back wrong. An
- *  unknown bot id (identity not resolved yet) strips nothing. Pure. */
-export function stripLeadingSelfMention(text: string, botUserId?: string): string {
-  if (!botUserId) return text
-  const found = LEADING_MENTION_RE.exec(text)
-  return found && found[1] === botUserId ? text.slice(found[0].length) : text
-}
-
-/** Slack's retrieved-message form for ONE link and nothing else: `<dest>` or `<dest|label>`,
- *  where the destination is the part BEFORE the pipe and the label is display text. Anchored on
- *  purpose — a link sitting inside prose is not this. */
-const SLACK_LINK_ONLY_RE = /^<([^|>\s]+)(?:\|[^>]*)?>$/
-
-/** The three characters Slack HTML-escapes in the text it hands back, and nothing else — so
- *  un-escaping exactly these is the lossless inverse of what the reader typed. */
-const SLACK_ENTITIES: [RegExp, string][] = [
-  [/&lt;/g, '<'],
-  [/&gt;/g, '>'],
-  [/&amp;/g, '&']
-]
-
-/** What the reader actually typed, recovered from Slack's own representation of it — the step
- *  before any schema check, because `<https://x/>` and `<mailto:a@b|a@b>` are Slack's spelling
- *  of a link, not the reader's answer, and would fail `uri`/`email` forever.
- *
- *  DECODING, never extracting: only a reply that is one link and nothing else is unwrapped, and
- *  `mailto:` comes off so an `email` field gets `a@b` rather than `mailto:a@b`. Prose with a link
- *  inside is returned whole — deciding which PART of a message is the value is the guess this
- *  route refuses to make. Entity un-escaping applies either way, since Slack escapes those three
- *  everywhere in message text. Inbound only: it has nothing to do with the outbound defusing
- *  (#1810/#1819) that keeps AGENT-authored text from becoming markup on a card. Pure. */
-export function decodeSlackReplyValue(text: string): string {
-  const trimmed = text.trim()
-  const link = SLACK_LINK_ONLY_RE.exec(trimmed)
-  const value = link ? link[1]!.replace(/^mailto:/, '') : trimmed
-  return SLACK_ENTITIES.reduce((out, [pattern, char]) => out.replace(pattern, char), value)
-}
-
-/** The digit shapes a numeric reply may take. Deliberately narrower than `Number()`, which reads
+/** The digit shapes a typed number may take. Deliberately narrower than `Number()`, which reads
  *  `0x1f`, `Infinity` and whitespace as numbers a reader plainly did not type. */
 const NUMERIC_REPLY_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
-
-/** The answer a thread reply carries for a reply-answered card, re-derived against the card
- *  itself exactly as a tapped option is: the typed value when this target would accept it, null
- *  when it would not — the caller then says why and leaves the card live. A numeric field comes
- *  back as a real JS number, so the accept content carries the schema's own type. Pure. */
-export function elicitReplyAnswer(target: ElicitTarget, reply: string): string | number | null {
-  const value = reply.trim()
-  if (target.kind === 'number') {
-    if (!NUMERIC_REPLY_RE.test(value)) return null
-    const parsed = Number(value)
-    return numberAccepts(target, parsed) ? parsed : null
-  }
-  return target.kind === 'text' && textAccepts(target, value) ? value : null
-}
 
 const BARE_URL_RE = /(?:https?:\/\/|www\.)\S+/gi
 
@@ -1328,92 +1252,140 @@ function elicitDismissButton(requestId: string): Record<string, unknown> {
   }
 }
 
-/** What a reply-answered card tells the reader to do: reply in this thread, with what, and whom
- *  the question waits for — there is nothing on the card itself to type into. `awaits` is the
- *  turn's requester as the platform spells them, absent when the card could not name one. */
-function replyInstruction(target: ElicitTarget, awaits?: string): string {
-  const ask = `Reply in this thread with ${elicitReplyExpectation(target)}.`
-  return awaits ? `${ask} Waiting for ${awaits}.` : `${ask} Anyone in this thread can answer.`
+/** Element types Slack REFUSES inside a block, by block type. Slack rejects the WHOLE message
+ *  rather than the offending block, so a card that gets this wrong never posts and its request is
+ *  cancelled with no trace in the channel — which is exactly how a `multi_static_select` in an
+ *  `actions` block took down a live session. Verified against the live API, not read off the docs:
+ *  an `actions` block answers `unsupported element: multiselect` for a multi-select and
+ *  `unsupported type` for a typed input, and an `input` block holds no button. */
+const SLACK_FORBIDDEN_ELEMENTS: Readonly<Record<string, ReadonlySet<string>>> = {
+  actions: new Set([
+    'multi_static_select',
+    'multi_external_select',
+    'multi_users_select',
+    'multi_conversations_select',
+    'multi_channels_select',
+    'plain_text_input',
+    'number_input',
+    'email_text_input',
+    'url_text_input'
+  ]),
+  input: new Set(['button', 'overflow'])
 }
 
-/** The multi-select half of {@link buildElicitationCard}: a `multi_static_select` carrying every
- *  option, a Confirm button and Dismiss, in ONE actions block so all three share the block_id the
- *  relay routes on. The select re-delivers the whole selection on each change and never submits,
- *  so Confirm carries only the request id and the daemon confirms the selection it last saw. The
- *  request id rides the select's own `action_id`, not its option values: DESELECTING EVERYTHING is
- *  a change too, and a card named only by its options could not report one. Slack caps an option
- *  value at 75 chars — a card that would overflow it is not built at all rather than posted with
- *  an option Slack would reject. Pure. */
-function buildMultiSelectElements(requestId: string, target: ElicitTarget): unknown[] | null {
-  const options = target.options.map((o) => ({
-    text: { type: 'plain_text', text: o.label, emoji: true },
-    value: o.value
-  }))
-  if (options.some((o) => o.value.length > SLACK_SELECT_VALUE_CAP)) return null
-  const seeded = Array.isArray(target.defaultValue) ? new Set(target.defaultValue) : null
-  const initial = seeded ? target.options.map((o, i) => (seeded.has(o.value) ? options[i] : null)).filter(Boolean) : []
-  return [
-    {
-      type: 'multi_static_select',
-      action_id: `${ELICIT_SELECT_ACTION}:${requestId}`,
-      placeholder: { type: 'plain_text', text: 'Select options', emoji: true },
-      options,
-      ...(initial.length ? { initial_options: initial } : {}),
-      ...(target.maxItems !== undefined ? { max_selected_items: target.maxItems } : {})
-    },
-    {
-      type: 'button',
-      action_id: ELICIT_CONFIRM_ACTION as string,
-      text: { type: 'plain_text', text: 'Confirm', emoji: true },
-      style: 'primary',
-      value: requestId
-    },
-    elicitDismissButton(requestId)
+/** How many `options` each element type holds. `checkboxes` and `radio_buttons` answer
+ *  `no more than 10 items allowed` past ten, where the select menus take a hundred — which is why
+ *  the card picks between them by list length rather than by taste. Verified against the API. */
+const SLACK_ELEMENT_MAX_OPTIONS: Readonly<Record<string, number>> = {
+  checkboxes: 10,
+  radio_buttons: 10,
+  static_select: 100,
+  multi_static_select: 100,
+  overflow: 5
+}
+
+/** The elements that HAVE a `max_selected_items`. `checkboxes` does not: Slack answers
+ *  `invalid additional property` for it, so a checkbox list's upper bound is said in the block's
+ *  hint and enforced when the answer comes back, never by the control. */
+const SLACK_MAX_SELECTED_ELEMENTS: ReadonlySet<string> = new Set([
+  'multi_static_select',
+  'multi_external_select',
+  'multi_users_select',
+  'multi_conversations_select',
+  'multi_channels_select'
+])
+
+/** Slack's own caps on one `actions` block's elements and on an option object's `value`. */
+const SLACK_ACTIONS_MAX_ELEMENTS = 25
+const SLACK_OPTION_VALUE_CAP = 75
+
+/** Every Slack rule this file has paid for, checked over one card's blocks: the element types a
+ *  block type refuses, the per-element option caps, `max_selected_items` only where it exists,
+ *  an `input` block's mandatory element, an option value past Slack's cap, and block ids unique
+ *  within the message. Returns the reasons Slack would reject the card, empty when it would take
+ *  it. Exported and asserted over every card we build, because our own JSON looks valid to us
+ *  right up until Slack sees it — which is the only reason #1825 shipped. Pure. */
+export function slackCardViolations(blocks: readonly unknown[]): string[] {
+  const bad: string[] = []
+  const seen = new Set<string>()
+  for (const [i, raw] of blocks.entries()) {
+    const b = raw as SlackBlockShape
+    if (typeof b.block_id === 'string') {
+      if (seen.has(b.block_id)) bad.push(`blocks/${i}: duplicate block_id "${b.block_id}"`)
+      seen.add(b.block_id)
+    }
+    const forbidden = SLACK_FORBIDDEN_ELEMENTS[b.type ?? ''] ?? new Set<string>()
+    if (b.type === 'input' && !b.element?.type) bad.push(`blocks/${i}: input block has no element`)
+    if (b.type === 'actions' && (b.elements?.length ?? 0) > SLACK_ACTIONS_MAX_ELEMENTS)
+      bad.push(`blocks/${i}: ${b.elements?.length} elements in an actions block, past ${SLACK_ACTIONS_MAX_ELEMENTS}`)
+    for (const el of [...(b.elements ?? []), ...(b.element ? [b.element] : [])]) {
+      if (!el?.type) continue
+      if (forbidden.has(el.type)) bad.push(`blocks/${i}: ${el.type} is not allowed in a ${b.type} block`)
+      bad.push(...slackElementViolations(el, `blocks/${i}/${el.type}`))
+    }
+  }
+  return bad
+}
+
+/** The shape {@link slackCardViolations} reads a block and its elements through — deliberately
+ *  everything-optional, since the point is to inspect JSON that may be wrong. */
+interface SlackElementShape {
+  type?: string
+  options?: { value?: unknown }[]
+  initial_options?: { value?: unknown }[]
+  initial_option?: { value?: unknown }
+  max_selected_items?: unknown
+}
+interface SlackBlockShape {
+  type?: string
+  block_id?: string
+  elements?: SlackElementShape[]
+  element?: SlackElementShape
+}
+
+/** One element's own rules: its option cap, its option values, and whether it may be told a
+ *  maximum selection at all. Pure. */
+function slackElementViolations(el: SlackElementShape, at: string): string[] {
+  const bad: string[] = []
+  const cap = SLACK_ELEMENT_MAX_OPTIONS[el.type ?? '']
+  if (cap !== undefined && (el.options?.length ?? 0) > cap)
+    bad.push(`${at}: ${el.options?.length} options, past the ${cap} this element holds`)
+  if (el.max_selected_items !== undefined && !SLACK_MAX_SELECTED_ELEMENTS.has(el.type ?? ''))
+    bad.push(`${at}: max_selected_items is not a property of this element`)
+  const values = [
+    ...(el.options ?? []),
+    ...(el.initial_options ?? []),
+    ...(el.initial_option ? [el.initial_option] : [])
   ]
+  for (const o of values)
+    if (typeof o?.value === 'string' && o.value.length > SLACK_OPTION_VALUE_CAP)
+      bad.push(`${at}: an option value is ${o.value.length} characters, past ${SLACK_OPTION_VALUE_CAP}`)
+  return bad
 }
 
 /**
- * Build the interactive elicitation card: the agent's `message` and one actions row — EVERY
- * {@link elicitTarget} option as a button for a single-select or boolean, or a
- * `multi_static_select` plus Confirm for a multi-select — always with a Dismiss button. The choice
- * rides each option's `value` (`<requestId>|<optionValue>`). A {@link ELICIT_REPLY_KINDS} field
- * has no control at all: the card carries the question, what is expected, whom it awaits
- * (`awaits`) and Dismiss, and the answer arrives as a reply in the thread. Returns null when the
- * form can't be rendered on `surface` (caller declines): a kind or an option list it does not
- * claim, which the reduction has already refused, or a multi-select whose encoded option values
- * Slack's select would reject. Nothing here trims a list to fit. Pure.
+ * Build the ONE-TAP elicitation card: the agent's `message` and one actions row carrying EVERY
+ * {@link elicitTarget} option as a button, plus Dismiss. The choice rides each option's `value`
+ * (`<requestId>|<optionValue>`). Only a single-select or a boolean is answered this way — one tap
+ * IS the answer there, where every other kind needs something filled in first and takes the
+ * `input` blocks of {@link buildElicitationFormCard} ({@link elicitCardShape} decides). Returns
+ * null when the form can't be rendered on `surface` (caller declines): a kind or an option list
+ * it does not claim, which the reduction has already refused. Nothing here trims a list to fit.
+ * Pure.
  */
 export function buildElicitationCard(
   requestId: string,
   params: CreateElicitationRequest,
   sessionTarget?: string,
-  surface: ElicitSurface = SLACK_ELICIT_SURFACE,
-  awaits?: string
+  surface: ElicitSurface = SLACK_ELICIT_SURFACE
 ): unknown[] | null {
   const target = elicitTarget(params, surface)
   if (!target) return null
   const message = elicitCardMessage(params)
-  if (ELICIT_REPLY_KINDS.has(target.kind)) {
-    return [
-      { type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}` } },
-      { type: 'context', elements: [{ type: 'mrkdwn', text: replyInstruction(target, awaits) }] },
-      {
-        type: 'actions',
-        ...(sessionTarget ? { block_id: sessionTarget } : {}),
-        elements: [elicitDismissButton(requestId)]
-      }
-    ]
-  }
-  if (target.kind === 'multi-enum') {
-    const elements = buildMultiSelectElements(requestId, target)
-    if (!elements) return null
-    const hint = selectionHint(target)
-    return [
-      { type: 'section', text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(message, ELICIT_MESSAGE_CAP)}` } },
-      ...(hint ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: hint }] }] : []),
-      { type: 'actions', ...(sessionTarget ? { block_id: sessionTarget } : {}), elements }
-    ]
-  }
+  // A lone question that has to be filled in is its own ONE-FIELD form: nothing tapped in an
+  // `actions` block can carry what was typed or selected, so the control is an input block.
+  if (elicitCardShape([target]) !== 'buttons')
+    return buildElicitationFormCard(requestId, params, [target], sessionTarget)
   const buttons = target.options.map((o, i) => ({
     type: 'button',
     action_id: `${ELICIT_ACTION_PREFIX}:${i}`,
@@ -1435,26 +1407,27 @@ export function buildElicitationResolvedCard(params: CreateElicitationRequest, d
   return [{ type: 'section', text: { type: 'mrkdwn', text } }]
 }
 
-// ── Multi-field elicitation forms (Slack modal, issue #1794's last Slack item) ────────────────
+// ── Elicitation form cards (`input` blocks in the message, issue #1794's last Slack item) ────
 
-/** Slack's own cap on a modal title. 24 characters hold no question, so the title is a FIXED
- *  deployment-authored line and the agent's own words go in the modal's first section, defused
- *  by {@link elicitCardMessage} like every other card's — an agent-authored string clamped into
- *  24 characters would be both unreadable and the one place on the modal a reader would trust
- *  most. This is the same phrase the seam already uses as a card's notification fallback. */
-const SLACK_MODAL_TITLE = 'Agent needs your input'
-
-/** Slack's own cap on a `plain_text_input`'s `min_length`/`max_length`, and on a select option's
- *  `value` — a modal has no button to fall back to, so an enum whose values outrun the second
- *  cap declines rather than posting a modal Slack would reject (#1813's finding, one surface on). */
+/** Slack's own cap on a `plain_text_input`'s `min_length`/`max_length`. */
 const SLACK_INPUT_LENGTH_CAP = 3000
 
-/** The `input` element one form field is answered by: a select for the pickable kinds, a
- *  `plain_text_input` for text and a `number_input` for numbers, each carrying the schema's own
- *  bounds so Slack refuses in the modal what the daemon would refuse anyway. Null ⇒ this field
- *  cannot BE an input block — an enum option value past Slack's 75-char select cap, or a minimum
- *  length past what an input holds — and the whole modal is then withheld rather than posted
- *  with a field the reader cannot answer honestly. Pure. */
+/** The longest list `checkboxes` and `radio_buttons` hold — past ten Slack answers `no more than
+ *  10 items allowed`, so a longer list falls back to the select menu, which holds a hundred. */
+const SLACK_CHOICE_MAX_OPTIONS = 10
+
+/** Slack's own cap on an `input` block's hint. */
+const SLACK_HINT_TEXT_CAP = 2000
+
+/** The `input` element one form field is answered by: for a pick, the control that fits the list —
+ *  `radio_buttons`/`checkboxes` for a short one, which show every option without a second tap, and
+ *  a select menu past what those hold — plus a `plain_text_input` for text and a `number_input` for
+ *  numbers, each carrying the schema's own bounds so Slack refuses on the card what the daemon
+ *  would refuse anyway. A checkbox list gets no `max_selected_items` (Slack has no such property
+ *  there): its bounds are said in the block's hint and enforced when the answer comes back, which
+ *  is where they were always binding. Null ⇒ this field cannot BE an input block — an option value
+ *  past Slack's 75-char cap, or a minimum length past what an input holds — and the whole card is
+ *  then withheld rather than posted with a field the reader cannot answer honestly. Pure. */
 function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> | null {
   const action_id = ELICIT_FORM_INPUT_ACTION as string
   if (target.kind === 'text') {
@@ -1484,9 +1457,12 @@ function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> |
     value: o.value
   }))
   if (!options.length || options.some((o) => o.value.length > SLACK_SELECT_VALUE_CAP)) return null
+  const short = options.length <= SLACK_CHOICE_MAX_OPTIONS
   if (target.kind === 'multi-enum') {
     const seeded = Array.isArray(target.defaultValue) ? new Set(target.defaultValue) : null
     const initial = seeded ? options.filter((o) => seeded.has(o.value)) : []
+    if (short)
+      return { type: 'checkboxes', action_id, options, ...(initial.length ? { initial_options: initial } : {}) }
     return {
       type: 'multi_static_select',
       action_id,
@@ -1499,6 +1475,7 @@ function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> |
   // A boolean's `default` is a real boolean, so its option value is the string the card spells it with.
   const seed = target.kind === 'boolean' ? String(target.defaultValue) : target.defaultValue
   const initial = options.find((o) => o.value === seed)
+  if (short) return { type: 'radio_buttons', action_id, options, ...(initial ? { initial_option: initial } : {}) }
   return {
     type: 'static_select',
     action_id,
@@ -1508,68 +1485,39 @@ function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> |
   }
 }
 
+/** What one field's block says under its label: the question's own words, plus a multi-select's
+ *  bounds, since a checkbox list cannot enforce them itself. Empty when there is nothing to add. */
+function elicitFormFieldHint(target: ElicitTarget): string {
+  const parts = [target.description ?? '', target.kind === 'multi-enum' ? selectionHint(target) : '']
+  return clampTo(parts.filter(Boolean).join(' '), SLACK_HINT_TEXT_CAP)
+}
+
 /**
- * Build the MULTI-FIELD elicitation card that goes in the channel. An `actions` block holds no
- * inputs, so the fields cannot be here at all: the card carries the agent's defused question, one
- * line naming what will be asked, an Answer button that opens the modal, and Dismiss — both in
- * one actions block so they share the `block_id` the relay routes on. Pure.
+ * Build the elicitation card whose fields are ANSWERED IN THE MESSAGE: the agent's defused
+ * question, then one `input` block per field in schema order — each keyed by {@link
+ * elicitFormBlockId}, which is the key its submitted value comes back under — and one actions
+ * block carrying Confirm and Dismiss, which share the `block_id` the relay routes on.
+ *
+ * ONE Confirm for the whole card, never one per question: a message's input values all arrive in
+ * `state.values` on any button tap in that message, so a single button submits the lot. That is
+ * also why a lone select that needs no typing keeps its row of buttons instead — one tap answers
+ * it, and there is nothing to fill in first ({@link elicitCardShape}).
+ *
+ * Null ⇒ some field cannot be an input block (see {@link elicitFormInputElement}) and the caller
+ * declines with a notice rather than posting a card with a field nobody can answer. Pure.
  */
 export function buildElicitationFormCard(
   requestId: string,
   params: CreateElicitationRequest,
   form: readonly ElicitTarget[],
   sessionTarget?: string
-): unknown[] {
-  const asked = form.map((t) => elicitFormFieldLabel(params, t)).join(', ')
-  return [
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}` }
-    },
-    {
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: clampTo(`Asks for ${escapeSlackMrkdwn(asked)}.`, SLACK_SECTION_TEXT_CAP) }]
-    },
-    {
-      type: 'actions',
-      ...(sessionTarget ? { block_id: sessionTarget } : {}),
-      elements: [
-        {
-          type: 'button',
-          action_id: ELICIT_OPEN_ACTION as string,
-          text: { type: 'plain_text', text: 'Answer', emoji: true },
-          style: 'primary',
-          value: requestId
-        },
-        elicitDismissButton(requestId)
-      ]
-    }
-  ]
-}
-
-/**
- * Build the modal that ANSWERS a multi-field card: the agent's defused question, then one
- * `input` block per field in schema order, each keyed by {@link elicitFormBlockId} so the
- * submitted state and a per-field error share one key. `private_metadata` names the card and
- * carries the opaque session target the relay routes the submission on — the same value the
- * card's own `block_id` carries, and nothing about the reader.
- *
- * Both ingress paths call THIS function with the card's own params, so the direct Socket Mode
- * modal and the relay-forwarded one are the same view. Null ⇒ some field cannot be an input
- * block (see {@link elicitFormInputElement}) and the caller declines with a notice. Pure.
- */
-export function buildElicitationFormModal(
-  requestId: string,
-  params: CreateElicitationRequest,
-  form: readonly ElicitTarget[],
-  sessionTarget?: string
-): Record<string, unknown> | null {
+): unknown[] | null {
   const required = new Set(elicitRequiredProps(params))
   const inputs: Record<string, unknown>[] = []
   for (const [index, target] of form.entries()) {
     const element = elicitFormInputElement(target)
     if (!element) return null
-    const hint = target.description ?? (target.kind === 'multi-enum' ? selectionHint(target) : '')
+    const hint = elicitFormFieldHint(target)
     inputs.push({
       type: 'input',
       block_id: elicitFormBlockId(index),
@@ -1581,61 +1529,72 @@ export function buildElicitationFormModal(
       element
     })
   }
-  return {
-    type: 'modal',
-    callback_id: ELICIT_FORM_CALLBACK_ID as string,
-    private_metadata: encodeElicitFormMetadata({ requestId, ...(sessionTarget ? { target: sessionTarget } : {}) }),
-    title: { type: 'plain_text', text: SLACK_MODAL_TITLE },
-    submit: { type: 'plain_text', text: 'Submit' },
-    close: { type: 'plain_text', text: 'Cancel' },
-    blocks: [
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP) }
-      },
-      ...inputs
-    ]
-  }
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `:speech_balloon: ${clampTo(elicitCardMessage(params), ELICIT_MESSAGE_CAP)}` }
+    },
+    ...inputs,
+    {
+      type: 'actions',
+      ...(sessionTarget ? { block_id: sessionTarget } : {}),
+      elements: [
+        {
+          type: 'button',
+          action_id: ELICIT_CONFIRM_ACTION as string,
+          text: { type: 'plain_text', text: 'Confirm', emoji: true },
+          style: 'primary',
+          value: requestId
+        },
+        elicitDismissButton(requestId)
+      ]
+    }
+  ]
 }
 
-/** The modal a tap on an ALREADY-SETTLED card opens: a stale client still shows the Answer
- *  button, and telling the reader the question closed is the difference between an explanation
- *  and a button that does nothing. Also the view a second reader's submission is replaced with
- *  once the first one settled the request. Pure. */
-export function buildElicitFormClosedModal(): Record<string, unknown> {
-  return {
-    type: 'modal',
-    title: { type: 'plain_text', text: SLACK_MODAL_TITLE },
-    close: { type: 'plain_text', text: 'Close' },
-    blocks: [
-      { type: 'section', text: { type: 'mrkdwn', text: 'This question has already been answered or dismissed.' } }
-    ]
-  }
+/** The two shapes a Slack elicitation card takes, decided by the reduction alone.
+ *
+ * A card is a row of BUTTONS exactly when ONE TAP CAN ANSWER IT: a single question that is a pure
+ * single-select or a boolean. Everything else is INPUT blocks with one Confirm and one Dismiss —
+ * a multi-select, a typed box, several questions, and a single question that brought a free-text
+ * companion box. A button submits the instant it is tapped, which leaves no moment to fill
+ * anything in; that is why a question gains a Confirm exactly when it has something to fill in.
+ *
+ * The companion case is not a guess about the schema: {@link elicitForm} already marks a companion
+ * with {@link ElicitTarget.customAnswerFor} (the `_meta` flag an AskUserQuestion bridge or a Codex
+ * `request_user_input` writes), so a question with a box is a reduction of two TARGETS and one
+ * QUESTION, where two questions are two of each. Reading the TARGET count is therefore all this
+ * needs: either way the card needs its inputs. Pure. */
+export type ElicitCardShape = 'buttons' | 'inputs'
+
+export function elicitCardShape(form: readonly ElicitTarget[]): ElicitCardShape {
+  const only = form.length === 1 ? form[0]! : null
+  return only && (only.kind === 'enum' || only.kind === 'boolean') ? 'buttons' : 'inputs'
 }
 
 /** What a refused field's error says, in the same plain words the card would have used — a
  *  reader who has to retype something is told the shape, never the schema keyword. */
 function elicitFormFieldError(target: ElicitTarget): string {
-  if (target.kind === 'text' || target.kind === 'number') return `Enter ${elicitReplyExpectation(target)}.`
+  if (target.kind === 'text' || target.kind === 'number') return `Enter ${elicitFieldExpectation(target)}.`
   if (target.kind === 'multi-enum') return selectionHint(target) || 'Select from the options offered.'
   return 'Choose one of the options offered.'
 }
 
-/** A form modal's answer, or the per-field errors that refuse it. Keyed by BLOCK id, which is
- *  what Slack's `response_action: errors` addresses. */
+/** A form card's answer, or the per-field errors that refuse it. Keyed by BLOCK id, which is what
+ *  the submitted state itself is keyed by. */
 export interface ElicitFormSubmission {
   answer?: Record<string, string | number | string[]>
   errors?: Record<string, string>
 }
 
 /**
- * Decode one `view_submission`'s raw field state into the typed record a form card answers with,
- * re-derived against the FORM THAT WAS RENDERED rather than trusted from the wire (#1815): each
- * value is read under its field's own block id, given the schema's own type — a real number for
- * `number`/`integer`, a list for a multi-select — and checked by {@link fieldAccepts}. A blank
- * optional input is simply absent; a missing REQUIRED field, a value of the wrong shape, and a
- * value the field does not admit each come back as that field's error, so one bad field refuses
- * the submission instead of being silently dropped. Pure.
+ * Decode one Confirm's raw field state into the typed record a form card answers with, re-derived
+ * against the FORM THAT WAS RENDERED rather than trusted from the wire (#1815): each value is read
+ * under its field's own block id, given the schema's own type — a real number for `number`/
+ * `integer`, a list for a multi-select — and checked by {@link fieldAccepts}. A blank optional
+ * input is simply absent; a missing REQUIRED field, a value of the wrong shape, and a value the
+ * field does not admit each come back as that field's error, so one bad field refuses the whole
+ * answer instead of being silently dropped. Pure.
  */
 export function elicitFormSubmission(
   params: CreateElicitationRequest,
@@ -1675,15 +1634,21 @@ export function elicitFormSubmission(
   return Object.keys(errors).length ? { errors } : { answer }
 }
 
-/** The `view_submission` response that puts those errors back on the modal, and the one that
- *  replaces it when the card it answers is already settled. Slack decodes both; the relay only
- *  carries them, on the opaque `response` slot of its own ack. Pure. */
-export function elicitFormErrorResponse(errors: Record<string, string>): Record<string, unknown> {
-  return { response_action: 'errors', errors }
-}
-
-export function elicitFormClosedResponse(): Record<string, unknown> {
-  return { response_action: 'update', view: buildElicitFormClosedModal() }
+/** What a refused Confirm is told IN THE THREAD, since a message card has no modal to return the
+ *  errors to: each refused field named as the card names it, with the same plain words a reply-
+ *  answered card would use, and the card left live to be answered again. Pure. */
+export function elicitFormRefusalNotice(
+  params: CreateElicitationRequest,
+  form: readonly ElicitTarget[],
+  errors: Readonly<Record<string, string>>
+): string {
+  const parts: string[] = []
+  for (const [blockId, message] of Object.entries(errors)) {
+    const index = elicitFormBlockIndex(blockId)
+    const target = index === null ? undefined : form[index]
+    parts.push(target ? `${elicitFormFieldLabel(params, target)}: ${message}` : message)
+  }
+  return clampTo(`That answer wasn't accepted — the question is still open. ${parts.join(' ')}`, ELICIT_MESSAGE_CAP)
 }
 
 /** Slack's own limit on an interactive element's `value`. A URL longer than this cannot ride a

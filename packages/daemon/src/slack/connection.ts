@@ -19,19 +19,13 @@ import {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
-  ELICIT_FORM_CALLBACK_ID,
-  ELICIT_OPEN_ACTION,
-  ELICIT_SELECT_ACTION,
   PERMISSION_ACTION_PREFIX,
   PERMISSION_UPDATE_ACTION,
   buildPermissionUpdateCard,
   buildStatusModal,
   buildStatusUnavailableModal,
-  decodeElicitFormMetadata,
   decodePermValue,
   elicitFormViewValues,
-  selectedOptionsFromState,
-  type SlackBlockActionsState,
   type SlackViewState,
   type SlackStreamChunk,
   type StatusBarInfo,
@@ -448,27 +442,14 @@ export interface SlackDeps {
    *  (render.buildElicitationCard). `value` is the chosen option's wire value, or null
    *  for the Dismiss button (decline). `actor` gates DM-card clicks (slack-approval-dm.md §6.4). */
   onElicitChoice?: (a: { requestId: string; value: string | null; actor?: InteractionActor }) => void
-  /** Fired when a user taps a multi-select elicitation card's Confirm button. `values` is the
-   *  selection read out of THAT tap's own message state, so it is the state this reader
-   *  confirmed — nothing is tracked between a selection change and the Confirm. */
-  onElicitConfirm?: (a: { requestId: string; values: string[]; actor?: InteractionActor }) => void
-  /** Fired when a reader taps a MULTI-FIELD elicitation card's Answer button. The fields cannot
-   *  sit on the card, so the answer is a modal: the daemon builds it from the card's own schema
-   *  and opens it on `conn` — the very connection, and the very bot token, that posted the card. */
-  onElicitFormOpen?: (a: {
-    requestId: string
-    triggerId: string
-    conn: SlackConnection
-    actor?: InteractionActor
-  }) => void
-  /** Fired when that modal is submitted. Resolves to the `view_submission` response Slack is
-   *  given: undefined closes the modal, a `response_action` payload keeps it open carrying the
-   *  per-field errors the daemon's re-validation produced. */
+  /** Fired when a reader taps an input-block elicitation card's Confirm button. `fields` is
+   *  every input of THAT tap's own message state, keyed by block id, so it is the state this
+   *  reader confirmed — nothing is tracked between a field change and the Confirm. */
   onElicitFormSubmit?: (a: {
     requestId: string
     fields: Record<string, string | string[]>
     actor?: InteractionActor
-  }) => Promise<Record<string, unknown> | undefined>
+  }) => void
   newTraceId: () => string
   log?: Logger
   /** When true, hand Bolt LogLevel.DEBUG so socket-mode internals are visible. */
@@ -506,18 +487,10 @@ type BlockActionArgs = {
     view?: { id?: string; private_metadata?: string }
     actions?: { block_id?: string }[]
     user?: { id?: string; username?: string; name?: string }
-    /** The message's full state, which a Block Kit tap carries — how a Confirm reads the
-     *  selection its own card was showing (`selectedOptionsFromState`). */
-    state?: SlackBlockActionsState
+    /** The message's full state, which a Block Kit tap carries — how a Confirm reads every
+     *  input its own card was showing (`elicitFormViewValues`). */
+    state?: SlackViewState
   }
-}
-
-/** The subset of a `view_submission` payload we read: who submitted it, the modal's opaque
- *  `private_metadata`, and every input's state. `ack` takes the response Slack applies. */
-type ViewSubmissionArgs = {
-  ack: (response?: unknown) => Promise<void>
-  body?: { user?: { id?: string; username?: string; name?: string } }
-  view?: { private_metadata?: string; state?: SlackViewState }
 }
 
 type MessageShortcutArgs = {
@@ -545,7 +518,6 @@ export type AppLike = {
   event: (type: string, handler: (args: { event: unknown }) => Promise<void> | void) => void
   action: (actionId: string | RegExp, handler: (args: BlockActionArgs) => Promise<void> | void) => void
   shortcut: (callbackId: string, handler: (args: MessageShortcutArgs) => Promise<void> | void) => void
-  view: (callbackId: string, handler: (args: ViewSubmissionArgs) => Promise<void> | void) => void
   client: {
     views: {
       open: (a: unknown) => Promise<unknown>
@@ -929,7 +901,6 @@ function sendOnlyApp(botToken: string): AppLike {
     event: () => {},
     action: () => {},
     shortcut: () => {},
-    view: () => {},
     client: client as unknown as AppLike['client'],
     start: async () => {},
     stop: async () => {}
@@ -1243,42 +1214,18 @@ export class SlackConnection implements PlatformConnection {
       await ack()
       if (action.value) this.deps.onElicitChoice?.({ requestId: action.value, value: null, actor: actorOf(body) })
     })
-    // Multi-select card (buildElicitationCard, `multi-enum`): a selection change is acked and
-    // otherwise ignored — nothing is tracked between interactions, so there is nothing to record.
-    this.app.action(new RegExp(`^${ELICIT_SELECT_ACTION}:`), async ({ ack }) => {
-      await ack()
-    })
-    // Confirm reads the selection out of its OWN payload's message state, keyed by the select's
-    // action id: that is the state this reader tapped Confirm on, whoever else touched the card.
+    // Input-block card (buildElicitationFormCard): every field is an `input`, which raises no
+    // interaction of its own, so Confirm is the only tap and it reads the WHOLE state out of its
+    // own payload — the state this reader confirmed, whoever else touched the card meanwhile.
     this.app.action(ELICIT_CONFIRM_ACTION, async ({ ack, action, body }) => {
       await ack()
       if (!action.value) return
-      const values = selectedOptionsFromState(body?.state, `${ELICIT_SELECT_ACTION}:${action.value}`)
-      // No state for the select ⇒ nothing this tap can be said to confirm; the card stays live.
-      if (values) this.deps.onElicitConfirm?.({ requestId: action.value, values, actor: actorOf(body) })
-    })
-    // Multi-field card (buildElicitationFormCard): Answer opens the modal the daemon builds from
-    // the card's own schema. The trigger id is valid ~3s, so the ack goes first and the open is
-    // not awaited — a missed window leaves the card live, and the reader taps Answer again.
-    this.app.action(ELICIT_OPEN_ACTION, async ({ ack, action, body }) => {
-      await ack()
-      const triggerId = body?.trigger_id
-      if (!action.value || !triggerId) return
       const actor = actorOf(body)
-      this.deps.onElicitFormOpen?.({ requestId: action.value, triggerId, conn: this, ...(actor ? { actor } : {}) })
-    })
-    // That modal's submission (buildElicitationFormModal). The response rides THIS ack, so a
-    // refused field returns to the modal with no relay and no second interaction involved.
-    this.app.view(ELICIT_FORM_CALLBACK_ID, async ({ ack, body, view }) => {
-      const meta = view?.private_metadata ? decodeElicitFormMetadata(view.private_metadata) : null
-      if (!meta) return await ack()
-      const actor = actorOf(body)
-      const response = await this.deps.onElicitFormSubmit?.({
-        requestId: meta.requestId,
-        fields: elicitFormViewValues(view?.state),
+      this.deps.onElicitFormSubmit?.({
+        requestId: action.value,
+        fields: elicitFormViewValues(body?.state),
         ...(actor ? { actor } : {})
       })
-      await ack(response)
     })
     log?.debug('slack: app.start → opening Socket Mode WebSocket (wss://…slack.com)…')
     await this.app.start()
@@ -1299,18 +1246,6 @@ export class SlackConnection implements PlatformConnection {
             ? buildStatusModal(data.info, sessionKey, data.link, privateMetadata, data.identity)
             : buildStatusUnavailableModal()
       })
-    } catch (err) {
-      this.deps.log?.debug(`slack: views.open failed: ${(err as Error).message}`)
-    }
-  }
-
-  /** Open one daemon-built modal on this connection's own bot token — the elicitation form's
-   *  view, on either ingress. Web API failures are logged and swallowed for the same reason
-   *  {@link openStatusModal}'s are: a one-shot trigger id cannot be retried, and the card the
-   *  view answers is still there to be tapped again. */
-  async openView(triggerId: string, view: unknown): Promise<void> {
-    try {
-      await this.app.client.views.open({ trigger_id: triggerId, view })
     } catch (err) {
       this.deps.log?.debug(`slack: views.open failed: ${(err as Error).message}`)
     }

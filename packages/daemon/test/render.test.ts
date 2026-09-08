@@ -21,15 +21,17 @@ import {
   elicitForm,
   elicitFormAccepts,
   elicitFormContent,
-  decodeSlackReplyValue,
-  elicitReplyAnswer,
-  elicitReplyExpectation,
-  stripLeadingSelfMention,
+  buildElicitationFormCard,
+  elicitCardShape,
+  elicitFieldExpectation,
+  elicitFormBlockId,
   elicitRequiredProps,
   elicitTarget,
   elicitUrl,
   buildUrlConsentCard,
+  buildUrlConsentResolvedCard,
   SLACK_DM_ELICIT_SURFACE,
+  slackCardViolations,
   SLACK_ELICIT_SURFACE,
   WEBCHAT_ELICIT_SURFACE,
   multiSelectAccepts,
@@ -42,7 +44,6 @@ import {
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
-  ELICIT_SELECT_ACTION,
   type SlackAction,
   type SlackAttributionInfo
 } from '../src/slack/render.js'
@@ -1399,6 +1400,126 @@ describe('permission card', () => {
   })
 })
 
+// Slack refuses a multi-select inside an `actions` block and drops the WHOLE message, so a card
+// that gets this wrong never posts and its request is cancelled with nothing shown in the channel.
+// Our own tests all passed while we shipped exactly that, because they assert the JSON we build
+// and never the rules Slack applies to it. These are those rules, verified against the live API,
+// asserted over EVERY card this file can build — across kinds, sizes and both card shapes.
+describe('every card we build is one Slack would accept', () => {
+  const req = (props: Record<string, unknown>, required?: string[]) =>
+    ({
+      mode: 'form',
+      sessionId: 's1',
+      message: 'Pick',
+      requestedSchema: { type: 'object', properties: props, ...(required ? { required } : {}) }
+    }) as any
+  const enumOf = (n: number) => Array.from({ length: n }, (_, i) => `o${i}`)
+  const pick = (n: number) => ({ type: 'string', enum: enumOf(n) })
+  const many = (n: number) => ({ type: 'array', items: { type: 'string', enum: enumOf(n) } })
+
+  // Every SHAPE and every SIZE that changes the control a field renders as: the checkbox/radio
+  // cap at 10, the select cap at 100, the button row's 24, a companion box, a whole form.
+  const cards: [string, any][] = [
+    ['a lone single-select (buttons)', req({ p: pick(2) })],
+    ['a full button row', req({ p: pick(24) })],
+    ['a lone boolean', req({ b: { type: 'boolean' } })],
+    ['a lone text field', req({ t: { type: 'string', minLength: 2, maxLength: 40 } })],
+    ['a lone patterned text field', req({ t: { type: 'string', pattern: '^[a-z]+$' } })],
+    ['a lone number field', req({ n: { type: 'integer', minimum: 1, maximum: 9 } })],
+    ['a multi-select at the checkbox cap', req({ m: { ...many(10), minItems: 1, maxItems: 3 } })],
+    ['a multi-select past it', req({ m: { ...many(11), maxItems: 3 } })],
+    ['a multi-select at the select cap', req({ m: many(100) })],
+    ['a seeded multi-select', req({ m: { ...many(4), default: ['o1', 'o2'] } })],
+    ['a two-question form', req({ p: pick(2), t: { type: 'string' } }, ['p'])],
+    [
+      'a form of every kind',
+      req({ p: pick(2), m: many(3), t: { type: 'string' }, n: { type: 'number' }, b: { type: 'boolean' } })
+    ],
+    ['a form whose select outgrows radio buttons', req({ p: pick(11), q: pick(2) })],
+    [
+      'a select with its own free-text companion',
+      req({
+        p: pick(3),
+        other: { type: 'string', _meta: { _askUserQuestionCustomAnswer: { isCustomAnswer: true, questionId: 'p' } } }
+      })
+    ],
+    [
+      'a URL consent card',
+      { mode: 'url', sessionId: 's1', message: 'Sign in', elicitationId: 'e1', url: 'https://x.test/' } as any
+    ]
+  ]
+
+  it.each(cards)('accepts %s', (_name, params) => {
+    const built =
+      params.mode === 'url'
+        ? buildUrlConsentCard('elicit-1', params, 'sess-target')
+        : (buildElicitationCard('elicit-1', params, 'sess-target') ??
+          buildElicitationFormCard('elicit-1', params, elicitForm(params, SLACK_ELICIT_SURFACE) ?? [], 'sess-target'))
+    expect(built).not.toBeNull()
+    expect(slackCardViolations(built!)).toEqual([])
+    // The routing block_id is on the actions block, and every other block_id is distinct from it.
+    const actions = (built as any[]).find((b: any) => b.type === 'actions')
+    expect(actions.block_id).toBe('sess-target')
+  })
+
+  it('holds for the settled cards, the permission card and the DM card too', () => {
+    const settled = [
+      buildElicitationResolvedCard(req({ p: pick(2) }), ':white_check_mark: o0'),
+      buildUrlConsentResolvedCard(
+        { mode: 'url', sessionId: 's1', message: 'Sign in', elicitationId: 'e1', url: 'https://x.test/' } as any,
+        'Opened'
+      ),
+      buildPermissionCard(
+        'perm-1',
+        {
+          sessionId: 's1',
+          toolCall: { toolCallId: 'tc1', title: 'Write perm-test.txt' },
+          options: [{ optionId: 'a', name: 'Allow Once', kind: 'allow_once' }]
+        } as any,
+        'sess-target'
+      ),
+      buildElicitationCard('elicit-1', req({ b: { type: 'boolean' } }), 'sess-target', SLACK_DM_ELICIT_SURFACE)!
+    ]
+    for (const card of settled) expect(slackCardViolations(card)).toEqual([])
+  })
+
+  // The guard has to FAIL on the thing that shipped, or it is decoration.
+  it('names the rules a hand-written card would break', () => {
+    expect(
+      slackCardViolations([
+        { type: 'actions', block_id: 'a', elements: [{ type: 'multi_static_select', options: [] }] },
+        { type: 'actions', block_id: 'a', elements: [{ type: 'plain_text_input' }, { type: 'number_input' }] },
+        { type: 'input', block_id: 'b' },
+        { type: 'input', block_id: 'c', element: { type: 'button' } },
+        {
+          type: 'input',
+          block_id: 'd',
+          element: { type: 'checkboxes', options: enumOf(11).map((value) => ({ value })), max_selected_items: 2 }
+        },
+        {
+          type: 'input',
+          block_id: 'e',
+          element: { type: 'radio_buttons', options: enumOf(11).map((value) => ({ value })) }
+        },
+        { type: 'input', block_id: 'f', element: { type: 'static_select', options: [{ value: 'x'.repeat(76) }] } },
+        { type: 'actions', block_id: 'g', elements: enumOf(26).map((value) => ({ type: 'button', value })) }
+      ])
+    ).toEqual([
+      'blocks/0: multi_static_select is not allowed in a actions block',
+      'blocks/1: duplicate block_id "a"',
+      'blocks/1: plain_text_input is not allowed in a actions block',
+      'blocks/1: number_input is not allowed in a actions block',
+      'blocks/2: input block has no element',
+      'blocks/3: button is not allowed in a input block',
+      'blocks/4/checkboxes: 11 options, past the 10 this element holds',
+      'blocks/4/checkboxes: max_selected_items is not a property of this element',
+      'blocks/5/radio_buttons: 11 options, past the 10 this element holds',
+      'blocks/6/static_select: an option value is 76 characters, past 75',
+      'blocks/7: 26 elements in an actions block, past 25'
+    ])
+  })
+})
+
 describe('elicitation card', () => {
   const form = (properties: Record<string, unknown>, message = 'Pick a language'): CreateElicitationRequest =>
     ({ mode: 'form', sessionId: 's1', message, requestedSchema: { type: 'object', properties } }) as any
@@ -1677,9 +1798,9 @@ describe('elicitation card', () => {
     })
   })
 
-  // #1794 Slack column: a `multi_static_select` CAN express "pick several", but it never submits
-  // on its own — so the card is a select plus its own Confirm, and Dismiss as always.
-  it('cards a multi-select as a select plus Confirm', () => {
+  // #1794 Slack column: a multi-select CAN express "pick several", but it never submits on its
+  // own — so the card is an input block plus its own Confirm, and Dismiss as always.
+  it('cards a multi-select as an input block plus Confirm', () => {
     const req = form({
       colors: {
         type: 'array',
@@ -1696,19 +1817,24 @@ describe('elicitation card', () => {
     })
     expect(elicitTarget(req, SLACK_ELICIT_SURFACE)?.kind).toBe('multi-enum')
     const blocks = buildElicitationCard('elicit-1', req, 'shared-session-target') as any[]
-    // The bounds are on the card, so a refused Confirm is not the reader's first news of them.
-    expect(blocks[1]).toEqual({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Select 1 to 2.' }] })
+    expect(slackCardViolations(blocks)).toEqual([])
+    // The control is an INPUT block of its own — Slack refuses a multi-select inside `actions`
+    // and drops the WHOLE message — and the buttons keep the actions block the relay routes on.
+    expect(blocks.map((b: any) => b.type)).toEqual(['section', 'input', 'actions'])
     expect(blocks[2].block_id).toBe('shared-session-target')
-    const [select, confirm, dismiss] = blocks[2].elements
-    expect(select.type).toBe('multi_static_select')
-    // The request rides the select's OWN action_id: deselecting everything is a change too,
-    // and a card named only by its selected options could not report one.
-    expect(select.action_id).toBe(`${ELICIT_SELECT_ACTION}:elicit-1`)
+    expect(blocks[1].block_id).toBe(elicitFormBlockId(0))
+    // Two options fit a checkbox list, which shows every one of them without a second tap. It has
+    // NO `max_selected_items` (Slack answers `invalid additional property`), so the bounds are on
+    // the block's hint and enforced when the answer comes back — never the reader's first news.
+    const select = blocks[1].element
+    const [confirm, dismiss] = blocks[2].elements
+    expect(select.type).toBe('checkboxes')
+    expect(select.max_selected_items).toBeUndefined()
+    expect(blocks[1].hint.text).toBe('Select 1 to 2.')
     expect(select.options.map((o: any) => [o.text.text, o.value])).toEqual([
       ['Red', '#FF0000'],
       ['Green', '#00FF00']
     ])
-    expect(select.max_selected_items).toBe(2)
     // Seeded from the schema's `default`, so an untouched Confirm submits what the card shows.
     expect(select.initial_options).toEqual([
       { text: { type: 'plain_text', text: 'Green', emoji: true }, value: '#00FF00' }
@@ -1720,9 +1846,9 @@ describe('elicitation card', () => {
   it('names an unbounded multi-select no bounds and seeds it nothing', () => {
     const req = form({ colors: { type: 'array', items: { type: 'string', enum: ['Red', 'Green'] } } })
     const blocks = buildElicitationCard('elicit-1', req) as any[]
-    expect(blocks).toHaveLength(2) // no hint block: there is nothing to say
-    const select = blocks[1].elements[0]
-    expect(select.max_selected_items).toBeUndefined()
+    expect(blocks).toHaveLength(3) // section + the control's input block + the buttons
+    expect(blocks[1].hint).toBeUndefined() // no bounds to say
+    const select = blocks[1].element
     expect(select.initial_options).toBeUndefined()
   })
 
@@ -1732,7 +1858,7 @@ describe('elicitation card', () => {
     const items = (n: number) => ({ type: 'string', enum: Array.from({ length: n }, (_, i) => `o${i}`) })
     const at = form({ colors: { type: 'array', items: items(100) } })
     expect(elicitTarget(at, SLACK_ELICIT_SURFACE)?.options).toHaveLength(100)
-    expect((buildElicitationCard('elicit-100', at) as any[])[1].elements[0].options).toHaveLength(100)
+    expect((buildElicitationCard('elicit-100', at) as any[])[1].element.options).toHaveLength(100)
     const over = form({ colors: { type: 'array', items: items(101) } })
     expect(elicitTarget(over, SLACK_ELICIT_SURFACE)).toBeNull()
     expect(buildElicitationCard('elicit-101', over)).toBeNull()
@@ -1769,32 +1895,20 @@ describe('elicitation card', () => {
     expect(elicitTarget(req, SLACK_DM_ELICIT_SURFACE)?.propName).toBe('ok')
   })
 
-  // ── a single text / number field, answered by a thread reply (issue #1794, Slack column) ──
-  // Slack's own way to type something is to send a message, so the card carries the question,
-  // what is expected, whom it waits for, and Dismiss — and nothing to type into.
+  // ── a single text / number field: a control of its own, and one Confirm ────────────────────
+  // A button submits the instant it is tapped, so it cannot answer a question that has to be
+  // typed into first — a typed field gets an `input` block and the card's one Confirm.
 
-  it('cards a text field as a question with no control but Dismiss', () => {
+  it('cards a text field as an input block with its bounds, plus Confirm and Dismiss', () => {
     const req = form({ note: { type: 'string', minLength: 3, maxLength: 40 } }, 'What should the release note say?')
-    const blocks = buildElicitationCard(
-      'elicit-1',
-      req,
-      'shared-session-target',
-      SLACK_ELICIT_SURFACE,
-      '<@U1>'
-    ) as any[]
+    const blocks = buildElicitationCard('elicit-1', req, 'shared-session-target') as any[]
+    expect(slackCardViolations(blocks)).toEqual([])
     expect(blocks[0].text.text).toBe(':speech_balloon: What should the release note say?')
-    expect(blocks[1]).toEqual({
-      type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: 'Reply in this thread with some text, 3 to 40 characters long. Waiting for <@U1>.'
-        }
-      ]
-    })
+    expect(blocks.map((b: any) => b.type)).toEqual(['section', 'input', 'actions'])
+    expect(blocks[1].element).toMatchObject({ type: 'plain_text_input', min_length: 3, max_length: 40 })
     expect(blocks[2].block_id).toBe('shared-session-target')
-    const [dismiss, ...rest] = blocks[2].elements
-    expect(rest).toEqual([]) // nothing to tap but the refusal
+    const [confirm, dismiss] = blocks[2].elements
+    expect([confirm.action_id, confirm.text.text]).toEqual([ELICIT_CONFIRM_ACTION, 'Confirm'])
     expect([dismiss.action_id, dismiss.value, dismiss.text.text]).toEqual([
       ELICIT_DISMISS_ACTION,
       'elicit-1',
@@ -1802,16 +1916,30 @@ describe('elicitation card', () => {
     ])
   })
 
-  it('says who may answer when the turn named no requester', () => {
+  it('cards a number field as a number input carrying the schema’s own bounds', () => {
     const blocks = buildElicitationCard('elicit-1', form({ n: { type: 'integer', minimum: 1, maximum: 5 } })) as any[]
-    expect(blocks[1].elements[0].text).toBe(
-      'Reply in this thread with a whole number from 1 to 5. Anyone in this thread can answer.'
-    )
+    expect(blocks[1].element).toMatchObject({
+      type: 'number_input',
+      is_decimal_allowed: false,
+      min_value: '1',
+      max_value: '5'
+    })
   })
 
-  it('says what is expected in plain words, never in schema vocabulary', () => {
+  // A card is a button row exactly when ONE TAP can answer it: a lone single-select or boolean.
+  it('gives buttons only to what a single tap answers', () => {
+    const shape = (props: Record<string, unknown>) => elicitCardShape(elicitForm(form(props), SLACK_ELICIT_SURFACE)!)
+    expect(shape({ p: { type: 'string', enum: ['a', 'b'] } })).toBe('buttons')
+    expect(shape({ b: { type: 'boolean' } })).toBe('buttons')
+    expect(shape({ t: { type: 'string' } })).toBe('inputs')
+    expect(shape({ n: { type: 'number' } })).toBe('inputs')
+    expect(shape({ m: { type: 'array', items: { type: 'string', enum: ['a'] } } })).toBe('inputs')
+    expect(shape({ p: { type: 'string', enum: ['a'] }, t: { type: 'string' } })).toBe('inputs')
+  })
+
+  it('says what a field expects in plain words, never in schema vocabulary', () => {
     const expectation = (prop: Record<string, unknown>) =>
-      elicitReplyExpectation(elicitTarget(form({ f: prop }), SLACK_ELICIT_SURFACE)!)
+      elicitFieldExpectation(elicitTarget(form({ f: prop }), SLACK_ELICIT_SURFACE)!)
     expect(expectation({ type: 'number' })).toBe('a number')
     expect(expectation({ type: 'integer' })).toBe('a whole number')
     expect(expectation({ type: 'number', minimum: 0.5 })).toBe('a number, 0.5 or more')
@@ -1824,67 +1952,6 @@ describe('elicitation card', () => {
     expect(expectation({ type: 'string', pattern: '^[a-z]+$' })).toBe(
       'some text, in the exact format the question asks for'
     )
-  })
-
-  it('strips one leading mention of the asking bot, and nothing else', () => {
-    // `@bot 42` is 42: addressing the asker is chrome, not value. Both mention spellings, and
-    // the punctuation a reader puts after an address.
-    expect(stripLeadingSelfMention('<@UBOT> 42', 'UBOT')).toBe('42')
-    expect(stripLeadingSelfMention('<@UBOT|acme-bot> 42', 'UBOT')).toBe('42')
-    expect(stripLeadingSelfMention('  <@UBOT>:  42', 'UBOT')).toBe('42')
-    expect(stripLeadingSelfMention('<@UBOT>, add-retries', 'UBOT')).toBe('add-retries')
-    // Anyone else's mention, a second one, and any position but the front are all content.
-    expect(stripLeadingSelfMention('<@UOTHER> 42', 'UBOT')).toBe('<@UOTHER> 42')
-    expect(stripLeadingSelfMention('<@UBOT> <@UBOT> 42', 'UBOT')).toBe('<@UBOT> 42')
-    expect(stripLeadingSelfMention('42 <@UBOT>', 'UBOT')).toBe('42 <@UBOT>')
-    expect(stripLeadingSelfMention('ping <@UBOT> 42', 'UBOT')).toBe('ping <@UBOT> 42')
-    // An identity not resolved yet strips nothing rather than guessing at the token.
-    expect(stripLeadingSelfMention('<@UBOT> 42', '')).toBe('<@UBOT> 42')
-    expect(stripLeadingSelfMention('<@UBOT> 42', undefined)).toBe('<@UBOT> 42')
-  })
-
-  it('decodes a reply Slack handed back as link markup, and only when it is one link', () => {
-    // Slack rewrites what the reader typed on the way back out, so `uri`/`email` would refuse a
-    // reader following the card's own instruction.
-    expect(decodeSlackReplyValue('<https://example.com/>')).toBe('https://example.com/')
-    // The destination is the part BEFORE the pipe; the label is display text Slack added.
-    expect(decodeSlackReplyValue('<https://example.com/|the docs page>')).toBe('https://example.com/')
-    expect(decodeSlackReplyValue('<mailto:a@b.co|a@b.co>')).toBe('a@b.co')
-    expect(decodeSlackReplyValue('<mailto:a@b.co>')).toBe('a@b.co')
-    // One link and nothing else. Prose with a link inside is returned whole: choosing which PART
-    // of a sentence is the value is a guess, not a decode.
-    expect(decodeSlackReplyValue('try <https://example.com/> first')).toBe('try <https://example.com/> first')
-    expect(decodeSlackReplyValue('<https://a/> <https://b/>')).toBe('<https://a/> <https://b/>')
-    // Slack escapes exactly these three everywhere in message text, so undoing them is lossless
-    // — and a query string is where a silently wrong value would otherwise have got through.
-    expect(decodeSlackReplyValue('<https://example.com/?a=1&amp;b=2>')).toBe('https://example.com/?a=1&b=2')
-    expect(decodeSlackReplyValue('2 &lt; 3 &amp;&amp; 3 &gt; 2')).toBe('2 < 3 && 3 > 2')
-    // An ordinary answer is itself, trimmed.
-    expect(decodeSlackReplyValue('  add-retries \n')).toBe('add-retries')
-  })
-
-  it('re-derives a reply against the card, and answers a numeric field with a real number', () => {
-    const number = elicitTarget(form({ n: { type: 'integer', minimum: 1, maximum: 5 } }), SLACK_ELICIT_SURFACE)!
-    expect(elicitReplyAnswer(number, ' 4 ')).toBe(4)
-    expect(elicitReplyAnswer(number, '4')).not.toBe('4') // a real number, never the wire string
-    expect(elicitReplyAnswer(number, '9')).toBeNull() // outside the bounds the card showed
-    expect(elicitReplyAnswer(number, '2.5')).toBeNull() // not whole
-    expect(elicitReplyAnswer(number, 'four')).toBeNull()
-    // Shapes `Number()` reads as numbers that no reader typed as one.
-    expect(elicitReplyAnswer(number, '0x3')).toBeNull()
-    expect(elicitReplyAnswer(number, '')).toBeNull()
-    expect(elicitReplyAnswer(number, 'Infinity')).toBeNull()
-    const text = elicitTarget(
-      form({ t: { type: 'string', minLength: 3, maxLength: 6, pattern: '^[a-z]+$' } }),
-      SLACK_ELICIT_SURFACE
-    )!
-    expect(elicitReplyAnswer(text, ' abcd \n')).toBe('abcd')
-    expect(elicitReplyAnswer(text, 'ab')).toBeNull()
-    expect(elicitReplyAnswer(text, 'abcdefg')).toBeNull()
-    expect(elicitReplyAnswer(text, 'ABCD')).toBeNull()
-    // A pick is never answered by typing at it: that would let an unoffered value through.
-    const pick = elicitTarget(form({ p: { type: 'string', enum: ['main'] } }), SLACK_ELICIT_SURFACE)!
-    expect(elicitReplyAnswer(pick, 'main')).toBeNull()
   })
 
   it('declines an array the card cannot honestly answer', () => {

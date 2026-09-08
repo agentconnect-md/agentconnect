@@ -601,25 +601,19 @@ export const SLACK_STATUS_ACTION = {
 export const PERMISSION_ACTION_PREFIX = 'ac_perm'
 export const ELICIT_ACTION_PREFIX = 'ac_elicit'
 export const ELICIT_DISMISS_ACTION = 'ac_elicit_dismiss'
-/** A multi-select elicitation card's own two ids: the `multi_static_select`, which never submits
- *  on its own, and the Confirm button that does. The selection is not tracked between the two —
- *  Confirm reads it out of its OWN payload's message state, so what it submits is the state that
- *  card was in when this reader tapped it. The select's action_id carries the request id, which
- *  is the key {@link selectedOptionsFromState} finds that state under. */
-export const ELICIT_SELECT_ACTION = 'ac_elicit_select'
+/** The Confirm button on an elicitation card whose fields are `input` blocks — a select, a
+ *  checkbox list or a typed box never submits on its own. Nothing is tracked between the two:
+ *  Confirm reads every field out of its OWN payload's message state, so what it submits is the
+ *  state that card was in when this reader tapped it. Its `value` is the bare request id. */
 export const ELICIT_CONFIRM_ACTION = 'ac_elicit_confirm'
 
-/** A MULTI-FIELD elicitation card's own three ids. An `actions` block holds no inputs, so the
- *  in-channel card cannot carry the fields at all: it carries an Answer button whose tap opens a
- *  modal ({@link ELICIT_FORM_CALLBACK_ID}) whose `input` blocks are the fields. One input per
- *  block, because Slack keys both the submitted state AND `response_action: errors` by BLOCK id. */
-export const ELICIT_OPEN_ACTION = 'ac_elicit_open'
-export const ELICIT_FORM_CALLBACK_ID = 'ac_elicit_form'
+/** The `action_id` every one of those `input` elements carries. One input per block, because
+ *  Slack keys the submitted state by BLOCK id — {@link elicitFormBlockId} is that key. */
 export const ELICIT_FORM_INPUT_ACTION = 'ac_elicit_input'
 
 const ELICIT_FORM_BLOCK_PREFIX = 'ac_elicit_f'
 
-/** The block id of the modal's Nth field. The INDEX rather than the property name: a property
+/** The block id of the card's Nth field. The INDEX rather than the property name: a property
  *  name can outrun Slack's own id length, and the daemon re-derives the field list from the
  *  card's params anyway (#1815), so an index is all the wire has to carry. */
 export function elicitFormBlockId(index: number): string {
@@ -633,9 +627,10 @@ export function elicitFormBlockIndex(blockId: string): number | null {
   return /^\d+$/.test(digits) ? Number(digits) : null
 }
 
-/** One `view_submission` payload's state — every input of the modal, keyed by block then action
- *  id. Widened past {@link SlackBlockActionsState} because a form's inputs answer with a typed
- *  `value` or a single `selected_option` as well as a list. */
+/** One interactive payload's state — every `input` block of the message, keyed by block then
+ *  action id. Slack has carried the full message state on `block_actions` since 2020-09-01, so a
+ *  Confirm tap arrives with the same shape a view submission does: a typed `value`, one
+ *  `selected_option`, or a list. */
 export interface SlackViewState {
   values?:
     | Record<
@@ -654,11 +649,11 @@ export interface SlackViewState {
     | undefined
 }
 
-/** What the reader typed and picked in a form modal, keyed by the field's BLOCK id so a
- *  per-field error can be returned under the very same key. A blank input and a cleared select
- *  are OMITTED rather than reported as empty: an untouched optional field is absent from the
- *  answer, which is what the schema means by optional, and the daemon's own accept check is
- *  what decides whether a required one may be missing. Pure. */
+/** What the reader typed and picked on a form card, keyed by the field's BLOCK id so a per-field
+ *  verdict can name the very same key. A blank input and a cleared select are OMITTED rather than
+ *  reported as empty: an untouched optional field is absent from the answer, which is what the
+ *  schema means by optional, and the daemon's own accept check is what decides whether a required
+ *  one may be missing. Pure. */
 export function elicitFormViewValues(state: SlackViewState | undefined): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {}
   for (const [blockId, block] of Object.entries(state?.values ?? {})) {
@@ -675,53 +670,6 @@ export function elicitFormViewValues(state: SlackViewState | undefined): Record<
     else if (typeof input.value === 'string' && input.value.length) out[blockId] = input.value
   }
   return out
-}
-
-/** A form modal's `private_metadata`: which card it answers, plus the opaque session target the
- *  relay routes its submission on (absent on the direct Socket Mode path, which needs no
- *  routing hint — the connection that received the submission is the one that posted the card). */
-export interface SlackElicitFormMetadata {
-  requestId: string
-  target?: string
-}
-
-export function encodeElicitFormMetadata(meta: SlackElicitFormMetadata): string {
-  return JSON.stringify({ v: 1, r: meta.requestId, ...(meta.target ? { t: meta.target } : {}) })
-}
-
-export function decodeElicitFormMetadata(raw: string): SlackElicitFormMetadata | null {
-  try {
-    const parsed = JSON.parse(raw) as { v?: unknown; r?: unknown; t?: unknown }
-    if (parsed.v !== 1 || typeof parsed.r !== 'string' || !parsed.r) return null
-    if (parsed.t !== undefined && typeof parsed.t !== 'string') return null
-    return { requestId: parsed.r, ...(typeof parsed.t === 'string' && parsed.t ? { target: parsed.t } : {}) }
-  } catch {
-    return null
-  }
-}
-
-/** One `block_actions` payload's message state — every stateful element of the message the tap
- *  came from, keyed by block then action id. Slack has carried the full state on `block_actions`
- *  (not just view submissions) since 2020-09-01. */
-export interface SlackBlockActionsState {
-  values?: Record<string, Record<string, { selected_options?: { value?: unknown }[] } | undefined> | undefined>
-}
-
-/** The selection a `multi_static_select` held when this interaction was raised, read from the
- *  payload's own message state — the snapshot a Confirm tap submits, and the reason no selection
- *  has to be tracked between interactions. Searched by ACTION id across every block, so it does
- *  not depend on which block Slack grouped the select into, nor on the card naming that block.
- *  Null ⇒ this payload carries no state for that select, which is NOT an empty selection: the
- *  caller drops the interaction rather than confirm a selection it cannot see. An empty array is
- *  a real answer (the reader cleared the select), which is why the two are distinct. */
-export function selectedOptionsFromState(state: SlackBlockActionsState | undefined, actionId: string): string[] | null {
-  for (const block of Object.values(state?.values ?? {})) {
-    const element = block?.[actionId]
-    if (!element?.selected_options) continue
-    const values = element.selected_options.map((o) => o.value)
-    return values.every((v) => typeof v === 'string') ? (values as string[]) : null
-  }
-  return null
 }
 
 /** Encode/decode the choice carried by permission and elicitation buttons. The

@@ -23,7 +23,6 @@ import { RelayIngressManager, type RelayIngressManagerDeps } from './relay-ingre
 // the identity, core owns the table). This suite was the last importer of the
 // core re-export shim that outlived the #571 route migration (audit F7).
 import {
-  forwardElicitFormSubmit,
   forwardSessionAction,
   forwardSessionShortcut,
   forwardSessionStop,
@@ -238,50 +237,6 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     })
     expect(second.msgId).toBe(first.msgId)
     expect(first.msgId).toMatch(/^slack-action:[a-f0-9]{64}$/)
-  })
-
-  // The one interaction forward that is AWAITED: per-field errors exist only as a
-  // `view_submission` response, and the daemon owns the schema they come from. The relay carries
-  // that verdict — it never renders, validates or holds any part of the modal.
-  it('returns the daemon’s form verdict, and an empty body when it cannot be asked', async () => {
-    const response = { response_action: 'errors', errors: { ac_elicit_f0: 'nope' } }
-    const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({
-      msgId: msg.msgId,
-      accepted: true,
-      response
-    }))
-    const daemon = { sendMsg } as unknown as RelayDaemonConnection
-    const manager = new RelayIngressManager(
-      deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
-    )
-    const internals = internalsOf(manager)
-    internals.router.upsert(assignment())
-
-    const submit = action({
-      interactionId: JSON.stringify(['ac_elicit_form', 'trigger-submit']),
-      kind: 'elicitation-submit',
-      requestId: 'elicit-5',
-      fields: { ac_elicit_f0: 'main' }
-    } as never)
-    expect(await forwardElicitFormSubmit(internals.ingressHost, BOT_ID, submit as never)).toEqual(response)
-    expect(sendMsg.mock.calls[0]![0]).toMatchObject({
-      source: 'platform_action',
-      platformId: 'slack',
-      agentId: AGENT_ID,
-      integrationId: INTEGRATION_ID,
-      payload: { kind: 'elicitation-submit', requestId: 'elicit-5', fields: { ac_elicit_f0: 'main' } }
-    })
-
-    // A refusal, an ack with nothing to say, and a throw all close the modal and leave the card
-    // live — the same bounded loss every other forward on this seam declares.
-    sendMsg.mockImplementation(async (msg) => ({ msgId: msg.msgId, accepted: false, reason: 'not_found' }))
-    expect(await forwardElicitFormSubmit(internals.ingressHost, BOT_ID, submit as never)).toBe('')
-    sendMsg.mockImplementation(async (msg) => ({ msgId: msg.msgId, accepted: true }))
-    expect(await forwardElicitFormSubmit(internals.ingressHost, BOT_ID, submit as never)).toBe('')
-    sendMsg.mockImplementation(async () => {
-      throw new Error('socket gone')
-    })
-    expect(await forwardElicitFormSubmit(internals.ingressHost, BOT_ID, submit as never)).toBe('')
   })
 
   it('forwards a message shortcut through the current thread affinity', () => {

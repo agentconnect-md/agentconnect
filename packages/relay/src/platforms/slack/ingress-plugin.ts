@@ -22,7 +22,6 @@ import { createHash } from 'node:crypto'
 import type { RdMsgPlatformAction } from '@agentconnect.md/protocol'
 import {
   SlackHttpIngest,
-  type HttpSlackElicitFormSubmit,
   type HttpSlackSessionAction,
   type HttpSlackSessionShortcut,
   type HttpSlackSessionStop,
@@ -63,19 +62,9 @@ export function httpSlackActionMsgId(botId: string, action: HttpSlackSessionActi
     case 'elicitation-choice':
       value = `${action.requestId}:${action.value ?? ''}`
       break
-    // The confirmed selection is part of the identity: two Confirms on one card are two answers,
+    // The confirmed fields are part of the identity: two Confirms on one card are two answers,
     // and a redelivery of either must dedup against itself rather than against the other.
     case 'elicitation-confirm':
-      value = `${action.requestId}:${JSON.stringify(action.values)}`
-      break
-    // The one-shot triggerId is deliberately omitted, as open-config's is: the interactionId
-    // already identifies the click, and trigger material must not reach a log or a dedup key.
-    case 'elicitation-open':
-      value = action.requestId
-      break
-    // The submitted fields are part of the identity: a corrected resubmission is a second
-    // answer, and a redelivery of either must dedup against itself rather than the other.
-    case 'elicitation-submit':
       value = `${action.requestId}:${JSON.stringify(action.fields)}`
       break
     case 'open-config':
@@ -159,46 +148,6 @@ export function forwardSessionAction(host: RelayIngressHost, botId: string, acti
         host.log.warn(`relay-ingress(${botId}): daemon rejected session action (${ack.reason ?? 'unknown'})`)
     })
     .catch((err) => host.log.warn(`relay-ingress(${botId}): session action forward failed: ${(err as Error).message}`))
-}
-
-/** Forward a submitted elicitation-form modal and RETURN the daemon's verdict, so the relay can
- *  put it on Slack's own 200. This is the one interaction forward that is awaited: the per-field
- *  errors exist only as a `view_submission` response, and the daemon owns the schema they come
- *  from. An unroutable or unreachable daemon answers '' — the modal closes and the card stays
- *  live, which is the same bounded loss every other forward on this seam declares. */
-export async function forwardElicitFormSubmit(
-  host: RelayIngressHost,
-  botId: string,
-  submit: HttpSlackElicitFormSubmit
-): Promise<unknown> {
-  const { target, interactionId: _interactionId, userId, ...payload } = submit
-  const route = host.directory.targetForAgent(botId, target.agentId, target.integrationId)
-  if (!route) {
-    host.log.warn(`relay-ingress(${botId}): ignored stale elicitation submission for agent ${target.agentId}`)
-    return ''
-  }
-  const rd: RdMsgPlatformAction = {
-    source: 'platform_action',
-    platformId: 'slack',
-    agentId: route.agentId,
-    integrationId: route.integrationId,
-    sessionKey: target.sessionKey,
-    msgId: httpSlackActionMsgId(botId, submit),
-    botId,
-    ...(userId ? { userId } : {}),
-    payload
-  }
-  try {
-    const ack = await host.forwardAction(rd, route)
-    if (!ack.accepted) {
-      host.log.warn(`relay-ingress(${botId}): daemon rejected the elicitation submission (${ack.reason ?? 'unknown'})`)
-      return ''
-    }
-    return ack.response ?? ''
-  } catch (err) {
-    host.log.warn(`relay-ingress(${botId}): elicitation submission forward failed: ${(err as Error).message}`)
-    return ''
-  }
 }
 
 /** Resolve a message shortcut from live conversation ownership (the core-owned
@@ -320,7 +269,6 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         onSelectThreadAgent: (channelId, threadTs, agentId) =>
           host.selectThreadAgent(botId, channelId, threadTs, agentId),
         onSessionAction: (action) => forwardSessionAction(host, botId, action),
-        onElicitFormSubmit: (submit) => forwardElicitFormSubmit(host, botId, submit),
         onSessionShortcut: (shortcut) => forwardSessionShortcut(host, botId, shortcut),
         onSessionStopped: (stop) => forwardSessionStop(host, botId, stop),
         onBotRevoked: (reason, eventAtMs) => {

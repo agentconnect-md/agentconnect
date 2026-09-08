@@ -1599,9 +1599,7 @@ export class Daemon {
       statusInfoForKey: (key) => this.statusInfoForKey(key),
       handlePermissionChoice: (a) => this.permissions.handlePermissionChoice(a),
       handleElicitChoice: (a) => this.permissions.handleElicitChoice(a),
-      handleElicitConfirm: (a) => void this.permissions.confirmElicitSelection(a),
-      handleElicitFormOpen: (a) => void this.permissions.openElicitFormModal(a),
-      handleElicitFormSubmit: (a) => this.permissions.submitElicitForm(a),
+      handleElicitFormSubmit: (a) => void this.permissions.submitElicitForm(a),
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
       handleTelegramCallback: (cb, conn) => this.commands.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
@@ -6423,11 +6421,6 @@ export class Daemon {
       return { kind: 'rejected', reason: 'suppressed' }
     }
 
-    // A live `text`/`number` elicitation card is answered by a reply in its own thread, and while
-    // it waits the ACP prompt is still blocked — so the reply is intercepted as the answer here,
-    // before routing could dispatch or queue it as a turn of its own (#1794's Slack column).
-    if (await this.permissions.answerElicitReply(msg)) return { kind: 'rejected', reason: 'suppressed' }
-
     const threadOwner = await this.prefetchedThreadOwner(msg)
     const result = routeRules(msg, routingRules, () => threadOwner)
     // Participant delivery is independent of whether the single-target ladder found an
@@ -7058,9 +7051,6 @@ export class Daemon {
       await this.commands.handleCommand(command, normalized, target)
       return { msgId: msg.msgId, accepted: true }
     }
-    // The same elicitation-reply interception the direct path applies, at the same point in the
-    // ladder: both Slack ingresses behave identically for every other elicitation verb too.
-    if (await this.permissions.answerElicitReply(normalized)) return { msgId: msg.msgId, accepted: true }
     // HTTP-bot ingress bypasses onInbound(), so repeat its `!stop` thread-mute gate:
     // while muted, implicit routing (thread affinity / keyword / auto / dm) never
     // dispatches — only an explicit @mention does, and it clears the mute. Muted traffic
@@ -7656,28 +7646,11 @@ export class Daemon {
     } else if (payload.kind === 'elicitation-choice') {
       await this.permissions.handleElicitChoice({ requestId: payload.requestId, value: payload.value, actor })
     } else if (payload.kind === 'elicitation-confirm') {
-      await this.permissions.confirmElicitSelection({
-        requestId: payload.requestId,
-        values: payload.values,
-        actor
-      })
-    } else if (payload.kind === 'elicitation-open') {
-      // The trigger id is one-shot and short-lived: open on this daemon's own bot token now,
-      // exactly as open-config above does, and let rd/ack be the relay receipt it always was.
-      void this.permissions.openElicitFormModal({
-        requestId: payload.requestId,
-        triggerId: payload.triggerId,
-        conn
-      })
-    } else if (payload.kind === 'elicitation-submit') {
-      // The ONE Slack action whose verdict Slack itself is waiting for: the per-field errors ride
-      // back on the ack's opaque `response`, which the relay surfaces verbatim on its 200.
-      const response = await this.permissions.submitElicitForm({
+      await this.permissions.submitElicitForm({
         requestId: payload.requestId,
         fields: payload.fields,
         ...(actor ? { actor } : {})
       })
-      return { msgId: msg.msgId, accepted: true, ...(response ? { response } : {}) }
     } else {
       await this.commands.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
     }
