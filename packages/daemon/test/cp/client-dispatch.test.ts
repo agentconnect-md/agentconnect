@@ -1140,6 +1140,19 @@ describe('CpClient memory/store (D→C REQ)', () => {
     await expect(pending).rejects.toMatchObject({ code: 'SCOPE_DENIED', retryable: false })
   })
 
+  it('sends an op exactly once — a late reply must never append a chunk twice — and fails on one deadline', async () => {
+    const { client, t, clock } = await readyClient({}, ['agent-memory-store-v1'])
+    const stores = () => t.sent.filter((raw) => JSON.parse(raw).type === 'memory/store')
+    const pending = client.memoryStore({ agentId: CRON_AGENT_ID, op })
+    await tick()
+    // Well past the default ack timeout and its retransmissions: still the one frame.
+    clock.advance(29_000)
+    expect(stores()).toHaveLength(1)
+    clock.advance(1_000)
+    await expect(pending).rejects.toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(stores()).toHaveLength(1)
+  })
+
   it('fails fast off the legal states instead of queueing on a dead socket', async () => {
     const { client, t } = await readyClient({}, ['agent-memory-store-v1'])
     expect(client.connected()).toBe(true)

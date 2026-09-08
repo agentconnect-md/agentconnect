@@ -107,6 +107,8 @@ import type { Logger } from '../log.js'
 export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
 
 const ACK_TIMEOUT_MS = 5000
+/** One deadline for a `memory/store` op, the shim carrier's per-op timeout; there is never a second send. */
+const MEMORY_STORE_TIMEOUT_MS = 30_000
 const BACKOFF_BASE_MS = 1000
 const BACKOFF_CAP_MS = 30000
 // No-split invariant `T_reassign > T_fence`. The CP frees a lease at `renewedAt + leaseMs` and tells the member
@@ -1131,7 +1133,13 @@ export class CpClient {
     if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
       throw new WireError('INTERNAL', 'control plane does not serve the memory store', false)
     }
-    const rep = await this.request('memory/store', payload)
+    // One send, never a retransmit: `memory-append` onto a staged file is not idempotent, and the CP does not
+    // deduplicate request ids, so a reply that is merely late must not become a chunk written twice.
+    const frame = this.scopedFrame('memory/store', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: MEMORY_STORE_TIMEOUT_MS
+    })
     if (rep.type !== 'memory/store/ok') {
       throw new WireError('INTERNAL', `expected memory/store/ok, got ${rep.type}`, false)
     }
