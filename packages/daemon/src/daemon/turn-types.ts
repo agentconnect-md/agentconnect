@@ -23,6 +23,7 @@ import type { DiscordConnection } from '../discord/connection.js'
 import type { FeishuConnection } from '../feishu/connection.js'
 import type { GithubReplyTarget, HookDispatchContext } from '../github/hook-coords.js'
 import type { WebchatTurnContext } from '../webchat/types.js'
+import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 
 /** Thrown to a `dispatch()` caller when the per-session admission queue is at its depth
  *  cap (§4.4 backpressure): the message is fast-failed, not buffered. Carries a stable
@@ -542,6 +543,8 @@ export interface TurnSignals {
  *  through it; the mutable rest is grouped by who writes it — platform chrome cursors,
  *  reply accumulation, the approval-wait meter (permissions/), and completion signals. */
 export interface Pending {
+  /** The same trusted workspace link resolver used by every output surface for this turn. */
+  resolveFileLink?: WorkspaceFileLinkResolver
   /** The pure decisions this turn was planned with — its identity, coordinates, output
    *  mode, and surface. Readonly by construction: nothing here is turn state. */
   readonly plan: TurnPlan
@@ -612,7 +615,14 @@ export interface Pending {
    * accumulates the agent's message chunks so the finished reply is recorded to the
    * transcript once (webchat has no Slack post boundary where text is otherwise saved).
    */
-  webchat?: WebchatTurnContext & { index: number; replyText: string; heldText: string; messageEmitted: boolean }
+  webchat?: WebchatTurnContext & {
+    index: number
+    replyText: string
+    heldText: string
+    heldTextOffset?: number
+    messageId?: string
+    messageEmitted: boolean
+  }
   /** Agent questions this turn has already told the channel it could not render (#1794), so a
    *  runtime re-raising the same unrenderable ask posts one notice rather than one per attempt. */
   declinedElicitNotices?: Set<string>

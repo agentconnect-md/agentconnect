@@ -3229,10 +3229,11 @@ export interface WorkspaceGitLogDto {
 // `WORKSPACE_*` code ⇒ the daemon rejected the path; 503 ⇒ offline or unplaced.
 export async function fetchWorkspaceGitDiff(
   agentId: string,
-  opts: { path: string; scope?: WorkspaceDiffScope; sessionId?: string }
+  opts: { path: string; scope?: WorkspaceDiffScope; sessionId?: string; repo?: string }
 ): Promise<WorkspaceGitDiffDto> {
   const q = new URLSearchParams({ path: opts.path })
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.repo) q.set('repo', opts.repo)
   if (opts.scope) q.set('scope', opts.scope)
   return apiGet<WorkspaceGitDiffDto>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitdiff?${q.toString()}`
@@ -3317,10 +3318,11 @@ export interface WorkspaceGitMessageResultDto {
 // too old (`DAEMON_FEATURE_MISSING`); 403 ⇒ no edit access; 503 ⇒ offline or unplaced.
 export async function stageWorkspacePaths(
   agentId: string,
-  opts: { paths: string[]; sessionId?: string }
+  opts: { paths: string[]; sessionId?: string; repo?: string }
 ): Promise<WorkspaceGitStatusDto> {
   const q = new URLSearchParams()
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.repo) q.set('repo', opts.repo)
   const query = q.size ? `?${q.toString()}` : ''
   return apiPost<WorkspaceGitStatusDto>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitstage${query}`,
@@ -3332,10 +3334,11 @@ export async function stageWorkspacePaths(
 // is lost. Same fresh-status answer and same failure surface as staging.
 export async function unstageWorkspacePaths(
   agentId: string,
-  opts: { paths: string[]; sessionId?: string }
+  opts: { paths: string[]; sessionId?: string; repo?: string }
 ): Promise<WorkspaceGitStatusDto> {
   const q = new URLSearchParams()
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.repo) q.set('repo', opts.repo)
   const query = q.size ? `?${q.toString()}` : ''
   return apiPost<WorkspaceGitStatusDto>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitunstage${query}`,

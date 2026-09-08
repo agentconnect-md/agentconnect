@@ -5,6 +5,8 @@ import { TelegramConverger } from '../src/telegram/render.js'
 import { DiscordConverger } from '../src/discord/render.js'
 import { FeishuConverger } from '../src/feishu/render.js'
 import { GithubReplyCollector } from '../src/github/poster.js'
+import { LinearConverger } from '../src/platforms/linear/turn-output.js'
+import { createWorkspaceFileLinkResolver } from '../src/messages/workspace-file-links.js'
 
 const chunk = (text: string): SessionUpdate => ({
   sessionUpdate: 'agent_message_chunk',
@@ -60,4 +62,49 @@ it('removes a newly activated host link from the shared code-host reply', () => 
   const reply = new GithubReplyCollector()
   reply.onUpdate(chunk('[report [source](/home/agent/source.md)](/home/agent/report.md)'))
   expect(reply.finalText()).toBe('\\[report source (`source.md`)\\](/home/agent/report.md)')
+})
+
+const resolveFileLink = createWorkspaceFileLinkResolver({
+  sessionUrl: 'https://console.example.test/acme/sessions/current',
+  agentId: 'agent-1',
+  cwd: '/agent/session/workspace',
+  roots: [{ path: '/agent/session/workspace' }]
+})
+
+it.each([
+  { name: 'Slack', create: () => new OutputConverger('minimal', [], resolveFileLink) },
+  { name: 'Telegram', create: () => new TelegramConverger('minimal', {}, resolveFileLink) },
+  { name: 'Discord', create: () => new DiscordConverger('minimal', resolveFileLink) },
+  { name: 'Feishu', create: () => new FeishuConverger('minimal', resolveFileLink) }
+])('opens a split workspace reference in the $name reply', ({ create }) => {
+  const c = create()
+  c.onUpdate(chunk('Read [the report][r].\n\n[r]: /agent/session/work'))
+  expect(bodies(c.flushBuffered())).toEqual([])
+  c.onUpdate(chunk('space/report.md'))
+  const finished = bodies(c.onFinal()).filter((body) => body?.includes('Read '))
+  expect(finished.length).toBeGreaterThan(0)
+  for (const body of finished) {
+    expect(body).toContain(resolveFileLink('report.md'))
+    expect(body).not.toContain('/agent/session/')
+  }
+})
+
+it('opens workspace files in the shared code-host final while preserving repository-relative links', () => {
+  const reply = new GithubReplyCollector()
+  reply.onUpdate(chunk('[report][r] and [source](src/main.ts).\n\n[r]: /agent/session/workspace/report.md'))
+  const final = reply.finalText(true, { resolvesRelativeTargets: true, resolveFileLink })
+  expect(final).toContain(resolveFileLink('report.md'))
+  expect(final).toContain('[source](src/main.ts)')
+  expect(final).not.toContain('/agent/session/')
+})
+
+it('opens relative workspace files in the Linear final response', () => {
+  const c = new LinearConverger('minimal', false, resolveFileLink)
+  c.onUpdate(chunk('[report](report.md)'))
+  const final = c.onFinal().find((action) => action.kind === 'activity' && action.type === 'response')
+  expect(final).toMatchObject({
+    kind: 'activity',
+    type: 'response',
+    body: expect.stringContaining(resolveFileLink('report.md')!)
+  })
 })

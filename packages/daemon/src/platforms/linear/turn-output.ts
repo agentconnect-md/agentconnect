@@ -15,6 +15,8 @@ import { splitAtParagraphBoundary } from '../../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../../session/no-response.js'
 import { extractToolOutput } from '../../session/tool-output.js'
 import type { TurnOutputContext } from '../turn-output.js'
+import { flattenUnsafeLinks } from '../../messages/agent-links.js'
+import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
 import { sanitizeTitle } from './message-strategy.js'
 
 /** Linear's plan-entry vocabulary. `canceled` has no ACP source today; it exists because
@@ -421,7 +423,8 @@ export class LinearConverger {
 
   constructor(
     private readonly mode: LinearOutputMode,
-    private readonly showFooter: boolean
+    private readonly showFooter: boolean,
+    private readonly resolveFileLink?: WorkspaceFileLinkResolver
   ) {
     this.policy = MODE_POLICY[mode]
   }
@@ -508,7 +511,7 @@ export class LinearConverger {
     if (this.settled) return []
     this.settled = true
     if (isNoResponseBody(this.sentinelTail.trim())) return this.discard()
-    const final = this.collector.finalText(true)?.trim() ?? ''
+    const final = this.collector.finalText(true, { resolveFileLink: this.resolveFileLink })?.trim() ?? ''
     // `none` is transcript-only (§5.2): the answer is still recorded, the feed still sees nothing.
     if (!this.policy.response) {
       this.discard()
@@ -675,7 +678,10 @@ export class LinearConverger {
       this.narration = tail
       text = ready
     }
-    return [...this.takePending(), { kind: 'activity', type: 'thought', body: text.trim() }]
+    const body = flattenUnsafeLinks(text.trim(), { resolveFileLink: this.resolveFileLink })
+    const actions = this.takePending()
+    if (body.trim()) actions.push({ kind: 'activity', type: 'thought', body })
+    return actions
   }
 
   /** Emit the reasoning accumulated SINCE THE LAST FLUSH. The in-place renderers keep a
@@ -687,7 +693,9 @@ export class LinearConverger {
     const trimmed = this.reasoning.trim()
     this.reasoning = ''
     if (!trimmed) return []
-    const tail = trimmed.length > MAX_REASONING ? `…${trimmed.slice(-MAX_REASONING)}` : trimmed
+    const safe = flattenUnsafeLinks(trimmed, { resolveFileLink: this.resolveFileLink })
+    if (!safe.trim()) return []
+    const tail = safe.length > MAX_REASONING ? `…${safe.slice(-MAX_REASONING)}` : safe
     return [{ kind: 'activity', type: 'thought', body: tail, ephemeral: true }]
   }
 
@@ -703,7 +711,7 @@ export class LinearConverger {
 
 /** Build this turn's converger. Fresh per turn, so a config change applies from the next one. */
 export function createLinearConverger(ctx: TurnOutputContext<unknown>): LinearConverger {
-  return new LinearConverger(normalizeMode(ctx.mode), ctx.showFooter)
+  return new LinearConverger(normalizeMode(ctx.mode), ctx.showFooter, ctx.resolveFileLink)
 }
 
 /** Seed the opaque per-turn state slot core stores and never reads. */

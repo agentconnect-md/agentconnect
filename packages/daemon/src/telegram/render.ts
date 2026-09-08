@@ -1,6 +1,7 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { splitIntoSections } from '../messages/split-sections.js'
 import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
+import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { AgentMessageRun } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
@@ -198,7 +199,8 @@ export class TelegramConverger {
    *  reply to it could not resolve back to this session (the hint would be a lie there). */
   constructor(
     private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
-    opts: { continueHint?: boolean } = {}
+    opts: { continueHint?: boolean } = {},
+    private readonly resolveFileLink?: WorkspaceFileLinkResolver
   ) {
     this.hintEnabled = opts.continueHint === true && (mode === 'low' || mode === 'medium' || mode === 'high')
     this.bodyLimit = this.hintEnabled
@@ -236,7 +238,7 @@ export class TelegramConverger {
     // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
     if (!trimmed || isNoResponsePrefix(trimmed)) return []
     const raw = complete ? this.buf : this.buf.slice(0, referenceBufferStart(this.buf))
-    const text = flattenUnsafeLinks(raw)
+    const text = flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
     return text.trim() ? [{ kind: 'live-reply', text: this.liveDisplay(text) }] : []
   }
 
@@ -256,7 +258,7 @@ export class TelegramConverger {
     // Hold while the body may still be / is the bare sentinel — a suppressed reply must not be
     // recorded or shown; onFinal makes the final drop. Non-sentinel bodies close normally.
     if (isNoResponsePrefix(this.buf.trim())) return []
-    const text = flattenUnsafeLinks(this.buf)
+    const text = flattenUnsafeLinks(this.buf, { resolveFileLink: this.resolveFileLink })
     this.recordDirty = false
     if (!text.trim()) return []
     return [
@@ -270,7 +272,7 @@ export class TelegramConverger {
   private drainReasoning(): TelegramAction[] {
     if (!this.reasoningDirty) return []
     this.reasoningDirty = false
-    const text = flattenUnsafeLinks(this.reasoningBuf)
+    const text = flattenUnsafeLinks(this.reasoningBuf, { resolveFileLink: this.resolveFileLink })
     return text.trim() ? [{ kind: 'reasoning', text: renderReasoning(text), parseMode: 'HTML' }] : []
   }
 
@@ -305,7 +307,7 @@ export class TelegramConverger {
   }
 
   private emitBody(raw: string, final: boolean): TelegramAction[] {
-    const text = flattenUnsafeLinks(raw)
+    const text = flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
     if (!text.trim()) return []
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.

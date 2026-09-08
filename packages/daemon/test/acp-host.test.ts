@@ -29,9 +29,12 @@ describe('AcpHost (against a fake ACP agent)', () => {
     )
     await host.start()
     const sessionId = await host.newSession('/tmp')
+    expect(host.sessionCwd(sessionId)).toBe('/tmp')
     const res = await host.prompt(sessionId, [{ type: 'text', text: 'hi' }])
     expect(res.stopReason).toBe('end_turn')
     expect(updates).toContainEqual({ sessionId, text: 'echo:hi' })
+    host.forgetSession(sessionId)
+    expect(host.sessionCwd(sessionId)).toBeUndefined()
     await host.stop()
   })
 
@@ -135,6 +138,9 @@ describe('AcpHost additional workspace directories', () => {
     await supported.start()
     await supported.newSession(cwd, [], undefined, undefined, [repoRoot])
     await supported.loadSession('persisted-session', cwd, [], undefined, undefined, [repoRoot])
+    expect(supported.sessionCwd('persisted-session')).toBe(cwd)
+    supported.discardSession('persisted-session')
+    expect(supported.sessionCwd('persisted-session')).toBeUndefined()
     await supported.stop()
 
     const unsupported = new AcpHost(
@@ -161,6 +167,7 @@ describe('AcpHost session deletion', () => {
     const sessionId = await host.newSession('/tmp')
     expect(await host.deleteSession(sessionId)).toBe(true)
     expect(host.hasSession(sessionId)).toBe(false)
+    expect(host.sessionCwd(sessionId)).toBeUndefined()
     await host.stop()
   })
 })

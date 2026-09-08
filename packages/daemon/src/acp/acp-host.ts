@@ -497,10 +497,8 @@ export function fastOptionFrom(configOptions: SessionConfigOption[] | null | und
 export class AcpHost {
   private spawned?: SpawnedRuntime
   private conn?: ClientConnection
-  // acpSessionIds this process created (or loaded). ACP sessions are in-memory in
-  // the subprocess, so an id persisted across a daemon restart / host eviction is
-  // unknown to a fresh process and must be re-created or re-loaded.
-  private live = new Set<string>()
+  // Only sessions created or loaded by this host have a trusted runtime working directory.
+  private live = new Map<string, string>()
   // sessionIds currently mid-load: `session/load` makes the agent REPLAY its whole
   // history via session/update, which we must NOT forward to the platform (it would
   // re-post the entire conversation). Cleared when the load resolves.
@@ -909,7 +907,7 @@ export class AcpHost {
       ...(_meta ? { _meta } : {})
     })
     announce?.(res.sessionId)
-    this.live.add(res.sessionId)
+    this.live.set(res.sessionId, cwd)
     const configOptions = await this.applySessionConfig(res.sessionId, res.configOptions)
     this.refreshOptionCaches(configOptions)
     this.sessionConfigs.set(res.sessionId, configOptions)
@@ -1099,6 +1097,11 @@ export class AcpHost {
     return this.live.has(sessionId)
   }
 
+  /** The working directory this host supplied to session/new or session/load. */
+  sessionCwd(sessionId: string): string | undefined {
+    return this.live.get(sessionId)
+  }
+
   /** True while a session/load is in flight — the session is this host's, but `live` does not hold it
    *  yet. A caller identifying "is this session mine" from an update must accept this window too, or
    *  it depends on whether the adapter emits before or after the load response. */
@@ -1161,7 +1164,7 @@ export class AcpHost {
         mcpServers: this.clampSessionMcpServers(mcpServers),
         ...(_meta ? { _meta } : {})
       })
-      this.live.add(sessionId)
+      this.live.set(sessionId, cwd)
       // Re-apply config prefs: ACP sessions restore their own last model/effort,
       // which may predate a CP-side agent edit.
       const configOptions = await this.applySessionConfig(sessionId, res.configOptions)

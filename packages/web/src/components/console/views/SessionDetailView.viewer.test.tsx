@@ -15,6 +15,8 @@ const wire = vi.hoisted(() => ({
   listCalls: [] as Array<{ path: string; sessionId?: string }>,
   /** Whether the open session has a worktree of its own; a shared workspace must never be asked for one. */
   isolation: 'session' as 'session' | 'shared',
+  contentPurgedAt: undefined as string | undefined,
+  workspaceMode: 'git' as 'git' | 'scratch',
   /** Which credential vouches for the checkout. Both are git, so both have session worktrees. */
   workspaceProvider: 'github' as 'github' | 'gitlab',
   /** The Git tab's two reads. A from-scratch workspace by default, so every case that predates the tab sees what it saw. */
@@ -189,11 +191,20 @@ const session: Session = {
 
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
-    agents: [{ ...agent, workspace: { ...agent.workspace, provider: wire.workspaceProvider } }],
+    agents: [
+      {
+        ...agent,
+        workspace:
+          wire.workspaceMode === 'scratch'
+            ? { mode: 'scratch' }
+            : { ...agent.workspace, provider: wire.workspaceProvider }
+      }
+    ],
     allSessions: [
       {
         ...session,
         workspaceIsolation: wire.isolation,
+        contentPurgedAt: wire.contentPurgedAt,
         ...(wire.agentless ? { agentId: '', agentName: '' } : {}),
         ...(wire.playground ? { platform: 'playground' } : {})
       }
@@ -315,6 +326,8 @@ beforeEach(() => {
   wire.fileCalls = []
   wire.listCalls = []
   wire.isolation = 'session'
+  wire.contentPurgedAt = undefined
+  wire.workspaceMode = 'git'
   wire.workspaceProvider = 'github'
   wire.git = { isRepo: false }
   wire.log = { isRepo: false, commits: [], truncated: false, tracking: null }
@@ -518,9 +531,38 @@ describe('the workspace scope both surfaces read', () => {
     expect(wire.fileCalls.at(-1)).toEqual({ path: 'src/notes.md' })
     expect(wire.listCalls[0]).toEqual({ path: '' })
   })
+
+  it.each(['purged', 'replaced'] as const)('keeps the linked session scope when its workspace is %s', async (state) => {
+    if (state === 'purged') wire.contentPurgedAt = '2026-09-08T12:00:00.000Z'
+    else wire.workspaceMode = 'scratch'
+    nav.search = 'view=flat&file=src%2Fnotes.md&agent=agent-1'
+
+    await render()
+
+    expect(wire.fileCalls.at(-1)).toEqual({ path: 'src/notes.md', sessionId: 'session-1' })
+    expect(wire.listCalls[0]).toEqual({ path: '', sessionId: 'session-1' })
+  })
 })
 
 describe('the viewer route', () => {
+  it('keeps a secondary repository through file and diff reads, then drops it when the viewer closes', async () => {
+    nav.search = 'view=flat&file=src%2Fnotes.md&agent=agent-1&repo=acme%2Fsecondary'
+    await render()
+    expect(wire.fileCalls.at(-1)).toEqual({ path: 'src/notes.md', sessionId: 'session-1', repo: 'acme/secondary' })
+
+    await press('[data-viewer-mode="diff"]')
+
+    expect(new URLSearchParams(nav.search).get('repo')).toBe('acme/secondary')
+    expect(wire.diffCalls.at(-1)).toEqual({
+      path: 'src/notes.md',
+      scope: 'unstaged',
+      sessionId: 'session-1',
+      repo: 'acme/secondary'
+    })
+    await press('[data-viewer-close]')
+    expect(new URLSearchParams(nav.search).get('repo')).toBeNull()
+  })
+
   it('round-trips a nested path whose every segment has to be encoded', async () => {
     // A slash separator, a space, a `+` (which decodes back to a space if the param was written as a query value), parens and non-ASCII — the encoder has to survive all of them in both directions.
     const clickRow = async (text: string) => {

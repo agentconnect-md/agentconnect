@@ -1,5 +1,6 @@
 import { fromMarkdown } from 'mdast-util-from-markdown'
 import type { Definition, Nodes } from 'mdast'
+import type { WorkspaceFileLinkResolver } from './workspace-file-links.js'
 
 const WEB_SCHEME = /^(?:https?|mailto):/i
 const HOST_ABSOLUTE = /^(?:[\\/]|[A-Za-z]:[\\/]|file:)/i
@@ -7,6 +8,8 @@ const HOST_ABSOLUTE = /^(?:[\\/]|[A-Za-z]:[\\/]|file:)/i
 export interface FlattenOptions {
   /** Keep a relative target linked: a code host resolves it against the repository, chat cannot. */
   resolvesRelativeTargets?: boolean
+  /** A daemon-owned mapping from runtime file targets to authenticated workspace URLs. */
+  resolveFileLink?: WorkspaceFileLinkResolver
 }
 
 /** Rewrite unsafe link targets without reformatting the rest of the Markdown source. */
@@ -24,7 +27,7 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
   const keeps = (url: string): boolean =>
     WEB_SCHEME.test(url) || (opts.resolvesRelativeTargets === true && !HOST_ABSOLUTE.test(url))
 
-  const render = (node: Nodes): string => {
+  const render = (node: Nodes, insideLink = false): string => {
     const start = node.position!.start.offset!
     const end = node.position!.end.offset!
     if (node.type === 'definition') return keeps(node.url) ? text.slice(start, end) : ''
@@ -33,7 +36,10 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
     let content = ''
     let label = ''
     if ('children' in node) {
-      const children = node.children.map((child) => ({ child, rendered: render(child) }))
+      const children = node.children.map((child) => ({
+        child,
+        rendered: render(child, insideLink || node.type === 'link' || node.type === 'linkReference')
+      }))
       const changed = children.some(
         ({ child, rendered }) => rendered !== text.slice(child.position!.start.offset!, child.position!.end.offset!)
       )
@@ -58,6 +64,8 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
     const display = target.url.startsWith('#') ? '' : HOST_ABSOLUTE.test(target.url) ? basename(target.url) : target.url
     // Images have no useful visible label here; an autolink's label is the unsafe target itself.
     const visible = (node.type === 'link' && text[start] === '[') || node.type === 'linkReference' ? label : ''
+    const fileUrl = !insideLink ? opts.resolveFileLink?.(target.url) : undefined
+    if (fileUrl && /^https?:/i.test(fileUrl)) return `[${visible || inlineCode(display)}](<${fileUrl}>)`
     if (!display || visible.includes(display)) return visible || inlineCode(display)
     return visible ? `${visible} (${inlineCode(display)})` : inlineCode(display)
   }

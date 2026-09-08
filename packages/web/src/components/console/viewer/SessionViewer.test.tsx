@@ -361,17 +361,25 @@ describe('SessionViewer scope', () => {
 describe('SessionViewer sliced reads', () => {
   const truncated = { content: 'a\nb\n', size: 200_000, truncated: true, nextOffset: 65_536, offset: 0 }
 
-  it('asks for the next slice at the offset the daemon named, not at the length of the text it decoded', async () => {
-    wire.slices[0] = truncated
-    wire.slices[65_536] = { content: 'c\n', size: 200_000, truncated: false, nextOffset: 200_000, offset: 65_536 }
-    await render()
-    expect(text()).toContain('Showing first 64.0 KB of 195.3 KB')
-    await pressButton('Load more')
-    expect(wire.calls[1]).toEqual({ path: 'src/app/page.tsx', offset: 65_536, sessionId: 'session-1' })
-    expect(code()).toBe('a\nb\nc')
-    expect(gutter()).toBe('1\n2\n3')
-    expect(text()).not.toContain('Showing first')
-  })
+  it.each([undefined, 'acme/secondary'])(
+    'keeps the daemon offset and repository scope on later slices: %s',
+    async (repo) => {
+      wire.slices[0] = truncated
+      wire.slices[65_536] = { content: 'c\n', size: 200_000, truncated: false, nextOffset: 200_000, offset: 65_536 }
+      await render({ repo })
+      expect(text()).toContain('Showing first 64.0 KB of 195.3 KB')
+      await pressButton('Load more')
+      expect(wire.calls[1]).toEqual({
+        path: 'src/app/page.tsx',
+        offset: 65_536,
+        sessionId: 'session-1',
+        ...(repo ? { repo } : {})
+      })
+      expect(code()).toBe('a\nb\nc')
+      expect(gutter()).toBe('1\n2\n3')
+      expect(text()).not.toContain('Showing first')
+    }
+  )
 
   it('keeps the slices it has when the next one fails, and offers the read again', async () => {
     wire.slices[0] = truncated
@@ -568,18 +576,26 @@ describe('SessionViewer staging', () => {
   const HUNK = '@@ -1,1 +1,1 @@\n-old\n+new\n'
   const stageButton = () => container?.querySelector<HTMLButtonElement>('[data-viewer-stage]') ?? undefined
 
-  it('stages the open path from the unstaged diff and re-reads it', async () => {
+  it.each([undefined, 'acme/secondary'])('stages the open path and re-reads the same repository: %s', async (repo) => {
     wire.diffs.unstaged = { diff: HUNK }
-    await render({ mode: 'diff', onIndexChanged: () => (indexChanges += 1) })
+    await render({ mode: 'diff', repo, onIndexChanged: () => (indexChanges += 1) })
     expect(wire.diffCalls).toHaveLength(1)
     expect(stageButton()?.dataset.viewerStage).toBe('stage')
     expect(text()).toContain('Stage file')
 
     await click('[data-viewer-stage]')
 
-    expect(wire.stageCalls).toEqual([{ kind: 'stage', paths: ['src/app/page.tsx'], sessionId: 'session-1' }])
+    expect(wire.stageCalls).toEqual([
+      { kind: 'stage', paths: ['src/app/page.tsx'], sessionId: 'session-1', ...(repo ? { repo } : {}) }
+    ])
     // The diff under the reader changed by definition, so it is re-read rather than left describing the tree before the write.
     expect(wire.diffCalls).toHaveLength(2)
+    expect(wire.diffCalls.at(-1)).toEqual({
+      path: 'src/app/page.tsx',
+      scope: 'unstaged',
+      sessionId: 'session-1',
+      ...(repo ? { repo } : {})
+    })
     // The fresh status the reply carries has no home in this pane, so the panel that owns the lists is told.
     expect(indexChanges).toBe(1)
   })

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
+import { emitWebchatUpdate, flushHeldWebchatText, type WebchatTurnOutput } from '../src/webchat/turn-output.js'
 import type { WebchatOutput, WebchatDone, RdChatEvent, RdMsgWebchat } from '@agentconnect.md/protocol'
 import { WAIT } from './wait-support.js'
 
@@ -59,6 +60,7 @@ function streamingHost(
     models?: string[]
     usage?: Record<string, number>
     initialUpdates?: unknown[]
+    error?: Error
   } = {}
 ) {
   const { stopReason = 'end_turn', model, models, usage, initialUpdates = [] } = opts
@@ -77,6 +79,7 @@ function streamingHost(
     setSessionFastMode: vi.fn(async () => true),
     prompt: vi.fn(async (sid: string, _blocks: unknown[]) => {
       for (const u of updates) onUpdate(sid, u)
+      if (opts.error) throw opts.error
       return { stopReason, ...(usage ? { usage } : {}) }
     }),
     cancel: vi.fn(async () => {}),
@@ -151,6 +154,97 @@ function fakeK8sPlane(bound: boolean) {
     stop: async () => {}
   }
 }
+
+describe('Webchat workspace file links', () => {
+  const fileUrl = 'https://console.example.test/sessions/session-1?file=report.md'
+  const resolveFileLink = (target: string) => (target.startsWith('/workspace/') ? fileUrl : undefined)
+  const live = () => {
+    const events: WebchatOutput[] = []
+    const wc: WebchatTurnOutput = {
+      conversationId: CONV,
+      turnId: 'turn-1',
+      index: 0,
+      replyText: '',
+      heldText: '',
+      messageEmitted: false,
+      sink: { output: (event) => events.push(event), done: () => {} }
+    }
+    const message = () => events.flatMap((o) => (o.event?.kind === 'message' ? [o.event.text] : [])).join('')
+    return { wc, events, message }
+  }
+
+  it('streams ordinary text while holding split inline and reference targets until the message completes', () => {
+    const { wc, message } = live()
+    emitWebchatUpdate(wc, text('See '), resolveFileLink)
+    expect(message()).toBe('See')
+    emitWebchatUpdate(wc, text('[report](/workspace/'), resolveFileLink)
+    emitWebchatUpdate(wc, text('report.md), or [source][file].\n\n[file]: /workspace/report.md'), resolveFileLink)
+    expect(message()).toBe('See')
+    flushHeldWebchatText(wc, resolveFileLink)
+    expect(message()).toBe(`See [report](<${fileUrl}>), or [source](<${fileUrl}>).\n\n`)
+    expect(wc.replyText).toBe(message())
+  })
+
+  it.each([thought('thinking'), toolCall('t1', 'Read report'), plan([{ content: 'Read report', status: 'pending' }])])(
+    'resolves the held message before a $sessionUpdate boundary',
+    (boundary) => {
+      const { wc, events, message } = live()
+      emitWebchatUpdate(wc, text('[report](/workspace/report.md)'), resolveFileLink)
+      emitWebchatUpdate(wc, boundary, resolveFileLink)
+      expect(events[0]?.event).toEqual({ kind: 'message', text: `[report](<${fileUrl}>)` })
+      expect(message()).toBe(wc.replyText)
+      expect(events.map((o) => o.index)).toEqual([0, 1])
+    }
+  )
+
+  it('keeps definitions scoped to named messages and preserves existing message concatenation', () => {
+    const { wc, message } = live()
+    emitWebchatUpdate(
+      wc,
+      { ...text('[report][file]\n\n[file]: /workspace/report.md'), messageId: 'a' },
+      resolveFileLink
+    )
+    emitWebchatUpdate(wc, { ...text('then [file]'), messageId: 'b' }, resolveFileLink)
+    expect(message()).toBe(`[report](<${fileUrl}>)\n\nthen`)
+    flushHeldWebchatText(wc, resolveFileLink)
+    expect(message()).toBe(`[report](<${fileUrl}>)\n\nthen [file]`)
+    expect(wc.replyText).toBe(message())
+  })
+
+  it.each([
+    ['Paragraph\n\n  ', '[file]: /workspace/report.md\n\n[file]'],
+    ['Literal ] before ', '[report](/workspace/report.md)'],
+    ['```md\n', '[report](/workspace/report.md)\n```']
+  ])('keeps streamed and canonical source identical when chunks affect surrounding Markdown', (first, second) => {
+    const { wc, message } = live()
+    emitWebchatUpdate(wc, text(first), resolveFileLink)
+    emitWebchatUpdate(wc, text(second), resolveFileLink)
+    flushHeldWebchatText(wc, resolveFileLink)
+    expect(message()).toBe(wc.replyText)
+    expect(message()).not.toBe('')
+  })
+
+  it('flushes a failed turn fragment through the same resolver and safe fallback', () => {
+    const { wc, message } = live()
+    emitWebchatUpdate(wc, text('[report](/workspace/report.md), [outside](/etc/private.txt)'), resolveFileLink)
+    flushHeldWebchatText(wc, resolveFileLink)
+    expect(message()).toBe(`[report](<${fileUrl}>), outside (\`private.txt\`)`)
+    expect(wc.replyText).toBe(message())
+    expect(wc.heldText).toBe('')
+  })
+
+  it('holds the no-response sentinel across work events and releases a real reply when it diverges', () => {
+    const { wc, message } = live()
+    emitWebchatUpdate(wc, text('AC_NO_'), resolveFileLink)
+    emitWebchatUpdate(wc, toolCall('t1', 'Read report'), resolveFileLink)
+    emitWebchatUpdate(wc, text('RESPONSE'), resolveFileLink)
+    expect(message()).toBe('')
+    emitWebchatUpdate(wc, text(' is the reserved marker.'), resolveFileLink)
+    expect(message()).toBe('AC_NO_RESPONSE is the reserved marker.')
+    flushHeldWebchatText(wc, resolveFileLink)
+    expect(wc.replyText).toBe(message())
+  })
+})
 
 describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
   it('maps message/thinking/tool chunks to webchat events with a monotonic index, then done', async () => {
@@ -1025,6 +1119,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
   it('handleWebchatCancel interrupts the in-flight turn without muting', async () => {
     let release!: () => void
+    let onUpdate!: (sid: string, update: unknown) => void
     const gate = new Promise<void>((r) => (release = r))
     const host = {
       start: vi.fn(async () => {}),
@@ -1032,14 +1127,21 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       modelOptions: vi.fn(() => null),
       hasSession: vi.fn(() => true),
       setSessionModel: vi.fn(async () => true),
-      prompt: vi.fn(async () => {
+      prompt: vi.fn(async (sid: string) => {
+        onUpdate(sid, text('[unfinished](/workspace/private'))
         await gate
         return { stopReason: 'end_turn' }
       }),
       cancel: vi.fn(async () => {}),
       stop: vi.fn(async () => {})
     }
-    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: (_agent, callback) => {
+        onUpdate = callback
+        return host as any
+      }
+    })
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
@@ -1053,7 +1155,11 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     )
     await vi.waitFor(
       () =>
-        expect([...(daemon as any).pending.values()].some((p: any) => p.webchat?.conversationId === CONV)).toBe(true),
+        expect(
+          [...(daemon as any).pending.values()].some(
+            (p: any) => p.webchat?.heldText === '[unfinished](/workspace/private'
+          )
+        ).toBe(true),
       WAIT
     )
 
@@ -1069,6 +1175,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await vi.waitFor(() => expect((daemon as any).pending.size).toBe(0), WAIT)
     expect(cp.dones).toHaveLength(1) // cancel-resolved prompt must not emit a second terminal frame
     expect(cp.outputs).toHaveLength(outputsBeforeCancel)
+    expect(cp.outputs.filter((output) => output.event?.kind === 'message')).toEqual([])
     await daemon.stop()
   })
 
@@ -1153,6 +1260,48 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     // Exactly one terminal frame, carrying the failure reason and no stopReason.
     expect(cp.dones).toEqual([{ conversationId: CONV, turnId, error: 'spawn claude ENOENT' }])
+    await daemon.stop()
+  })
+
+  it('delivers a held file-link fragment before a terminal error and records the same canonical text', async () => {
+    const { factory } = streamingHost([text('[report](/etc/report.md)')], { error: new Error('runtime failed') })
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    const delivery: string[] = []
+    const posts: string[] = []
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const msg = {
+      msgId: `webchat:${CONV}`,
+      traceId: turnId,
+      source: 'user' as const,
+      platform: 'webchat' as const,
+      channel: CONV,
+      sender: { id: 'alice', isBot: false },
+      text: 'go',
+      mentionedBots: [] as string[],
+      isDm: true,
+      trigger: 'dm' as const
+    }
+    await expect(
+      (daemon as any).dispatch(AGENT_ID, msg, undefined, {
+        conversationId: CONV,
+        turnId,
+        sink: {
+          output: (output: WebchatOutput) => {
+            if (output.event?.kind === 'message') delivery.push(output.event.text)
+          },
+          done: (done: WebchatDone) => delivery.push(`done:${done.error}`)
+        },
+        postSink: (post: { post: { text: string } }) => posts.push(post.post.text)
+      })
+    ).rejects.toThrow('runtime failed')
+    expect(delivery).toEqual(['report (`report.md`)', 'done:runtime failed'])
+    expect(posts).toEqual(['report (`report.md`)'])
+    const rows = await (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`)
+    expect(
+      rows.filter((row: { sender: string }) => row.sender === AGENT_ID).map((row: { text: string }) => row.text)
+    ).toContain('report (`report.md`)')
     await daemon.stop()
   })
 

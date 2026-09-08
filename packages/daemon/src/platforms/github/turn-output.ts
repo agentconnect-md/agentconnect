@@ -44,6 +44,7 @@
 import type { GithubPublishedComment, PublishedHookOutput } from '@agentconnect.md/protocol'
 import type { GithubReplyCollector } from '../../github/poster.js'
 import type { GitlabPublishFailure } from '../../gitlab/poster.js'
+import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
 
 /** GitHub's per-turn state (§7.3). Held in the turn's final-surface slot, which
  *  core stores opaquely and never reads. */
@@ -66,6 +67,7 @@ export interface GithubTurnState {
  *  structurally — a far smaller footprint than the chat surfaces need, because
  *  GitHub owns no anchors on the turn record. */
 export interface GithubTurn {
+  resolveFileLink?: WorkspaceFileLinkResolver
   plan: {
     statusThread: string
     transcriptChannel: string
@@ -138,7 +140,10 @@ export async function finalizeGithubTurn<TTurn extends GithubTurn>(
   // A headless GitHub hook has no platform-send boundary. Explicit final chunks
   // were withheld from the core converger, so persist the collector's one
   // logical final now instead of one row per idle/size flush.
-  const final = !opts.suppressed && opts.atEnd ? state.collector.finalText(true) : undefined
+  const final =
+    !opts.suppressed && opts.atEnd
+      ? state.collector.finalText(true, { resolvesRelativeTargets: true, resolveFileLink: turn.resolveFileLink })
+      : undefined
   if (state.deferredFinalTranscript && final?.trim()) {
     await host.appendTranscript({
       channel: turn.plan.transcriptChannel,
