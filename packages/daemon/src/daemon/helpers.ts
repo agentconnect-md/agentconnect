@@ -1,5 +1,5 @@
-import type { Stats } from 'node:fs'
-import { basename, isAbsolute, relative, sep } from 'node:path'
+import { existsSync, type Stats } from 'node:fs'
+import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import type { MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { effectiveMemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { SandboxError, sandboxBoundary } from '../acp/sandbox.js'
@@ -13,10 +13,12 @@ export function ignoreAgentWatchPath(agentsDir: string, path: string, stats?: St
   const segments = relative(agentsDir, path).split(sep)
   if (segments.some((segment) => segment === 'node_modules' || segment.startsWith('.'))) return true
   // The watcher only wants `agent.json`; the memory tree is the daemon's own, and Windows cannot rename a watched dir.
+  // Only beneath an actual agent root — discovery is recursive, so a grouping dir may hold an agent named like one.
   const owned = segments[1]
   if (
     owned !== undefined &&
-    (DAEMON_OWNED_AGENT_DIRNAMES.includes(owned) || owned.startsWith(MEMORY_ARCHIVE_DIRNAME_PREFIX))
+    (DAEMON_OWNED_AGENT_DIRNAMES.includes(owned) || owned.startsWith(MEMORY_ARCHIVE_DIRNAME_PREFIX)) &&
+    existsSync(join(agentsDir, segments[0]!, 'agent.json'))
   )
     return true
   return stats !== undefined && !stats.isDirectory() && basename(path) !== 'agent.json'
