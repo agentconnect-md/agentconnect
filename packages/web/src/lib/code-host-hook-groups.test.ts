@@ -30,17 +30,19 @@ function hook(partial: Partial<HookDto> & Pick<HookDto, 'id'>): HookDto {
 }
 
 describe('orderedGithubHookRows', () => {
-  it('keeps a repository as two rows, change proposals first', () => {
+  it('keeps a repository as one row per family, change proposals first', () => {
     const rows = orderedGithubHookRows([
       hook({ id: 'a', repoId: '1', repoFullName: 'acme/api', family: 'issues', events: ['issues:*'] }),
+      hook({ id: 'c', repoId: '1', repoFullName: 'acme/api', family: 'deployment', events: ['deployment:created'] }),
       hook({ id: 'b', repoId: '1', repoFullName: 'acme/api', family: 'pull_request', events: ['pull_request:*'] })
     ])
-    expect(rows.map((row) => row.hook.id)).toEqual(['b', 'a'])
-    expect(rows.map((row) => row.family)).toEqual(['pull_request', 'issues'])
+    expect(rows.map((row) => row.hook.id)).toEqual(['b', 'a', 'c'])
+    expect(rows.map((row) => row.family)).toEqual(['pull_request', 'issues', 'deployment'])
     expect(rows.every((row) => row.repoKey === '1')).toBe(true)
     // The block's edges: the opener names the repo, the closer carries the divider.
     expect(rows.map((row) => [row.first, row.last])).toEqual([
       [true, false],
+      [false, false],
       [false, true]
     ])
     // Nothing left to add, so no row offers a chip.
@@ -51,7 +53,7 @@ describe('orderedGithubHookRows', () => {
     const rows = orderedGithubHookRows([
       hook({ id: 'a', repoId: '1', repoFullName: 'acme/api', family: 'issues', events: ['issues:*'] })
     ])
-    expect(rows[0]!.addFamilies).toEqual(['pull_request'])
+    expect(rows[0]!.addFamilies).toEqual(['pull_request', 'deployment'])
     // A one-row block opens and closes on the same row.
     expect([rows[0]!.first, rows[0]!.last]).toEqual([true, true])
   })
@@ -59,7 +61,8 @@ describe('orderedGithubHookRows', () => {
   it('never offers the held-back push subject', () => {
     const rows = orderedGithubHookRows([
       hook({ id: 'a', repoId: '1', repoFullName: 'acme/api', family: 'pull_request', events: ['pull_request:*'] }),
-      hook({ id: 'b', repoId: '1', repoFullName: 'acme/api', family: 'issues', events: ['issues:*'] })
+      hook({ id: 'b', repoId: '1', repoFullName: 'acme/api', family: 'issues', events: ['issues:*'] }),
+      hook({ id: 'c', repoId: '1', repoFullName: 'acme/api', family: 'deployment', events: ['deployment:created'] })
     ])
     expect(rows.flatMap((row) => row.addFamilies)).toEqual([])
   })
@@ -79,8 +82,8 @@ describe('orderedGithubHookRows', () => {
       hook({ id: 'b', repoId: '1', repoFullName: 'acme/api', family: null, events: ['pull_request:*'] })
     ])
     expect(rows.map((row) => row.family)).toEqual(['pull_request', null])
-    // The unplaceable row covers nothing, so issues is still on offer — on the first row.
-    expect(rows[0]!.addFamilies).toEqual(['issues'])
+    // The unplaceable row covers nothing, so issues and deployments are still on offer — on the first row.
+    expect(rows[0]!.addFamilies).toEqual(['issues', 'deployment'])
     expect(rows[1]!.addFamilies).toEqual([])
   })
 
@@ -90,7 +93,8 @@ describe('orderedGithubHookRows', () => {
       hook({ id: 'b', repoFullName: 'acme/api', family: 'pull_request', events: ['pull_request:*'] })
     ])
     expect(rows.map((row) => row.repoKey)).toEqual(['acme/api', 'acme/api'])
-    expect(rows.flatMap((row) => row.addFamilies)).toEqual([])
+    // One block, so the one unwatched subject is offered once rather than per row.
+    expect(rows.flatMap((row) => row.addFamilies)).toEqual(['deployment'])
   })
 })
 
