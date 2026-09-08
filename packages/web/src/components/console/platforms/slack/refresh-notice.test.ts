@@ -5,6 +5,7 @@ import { slackManifestScopeFragment, slackRefreshNoticeState } from './refresh-n
 const refreshResult = (overrides: Partial<SlackBotRefreshDto> = {}): SlackBotRefreshDto => ({
   manifest: 'synced',
   authorization: 'current',
+  rejection: null,
   missingScopes: [],
   settingsUrl: 'https://api.slack.com/apps/A0123',
   manifestUrl: 'https://app.slack.com/app-settings/T0123/A0123/app-manifest',
@@ -25,8 +26,7 @@ describe('slackRefreshNoticeState', () => {
       needsAttention: false,
       message: 'Workspace permissions match AgentConnect’s requirements.',
       action: null,
-      scopeFragment: null,
-      offerDelete: false
+      scopeFragment: null
     })
   })
 
@@ -35,8 +35,7 @@ describe('slackRefreshNoticeState', () => {
       needsAttention: false,
       message: 'Slack app configuration and workspace permissions are up to date.',
       action: null,
-      scopeFragment: null,
-      offerDelete: false
+      scopeFragment: null
     })
   })
 
@@ -68,8 +67,7 @@ describe('slackRefreshNoticeState', () => {
         href: 'https://app.slack.com/app-settings/T0123/A0123/app-manifest',
         label: 'Open App Manifest'
       },
-      scopeFragment: '"chat:write.customize",\n"lists:read",',
-      offerDelete: false
+      scopeFragment: '"chat:write.customize",\n"lists:read",'
     })
   })
 
@@ -89,12 +87,13 @@ describe('slackRefreshNoticeState', () => {
     })
   })
 
-  it('offers reinstallation AND forgetting the bot when Slack rejects the stored token', () => {
+  it('offers only reinstallation when Slack rejects the stored token', () => {
     expect(
       slackRefreshNoticeState(
         refreshResult({
           manifest: 'manual_update_required',
           authorization: 'invalid',
+          rejection: 'invalid_auth',
           // Reinstall is app-scoped and does not need the team id that an invalid
           // token can no longer reveal through auth.test.
           reinstallUrl: 'https://api.slack.com/apps/A0123/install-on-team?'
@@ -102,23 +101,13 @@ describe('slackRefreshNoticeState', () => {
       )
     ).toMatchObject({
       needsAttention: true,
+      // Slack's own code rides along: it is the only diagnosis the console has.
+      message:
+        'Slack rejected the stored bot token (invalid_auth). Reinstall the app if needed, then recreate this integration with the current Bot User OAuth Token.',
       action: {
         href: 'https://api.slack.com/apps/A0123/install-on-team?',
         label: 'Reinstall workspace'
-      },
-      offerDelete: true
-    })
-  })
-
-  it('offers only forgetting the bot when the app itself was deleted in Slack', () => {
-    expect(
-      slackRefreshNoticeState(refreshResult({ manifest: 'manual_update_required', authorization: 'app_deleted' }))
-    ).toEqual({
-      needsAttention: true,
-      message: 'This app no longer exists in Slack — it was deleted there. Delete it here to clean up.',
-      action: null,
-      scopeFragment: null,
-      offerDelete: true
+      }
     })
   })
 })

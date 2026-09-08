@@ -127,54 +127,47 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         // installed scopes so the Console can offer the platform OAuth reinstall.
         let manifest: SlackBotRefreshDtoT['manifest'] = bot.prebuilt ? 'synced' : 'manual_update_required'
         const api = slack.configApi
-        const tokenRejected = checked?.status === 'invalid'
         // Manifest sync needs a config token that owns THIS app — i.e. the caller's
         // own (per-user), resolved through the §9 tooling-credential facet: the SAME
         // instance the registry advertises and the install funnel uses, so the two
         // flows cannot disagree about which store answers or when a token is stale.
-        // A rejected bot token resolves it too: the export tells a deleted app from a dead token on a live one.
-        const config =
-          !bot.prebuilt && api && req.principal && (appIdentityMatches || tokenRejected)
-            ? ((await slack.toolingCredentials?.resolveAccessToken(bot.orgId, req.principal.userId, new Date())) ?? {
-                ok: false as const,
-                reason: 'unreachable' as const
-              })
-            : null
-        let appDeleted = false
-        if (api && config?.ok && appIdentityMatches) {
-          const exported = await api.exportApp(config.accessToken, bot.slackAppId)
-          if (exported.ok) {
-            const redirectUrl = deps.config.PUBLIC_CP_URL ? slackOAuthRedirectUri(deps.config.PUBLIC_CP_URL) : undefined
-            // An HTTP-mode bot's manifest keeps Socket Mode off + the relay pool's
-            // request_urls (slack-http-mode §6); a socket bot's refresh is unchanged.
-            const httpRelayBase = bot.transport === 'http' ? relayHttpBase(deps.config.PUBLIC_RELAY_URL) : null
-            const updated = await api.updateApp(
-              config.accessToken,
-              bot.slackAppId,
-              mergeManagedSlackManifest(exported.manifest, bot.name, redirectUrl, httpRelayBase ?? undefined)
-            )
-            manifest = updated.ok
-              ? 'synced'
-              : MANUAL_MANIFEST_ERRORS.has(updated.error)
-                ? 'manual_update_required'
-                : 'unknown'
-          } else {
-            manifest = MANUAL_MANIFEST_ERRORS.has(exported.error) ? 'manual_update_required' : 'unknown'
+        if (!bot.prebuilt && api && appIdentityMatches && req.principal) {
+          const config = (await slack.toolingCredentials?.resolveAccessToken(
+            bot.orgId,
+            req.principal.userId,
+            new Date()
+          )) ?? { ok: false as const, reason: 'unreachable' as const }
+          if (config.ok) {
+            const exported = await api.exportApp(config.accessToken, bot.slackAppId)
+            if (exported.ok) {
+              const redirectUrl = deps.config.PUBLIC_CP_URL
+                ? slackOAuthRedirectUri(deps.config.PUBLIC_CP_URL)
+                : undefined
+              // An HTTP-mode bot's manifest keeps Socket Mode off + the relay pool's
+              // request_urls (slack-http-mode §6); a socket bot's refresh is unchanged.
+              const httpRelayBase = bot.transport === 'http' ? relayHttpBase(deps.config.PUBLIC_RELAY_URL) : null
+              const updated = await api.updateApp(
+                config.accessToken,
+                bot.slackAppId,
+                mergeManagedSlackManifest(exported.manifest, bot.name, redirectUrl, httpRelayBase ?? undefined)
+              )
+              manifest = updated.ok
+                ? 'synced'
+                : MANUAL_MANIFEST_ERRORS.has(updated.error)
+                  ? 'manual_update_required'
+                  : 'unknown'
+            } else {
+              manifest = MANUAL_MANIFEST_ERRORS.has(exported.error) ? 'manual_update_required' : 'unknown'
+            }
+          } else if (config.reason === 'unreachable') {
+            manifest = 'unknown'
           }
-        } else if (config && !config.ok && config.reason === 'unreachable' && appIdentityMatches) {
-          manifest = 'unknown'
-        } else if (api && config?.ok && tokenRejected) {
-          // `app_not_found` is Slack's answer for an app that no longer exists; a live app whose token died still exports.
-          const exported = await api.exportApp(config.accessToken, bot.slackAppId)
-          appDeleted = !exported.ok && exported.error === 'app_not_found'
         }
 
         let authorization: SlackBotRefreshDtoT['authorization'] = 'unknown'
         let missingScopes: string[] = []
-        if (tokenRejected) {
-          authorization = appDeleted ? 'app_deleted' : 'invalid'
-          // A definitive rejection is positive evidence the credential is dead: converge as the relay's own probe does (`rc/bot-revoked`), fenced on the generation just tested.
-          await deps.httpBot.revokeBot(bot.id, 'tokens_revoked', { revision: bot.credentialRevision })
+        if (checked?.status === 'invalid') {
+          authorization = 'invalid'
         } else if (checked?.status === 'ok' && checked.appId && checked.appId !== bot.slackAppId) {
           authorization = 'app_mismatch'
         } else if (checked?.status === 'ok') {
@@ -192,6 +185,7 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         return {
           manifest,
           authorization,
+          rejection: checked?.status === 'invalid' ? checked.error : null,
           missingScopes,
           ...slackAppLinks(bot.slackAppId, appIdentityMatches && checked?.status === 'ok' ? checked.teamId : null)
         }

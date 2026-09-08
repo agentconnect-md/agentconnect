@@ -93,7 +93,7 @@ describe('verifySlackBot (auth.test)', () => {
 
   it('reports invalid when auth.test replies ok:false (bad/expired/revoked token)', async () => {
     mockFetch(() => new Response(JSON.stringify({ ok: false, error: 'invalid_auth' }), { status: 200 }))
-    expect(await verifySlackBot('xoxb-bad')).toEqual({ status: 'invalid' })
+    expect(await verifySlackBot('xoxb-bad')).toEqual({ status: 'invalid', error: 'invalid_auth' })
   })
 
   it.each(['ratelimited', 'internal_error', 'service_unavailable', 'team_added_to_org'])(

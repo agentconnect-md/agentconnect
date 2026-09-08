@@ -90,10 +90,9 @@ class CountingConfigApi implements SlackConfigApi {
       }
     }
   }
-  exportResult: SlackManifestExportResult = { ok: true, manifest: { display_information: { name: 'Kept' } } }
   async exportApp(configToken: string): Promise<SlackManifestExportResult> {
     this.exportCalls.push(configToken)
-    return this.exportResult
+    return { ok: true, manifest: { display_information: { name: 'Kept' } } }
   }
   async updateApp(configToken: string): Promise<SlackManifestUpdateResult> {
     this.updateCalls.push(configToken)
@@ -311,80 +310,6 @@ describe('providerToolingCredentials — the Settings→Bots manifest refresh', 
     expect(res.json().manifest).toBe('unknown')
     expect(api.exportCalls).toEqual([])
   })
-
-  it("answers 'app_deleted' when the token is dead AND the caller's config token no longer lists the app", async () => {
-    const { app, api } = withFunnel()
-    const botId = await installedSlackBot(app, 'A0TOOL0006')
-    await storeConfig(app, {
-      accessToken: 'xoxe.xoxp-fresh',
-      refreshToken: 'xoxe-refresh',
-      accessExpiresAt: new Date(Date.now() + HOUR)
-    })
-    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid' })
-    api.exportResult = { ok: false, error: 'app_not_found' }
-
-    const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })
-
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ authorization: 'app_deleted', manifest: 'manual_update_required' })
-    expect(api.exportCalls).toEqual(['xoxe.xoxp-fresh'])
-    expect(api.updateCalls).toEqual([])
-    // The dead credential converges as the relay's own probe would: bot revoked, install flipped.
-    const bot = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
-    expect(bot.revokedAt).toBeInstanceOf(Date)
-    expect(await prisma.integration.count({ where: { botId, status: 'revoked' } })).toBe(1)
-  })
-
-  it("stays 'invalid' when the app still exports — a dead token on a live app — and writes nothing back", async () => {
-    const { app, api } = withFunnel()
-    const botId = await installedSlackBot(app, 'A0TOOL0007')
-    await storeConfig(app, {
-      accessToken: 'xoxe.xoxp-fresh',
-      refreshToken: 'xoxe-refresh',
-      accessExpiresAt: new Date(Date.now() + HOUR)
-    })
-    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid' })
-
-    const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })
-
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ authorization: 'invalid', manifest: 'manual_update_required' })
-    expect(api.exportCalls).toEqual(['xoxe.xoxp-fresh'])
-    expect(api.updateCalls).toEqual([])
-    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).revokedAt).toBeInstanceOf(Date)
-  })
-
-  it("stays 'invalid' without a config token, probing no manifest", async () => {
-    const { app, api } = withFunnel()
-    const botId = await installedSlackBot(app, 'A0TOOL0008')
-    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid' })
-
-    const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })
-
-    expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ authorization: 'invalid' })
-    expect(api.exportCalls).toEqual([])
-  })
-
-  it('a bot whose installs were revoked reads as free and can be forgotten, dead rows included', async () => {
-    const { app } = withFunnel()
-    const botId = await installedSlackBot(app, 'A0TOOL0009')
-    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid' })
-    await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })
-
-    const listed = (await app.app.inject({ method: 'GET', url: `${ORG}/bots` })).json() as {
-      id: string
-      agentIds: string[]
-      revokedAt: string | null
-    }[]
-    expect(listed.find((b) => b.id === botId)).toMatchObject({ agentIds: [], revokedAt: expect.any(String) })
-
-    // The console offers the delete on that free row; the revoked membership must not FK-block it.
-    const del = await app.app.inject({ method: 'DELETE', url: `${ORG}/bots/${botId}` })
-    expect(del.statusCode).toBe(204)
-    expect(await prisma.integration.count({ where: { botId } })).toBe(0)
-    expect(await prisma.bot.count({ where: { id: botId } })).toBe(0)
-  })
 })
 
 describe('providerToolingCredentials — the config status projection', () => {
@@ -484,9 +409,10 @@ describe('the §9 DI collapse keeps its read-through seam', () => {
       authorization: 'reinstall_required'
     })
 
-    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid' })
+    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid', error: 'invalid_auth' })
     expect((await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })).json()).toMatchObject({
-      authorization: 'invalid'
+      authorization: 'invalid',
+      rejection: 'invalid_auth'
     })
   })
 })

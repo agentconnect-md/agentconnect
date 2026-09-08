@@ -31,7 +31,7 @@ export type SlackBotVerification =
       teamName: string | null
       scopes: string[] | null
     } // valid; scopes from x-oauth-scopes
-  | { status: 'invalid' } // Slack definitively rejected the credential
+  | { status: 'invalid'; error: string } // Slack rejected the credential; `error` is its code
   | { status: 'unreachable' } // network / timeout / non-2xx — inconclusive, do not block
 
 export type SlackBotVerifier = (botToken: string) => Promise<SlackBotVerification>
@@ -104,7 +104,11 @@ export const verifySlackBot: SlackBotVerifier = async (botToken) => {
       bot_id?: string
       user_id?: string
     }
-    if (!body.ok) return { status: rejectedCredential(body.error) }
+    if (!body.ok) {
+      return rejectedCredential(body.error) === 'invalid'
+        ? { status: 'invalid', error: body.error ?? 'invalid_auth' }
+        : { status: 'unreachable' }
+    }
     const scopeHeader = res.headers.get('x-oauth-scopes')
     const scopes = scopeHeader
       ? scopeHeader

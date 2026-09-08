@@ -230,7 +230,7 @@ function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) 
 
 /** The refresh outcome — the failure banner and the manifest/authorization
  *  notice, in the order they render under the row today. */
-function SlackCardNotice({ bot, onDelete }: { bot: BotDto; onDelete?: (bot: BotDto) => void }) {
+function SlackCardNotice({ bot }: { bot: BotDto }) {
   const card = useSlackBotCard()
   const entry = card.entryFor(bot.id)
   if (!entry) return null
@@ -250,7 +250,6 @@ function SlackCardNotice({ bot, onDelete }: { bot: BotDto; onDelete?: (bot: BotD
           builtin={bot.prebuilt}
           reinstalling={card.reinstallingBot(bot.id)}
           onReinstall={bot.prebuilt ? () => card.reinstallBuiltin(bot) : undefined}
-          onDelete={onDelete ? () => onDelete(bot) : undefined}
         />
       )}
     </>
@@ -261,29 +260,19 @@ function SlackRefreshNotice({
   result,
   builtin,
   reinstalling,
-  onReinstall,
-  onDelete
+  onReinstall
 }: {
   result: SlackBotRefreshDto
   builtin?: boolean
   reinstalling?: boolean
   onReinstall?: () => void
-  onDelete?: () => void
 }) {
-  const {
-    needsAttention,
-    message: defaultMessage,
-    action,
-    scopeFragment,
-    offerDelete
-  } = slackRefreshNoticeState(result)
+  const { needsAttention, message: defaultMessage, action, scopeFragment } = slackRefreshNoticeState(result)
   const [copied, setCopied] = useState(false)
   const message =
     builtin && result.authorization === 'invalid'
       ? 'Slack rejected this workspace authorization. Reinstall the app to reconnect it.'
       : defaultMessage
-  // A builtin app is the deployment's: a rejected authorization is reinstalled, never forgotten here.
-  const deletable = offerDelete && !builtin && !!onDelete
   const copyScopes = async () => {
     if (!scopeFragment) return
     try {
@@ -309,7 +298,7 @@ function SlackRefreshNotice({
           <span className="mono ml-1 text-[11px]">Missing: {result.missingScopes.join(', ')}</span>
         )}
       </span>
-      {(scopeFragment || action || deletable) && (
+      {(scopeFragment || action) && (
         <span className="flex flex-none items-center gap-3">
           {scopeFragment && (
             <button type="button" className="lnk border-0 bg-transparent p-0" onClick={() => void copyScopes()}>
@@ -330,11 +319,6 @@ function SlackRefreshNotice({
               {action.label}
             </a>
           ) : null}
-          {deletable && (
-            <button type="button" className="lnk border-0 bg-transparent p-0" onClick={onDelete}>
-              Delete app
-            </button>
-          )}
         </span>
       )}
     </div>

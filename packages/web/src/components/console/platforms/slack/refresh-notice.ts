@@ -9,8 +9,6 @@ export interface SlackRefreshNoticeState {
   } | null
   /** The missing scopes as a paste-ready manifest block, or null when no hand edit is the remedy. */
   scopeFragment: string | null
-  /** The stored credential is dead for good (rejected, or its app deleted): offer forgetting the bot here. */
-  offerDelete: boolean
 }
 
 /** JSON array items, one per line with a trailing comma, so the block pastes verbatim right after `"bot": [` in the manifest. */
@@ -47,14 +45,11 @@ export function slackRefreshNoticeState(result: SlackBotRefreshDto): SlackRefres
         ? { href: result.settingsUrl, label: 'Open Slack' }
         : { href: result.manifestUrl, label: 'Open App Manifest' }
   }
-  // `app_deleted` links nowhere: the app's Slack pages went with it.
 
   let message = 'Slack app configuration and workspace permissions are up to date.'
-  if (result.authorization === 'app_deleted') {
-    message = 'This app no longer exists in Slack — it was deleted there. Delete it here to clean up.'
-  } else if (result.authorization === 'invalid') {
-    message =
-      'Slack rejected the stored bot token. Reinstall the app and recreate this integration with the current Bot User OAuth Token, or delete it here if the app was removed from Slack.'
+  if (result.authorization === 'invalid') {
+    // Slack's own code is the diagnosis: `invalid_auth` also answers a caller its IP allowlist excludes.
+    message = `Slack rejected the stored bot token (${result.rejection ?? 'invalid'}). Reinstall the app if needed, then recreate this integration with the current Bot User OAuth Token.`
   } else if (result.authorization === 'app_mismatch') {
     message = 'The stored bot token belongs to a different Slack app. Recreate this integration with matching tokens.'
   } else if (result.authorization === 'reinstall_required' && !manualScopes) {
@@ -77,7 +72,6 @@ export function slackRefreshNoticeState(result: SlackBotRefreshDto): SlackRefres
     message,
     action,
     scopeFragment:
-      manualScopes && result.missingScopes.length > 0 ? slackManifestScopeFragment(result.missingScopes) : null,
-    offerDelete: result.authorization === 'invalid' || result.authorization === 'app_deleted'
+      manualScopes && result.missingScopes.length > 0 ? slackManifestScopeFragment(result.missingScopes) : null
   }
 }
