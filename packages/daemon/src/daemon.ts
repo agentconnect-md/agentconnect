@@ -306,12 +306,7 @@ import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
 import { assembleRuntimeLaunch } from './launch/assemble.js'
-import {
-  resolveTrustedExecutable,
-  sandboxReadRoots,
-  sandboxWriteRoots,
-  trustedRuntimeReadRoots
-} from './runtimes/read-roots.js'
+import { resolveTrustedExecutable, normalizeSandboxMounts, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient } from './cp/client.js'
@@ -1848,9 +1843,8 @@ export class Daemon {
       autoCreate: true
     })
     this.cfg = cfg
-    // Fail the boot, not the first sandboxed turn, on a mistyped or missing operator read or write root.
-    sandboxReadRoots(cfg.security.sandboxReadRoots)
-    sandboxWriteRoots(cfg.security.sandboxWriteRoots)
+    // Validate operator mounts before startup can create any runtime hosts.
+    cfg.sandbox.mounts = normalizeSandboxMounts(cfg.sandbox.mounts)
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     // §24.4: an excluded origin is named at SPEC admission. All this knows is the operator list —
     // whether a spec names an instance of its own, which stays cloneable either way, is per-agent.
@@ -3609,7 +3603,7 @@ export class Daemon {
       executableCommands,
       moduleEntries: [cliEntry, ...nodeExecArgvModuleEntries()],
       paths,
-      readRoots: this.cfg.security.sandboxReadRoots
+      readRoots: this.cfg.sandbox.mounts.map((mount) => mount.source)
     })
   }
 
@@ -4454,7 +4448,9 @@ export class Daemon {
                 gitlabCredentials
               )
           : undefined,
-        runtimeWriteRoots: runInSandbox ? sandboxWriteRoots(this.cfg.security.sandboxWriteRoots) : undefined,
+        runtimeWriteRoots: runInSandbox
+          ? this.cfg.sandbox.mounts.filter((mount) => !mount.readOnly).map((mount) => mount.source)
+          : undefined,
         // A session host with its own clones (§11) writes its session directory alone; the launch derives its Git grants from it.
         trustedWorkspaceWriteRoots: runInSandbox
           ? this.workspaces.trustedWorkspaceWriteRoots(agent, hostKeySessionKey(opts.hostKey))

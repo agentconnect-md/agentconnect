@@ -21,7 +21,7 @@ export interface CodexPermissionProfileOptions {
   sessionGitMetadataRoots?: readonly string[]
   /** A confined session's private HOME (§11) — a SIBLING of the cwd, so `:workspace` never reaches it. */
   sessionHomeRoot?: string
-  /** Operator-declared `security.sandboxWriteRoots` the outer boundary already opened: a shared package store, outside the cwd. */
+  /** Operator-declared writable `sandbox.mounts` the outer boundary already opened: a shared package store, outside the cwd. */
   sharedWriteRoots?: readonly string[]
   allowModelToolUnixSockets?: boolean
   disableUnifiedExec?: boolean

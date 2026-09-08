@@ -114,7 +114,7 @@ export interface ClaudeInnerSandboxSettings {
     allowAllUnixSockets: boolean
   }
   filesystem: {
-    /** Operator-declared `security.sandboxWriteRoots`; absent when there are none, so the policy stays byte-identical. */
+    /** Operator-declared writable `sandbox.mounts`; absent when there are none, so the policy stays byte-identical. */
     allowWrite?: string[]
     denyRead: string[]
     denyWrite: string[]

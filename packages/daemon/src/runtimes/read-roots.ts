@@ -2,7 +2,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, 
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
-import type { McpServerDef, RuntimeDef } from '../config/config-schema.js'
+import type { McpServerDef, RuntimeDef, SandboxMount } from '../config/config-schema.js'
 import { resolveCommandPath } from './probe.js'
 
 /**
@@ -23,7 +23,7 @@ export interface TrustedRuntimeReadRootsOptions {
   moduleEntries?: readonly string[]
   /** Exact daemon-owned files, sockets, or already-reviewed directories. */
   paths?: readonly string[]
-  /** Operator-owned daemon-wide read-only host dirs (`security.sandboxReadRoots`), shared by every runtime. */
+  /** Normalized operator mount sources, shared by every runtime. */
   readRoots?: readonly string[]
 }
 
@@ -47,14 +47,20 @@ function existingRoot(path: string, env: NodeJS.ProcessEnv, label = 'trusted run
   return realpathSync(expanded)
 }
 
-/** Normalize `security.sandboxReadRoots` (`~/` against the host HOME, must exist, realpath'd); throws so a boot fails fast. */
-export function sandboxReadRoots(paths: readonly string[], env: NodeJS.ProcessEnv = process.env): string[] {
-  return paths.map((path) => existingRoot(path, env, 'security.sandboxReadRoots entry'))
-}
-
-/** `security.sandboxWriteRoots`, normalized exactly like the read roots; the launch decides whether each may be reopened writable. */
-export function sandboxWriteRoots(paths: readonly string[], env: NodeJS.ProcessEnv = process.env): string[] {
-  return paths.map((path) => existingRoot(path, env, 'security.sandboxWriteRoots entry'))
+/** SRT exposes canonical host paths in place; duplicate writable grants take precedence. */
+export function normalizeSandboxMounts(
+  mounts: readonly SandboxMount[],
+  env: NodeJS.ProcessEnv = process.env
+): SandboxMount[] {
+  const normalized = new Map<string, SandboxMount>()
+  for (const mount of mounts) {
+    const source = existingRoot(mount.source, env, 'sandbox.mounts source')
+    const target = existingRoot(mount.target, env, 'sandbox.mounts target')
+    if (source !== target) throw new Error(`sandbox.mounts requires source and target to be the same path for srt`)
+    const previous = normalized.get(source)
+    normalized.set(source, { source, target, readOnly: mount.readOnly && (previous?.readOnly ?? true) })
+  }
+  return [...normalized.values()]
 }
 
 /** Resolve the existing prefix too, so a missing socket/file below a symlink is
@@ -250,7 +256,7 @@ export function trustedRuntimeReadRoots(opts: TrustedRuntimeReadRootsOptions): s
 
   addExecutable(opts.runtime.command, runtimeEnv, out, executables)
   for (const path of opts.runtime.readRoots ?? []) out.add(existingRoot(path, runtimeEnv))
-  for (const path of sandboxReadRoots(opts.readRoots ?? [], hostEnv)) out.add(path)
+  for (const path of opts.readRoots ?? []) out.add(existingRoot(path, hostEnv, 'sandbox.mounts source'))
 
   for (const server of opts.mcpServers ?? []) {
     if (server.transport !== 'stdio' || !server.command) continue

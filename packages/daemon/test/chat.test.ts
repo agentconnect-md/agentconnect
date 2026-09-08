@@ -267,40 +267,22 @@ describe('runChat', () => {
     expect(hostFactory).not.toHaveBeenCalled()
   })
 
-  it('rejects a missing security.sandboxReadRoots entry before creating any host', async () => {
+  it.each([true, false])('rejects a missing mount before creating any host (readOnly=%s)', async (readOnly) => {
     const files = scaffold()
+    const source = join(files.root, 'no-such-mount')
     writeFileSync(
       files.configPath,
       JSON.stringify({
         version: 1,
         controlPlane: { enabled: false },
         runtimes: { fake: { command: process.execPath, args: [fakeAgent], env: [] } },
-        security: { sandboxReadRoots: [join(files.root, 'no-such-toolchain')] }
+        sandbox: { mounts: [{ source, target: source, readOnly }] }
       })
     )
     const hostFactory = vi.fn()
 
     await expect(runChat({ ...files, message: 'hi', out: capture().stream, hostFactory })).rejects.toThrow(
-      /security\.sandboxReadRoots entry does not exist/
-    )
-    expect(hostFactory).not.toHaveBeenCalled()
-  })
-
-  it('rejects a missing security.sandboxWriteRoots entry before creating any host', async () => {
-    const files = scaffold()
-    writeFileSync(
-      files.configPath,
-      JSON.stringify({
-        version: 1,
-        controlPlane: { enabled: false },
-        runtimes: { fake: { command: process.execPath, args: [fakeAgent], env: [] } },
-        security: { sandboxWriteRoots: [join(files.root, 'no-such-store')] }
-      })
-    )
-    const hostFactory = vi.fn()
-
-    await expect(runChat({ ...files, message: 'hi', out: capture().stream, hostFactory })).rejects.toThrow(
-      /security\.sandboxWriteRoots entry does not exist/
+      /sandbox\.mounts source does not exist/
     )
     expect(hostFactory).not.toHaveBeenCalled()
   })
