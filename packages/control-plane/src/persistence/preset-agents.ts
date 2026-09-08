@@ -55,11 +55,13 @@ export const GENERAL_PRESET = {
   icon: { kind: 'glyph', glyph: 'agentconnect', color: '#1a212b' } satisfies AgentIcon
 } as const
 
-/** The preset's default skill (§3.1): the platform's own `agentconnect-platform`
- *  skill — platform introduction + admin-over-MCP/REST guidance — acquired from
- *  the public `agentconnect-skill` repository's `skills/` directory. Registered
- *  as an ordinary org skill source named after the preset, so the console lists
- *  and manages it like any user-registered source. */
+/** The preset's default skills (§3.1), acquired from the public
+ *  `agentconnect-skill` repository's `skills/` directory: `agentconnect-platform`
+ *  (platform introduction + admin-over-MCP/REST guidance) and
+ *  `agentconnect-create-agent` (template-driven agent creation through the admin
+ *  MCP toolset, collecting parameters with elicitation cards). Registered as an
+ *  ordinary org skill source named after the preset, so the console lists and
+ *  manages it like any user-registered source. */
 export const PRESET_SKILL_SOURCE = {
   name: 'agentconnect',
   source: 'agentconnect-md/agentconnect-skill',
@@ -71,7 +73,7 @@ export const PRESET_SKILL_SOURCE = {
   // repo's default branch so the skill tracks head like a console-registered source.
   ref: 'main',
   subDir: 'skills',
-  skills: ['agentconnect-platform']
+  skills: ['agentconnect-platform', 'agentconnect-create-agent']
 } as const
 
 /** The preset agent's default enable-list ("<sourceName>/<skillName>") — resolved
