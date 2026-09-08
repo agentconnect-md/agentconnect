@@ -72,6 +72,30 @@ export function elicitCard(body: string | undefined): ElicitBody | null {
   }
 }
 
+/** One elicitation card's identity across the two places it can be rendered from: the agent that
+ *  owns the request, and the request itself. A uuid request id could stand alone, but identity
+ *  here is (owner, request) and saying so keeps a future non-unique id from silently colliding. */
+export function elicitStepKey(agentId: string | undefined, requestId: string): string {
+  return `${agentId ?? ''}\u0000${requestId}`
+}
+
+/** Every card the LIVE stream is currently carrying. On a reload a pending webchat card arrives
+ *  twice — once as its transcript row (#1794) and once as the replayed `elicitation` event — and
+ *  the live copy is the one that can still be answered and the one `elicitation_resolved` settles,
+ *  so this is what the transcript's twin is dropped against. Empty for every surface that streams
+ *  no cards at all, which is the Slack-origin case. */
+export function liveElicitKeys(
+  live: readonly { lane?: string; agentId?: string; elicit?: { requestId: string } }[],
+  ownerAgentId?: string
+): Set<string> {
+  const keys = new Set<string>()
+  for (const step of live) {
+    if (!step.elicit?.requestId) continue
+    keys.add(elicitStepKey(step.agentId ?? ownerAgentId, step.elicit.requestId))
+  }
+  return keys
+}
+
 /** Split an agent turn's collapsed work steps into the counts the summary reports:
  *  reasoning STEPS (THINK/PLAN), tool-command STEPS (TOOL), and edited FILES — the
  *  DISTINCT file paths across all EDIT steps (a single EDIT row can touch several

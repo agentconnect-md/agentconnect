@@ -103,6 +103,8 @@ import type { AgentIcon } from '@/lib/agent-icon'
 import {
   elicitCard,
   ELICIT_LANE,
+  elicitStepKey,
+  liveElicitKeys,
   NOTICE_LANE,
   PLAN_LANE,
   WORK_LANES,
@@ -3851,10 +3853,24 @@ export default function SessionDetailView() {
     }
     return undefined
   }
+  // #1794's two halves meet on a reload: a pending webchat card is BOTH a transcript row and the
+  // `elicitation` event the cold attach replays, and the two render independently — one question,
+  // two answerable cards, and a settlement that only reaches the live one. A card carries no
+  // `postId`, so `reconcilePersistedLiveSteps`' exact-post arm cannot retire it; its identity is
+  // its OWNER plus its request. The LIVE copy wins while that replay stands: it is the one that
+  // can be answered, and the one `elicitation_resolved` collapses. Once the turn's live steps are
+  // retired the persisted row takes over, carrying the outcome it was rewritten with. Empty on a
+  // Slack-origin session, which streams no cards and so only ever has the persisted copy.
+  const liveCards = liveElicitKeys(liveSteps, session.agentId)
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
     for (const m of visibleMsgs ?? []) {
+      if (liveCards.size > 0 && (m.kind || '').toLowerCase() === 'elicit') {
+        const persisted = elicitCard(m.body)
+        const owner = conversationSourceAgentByMessageRef.current.get(m) ?? m.sender
+        if (persisted && liveCards.has(elicitStepKey(owner, persisted.requestId))) continue
+      }
       const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
       const sourceTurnKey = conversationSourceTurnByMessageRef.current.get(m)
       // A merged conversation stamps every row with the platform of the source

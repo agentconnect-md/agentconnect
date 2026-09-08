@@ -315,7 +315,13 @@ export class PermissionCoordinator {
   private readonly permissionEvaluationDetails = new WeakMap<RequestPermissionRequest, Record<string, unknown>>()
 
   // ── Interactive elicitations (ACP elicitation/create, form + url mode) ──────
-  private elicitSeq = 0
+  /** One outstanding card per id, and the id is a `randomUUID()` — never a process-local
+   *  sequence. A card lives in a Slack MESSAGE, which outlives the daemon that posted it, so a
+   *  restart minting `elicit-1` again would let a stale button answer whatever request now holds
+   *  that id: the card carries its option's POSITION (#1794), and a position resolves against the
+   *  NEW question's options, so the stale tap would accept an answer to a question its reader
+   *  never saw. A literal used to be rejected by the new option list by accident; nothing should
+   *  rest on that accident, and one id shape is also one less branch. */
   private pendingElicits = new Map<string, PendingElicit>()
   /** URL-mode cards already consented to, keyed by `<owner>\x00<elicitationId>` and awaiting
    *  an `elicitation/complete` that may never come — their ACP request resolved at consent, so
@@ -1404,7 +1410,7 @@ export class PermissionCoordinator {
       return await this.awaitSlackFormElicitation(agentId, sessionId, params, p, conn, form)
     }
     const target = form[0]!
-    const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
+    const requestId = randomUUID()
     const blocks = buildElicitationCard(requestId, params, this.host.httpSlackSessionTarget(p), SLACK_ELICIT_SURFACE)
     if (!blocks) return this.noticeUnrenderableElicit(p, params, isApproval)
     const cardMessage = (params as { message?: string }).message?.trim() || 'The agent needs your input'
@@ -1593,7 +1599,7 @@ export class PermissionCoordinator {
     const form = elicitForm(params, WEBCHAT_ELICIT_SURFACE)
     if (!form) return this.noticeUnrenderableWebchatElicit(p, wc, params)
     const target = form[0]!
-    const requestId = `elicit-${++this.elicitSeq}`
+    const requestId = randomUUID()
     const message = (params as { message?: string }).message?.trim() || 'The agent needs your input'
     const card = elicitCardPayload(requestId, message, params, form)
     let resolveResult!: (res: CreateElicitationResponse) => void
@@ -1648,7 +1654,7 @@ export class PermissionCoordinator {
     wc: NonNullable<Pending['webchat']>,
     url: { elicitationId: string; url: string }
   ): Promise<CreateElicitationResponse | undefined> {
-    const requestId = `elicit-${++this.elicitSeq}`
+    const requestId = randomUUID()
     const message = (params as { message?: string }).message?.trim() || 'The agent needs you to open a link'
     let resolveResult!: (res: CreateElicitationResponse) => void
     const result = new Promise<CreateElicitationResponse>((resolve) => (resolveResult = resolve))
@@ -1701,7 +1707,7 @@ export class PermissionCoordinator {
     conn: SlackConnection,
     url: { elicitationId: string; url: string }
   ): Promise<CreateElicitationResponse | undefined> {
-    const requestId = `elicit-${++this.elicitSeq}`
+    const requestId = randomUUID()
     const blocks = buildUrlConsentCard(requestId, params, this.host.httpSlackSessionTarget(p))
     if (!blocks) return this.noticeUnrenderableElicit(p, params, false)
     const message = (params as { message?: string }).message?.trim() || 'The agent needs you to open a link'
@@ -1769,7 +1775,7 @@ export class PermissionCoordinator {
     conn: SlackConnection,
     form: ElicitTarget[]
   ): Promise<CreateElicitationResponse | undefined> {
-    const requestId = `elicit-${++this.elicitSeq}`
+    const requestId = randomUUID()
     const sessionTarget = this.host.httpSlackSessionTarget(p)
     const blocks = buildElicitationFormCard(requestId, params, form, sessionTarget)
     if (!blocks) return this.noticeUnrenderableElicit(p, params, false)
@@ -1982,10 +1988,10 @@ export class PermissionCoordinator {
     requestId: string
     value: ElicitAnswer
     actor?: InteractionActor
-    /** Set only by the webchat ingress: the answering browser's conversation. It confines
-     *  the answer to a card THIS conversation was shown — a webchat client can neither
-     *  answer a Slack card nor another conversation's, both of which the guessable
-     *  `elicit-<n>` id would otherwise allow. */
+    /** Set only by the webchat ingress: the answering browser's conversation. It confines the
+     *  answer to a card THIS conversation was shown — a webchat client may answer neither a Slack
+     *  card nor another conversation's. Kept alongside the unguessable request id rather than
+     *  replaced by it: an id is a secret, and a scope is a rule. */
     webchatConversationId?: string
   }): Promise<void> {
     // A DM elicitation card's request lives on the editor path (§2/§6.4).
@@ -2015,8 +2021,8 @@ export class PermissionCoordinator {
     // for a numeric field, a string for the rest. Dismiss (null) settles any of them.
     if (a.value !== null && !isFormAnswer(a.value) && !answerFitsKind(rec.kind, a.value)) return
     const target = elicitTarget(rec.params, surfaceOf(rec))
-    // A browser answers only a card ITS OWN conversation was shown: both surfaces share one
-    // `elicit-<n>` counter, so the guessable id would otherwise reach another conversation's.
+    // A browser answers only a card ITS OWN conversation was shown: both surfaces mint ids from
+    // one place, so the scope is what keeps one conversation's answer out of another's card.
     if (a.webchatConversationId !== undefined) {
       if (rec.surface !== 'webchat' || rec.wc.conversationId !== a.webchatConversationId) return
       // And a card settles only from its own surface, so a Slack tap never answers a webchat one.
@@ -2185,7 +2191,7 @@ export class PermissionCoordinator {
    *  decline notice could not tell them. */
   private recordUnrenderableElicit(p: Pending, params: CreateElicitationRequest): void {
     const message = (params as { message?: string }).message?.trim() || 'The agent needs your input'
-    const card = elicitUnrenderablePayload(`elicit-${++this.elicitSeq}`, message)
+    const card = elicitUnrenderablePayload(randomUUID(), message)
     // Written settled in one go: this ask was never open on any surface.
     this.writeElicitRow(
       {

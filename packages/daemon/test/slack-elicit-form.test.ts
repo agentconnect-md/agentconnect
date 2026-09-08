@@ -24,6 +24,7 @@ import {
   buildElicitationFormCard,
   elicitCardShape,
   elicitForm,
+  decodePermValue,
   elicitFormBlockId,
   elicitFormSubmission,
   elicitOptionToken,
@@ -705,5 +706,52 @@ describe('a card recorded in the transcript', () => {
       options: [],
       outcome: 'unrenderable'
     })
+  })
+})
+
+// ── #1794 review: a card outlives the daemon that posted it ───────────────────────────────────
+
+describe('a stale card cannot answer the request that reused its id', () => {
+  it("a tap from one daemon's card settles nothing on the next daemon's", async () => {
+    const before = slackTurn()
+    const staging = await raise(before, form({ env: { type: 'string', enum: ['staging', 'canary'] } }, ['env']))
+    // The button's own wire value, exactly as Slack would hand it back — and Slack keeps that
+    // message, and its buttons, long after the daemon that posted it is gone.
+    const staleValue = (before.posted[0] as any[])[1].elements[0].value as string
+    const stale = decodePermValue(staleValue)!
+    expect(stale.requestId).toBe(staging.requestId)
+    expect(stale.optionId).toBe(elicitOptionToken(0))
+
+    // A restart, and a fresh daemon that asks a DIFFERENT question.
+    const after = slackTurn()
+    const production = await raise(after, form({ env: { type: 'string', enum: ['production', 'rollback'] } }, ['env']))
+    let settled = false
+    void production.result.then(() => (settled = true))
+
+    // Tapping the stale card must not answer the new request. A process-local sequence handed
+    // both requests the same id, and the card carries a POSITION, so this tap used to accept
+    // `production` — an answer to a question this reader never saw.
+    await after.daemon.permissions.handleElicitChoice({ requestId: stale.requestId, value: stale.optionId })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(settled).toBe(false)
+    expect(after.daemon.permissions.pendingElicits.size).toBe(1)
+    // Which is only true because an id is unique across daemon lifetimes.
+    expect(production.requestId).not.toBe(staging.requestId)
+
+    await after.daemon.permissions.handleElicitChoice({
+      requestId: production.requestId,
+      value: elicitOptionToken(0)
+    })
+    await expect(production.result).resolves.toEqual({ action: 'accept', content: { env: 'production' } })
+  })
+
+  it('mints an id no card can guess and no restart can repeat', async () => {
+    const h = slackTurn()
+    const first = await raise(h, form({ a: { type: 'string', enum: ['x', 'y'] } }, ['a']))
+    await h.daemon.permissions.handleElicitChoice({ requestId: first.requestId, value: null })
+    await expect(first.result).resolves.toEqual({ action: 'decline' })
+    const second = await raise(h, form({ a: { type: 'string', enum: ['x', 'y'] } }, ['a']))
+    for (const id of [first.requestId, second.requestId]) expect(id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(second.requestId).not.toBe(first.requestId)
   })
 })
