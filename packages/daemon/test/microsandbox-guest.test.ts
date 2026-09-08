@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import { MAX_FRAME_BYTES, type MemoryFsPayload } from '@agentconnect.md/protocol'
 import {
   MICROSANDBOX_GUEST_ENTRY,
   MICROSANDBOX_NODE,
@@ -14,7 +14,7 @@ import {
 } from '../src/microsandbox/guest.js'
 import { GitTransportError } from '../src/workspace/git-runner.js'
 import { MicrosandboxWorkspaceFs } from '../src/microsandbox/workspace-fs.js'
-import { applyMemoryFsPayload, type MemoryFsPayload } from '../src/shim/memory-fs-channel.js'
+import { applyMemoryFsPayload } from '../src/shim/memory-fs-channel.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
 import { pathExecutor } from './fixtures/memory-fs-pod.js'
 
