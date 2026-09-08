@@ -306,8 +306,9 @@ the provider still does not (§6, §9).** The binding change is the trigger: whe
 owning daemon applies a binding whose `home` became `control-plane`, it copies `memory/`
 and `channels/` once through the two ports (`copyMemoryTree(from, to)`, under the
 directory lock), the change log with them — sidecar lines become rows, one batch,
-bounded by the sidecar cap — and reports completion, which the CP records on the
-binding. Until that record exists the agent's memory is unavailable the way an
+bounded by the sidecar cap — and reports completion on a frame of its own,
+`memory/home/migrated` → `memory/home/migrated/ok`, which the CP records on the
+binding; it is not an op in the store set, because it is not a file operation. Until that record exists the agent's memory is unavailable the way an
 unreachable home is (no standing context, tools answer unavailable, distillation waits
 in the outbox), so nothing writes the target while the copy runs. That is what makes
 the copy restartable by doing nothing clever: the source is frozen from the moment the
