@@ -470,7 +470,7 @@ function WhereStep({
         />
         <WhereCard
           name="Daemon"
-          desc="Bring your own subscription or API key, and your own machine."
+          desc="Bring your own provider credentials, and your own machine."
           icon="server"
           selected={choice === 'daemon'}
           onSelect={() => onChoice('daemon')}
@@ -677,7 +677,7 @@ function DaemonStep({
     <StepFrame
       stepLabel={stepLabel}
       title="Run the daemon"
-      sub="Bring your own subscription or API key, and your own machine. Run this on the machine your agents should work on."
+      sub="Bring your own provider credentials, and your own machine. Run this on the machine your agents should work on."
       footer={
         <>
           {onBack && (
