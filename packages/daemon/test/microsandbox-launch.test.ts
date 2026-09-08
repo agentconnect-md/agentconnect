@@ -103,7 +103,7 @@ describe('prepareMicrosandboxLaunch', () => {
       expect(launch.env[name]).toBeUndefined()
     }
     expect(launch.env.TMPDIR).toBe('/tmp')
-    expect(launch.env.AC_GITCRED_SOCKET).toBe('/run/agentconnect/gitcred.sock')
+    expect(launch.env.AC_GITCRED_SOCKET).toBe('/tmp/agentconnect/gitcred.sock')
     const dockerConfig = join(opts.scopeDir, 'run', 'config-files', 'docker')
     const explicit = prepareMicrosandboxLaunch({
       ...opts,
@@ -209,7 +209,11 @@ describe('prepareMicrosandboxLaunch', () => {
       opts.scopeDir,
       join(opts.scopeDir, 'home', 'replacement'),
       dirname(MICROSANDBOX_GUEST_ENTRY),
-      '/run/agentconnect'
+      '/run',
+      '/var/run',
+      '/run/docker',
+      '/tmp/agentconnect',
+      '/tmp'
     ]) {
       expect(() =>
         prepareMicrosandboxLaunch({ ...opts, mounts: [{ source: opts.hostHome, target, readOnly: false }] })

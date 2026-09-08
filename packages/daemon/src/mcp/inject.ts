@@ -42,19 +42,11 @@ export function buildMcpServers(opts: {
   ]
 }
 
-/**
- * The same bridge for a runtime that lives in a SANDBOX POD, in that pod's coordinates.
- *
- * Nothing of this daemon's filesystem survives the trip. The launch is the one the image reported
- * for itself — interpreter included, so nothing here depends on what the harness leaves on the
- * pod's PATH — and the endpoint is the `mcp` tunnel's in-pod socket, which the shim serves and
- * proxies back to this daemon's control server. Sending the daemon-side pair instead is not a
- * degraded spec but an unspawnable one: the pod's runtime retried a module it has no filesystem
- * for until it gave up, and the agent lost every AgentConnect tool without saying so.
- */
+/** Use the image's bridge command with the local guest socket; pool paths remain the default. */
 export function buildSandboxMcpServers(opts: {
   bridge: { command: string; args: string[] }
   token: string
+  socketPath?: string
 }): McpStdioServer[] {
   return [
     {
@@ -62,7 +54,7 @@ export function buildSandboxMcpServers(opts: {
       command: opts.bridge.command,
       args: [...opts.bridge.args],
       env: [
-        { name: 'AC_MCP_ENDPOINT', value: SANDBOX_TUNNEL_PATHS.mcp },
+        { name: 'AC_MCP_ENDPOINT', value: opts.socketPath ?? SANDBOX_TUNNEL_PATHS.mcp },
         { name: 'AC_MCP_TOKEN', value: opts.token }
       ]
     }

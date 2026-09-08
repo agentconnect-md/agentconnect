@@ -45,8 +45,7 @@ describe('buildSandboxMcpServers', () => {
     const bridge = { command: '/usr/local/bin/node', args: ['/opt/agentconnect/shim/mcp-bridge.js'] }
     const [server] = buildSandboxMcpServers({ bridge, token: 'tok-1' })
     expect(server!.name).toBe('agentconnect')
-    // Not process.execPath and not the daemon's CLI entry: both name files the pod does not have,
-    // and a runtime handed them retries a missing module instead of serving tools.
+    // Both the interpreter and bridge must exist in the image.
     expect(server!.command).toBe(bridge.command)
     expect(server!.args).toEqual(bridge.args)
     expect(server!.env).toEqual([
@@ -54,5 +53,7 @@ describe('buildSandboxMcpServers', () => {
       { name: 'AC_MCP_TOKEN', value: 'tok-1' }
     ])
     expect(server!.args).not.toContain('tok-1')
+    const [localVm] = buildSandboxMcpServers({ bridge, token: 'tok-1', socketPath: '/tmp/agentconnect/mcp.sock' })
+    expect(localVm!.env).toContainEqual({ name: 'AC_MCP_ENDPOINT', value: '/tmp/agentconnect/mcp.sock' })
   })
 })
