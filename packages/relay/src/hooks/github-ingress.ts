@@ -476,6 +476,11 @@ function sanitizeTitle(title: string): string {
 /** A commit id as GitHub writes it; anything else is dropped rather than rendered on the trusted header. */
 const COMMIT_SHA = /^[0-9a-f]{7,64}$/i
 
+/** The first link a payload actually carries — GitHub defaults an omitted status URL to `""`, not null. */
+function firstUrl(...candidates: Array<string | null | undefined>): string | undefined {
+  return candidates.find((candidate): candidate is string => typeof candidate === 'string' && candidate !== '')
+}
+
 /** Build the trimmed envelope shared by every hook this delivery fans out to
  *  (exported for unit tests). Comment fields win over the subject's for
  *  `issue_comment` deliveries — the comment is what fired. Push deliveries have
@@ -495,14 +500,15 @@ export function buildGithubContext(event: string, payload: GithubPayload): HookC
     ''
   const excerpt = truncateUtf8(bodySource, GITHUB_BODY_EXCERPT_MAX)
   const action = githubEventAction(event, payload)
-  const htmlUrl =
-    payload.comment?.html_url ??
-    subject?.html_url ??
-    payload.compare ??
-    status?.log_url ??
-    status?.target_url ??
-    status?.environment_url ??
-    (deployment ? payload.workflow_run?.html_url : undefined)
+  const htmlUrl = firstUrl(
+    payload.comment?.html_url,
+    subject?.html_url,
+    payload.compare,
+    status?.log_url,
+    status?.target_url,
+    status?.environment_url,
+    deployment ? payload.workflow_run?.html_url : undefined
+  )
   return {
     source: 'github',
     event,

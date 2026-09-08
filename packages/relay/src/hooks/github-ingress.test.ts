@@ -2485,6 +2485,22 @@ describe('github ingress', () => {
       expect(h.reports.map((r) => r.event)).toEqual(['deployment_status:failure'])
     })
 
+    it('skips the empty-string URLs GitHub defaults omitted status fields to', async () => {
+      h.table.upsert(rule({}, { events: ['deployment_status:*'] }))
+      await post('deployment_status', deploymentStatusPayload({ state: 'success', log_url: '', target_url: '' }), {
+        headers: { 'x-github-delivery': 'ds-env-url' }
+      })
+      await post(
+        'deployment_status',
+        deploymentStatusPayload({ state: 'success', log_url: '', target_url: '', environment_url: '' }),
+        { headers: { 'x-github-delivery': 'ds-run-url' } }
+      )
+      await flush()
+      const urls = h.sent.map((m) => (m.source === 'hook' ? m.context?.htmlUrl : undefined))
+      // The first non-empty link wins: the environment URL, then the workflow run that created the deployment.
+      expect(urls).toEqual(['https://app.example.test', 'https://github.com/acme/infra/actions/runs/1'])
+    })
+
     it('`deployment_status:*` takes every state; thread and push subscriptions take none', async () => {
       h.table.upsert(rule({}, { events: ['deployment:*', 'deployment_status:*'] }))
       h.table.upsert(rule({ hookId: HOOK_B }, { events: ['issues:opened', 'pull_request:*', 'push:*'] }))
