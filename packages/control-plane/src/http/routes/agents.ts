@@ -99,6 +99,7 @@ import {
   resolveMemoryBindingOnUpdate
 } from '../../agent-memory/home.js'
 import { memoryHistoryRoot, toHistoryEvent } from '../../agent-memory/history.js'
+import { memoryHomeUnavailable, SANDBOX_UNAVAILABLE_CODE } from '../../agent-memory/unavailable.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import { canView, canViewSession, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
@@ -744,7 +745,7 @@ export function workspaceErrorCode(err: ProtocolError): string | null {
  *  running, so its files are unreachable until it is. 503 like an offline daemon, because that is
  *  what it is — but WITH the code, which is how the console tells "come back in a moment" from a
  *  daemon that may never come back, and from an empty workspace. */
-const SANDBOX_UNAVAILABLE = 'WORKSPACE_SANDBOX_UNAVAILABLE'
+const SANDBOX_UNAVAILABLE = SANDBOX_UNAVAILABLE_CODE
 
 /** Status a console can act on instead of the 503 that reads as an offline daemon:
  *  a worktree the daemon lacks is 404 (as when the CP pre-empts the read), a bad path
@@ -784,13 +785,13 @@ function sendWorkspaceFailure(reply: FastifyReply, err: unknown): boolean {
   return true
 }
 
-/** A memory or dream request refused because the agent's sandbox is not running: the workspace
- *  reader's transient 503 + code, so the console wakes the sandbox (#1077). false ⇒ not that. */
-function sendSandboxUnavailable(reply: FastifyReply, err: unknown): boolean {
-  if (!(err instanceof ProtocolError) || workspaceErrorCode(err) !== SANDBOX_UNAVAILABLE) return false
-  void reply
-    .code(503)
-    .send({ error: 'Service Unavailable', statusCode: 503, message: err.message, code: SANDBOX_UNAVAILABLE })
+/** A memory request refused because the agent's memory home is out of reach (a sleeping sandbox, a Control-Plane
+ *  tree behind a missing connection, feature, scope, or migration): a 503 with the reason as `code`, so the console
+ *  retries — and wakes the sandbox on the one code it knows (#1077). false ⇒ not that. */
+function sendMemoryHomeUnavailable(reply: FastifyReply, err: unknown): boolean {
+  const failure = memoryHomeUnavailable(err)
+  if (!failure) return false
+  void reply.code(503).send({ error: failure.error, statusCode: 503, message: failure.message, code: failure.code })
   return true
 }
 
@@ -866,11 +867,9 @@ function memoryAdminFailure(err: unknown): {
   message: string
   code?: string
 } | null {
-  // A cluster agent's memory tree is on its sandbox volume: asleep is the workspace reader's transient
-  // 503 + code, which the console answers by waking the sandbox (#1077) — never a 400.
-  if (err instanceof ProtocolError && workspaceErrorCode(err) === SANDBOX_UNAVAILABLE) {
-    return { status: 503, error: 'Service Unavailable', message: err.message, code: SANDBOX_UNAVAILABLE }
-  }
+  // The memory home is out of reach (asleep sandbox, unreachable Control-Plane tree): transient 503 + reason, never a 400.
+  const unreachable = memoryHomeUnavailable(err)
+  if (unreachable) return unreachable
   if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
     return { status: 400, error: 'Bad Request', message: `daemon rejected the request: ${err.message}` }
   }
@@ -3512,7 +3511,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Read the agent memory index',
           description:
-            "Proxy the agent's memory index (<agent-root>/memory/MEMORY.md) live from the owning daemon; a not-yet-created file is data (exists:false). 503 when unplaced or the daemon is offline.",
+            "Proxy the agent's memory index (<agent-root>/memory/MEMORY.md) live from the owning daemon; a not-yet-created file is data (exists:false). 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'readAgentMemory',
           params: IdParam,
           querystring: MemoryFileQueryDto,
@@ -3545,7 +3544,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toAgentMemoryDto(rep)
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3563,7 +3562,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List agent memory files',
           description:
-            "List the files in the agent's memory dir (MEMORY.md index + topic files) live from the owning daemon. 503 when unplaced or the daemon is offline.",
+            "List the files in the agent's memory dir (MEMORY.md index + topic files) live from the owning daemon. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'listAgentMemoryFiles',
           params: IdParam,
           querystring: MemoryFilesQueryDto,
@@ -3593,7 +3592,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toMemoryFilesDto(rep)
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3611,7 +3610,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List agent channel memory folders',
           description:
-            'List the channels that have their own memory folder for a channel-scoped agent, live from the owning daemon (empty for agent-scoped agents). 503 when unplaced or the daemon is offline.',
+            'List the channels that have their own memory folder for a channel-scoped agent, live from the owning daemon (empty for agent-scoped agents). 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'listAgentMemoryChannels',
           params: IdParam,
           response: { 200: MemoryChannelsDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
@@ -3638,7 +3637,7 @@ export function agentRoutes(deps: HttpDeps) {
             }))
           }
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3656,7 +3655,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Read a memory file',
           description:
-            'Proxy one byte slice of a memory file (?path defaults to MEMORY.md) live from the owning daemon; a missing file is data (exists:false). 503 when unplaced or the daemon is offline.',
+            'Proxy one byte slice of a memory file (?path defaults to MEMORY.md) live from the owning daemon; a missing file is data (exists:false). 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'readAgentMemoryFile',
           params: IdParam,
           querystring: MemoryFileQueryDto,
@@ -3689,7 +3688,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toAgentMemoryDto(rep)
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3708,7 +3707,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Replace a memory file',
           description:
-            'Replace one memory file (?path defaults to MEMORY.md) on the owning daemon; returns the written size/mtime. `ifMatchMtime` (optional) is optimistic concurrency — a 409 if the file changed under you. Requires edit permission. 503 when unplaced or the daemon is offline.',
+            'Replace one memory file (?path defaults to MEMORY.md) on the owning daemon; returns the written size/mtime. `ifMatchMtime` (optional) is optimistic concurrency — a 409 if the file changed under you. Requires edit permission. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'putAgentMemoryFile',
           params: IdParam,
           querystring: PutMemoryFileQueryDto,
@@ -3754,7 +3753,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return { path: ok.path, size: ok.size, mtime: ok.mtime }
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           // The daemon rejects a stale write (CONFLICT) or an over-budget / bad-path
           // write (BAD_PAYLOAD) — surface those as 409 / 400, not the generic 503.
           if (err instanceof ProtocolError && err.code === 'CONFLICT') {
@@ -3781,7 +3780,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List memory file history',
           description:
-            'Return one newest-first page of add/update/delete provenance for a managed memory file. For a memory home on the daemon the page is proxied live from the owning daemon and not persisted here; for a home in the Control Plane it is answered from the change log the Control Plane keeps, with no daemon involved.',
+            'Return one newest-first page of add/update/delete provenance for a managed memory file. For a memory home on the daemon the page is proxied live from the owning daemon and not persisted here; for a home in the Control Plane it is answered from the change log the Control Plane keeps, with no daemon involved. 503 when unplaced, the daemon is offline, or the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'listAgentMemoryFileHistory',
           params: IdParam,
           querystring: MemoryHistoryQueryDto,
