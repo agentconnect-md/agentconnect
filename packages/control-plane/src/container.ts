@@ -1504,6 +1504,7 @@ export function buildContainer(
       externalMemoryConnectionSecret: repos.externalMemoryConnectionSecret,
       externalMemoryGrant: repos.externalMemoryGrant,
       memoryConnectionWriter: repos.memoryConnectionWriter,
+      agentMemoryHistory: repos.agentMemoryHistory,
       slackInstall: repos.slackInstall,
       slackPlatformInstall: repos.slackPlatformInstall,
       feishuAppRegistration: repos.feishuAppRegistration,

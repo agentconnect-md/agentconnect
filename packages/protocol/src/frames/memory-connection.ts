@@ -110,15 +110,18 @@ export const ManagedMemoryBinding = z
     dreaming: MemoryDreamingPolicy.optional(),
     scope: ManagedMemoryScope.optional(),
     // Absent on a binding older than the field ⇒ `daemon`, the historical home; the CP stores the resolved value.
-    home: ManagedMemoryHome.default('daemon')
+    home: ManagedMemoryHome.default('daemon'),
+    // CP-owned: set with a `daemon` → `control-plane` change, cleared by `memory/home/migrated`; never accepted from a client.
+    homeMigration: z.literal('pending').optional()
   })
   .strict()
 export type ManagedMemoryBinding = z.infer<typeof ManagedMemoryBinding>
 
 // `none` and `native` carry no managed policy; `autoDistill` stays accepted because stored bindings have carried it.
-const RuntimeMemoryBinding = z
+export const RuntimeMemoryBinding = z
   .object({ provider: z.enum(['none', 'native']), autoDistill: z.boolean().optional() })
   .strict()
+export type RuntimeMemoryBinding = z.infer<typeof RuntimeMemoryBinding>
 
 export const ExternalMemoryBinding = z
   .object({

@@ -321,7 +321,10 @@ and `channels/` once through the two ports (`copyMemoryTree(from, to)`, under th
 directory lock), the change log with them — sidecar lines become rows, one batch,
 bounded by the sidecar cap — and reports completion on a frame of its own,
 `memory/home/migrated` → `memory/home/migrated/ok`, which the CP records on the
-binding; it is not an op in the store set, because it is not a file operation. Until that record exists the agent's memory is unavailable the way an
+binding; it is not an op in the store set, because it is not a file operation. The
+record is the CP-owned `homeMigration: 'pending'` the binding carries from the flip
+until that report clears it (a report for a home that moved on since is `CONFLICT`;
+a repeated report is the same success). Until that record exists the agent's memory is unavailable the way an
 unreachable home is (no standing context, tools answer unavailable, distillation waits
 in the outbox), so nothing writes the target while the copy runs. That is what makes
 the copy restartable by doing nothing clever: the source is frozen from the moment the
@@ -332,7 +335,8 @@ marker file, no partial-tree question. Staging and the pre-adoption backup stay 
 each belonging to the host or the adoption that made it; the source tree is never
 deleted. The daemon then rebuilds the session boundary as any memory change does. The
 reverse, `control-plane` → `daemon`, is not a migration: the CP refuses it as a plain
-binding change and accepts it only as a forced one, which keeps nothing — the CP drops
+binding change (409) and accepts it only as a forced one (`force: true` on the agent
+edit), which keeps nothing — the CP drops
 the agent's rows and its change log, and the daemon starts from an empty tree, the
 pre-switch local tree archived aside rather than resurrected (a snapshot from before
 the switch is not the memory the agent has been using since). The console offers the
@@ -848,7 +852,7 @@ Agent configuration uses a discriminated shape across protocol `AgentSpec`, CP
 type MemoryConfig =
   | { provider: 'none' }
   | { provider: 'native' }
-  | { provider: 'managed'; autoDistill?: boolean; home?: 'daemon' | 'control-plane' }
+  | { provider: 'managed'; autoDistill?: boolean; home?: 'daemon' | 'control-plane'; homeMigration?: 'pending' }
   | {
       provider: 'external'
       connectionId: string
@@ -861,7 +865,10 @@ type MemoryConfig =
   a later placement change never flips it implicitly; an agent placed on the
   install-wide pool must carry `control-plane`, and the console fixes the selector
   there. `home` migrates one way only, `daemon` → `control-plane` (§3.2.1); the
-  reverse is accepted only as a forced change and keeps no memory.
+  reverse is accepted only as a forced change (`force: true` on the edit, 409 without
+  it) and keeps no memory. An edit that omits `home` keeps the current one, and
+  `homeMigration` is CP-owned and read-only: set by the forward switch, cleared by the
+  daemon's completion report, never accepted from a client.
 - `connectionId` must belong to the agent's organization, and the caller must
   be authorized to use it. The CP does not accept per-agent
   `endpoint/apiKey/command`.

@@ -160,6 +160,20 @@ describe('managed memory home', () => {
     }
   })
 
+  it('carries the CP-owned migration flag only as `pending`, and only on a managed binding', () => {
+    expect(AgentMemoryBinding.parse({ provider: 'managed', home: 'control-plane', homeMigration: 'pending' })).toEqual({
+      provider: 'managed',
+      home: 'control-plane',
+      homeMigration: 'pending'
+    })
+    for (const bad of [
+      { provider: 'managed', home: 'control-plane', homeMigration: 'done' },
+      { provider: 'native', homeMigration: 'pending' }
+    ]) {
+      expect(AgentMemoryBinding.safeParse(bad).success).toBe(false)
+    }
+  })
+
   it('resolves the home on the AgentSpec a daemon receives', () => {
     expect(AgentSpec.parse({ name: 'bot', memory: { provider: 'managed' } }).memory).toEqual({
       provider: 'managed',
