@@ -740,6 +740,63 @@ describe('memory MCP tools (executeTool)', () => {
       id: 'record-1',
       deleted: true
     })
+    // The surface can page, but this manifest never declared `list` — the tool must refuse
+    // rather than enumerate through an undeclared capability.
+    await expect(executeTool(ctx, 'listMemory', {}, deps)).rejects.toThrow(/does not support list/)
+  })
+
+  it('lists records through the declared capability, passing the cursor and page size on', async () => {
+    const record = {
+      id: 'record-1',
+      text: 'deploy in sea',
+      scope: { kind: 'agent' as const, key: 'ac:agent:bot-a' },
+      version: 'v1'
+    }
+    let listScope: { agentId: string } | undefined
+    let listReq: { cursor?: string; limit: number } | undefined
+    const surface = {
+      shape: 'records' as const,
+      capabilities: new Set(['recall', 'list'] as const),
+      search: async () => [record],
+      list: async (scope: { agentId: string }, req: { cursor?: string; limit: number }) => {
+        listScope = scope
+        listReq = req
+        return { records: [record], ...(req.cursor ? {} : { nextCursor: 'cursor-2' }) }
+      },
+      get: async () => record,
+      create: async () => record,
+      update: async () => record,
+      delete: async () => true,
+      history: async () => ({ events: [] })
+    }
+    const deps = {
+      gatewayFor: () => undefined,
+      memory: {
+        adminSurface: () => null,
+        adminSurfaceForAgent: (agentId: string) => (agentId === 'bot-a' ? surface : null)
+      },
+      recordOutbound: () => {},
+      now: () => 0
+    } as unknown as OpsDeps
+
+    // First page: no cursor from the model, the core default page size, and the backend's
+    // continuation handed back verbatim.
+    await expect(executeTool(ctx, 'listMemory', {}, deps)).resolves.toEqual({
+      records: [record],
+      nextCursor: 'cursor-2'
+    })
+    expect(listScope).toEqual({ agentId: 'bot-a' })
+    expect(listReq).toEqual({ limit: 50 })
+
+    // Second page: the cursor travels through, and an absent nextCursor is omitted rather
+    // than emitted as null.
+    await expect(executeTool(ctx, 'listMemory', { cursor: 'cursor-2', limit: 10 }, deps)).resolves.toEqual({
+      records: [record]
+    })
+    expect(listReq).toEqual({ cursor: 'cursor-2', limit: 10 })
+
+    // The model cannot ask for an unbounded page.
+    await expect(executeTool(ctx, 'listMemory', { limit: 101 }, deps)).rejects.toThrow()
   })
 })
 

@@ -51,6 +51,12 @@ export const SEARCH_MEMORY_ARGS = z.object({
   maxBytes: optionalBoundedInt('maxBytes', 1, 32_768)
 })
 
+/** `listMemory` arguments: an opaque cursor and a page size, both optional. */
+export const LIST_MEMORY_ARGS = z.object({
+  cursor: optionalString('cursor'),
+  limit: optionalBoundedInt('limit', 1, 100)
+})
+
 /** `saveMemory` arguments. */
 export const SAVE_MEMORY_ARGS = z.object({ text: requiredString('text'), metadata: optionalObject('metadata') })
 
@@ -74,6 +80,7 @@ export const MEMORY_TOOL_ACCESS_MODES: Record<string, 'read' | 'write'> = {
   readMemory: 'read',
   writeMemory: 'write',
   searchMemory: 'read',
+  listMemory: 'read',
   getMemory: 'read',
   saveMemory: 'write',
   updateMemory: 'write',
@@ -226,7 +233,7 @@ function recordSurface(ctx: SessionContext, deps: MemoryOpsDeps) {
   const surface = deps.memory.adminSurfaceForAgent?.(ctx.agentId) ?? deps.memory.adminSurface()
   if (!surface || surface.shape !== 'records') throw new Error('record memory is not available for this agent')
   const scope = memoryScopeFor(ctx, deps)
-  const requireCapability = (operation: 'recall' | 'create' | 'get' | 'update' | 'delete'): void => {
+  const requireCapability = (operation: 'recall' | 'list' | 'create' | 'get' | 'update' | 'delete'): void => {
     if (!surface.capabilities.has(operation)) throw new Error(`record memory does not support ${operation}`)
   }
   return { surface, scope, requireCapability }
@@ -248,6 +255,23 @@ export async function searchMemory(
     timeoutMs: 3_000
   })
   return { records }
+}
+
+/** Enumerate the store, which `searchMemory` cannot do: a query that describes nothing in
+ *  particular matches nothing, so "what do I remember?" needs a page, not a search. */
+export async function listMemory(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: MemoryOpsDeps
+): Promise<unknown> {
+  const { surface, scope, requireCapability } = recordSurface(ctx, deps)
+  requireCapability('list')
+  const { cursor, limit } = parseArgs(LIST_MEMORY_ARGS, args)
+  const page = await surface.list(scope, {
+    ...(cursor ? { cursor } : {}),
+    limit: limit ?? 50
+  })
+  return { records: page.records, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) }
 }
 
 export async function saveMemory(

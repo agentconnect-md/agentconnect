@@ -59,7 +59,9 @@ export const MEMORY_TOOLS: ToolDescriptor[] = [
 /** The memory tool names — used to strip them for a `native`-memory agent, which uses the runtime's own memory. */
 export const MEMORY_TOOL_NAMES = new Set(MEMORY_TOOLS.map((t) => t.name))
 /** Core-owned record tools for an external-memory provider: raw plugin tools are never copied into a model session, and optional actions are projected only when the reviewed manifest declares the capability. */
-const EXTERNAL_MEMORY_TOOLS: Readonly<Record<'recall' | 'create' | 'get' | 'update' | 'delete', ToolDescriptor>> = {
+const EXTERNAL_MEMORY_TOOLS: Readonly<
+  Record<'recall' | 'list' | 'create' | 'get' | 'update' | 'delete', ToolDescriptor>
+> = {
   recall: {
     name: 'searchMemory',
     description:
@@ -77,6 +79,20 @@ const EXTERNAL_MEMORY_TOOLS: Readonly<Record<'recall' | 'create' | 'get' | 'upda
       },
       ['query']
     )
+  },
+  list: {
+    name: 'listMemory',
+    description:
+      'List your durable external memory records, newest first, one page at a time. Use this to see WHAT you have stored when no particular query describes it — searchMemory only finds records that match a topic, so it cannot answer "what do I remember?". The daemon supplies your trusted agent scope automatically.',
+    inputSchema: obj({
+      cursor: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 4096,
+        description: 'Opaque cursor from a previous page; omit for the first page.'
+      },
+      limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Optional page size; defaults to 50.' }
+    })
   },
   create: {
     name: 'saveMemory',
@@ -150,7 +166,7 @@ const EXTERNAL_MEMORY_TOOLS: Readonly<Record<'recall' | 'create' | 'get' | 'upda
   }
 }
 
-const EXTERNAL_MEMORY_TOOL_OPERATIONS = ['recall', 'create', 'get', 'update', 'delete'] as const
+const EXTERNAL_MEMORY_TOOL_OPERATIONS = ['recall', 'list', 'create', 'get', 'update', 'delete'] as const
 
 export function externalMemoryTools(capabilities: ReadonlySet<MemoryPluginOperation>): ToolDescriptor[] {
   return EXTERNAL_MEMORY_TOOL_OPERATIONS.filter((operation) => capabilities.has(operation)).map(

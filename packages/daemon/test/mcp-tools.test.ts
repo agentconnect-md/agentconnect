@@ -491,6 +491,7 @@ describe('toolsForIntegrations', () => {
         'updateListItem',
         'readTelegramFile',
         'searchMemory',
+        'listMemory',
         'saveMemory',
         'getMemory',
         'updateMemory',
@@ -514,7 +515,15 @@ describe('toolsForIntegrations', () => {
       'getMemory',
       'deleteMemory'
     ])
-    for (const tool of externalMemoryTools(new Set(['recall', 'create', 'get', 'update', 'delete']))) {
+    // `list` is a declared capability like any other: projected when the manifest has it,
+    // absent when it does not — a backend without paging must not advertise enumeration.
+    expect(externalMemoryTools(new Set(['recall', 'list', 'get'])).map((tool) => tool.name)).toEqual([
+      'searchMemory',
+      'listMemory',
+      'getMemory'
+    ])
+    expect(externalMemoryTools(new Set(['recall', 'get'])).map((tool) => tool.name)).not.toContain('listMemory')
+    for (const tool of externalMemoryTools(new Set(['recall', 'list', 'create', 'get', 'update', 'delete']))) {
       expect(tool.name).not.toMatch(/^agentconnect_memory_/)
       expect(tool.inputSchema).toMatchObject({ type: 'object', additionalProperties: false })
     }

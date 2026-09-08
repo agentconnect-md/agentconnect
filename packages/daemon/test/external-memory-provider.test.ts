@@ -225,6 +225,7 @@ describe('ExternalMemoryProvider', () => {
     const provider = new ExternalMemoryProvider(binding(), h.deps)
     expect(provider.toolsForAgent().map((tool) => tool.name)).toEqual([
       'searchMemory',
+      'listMemory',
       'saveMemory',
       'getMemory',
       'updateMemory',

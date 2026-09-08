@@ -31,7 +31,7 @@ const telegramInt: Integration = {
   config: { botToken: '123456:ABC' }
 }
 
-const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete'] as const)
+const ALL_CAPABILITIES = new Set(['recall', 'list', 'create', 'get', 'update', 'delete'] as const)
 
 const advertised: ToolDescriptor[] = [
   ...toolsForIntegrations([slackInt, telegramInt], {
