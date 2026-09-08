@@ -31,6 +31,7 @@ import { storeDigest } from '../src/dream/dreamer.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
 import type { MemoryFs } from '../src/memory/fs.js'
 import { pod } from './fixtures/memory-fs-pod.js'
+import { WAIT } from './wait-support.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
 
@@ -575,16 +576,23 @@ describe('DreamRunner pipeline', () => {
   })
 
   it('cancel during extraction wins: the late output is never staged', async () => {
+    let markExtractionReady!: () => void
+    const extractionReady = new Promise<void>((resolve) => (markExtractionReady = resolve))
     let release!: (v: string) => void
-    const gate = new Promise<string>((r) => (release = r))
-    const { store, runner } = await setup({ extract: () => gate })
+    const gate = new Promise<string>((resolve) => (release = resolve))
+    const { store, runner } = await setup({
+      extract: () => {
+        markExtractionReady()
+        return gate
+      }
+    })
     const started = await runner.start('a1', { trigger: 'manual' })
-    // allow the pending → running transition to land
-    await new Promise((r) => setTimeout(r, 10))
+    await extractionReady
     const canceled = await runner.cancel('a1', started.dreamId)
     expect(canceled.status).toBe('canceled')
     release(PROPOSAL)
-    await new Promise((r) => setTimeout(r, 20))
+    // The canceled status precedes the late extraction's staging cleanup.
+    await vi.waitFor(() => expect(runner.inFlight('a1')).toBe(false), WAIT)
     expect(store.dreams.get(started.dreamId)?.status).toBe('canceled')
     expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
   })
