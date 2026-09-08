@@ -38,9 +38,10 @@ public callback endpoint is required; the CP only orchestrates. Concretely:
   daemon. It does not persist message content.
 - The **Control Plane** does orchestration/registry/auth + serves the Web UI BFF. It
   stores **only control-plane metadata** — never message bodies, ACP `session/update`
-  streams, or attachment bytes. Authorized BFF reads may proxy bounded
-  transcript, tool-body, memory, or workspace content from the owning daemon
-  without persisting it.
+  streams, or attachment bytes. Managed agent memory with `home: control-plane` is
+  the one curated-content exception, like organization knowledge. Authorized BFF
+  reads may proxy bounded transcript, tool-body, memory, or workspace content from
+  the owning daemon without persisting it.
 - daemon ↔ CP is a single **WebSocket** used primarily for control signaling
   (register, heartbeat, orchestration commands, telemetry). It also carries the
   scoped request/reply frames for those on-demand BFF reads; live platform

@@ -300,10 +300,10 @@ claim is `agent-<agentId>-<16 hex of the session leaf>`, its pod labelled
 `session-<24 hex>`), and the same labels ride the claim's own metadata so a
 successor member can list an agent's session claims without knowing its
 sessions. The session's clones and HOME live on that pod's volume under
-`<mount>/sessions/<leaf>/`; the agent pod keeps the primary checkout, the
-secondary roots and managed memory, and a session runtime binds and holds it as
-its companion for the runtime's life, so a running runtime still implies a
-reachable agent pod. Every workspace path is routed to the pod that owns it,
+`<mount>/sessions/<leaf>/`; the agent pod keeps the primary checkout and the
+secondary roots (managed memory is in the CP database, §11), and a session runtime
+binds and holds it as its companion for the runtime's life, so a running runtime
+still implies a reachable agent pod. Every workspace path is routed to the pod that owns it,
 read off the **path** rather than off the live-launch registry, so a suspended
 session pod stays addressable; a read that names one RESUMES it, only beside a
 bound agent pod and only onto the claim whose uid the router just observed. The
@@ -1013,16 +1013,21 @@ simply not persisted on a shared store (#1063).
 **Managed agent memory is not store content and not member state either.** A
 member's state root is an `emptyDir`, so anything the daemon wrote there for an
 agent — `memory/`, `channels/`, dream staging — was lost with the next rollout
-and invisible to the member that claimed the agent next (#1078). A pool agent's
-managed memory therefore lives on its **sandbox volume**, at
-`<workspace mount>/.agentconnect/memory`, beside the checkout on the same PVC:
-it follows the agent across members exactly as the workspace does, is read and
-written through the shim's file channel by whichever member holds the duty, and
-is reachable only while the sandbox is bound — the console wakes the sandbox
-before it reads (§8, #1077), and a post-turn distillation that arrives after
-the pod was suspended waits in the shared-store capture outbox until the next
-bind. Local daemons keep the tree under the agent dir; the two are one code path
-over a file-system port ([memory-evolution.md](memory-evolution.md) §3.2.1).
+and invisible to the member that claimed the agent next (#1078). The first fix put
+the tree on the agent's **sandbox volume** (`<workspace mount>/.agentconnect/memory`),
+which followed the agent across members but was reachable only while that pod was
+bound: the console had to wake it before a read (§8, #1077), a post-turn
+distillation that arrived after a suspend waited in the capture outbox, and a session
+runtime had to hold the agent pod as a companion partly for the tree's sake. A pool
+agent's managed memory therefore lives in the **Control Plane database**
+(`memory.home: control-plane`, [memory-evolution.md](memory-evolution.md) §3.2.1):
+read and written by whichever member holds the duty over the daemon's CP connection,
+org-fenced and write-fenced by placement, reachable while the connection is READY
+regardless of any pod, and carried through a move because nothing is daemon-local.
+The pool mandates that home — the CP rejects `home: daemon` for an agent placed on
+the install-wide pool and a `--k8s` member fails such an activation closed. Local
+daemons keep the tree under the agent dir by default and may opt into the same
+home; the two are one code path over a file-system port.
 
 ## 12. Capacity (D14) and upgrades (D12)
 
