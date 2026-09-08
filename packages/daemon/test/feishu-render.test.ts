@@ -51,6 +51,33 @@ describe('FeishuConverger AC_NO_RESPONSE suppression', () => {
 })
 
 describe('Lark CardKit reply lifecycle', () => {
+  it('keeps reference uses and definitions together in the transcript while updating the live card', () => {
+    const c = new FeishuConverger('low')
+    c.onUpdate(chunk('Earlier paragraph.\n\nRead [the digest][r].\n\n'))
+    expect(c.flushBuffered().filter((action) => action.kind === 'post')).toEqual([
+      { kind: 'post', text: 'Earlier paragraph.\n\n', recordOnly: true }
+    ])
+    c.onUpdate(chunk('[r]: /home/agent/out.md'))
+    const updates = c.flushBuffered()
+    expect(updates.filter((action) => action.kind === 'post')).toEqual([])
+    expect(updates).toEqual([])
+    const final = c.onFinal()
+    expect(final.find((action) => action.kind === 'post')?.text.trim()).toBe('Read the digest (`out.md`).')
+    expect(final.find((action) => action.kind === 'card-final')?.text).toBe(
+      'Earlier paragraph.\n\nRead the digest (`out.md`).'
+    )
+  })
+
+  it('keeps a completed reference message visible when the next ordinary message streams', () => {
+    const c = new FeishuConverger('low')
+    c.onUpdate(chunk('Read [the digest][r].\n\n[r]: /home/agent/out.md'))
+    c.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 'read', title: 'Read file' } as SessionUpdate)
+    c.onUpdate(chunk('Following prose.'))
+    expect(c.streamUpdate()).toEqual([
+      { kind: 'card-stream', text: 'Read the digest (`out.md`).\n\n\n\nFollowing prose.' }
+    ])
+  })
+
   it('streams cumulative text and finalizes the same reply with shared attribution', () => {
     const c = new FeishuConverger('low')
     expect(c.onStart()).toEqual([{ kind: 'card-start' }])

@@ -65,6 +65,7 @@
     "discord.js": "^14.27.0",
     "fflate": "^0.8.3",
     "grammy": "^1.45.1",
+    "mdast-util-from-markdown": "^2.0.3",
     "pg": "^8.22.0",
     "simple-git": "^3.36.0",
     "skills": "1.5.21",
@@ -78,6 +79,7 @@
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.0.4",
+    "@types/mdast": "^4.0.4",
     "@types/node": "^24.13.3",
     "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
