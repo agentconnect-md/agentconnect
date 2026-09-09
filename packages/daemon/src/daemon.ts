@@ -78,6 +78,7 @@ import { attachmentMention, sniffImageMimeType } from './session/attachment-bloc
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { CodeHostEffectReq, SessionContext } from './mcp/ops.js'
+import type { MemoryAccessDecision, MemoryWriteAsk, MemoryWriteVerdict } from './mcp/ops/memory.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
@@ -2833,24 +2834,11 @@ export class Daemon {
       replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
       codeHostEffect: (req) => this.runCodeHostEffect(req),
       memory: this.memory,
-      // Every session may READ shared agent memory; only a non-isolated session
-      // may WRITE it, so a private DM/A2A turn can use existing memory but cannot
-      // push its own content into the cross-user store (#653; capture stays gated
-      // like post-turn distillation). Resolved from trusted session coords at call
-      // time so a policy change takes effect for an already-running ACP session.
-      memoryAccessAllowed: async (ctx, mode) => {
-        if (mode === 'read') return true
-        // A daemon-minted binding (distillation) carries its own authorization: it has
-        // no persisted session row, so the capture gate below would fail closed on it,
-        // and the privacy decision was already made upstream — queueMemoryPostTurn
-        // refuses to distill a capture-excluded turn at all. The binding is never
-        // model-supplied, so this cannot be forged from inside a session.
-        if (ctx.memoryBinding) return true
-        return !(await this.store.isCaptureExcluded(
-          ctx.agentId,
-          sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-        ))
-      },
+      // Every session may READ shared agent memory; a private session's WRITE asks the human in it
+      // first (#653; capture stays gated like post-turn distillation). Resolved from trusted session
+      // coords at call time so a policy change takes effect for an already-running ACP session.
+      memoryAccessDecision: (ctx, mode) => this.memoryAccessDecisionFor(ctx, mode),
+      requestMemoryWriteApproval: (ctx, ask) => this.requestMemoryWriteApprovalFor(ctx, ask),
       memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
       resolveAttachment: async (ctx, name) => {
         const found = await this.store.transcriptAttachmentByName(
@@ -5063,6 +5051,28 @@ export class Daemon {
       if (turn.selectedHost) selected.add(turn.selectedHost)
     }
     await Promise.all([...selected].map((lifecycle) => lifecycle.stop(0)))
+  }
+
+  /** The memory-tool gate (#653): reads always pass; a private session's write asks unless it holds a session grant. */
+  private async memoryAccessDecisionFor(ctx: SessionContext, mode: 'read' | 'write'): Promise<MemoryAccessDecision> {
+    if (mode === 'read') return 'allow'
+    // A daemon-minted binding (distillation) carries its own authorization: it has no persisted
+    // row, so the capture gate would fail closed on it, and queueMemoryPostTurn already refused
+    // to distill a capture-excluded turn. Never model-supplied, so it cannot be forged.
+    if (ctx.memoryBinding) return 'allow'
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    if (!(await this.store.isCaptureExcluded(ctx.agentId, key))) return 'allow'
+    return this.memoryWriteGrants.has(key) ? 'allow' : 'ask'
+  }
+
+  /** Ask the human behind the session's live turn about ONE write; "for this session" is remembered here. */
+  private async requestMemoryWriteApprovalFor(ctx: SessionContext, ask: MemoryWriteAsk): Promise<MemoryWriteVerdict> {
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const p = [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
+    if (!p) return 'no_approver'
+    const outcome = await this.permissions.askMemoryWriteApproval(p.hostKey, p.acpSessionId, ask)
+    if (outcome === 'allow_session') this.memoryWriteGrants.add(key)
+    return outcome === 'allow_once' || outcome === 'allow_session' ? 'allowed' : outcome
   }
 
   /** Build the memory scope for an agent + conversation. For a `channel`-scoped
@@ -11337,10 +11347,9 @@ export class Daemon {
           // conversation post, not an address — it must not defeat the response-choice
           // rule (webchat-multi-agents.md §5.2a).
           directAgentCall: plan.directAgentCall,
-          // Memory READS (index injection + auto-recall) are no longer session-
-          // gated — every session may use shared memory (#653). WRITES stay gated
-          // (memory write tools via memoryAccessAllowed; post-turn distillation via
-          // isCaptureExcluded at recordTurnForBinding).
+          // Memory READS (index injection + auto-recall) are not session-gated — every session may
+          // use shared memory (#653). WRITES stay gated (memory write tools via memoryAccessDecision,
+          // which asks the human in a private session; post-turn distillation via isCaptureExcluded).
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
           ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
           ...(webchatIsolation ? { workspaceIsolation: webchatIsolation } : {}),
@@ -13842,6 +13851,11 @@ export class Daemon {
    */
   private activeTurnCallMeta = new Map<string, CallMeta>()
 
+  /** Private sessions whose human chose "Allow for this session" on a memory write, by logical
+   *  sessionKey (session-visibility.md §5.1): later writes there skip the ask. In-memory on purpose —
+   *  a daemon restart forgets the grant — and dropped with the session row. */
+  private readonly memoryWriteGrants = new Set<string>()
+
   /** The active turn's trusted `shareFile` post target, by logical sessionKey — the
    *  coordinate + per-platform anchor the tool may NOT receive from the model
    *  (agent-authored-attachments.md §3.1), plus the two coordinate refusals (§3.2). */
@@ -16340,6 +16354,7 @@ export class Daemon {
           await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })
         ) {
           removed += 1
+          this.memoryWriteGrants.delete(rec.key)
           if (rec.acpSessionId)
             this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
           await this.modelSessions.release(rec.key)

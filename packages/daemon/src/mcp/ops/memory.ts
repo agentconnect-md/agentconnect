@@ -18,19 +18,73 @@ export interface MemoryOpsDeps {
   /** The agent memory provider — backs the `readMemory`/`writeMemory` tools.
    *  Universal (every agent has memory), independent of the platform. */
   memory: MemoryProvider
-  /** Session-isolation gate for the explicit memory-tool path, by operation
-   *  (#653). Agent memory is shared across users: every session may READ it
-   *  (read/search/get), but only a non-isolated session may WRITE it
-   *  (write/save/update/delete), so a private DM/A2A turn cannot push its content
-   *  into shared memory. Automatic recall is always allowed; post-turn capture and
-   *  Dream selection are gated at their own boundaries. Checked at CALL time so a
-   *  mid-session policy change takes effect immediately. Absent ⇒ allowed (e.g. in
-   *  unit fixtures). */
-  memoryAccessAllowed?: (ctx: SessionContext, mode: 'read' | 'write') => boolean | Promise<boolean>
+  /** Session-isolation gate for the explicit memory-tool path, by operation (#653): agent memory is
+   *  shared across users, so every session may READ it but a private session's WRITE is `ask` — the
+   *  human in the session decides (or `deny` when nothing can ask). Post-turn capture and Dream
+   *  selection are gated at their own boundaries. Checked at CALL time; absent ⇒ allowed (fixtures). */
+  memoryAccessDecision?: (
+    ctx: SessionContext,
+    mode: 'read' | 'write'
+  ) => MemoryAccessDecision | Promise<MemoryAccessDecision>
+  /** Ask the human in the session to approve ONE pending write (the `ask` decision). Covers exactly
+   *  this call's payload; a session-wide grant is the daemon's to remember. Absent ⇒ nobody to ask. */
+  requestMemoryWriteApproval?: (ctx: SessionContext, ask: MemoryWriteAsk) => Promise<MemoryWriteVerdict>
   /** Build the memory scope for a tool call — carries the per-channel folder key
    *  for a channel-scoped agent so tools read/write that channel's memory (#653).
    *  Absent ⇒ agent-level store (unit fixtures). */
   memoryScope?: (ctx: SessionContext) => MemoryScope
+}
+
+/** The gate's verdict for one memory-tool call: proceed, refuse, or ask the human first. */
+export type MemoryAccessDecision = 'allow' | 'deny' | 'ask'
+
+/** How an `ask` ended: approved, declined (or abandoned), or nobody could be asked at all. */
+export type MemoryWriteVerdict = 'allowed' | 'denied' | 'no_approver'
+
+/** What the approval card shows for one pending write: the tool, its target, and a bounded summary. */
+export interface MemoryWriteAsk {
+  tool: string
+  /** The memory file or record the write lands on. */
+  target: string
+  /** One line: the first ~200 chars of the content, or what an edit/delete does. */
+  summary: string
+}
+
+const ASK_SUMMARY_MAX = 200
+
+function clip(text: string, max = ASK_SUMMARY_MAX): string {
+  const one = text.replace(/\s+/g, ' ').trim()
+  return one.length > max ? `${one.slice(0, max - 1)}…` : one
+}
+
+const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
+
+/** Describe a pending memory write for the approval card, from the RAW arguments: total, never
+ *  throws — a malformed call is refused by the handler's own parsing once (if) it is approved. */
+export function memoryWriteAsk(tool: string, args: Record<string, unknown>): MemoryWriteAsk {
+  switch (tool) {
+    case 'writeMemory': {
+      const target = str(args.path) ?? 'MEMORY.md'
+      const oldString = str(args.oldString)
+      const newString = str(args.newString)
+      if (oldString !== undefined || newString !== undefined) {
+        const summary = newString
+          ? `Replace "${clip(oldString ?? '', 80)}" with "${clip(newString, 120)}"`
+          : `Remove "${clip(oldString ?? '')}"`
+        return { tool, target, summary }
+      }
+      const content = str(args.content)
+      return { tool, target, summary: content ? `Content: "${clip(content)}"` : `Clear ${target} (empty write)` }
+    }
+    case 'saveMemory':
+      return { tool, target: 'a new memory record', summary: `Content: "${clip(str(args.text) ?? '')}"` }
+    case 'updateMemory':
+      return { tool, target: `record ${str(args.id) ?? '?'}`, summary: `New content: "${clip(str(args.text) ?? '')}"` }
+    case 'deleteMemory':
+      return { tool, target: `record ${str(args.id) ?? '?'}`, summary: `Delete record ${str(args.id) ?? '?'}` }
+    default:
+      return { tool, target: 'shared memory', summary: '' }
+  }
 }
 
 /** `readMemory` arguments; an omitted `path` reads the MEMORY.md index. */

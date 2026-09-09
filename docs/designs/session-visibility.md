@@ -661,6 +661,22 @@ from `isDm`/webchat/launch-correlation alone. The gate therefore has two layers:
      acknowledgement, typically sub-second", not "at the moment of the API
      call".
 
+**The one exception to the write exclusion is an explicit approval in the
+session.** The human in a private session owns its content, so when the agent
+calls an explicit memory write tool (`writeMemory`, `saveMemory`,
+`updateMemory`, `deleteMemory`) from a capture-excluded session, the daemon does
+not refuse — it asks that human, through the same approval surfaces a runtime
+permission prompt uses (webchat's in-stream card, the platform's elicitation
+card where it has one, otherwise the Agent-editor approval queue). The card
+names the target file or record and a short content summary, and offers three
+choices: **Allow once** (exactly that call and payload), **Allow for this
+session** (later writes from the same session skip the ask; held in daemon
+memory and forgotten on restart), and **Deny**. A denied, dismissed, or
+cancelled ask returns a read-only refusal to the model. When there is no human
+to ask — a headless cron run, an A2A child, a suppressed or ended turn — the
+write is refused at once rather than left waiting. Reads, post-turn
+distillation, and dream capture are unchanged by this.
+
 **Already-captured memory is not scrubbed.** Distilled memory cannot be
 reliably attributed back to source turns, so tightening a session stops
 _future_ capture but does not retract what was distilled while it was

@@ -1,9 +1,13 @@
 import type { MemoryPluginOperation } from '@agentconnect.md/protocol'
 import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
 
-/** Refusal surfaced to the model when an isolated session tries to access agent memory shared with other users. */
-export const MEMORY_ACCESS_BLOCKED =
-  'Shared agent memory is unavailable in this session. Keep the information in this conversation instead; do not retry.'
+const MEMORY_READ_ONLY_HERE = "This session is private, so the agent's shared memory is read-only here."
+
+/** Refusal surfaced to the model when the user declined (or never answered) a private session's write. */
+export const MEMORY_WRITE_NOT_APPROVED = `${MEMORY_READ_ONLY_HERE} The user did not approve saving this; keep the information in this conversation and do not retry.`
+
+/** Refusal surfaced to the model when a private session's write has nobody who could approve it. */
+export const MEMORY_WRITE_NO_APPROVER = `${MEMORY_READ_ONLY_HERE} No one could be asked to approve this write; keep the information in this conversation and do not retry.`
 
 /** The agent's long-term memory tools, for EVERY agent: `<agent-root>/memory/` with a `MEMORY.md` index plus topic files. */
 export const MEMORY_TOOLS: ToolDescriptor[] = [
