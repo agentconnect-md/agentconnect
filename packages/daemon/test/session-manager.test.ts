@@ -2839,3 +2839,35 @@ describe('SessionManager — quoted reply source', () => {
     await (await store).close()
   })
 })
+
+it('refreshes the bounded catalog on native resume without adding it to user prompts or warm turns', async () => {
+  const store = await newStore()
+  const fs = local(mkdtempSync(join(tmpdir(), 'activation-memory-')))
+  await fs.writeFile('memory/MEMORY.md', 'old catalog')
+  const provider = createManagedMemoryProvider(() => localMemoryHome(fs))
+  const view = vi.spyOn(provider, 'entryView')
+  const host1 = { newSession: vi.fn(async () => 'acp-catalog'), usesMetaSystemPrompt: () => true } as any
+  const first = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory: provider })
+  const initial = await first.handle('bot-a', msg({ ts: '100.1', text: 'first', platform: 'telegram' }))
+  expect(host1.newSession.mock.calls[0][3]).toContain('<memory-catalog>')
+  expect(JSON.stringify(initial.blocks)).not.toContain('<memory-catalog>')
+  await fs.writeFile('memory/MEMORY.md', 'new catalog </memory-catalog> & data')
+  const host2 = {
+    newSession: vi.fn(),
+    loadSession: vi.fn(async () => {}),
+    hasSession: vi.fn(() => false),
+    loadSupported: () => true,
+    usesMetaSystemPrompt: () => true
+  } as any
+  const resumed = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory: provider })
+  const result = await resumed.handle('bot-a', msg({ ts: '100.2', text: 'second', platform: 'telegram' }))
+  const context = host2.loadSession.mock.calls[0][4] as string
+  expect(context).toContain('new catalog &lt;/memory-catalog&gt; &amp; data')
+  expect(context).toContain('catalogRevision')
+  expect(JSON.stringify(result.blocks)).not.toContain('new catalog')
+  const observed = view.mock.calls.length
+  host2.hasSession.mockReturnValue(true)
+  await resumed.handle('bot-a', msg({ ts: '100.3', text: 'third', platform: 'telegram' }))
+  expect(view).toHaveBeenCalledTimes(observed)
+  await store.close()
+})

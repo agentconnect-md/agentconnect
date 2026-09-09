@@ -1,6 +1,6 @@
 # Design: Unified Memory Operations and Context
 
-**Status:** Implementation in progress. The common read foundation is implemented; additive model/admin read projections are implemented; the common console, activation-time catalog delivery, and common mutations remain pending. This design does not change the plugin ABI by itself.
+**Status:** Implementation in progress. Common reads, conditional managed mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh and compatibility retirement remain pending. This design does not change the plugin ABI by itself.
 
 **Related:** [Memory evolution](memory-evolution.md), [managed memory](memory-system-plan.md), [Dream](memory-dreaming.md), [product conventions](../product-conventions.md).
 
@@ -455,3 +455,26 @@ capabilities and starts a new list; further pages load explicitly. The initial U
 shows stored text directly, preserving full Markdown/frontmatter during edits.
 Activation-time catalog refresh and retirement of compatibility tools remain
 separate work.
+
+### Supported activation catalog delivery
+
+System-context-capable hosts receive a bounded common catalog observation at
+session creation and native `session/load`. Fresh sessions retain their existing
+startup index and add only catalog metadata; a native resume receives the current
+overview as well. The common context service reads managed index/metadata,
+including both overlay layers in the catalog revision, without fetching every
+topic body. External v1 retains unknown freshness/unavailable coverage and does
+not enumerate its backend automatically.
+
+The observation requests at most 8 KiB of overview and includes catalog revision,
+freshness, and coverage. XML-escaped JSON marks it as untrusted reference data.
+Observation failures report unknown/unavailable, never an empty store. Native and
+none providers keep their existing behavior. The observation is evaluated only
+when the runtime lifecycle actually requests new/load system context; normal
+already-live turns do not rescan or inject it as user text.
+
+This slice does not claim arbitrary mid-session system prompt replacement. A
+continuously live host without a supported update mechanism still uses explicit
+entry tools for fresh reads. Its automatic refresh requires a separately verified
+runtime capability; silently inserting a leading user-message catalog is not an
+acceptable fallback.
