@@ -6,7 +6,12 @@ import { PlacementResolver } from '../../orchestrator/placementResolver.js'
 import { systemClock } from '../../domain/clock.js'
 import type { DaemonId } from '../../domain/ids.js'
 import { MemoryStoreTooLargeError } from '../../agent-memory/paths.js'
-import { handleMemoryHistoryAppend, handleMemoryHomeMigrated, handleMemoryStore } from './memory-store.js'
+import {
+  handleMemoryTransaction,
+  handleMemoryHistoryAppend,
+  handleMemoryHomeMigrated,
+  handleMemoryStore
+} from './memory-store.js'
 
 const DAEMON = 'd0d0d0d0-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -286,5 +291,28 @@ describe('handleMemoryHomeMigrated', () => {
     )
     expect(c.sendError).toHaveBeenCalledWith(expect.any(String), 'CONFLICT', expect.any(String), false)
     expect(c.replyTo).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleMemoryTransaction', () => {
+  it('uses the existing org, serving-daemon and home gates before entering the transaction', async () => {
+    const apply = vi.fn(async () => ({ operation: 'snapshot', revision: 'a'.repeat(64) }))
+    const d = deps({ agentMemoryTransaction: { apply } })
+    const c = conn()
+    const request = frame('memory/transaction/v1', { agentId: AGENT, root: 'memory', operation: 'snapshot' })
+    await handleMemoryTransaction(request, c, d)
+    expect(c.replyTo).toHaveBeenCalledWith(request, 'memory/transaction/v1/result', {
+      operation: 'snapshot',
+      revision: 'a'.repeat(64)
+    })
+    expect(apply).toHaveBeenCalledTimes(1)
+    const foreignConn = conn()
+    foreignConn.daemonId = 'foreign-daemon'
+    await handleMemoryTransaction(request, foreignConn, d)
+    expect(apply).toHaveBeenCalledTimes(1)
+    const foreign = deps({ agent: { get: async () => null }, agentMemoryTransaction: { apply } })
+    await handleMemoryTransaction(request, c, foreign)
+    expect(c.sendError).toHaveBeenCalledWith(request.id, 'SCOPE_DENIED', expect.any(String), false)
+    expect(apply).toHaveBeenCalledTimes(1)
   })
 })

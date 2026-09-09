@@ -1,3 +1,9 @@
+import {
+  handleMemoryTransaction,
+  handleMemoryHistoryAppend,
+  handleMemoryHomeMigrated,
+  handleMemoryStore
+} from './memory-store.js'
 /**
  * `FrameRouter` (design §4.6) — the flat `type → handler` dispatch table.
  *
@@ -63,7 +69,6 @@ import {
   handleManagedSkillRead,
   handleOrganizationSuggestionsSync
 } from './organization-knowledge.js'
-import { handleMemoryHistoryAppend, handleMemoryHomeMigrated, handleMemoryStore } from './memory-store.js'
 
 export type Handler = (frame: AnyFrame, conn: DaemonConnection, deps: DaemonWsDeps) => Promise<void>
 
@@ -114,6 +119,7 @@ export class FrameRouter {
       'skills/org': handleOrgSkills,
       'knowledge/suggestions/sync': handleOrganizationSuggestionsSync,
       'managed-skill/read': handleManagedSkillRead,
+      'memory/transaction/v1': handleMemoryTransaction,
       'memory/store': handleMemoryStore,
       'memory/history/append': handleMemoryHistoryAppend,
       'memory/home/migrated': handleMemoryHomeMigrated,

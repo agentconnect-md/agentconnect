@@ -203,3 +203,5 @@ export {
 export * from './memory-entries.js'
 
 export * from './frames/memory-entries.js'
+
+export * from './frames/memory-transaction.js'

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 // `CpMemoryFs` — the shim client over the CP connection (memory-evolution.md §3.2.1): the same op set, sliced and
 // chunked the same way, against a tree-relative root, and one resolution when the home is out of reach.
 import { afterAll, describe, expect, it } from 'vitest'
@@ -254,3 +255,47 @@ function withoutTempNames(ops: MemoryFsPayload[]): unknown {
     JSON.stringify(ops).replace(/\.agentconnect-memory-[0-9a-f-]{36}\.tmp/g, '.agentconnect-memory-TMP.tmp')
   )
 }
+
+it('offers atomic publication only for a negotiated CP home and binds every call to its root', async () => {
+  const calls: import('@agentconnect.md/protocol').MemoryTransactionReq[] = []
+  let supported = false
+  let connected = true
+  const link = fakeLink({
+    supportsServerFeature: (feature) =>
+      feature === 'agent-memory-store-v1' || (supported && feature === 'memory-transaction-v1'),
+    connected: () => connected,
+    memoryTransaction: async (req) => {
+      calls.push(req)
+      return { operation: 'snapshot', revision: 'a'.repeat(64) }
+    }
+  })
+  const fs = new CpMemoryFs(link, AGENT).subdir('channels/channel-a')
+  expect(fs.atomicTransaction).toBeUndefined()
+  supported = true
+  const transact = fs.atomicTransaction!
+  await transact({ operation: 'snapshot', root: 'memory' })
+  expect(calls).toEqual([{ operation: 'snapshot', agentId: AGENT, root: 'channels/channel-a/memory' }])
+  supported = false
+  await expect(transact({ operation: 'snapshot', root: 'memory' })).rejects.toThrow('no longer supports')
+  supported = true
+  connected = false
+  await expect(transact({ operation: 'snapshot', root: 'memory' })).rejects.toThrow('unreachable')
+  expect(calls).toHaveLength(1)
+})
+
+it('stages complete UTF-8 content in bounded append frames without publishing it', async () => {
+  const link = fakeLink({
+    supportsServerFeature: () => true,
+    memoryTransaction: async () => ({ operation: 'snapshot', revision: 'a'.repeat(64) })
+  })
+  const fs = new CpMemoryFs(link, AGENT).subdir('channels/channel-a')
+  const text = '记忆\n'.repeat(20000)
+  const staged = await fs.stageTransactionFile!('memory', text)
+  expect(staged.revision).toBe(createHash('sha256').update(text).digest('hex'))
+  expect(await fsp.readFile(join(link.tree, 'channels/channel-a/memory', staged.temp), 'utf8')).toBe(text)
+  expect(link.requests.every((req) => req.op.op === 'memory-append')).toBe(true)
+  expect(link.requests.every((req) => Buffer.byteLength(JSON.stringify(req)) < REPLY_BUDGET)).toBe(true)
+  expect(link.requests.filter((req) => req.op.op === 'memory-append' && req.op.create)).toHaveLength(1)
+  const empty = await fs.stageTransactionFile!('memory', '')
+  expect(await fsp.readFile(join(link.tree, 'channels/channel-a/memory', empty.temp), 'utf8')).toBe('')
+})

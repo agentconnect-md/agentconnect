@@ -1,3 +1,4 @@
+import { MemoryTransactionReq, MemoryTransactionResult } from './frames/memory-transaction.js'
 import { MemoryEntriesReadReq, MemoryEntriesReadResult } from './frames/memory-entries.js'
 import { z } from 'zod'
 
@@ -437,6 +438,8 @@ export const FRAME_SCHEMAS = {
   'memory/record/history': MemoryRecordHistoryReq,
   'memory/record/history/page': MemoryRecordHistoryPage,
   // ── managed memory home in the CP (memory-evolution.md §3.2.1) ──
+  'memory/transaction/v1': MemoryTransactionReq,
+  'memory/transaction/v1/result': MemoryTransactionResult,
   'memory/store': MemoryStoreReq,
   'memory/store/ok': MemoryFsReplySchema,
   'memory/history/append': MemoryHistoryAppendReq,
@@ -708,6 +711,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('memory/record/delete/result', FRAME_SCHEMAS['memory/record/delete/result']),
   frame('memory/record/history', FRAME_SCHEMAS['memory/record/history']),
   frame('memory/record/history/page', FRAME_SCHEMAS['memory/record/history/page']),
+  frame('memory/transaction/v1', FRAME_SCHEMAS['memory/transaction/v1']),
+  frame('memory/transaction/v1/result', FRAME_SCHEMAS['memory/transaction/v1/result']),
   frame('memory/store', FRAME_SCHEMAS['memory/store']),
   frame('memory/store/ok', FRAME_SCHEMAS['memory/store/ok']),
   frame('memory/history/append', FRAME_SCHEMAS['memory/history/append']),

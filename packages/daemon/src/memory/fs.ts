@@ -1,3 +1,4 @@
+import type { MemoryTransactionReq, MemoryTransactionResult } from '@agentconnect.md/protocol'
 /**
  * `MemoryFs` — the file-system port an agent's managed memory tree is kept behind.
  *
@@ -96,7 +97,17 @@ export interface MemoryFsWriteOptions {
 }
 
 /** The port. Paths are root-relative; a missing path is data (`null` / `[]` / `false`), never an error. */
+export type MemoryFsTransactionRequest = MemoryTransactionReq extends infer R
+  ? R extends MemoryTransactionReq
+    ? Omit<R, 'agentId'>
+    : never
+  : never
+
 export interface MemoryFs {
+  // Absent on native-writable homes and older peers; callers must not emulate this with sequential file writes.
+  readonly stageTransactionFile?:
+    ((root: string, content: string) => Promise<{ temp: string; revision: string }>) | undefined
+  readonly atomicTransaction?: ((request: MemoryFsTransactionRequest) => Promise<MemoryTransactionResult>) | undefined
   /** Identity of the tree for the in-process locks and write ledger — equal for every instance over one tree. */
   readonly key: string
   /** Absolute root in the coordinates of the filesystem holding it (an execution cwd is built from it). */

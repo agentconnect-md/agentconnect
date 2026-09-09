@@ -123,6 +123,7 @@ model Org {
   codeHostReviewLeases      CodeHostReviewLease[]
   codeHostReviewOutcomes    CodeHostReviewAttemptOutcome[]
   agentMemoryFiles          AgentMemoryFile[]
+  agentMemoryMutations      AgentMemoryMutation[]
   agentMemoryHistory        AgentMemoryHistory[]
 
   @@index([createdByUserId])
@@ -833,6 +834,7 @@ model Agent {
 
   organizationEnvironmentAssignments OrganizationEnvironmentAssignment[]
   memoryFiles           AgentMemoryFile[]
+  memoryMutations       AgentMemoryMutation[]
   memoryHistory         AgentMemoryHistory[]
 
   @@unique([orgId, name]) // slug is unique within an org
@@ -3604,4 +3606,24 @@ model AgentMemoryHistory {
   @@index([agentId, root, path, at])
   @@index([orgId])
   @@map("agent_memory_history")
+}
+
+// Durable, body-free receipts; history retention cannot erase whether a mutation already committed.
+model AgentMemoryMutation {
+  agentId String @db.Uuid
+  operationId String @db.Uuid
+  orgId String
+  root String
+  requestHash String
+  source String
+  sourceTurnId String? @db.Uuid
+  committedAt DateTime @db.Timestamptz(3)
+  receipt Json
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  @@id([agentId, operationId])
+  @@index([agentId, root, committedAt])
+  @@index([agentId, sourceTurnId])
+  @@index([orgId])
+  @@map("agent_memory_mutation")
 }
