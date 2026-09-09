@@ -776,6 +776,7 @@ export class Daemon {
   /** MCP token backing each agent's cached distillation session, released with it. */
   private memoryExtractionTokens = new Map<string, string>()
   private memoryExtractionScopes = new Map<string, MemoryScope>()
+  private memoryExtractionChains = new Map<string, Promise<string>>()
 
   /** Drop the token behind a cached distillation session so a replaced or discarded
    *  session cannot leave a live tool grant behind. */
@@ -5236,6 +5237,18 @@ export class Daemon {
   }
 
   private async runMemoryExtraction(agentId: string, prompt: string, scope?: MemoryScope): Promise<string> {
+    const key = this.memoryExtractionKey(agentId, scope)
+    const prior = this.memoryExtractionChains.get(key) ?? Promise.resolve('')
+    const next = prior.catch(() => '').then(() => this.runMemoryExtractionPass(agentId, prompt, scope))
+    this.memoryExtractionChains.set(key, next)
+    try {
+      return await next
+    } finally {
+      if (this.memoryExtractionChains.get(key) === next) this.memoryExtractionChains.delete(key)
+    }
+  }
+
+  private async runMemoryExtractionPass(agentId: string, prompt: string, scope?: MemoryScope): Promise<string> {
     const cacheKey = this.memoryExtractionKey(agentId, scope)
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)

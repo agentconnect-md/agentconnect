@@ -673,6 +673,39 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     return { host, daemon }
   }
 
+  it('serializes replay and fresh extraction so concurrent passes cannot exchange source identities', async () => {
+    const { host, daemon } = distillHost({ usesMetaSystemPrompt: true })
+    await daemon.start()
+    let release!: () => void
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const observed: string[] = []
+    host.prompt.mockImplementation(async () => {
+      const context: any = [...(daemon as any).mcp.sessions.values()].find(
+        (ctx: any) => ctx.memoryBinding?.source === 'distill'
+      )
+      const before = memoryScopeFor(context, (daemon as any).mcp.deps).sourceTurnId!
+      observed.push(before)
+      if (before === 'first') await barrier
+      expect(memoryScopeFor(context, (daemon as any).mcp.deps).sourceTurnId).toBe(before)
+      return { stopReason: 'end_turn', usage: { totalTokens: 5, inputTokens: 4, outputTokens: 1 } }
+    })
+    const first = (daemon as any).runMemoryExtraction(AGENT_ID, 'extract', { agentId: AGENT_ID, sourceTurnId: 'first' })
+    await vi.waitFor(() => expect(observed).toEqual(['first']), WAIT)
+    const second = (daemon as any).runMemoryExtraction(AGENT_ID, 'extract', {
+      agentId: AGENT_ID,
+      sourceTurnId: 'second'
+    })
+    await Promise.resolve()
+    expect(host.prompt).toHaveBeenCalledOnce()
+    release()
+    await Promise.all([first, second])
+    expect(observed).toEqual(['first', 'second'])
+    expect((daemon as any).memoryExtractionChains.size).toBe(0)
+    await daemon.stop()
+  })
+
   it('refreshes a cached extraction binding per turn and rejects tool access between passes', async () => {
     const { host, daemon } = distillHost({ usesMetaSystemPrompt: true })
     await daemon.start()
