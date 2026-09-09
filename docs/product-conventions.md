@@ -794,10 +794,16 @@ retracted. Until a session's daemon has confirmed the current state, that daemon
 capture rather than assuming the session is shareable.
 
 The block covers both ways a session reaches shared memory: the automatic post-turn
-distillation, and an explicit write by the agent itself. A private session's memory-write
-tools refuse with an explanation rather than failing silently, and reads stay available —
-recalling what the agent already knows is not a disclosure of the current conversation.
-Dream sessions skip private transcripts entirely.
+distillation, and an explicit write by the agent itself. Distillation is simply withheld.
+An explicit write asks the human in the session first — the card names the target and a
+short summary of the content and offers Allow once, Allow for this session, and Deny —
+because that person owns the conversation and an explicit approval is consent to share it.
+The ask reaches the same surfaces a permission prompt does (the webchat card, the
+platform's own card, otherwise the Agent-editor queue); when nobody can be asked (a
+headless run, an agent-to-agent child) or the answer is no, the tool refuses with an
+explanation that says the memory is read-only here rather than failing silently. Reads
+stay available — recalling what the agent already knows is not a disclosure of the
+current conversation. Dream sessions skip private transcripts entirely.
 
 **Agents on native runtime memory are the exception, and the product must say so.** With
 that backend the runtime persists memory inside its own process for the whole agent, with
