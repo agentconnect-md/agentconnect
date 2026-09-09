@@ -3,7 +3,7 @@ import { MemoryEntryErrorCode } from '../memory-entries.js'
 
 export const MEMORY_TRANSACTION_V1_FEATURE = 'memory-transaction-v1'
 const digest = z.string().regex(/^[0-9a-f]{64}$/)
-const path = z
+export const MemoryTransactionPath = z
   .string()
   .min(1)
   .max(256)
@@ -12,13 +12,13 @@ const change = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('put'),
-      path,
+      path: MemoryTransactionPath,
       expectedRevision: digest.nullable(),
       temp: z.string().regex(/^\.agentconnect-memory-[0-9a-f-]{36}\.tmp$/),
       stagedRevision: digest
     })
     .strict(),
-  z.object({ action: z.literal('delete'), path, expectedRevision: digest }).strict()
+  z.object({ action: z.literal('delete'), path: MemoryTransactionPath, expectedRevision: digest }).strict()
 ])
 const scope = z.object({ agentId: z.string().uuid(), root: z.string().min(1).max(1024) })
 export const MemoryTransactionReq = z.discriminatedUnion('operation', [
@@ -50,7 +50,11 @@ export const MemoryTransactionReceipt = z
     revision: digest,
     committedAt: z.string().datetime(),
     files: z
-      .array(z.object({ path, revision: digest.nullable(), mtime: z.string().datetime().nullable() }).strict())
+      .array(
+        z
+          .object({ path: MemoryTransactionPath, revision: digest.nullable(), mtime: z.string().datetime().nullable() })
+          .strict()
+      )
       .max(2)
   })
   .strict()
