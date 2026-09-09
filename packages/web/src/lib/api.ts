@@ -6053,3 +6053,56 @@ export function reviewOrganizationSuggestion(
     ...(decision === 'accept' ? { snapshotToken: detail } : detail?.trim() ? { reason: detail.trim() } : {})
   })
 }
+
+function memoryEntryUrl(agentId: string, suffix: string, channelKey?: string, query: Record<string, string> = {}) {
+  const params = new URLSearchParams({ ...query, ...(channelKey ? { channelKey } : {}) })
+  return `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/${suffix}${params.size ? `?${params}` : ''}`
+}
+export function describeAgentMemoryEntries(agentId: string, channelKey?: string) {
+  return apiGet<import('@agentconnect.md/protocol').MemoryEntryCapabilities>(
+    memoryEntryUrl(agentId, 'capabilities', channelKey)
+  )
+}
+export function listAgentMemoryEntries(agentId: string, channelKey?: string, cursor?: string) {
+  return apiGet<import('@agentconnect.md/protocol').MemoryEntryListResult>(
+    memoryEntryUrl(agentId, 'entries', channelKey, { limit: '20', ...(cursor ? { cursor } : {}) })
+  )
+}
+export function getAgentMemoryEntry(agentId: string, ref: string, channelKey?: string, cursor?: string) {
+  return apiGet<import('@agentconnect.md/protocol').MemoryEntryContent | null>(
+    memoryEntryUrl(agentId, `entries/${encodeURIComponent(ref)}`, channelKey, {
+      maxBytes: '32768',
+      ...(cursor ? { cursor } : {})
+    })
+  )
+}
+export function createAgentMemoryEntry(
+  agentId: string,
+  request: import('@agentconnect.md/protocol').MemoryEntryCreateRequest,
+  channelKey?: string
+) {
+  return apiPost<import('@agentconnect.md/protocol').MemoryEntryMutationReceipt>(
+    memoryEntryUrl(agentId, 'entries', channelKey),
+    request
+  )
+}
+export function updateAgentMemoryEntry(
+  agentId: string,
+  request: import('@agentconnect.md/protocol').MemoryEntryUpdateRequest,
+  channelKey?: string
+) {
+  return apiPatch<import('@agentconnect.md/protocol').MemoryEntryMutationReceipt>(
+    memoryEntryUrl(agentId, 'entries', channelKey),
+    request
+  )
+}
+export function deleteAgentMemoryEntry(
+  agentId: string,
+  request: import('@agentconnect.md/protocol').MemoryEntryDeleteRequest,
+  channelKey?: string
+) {
+  return apiDelete<import('@agentconnect.md/protocol').MemoryEntryMutationReceipt>(
+    memoryEntryUrl(agentId, 'entries', channelKey),
+    request
+  )
+}

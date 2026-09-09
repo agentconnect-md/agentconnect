@@ -11,6 +11,10 @@ const mocks = vi.hoisted(() => ({
   wake: 'starting' as 'running' | 'starting' | 'unsupported'
 }))
 
+vi.mock('@/components/console/UnifiedMemoryPanel', () => ({
+  UnifiedMemoryPanel: ({ children }: { children: ReactNode }) => children
+}))
+
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 
 vi.mock('@/lib/data-context', () => ({

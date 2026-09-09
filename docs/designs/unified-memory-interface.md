@@ -432,3 +432,26 @@ Clients must inspect current state before deciding whether to issue a new write;
 HTTP retries are not idempotency keys. Confirmed conditional conflicts retain
 `currentRevision` where known. Legacy file and record routes remain available.
 The console UI and catalog-refresh integration are subsequent slices.
+
+### Unified console entry browser
+
+The Memory panel now defaults to a capability-driven entry browser for providers
+that support list/get. Managed and external views share the same paged list and
+complete-content reader. The existing settings, channel selector, and Dream panel
+remain in place. Unsupported/older peers use the existing view; “More memory
+tools” also retains file/history and provider-specific operations during rollout.
+
+The editor loads every content slice before enabling edits, rejecting missing,
+repeated, changed-revision, or oversized continuation chains. Reads are bounded to
+128 slices and the smaller of the provider item limit or 4 MiB. Scope changes
+remount the browser and invalidate outstanding reads. Conditional writes use the
+ref/revision of the loaded document; inherited entries and read-only callers have
+no edit/delete controls. Create/update respect both item bytes and the advertised
+normalized JSON mutation request budget. Delete requires an explicit confirmation.
+
+Conflicts and unconfirmed writes retain the draft and block another mutation until
+the user reloads saved memory. No write is automatically retried. Refresh rechecks
+capabilities and starts a new list; further pages load explicitly. The initial UI
+shows stored text directly, preserving full Markdown/frontmatter during edits.
+Activation-time catalog refresh and retirement of compatibility tools remain
+separate work.
