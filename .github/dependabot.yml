@@ -9,6 +9,8 @@ updates:
       prefix: chore
       include: scope
     ignore:
+      # Upgrade the audited skills CLI together with its mirrored discovery and install contracts.
+      - dependency-name: skills
       # Upgrade Node types across majors together with the manually managed Node runtime.
       - dependency-name: '@types/node'
         update-types:
