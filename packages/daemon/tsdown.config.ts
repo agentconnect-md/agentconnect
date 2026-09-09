@@ -41,6 +41,7 @@ export default defineConfig({
   // accidentally read the daemon manifest instead.
   entry: {
     index: 'src/index.ts',
+    'prepare-upgrade': 'src/prepare-upgrade.ts',
     'skills/dist/cli': skillsCliEntry,
     'skills/workspace-mutation': 'src/skills/skill-workspace-mutation-cli.ts'
   },

@@ -112,7 +112,7 @@ export async function versionReinstallLatest(root: string): Promise<string> {
 
 export async function runUpgrade(
   root: string,
-  opts: { to?: string; channel?: Channel; restart?: boolean; keep?: number }
+  opts: { to?: string; channel?: Channel; restart?: boolean; keep?: number; configPath?: string }
 ): Promise<void> {
   await withVersionLock(root, 'upgrade', () => upgrade(root, opts, realUpgradeDeps(root, note)), { wait: true })
 }

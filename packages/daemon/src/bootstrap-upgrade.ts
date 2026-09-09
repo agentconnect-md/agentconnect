@@ -32,7 +32,7 @@ interface BootstrapControlPlane {
 
 export interface BootstrapUpgradeDeps {
   connect: (url: string) => Promise<Transport>
-  install: (cliEntry: string, targetVersion: string, root: string, log: UpgradeLog) => Promise<boolean>
+  install: typeof runCliUpgrade
   log: UpgradeLog
 }
 
@@ -125,7 +125,7 @@ export async function runBootstrapUpgrade(
     const lifecycle = (reply.payload as AuthOk).lifecycle
     if (!lifecycle || lifecycle.action !== 'upgrade' || lifecycle.targetVersion === DAEMON_VERSION) return 'continue'
 
-    const installed = await deps.install(cliEntry, lifecycle.targetVersion, root, deps.log)
+    const installed = await deps.install(cliEntry, lifecycle.targetVersion, root, deps.log, opts.configPath)
     if (!installed) {
       await reportResult(transport, correlator, lifecycle, 'failed', `failed to install ${lifecycle.targetVersion}`)
       return 'continue'

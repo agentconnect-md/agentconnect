@@ -1467,6 +1467,7 @@ export class Daemon {
       supervisor: () => this.opts.supervisor,
       k8s: () => this.k8s,
       root: () => this.opts.root,
+      configPath: () => this.opts.configPath,
       upgradeInstaller: () => this.opts.upgradeInstaller,
       stop: () => this.stop(),
       requestExit: (code) => this.requestExit(code)

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { upgrade, type UpgradeDeps } from '../src/upgrade.js'
+import { prepareDaemonUpgrade, upgrade, type UpgradeDeps } from '../src/upgrade.js'
 import { checkServiceHealthy } from '../src/health.js'
 import { currentVersion, readMeta } from '../src/version-store.js'
 import type { ResolvedTarget } from '../src/registry.js'
@@ -19,6 +19,7 @@ function deps(over: Partial<UpgradeDeps> = {}): UpgradeDeps {
       install(r, t.version)
       return t.version
     },
+    prepare: vi.fn(async () => {}),
     serviceInstalled: () => true,
     restartService: vi.fn(async () => {}),
     health: async () => ({ healthy: true, reason: 'stable pid 1' }),
@@ -29,6 +30,67 @@ function deps(over: Partial<UpgradeDeps> = {}): UpgradeDeps {
 }
 
 describe('upgrade', () => {
+  it('keeps the old version active until target preparation completes', async () => {
+    const r = root()
+    install(r, '1.0.0')
+    const { useVersion } = await import('../src/version-ops.js')
+    useVersion(r, '1.0.0')
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => (release = resolve))
+    const prepare = vi.fn(async () => pending)
+    const restart = vi.fn(async () => {})
+    const upgrading = upgrade(
+      r,
+      { to: '2.0.0', restart: true, configPath: '/custom/config.json' },
+      deps({ prepare, restartService: restart })
+    )
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledWith(r, '2.0.0', '/custom/config.json'))
+    expect(currentVersion(r)).toBe('1.0.0')
+    expect(restart).not.toHaveBeenCalled()
+    release()
+    await upgrading
+    expect(currentVersion(r)).toBe('2.0.0')
+    expect(restart).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves current, rollback metadata and the running service intact when preparation fails', async () => {
+    const r = root()
+    install(r, '1.0.0')
+    const { useVersion } = await import('../src/version-ops.js')
+    useVersion(r, '1.0.0')
+    const before = readMeta(r)
+    const d = deps({
+      prepare: async () => {
+        throw new Error('image unavailable')
+      }
+    })
+    await expect(upgrade(r, { to: '2.0.0', restart: true }, d)).rejects.toThrow('image unavailable')
+    expect(currentVersion(r)).toBe('1.0.0')
+    expect(readMeta(r)).toEqual(before)
+    expect(d.restartService).not.toHaveBeenCalled()
+    expect(d.prune).not.toHaveBeenCalled()
+  })
+
+  it('runs the target bundle preparation entry and propagates its failure', async () => {
+    const r = root()
+    const dist = join(r, 'versions', '2.0.0', 'dist')
+    mkdirSync(dist, { recursive: true })
+    await prepareDaemonUpgrade(r, '1.0.0')
+    writeFileSync(
+      join(dist, 'prepare-upgrade.js'),
+      'require("node:fs").writeFileSync(__dirname + "/prepared.json", JSON.stringify(process.argv.slice(2)))'
+    )
+    await prepareDaemonUpgrade(r, '2.0.0', '/custom/config.json')
+    expect(JSON.parse(readFileSync(join(dist, 'prepared.json'), 'utf8'))).toEqual([
+      '--root',
+      r,
+      '--config',
+      '/custom/config.json'
+    ])
+    writeFileSync(join(dist, 'prepare-upgrade.js'), 'process.exit(7)')
+    await expect(prepareDaemonUpgrade(r, '2.0.0')).rejects.toThrow('upgrade preparation failed (7)')
+  })
+
   it('prunes with the default retention after switching, protecting the target', async () => {
     const r = root()
     install(r, '1.0.0')

@@ -151,9 +151,19 @@ been reused, not merely because the lock is old.
 
 ## 3. Local upgrade
 
-`agentconnect upgrade` resolves and installs a target, then switches `current`
-to it. The target comes from `--to <version>` or the selected `stable` or `rc`
-channel.
+`agentconnect upgrade` resolves and installs a target, prepares it, then switches
+`current` to it. The target comes from `--to <version>` or the selected `stable`
+or `rc` channel.
+
+When the target includes `dist/prepare-upgrade.js`, the CLI runs that entry with
+the selected root and optional config path before switching versions or stopping
+the running daemon. The target owns config validation and image selection. For
+microsandbox it installs its pinned SDK and prepares the target image's layered
+artifacts without creating, stopping, or resuming VMs. A preparation failure
+leaves `current`, rollback metadata, and the running daemon unchanged. Older
+bundles without the entry keep their existing upgrade behavior. This preparation
+step requires an updated CLI; an older CLI still prepares the image on daemon
+startup.
 
 Without `--restart`, the running daemon is unchanged. The selected version takes
 effect on its next launch.

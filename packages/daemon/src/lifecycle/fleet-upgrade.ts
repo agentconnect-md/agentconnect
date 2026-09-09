@@ -16,6 +16,7 @@ export interface FleetUpgradeHost {
   supervisor: () => string | undefined
   k8s: () => boolean
   root: () => string | undefined
+  configPath: () => string | undefined
   upgradeInstaller: () => typeof runCliUpgrade | undefined
   stop: () => Promise<void>
   requestExit: (code: number) => void
@@ -82,7 +83,9 @@ export class FleetUpgradeCoordinator {
   private startFleetUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
     const log = this.host.log()
     const installation = Promise.resolve()
-      .then(() => (this.host.upgradeInstaller() ?? runCliUpgrade)(cliEntry, targetVersion, root, log))
+      .then(() =>
+        (this.host.upgradeInstaller() ?? runCliUpgrade)(cliEntry, targetVersion, root, log, this.host.configPath())
+      )
       .catch((err) => {
         log.error(`cp: could not install daemon ${targetVersion}: ${formatErr(err)}`)
         return false

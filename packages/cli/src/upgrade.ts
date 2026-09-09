@@ -1,11 +1,9 @@
-/**
- * `agentconnect upgrade` orchestration (cli-daemon-split.md §5.2): install the
- * target → flip `current` → optionally restart → health-check → auto-rollback on
- * failure. The caller wraps this in the version lock; the steps here assume it is
- * held. Dependencies are injected so the control flow (esp. rollback) is testable
- * without a registry or a real service.
- */
+// Install and prepare before activation; the caller holds the version lock through restart and rollback.
 import { resolveController } from './service/index.js'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { spawnDaemon } from './delegate.js'
+import { versionDir } from './paths.js'
 import { checkServiceHealthy, type HealthResult } from './health.js'
 import { installTarget, resolveTarget } from './install.js'
 import type { ResolvedTarget } from './registry.js'
@@ -16,6 +14,7 @@ export interface UpgradeOpts {
   to?: string
   channel?: Channel
   restart?: boolean
+  configPath?: string
   /** Retention for the post-upgrade prune (default DEFAULT_KEEP_VERSIONS); 0 disables it. */
   keep?: number
 }
@@ -23,6 +22,7 @@ export interface UpgradeOpts {
 export interface UpgradeDeps {
   resolve: (o: { to?: string; channel: Channel }) => Promise<ResolvedTarget>
   install: (root: string, target: ResolvedTarget, log: (m: string) => void) => Promise<string>
+  prepare: (root: string, version: string, configPath?: string) => Promise<void>
   serviceInstalled: () => boolean
   restartService: () => Promise<void>
   health: () => Promise<HealthResult>
@@ -35,6 +35,7 @@ export function realUpgradeDeps(root: string, log: (m: string) => void): Upgrade
   return {
     resolve: resolveTarget,
     install: installTarget,
+    prepare: prepareDaemonUpgrade,
     serviceInstalled: () => resolveController({ root }).isInstalled(),
     restartService: async () => {
       const c = resolveController({ root })
@@ -44,6 +45,17 @@ export function realUpgradeDeps(root: string, log: (m: string) => void): Upgrade
     health: () => checkServiceHealthy(() => resolveController({ root }).status()),
     prune: (opts) => autoPrune(root, log, opts),
     log
+  }
+}
+
+// The target bundle owns sandbox configuration and release image selection.
+export async function prepareDaemonUpgrade(root: string, version: string, configPath?: string): Promise<void> {
+  const entry = join(versionDir(root, version), 'dist', 'prepare-upgrade.js')
+  if (!existsSync(entry)) return
+  const args = ['--root', root, ...(configPath ? ['--config', configPath] : [])]
+  const result = await spawnDaemon(entry, args).done
+  if (result.code !== 0) {
+    throw new Error(`daemon ${version} upgrade preparation failed (${result.signal ?? result.code}); current unchanged`)
   }
 }
 
@@ -67,6 +79,7 @@ export async function upgrade(root: string, opts: UpgradeOpts, deps: UpgradeDeps
     return
   }
 
+  await deps.prepare(root, target.version, opts.configPath)
   useVersion(root, target.version) // records `before` as previous (rollback target)
   if (opts.channel && opts.channel !== meta.channel) {
     writeMeta(root, { ...readMeta(root), channel: opts.channel })

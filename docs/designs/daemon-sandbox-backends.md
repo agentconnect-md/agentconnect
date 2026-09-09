@@ -329,13 +329,17 @@ directory at `/tmp/agentconnect` as the image's ordinary user; the pool keeps it
 existing `/run/agentconnect` paths.
 
 In pinned version `0.6.17`, starting a retained flat-disk VM still validates the
-OCI image's VMDK cache. The manager therefore runs the official
-`msb pull <image> --materialize all --quiet` before its VM probe, preparing both
-image forms, and tests stop/start. Retained flat VMs continue to use their original disk. This
-uses the upstream CLI and package without an upstream source patch; cold image
-preparation includes the extra materialization cost.
+OCI image's VMDK cache. The manager runs the official
+`msb pull <image> --materialize layered --quiet` before its VM probe, preparing
+the shared layers and VMDK without generating an unused flat base disk. Retained
+flat VMs continue to use their original disk. The same image preparation runs
+before version activation during CLI upgrades; startup still verifies VM
+boot and stop/start, reusing the prepared image cache.
 
 ### Release image selection and Docker
+
+All runtime image build stages pin the Node base image by version and digest;
+updating the base is an explicit source change rather than an incidental tag refresh.
 
 The release build bundles `dist/release.json` with a `runtimeSandboxImage` OCI
 reference. It names the current release's `runtime-sandbox-full:v<version>` alias.
