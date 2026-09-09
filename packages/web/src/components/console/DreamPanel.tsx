@@ -553,6 +553,46 @@ export function DreamPanel({
   )
 }
 
+/**
+ * What every staged-content read shares (#1078): staging lives on the agent's pod whatever its memory home, so a
+ * read refused with the asleep code is the asleep state — the pod is woken once, the read re-issued (`attempt`) until
+ * it answers, and the shared notice drawn in place of the error line. The Memory tab no longer presses that wake on
+ * open for a Control-Plane home, so the staged surfaces press it themselves.
+ */
+function useStagedRead(agentId: string, loaded: boolean) {
+  const [error, setError] = useState<string | null>(null)
+  const [asleep, setAsleep] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const retry = useCallback(() => setAttempt((n) => n + 1), [])
+  const readState: SandboxReadState = asleep ? 'asleep' : error ? 'failed' : loaded ? 'ready' : 'pending'
+  const wake = useSandboxWake(agentId, readState, retry)
+  const reset = useCallback(() => {
+    setError(null)
+    setAsleep(false)
+  }, [])
+  const refused = useCallback((e: unknown, fallback: string) => {
+    if (e instanceof ApiError && e.code === SANDBOX_ASLEEP_CODE) setAsleep(true)
+    else setError(e instanceof Error ? e.message : fallback)
+  }, [])
+  const asleepNotice = asleep ? (
+    wake.phase === 'starting' ? (
+      <SandboxStartingNotice compact />
+    ) : (
+      <SandboxAsleepNotice
+        wake={wake}
+        startable
+        compact
+        notice={
+          <div className="px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
+            {DREAM_SANDBOX_ASLEEP_NOTICE}
+          </div>
+        }
+      />
+    )
+  ) : null
+  return { attempt, error, asleepNotice, reset, refused }
+}
+
 /** Line diff of one staged file against what is live now, for a completed dream. */
 function DreamReview({
   agentId,
@@ -578,17 +618,7 @@ function DreamReview({
   const [staged, setStaged] = useState<string>('')
   const [live, setLive] = useState<string>('')
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  // Staging lives on the pod whatever the memory home (#1078): a read refused as asleep presses the wake here, since the Memory tab no longer does on open.
-  const [asleep, setAsleep] = useState(false)
-  const [attempt, setAttempt] = useState(0)
-  const retry = useCallback(() => setAttempt((n) => n + 1), [])
-  const readState: SandboxReadState = asleep ? 'asleep' : error ? 'failed' : paths === null ? 'pending' : 'ready'
-  const wake = useSandboxWake(agentId, readState, retry)
-  const refused = (e: unknown, fallback: string) => {
-    if (e instanceof ApiError && e.code === SANDBOX_ASLEEP_CODE) setAsleep(true)
-    else setError(e instanceof Error ? e.message : fallback)
-  }
+  const { attempt, error, asleepNotice, reset, refused } = useStagedRead(agentId, paths !== null)
   // Same-bytes review fence token from the staged listing; echoed on Adopt so the
   // daemon binds adoption to exactly the bytes shown here (task #36 Phase B).
   const [reviewToken, setReviewToken] = useState<string | undefined>(undefined)
@@ -598,8 +628,7 @@ function DreamReview({
     let alive = true
     setPaths(null)
     setSelected(null)
-    setError(null)
-    setAsleep(false)
+    reset()
     setReviewToken(undefined)
     void (async () => {
       try {
@@ -626,7 +655,7 @@ function DreamReview({
       alive = false
     }
     // `attempt` is the wake's re-issue of this read.
-  }, [agentId, dreamId, attempt])
+  }, [agentId, dreamId, attempt, reset, refused])
 
   useEffect(() => {
     if (!selected) return
@@ -649,30 +678,14 @@ function DreamReview({
         if (id === request.current) setLoading(false)
       }
     })()
-  }, [agentId, dreamId, selected])
+  }, [agentId, dreamId, selected, refused])
 
   const deleting = (paths ?? []).filter((p) => p.live && !p.staged)
 
   return (
     <div className="flex flex-col gap-3 rounded-(--radius-md) border border-(--border-subtle) bg-(--surface-sunken) p-3">
-      {asleep ? (
-        wake.phase === 'starting' ? (
-          <SandboxStartingNotice compact />
-        ) : (
-          <SandboxAsleepNotice
-            wake={wake}
-            startable
-            compact
-            notice={
-              <div className="px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
-                {DREAM_SANDBOX_ASLEEP_NOTICE}
-              </div>
-            }
-          />
-        )
-      ) : error ? (
-        <div className="font-sans text-[12px] leading-normal text-(--status-error)">{error}</div>
-      ) : null}
+      {asleepNotice ??
+        (error ? <div className="font-sans text-[12px] leading-normal text-(--status-error)">{error}</div> : null)}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex flex-wrap items-center gap-1">
@@ -809,27 +822,39 @@ function SkillBody({
   onRead: (reviewToken?: string) => void
 }) {
   const [content, setContent] = useState<DreamSkillContentDto | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [open, setOpen] = useState(false)
+  const { attempt, error, asleepNotice, reset, refused } = useStagedRead(agentId, content !== null)
+  // The parent's callback is an inline arrow; a ref keeps its identity out of the read effect.
+  const onReadRef = useRef(onRead)
+  onReadRef.current = onRead
+
+  // Read once opened, and again when the wake re-issues it (`attempt`); a body already shown is never re-read.
+  useEffect(() => {
+    if (!open || content) return
+    let alive = true
+    reset()
+    void fetchDreamSkill(agentId, dreamId, name)
+      .then((body) => {
+        if (!alive) return
+        setContent(body)
+        // Only a body that actually rendered counts as reviewed — a pending
+        // request, an error, or vanished staging must all keep Accept off.
+        if (body.exists && body.skill) onReadRef.current(body.reviewToken)
+      })
+      .catch((err) => {
+        if (alive) refused(err, 'Could not load this skill.')
+      })
+    return () => {
+      alive = false
+    }
+  }, [open, content, attempt, agentId, dreamId, name, reset, refused])
 
   return (
-    <details
-      className="w-full"
-      onToggle={(e) => {
-        if (!(e.currentTarget as HTMLDetailsElement).open || content) return
-        void fetchDreamSkill(agentId, dreamId, name)
-          .then((body) => {
-            setContent(body)
-            // Only a body that actually rendered counts as reviewed — a pending
-            // request, an error, or vanished staging must all keep Accept off.
-            if (body.exists && body.skill) onRead(body.reviewToken)
-          })
-          .catch((err) => setError(err instanceof Error ? err.message : 'Could not load this skill.'))
-      }}
-    >
+    <details className="w-full" onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
       <summary className="cursor-pointer list-none font-sans text-[11px] font-medium leading-normal text-(--brand-soft-text) [&::-webkit-details-marker]:hidden">
         Show what this installs
       </summary>
-      {error ? <div className="mt-1 font-sans text-[11px] text-(--status-error)">{error}</div> : null}
+      {asleepNotice ?? (error ? <div className="mt-1 font-sans text-[11px] text-(--status-error)">{error}</div> : null)}
       {content?.exists === false ? (
         <div className="mt-1 font-sans text-[11px] text-(--text-tertiary)">This candidate is no longer staged.</div>
       ) : null}

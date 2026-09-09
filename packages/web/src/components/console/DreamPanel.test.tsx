@@ -562,6 +562,43 @@ describe('DreamPanel', () => {
     vi.useRealTimers()
   })
 
+  it('wakes the sandbox when a suggested skill’s staged body refuses as asleep, then enables Accept once it loads', async () => {
+    // The skill body is staged content on the pod too; an adopted dream has no Review button, so this read
+    // must carry its own wake rather than lean on the memory-store review's.
+    vi.useFakeTimers()
+    try {
+      const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+      api.listDreams.mockResolvedValue([dream({ status: 'adopted', skills })])
+      api.fetchDreamSkill.mockRejectedValueOnce(
+        Object.assign(new FakeApiError(503), { code: 'WORKSPACE_SANDBOX_UNAVAILABLE' })
+      )
+      const host = await render()
+      const details = host.querySelector<HTMLDetailsElement>('details')!
+      await act(async () => {
+        details.open = true
+        details.dispatchEvent(new Event('toggle'))
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(api.wakeAgent).toHaveBeenCalledWith(AGENT)
+      expect(host.textContent).toContain('Starting the agent’s sandbox')
+      expect(host.textContent).not.toContain('http 503')
+      expect(button(host, 'Accept')?.disabled).toBe(true)
+
+      // The wake answered; the first poll re-issues the read, the body renders, and Accept opens up.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_100)
+      })
+      expect(host.textContent).toContain('echo deploying')
+      expect(host.textContent).not.toContain('Starting the agent’s sandbox')
+      expect(button(host, 'Accept')?.disabled).toBe(false)
+      expect(api.wakeAgent).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps Accept disabled while the body is loading, and on error or missing staging', async () => {
     const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
     api.listDreams.mockResolvedValue([dream({ skills })])
