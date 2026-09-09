@@ -154,6 +154,56 @@ describe('webchat steer-only turns', () => {
     await daemon.stop()
   })
 
+  it('joins a reconnect copy to the steer admission still deciding, so both copies get the one verdict', async () => {
+    let releaseSteer!: () => void
+    const held = new Promise<void>((r) => (releaseSteer = r))
+    const h = steeringHost(async () => {
+      await held
+      return 'injected'
+    })
+    const daemon = await boot(h.host)
+    const events: RdChatEvent[] = []
+    await startTurn(daemon, h.host, events)
+
+    const original = (daemon as any).handleRelayMsg(steerOp('use staging'), () => {})
+    await vi.waitFor(() => expect(h.host.steer).toHaveBeenCalledOnce(), WAIT)
+    // The browser reconnected meanwhile and re-sent the same steer under a fresh relay msgId.
+    const copy = (daemon as any).handleRelayMsg({ ...steerOp('use staging'), msgId: 'm-3' }, () => {})
+    releaseSteer()
+    expect(await original).toEqual({ msgId: 'm-2', accepted: true, turnId: STEER_TURN, steered: true })
+    expect(await copy).toEqual({ msgId: 'm-3', accepted: true, turnId: STEER_TURN, steered: true })
+    expect(h.host.steer).toHaveBeenCalledOnce()
+    h.releaseOne()
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    expect(h.host.prompt).toHaveBeenCalledTimes(1)
+    await daemon.stop()
+  })
+
+  it('reports a reconnect copy of a steer that became its own turn as accepted, never `busy`', async () => {
+    const h = steeringHost()
+    const daemon = await boot(h.host)
+    const events: RdChatEvent[] = []
+    await startTurn(daemon, h.host, events)
+    h.releaseOne()
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+
+    expect(await (daemon as any).handleRelayMsg(steerOp('late steer'), () => {})).toEqual({
+      msgId: 'm-2',
+      accepted: true,
+      turnId: STEER_TURN
+    })
+    await vi.waitFor(() => expect(h.host.prompt).toHaveBeenCalledTimes(2), WAIT)
+    // While that turn runs (and after it ends) a re-sent copy is not a second delivery.
+    expect(await (daemon as any).handleRelayMsg({ ...steerOp('late steer'), msgId: 'm-3' }, () => {})).toEqual({
+      msgId: 'm-3',
+      accepted: true,
+      turnId: STEER_TURN
+    })
+    expect(h.host.prompt).toHaveBeenCalledTimes(2)
+    h.releaseOne()
+    await daemon.stop()
+  })
+
   it('admits a steer whose turn had already ended as an ordinary turn, without `steered`', async () => {
     const h = steeringHost()
     const daemon = await boot(h.host)

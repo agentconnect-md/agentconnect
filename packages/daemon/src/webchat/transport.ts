@@ -134,6 +134,8 @@ export interface WebchatHost {
 export class WebchatTransport {
   /** Bounded, ephemeral reconnect state keyed by (turnId, agentId). */
   private readonly webchatStreams = new Map<string, WebchatTurnStream>()
+  /** Steer-only admissions still awaiting their verdict, by stream key — a reconnect copy joins them. */
+  private readonly pendingSteerAdmissions = new Map<string, Promise<WebchatAck>>()
 
   constructor(private readonly host: WebchatHost) {}
 
@@ -265,11 +267,19 @@ export class WebchatTransport {
       return { accepted: false, turnId, reason: 'busy' }
     }
     this.pruneWebchatStreams()
-    const existingStream = this.webchatStreams.get(this.webchatStreamKey(turnId, result.agentId))
+    const streamKey = this.webchatStreamKey(turnId, result.agentId)
+    const existingStream = this.webchatStreams.get(streamKey)
     if (existingStream) {
-      // A browser that lost the ack re-sends its steer on reconnect (same turnId): a copy of one
-      // this daemon already steered is confirmed again, never queued or refused as a duplicate.
-      if (steer && this.streamEndedSteered(existingStream)) return { accepted: true, turnId, steered: true }
+      // A browser that lost the ack re-sends its steer on reconnect (same turnId). The copy is
+      // never a second delivery: it joins an admission still deciding, is confirmed for a stream
+      // that already ended steered, and is reported accepted for one that became its own turn —
+      // `busy` stays the DEFINITE refusal the browser may requeue on.
+      if (steer) {
+        const pending = this.pendingSteerAdmissions.get(streamKey)
+        if (pending) return await pending
+        if (this.streamEndedSteered(existingStream)) return { accepted: true, turnId, steered: true }
+        return { accepted: true, turnId }
+      }
       return { accepted: false, turnId, reason: 'busy' }
     }
     const initialRuntime =
@@ -326,7 +336,15 @@ export class WebchatTransport {
       // separate turn after the regeneration already answered it.
       msg.transcriptTs = observedTs
     }
-    if (steer) return await this.dispatchSteerOnly(result.agentId, msg, stream)
+    if (steer) {
+      const verdict = this.dispatchSteerOnly(result.agentId, msg, stream)
+      this.pendingSteerAdmissions.set(streamKey, verdict)
+      try {
+        return await verdict
+      } finally {
+        this.pendingSteerAdmissions.delete(streamKey)
+      }
+    }
     void this.host.dispatch(result.agentId, msg, undefined, stream).catch((err) => {
       if (!(err instanceof LifecycleCleanupBlockedError))
         this.host.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)

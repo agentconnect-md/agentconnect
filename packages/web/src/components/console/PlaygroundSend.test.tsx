@@ -1212,20 +1212,65 @@ describe('mid-turn steering', () => {
     }
   })
 
-  it('returns an unacked steer to the queue when the socket closes on an idle turn', async () => {
-    const { socket, turnId } = await openSteerableStream()
-    await act(async () => {
-      expect(pgSend('s1', 'agent-1', 'still unanswered', 'c1')).toBe(true)
-    })
-    // The running turn ends (busy clears) and then the socket closes with the steer unacked:
-    // nothing will reconnect, so the message must not vanish behind its steer label.
-    act(() => feed(socket, { type: 'done', done: { turnId, agentId: 'agent-1', stopReason: 'end_turn' } }))
-    act(() => socket.onclose?.())
-    // Back in the queue, and — the turn being idle — straight out again as an ordinary turn.
-    const resent = getLiveSteps('s1').filter((s) => s.kind === 'msg' && s.text === 'still unanswered')
-    expect(resent).toHaveLength(1)
-    expect(resent[0]!.steer).toBeFalsy()
-    expect(getPgQueue('s1')).toEqual([])
+  it('keeps an unacked steer under its own turnId when the socket closes on an idle turn', async () => {
+    vi.useFakeTimers()
+    try {
+      const { socket, turnId } = await openSteerableStream()
+      await act(async () => {
+        expect(pgSend('s1', 'agent-1', 'still unanswered', 'c1')).toBe(true)
+      })
+      const steer = frames(socket).find((f) => f.steer === true)!
+      // The running turn ends (busy clears) and then the socket closes with the steer unacked. The
+      // runtime may already have it, so it must NOT become a fresh turn: the provider reconnects for
+      // the steer alone and re-sends the same frame, which the daemon reconciles.
+      act(() => feed(socket, { type: 'done', done: { turnId, agentId: 'agent-1', stopReason: 'end_turn' } }))
+      act(() => socket.onclose?.())
+      expect(getPgQueue('s1')).toEqual([])
+      expect(getLiveSteps('s1').filter((s) => s.text === 'still unanswered')).toMatchObject([{ steer: true }])
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000)
+      })
+      const reconnected = SteerSocket.instances[1]!
+      expect(reconnected).toBeDefined()
+      await act(async () => {
+        reconnected.readyState = 1
+        reconnected.onopen?.()
+      })
+      act(() => feed(reconnected, { type: 'ready', conversationId: 'c1' }))
+      expect(frames(reconnected).find((f) => f.steer === true)).toEqual(steer)
+      // The daemon had run it as its own turn (the turn was over): the copy is reported accepted, the
+      // step becomes an ordinary user turn and the browser opens its lane and pulls the replay.
+      act(() => feed(reconnected, { type: 'ack', ack: { accepted: true, turnId: steer.turnId, agentId: 'agent-1' } }))
+      expect(getLiveSteps('s1').filter((s) => s.text === 'still unanswered')).toMatchObject([{ steer: undefined }])
+      expect(frames(reconnected).find((f) => f.type === 'resume')).toMatchObject({ turnId: steer.turnId })
+      expect(getPgQueue('s1')).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not requeue an unacked steer when reconnecting gives up — the delivery is marked uncertain', async () => {
+    vi.useFakeTimers()
+    try {
+      const { socket } = await openSteerableStream()
+      await act(async () => {
+        expect(pgSend('s1', 'agent-1', 'maybe delivered', 'c1')).toBe(true)
+      })
+      act(() => socket.onclose?.())
+      // Every reconnect attempt dies at once until the budget is spent.
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000)
+        })
+        const latest = SteerSocket.instances.at(-1)!
+        if (latest !== socket && latest.readyState === 0) act(() => latest.onclose?.())
+      }
+      expect(getPgQueue('s1')).toEqual([])
+      expect(getLiveSteps('s1').filter((s) => s.text === 'maybe delivered')).toMatchObject([{ steer: true }])
+      expect(getLiveSteps('s1').some((s) => s.kind === 'done' && s.text.includes('Could not confirm'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('steers a follow-up into the running turn instead of queueing it', async () => {
