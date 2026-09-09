@@ -121,7 +121,14 @@ interface ClosedGate {
  *  appends a second stream event. The chat arm names no platform — the facet does, and the
  *  handle's three fields are the coordinates BOTH chat surfaces identify a posted card by. */
 type PendingElicitSurface =
-  | ({ surface: 'chat'; facet: ElicitCardFacet } & ElicitCardHandle)
+  | ({
+      surface: 'chat'
+      facet: ElicitCardFacet
+      /** The conversation a typed answer must have been written in, qualified by the bot that owns
+       *  the card (`plan.transcriptChannel`). `channel` is the bare platform channel a rewrite is
+       *  addressed to, which cannot tell two bots apart in one person's DMs. */
+      answerConv: string
+    } & ElicitCardHandle)
   | { surface: 'webchat'; wc: NonNullable<Pending['webchat']> }
 
 /** What the surface a card was posted to renders — re-deriving its target has to ask the same
@@ -1500,6 +1507,7 @@ export class PermissionCoordinator {
       facet,
       conn: p.conn,
       channel: p.plan.channel,
+      answerConv: p.plan.transcriptChannel,
       // An MCP approval keeps its durable record in `permission_requests` and its own console
       // surface, so it is not also a transcript card.
       ...(isApproval
@@ -1953,7 +1961,11 @@ export class PermissionCoordinator {
   async claimElicitReply(reply: ElicitCardReply & { actor?: InteractionActor }): Promise<boolean> {
     if (reply.replyTo === undefined) return false
     for (const [requestId, rec] of this.pendingElicits) {
-      if (rec.surface !== 'chat' || !rec.facet.claimReply || !rec.form || rec.channel !== reply.channel) continue
+      if (rec.surface !== 'chat' || !rec.facet.claimReply || !rec.form) continue
+      // Matched on the BOT-QUALIFIED conversation, never the bare channel: a person's DMs with two
+      // Telegram bots share one chat id and one message-number sequence, so a bare channel would
+      // let a reply to bot B's prompt settle bot A's card — and suppress B's own delivery with it.
+      if (rec.answerConv !== reply.conversation) continue
       const form = this.cardForm(rec)
       if (!form) continue
       const claimed = rec.facet.claimReply(rec, { requestId, params: rec.params, form }, reply)

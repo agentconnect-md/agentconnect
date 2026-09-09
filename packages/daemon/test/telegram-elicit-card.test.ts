@@ -140,6 +140,7 @@ interface Harness {
   /** Hold the next card post's response, so a tap can be made to beat its own send. */
   holdPost: (release: Promise<void>) => void
   prompts: { text: string; opts: { replyTo?: number; placeholder?: string } }[]
+  deleted: string[]
 }
 
 /** @param turn the turn's THREAD coordinate and its Telegram reply anchor — a plain supergroup
@@ -154,6 +155,7 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
   const cards: { text: string; buttons: InlineButton[][]; opts: { threadTs?: string; replyTo?: number } }[] = []
   const edits: { text: string; buttons: InlineButton[][]; id?: number }[] = []
   const prompts: { text: string; opts: { replyTo?: number; placeholder?: string } }[] = []
+  const deleted: string[] = []
   const acked: string[] = []
   const conn = Object.create(TelegramConnection.prototype)
   let held: Promise<void> | undefined
@@ -170,9 +172,14 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
   conn.editCard = async (_c: string, id: number, text: string, buttons: InlineButton[][]) => {
     edits.push({ text, buttons, id })
   }
+  // A DISTINCT id per send, as Telegram gives: a fixed one hides a card holding two open boxes.
   conn.postPrompt = async (_c: string, text: string, opts: { replyTo?: number; placeholder?: string } = {}) => {
     prompts.push({ text, opts })
-    return '5150'
+    return String(5150 + prompts.length - 1)
+  }
+  conn.deleteMessage = async (_c: string, ts: string) => {
+    deleted.push(ts)
+    return true
   }
   conn.answerCallback = async (id: string) => void acked.push(id)
   daemon.pending.set(JSON.stringify(['agent-1', 's1']), {
@@ -182,7 +189,7 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
       sessionKey: 'k1',
       requesterId: 'turn-user',
       channel: '-100',
-      transcriptChannel: '-100',
+      transcriptChannel: '-100\u001ftelegram:bot-a',
       statusThread: 'T1',
       agentName: 'agent',
       isDm: false,
@@ -213,7 +220,8 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
     acked,
     notices: () => applied.filter((a) => a.kind === 'notice').map((a) => a.text as string),
     holdPost: (release: Promise<void>) => void (held = release),
-    prompts
+    prompts,
+    deleted
   }
 }
 
@@ -487,7 +495,12 @@ describe('a Telegram typed answer is written into a force-reply box', () => {
       h.conn
     )
   }
-  const reply = (text: string, replyTo?: string) => ({ channel: '-100', text, ...(replyTo ? { replyTo } : {}) })
+  const CONV = '-100\u001ftelegram:bot-a'
+  const reply = (text: string, replyTo?: string, conversation = CONV) => ({
+    conversation,
+    text,
+    ...(replyTo ? { replyTo } : {})
+  })
 
   it('offers a box rather than a control that cannot take characters, and takes what is typed', async () => {
     const h = telegramTurn()
@@ -507,10 +520,12 @@ describe('a Telegram typed answer is written into a force-reply box', () => {
 
     expect(await h.daemon.permissions.claimElicitReply(reply('ship it', '5150'))).toBe(true)
     await expect(result).resolves.toEqual({ action: 'accept', content: { note: 'ship it' } })
-    // Both the card and the prompt stop offering anything: no reader is left typing into a
-    // question that is over.
-    expect(h.edits.map((e) => e.id)).toEqual([4242, 5150])
+    // The card stops offering anything, and the prompt is DELETED rather than edited: Telegram
+    // edits only a message carrying no markup or an inline keyboard, so an edit aimed at a
+    // `force_reply` is refused and the box would simply remain.
+    expect(h.edits.map((e) => e.id)).toEqual([4242])
     expect(h.edits[0]!.text).toContain('✅ note: ship it')
+    expect(h.deleted).toEqual(['5150'])
   })
 
   it('answers only the prompt it opened — never a reply to anything else', async () => {
@@ -522,9 +537,27 @@ describe('a Telegram typed answer is written into a force-reply box', () => {
     // A message that replies to nothing, and one replying to some other message, are both prompts.
     expect(await h.daemon.permissions.claimElicitReply(reply('ship it'))).toBe(false)
     expect(await h.daemon.permissions.claimElicitReply(reply('ship it', '4242'))).toBe(false)
-    // Another conversation's reply cannot reach this card either.
-    expect(await h.daemon.permissions.claimElicitReply({ channel: '-200', text: 'x', replyTo: '5150' })).toBe(false)
+    // Another conversation's reply cannot reach this card, and neither can the SAME chat id
+    // reached through a different bot — one person's DMs with two bots share their message
+    // numbers, so the bot is part of the identity.
+    expect(await h.daemon.permissions.claimElicitReply(reply('x', '5150', '-200\u001ftelegram:bot-a'))).toBe(false)
+    expect(await h.daemon.permissions.claimElicitReply(reply('x', '5150', '-100\u001ftelegram:bot-b'))).toBe(false)
+    expect(await h.daemon.permissions.claimElicitReply(reply('x', '5150', '-100'))).toBe(false)
     expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+  })
+
+  it('keeps EVERY box it opened answerable, so a second tap does not break the first', async () => {
+    // Two readers can be typing at once, and one reader can tap twice. A box still on screen must
+    // not have stopped working because a later one appeared.
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form({ note: { type: 'string' } }, ['note']))
+    await tap(h, requestId, 'ed')
+    await tap(h, requestId, 'ed')
+    expect(h.prompts).toHaveLength(2)
+    expect(await h.daemon.permissions.claimElicitReply(reply('from the first box', '5150'))).toBe(true)
+    await expect(result).resolves.toEqual({ action: 'accept', content: { note: 'from the first box' } })
+    // And both boxes are retired, not just the one that was answered.
+    expect(h.deleted.sort()).toEqual(['5150', '5151'])
   })
 
   it('takes the first answer and nothing after it, because the answered card is gone', async () => {
@@ -555,7 +588,6 @@ describe('a Telegram typed answer is written into a force-reply box', () => {
     expect(h.daemon.permissions.pendingElicits.size).toBe(1)
     expect(h.notices().at(-1)).toContain('Enter')
 
-    await tap(h, requestId, 'ed')
     expect(await h.daemon.permissions.claimElicitReply(reply('42', '5150'))).toBe(true)
     await expect(result).resolves.toEqual({ action: 'accept', content: { count: 42 } })
   })

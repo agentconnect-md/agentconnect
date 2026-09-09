@@ -168,6 +168,7 @@ export interface TelegramApi {
     text: string,
     opts?: { parse_mode?: string; reply_markup?: InlineKeyboardMarkup }
   ): Promise<unknown>
+  deleteMessage(chatId: number | string, messageId: number): Promise<unknown>
   /** The two outbound file forms. An image previews inline through sendPhoto; sendDocument
    *  takes everything else and is the only form that preserves the bytes exactly. */
   sendPhoto(
@@ -552,6 +553,27 @@ export class TelegramConnection implements PlatformConnection {
       } catch (err) {
         this.deps.log?.debug(`telegram: sendMessage (prompt) failed (ch=${channel}): ${(err as Error).message}`)
         return undefined
+      }
+    })
+  }
+
+  /**
+   * Retire one of the bot's own messages ({@link PlatformConnection.deleteMessage}). The only
+   * supported way to take back a `force_reply`: Telegram edits only messages carrying no markup or
+   * an inline keyboard, so an edit aimed at a prompt is refused — and a refused edit leaves a
+   * reader typing into a question that is over. Best-effort: false when the API refused it, which
+   * a message past its own delete window will.
+   */
+  async deleteMessage(channel: string, ts: string): Promise<boolean> {
+    const messageId = Number(ts)
+    if (!Number.isInteger(messageId)) return false
+    return await this.queue.enqueue(async () => {
+      try {
+        await this.bot.api.deleteMessage(channel, messageId)
+        return true
+      } catch (err) {
+        this.deps.log?.debug(`telegram: deleteMessage failed (ch=${channel} id=${ts}): ${(err as Error).message}`)
+        return false
       }
     })
   }

@@ -249,15 +249,17 @@ interface TelegramElicitDraft {
  *  record, so a card that ends without a Confirm leaves nothing behind. */
 interface TelegramElicitCardState {
   chosen: Set<number>
-  /** The open `force_reply` prompt's own message id, which is what a reply to it names. Absent
-   *  until the reader asks for the box, and again once the prompt has been answered. */
-  promptTs?: string
+  /** EVERY `force_reply` prompt this card has posted, by message id — which is what a reply to one
+   *  names. All of them stay answerable until the card settles: each tap of Answer posts its own
+   *  box, so two readers can be typing at once (or one reader can tap twice), and a box still on
+   *  screen must not have stopped working because a later one appeared. */
+  prompts: Set<string>
 }
 
 function cardStateOf(handle: ElicitCardHandle): TelegramElicitCardState {
   const existing = handle.cardState as TelegramElicitCardState | undefined
   if (existing) return existing
-  const fresh: TelegramElicitCardState = { chosen: new Set<number>() }
+  const fresh: TelegramElicitCardState = { chosen: new Set<number>(), prompts: new Set<string>() }
   handle.cardState = fresh
   return fresh
 }
@@ -343,7 +345,7 @@ export const telegramElicitCards: ElicitCardFacet = {
           placeholder: elicitFieldExpectation(target)
         })
         .then((ts) => {
-          if (ts !== undefined) state.promptTs = ts
+          if (ts !== undefined) state.prompts.add(ts)
         })
         .catch(() => {})
       return { kind: 'pending' }
@@ -389,7 +391,7 @@ export const telegramElicitCards: ElicitCardFacet = {
     const target = telegramAssembledField(card.form)
     if (!target || (target.kind !== 'text' && target.kind !== 'number')) return null
     const state = handle.cardState as TelegramElicitCardState | undefined
-    if (!state?.promptTs || state.promptTs !== reply.replyTo) return null
+    if (reply.replyTo === undefined || !state?.prompts.has(reply.replyTo)) return null
     const text = reply.text.trim()
     if (!text) return null
     // The prompt is deliberately NOT spent here. An accepted answer settles the card, and a card
@@ -412,11 +414,11 @@ export const telegramElicitCards: ElicitCardFacet = {
     const text = clampTo(`${telegramElicitText(message)}\n${decision}`, TELEGRAM_MESSAGE_LIMIT)
     // An empty keyboard is what drops the buttons; the answered card stays readable in the chat.
     void (handle.conn as TelegramConnection).editCard(handle.channel, messageId, text, []).catch(() => {})
-    // And a prompt still standing would keep offering a box for a question that is over. Editing
-    // it is what drops its `force_reply`, so no reader is left typing into a closed card.
-    const promptTs = (handle.cardState as TelegramElicitCardState | undefined)?.promptTs
-    const promptId = promptTs === undefined ? NaN : Number(promptTs)
-    if (Number.isInteger(promptId))
-      void (handle.conn as TelegramConnection).editCard(handle.channel, promptId, decision, []).catch(() => {})
+    // Every prompt still standing would keep offering a box for a question that is over, so each
+    // is DELETED rather than edited: Telegram edits only a message carrying no markup or an inline
+    // keyboard, so an edit aimed at a `force_reply` is refused and the box would simply remain.
+    const prompts = (handle.cardState as TelegramElicitCardState | undefined)?.prompts
+    for (const promptTs of prompts ?? [])
+      void (handle.conn as TelegramConnection).deleteMessage(handle.channel, promptTs).catch(() => {})
   }
 }

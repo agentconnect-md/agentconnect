@@ -6667,7 +6667,9 @@ export class Daemon {
     if (
       !agentAuthored &&
       (await this.permissions.claimElicitReply({
-        channel: msg.channel,
+        // Qualified by the receiving bot, or a reply in one person's DM with bot B could settle a
+        // card bot A is holding — those two DMs share a chat id and its message numbers.
+        conversation: transcriptChannelKey(msg.channel, msg.transportScope),
         ...(msg.replyTo !== undefined ? { replyTo: msg.replyTo } : {}),
         text: msg.text,
         actor: { userId: msg.sender.id }

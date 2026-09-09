@@ -141,7 +141,11 @@ export interface ElicitCardTapTarget {
  *  it was written as a reply to, and its words. A surface matches it against whatever it asked the
  *  reader to reply TO — which is how one answer reaches exactly one card. */
 export interface ElicitCardReply {
-  readonly channel: string
+  /** The conversation, QUALIFIED BY THE BOT THAT RECEIVED IT — `transcriptChannelKey`, the same
+   *  identity the transcript and the ingress dedup use. Not the bare channel: two Telegram bots
+   *  DM'd by one person share that person's chat id AND its message numbers, so a bare channel
+   *  would let a reply to bot B's message id settle bot A's card. */
+  readonly conversation: string
   /** The message this reply answers, in the surface's own dialect. Absent ⇒ not a reply at all. */
   readonly replyTo?: string
   readonly text: string
