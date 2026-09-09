@@ -103,7 +103,7 @@ jobs:
       # Full history + tags: the effective-version walk below diffs stable tags
       # pairwise. This repo is small; the extra clone cost on rc builds is noise.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -266,7 +266,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           ref: ${{ needs.prepare.outputs.version }}
@@ -494,7 +494,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           ref: ${{ needs.prepare.outputs.version }}
