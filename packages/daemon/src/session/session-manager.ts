@@ -1,3 +1,5 @@
+import { createMemoryEntryService } from '../memory/entries/factory.js'
+import { memoryActivationContext } from '../memory/entries/activation.js'
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
 import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } from '../store/local-store.js'
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
@@ -578,6 +580,25 @@ export class SessionManager {
     // Composed lazily and memoized, because the workspace roots it names must be sampled where the
     // additional directories are: on a warm host `openRuntimeSession` performs the preparation
     // itself, so a context built before that could name a root the runtime never received.
+    let activation: Promise<string> | undefined
+    const activationContext = (includeOverview: boolean): Promise<string> => {
+      if (!usesMeta || !memoryEnabled || (currentMemoryProvider !== 'managed' && currentMemoryProvider !== 'external'))
+        return Promise.resolve('')
+      return (activation ??= memoryActivationContext(
+        {
+          context: async (request) => {
+            const entries = await createMemoryEntryService({
+              provider: this.deps.memory,
+              store: this.deps.store,
+              scope: memScope,
+              canRead: () => this.deps.agentById(agentId) !== undefined
+            })
+            return entries.context(request)
+          }
+        },
+        includeOverview
+      ))
+    }
     let standing: Promise<StandingContext> | undefined
     const standingContext = (): Promise<StandingContext> =>
       (standing ??= (async () =>
@@ -666,8 +687,12 @@ export class SessionManager {
       // metadata-only settings cannot be reversed by a later live selector.
       chatRuntimeChangesAllowed: () => this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true,
       effortOverride: async () => initialEffort ?? (await this.deps.store.getEffortOverride(key)),
-      metaContext: async () => (await standingContext()).metaContext,
-      resumeSystemContext: async () => (await standingContext()).resumeSystemContext,
+      metaContext: async () => {
+        const context = (await standingContext()).metaContext
+        return usesMeta ? [context, await activationContext(false)].filter(Boolean).join('\n\n') || undefined : context
+      },
+      resumeSystemContext: async () =>
+        [(await standingContext()).resumeSystemContext, await activationContext(true)].filter(Boolean).join('\n\n'),
       usesMeta,
       ...(signal ? { signal } : {}),
       abortable,
