@@ -7,6 +7,7 @@ import {
   type MemoryFsReply,
   type MemoryStoreReq,
   MEMORY_TRANSACTION_V1_FEATURE,
+  MEMORY_CAPTURE_FENCE_V1_FEATURE,
   type MemoryTransactionReq,
   type MemoryTransactionResult
 } from '@agentconnect.md/protocol'
@@ -104,6 +105,30 @@ export class CpMemoryFs extends MemoryFsClient {
     }
   }
 
+  get captureStatus(): MemoryFs['captureStatus'] {
+    if (!this.atomicTransaction || !this.link.supportsServerFeature(MEMORY_CAPTURE_FENCE_V1_FEATURE)) return undefined
+    return async (root, sourceTurnId) => {
+      const transact = this.atomicTransaction
+      if (!transact || !this.link.supportsServerFeature(MEMORY_CAPTURE_FENCE_V1_FEATURE))
+        throw new MemoryHomeUnavailableError('feature', 'the memory home no longer supports capture fences')
+      let result: MemoryTransactionResult
+      try {
+        result = await transact({ operation: 'capture-status', root, sourceTurnId })
+      } catch (error) {
+        // This read has no ambiguous write outcome; classify transport failures for the durable capture outbox.
+        if (error instanceof WireError && (error.retryable || error.code === 'SCOPE_DENIED'))
+          throw new MemoryHomeUnavailableError(
+            error.code === 'SCOPE_DENIED' ? 'scope-denied' : 'connection',
+            'memory capture status is unavailable'
+          )
+        throw error
+      }
+      if (result.operation !== 'capture-status')
+        throw new MemoryHomeUnavailableError('connection', 'memory capture status could not be established')
+      return { suppressed: result.suppressed }
+    }
+  }
+
   get atomicTransaction(): MemoryFs['atomicTransaction'] {
     if (!this.link.memoryTransaction || !this.link.supportsServerFeature(MEMORY_TRANSACTION_V1_FEATURE))
       return undefined
@@ -112,6 +137,8 @@ export class CpMemoryFs extends MemoryFsClient {
         throw new MemoryHomeUnavailableError('connection', 'the memory transaction home is unreachable')
       if (!this.link.memoryTransaction || !this.link.supportsServerFeature(MEMORY_TRANSACTION_V1_FEATURE))
         throw new MemoryHomeUnavailableError('feature', 'the memory home no longer supports transactions')
+      if (request.operation === 'capture-status' && !this.link.supportsServerFeature(MEMORY_CAPTURE_FENCE_V1_FEATURE))
+        throw new MemoryHomeUnavailableError('feature', 'the memory home no longer supports capture fences')
       return this.link.memoryTransaction({
         ...request,
         agentId: this.agentId,

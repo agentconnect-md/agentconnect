@@ -607,11 +607,14 @@ export function writeMemoryFile(
   content: string,
   ifMatchMtime: string | undefined,
   source: MemoryWriteSource,
-  history: MemoryHistorySink
+  history: MemoryHistorySink,
+  sourceTurnId?: string
 ): Promise<{ size: number; mtime: string }> {
   // Serialize every write behind the shared per-dir lock so it can't interleave
   // with a dream adoption's fence-and-swap (nor another write).
-  return withMemoryDirLock(fs, () => writeMemoryFileHoldingLock(fs, relPath, content, ifMatchMtime, source, history))
+  return withMemoryDirLock(fs, () =>
+    writeMemoryFileHoldingLock(fs, relPath, content, ifMatchMtime, source, history, sourceTurnId)
+  )
 }
 
 // The write itself, WITHOUT taking the memory-dir lock — for a caller that already holds it and needs several writes to
@@ -622,7 +625,8 @@ export async function writeMemoryFileHoldingLock(
   content: string,
   ifMatchMtime: string | undefined,
   source: MemoryWriteSource,
-  history: MemoryHistorySink
+  history: MemoryHistorySink,
+  sourceTurnId?: string
 ): Promise<{ size: number; mtime: string }> {
   const topic = memoryTopicName(relPath)
   // Keep a written header truthful (`name` from the filename, fresh `modified`).
@@ -640,7 +644,7 @@ export async function writeMemoryFileHoldingLock(
   }
   if (MemoryTransactionPath.safeParse(topic).success && fs.atomicTransaction && fs.stageTransactionFile) {
     try {
-      const result = await atomicWriteMemoryFileHoldingLock(fs, topic, content, ifMatchMtime, source)
+      const result = await atomicWriteMemoryFileHoldingLock(fs, topic, content, ifMatchMtime, source, sourceTurnId)
       bumpWriteMarks(fs, source)
       return result
     } catch (error) {

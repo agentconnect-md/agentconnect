@@ -1,3 +1,4 @@
+import { memorySourceTurnId } from '../source-turn.js'
 import { managedMemoryEntries } from '../entries/managed.js'
 import type { MemoryEntry } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../../config/config-schema.js'
@@ -127,7 +128,9 @@ export class ManagedMemoryProvider implements MemoryProvider {
     // The extraction session holds the same memory tools as any other trigger and
     // writes through them itself (#41), so there is nothing to parse or apply here.
     // Its text answer is not the product; the writes are.
-    await this.extract(scope.agentId, await buildDistillationPrompt(store, turn), scope)
+    const sourceTurnId = turn.turnId ? memorySourceTurnId(scope.agentId, turn.turnId) : undefined
+    if (sourceTurnId && store.captureStatus && (await store.captureStatus('memory', sourceTurnId)).suppressed) return
+    await this.extract(scope.agentId, await buildDistillationPrompt(store, turn), { ...scope, sourceTurnId })
   }
 
   tools(): ToolDescriptor[] {
@@ -190,7 +193,15 @@ export class ManagedMemoryProvider implements MemoryProvider {
     source?: MemoryWriteSource
   ): Promise<MemoryWriteResult> {
     const { store, history } = this.activeStore(scope)
-    const { size, mtime } = await writeMemoryFile(store, path, content, ifMatch, source ?? 'tool', history)
+    const { size, mtime } = await writeMemoryFile(
+      store,
+      path,
+      content,
+      ifMatch,
+      source ?? 'tool',
+      history,
+      scope.sourceTurnId
+    )
     return { ok: true, path, size, mtime }
   }
 }

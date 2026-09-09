@@ -1,3 +1,9 @@
+import { WireError } from '@agentconnect.md/connection'
+import { CpMemoryFs } from '../src/cp/memory-fs.js'
+import { ManagedMemoryProvider } from '../src/memory/provider.js'
+import { localMemoryHome } from '../src/memory/home.js'
+import { memorySourceTurnId } from '../src/memory/source-turn.js'
+import { memoryScopeFor } from '../src/mcp/ops/memory.js'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -87,6 +93,74 @@ function scriptedHost() {
 }
 
 describe('Daemon evaluation surface', () => {
+  it('defers capture to the durable outbox when the capture-status wire request times out', async () => {
+    const { factory } = scriptedHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const fs = new CpMemoryFs(
+      {
+        connected: () => true,
+        supportsServerFeature: () => true,
+        memoryStore: async () => {
+          throw new Error('unexpected file request')
+        },
+        memoryTransaction: async () => {
+          throw new WireError('INTERNAL', 'no ack', true)
+        }
+      },
+      AGENT_ID
+    )
+    const extract = vi.fn(async () => '')
+    const provider = new ManagedMemoryProvider(
+      () => localMemoryHome(fs),
+      () => true,
+      extract
+    )
+    vi.spyOn((daemon as any).memory, 'recordTurnForBinding').mockImplementation((...args: any[]) =>
+      provider.recordTurn(args[0], args[1])
+    )
+    vi.spyOn((daemon as any).store, 'isCaptureExcluded').mockResolvedValue(false)
+    const enqueue = vi.spyOn((daemon as any).memoryOutbox, 'enqueue').mockResolvedValue({ status: 'inserted' })
+    await (daemon as any).queueMemoryPostTurn(AGENT_ID, 'source-session', 'source-turn', 'input', 'output', {
+      provider: 'managed',
+      home: 'control-plane'
+    })
+    await Promise.all((daemon as any).memoryPostTurnChains.values())
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: AGENT_ID, turnId: 'source-turn', input: 'input', output: 'output' })
+    )
+    expect(extract).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('uses the same trusted turn identity during tools and post-turn capture, then clears it', async () => {
+    const { factory, host } = scriptedHost()
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: factory,
+      evaluation: { observer: new EvaluationEventCollector(), runId: 'capture-origin-test' }
+    })
+    await daemon.start()
+    const captured = vi.spyOn(daemon as any, 'queueMemoryPostTurn').mockResolvedValue(undefined)
+    const originalPrompt = host.prompt.getMockImplementation()!
+    const active: string[] = []
+    host.prompt.mockImplementation(async (sessionId) => {
+      active.push(...(daemon as any).activeMemorySourceTurns.values())
+      return originalPrompt(sessionId)
+    })
+    await daemon.runEvaluationTurn({
+      agentId: AGENT_ID,
+      conversationId: 'capture-origin',
+      turnId: 'origin-1',
+      text: 'Remember this'
+    })
+    await daemon.waitForEvaluationIdle()
+    expect(captured).toHaveBeenCalledOnce()
+    expect(active).toEqual([memorySourceTurnId(AGENT_ID, captured.mock.calls[0]![2] as string)])
+    expect((daemon as any).activeMemorySourceTurns.size).toBe(0)
+    await daemon.stop()
+  })
+
   it('drives a full daemon turn and emits ordered semantic evidence without credentials', async () => {
     const collector = new EvaluationEventCollector()
     const { factory, host } = scriptedHost()
@@ -642,6 +716,58 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     })
     return { host, daemon }
   }
+
+  it('serializes replay and fresh extraction so concurrent passes cannot exchange source identities', async () => {
+    const { host, daemon } = distillHost({ usesMetaSystemPrompt: true })
+    await daemon.start()
+    let release!: () => void
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const observed: string[] = []
+    host.prompt.mockImplementation(async () => {
+      const context: any = [...(daemon as any).mcp.sessions.values()].find(
+        (ctx: any) => ctx.memoryBinding?.source === 'distill'
+      )
+      const before = memoryScopeFor(context, (daemon as any).mcp.deps).sourceTurnId!
+      observed.push(before)
+      if (before === 'first') await barrier
+      expect(memoryScopeFor(context, (daemon as any).mcp.deps).sourceTurnId).toBe(before)
+      return { stopReason: 'end_turn', usage: { totalTokens: 5, inputTokens: 4, outputTokens: 1 } }
+    })
+    const first = (daemon as any).runMemoryExtraction(AGENT_ID, 'extract', { agentId: AGENT_ID, sourceTurnId: 'first' })
+    await vi.waitFor(() => expect(observed).toEqual(['first']), WAIT)
+    const second = (daemon as any).runMemoryExtraction(AGENT_ID, 'extract', {
+      agentId: AGENT_ID,
+      sourceTurnId: 'second'
+    })
+    await Promise.resolve()
+    expect(host.prompt).toHaveBeenCalledOnce()
+    release()
+    await Promise.all([first, second])
+    expect(observed).toEqual(['first', 'second'])
+    expect((daemon as any).memoryExtractionChains.size).toBe(0)
+    await daemon.stop()
+  })
+
+  it('refreshes a cached extraction binding per turn and rejects tool access between passes', async () => {
+    const { host, daemon } = distillHost({ usesMetaSystemPrompt: true })
+    await daemon.start()
+    const scopes: any[] = []
+    let context: any
+    host.prompt.mockImplementation(async () => {
+      context = [...(daemon as any).mcp.sessions.values()].find((ctx: any) => ctx.memoryBinding?.source === 'distill')
+      scopes.push(memoryScopeFor(context, (daemon as any).mcp.deps))
+      return { stopReason: 'end_turn', usage: { totalTokens: 5, inputTokens: 4, outputTokens: 1 } }
+    })
+    for (const sourceTurnId of ['first', 'second']) {
+      await (daemon as any).runMemoryExtraction(AGENT_ID, 'extract', { agentId: AGENT_ID, sourceTurnId })
+      expect(() => memoryScopeFor(context, (daemon as any).mcp.deps)).toThrow('not active')
+    }
+    expect(host.newSession).toHaveBeenCalledOnce()
+    expect(scopes.map((scope) => scope.sourceTurnId)).toEqual(['first', 'second'])
+    await daemon.stop()
+  })
 
   it('distills on a runtime without an ACP system-prompt channel (Codex/OpenCode) via inline policy', async () => {
     const { host, daemon } = distillHost({ usesMetaSystemPrompt: false })

@@ -33,7 +33,8 @@ export async function atomicWriteMemoryFileHoldingLock(
   topic: string,
   content: string,
   ifMatchMtime: string | undefined,
-  source: MemoryWriteSource
+  source: MemoryWriteSource,
+  sourceTurnId?: string
 ): Promise<{ size: number; mtime: string }> {
   const transact = fs.atomicTransaction
   const stage = fs.stageTransactionFile
@@ -86,6 +87,7 @@ export async function atomicWriteMemoryFileHoldingLock(
       operationId: randomUUID(),
       expectedRevision: snapshot.revision,
       source,
+      ...(sourceTurnId ? { sourceTurnId } : {}),
       changes
     }
     dispatched = true

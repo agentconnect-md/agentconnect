@@ -1,5 +1,6 @@
 import {
   MEMORY_TRANSACTION_V1_FEATURE,
+  MEMORY_CAPTURE_FENCE_V1_FEATURE,
   type MemoryTransactionReq,
   type MemoryTransactionResult
 } from '@agentconnect.md/protocol'
@@ -1142,6 +1143,8 @@ export class CpClient {
     this.requireReady('memory/transaction/v1')
     if (!this.supportsServerFeature(MEMORY_TRANSACTION_V1_FEATURE))
       throw new WireError('INTERNAL', 'control plane does not support memory transactions', false)
+    if (payload.operation === 'capture-status' && !this.supportsServerFeature(MEMORY_CAPTURE_FENCE_V1_FEATURE))
+      throw new WireError('INTERNAL', 'control plane does not support capture fences', false)
     const frame = this.scopedFrame('memory/transaction/v1', payload)
     const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
       maxTries: 1,

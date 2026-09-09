@@ -174,4 +174,75 @@ describe('atomic memory home publication', () => {
     expect(await f.apply(req)).toMatchObject({ operation: 'error', code: 'FORBIDDEN' })
     expect(await f.read('topic.md')).toBeNull()
   })
+  it('suppresses delayed capture after a completed explicit mutation, across repo instances and history retention', async () => {
+    const f = await fixture()
+    const sourceTurnId = randomUUID()
+    const explicit = { ...(await f.request([await f.stage('topic.md', 'correction')])), sourceTurnId }
+    receipt(await f.apply(explicit))
+    await prisma.agentMemoryHistory.deleteMany({ where: { agentId: f.agentId } })
+    const restarted = new PgAgentMemoryTransactionRepo(prisma)
+    expect(
+      await restarted.apply(
+        f.agentId,
+        DEF_ORG,
+        { operation: 'capture-status', agentId: f.agentId, root: 'memory', sourceTurnId },
+        NOW
+      )
+    ).toEqual({ operation: 'capture-status', suppressed: true })
+    const delayed = {
+      ...(await f.request([await f.stage('topic.md', 'old extracted fact', hash('correction'))])),
+      source: 'distill' as const,
+      sourceTurnId
+    }
+    expect(await restarted.apply(f.agentId, DEF_ORG, delayed, NOW)).toMatchObject({
+      operation: 'error',
+      code: 'CONFLICT'
+    })
+    expect(await f.read('topic.md')).toBe('correction')
+    expect(await prisma.agentMemoryMutation.count({ where: { agentId: f.agentId } })).toBe(1)
+  })
+
+  it('isolates capture suppression by agent, memory root and source turn', async () => {
+    const f = await fixture()
+    const other = await fixture()
+    const sourceTurnId = randomUUID()
+    receipt(await f.apply({ ...(await f.request([await f.stage('topic.md', 'correction')])), sourceTurnId }))
+    for (const scope of [
+      { agentId: f.agentId, root: 'memory', sourceTurnId: randomUUID() },
+      { agentId: f.agentId, root: 'channels/example/memory', sourceTurnId },
+      { agentId: other.agentId, root: 'memory', sourceTurnId }
+    ]) {
+      const repo = new PgAgentMemoryTransactionRepo(prisma)
+      expect(await repo.apply(scope.agentId, DEF_ORG, { ...scope, operation: 'capture-status' }, NOW)).toEqual({
+        operation: 'capture-status',
+        suppressed: false
+      })
+    }
+  })
+
+  it('does not treat a failed explicit mutation as completed or suppress an already committed replay', async () => {
+    const f = await fixture()
+    const sourceTurnId = randomUUID()
+    const failed = {
+      ...(await f.request([await f.stage('topic.md', 'invalid')])),
+      expectedRevision: '0'.repeat(64),
+      sourceTurnId
+    }
+    expect(await f.apply(failed)).toMatchObject({ operation: 'error', code: 'CONFLICT' })
+    expect(await f.apply({ operation: 'capture-status', agentId: f.agentId, root: 'memory', sourceTurnId })).toEqual({
+      operation: 'capture-status',
+      suppressed: false
+    })
+    const capture = {
+      ...(await f.request([await f.stage('topic.md', 'captured')])),
+      source: 'distill' as const,
+      sourceTurnId
+    }
+    const original = receipt(await f.apply(capture))
+    receipt(
+      await f.apply({ ...(await f.request([await f.stage('topic.md', 'correction', hash('captured'))])), sourceTurnId })
+    )
+    expect(await f.apply(capture)).toEqual({ operation: 'commit', receipt: original, replayed: true })
+    expect(await f.read('topic.md')).toBe('correction')
+  })
 })

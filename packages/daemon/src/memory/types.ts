@@ -27,6 +27,8 @@ export type MemoryProviderKind = 'none' | 'native' | 'managed' | 'external'
  *  agent-level base + the channel folder, writes/capture go to the channel folder.
  *  `userId`/`sessionId` are reserved for later providers. */
 export interface MemoryScope {
+  // Trusted daemon-minted source-turn identity, never selected by model arguments.
+  sourceTurnId?: string
   agentId: string
   /** Act on exactly this store instead of resolving one from the agent + channel.
    *  A dream binds its STAGED store here, so the same memory tools serve it without

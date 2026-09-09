@@ -1,7 +1,9 @@
+import { MemoryTransactionReq } from '@agentconnect.md/protocol'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { memorySourceTurnId } from '../src/memory/source-turn.js'
 import { ensureMemory, readMemoryFile } from '../src/memory/store.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { localMemoryHome } from '../src/memory/home.js'
@@ -66,5 +68,34 @@ describe('managed memory auto-distillation', () => {
 
     expect(calls).toBe(1) // the opt-in gate still decides whether extraction runs at all
     expect(await readMemoryFile(local(dir), 'prefs.md')).toBe('') // no second write path
+  })
+  it('checks durable source-turn suppression before extraction and carries the same identity into writes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-distill-fence-'))
+    const fs = local(dir)
+    const captureStatus = vi.fn(async () => ({ suppressed: true }))
+    Object.defineProperty(fs, 'captureStatus', { value: captureStatus })
+    const extract = vi.fn(async () => '')
+    const provider = new ManagedMemoryProvider(
+      () => localMemoryHome(fs),
+      () => true,
+      extract
+    )
+    const turn = { turnId: 'platform:source', input: 'old fact', output: 'done' }
+    await provider.recordTurn({ agentId: 'agent' }, turn)
+    expect(extract).not.toHaveBeenCalled()
+    const sourceTurnId = memorySourceTurnId('agent', turn.turnId)
+    expect(
+      MemoryTransactionReq.safeParse({
+        operation: 'capture-status',
+        agentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        root: 'memory',
+        sourceTurnId
+      }).success
+    ).toBe(true)
+    expect(captureStatus).toHaveBeenCalledWith('memory', sourceTurnId)
+    captureStatus.mockResolvedValue({ suppressed: false })
+    await provider.recordTurn({ agentId: 'agent' }, turn)
+    expect(extract).toHaveBeenCalledWith('agent', expect.any(String), { agentId: 'agent', sourceTurnId })
+    expect(memorySourceTurnId('other', turn.turnId)).not.toBe(sourceTurnId)
   })
 })

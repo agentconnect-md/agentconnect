@@ -299,3 +299,54 @@ it('stages complete UTF-8 content in bounded append frames without publishing it
   const empty = await fs.stageTransactionFile!('memory', '')
   expect(await fsp.readFile(join(link.tree, 'channels/channel-a/memory', empty.temp), 'utf8')).toBe('')
 })
+
+it('negotiates capture status separately and fences a captured getter after feature loss', async () => {
+  let supported = false
+  const calls: import('@agentconnect.md/protocol').MemoryTransactionReq[] = []
+  const link = fakeLink({
+    supportsServerFeature: (feature) => feature !== 'memory-capture-fence-v1' || supported,
+    memoryTransaction: async (request) => {
+      calls.push(request)
+      return { operation: 'capture-status', suppressed: true }
+    }
+  })
+  const fs = new CpMemoryFs(link, AGENT).subdir('channels/channel-a')
+  expect(fs.atomicTransaction).toBeDefined()
+  expect(fs.captureStatus).toBeUndefined()
+  await expect(
+    fs.atomicTransaction!({ operation: 'capture-status', root: 'memory', sourceTurnId: AGENT })
+  ).rejects.toThrow('no longer supports')
+  supported = true
+  const status = fs.captureStatus!
+  expect(await status('memory', AGENT)).toEqual({ suppressed: true })
+  expect(calls).toEqual([
+    { operation: 'capture-status', root: 'channels/channel-a/memory', sourceTurnId: AGENT, agentId: AGENT }
+  ])
+  supported = false
+  await expect(status('memory', AGENT)).rejects.toThrow('no longer supports')
+  expect(calls).toHaveLength(1)
+})
+
+it('classifies capture query transport failures without hiding non-retryable protocol errors', async () => {
+  for (const [failure, reason] of [
+    [new WireError('INTERNAL', 'no ack', true), 'connection'],
+    [new WireError('SCOPE_DENIED', 'ownership changed', false), 'scope-denied'],
+    [new WireError('BAD_PAYLOAD', 'invalid query', false), undefined]
+  ] as const) {
+    const fs = new CpMemoryFs(
+      fakeLink({
+        supportsServerFeature: () => true,
+        memoryTransaction: async () => {
+          throw failure
+        }
+      }),
+      AGENT
+    )
+    if (reason)
+      await expect(fs.captureStatus!('memory', AGENT)).rejects.toMatchObject({
+        name: 'MemoryHomeUnavailableError',
+        reason
+      })
+    else await expect(fs.captureStatus!('memory', AGENT)).rejects.toBe(failure)
+  }
+})

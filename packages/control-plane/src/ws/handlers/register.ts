@@ -12,6 +12,7 @@
  */
 import {
   MEMORY_TRANSACTION_V1_FEATURE,
+  MEMORY_CAPTURE_FENCE_V1_FEATURE,
   isFrame,
   AGENT_EXISTS_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
@@ -120,7 +121,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       APPROVAL_DM_ROUTE_V1_FEATURE,
       // memory-evolution.md §3.2.1: this CP serves the whole `memory/store` family, the migration completion included.
       AGENT_MEMORY_STORE_V1_FEATURE,
-      MEMORY_TRANSACTION_V1_FEATURE
+      MEMORY_TRANSACTION_V1_FEATURE,
+      MEMORY_CAPTURE_FENCE_V1_FEATURE
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)
