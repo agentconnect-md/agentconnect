@@ -1,125 +1,17 @@
-import { z } from 'zod'
-import {
-  GitTransportError,
-  type GitLogEntry,
-  type GitPullSummary,
-  type GitRunner,
-  type GitStatusSummary
-} from '../workspace/git-runner.js'
+import { CommandGitRunner, GitExecResultSchema, type GitExecPayload } from '../workspace/command-git-runner.js'
+import { GitTransportError } from '../workspace/git-runner.js'
 import { ShimChannelLostError, type ShimRequester } from './channels.js'
 
-/**
- * The `exec` payload for a git invocation inside the sandbox.
- *
- * argv only, never a composed shell string: the arguments are assembled from workspace
- * configuration that a repository can influence, and a shell would turn that into an
- * injection surface. `cwd` is validated on the shim side too — a daemon-side check says
- * nothing about the filesystem the shim is standing on.
- */
-export const GitExecPayloadSchema = z.object({
-  tool: z.literal('git'),
-  cwd: z.string().min(1).optional(),
-  args: z.array(z.string()).min(1).max(64),
-  /** How long the caller will wait, so the sandbox kills the child before the request is
-   *  abandoned — otherwise a slow git keeps running (and keeps index.lock) past the point
-   *  anything is listening for its result. Bounded again on the shim side. */
-  timeoutMs: z.number().int().min(1_000).max(900_000).optional(),
-  /** The COMPLETE environment for this invocation, replacing rather than extending whatever
-   *  the sandbox has. Callers build it by sanitizing (stripping host GIT_CONFIG_*, protocol
-   *  allowances and so on), so merging would defeat that; the shim must apply it as given.
-   *  Scoped to the request, so a runtime cannot read the credential pointers back out of its
-   *  own process environment afterwards. */
-  env: z.record(z.string(), z.string()).optional()
-})
-export type GitExecPayload = z.infer<typeof GitExecPayloadSchema>
+export {
+  GitExecPayloadSchema,
+  GitExecResultSchema,
+  GitExecError,
+  parsePorcelainV2,
+  parseShortstat
+} from '../workspace/command-git-runner.js'
+export type { GitExecPayload, GitExecResult } from '../workspace/command-git-runner.js'
 
-export const GitExecResultSchema = z.object({
-  code: z.number().int(),
-  stdout: z.string(),
-  stderr: z.string()
-})
-export type GitExecResult = z.infer<typeof GitExecResultSchema>
-
-/**
- * Parse `git status --porcelain=v2 --branch -z` into the fields the daemon reads.
- *
- * The three changed-entry record types have DIFFERENT field counts before the path, and an
- * earlier version of this treated them alike: a staged rename came back with its similarity
- * score and original path glued into `path`, and an unmerged record was dropped entirely — so
- * a conflicted tree looked clean to any caller deriving cleanliness from `files.length`.
- *
- * `-z` rather than newlines because paths are NUL-terminated verbatim; the default format
- * C-quotes unusual filenames, which would diverge from what the local runner reports.
- */
-export function parsePorcelainV2(stdout: string): GitStatusSummary {
-  const summary: GitStatusSummary = { current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }
-  const entries = stdout.split('\0')
-  const push = (path: string, xy: string): void => {
-    summary.files.push({
-      path,
-      index: xy[0] === '.' ? ' ' : (xy[0] ?? ' '),
-      working_dir: xy[1] === '.' ? ' ' : (xy[1] ?? ' ')
-    })
-  }
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index]
-    if (!entry) continue
-    if (entry.startsWith('# branch.head ')) {
-      const head = entry.slice('# branch.head '.length).trim()
-      // A detached HEAD reports `(detached)`, which is not a branch name.
-      summary.current = head === '(detached)' ? null : head
-      continue
-    }
-    if (entry.startsWith('# branch.upstream ')) {
-      summary.tracking = entry.slice('# branch.upstream '.length).trim()
-      continue
-    }
-    if (entry.startsWith('# branch.ab ')) {
-      const [ahead, behind] = entry.slice('# branch.ab '.length).trim().split(' ')
-      summary.ahead = Math.abs(Number(ahead ?? 0)) || 0
-      summary.behind = Math.abs(Number(behind ?? 0)) || 0
-      continue
-    }
-    if (entry.startsWith('# ')) continue
-    const fields = entry.split(' ')
-    // `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>` — eight fields, then the path.
-    if (entry.startsWith('1 ')) {
-      push(fields.slice(8).join(' '), fields[1] ?? '..')
-      continue
-    }
-    // `2 <XY> ... <X><score> <path>` — NINE fields (the extra is the rename score), and with
-    // -z the ORIGINAL path follows as its own entry, which must be consumed, not parsed.
-    if (entry.startsWith('2 ')) {
-      push(fields.slice(9).join(' '), fields[1] ?? '..')
-      index += 1
-      continue
-    }
-    // `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>` — ten fields. Dropping these is
-    // what made a conflicted workspace look clean.
-    if (entry.startsWith('u ')) {
-      push(fields.slice(10).join(' '), fields[1] ?? 'UU')
-      continue
-    }
-    if (entry.startsWith('? ')) push(entry.slice(2), '??')
-  }
-  summary.clean = summary.files.length === 0
-  return summary
-}
-
-/** `N files changed, N insertions(+), N deletions(-)` — a fixed shape, unlike --stat prose. */
-export function parseShortstat(stdout: string): { insertions: number; deletions: number } {
-  const insertions = /(\d+) insertions?\(\+\)/.exec(stdout)
-  const deletions = /(\d+) deletions?\(-\)/.exec(stdout)
-  return { insertions: Number(insertions?.[1] ?? 0), deletions: Number(deletions?.[1] ?? 0) }
-}
-
-/** Subcommands whose duration is set by a remote rather than by local work. */
-const NETWORK_SUBCOMMANDS = new Set(['clone', 'fetch', 'pull', 'push'])
-
-/** Invocations that may be sent twice: they read, so a first attempt that may or may not have landed
- *  changes nothing. Deliberately a list of READS rather than of "idempotent" commands — `add` is
- *  idempotent and still excluded, because the question here is what a repeat can cost, and the
- *  cheapest way to never get that wrong is to repeat nothing that writes. */
+// Only reads may be repeated after a lost channel; mutations may already have committed.
 const REPEATABLE_SUBCOMMANDS = new Set([
   'check-ref-format',
   'diff',
@@ -131,174 +23,38 @@ const REPEATABLE_SUBCOMMANDS = new Set([
   'status',
   'symbolic-ref'
 ])
-const NETWORK_DEADLINE_MS = 10 * 60_000
-const LOCAL_DEADLINE_MS = 120_000
-/** The requester outwaits the child so a terminated result is delivered rather than raced. */
-const REQUEST_MARGIN_MS = 15_000
 
-/** A git failure that carries what the sandbox reported, so a caller can act on it. */
-export class GitExecError extends Error {
-  constructor(
-    readonly code: number,
-    readonly stdout: string,
-    readonly stderr: string,
-    args: string[]
-  ) {
-    super(`git ${args[0] ?? ''} failed with code ${code}: ${stderr.trim() || stdout.trim()}`)
-    this.name = 'GitExecError'
-  }
-}
-
-/**
- * Runs the daemon's git operations inside the sandbox over the shim's exec channel.
- *
- * The orchestration — which clone, which worktree, which reset — stays in the daemon. Moving
- * that logic into the shim would look like reuse and would actually relocate the trust
- * boundary, since the shim is the half-trusted side.
- */
-export class ShimGitRunner implements GitRunner {
-  constructor(
-    private readonly requester: ShimRequester,
-    private readonly cwd?: string,
-    private readonly env?: Record<string, string>,
-    // Cancels the git running IN THE SANDBOX, matching what the local runner's signal does to a
-    // local child. Without it the caller's budget expires while the remote git keeps index.lock.
-    private readonly abort?: AbortSignal
-  ) {}
-
-  withEnv(env: Record<string, string>): GitRunner {
-    // Carry `env` itself, NOT merged over any previous one. simple-git's second .env() call
-    // replaces the first, so merging here would let a variable the new sanitized environment
-    // intentionally omitted survive on the remote runner alone — a divergence in exactly the
-    // direction that matters, since those omissions are the sanitization.
-    return new ShimGitRunner(this.requester, this.cwd, { ...env }, this.abort)
-  }
-
-  async raw(args: string[]): Promise<string> {
-    const result = await this.exec(args)
-    return result.stdout
-  }
-
-  async clone(repo: string, target: string, options: string[] = []): Promise<void> {
-    await this.exec(['clone', ...options, repo, target])
-  }
-
-  async pull(remote: string, branch: string, options: string[] = []): Promise<GitPullSummary> {
-    // `--stat=...` would need parsing prose; the shortstat line has a fixed shape, and the
-    // changed-file list comes from a name-only diff against the pre-pull HEAD.
-    const before = await this.exec(['rev-parse', 'HEAD']).then(
-      (result) => result.stdout.trim(),
-      () => ''
+// The pool transport keeps its own retry and request-margin semantics.
+export class ShimGitRunner extends CommandGitRunner {
+  constructor(requester: ShimRequester, cwd?: string, env?: Record<string, string>, abort?: AbortSignal) {
+    super(
+      async (payload: GitExecPayload) => {
+        const options = { timeoutMs: payload.timeoutMs! + 15_000, ...(abort ? { abort } : {}) }
+        const request = () => requester.request('exec', payload, options)
+        let reply
+        try {
+          reply = await request()
+        } catch (error) {
+          if (!(error instanceof ShimChannelLostError)) throw error
+          if (!REPEATABLE_SUBCOMMANDS.has(payload.args[0] ?? '')) {
+            throw new GitTransportError(
+              `git ${payload.args[0] ?? ''} lost its sandbox channel: ${error.message}`,
+              error
+            )
+          }
+          try {
+            reply = await request()
+          } catch (retry) {
+            throw new GitTransportError(
+              `git ${payload.args[0] ?? ''} lost its sandbox channel: ${(retry as Error).message}`,
+              retry
+            )
+          }
+        }
+        return GitExecResultSchema.parse(reply)
+      },
+      cwd,
+      env
     )
-    await this.exec(['pull', ...options, remote, branch])
-    const after = (await this.exec(['rev-parse', 'HEAD'])).stdout.trim()
-    if (!before || before === after) return { files: [], insertions: 0, deletions: 0 }
-    const names = await this.exec(['diff', '--name-only', `${before}..${after}`])
-    const shortstat = await this.exec(['diff', '--shortstat', `${before}..${after}`])
-    return {
-      files: names.stdout.split('\n').filter((line) => line.trim().length > 0),
-      ...parseShortstat(shortstat.stdout)
-    }
-  }
-
-  async status(): Promise<GitStatusSummary> {
-    // porcelain=v2 rather than simple-git's own parse: the format is documented and stable,
-    // which is what makes parsing it on this side of the channel safe. -z keeps unusual
-    // filenames verbatim instead of C-quoted.
-    // `-u` matches what the pinned simple-git runs (`status --porcelain -b -u --null`). Without
-    // it git collapses an untracked nested file to `nested/`, while the local runner reports
-    // `nested/file.txt` — the file list would differ by runner for the same tree.
-    const result = await this.exec(['status', '--porcelain=v2', '--branch', '-u', '-z'])
-    return parsePorcelainV2(result.stdout)
-  }
-
-  async readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }> {
-    // Two ceilings, and they are not the same one. The SANDBOX already caps what any exec may
-    // stream back (`MAX_STREAM_BYTES` in exec-handler), which is what stops a runtime flooding
-    // the channel; this cap is the caller's own, and it is applied here so the daemon's memory
-    // and the wire frame are bounded by the number the caller asked for regardless of which
-    // shim version answered. Locally the child dies AT `maxBytes`; here it dies at the larger
-    // sandbox cap and the head slice is taken after. The observable answer — head slice plus an
-    // overflow flag — is identical, which is what the contract test pins.
-    let result
-    try {
-      result = await this.exec(args)
-    } catch (err) {
-      // The sandbox refuses a stream over its own 64 KiB frame cap rather than handing back a
-      // head slice, so past that point there is no partial answer to return remotely — only the
-      // FACT that it overflowed, which is what the caller reports as `truncated`. Locally the
-      // same read yields a head slice; the two agree on the flag and differ in how much text
-      // survives, and that difference is the sandbox frame, not this contract.
-      if (err instanceof Error && /more than \d+ bytes on one stream/.test(err.message)) {
-        return { out: Buffer.alloc(0), overflow: true }
-      }
-      throw err
-    }
-    const full = Buffer.from(result.stdout, 'utf8')
-    if (full.byteLength <= maxBytes) return { out: full, overflow: false }
-    return { out: full.subarray(0, maxBytes), overflow: true }
-  }
-
-  async log(options: { maxCount: number }): Promise<GitLogEntry[]> {
-    // %cI is git's strict-ISO committer date, matching what the local runner asks simple-git
-    // for; a unit separator keeps subjects that contain spaces or tabs intact.
-    const SEP = '\u001f'
-    const result = await this.exec(['log', `--max-count=${options.maxCount}`, `--format=%H%x1f%cI%x1f%s`])
-    return result.stdout
-      .split('\n')
-      .filter((line) => line.includes(SEP))
-      .map((line) => {
-        const [hash, committedAt, subject] = line.split(SEP)
-        return { hash: hash ?? '', committedAt: committedAt ?? '', subject: subject ?? '' }
-      })
-  }
-
-  /**
-   * Send one invocation, retrying a channel that went away IF the invocation is safe to repeat.
-   *
-   * The shim re-dials at half its credential TTL and `ShimSession.attach` fails the requests in
-   * flight, documenting that the session continues and a caller may simply ask again. This is that
-   * caller. It retries ONCE, and only for a read: the abort says a reply was lost, not whether the
-   * request ever landed, so repeating `commit` risks a second commit and repeating `add` after a
-   * partial one is merely harmless. Anything left over — a retry that also lost its channel, a
-   * mutation, a timeout — becomes a {@link GitTransportError}, which callers must not read as git's
-   * answer about the checkout.
-   */
-  private async send(payload: GitExecPayload, deadlineMs: number, args: string[]): Promise<unknown> {
-    const options = { timeoutMs: deadlineMs + REQUEST_MARGIN_MS, ...(this.abort ? { abort: this.abort } : {}) }
-    try {
-      return await this.requester.request('exec', payload, options)
-    } catch (err) {
-      if (!(err instanceof ShimChannelLostError)) throw err
-      if (!REPEATABLE_SUBCOMMANDS.has(args[0] ?? '')) {
-        throw new GitTransportError(`git ${args[0] ?? ''} lost its sandbox channel: ${err.message}`, err)
-      }
-      try {
-        return await this.requester.request('exec', payload, options)
-      } catch (retry) {
-        throw new GitTransportError(`git ${args[0] ?? ''} lost its sandbox channel: ${(retry as Error).message}`, retry)
-      }
-    }
-  }
-
-  private async exec(args: string[]): Promise<GitExecResult> {
-    // A subcommand that talks to a remote is bounded by the network, not by local work, and the
-    // requester's 30s default cannot clone a real repository. The child's deadline is the
-    // shorter of the two so it is reaped and reported before the request is abandoned — an
-    // abandoned request leaves git running, and a running git keeps index.lock.
-    const deadlineMs = NETWORK_SUBCOMMANDS.has(args[0] ?? '') ? NETWORK_DEADLINE_MS : LOCAL_DEADLINE_MS
-    const payload: GitExecPayload = {
-      tool: 'git',
-      args,
-      timeoutMs: deadlineMs,
-      ...(this.cwd ? { cwd: this.cwd } : {}),
-      // Present whenever an environment was set, including an explicitly EMPTY one: "run with
-      // nothing" is a meaningful instruction and must not be indistinguishable from "unset".
-      ...(this.env !== undefined ? { env: this.env } : {})
-    }
-    const raw = await this.send(payload, deadlineMs, args)
-    const result = GitExecResultSchema.parse(raw)
-    if (result.code !== 0) throw new GitExecError(result.code, result.stdout, result.stderr, args)
-    return result
   }
 }

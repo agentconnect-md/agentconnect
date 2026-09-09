@@ -1,18 +1,16 @@
-// Run with tsx: smoke-microsandbox-docker.mts <image> <msb-binary> [sdk-module] [cache-dir] [guest-helper].
+// Run with tsx: smoke-microsandbox-docker.mts <image> <msb-binary> [sdk-module] [cache-dir].
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, rm, statfs, symlink, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import { MicrosandboxManager, type MicrosandboxEnvironment } from '../src/microsandbox/driver.js'
-import { MICROSANDBOX_GUEST_ENTRY } from '../src/microsandbox/guest.js'
 
-const [image, msbBinary, sdkModule, cacheDir, helperArgument] = process.argv.slice(2)
+const [image, msbBinary, sdkModule, cacheDir] = process.argv.slice(2)
 if (!image || !msbBinary)
-  throw new Error('usage: smoke-microsandbox-docker.mts <image> <msb-binary> [sdk-module] [cache-dir] [guest-helper]')
+  throw new Error('usage: smoke-microsandbox-docker.mts <image> <msb-binary> [sdk-module] [cache-dir]')
 const root = await mkdtemp(join(tmpdir(), 'acd-'))
-const helper = resolve(helperArgument ?? fileURLToPath(new URL('../dist/microsandbox/guest.js', import.meta.url)))
 const home = join(root, 'home')
 await mkdir(home)
 await mkdir(join(root, 'microsandbox'))
@@ -98,10 +96,7 @@ async function session(name: string) {
   const environment: MicrosandboxEnvironment = {
     id: `docker-smoke/${name}`,
     workspaceRoot: workspace,
-    mounts: [
-      { source: workspace, target: workspace, readOnly: false },
-      { source: helper, target: MICROSANDBOX_GUEST_ENTRY, readOnly: true }
-    ]
+    mounts: [{ source: workspace, target: workspace, readOnly: false }]
   }
   environments.push(environment)
   return environment

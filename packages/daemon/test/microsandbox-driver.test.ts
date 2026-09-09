@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
@@ -6,7 +6,7 @@ import { decode, encode } from 'cborg'
 import type { ExecEvent } from 'microsandbox'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MicrosandboxManager, type MicrosandboxManagerOptions } from '../src/microsandbox/driver.js'
-import { MICROSANDBOX_NODE } from '../src/microsandbox/guest.js'
+import { MICROSANDBOX_NODE } from '../src/microsandbox/exec.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../src/shim/sandbox-paths.js'
 
 class FakeExec {
@@ -106,7 +106,7 @@ function fakeSdk() {
       })
       expect(python).toHaveBeenCalledWith(
         '/usr/bin/python3',
-        ['-c', expect.stringContaining('socket.socket(socket.AF_VSOCK')],
+        ['-I', '-c', expect.stringContaining('socket.socket(socket.AF_VSOCK')],
         { timeout: 10_000 }
       )
       return { success: true, code: 0, stdout: () => stdout }
@@ -128,7 +128,8 @@ function fakeSdk() {
             process.request = decode(message.p) as NonNullable<FakeExec['request']>
             sandbox.processes.push(process)
             process.push({ kind: 'started', pid: 1 })
-            if (process.request.args[1] === 'sockets') process.push({ kind: 'stdout', data: Buffer.from('ready\n') })
+            if (process.request.cmd === '/usr/bin/python3')
+              process.push({ kind: 'stdout', data: Buffer.from('ready\n') })
             else {
               processes.push(process)
               await onRun?.(process)
@@ -306,6 +307,30 @@ describe('microsandbox process and VM ownership', () => {
     expect(await manager.environmentIds()).toEqual([])
   })
 
+  it('streams large UTF-8 stdin while draining output and replaces the image environment when requested', async () => {
+    const { manager, environment, runWith, processes } = await fixture()
+    const input = '中文 input\n'.repeat(20_000)
+    runWith((process) => {
+      process.stdin.mockImplementation((data) => {
+        if (data.length === 0) process.push({ kind: 'exited', code: 0 })
+      })
+    })
+    const result = await manager.exec(environment, '/bin/cat', [], {
+      stdin: input,
+      env: { HOME: '/workspace' },
+      inheritEnv: false
+    })
+    expect(result).toEqual({ exitCode: 0, stdout: input, stderr: '' })
+    expect(processes[0]!.request).toMatchObject({
+      cmd: '/usr/bin/env',
+      args: ['-i', '--', 'HOME=/workspace', '/bin/cat'],
+      env: []
+    })
+    expect(processes[0]!.writes.length).toBeGreaterThan(1)
+    expect(processes[0]!.writes.every((chunk) => chunk.length <= 64 * 1024)).toBe(true)
+    await manager.stopAll()
+  })
+
   it('closes a terminal failure before releasing the execution without hanging readers', async () => {
     const { manager, environment, request, processes, runWith } = await fixture()
     let releaseClose!: () => void
@@ -345,6 +370,37 @@ describe('microsandbox process and VM ownership', () => {
     created[0]!.spec.image = 'changed-outside-daemon'
     await expect(resumed.driverFor(environment).launch(request)).rejects.toThrow('changed persisted configuration')
     await manager.discard(environment.id)
+  })
+
+  it('resumes the retained VM after retiring only the known guest helper mount', async () => {
+    const { manager, options, environment, request, created } = await fixture()
+    const helpers = join(options.root, 'microsandbox', 'helpers')
+    await mkdir(helpers, { recursive: true })
+    const helper = join(helpers, 'guest.js')
+    await writeFile(helper, 'export {}')
+    const legacy = {
+      ...environment,
+      mounts: [{ source: await realpath(helper), target: '/opt/agentconnect-local/guest.js', readOnly: true }]
+    }
+    const runtime = await manager.driverFor(legacy).launch(request)
+    await runtime.stop(0)
+    await manager.stopAll()
+    const resumed = new MicrosandboxManager(options)
+    await expect(
+      resumed
+        .driverFor({
+          ...environment,
+          mounts: [{ source: '/workspace-other', target: '/workspace-other', readOnly: false }]
+        })
+        .launch(request)
+    ).rejects.toThrow('changed persisted configuration')
+    const changed = new MicrosandboxManager({ ...options, config: { ...options.config, cpus: 4 } })
+    await expect(changed.driverFor(environment).launch(request)).rejects.toThrow('changed persisted configuration')
+    const restored = await resumed.driverFor(environment).launch(request)
+    expect(created).toHaveLength(1)
+    expect(created[0]!.destroy).not.toHaveBeenCalled()
+    await restored.stop(0)
+    await resumed.discard(environment.id)
   })
 
   it('retries a failed VM lookup without retaining a rejected launch', async () => {

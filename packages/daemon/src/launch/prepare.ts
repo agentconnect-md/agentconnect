@@ -215,7 +215,6 @@ export function prepareRuntimeLaunch(opts: {
   hostPackageCache?: boolean
   microsandbox?: {
     mounts: SandboxMount[]
-    guestEntry: string
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }

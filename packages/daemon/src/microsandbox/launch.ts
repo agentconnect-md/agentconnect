@@ -16,7 +16,7 @@ import { compactReadRoots, normalizeSandboxMounts } from '../runtimes/read-roots
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
-import { MICROSANDBOX_GUEST_ENTRY, MICROSANDBOX_SOCKET_BRIDGES, MICROSANDBOX_TUNNEL_PATHS } from './guest.js'
+import { MICROSANDBOX_SOCKET_BRIDGES, MICROSANDBOX_TUNNEL_PATHS } from './socket-bridge.js'
 
 const IMAGE_PATH = '/opt/agentconnect/pathbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 const HOST_IPC_ENV = [
@@ -56,7 +56,6 @@ export interface PrepareMicrosandboxLaunchOptions {
   allowModelToolUnixSockets?: boolean
   trustedMounts?: SandboxMount[]
   mounts: SandboxMount[]
-  guestEntry: string
 }
 
 function contains(root: string, path: string): boolean {
@@ -127,9 +126,6 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
       source: automaticSource(mount.source)
     }))
   ]
-  const guestEntry = realpathSync(opts.guestEntry)
-  if (!statSync(guestEntry).isFile()) throw new Error('microsandbox guest entry must be a regular file')
-  automatic.push({ source: guestEntry, target: MICROSANDBOX_GUEST_ENTRY, readOnly: true })
   const configured = normalizeSandboxMounts(opts.mounts, hostEnv, 'microsandbox')
   const ownedTargets = [
     '/run',

@@ -1,6 +1,11 @@
-import { spawn } from 'node:child_process'
-import { createExecHandler } from '../shim/exec-handler.js'
-import { MICROSANDBOX_SOCKET_BRIDGES } from './guest.js'
+export const MICROSANDBOX_TUNNEL_PATHS = {
+  mcp: '/tmp/agentconnect/mcp.sock',
+  gitcred: '/tmp/agentconnect/gitcred.sock'
+} as const
+export const MICROSANDBOX_SOCKET_BRIDGES = [
+  { path: MICROSANDBOX_TUNNEL_PATHS.mcp, port: 5000 },
+  { path: MICROSANDBOX_TUNNEL_PATHS.gitcred, port: 5001 }
+] as const
 
 const SOCKET_BRIDGE = String.raw`
 import json, os, signal, socket, stat, sys, threading
@@ -84,60 +89,5 @@ finally:
         os.unlink(path)
 `
 
-async function serveSockets(): Promise<void> {
-  const child = spawn('/usr/bin/python3', ['-u', '-c', SOCKET_BRIDGE, JSON.stringify(MICROSANDBOX_SOCKET_BRIDGES)], {
-    stdio: 'inherit'
-  })
-  const stop = (): void => {
-    child.kill('SIGTERM')
-  }
-  process.once('SIGTERM', stop)
-  process.once('SIGINT', stop)
-  try {
-    await new Promise<void>((resolve, reject) => {
-      child.once('error', reject)
-      child.once('exit', (code, signal) => {
-        if (code === 0) resolve()
-        else reject(new Error(`socket bridge exited with ${signal ?? code}`))
-      })
-    })
-  } finally {
-    process.removeListener('SIGTERM', stop)
-    process.removeListener('SIGINT', stop)
-  }
-}
-
-async function main(): Promise<void> {
-  const argument = process.argv[2]
-  if (argument === 'sockets') return await serveSockets()
-  if (!argument) throw new Error('expected a guest request or sockets mode')
-  const {
-    workspaceRoot,
-    payload,
-    capability = 'exec'
-  } = JSON.parse(argument) as {
-    workspaceRoot?: unknown
-    payload?: unknown
-    capability?: unknown
-  }
-  if (typeof workspaceRoot !== 'string' || workspaceRoot.length === 0) {
-    throw new Error('workspaceRoot is required')
-  }
-  if (capability !== 'exec' && capability !== 'read') throw new Error('unsupported guest capability')
-  const abort = new AbortController()
-  const stop = (): void => abort.abort()
-  process.once('SIGTERM', stop)
-  process.once('SIGINT', stop)
-  try {
-    const result = await createExecHandler({ workspaceRoot })(capability, payload, abort.signal)
-    process.stdout.write(`${JSON.stringify(result)}\n`)
-  } finally {
-    process.removeListener('SIGTERM', stop)
-    process.removeListener('SIGINT', stop)
-  }
-}
-
-await main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-  process.exitCode = 1
-})
+export const MICROSANDBOX_SOCKET_BRIDGE_COMMAND = '/usr/bin/python3'
+export const MICROSANDBOX_SOCKET_BRIDGE_ARGS = ['-u', '-c', SOCKET_BRIDGE, JSON.stringify(MICROSANDBOX_SOCKET_BRIDGES)]
