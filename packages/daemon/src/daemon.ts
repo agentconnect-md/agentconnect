@@ -18309,7 +18309,8 @@ export class Daemon {
         fakeHosts: this.opts.hostFactory !== undefined,
         ...(this.opts.probeRuntimes ? { probe: this.opts.probeRuntimes } : {}),
         ...(this.sandboxMechanism ? { sandboxMechanism: this.sandboxMechanism } : {}),
-        requireSandbox: this.cfg.security.requireSandbox,
+        // Required VM isolation applies to sessions; host metadata probes use SRT when available.
+        requireSandbox: this.cfg.sandbox.backend === 'srt' && this.cfg.security.requireSandbox,
         daemonRoot: this.root,
         agentsRoot: this.cfg.agentsDir,
         isolateAccountApps: this.cfg.security.isolateAccountApps

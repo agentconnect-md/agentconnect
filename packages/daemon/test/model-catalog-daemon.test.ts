@@ -10,7 +10,7 @@ import { LocalStore } from '../src/store/local-store.js'
 import { catalogFingerprint } from '../src/runtimes/model-catalog.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
-import type { RuntimeProbeResult } from '../src/runtimes/runtime-prober.js'
+import { preparedProbeLaunch, type ProbeOptions, type RuntimeProbeResult } from '../src/runtimes/runtime-prober.js'
 import { FakeClock } from './cp/fake-clock.js'
 
 /** Daemon-level integration tests for the runtime-model-catalog wiring
@@ -258,12 +258,16 @@ describe('microsandbox runtime facts', () => {
       const clock = new FakeClock()
       clock.advance(10_000)
       let catalog = catalogOf({})
-      const probe = vi.fn(async (runtimes: Record<string, RuntimeDef>): Promise<RuntimeProbeResult[]> =>
-        Object.keys(runtimes).map((runtime) =>
-          runtime === 'pi-acp'
-            ? { runtime, ok: false, models: [], authRequired: true, error: 'Authentication required' }
-            : { runtime, ok: true, models: ['host-model'], probedVersion: 'host-version', acpProtocolVersion: 1 }
-        )
+      const probe = vi.fn(
+        async (runtimes: Record<string, RuntimeDef>, options: ProbeOptions): Promise<RuntimeProbeResult[]> =>
+          Object.entries(runtimes).map(([runtime, definition]) => {
+            const cwd = join(dir, 'probes', runtime, 'workspace')
+            mkdirSync(cwd, { recursive: true })
+            expect(preparedProbeLaunch(runtime, definition, cwd, options)).toBeDefined()
+            return runtime === 'pi-acp'
+              ? { runtime, ok: false, models: [], authRequired: true, error: 'Authentication required' }
+              : { runtime, ok: true, models: ['host-model'], probedVersion: 'host-version', acpProtocolVersion: 1 }
+          })
       )
       const daemon = new Daemon({
         root: dir,
@@ -289,6 +293,7 @@ describe('microsandbox runtime facts', () => {
         catalog.entries['pi-acp']!.source = 'curated'
         const d = daemon as any
         d.cfg.sandbox.backend = 'microsandbox'
+        d.cfg.security.requireSandbox = true
         d.microsandboxTable = {
           runtimes: ['codex-acp', ...(expiredInImage ? ['pi-acp'] : []), 'opencode'].map((id) => ({
             id,

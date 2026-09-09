@@ -179,6 +179,9 @@ record. Configuration directories, empty stores, and an executable in the image
 do not establish that the operator configured a login.
 
 The daemon probes each candidate on the host to learn its models and capabilities.
+These metadata probes use host SRT when available and otherwise run on the host;
+they do not submit a model turn. With microsandbox selected, `requireSandbox`
+continues to require VM isolation for agent sessions, without requiring host SRT.
 The image table supplies the guest command and binary version. A candidate missing
 from that table remains visible with **Binary not installed in image**. An image
 runtime without a discovered host login does not appear in the candidate list.
