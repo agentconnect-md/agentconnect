@@ -89,6 +89,41 @@ describe('ThreadContextCoordinator', () => {
     await db.close()
   })
 
+  it("never re-imports the agent's own provider rows, so a console-mirrored human turn stays one human row", async () => {
+    const db = await store()
+    const coordinator = new ThreadContextCoordinator(db)
+    // The console turn recorded the human under its dispatch ts; on Slack the same words landed as a bot
+    // post carrying this agent's authorship metadata, so the provider read returns them as `bot-a`.
+    await coordinator.observeInbound(text('1700000073188', 'U1', 'console question'))
+    await coordinator.observeInbound(text('1700000031.451949', 'bot-a', 'own reply'))
+    const snapshot = vi.fn(async () => ({
+      completeness: 'authoritative' as const,
+      checkpoint: '1700000100.000000',
+      events: [
+        { ...text('1700000031.451949', 'bot-a', 'own reply'), trustedAgentBot: true },
+        { ...text('1700000073.415209', 'bot-a', 'console question'), trustedAgentBot: true },
+        text('1700000099.000001', 'U2', 'peer human')
+      ]
+    }))
+
+    const refresh = await coordinator.refresh({
+      agentId: 'bot-a',
+      transcriptChannel: 'scope:C1',
+      thread: 'T1',
+      afterRevision: 0,
+      snapshot
+    })
+
+    const rows = await db.transcriptSinceRevision('scope:C1', 'T1', 0, 'bot-a')
+    expect(rows.filter((row) => row.text === 'console question').map((row) => row.sender)).toEqual(['U1'])
+    expect(rows.filter((row) => row.sender === 'bot-a').map((row) => row.ts)).toEqual(['1700000031.451949'])
+    expect(refresh.events.map((event) => [event.sender, event.text])).toEqual([
+      ['U1', 'console question'],
+      ['U2', 'peer human']
+    ])
+    await db.close()
+  })
+
   it('retries a failed snapshot and degrades to observed-only without hiding local events', async () => {
     const db = await store()
     const onFailure = vi.fn()

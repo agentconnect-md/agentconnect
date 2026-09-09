@@ -566,8 +566,10 @@ session and keeps the read-only view otherwise.
   cancel is limited to the conversation's own turn and runtime-set ops are
   refused; a platform message arriving mid-continuation queues behind the
   reservation/turn; the posting agent's provider echo does not duplicate its
-  targeted dispatch, while other existing thread participants follow ordinary
-  activation rules. **Hook origin (§9):** a turn into a `hook:github:<repo>:<n>`
+  targeted dispatch — neither live nor when its turn-final thread snapshot reads
+  the mirror back under the agent's own authorship (the human row already exists
+  under the dispatch ts, so own-agent provider rows are never re-imported) —
+  while other existing thread participants follow ordinary activation rules. **Hook origin (§9):** a turn into a `hook:github:<repo>:<n>`
   session runs on that session's own key, posts nothing to any platform, and
   lands the human turn plus exactly ONE reply row in that session's transcript
   while streaming to the browser; a hook target that no longer resolves is
