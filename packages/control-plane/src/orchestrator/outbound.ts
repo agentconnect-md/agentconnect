@@ -1,5 +1,9 @@
 import {
   MEMORY_ENTRIES_V1_FEATURE,
+  MEMORY_ENTRIES_WRITE_V1_FEATURE,
+  memoryEntryMutationFits,
+  type MemoryEntriesWriteReq,
+  type MemoryEntriesWriteResult,
   type MemoryEntriesReadReq,
   type MemoryEntriesReadResult,
   Ack,
@@ -705,6 +709,29 @@ export class ControlSender {
   async memoryRecordSearch(daemonId: string, req: MemoryRecordSearchReq): Promise<MemoryRecordSearchPage> {
     const c = this.must(daemonId)
     return c.conn.request<MemoryRecordSearchPage>('memory/record/search', req, { epoch: c.sessionEpoch })
+  }
+
+  async memoryEntriesWrite(daemonId: string, req: MemoryEntriesWriteReq): Promise<MemoryEntriesWriteResult> {
+    const c = this.must(daemonId)
+    if (!c.capabilities?.features?.includes(MEMORY_ENTRIES_WRITE_V1_FEATURE))
+      return { operation: 'error', code: 'UNSUPPORTED', message: 'this daemon does not support unified memory writes' }
+    if (!memoryEntryMutationFits(req))
+      return { operation: 'error', code: 'TOO_LARGE', message: 'memory mutation exceeds the JSON request byte limit' }
+    try {
+      // Each delivery allocates a fresh mutation operation; retransmission is not idempotent.
+      return await c.conn.request<MemoryEntriesWriteResult>(
+        'memory/entries/write/v1',
+        req,
+        { epoch: c.sessionEpoch },
+        { maxTries: 1 }
+      )
+    } catch {
+      return {
+        operation: 'error',
+        code: 'AMBIGUOUS_WRITE',
+        message: 'memory mutation outcome is unconfirmed; read current state before retrying'
+      }
+    }
   }
 
   async memoryEntriesRead(daemonId: string, req: MemoryEntriesReadReq): Promise<MemoryEntriesReadResult> {

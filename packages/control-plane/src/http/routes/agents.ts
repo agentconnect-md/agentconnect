@@ -1,4 +1,9 @@
 import {
+  MemoryEntryCreateRequest,
+  MemoryEntryUpdateRequest,
+  MemoryEntryDeleteRequest,
+  MemoryEntryMutationReceipt,
+  type MemoryEntriesWriteReq,
   MemoryEntryCapabilities,
   MemoryEntryListRequest,
   MemoryEntryListResult,
@@ -931,8 +936,8 @@ export function agentRoutes(deps: HttpDeps) {
       return { ...agent, daemonId }
     }
 
-    type MemoryEntryReadOperation = MemoryEntriesReadReq extends infer R
-      ? R extends MemoryEntriesReadReq
+    type MemoryEntryOperation = MemoryEntriesReadReq | MemoryEntriesWriteReq extends infer R
+      ? R extends MemoryEntriesReadReq | MemoryEntriesWriteReq
         ? Omit<R, 'agentId'>
         : never
       : never
@@ -940,16 +945,19 @@ export function agentRoutes(deps: HttpDeps) {
       error: z.string(),
       statusCode: z.number(),
       message: z.string(),
-      code: MemoryEntryErrorCode.optional()
+      code: MemoryEntryErrorCode.optional(),
+      currentRevision: z.string().max(512).optional()
     })
-    const entryRead = async (
-      req: FastifyRequest,
-      reply: FastifyReply,
-      id: string,
-      operation: MemoryEntryReadOperation
-    ) => {
+    const entryCall = async (req: FastifyRequest, reply: FastifyReply, id: string, operation: MemoryEntryOperation) => {
       const agent = await getServingAgent(req, id)
       if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+      const mutation =
+        operation.operation === 'create' || operation.operation === 'update' || operation.operation === 'delete'
+      const editable = canEdit(agent, ctxOf(req))
+      if (mutation && !editable)
+        return reply
+          .code(403)
+          .send({ error: 'Forbidden', statusCode: 403, message: 'memory edit access is required', code: 'FORBIDDEN' })
       if (!agent.daemonId)
         return reply.code(503).send({
           error: 'Service Unavailable',
@@ -958,10 +966,10 @@ export function agentRoutes(deps: HttpDeps) {
           code: 'UNAVAILABLE'
         })
       try {
-        const answer = await deps.control.memoryEntriesRead(agent.daemonId, {
-          ...operation,
-          agentId: agent.id
-        } as MemoryEntriesReadReq)
+        const payload = { ...operation, agentId: agent.id }
+        const answer = mutation
+          ? await deps.control.memoryEntriesWrite(agent.daemonId, payload as MemoryEntriesWriteReq)
+          : await deps.control.memoryEntriesRead(agent.daemonId, payload as MemoryEntriesReadReq)
         if (answer.operation === 'error') {
           const statuses = {
             UNSUPPORTED: 501,
@@ -976,11 +984,34 @@ export function agentRoutes(deps: HttpDeps) {
             AMBIGUOUS_WRITE: 503
           } as const
           const status = statuses[answer.code]
-          return reply
-            .code(status)
-            .send({ error: answer.code, statusCode: status, message: answer.message, code: answer.code })
+          return reply.code(status).send({
+            error: answer.code,
+            statusCode: status,
+            message: answer.message,
+            code: answer.code,
+            ...('currentRevision' in answer ? { currentRevision: answer.currentRevision } : {})
+          })
         }
-        if (answer.operation !== operation.operation) throw new Error('unexpected memory entry reply')
+        if (answer.operation !== (mutation ? 'completed' : operation.operation))
+          throw new Error('unexpected memory entry reply')
+        if (!editable) {
+          if (answer.operation === 'describe')
+            return reply.send({
+              ...answer.result,
+              operations: answer.result.operations.filter(
+                (op) => op !== 'create' && op !== 'update' && op !== 'delete'
+              ),
+              exactCreate: false,
+              exactEdit: false
+            })
+          if (answer.operation === 'list')
+            return reply.send({
+              ...answer.result,
+              entries: answer.result.entries.map((entry) => ({ ...entry, editable: false }))
+            })
+          if (answer.operation === 'get' && answer.result)
+            return reply.send({ ...answer.result, entry: { ...answer.result.entry, editable: false } })
+        }
         return reply.send(answer.result)
       } catch (err) {
         const failure = memoryAdminFailure(err)
@@ -1008,7 +1039,7 @@ export function agentRoutes(deps: HttpDeps) {
           response: { 200: MemoryEntryCapabilities, ...entryErrors }
         }
       },
-      (req, reply) => entryRead(req, reply, req.params.id, { operation: 'describe', ...req.query })
+      (req, reply) => entryCall(req, reply, req.params.id, { operation: 'describe', ...req.query })
     )
     r.get(
       '/agents/:id/memory/entries',
@@ -1028,7 +1059,7 @@ export function agentRoutes(deps: HttpDeps) {
       },
       (req, reply) => {
         const { channelKey, ...request } = req.query
-        return entryRead(req, reply, req.params.id, {
+        return entryCall(req, reply, req.params.id, {
           operation: 'list',
           ...(channelKey ? { channelKey } : {}),
           request
@@ -1054,12 +1085,66 @@ export function agentRoutes(deps: HttpDeps) {
       },
       (req, reply) => {
         const { channelKey, ...request } = req.query
-        return entryRead(req, reply, req.params.id, {
+        return entryCall(req, reply, req.params.id, {
           operation: 'get',
           ...(channelKey ? { channelKey } : {}),
           request: { ...request, ref: req.params.ref }
         })
       }
+    )
+
+    r.post(
+      '/agents/:id/memory/entries',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Create a unified memory entry',
+          description:
+            'Applies a scoped conditional mutation through the serving daemon. JSON requests are bounded by capabilities.limits.maxMutationRequestBytes; oversized requests return 413. An ambiguous outcome must be reconciled by reading before retrying.',
+          operationId: 'createAgentMemoryEntry',
+          params: IdParam,
+          querystring: entryScopeQuery,
+          body: MemoryEntryCreateRequest,
+          response: { 200: MemoryEntryMutationReceipt, ...entryErrors }
+        }
+      },
+      (req, reply) => entryCall(req, reply, req.params.id, { operation: 'create', ...req.query, request: req.body })
+    )
+
+    r.patch(
+      '/agents/:id/memory/entries',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Update a unified memory entry',
+          description:
+            'Applies a scoped conditional mutation through the serving daemon. JSON requests are bounded by capabilities.limits.maxMutationRequestBytes; oversized requests return 413. An ambiguous outcome must be reconciled by reading before retrying.',
+          operationId: 'updateAgentMemoryEntry',
+          params: IdParam,
+          querystring: entryScopeQuery,
+          body: MemoryEntryUpdateRequest,
+          response: { 200: MemoryEntryMutationReceipt, ...entryErrors }
+        }
+      },
+      (req, reply) => entryCall(req, reply, req.params.id, { operation: 'update', ...req.query, request: req.body })
+    )
+
+    r.delete(
+      '/agents/:id/memory/entries',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Delete a unified memory entry',
+          description:
+            'Applies a scoped conditional mutation through the serving daemon. JSON requests are bounded by capabilities.limits.maxMutationRequestBytes; oversized requests return 413. An ambiguous outcome must be reconciled by reading before retrying.',
+          operationId: 'deleteAgentMemoryEntry',
+          params: IdParam,
+          querystring: entryScopeQuery,
+          body: MemoryEntryDeleteRequest,
+          response: { 200: MemoryEntryMutationReceipt, ...entryErrors }
+        }
+      },
+      (req, reply) => entryCall(req, reply, req.params.id, { operation: 'delete', ...req.query, request: req.body })
     )
 
     // A session worktree is part of that session's protected body surface. The

@@ -1,4 +1,4 @@
-import { createMemoryEntriesReader } from './memory-entries.js'
+import { createMemoryEntriesWriter, createMemoryEntriesReader } from './memory-entries.js'
 import type { MemoryProvider } from '../memory/provider.js'
 // The `CpClientDeps` literal the daemon hands `CpClient`, hoisted out of `Daemon.startCpClient`.
 // Construction order is load-bearing (the workspace resolvers feed the file, git and skills seams),
@@ -408,6 +408,11 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         host.dutyCoordinator().dutyEnforced() && (await host.dutyCoordinator().claimDutyForTrigger(id)).granted,
       log: host.log()
     }),
+    memoryEntriesWrite: createMemoryEntriesWriter(
+      host.memory(),
+      host.store(),
+      (id) => host.agents().has(id) && (!host.dutyCoordinator().dutyEnforced() || host.duties().holdsAgent(id))
+    ),
     memoryEntriesRead: createMemoryEntriesReader(
       host.memory(),
       host.store(),

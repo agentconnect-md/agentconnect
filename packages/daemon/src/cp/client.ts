@@ -317,6 +317,7 @@ export class CpClient {
       agentWake: deps.agentWake,
       memoryReader: deps.memoryReader,
       memoryEntriesRead: deps.memoryEntriesRead,
+      memoryEntriesWrite: deps.memoryEntriesWrite,
       dreamReader: deps.dreamReader,
       localSkillsReader: deps.localSkillsReader,
       runtimeCommandsReader: deps.runtimeCommandsReader,

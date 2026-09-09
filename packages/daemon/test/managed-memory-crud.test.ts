@@ -343,3 +343,38 @@ it('executes conditional MCP writes with trusted scope, approvals and synthetic-
   ).toMatchObject({ state: 'completed' })
   expect(f.commits).toHaveLength(3)
 })
+
+it('admin mutations use console origin, reject lost ownership and expose conditional entries', async () => {
+  const f = await fixture()
+  const { createMemoryEntriesReader, createMemoryEntriesWriter } = await import('../src/cp/memory-entries.js')
+  let owned = true
+  const access = (id: string) => owned && id === 'agent'
+  const write = createMemoryEntriesWriter(f.provider, f.db, access)
+  const read = createMemoryEntriesReader(f.provider, f.db, access)
+  const created = await write({ agentId: 'agent', operation: 'create', request: { label: 'admin', text: 'hello' } })
+  expect(created.operation).toBe('completed')
+  if (created.operation !== 'completed') throw new Error('create failed')
+  expect(f.commits[0]).toMatchObject({ source: 'console' })
+  expect(f.commits[0]!.sourceTurnId).toBeUndefined()
+  expect(await read({ agentId: 'agent', operation: 'describe' })).toMatchObject({
+    result: { operations: ['list', 'get', 'create', 'update', 'delete'], limits: { maxMutationRequestBytes: 196608 } }
+  })
+  const ref = created.result.entry!.ref
+  const revision = created.result.entry!.revision
+  expect(
+    await write({ agentId: 'agent', operation: 'update', request: { ref, revision, text: 'changed' } })
+  ).toMatchObject({ operation: 'completed' })
+  expect(await write({ agentId: 'agent', operation: 'delete', request: { ref, revision } })).toMatchObject({
+    code: 'CONFLICT',
+    currentRevision: expect.any(String)
+  })
+  owned = false
+  expect(await write({ agentId: 'agent', operation: 'create', request: { text: 'denied' } })).toMatchObject({
+    code: 'FORBIDDEN'
+  })
+  owned = true
+  expect(
+    await write({ agentId: 'agent', operation: 'create', request: { text: '\u0000'.repeat(40000) } })
+  ).toMatchObject({ code: 'TOO_LARGE' })
+  expect(f.commits).toHaveLength(2)
+})

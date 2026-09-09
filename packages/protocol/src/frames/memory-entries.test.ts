@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { MemoryEntriesReadReq, MemoryEntriesReadResult } from './memory-entries.js'
+import {
+  MemoryEntriesReadReq,
+  MemoryEntriesReadResult,
+  MemoryEntriesWriteReq,
+  memoryEntryMutationFits
+} from './memory-entries.js'
 import { buildEnvelope, decodeEnvelope, encode } from '../index.js'
 
 const agentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -20,4 +25,14 @@ describe('versioned unified entry read frames', () => {
       MemoryEntriesReadResult.safeParse({ operation: 'error', code: 'CURSOR_EXPIRED', message: 'Expired' }).success
     ).toBe(true)
   })
+})
+
+it('roundtrips scoped mutations and measures JSON escaping instead of text length', () => {
+  const request = MemoryEntriesWriteReq.parse({ agentId, operation: 'create', request: { text: 'hello' } })
+  expect(decodeEnvelope(encode(buildEnvelope('memory/entries/write/v1', request))).ok).toBe(true)
+  expect(memoryEntryMutationFits(request)).toBe(true)
+  expect(memoryEntryMutationFits({ ...request, operation: 'create', request: { text: '\u0000'.repeat(40000) } })).toBe(
+    false
+  )
+  expect(MemoryEntriesWriteReq.safeParse({ ...request, source: 'tool' }).success).toBe(false)
 })
