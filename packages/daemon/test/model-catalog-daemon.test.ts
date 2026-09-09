@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
@@ -10,7 +10,7 @@ import { LocalStore } from '../src/store/local-store.js'
 import { catalogFingerprint } from '../src/runtimes/model-catalog.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
-import type { RuntimeProbeResult } from '../src/runtimes/runtime-prober.js'
+import { preparedProbeLaunch, type ProbeOptions, type RuntimeProbeResult } from '../src/runtimes/runtime-prober.js'
 import { FakeClock } from './cp/fake-clock.js'
 
 /** Daemon-level integration tests for the runtime-model-catalog wiring
@@ -235,101 +235,130 @@ describe('daemon activation gate provenance rule', () => {
 })
 
 describe('microsandbox runtime facts', () => {
-  it('probes host definitions while preserving image facts and same-ID host admission', async () => {
-    const dir = root()
-    await seedCache(
-      dir,
-      ['local', 'shared', 'guest-only'].map((runtimeId) => ({
-        runtimeId,
-        models: [{ id: 'old-host-model', caps: { fastMode: true } }]
-      }))
-    )
-    const clock = new FakeClock()
-    clock.advance(10_000)
-    let catalog = catalogOf({ local: FAKE_RT })
-    const probe = vi.fn(async (runtimes: Record<string, RuntimeDef>): Promise<RuntimeProbeResult[]> =>
-      Object.keys(runtimes).map((runtime) => ({
-        runtime,
-        ok: true,
-        models: ['host-model'],
-        probedVersion: 'host-version',
-        acpProtocolVersion: 1
-      }))
-    )
-    const daemon = new Daemon({
-      root: dir,
-      clock,
-      resolveCatalog: async () => catalog,
-      installed: (runtimes) => Object.fromEntries(Object.entries(runtimes).filter(([id]) => id !== 'guest-only')),
-      probeRuntimes: probe,
-      hostFactory: () => ({}) as never,
-      sandboxMechanism: null
-    })
-
-    try {
-      await daemon.start()
-      catalog = catalogOf({ local: FAKE_RT, shared: FAKE_RT, 'guest-only': FAKE_RT })
-      catalog.entries.shared!.source = 'curated'
-      const d = daemon as any
-      d.cfg.sandbox.backend = 'microsandbox'
-      d.microsandboxTable = {
-        runtimes: ['shared', 'guest-only'].map((id) => ({
-          id,
-          command: `/image/bin/${id}`,
-          args: ['acp'],
-          version: 'image-version',
-          models: ['image-model'],
-          acp: { protocolVersion: 9 }
-        }))
+  it.each([true, false])(
+    'retains stored logins through host probes and model refreshes (expired runtime in image: %s)',
+    async (expiredInImage) => {
+      const dir = root()
+      const hostHome = join(dir, 'host-home')
+      for (const part of ['.codex', '.grok', '.pi/agent', '.local/share/opencode']) {
+        mkdirSync(join(hostHome, part), { recursive: true })
       }
-      const install = vi.spyOn(d, 'installManagedRuntimePackages')
-      const agents = [
-        { runtime: 'shared', runInSandbox: true },
-        { runtime: 'local', runInSandbox: false }
-      ]
-      await d.discoverRuntimes(dir, d.cfg, agents)
-      expect(install.mock.calls[0]![1]).toEqual(['local'])
-      d.cfg.security.requireSandbox = true
-      await d.discoverRuntimes(dir, d.cfg, agents)
-      expect(install.mock.calls[1]![1]).toEqual([])
-      d.cfg.security.requireSandbox = false
-      await d.hydrateRuntimeCaches()
-      expect(d.runtimeFacts.profileFor('local').modelCatalog.models[0].id).toBe('old-host-model')
-      const noteProbe = stubCatalogSvc(daemon)
-      const emitted = captureEmits(daemon)
-
-      await d.runtimeFacts.probeAndEmit(true)
-
-      expect(probe.mock.calls.map(([runtimes]) => runtimes)).toEqual([{ local: FAKE_RT }, { shared: FAKE_RT }])
-      expect(noteProbe).toHaveBeenCalledOnce()
-      expect(noteProbe.mock.calls[0]![0]).toMatchObject({ runtimeId: 'local', rt: FAKE_RT })
-      expect(() => d.curatedRuntimeAdmission.assertLaunch('shared', 'curated')).not.toThrow()
-      for (const id of ['shared', 'guest-only']) {
-        expect(d.runtimeFacts.profileFor(id)).toMatchObject({
-          runtime: id,
-          version: 'image-version',
-          models: ['image-model'],
-          modelsSource: 'cached',
-          acpProtocolVersion: 9
+      writeFileSync(join(hostHome, '.codex', 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'fixture-key' }))
+      writeFileSync(
+        join(hostHome, '.grok', 'auth.json'),
+        JSON.stringify({ 'xai::api_key': { key: 'fixture-key', auth_mode: 'api_key' } })
+      )
+      writeFileSync(
+        join(hostHome, '.pi', 'agent', 'auth.json'),
+        JSON.stringify({
+          anthropic: { type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: 1 }
         })
-        expect(d.runtimeFacts.profileFor(id).modelCatalog).toBeUndefined()
-        expect(await d.store.getRuntimeCatalogMeta(id)).toMatchObject({ fingerprint: 'fp-cache' })
-      }
-      expect(d.localRuntimeCatalog.runtimes.shared.command).toBe('fake-agent')
-      expect(d.microsandboxCatalog.runtimes.shared.command).toBe('/image/bin/shared')
+      )
+      writeFileSync(join(hostHome, '.local', 'share', 'opencode', 'auth.json'), '{}')
+      const clock = new FakeClock()
+      clock.advance(10_000)
+      let catalog = catalogOf({})
+      const probe = vi.fn(
+        async (runtimes: Record<string, RuntimeDef>, options: ProbeOptions): Promise<RuntimeProbeResult[]> =>
+          Object.entries(runtimes).map(([runtime, definition]) => {
+            const cwd = join(dir, 'probes', runtime, 'workspace')
+            mkdirSync(cwd, { recursive: true })
+            expect(preparedProbeLaunch(runtime, definition, cwd, options)).toBeDefined()
+            return runtime === 'pi-acp'
+              ? { runtime, ok: false, models: [], authRequired: true, error: 'Authentication required' }
+              : { runtime, ok: true, models: ['host-model'], probedVersion: 'host-version', acpProtocolVersion: 1 }
+          })
+      )
+      const daemon = new Daemon({
+        root: dir,
+        clock,
+        resolveCatalog: async () => catalog,
+        installed: (runtimes) => runtimes,
+        probeRuntimes: probe,
+        hostFactory: () => ({}) as never,
+        sandboxMechanism: null
+      })
 
-      d.localRuntimeCatalog = catalogOf({})
-      clock.advance(5 * 60_000)
-      probe.mockClear()
-      emitted.length = 0
-      await d.runtimeFacts.probeAndEmit(true)
-      expect(probe).not.toHaveBeenCalled()
-      expect(emitted).toHaveLength(1)
-      expect(emitted[0]!.find((profile) => profile.runtime === 'shared')?.models).toEqual(['image-model'])
-    } finally {
-      await daemon.stop()
+      try {
+        await daemon.start()
+        vi.stubEnv('HOME', hostHome)
+        vi.stubEnv('USERPROFILE', hostHome)
+        vi.stubEnv('CODEX_HOME', join(hostHome, '.codex'))
+        vi.stubEnv('GROK_HOME', join(hostHome, '.grok'))
+        vi.stubEnv('GROK_AUTH_PATH', join(hostHome, '.grok', 'auth.json'))
+        vi.stubEnv('PI_CODING_AGENT_DIR', join(hostHome, '.pi', 'agent'))
+        vi.stubEnv('XDG_DATA_HOME', join(hostHome, '.local', 'share'))
+        catalog = catalogOf({ 'grok-build': FAKE_RT, 'codex-acp': FAKE_RT, 'pi-acp': FAKE_RT, opencode: FAKE_RT })
+        catalog.entries['codex-acp']!.source = 'curated'
+        catalog.entries['pi-acp']!.source = 'curated'
+        const d = daemon as any
+        d.cfg.sandbox.backend = 'microsandbox'
+        d.cfg.security.requireSandbox = true
+        d.microsandboxTable = {
+          runtimes: ['codex-acp', ...(expiredInImage ? ['pi-acp'] : []), 'opencode'].map((id) => ({
+            id,
+            command: `/image/bin/${id}`,
+            args: ['acp'],
+            version: 'image-version',
+            models: ['image-model'],
+            acp: { protocolVersion: 9 }
+          }))
+        }
+        await d.discoverRuntimes(dir, d.cfg, [])
+        expect(d.reportedRuntimeIds().sort()).toEqual(['codex-acp', 'grok-build', 'pi-acp'])
+        expect(d.microsandboxCatalog.entries.opencode).toBeUndefined()
+        await d.hydrateRuntimeCaches()
+        expect(d.runtimeFacts.profileFor('codex-acp').models).toEqual([])
+        const onCatalogUpdated = d.modelCatalogSvc.deps.onUpdated
+        const noteProbe = stubCatalogSvc(daemon)
+        const emitted = captureEmits(daemon)
+
+        await d.runtimeFacts.probeAndEmit(true)
+
+        expect(probe.mock.calls.map(([runtimes]) => Object.keys(runtimes))).toEqual([
+          ['grok-build'],
+          ['codex-acp', 'pi-acp']
+        ])
+        expect(noteProbe.mock.calls.map(([input]) => input.runtimeId).sort()).toEqual(['codex-acp', 'grok-build'])
+        expect(d.runtimeFacts.profileFor('codex-acp')).toMatchObject({
+          runtime: 'codex-acp',
+          version: 'image-version',
+          models: ['host-model'],
+          modelsSource: 'probed',
+          acpProtocolVersion: 1
+        })
+        expect(d.runtimeFacts.profileFor('codex-acp').unavailableReason).toBeUndefined()
+        expect(d.runtimeFacts.profileFor('grok-build')).toMatchObject({
+          models: ['host-model'],
+          unavailableReason: 'image-binary-missing'
+        })
+        expect(d.runtimeFacts.profileFor('pi-acp')).toMatchObject({ authRequired: true })
+        expect(d.runtimeFacts.profileFor('pi-acp').unavailableReason).toBe(
+          expiredInImage ? undefined : 'image-binary-missing'
+        )
+        expect(d.curatedRuntimeAdmission.status('codex-acp', 'curated')).toBe('verified')
+        expect(d.curatedRuntimeAdmission.status('pi-acp', 'curated')).toBe('failed')
+        expect(d.reportedRuntimeIds().sort()).toEqual(['codex-acp', 'grok-build', 'pi-acp'])
+        expect(d.localRuntimeCatalog.runtimes['codex-acp'].command).toBe('fake-agent')
+        expect(d.microsandboxCatalog.runtimes['codex-acp'].command).toBe('/image/bin/codex-acp')
+        await onCatalogUpdated('codex-acp')
+        expect(
+          emitted
+            .at(-1)
+            ?.map((profile) => profile.runtime)
+            .sort()
+        ).toEqual(['codex-acp', 'grok-build', 'pi-acp'])
+        probe.mockClear()
+        d.runtimeFacts.armProbeRefresh()
+        clock.advance(5 * 60_000)
+        await vi.waitFor(() => expect(probe).toHaveBeenCalledOnce())
+        expect(Object.keys(probe.mock.calls[0]![0])).toEqual(['codex-acp', 'pi-acp'])
+      } finally {
+        vi.unstubAllEnvs()
+        await daemon.stop()
+      }
     }
-  })
+  )
 })
 
 describe('daemon last-good advertisement fallback', () => {

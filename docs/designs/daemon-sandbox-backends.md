@@ -170,6 +170,31 @@ with `--k8s` is rejected as conflicting configuration; an omitted/default local
 backend has no effect on pool execution. Sharing an image does not mean nesting
 microsandbox inside every pool pod.
 
+### Runtime discovery
+
+A microsandbox daemon derives its runtime candidates from the stored credential
+sources used to prepare runtime authentication. Discovery checks the specific
+authentication file and, for a shared provider store, the corresponding provider
+record. Configuration directories, empty stores, and an executable in the image
+do not establish that the operator configured a login.
+
+The daemon probes each candidate on the host to learn its models and capabilities.
+These metadata probes use host SRT when available and otherwise run on the host;
+they do not submit a model turn. With microsandbox selected, `requireSandbox`
+continues to require VM isolation for agent sessions, without requiring host SRT.
+The image table supplies the guest command and binary version. A candidate missing
+from that table remains visible with **Binary not installed in image**. An image
+runtime without a discovered host login does not appear in the candidate list.
+
+Stored credentials indicate configuration, not current validity. Expired logins
+remain visible; an authentication failure from the host probe or a real turn
+produces the existing **Login required** status independently of image availability.
+
+File and database discovery currently covers Claude, Codex, Qoder, OMP, Grok, pi,
+OpenCode, DSH, Hermes, Auggie, Cline, Amp, and Gemini/Qwen/Kimi OAuth. Keyring-only
+logins and credential formats without a shared discovery descriptor are not
+detected; those runtimes stay out of the microsandbox candidate list.
+
 ## 2. Selecting the backend
 
 The choice favors session development workflows over maximum hardening.

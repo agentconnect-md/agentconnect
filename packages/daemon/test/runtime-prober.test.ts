@@ -174,18 +174,19 @@ describe('probeRuntime', () => {
     expect(onStop).toHaveBeenCalledOnce()
   })
 
-  it('flags an ACP auth-required rejection (-32000) as authRequired', async () => {
+  it.each([
+    [-32000, 'Authentication required'],
+    [-32603, 'OAuth session expired and could not be refreshed']
+  ])('flags an ACP login rejection (%s) as authRequired', async (code, message) => {
     const host = fakeHost({
-      // Exactly what claude-acp / codex-acp reject session/new with when logged
-      // out: the SDK's RequestError.authRequired (JSON-RPC -32000).
       newSession: async () => {
-        throw Object.assign(new Error('Authentication required'), { code: -32000 })
+        throw Object.assign(new Error(message), { code })
       }
     })
     const res = await probeRuntime('codex-acp', rt, '/tmp/x', { hostFactory: () => host })
     expect(res.ok).toBe(false)
     expect(res.authRequired).toBe(true)
-    expect(res.error).toContain('Authentication required')
+    expect(res.error).toContain(message)
   })
 
   it('keeps other JSON-RPC failures (e.g. -32603) out of authRequired', async () => {

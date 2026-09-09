@@ -6,6 +6,7 @@ import {
   effortField,
   effortLabel,
   FALLBACK_RUNTIME_IDS,
+  imageBinaryMissingRuntimeIds,
   loginRequiredRuntimeIds,
   fastModeAvailableFor,
   modelCapability,
@@ -468,17 +469,15 @@ export default function EditAgentModal({
   const forceMove = daemonChanged && !initialPlacement && sourceOffline && moveReady(daemon)
   const sourceBlocksSafeMove = daemonChanged && sourceUnavailable && !forceMove
 
-  // Runtime options come from the SELECTED daemon's reported profiles (same source as
-  // the Add-agent picker); fall back to the static runtime list when the daemon reports
-  // none. Keep the agent's current runtime selectable so changing placement never
-  // silently rewrites it.
+  // Preserve the configured runtime while keeping the selected daemon's reported choices authoritative.
   const reportedRuntimeIds = daemon?.runtimeModels.map((r) => r.runtime) ?? []
-  const runtimeIds = reportedRuntimeIds.length ? reportedRuntimeIds : FALLBACK_RUNTIME_IDS
+  const runtimeIds = daemon ? reportedRuntimeIds : FALLBACK_RUNTIME_IDS
   const runtimeOptions = runtime && !runtimeIds.includes(runtime) ? [runtime, ...runtimeIds] : runtimeIds
   // Runtimes the daemon reports as logged out — marked in the picker, never blocked.
   // An agent may legitimately sit on one (docs/designs/preset-agents.md §3.2), so this
   // surfaces the state on the choice rather than taking the choice away.
   const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
+  const runtimesMissingImageBinary = imageBinaryMissingRuntimeIds(daemon)
   const runtimeMeta = acpRuntime(acpRegistry, runtime)
   // Models are only what the daemon reports for this runtime — advertised ids
   // verbatim, never a synthesized "Default" entry: an agent without an explicit
@@ -804,6 +803,7 @@ export default function EditAgentModal({
                       value={runtime}
                       options={runtimeOptions}
                       needsLogin={runtimesNeedingLogin}
+                      imageBinaryMissing={runtimesMissingImageBinary}
                       onChange={onRuntimeChange}
                     />
                   </div>

@@ -327,6 +327,8 @@ export const FactsRuntimeProfile = z.object({
   // before sessions can start. Cleared (absent) once a probe succeeds; absent
   // also for older daemons that don't report it.
   authRequired: z.boolean().optional(),
+  // The host runtime remains discoverable when its binary is absent from the selected sandbox image.
+  unavailableReason: z.literal('image-binary-missing').optional(),
   // Discovered model × config capability matrix (last-good; survives probe
   // failures — advertisement (`models`) empties on failure, capability
   // knowledge does not). Absent = this daemon has no catalog for the runtime.

@@ -60,6 +60,7 @@ function toProfileView(p: RuntimeProfileRecord): DaemonRuntimeProfile {
     modelCatalog: p.modelCatalog,
     modelsSource: p.modelsSource,
     authRequired: p.authRequired,
+    unavailableReason: p.unavailableReason ?? null,
     observedAt: p.observedAt
   }
 }

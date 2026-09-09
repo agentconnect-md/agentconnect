@@ -271,6 +271,7 @@ import {
   RuntimeCommandsCache
 } from './runtimes/runtime-commands.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
+import { discoverRuntimeCredentials } from './runtimes/runtime-credential-discovery.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import {
   declaredRuntimeCatalog,
@@ -2300,47 +2301,61 @@ export class Daemon {
     })
   }
 
-  /** Phase 13 — resolve the runtime catalog and narrow it to what is actually installed (declared, under --k8s). */
+  /** Phase 13 — resolve host candidates and the image's separate executable catalog. */
   private async discoverRuntimes(root: string, cfg: Config, discoveredAgents: LoadedAgent[]): Promise<void> {
     const resolvedCatalog = await (this.opts.resolveCatalog ?? resolveRuntimeCatalog)(cfg, root, {
       neededRuntimes: discoveredAgents.map((a) => a.runtime),
       mode: 'cache-first'
     })
-    // Advertise (and launch) only runtimes actually installed on this host — the
-    // registry lists every known agent, but most aren't present here. Under --k8s
-    // there is nothing to discover locally: the sandbox image declares what it ships
-    // (k8s-runtimes.ts), so presence is a declaration rather than a probe.
-    const installedCatalog = this.opts.installed
-      ? (() => {
-          const runtimes = this.opts.installed!(resolvedCatalog.runtimes)
-          return {
-            runtimes,
-            entries: Object.fromEntries(
-              Object.entries(resolvedCatalog.entries).filter(([id]) => runtimes[id] !== undefined)
+    // VM candidates come from the same stored auth sources that prepare their private HOME.
+    const credentialEntries =
+      cfg.sandbox.backend === 'microsandbox'
+        ? Object.fromEntries(
+            Object.entries(resolvedCatalog.entries).filter(
+              ([id, entry]) => discoverRuntimeCredentials(id, entry.runtime).paths.length > 0
             )
-          }
-        })()
-      : this.k8s
-        ? this.declaredPoolCatalog(root, resolvedCatalog)
-        : installedRuntimeCatalog(resolvedCatalog)
+          )
+        : undefined
+    const installedCatalog = credentialEntries
+      ? {
+          entries: credentialEntries,
+          runtimes: Object.fromEntries(Object.entries(credentialEntries).map(([id, entry]) => [id, entry.runtime]))
+        }
+      : this.opts.installed
+        ? (() => {
+            const runtimes = this.opts.installed!(resolvedCatalog.runtimes)
+            return {
+              runtimes,
+              entries: Object.fromEntries(
+                Object.entries(resolvedCatalog.entries).filter(([id]) => runtimes[id] !== undefined)
+              )
+            }
+          })()
+        : this.k8s
+          ? this.declaredPoolCatalog(root, resolvedCatalog)
+          : installedRuntimeCatalog(resolvedCatalog)
     // Only what this daemon's agents actually run: a runtime assigned later is installed before its
     // first host start instead, so a host with six logged-in harnesses does not fetch all six here.
     const storedCatalog = await this.installManagedRuntimePackages(
       installedCatalog,
       discoveredAgents.filter((agent) => !this.usesMicrosandbox(agent)).map((agent) => agent.runtime)
     )
-    const { runtimes: installed, entries: installedEntries } = storedCatalog
-    this.localRuntimeCatalog = cfg.sandbox.backend === 'microsandbox' ? storedCatalog : undefined
+    this.localRuntimeCatalog = credentialEntries
+      ? {
+          entries: { ...installedCatalog.entries, ...storedCatalog.entries },
+          runtimes: { ...installedCatalog.runtimes, ...storedCatalog.runtimes }
+        }
+      : undefined
+    const localCatalog = this.localRuntimeCatalog ?? storedCatalog
+    const { runtimes: installed, entries: installedEntries } = localCatalog
     if (this.microsandboxTable) {
-      const declared = declaredRuntimeCatalog(resolvedCatalog, this.microsandboxTable)
+      const declared = declaredRuntimeCatalog(installedCatalog, this.microsandboxTable)
       this.microsandboxCatalog = declared.catalog
-      this.k8sDeclaredModels = declared.models
-      this.k8sDeclaredAcp = declared.acp
       this.runtimeCatalog = {
-        entries: { ...storedCatalog.entries, ...declared.catalog.entries },
-        runtimes: { ...storedCatalog.runtimes, ...declared.catalog.runtimes }
+        entries: { ...localCatalog.entries, ...declared.catalog.entries },
+        runtimes: { ...localCatalog.runtimes, ...declared.catalog.runtimes }
       }
-    } else this.runtimeCatalog = storedCatalog
+    } else this.runtimeCatalog = localCatalog
     this.refreshAdmittedRuntimes()
     this.runtimeFacts.setInstalled(installedEntries)
     if (this.microsandboxCatalog) this.runtimeFacts.noteImageCatalog(this.microsandboxCatalog.entries)
@@ -2348,7 +2363,10 @@ export class Daemon {
     const pendingCurated = Object.keys(installed).filter((id) => installedEntries[id]?.source === 'curated')
     if (pendingCurated.length) this.log.info(`runtimes pending ACP admission: ${pendingCurated.join(', ')}`)
     const skipped = Object.keys(resolvedCatalog.runtimes).filter((id) => !installed[id])
-    if (skipped.length) this.log.info(`runtimes not installed (skipped): ${skipped.join(', ')}`)
+    if (skipped.length) {
+      const reason = credentialEntries ? 'without stored credentials' : 'not installed'
+      this.log.info(`runtimes ${reason} (skipped): ${skipped.join(', ')}`)
+    }
   }
 
   // Sources whose launch spec the daemon itself supplies. Explicit `user` config is the operator's
@@ -2426,7 +2444,9 @@ export class Daemon {
    *  after boot. The store memoizes, so this resolves once for the runtime and never once per spawn. */
   private async ensureRuntimeInstalled(runtimeId: string, local = false): Promise<void> {
     if (local && this.localRuntimeCatalog) {
-      this.localRuntimeCatalog = await this.installManagedRuntimePackages(this.localRuntimeCatalog, [runtimeId])
+      const installed = await this.installManagedRuntimePackages(this.localRuntimeCatalog, [runtimeId])
+      if (!installed.entries[runtimeId]) throw new Error(this.runtimeUnavailableMessage(runtimeId))
+      this.localRuntimeCatalog = installed
       return
     }
     const entry = this.runtimeCatalog.entries[runtimeId]
@@ -2526,8 +2546,7 @@ export class Daemon {
     // Model-catalog cache: synchronous last-good hydrate BEFORE the CP client
     // starts, so the register-time facts snapshot already carries models + the
     // capability matrix instead of blanking the CP until the sweep completes.
-    // Image runtimes must not inherit model catalogs cached by a previous host execution.
-    await this.runtimeFacts.hydrateFromCache(new Set(Object.keys(this.microsandboxCatalog?.entries ?? {})))
+    await this.runtimeFacts.hydrateFromCache()
     // The image's declared models are the fresher truth than any cached row, and stay
     // `cached` provenance: no live probe confirmed them, so model gates remain permissive.
     this.runtimeFacts.applyDeclaredFacts(this.k8sDeclaredModels, this.k8sDeclaredAcp)
@@ -2561,10 +2580,7 @@ export class Daemon {
       }),
       onUpdated: async (runtimeId) => {
         await this.runtimeFacts.rebuildCatalog(runtimeId)
-        this.cpClient?.emitDaemonRuntimes?.(
-          this.admittedRuntimeIds().map((id) => this.runtimeFacts.profileFor(id)),
-          this.mcpServerFactsFromDefs()
-        )
+        this.runtimeFacts.emitFacts()
       }
     })
   }
@@ -18266,8 +18282,9 @@ export class Daemon {
       draining: () => this.draining,
       catalog: () => this.runtimeCatalog,
       localProbeCatalog: () => this.localRuntimeCatalog ?? this.runtimeCatalog,
-      executionLocation: (runtimeId) =>
-        this.k8s || this.microsandboxCatalog?.entries[runtimeId] !== undefined ? 'sandbox' : 'host',
+      imageVersion: (runtimeId) => this.microsandboxCatalog?.entries[runtimeId]?.version,
+      unavailableReason: (runtimeId) =>
+        this.microsandboxTable && !this.microsandboxCatalog?.entries[runtimeId] ? 'image-binary-missing' : undefined,
       admittedRuntimes: () => this.runtimes,
       refreshAdmitted: () => this.refreshAdmittedRuntimes(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),
@@ -18277,16 +18294,13 @@ export class Daemon {
       mcpServerFacts: () => this.mcpServerFactsFromDefs(),
       noteCatalogProbe: (input) => void this.modelCatalogSvc?.noteProbe(input),
       localizeRuntime: async (runtimeId) => {
-        await this.ensureRuntimeInstalled(runtimeId)
-        // Host-only installs must stay current in the separate local launch catalog.
+        await this.ensureRuntimeInstalled(runtimeId, this.localRuntimeCatalog !== undefined)
+        // Keep host launch commands current without replacing the image's executable.
         if (this.localRuntimeCatalog && !this.microsandboxCatalog?.entries[runtimeId]) {
-          const entry = this.runtimeCatalog.entries[runtimeId]
+          const entry = this.localRuntimeCatalog.entries[runtimeId]
           if (entry) {
-            this.localRuntimeCatalog.entries[runtimeId] = entry
-            this.localRuntimeCatalog.runtimes[runtimeId] = entry.runtime
-          } else {
-            delete this.localRuntimeCatalog.entries[runtimeId]
-            delete this.localRuntimeCatalog.runtimes[runtimeId]
+            this.runtimeCatalog.entries[runtimeId] = entry
+            this.runtimeCatalog.runtimes[runtimeId] = entry.runtime
           }
         }
       },
@@ -18295,7 +18309,8 @@ export class Daemon {
         fakeHosts: this.opts.hostFactory !== undefined,
         ...(this.opts.probeRuntimes ? { probe: this.opts.probeRuntimes } : {}),
         ...(this.sandboxMechanism ? { sandboxMechanism: this.sandboxMechanism } : {}),
-        requireSandbox: this.cfg.security.requireSandbox,
+        // Required VM isolation applies to sessions; host metadata probes use SRT when available.
+        requireSandbox: this.cfg.sandbox.backend === 'srt' && this.cfg.security.requireSandbox,
         daemonRoot: this.root,
         agentsRoot: this.cfg.agentsDir,
         isolateAccountApps: this.cfg.security.isolateAccountApps
@@ -18636,12 +18651,9 @@ export class Daemon {
     return Object.keys(this.runtimes)
   }
 
-  /** Runtime ids the facts snapshot reports: the admitted set PLUS curated
-   *  candidates whose fresh probe was an auth-required rejection. Those are
-   *  installed but logged out — they must be visible to the console (with the
-   *  login warning) even though admission keeps them unlaunchable until a
-   *  probe succeeds. */
+  /** Keep VM credential candidates visible through missing binaries and failed or expired logins. */
   private reportedRuntimeIds(): string[] {
+    if (this.localRuntimeCatalog) return Object.keys(this.runtimeCatalog.entries)
     const ids = this.admittedRuntimeIds()
     const admitted = new Set(ids)
     return [

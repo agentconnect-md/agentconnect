@@ -110,6 +110,31 @@ describe('daemon-owned adapter store', () => {
     await daemon.stop()
   })
 
+  it('retains a VM host-probe candidate after a failed install so a later probe can retry', async () => {
+    const root = scaffold()
+    const { tree: dir, bin } = tree(root)
+    let attempts = 0
+    const daemon = daemonWith(root, async () => {
+      if (++attempts === 1) throw new Error('package registry unavailable')
+      return { tree: dir, version: '1.4.2', bin }
+    })
+    await daemon.start()
+    const local = daemon as unknown as {
+      localRuntimeCatalog: ResolvedRuntimeCatalog
+      ensureRuntimeInstalled(id: string, local: boolean): Promise<void>
+    }
+    try {
+      local.localRuntimeCatalog = catalog()
+      await expect(local.ensureRuntimeInstalled('codex-acp', true)).rejects.toThrow('no daemon-owned install')
+      expect(local.localRuntimeCatalog.runtimes['codex-acp']).toEqual(RUNTIME)
+      await local.ensureRuntimeInstalled('codex-acp', true)
+      expect(attempts).toBe(2)
+      expect(local.localRuntimeCatalog.runtimes['codex-acp']!.args).toEqual([bin])
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it('keeps that refusal to one line with no absolute path, however the failure was thrown', async () => {
     const root = scaffold('codex-acp')
     const { tree: dir } = tree(root)

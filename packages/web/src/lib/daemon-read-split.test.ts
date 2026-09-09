@@ -59,7 +59,8 @@ const capability: DaemonCapabilityDto = {
         source: 'acp',
         observedAt: '2026-08-30T00:00:00.000Z'
       },
-      authRequired: true
+      authRequired: true,
+      unavailableReason: 'image-binary-missing'
     }
   ],
   mcpServers: [{ name: 'github', transport: 'stdio' }]
@@ -86,6 +87,7 @@ describe('daemon read split', () => {
     expect(row.runtimeModels[0]!.mcpCapabilities).toEqual({ http: true, sse: true })
     // The login warning is fleet-wide information, so it survives the split.
     expect(row.runtimeModels[0]!.authRequired).toBe(true)
+    expect(row.runtimeModels[0]!.unavailableReason).toBe('image-binary-missing')
     // The runtime-level answers survive, so the read-only model/permission labels resolve
     // for every agent; the per-model matrix is empty until `useDaemonDetail` reads one daemon.
     expect(row.runtimeModels[0]!.modelCatalog!.defaultModel).toBe('sonnet')
@@ -101,7 +103,14 @@ describe('daemon read split', () => {
 
 describe('mergeDaemonCatalogs — the detail read owns catalogs, the fleet row owns the rest', () => {
   const fleet = [
-    { runtime: 'claude-acp', version: '0.70.0', models: ['opus'], authRequired: true, modelCatalog: null }
+    {
+      runtime: 'claude-acp',
+      version: '0.70.0',
+      models: ['opus'],
+      authRequired: true,
+      unavailableReason: 'image-binary-missing',
+      modelCatalog: null
+    }
   ] as DaemonRow['runtimeModels']
   const detail = [
     {
@@ -120,6 +129,7 @@ describe('mergeDaemonCatalogs — the detail read owns catalogs, the fleet row o
     // A slower detail response must not resurrect a stale runtime inventory or login state.
     expect(merged!.models).toEqual(['opus'])
     expect(merged!.authRequired).toBe(true)
+    expect(merged!.unavailableReason).toBe('image-binary-missing')
   })
 
   it('never adds a runtime the fleet row no longer reports', () => {

@@ -49,6 +49,15 @@ const CLAUDE = 0
 const CODEX = 1
 
 describe('RuntimeSelect', () => {
+  it('keeps an empty reported list unselected and closed', async () => {
+    const onChange = vi.fn()
+    await mount(<RuntimeSelect value="" options={[]} onChange={onChange} />)
+    expect(trigger().disabled).toBe(true)
+    expect(trigger().textContent).toContain('Select runtime')
+    expect(options()).toHaveLength(0)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('marks a logged-out runtime without taking the choice away', async () => {
     await mount(<Harness needsLogin={['codex']} />)
 
@@ -64,6 +73,24 @@ describe('RuntimeSelect', () => {
 
     expect(trigger().textContent).toContain('Codex')
     expect(options()).toHaveLength(0)
+  })
+
+  it('keeps a missing image binary visible alongside its independent login warning', async () => {
+    const onChange = vi.fn()
+    await mount(
+      <RuntimeSelect
+        value="claude"
+        options={['claude', 'codex']}
+        needsLogin={['codex']}
+        imageBinaryMissing={['codex']}
+        onChange={onChange}
+      />
+    )
+    const codex = options()[CODEX]!
+    expect(codex.textContent).toContain('Binary not installed in image')
+    expect(codex.textContent).toContain('Login required')
+    await act(async () => codex.click())
+    expect(onChange).toHaveBeenCalledWith('codex')
   })
 
   it('leaves a signed-in runtime unmarked', async () => {

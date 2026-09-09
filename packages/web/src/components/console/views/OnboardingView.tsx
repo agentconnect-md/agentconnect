@@ -19,6 +19,7 @@ import {
   modelOptionsFor,
   poolLabel,
   preferredModelFor,
+  imageBinaryMissingRuntimeIds,
   loginRequiredRuntimeIds
 } from '@/lib/data'
 import type { DaemonRow } from '@/lib/data'
@@ -486,10 +487,14 @@ function WhereStep({
 // daemon's reported profiles (else the static fallback), models from the chosen
 // runtime's profile.
 function useRuntimeModel(daemon?: DaemonRow, initial?: { runtime?: string; model?: string }) {
-  const runtimeIds = daemon?.runtimeModels.length ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
+  const runtimeIds = daemon ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
   // Logged-out runtimes are marked, not blocked; the default just prefers a signed-in one.
   const runtimesNeedingLogin = daemon ? loginRequiredRuntimeIds(daemon) : []
-  const defaultRuntime = runtimeIds.find((id) => !runtimesNeedingLogin.includes(id)) ?? runtimeIds[0] ?? ''
+  const runtimesMissingImageBinary = imageBinaryMissingRuntimeIds(daemon)
+  const defaultRuntime =
+    runtimeIds.find((id) => !runtimesNeedingLogin.includes(id) && !runtimesMissingImageBinary.includes(id)) ??
+    runtimeIds[0] ??
+    ''
   // Seeded from the agent's current config (a pool-born preset has one); '' = untouched.
   const [runtime, setRuntime] = useState(initial?.runtime ?? '')
   const effectiveRuntime = runtime && runtimeIds.includes(runtime) ? runtime : defaultRuntime
@@ -500,6 +505,7 @@ function useRuntimeModel(daemon?: DaemonRow, initial?: { runtime?: string; model
   return {
     runtimeIds,
     runtimesNeedingLogin,
+    runtimesMissingImageBinary,
     effectiveRuntime,
     models,
     selectedModel,
@@ -518,6 +524,7 @@ function RuntimeModelFields({ rm }: { rm: ReturnType<typeof useRuntimeModel> }) 
           value={rm.effectiveRuntime}
           options={rm.runtimeIds}
           needsLogin={rm.runtimesNeedingLogin}
+          imageBinaryMissing={rm.runtimesMissingImageBinary}
           onChange={(next) => {
             rm.setRuntime(next)
             rm.setModel('')

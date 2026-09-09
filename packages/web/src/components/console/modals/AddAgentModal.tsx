@@ -12,6 +12,7 @@ import {
   poolLabel,
   poolTagline,
   groupPlacementValue,
+  imageBinaryMissingRuntimeIds,
   loginRequiredRuntimeIds,
   agentSlugFinalize,
   agentSlugSanitize,
@@ -329,16 +330,18 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     sandboxSupported,
     sandboxRequired
   })
-  // Runtime ids come from the selected daemon's reported profiles — the registry ids
-  // that round-trip back to the launch key — so a created agent actually resolves.
-  // No daemon (or none reported) ⇒ the static fallback list.
-  const runtimeIds = daemon?.runtimeModels.length ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
+  // A selected daemon's reported profiles are authoritative, including an empty list.
+  const runtimeIds = daemon ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
   // Runtimes the daemon reports as logged out. Marked in the picker, never blocked —
   // creating on one is a supported state (docs/designs/preset-agents.md §3.2).
   const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
+  const runtimesMissingImageBinary = imageBinaryMissingRuntimeIds(daemon)
   // …but the DEFAULT prefers a signed-in one, mirroring how auto-placement picks a
   // preset's runtime. Falls through to the first reported id when all are logged out.
-  const defaultRuntime = runtimeIds.find((id) => !runtimesNeedingLogin.includes(id)) ?? runtimeIds[0] ?? ''
+  const defaultRuntime =
+    runtimeIds.find((id) => !runtimesNeedingLogin.includes(id) && !runtimesMissingImageBinary.includes(id)) ??
+    runtimeIds[0] ??
+    ''
   // `runtime` is '' until the user picks one, so the default above applies to a fresh
   // form while an explicit choice — logged out or not — always survives.
   const effectiveRuntime = runtime && runtimeIds.includes(runtime) ? runtime : defaultRuntime
@@ -618,6 +621,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     }
     if (!daemon) {
       setErr('No daemon available — start a daemon first.')
+      return
+    }
+    if (!effectiveRuntime) {
+      setErr('No runtime available on this daemon.')
       return
     }
     if (usingPicker && !ghRepo) {
@@ -910,6 +917,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     value={effectiveRuntime}
                     options={runtimeIds}
                     needsLogin={runtimesNeedingLogin}
+                    imageBinaryMissing={runtimesMissingImageBinary}
                     onChange={(nextRuntime) => {
                       setRuntime(nextRuntime)
                       setEffort('')
@@ -1438,7 +1446,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         <Button variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <Button disabled={busy || (memoryProvider === 'external' && !externalMemory.connectionId)} onClick={submit}>
+        <Button
+          disabled={busy || !effectiveRuntime || (memoryProvider === 'external' && !externalMemory.connectionId)}
+          onClick={submit}
+        >
           <Icon name="bot" size={15} />
           {busy ? 'Creating…' : 'Create'}
         </Button>

@@ -16,11 +16,15 @@ import {
   symlinkSync,
   unlinkSync
 } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
-
-export type SharedCredentialProfile = 'claude' | 'codex' | 'qoder' | 'qoder-cn'
+import {
+  resolveClaudeCredentialSources,
+  resolveCodexCredentialSources,
+  resolveQoderCredentialSources,
+  sharedCredentialProfile
+} from './runtime-credential-sources.js'
+export { sharedCredentialProfile, type SharedCredentialProfile } from './runtime-credential-sources.js'
 
 export interface SharedRuntimeCredentialAccess {
   env: Record<string, string>
@@ -30,38 +34,6 @@ export interface SharedRuntimeCredentialAccess {
   seedExclusions: string[]
   /** Finish migration/linking after the private runtime HOME exists. */
   preparePrivateHome: (runtimeHome: string) => void
-}
-
-function signature(runtime: RuntimeDef | undefined, pattern: RegExp): boolean {
-  return runtime ? [runtime.command, ...runtime.args].some((part) => pattern.test(part.toLowerCase())) : false
-}
-
-/** Runtime identity is daemon/registry-owned; an agent can select an id but
- * cannot declare a credential profile or filesystem path. */
-export function sharedCredentialProfile(runtimeId: string, runtime?: RuntimeDef): SharedCredentialProfile | undefined {
-  if (runtimeId === 'claude-acp' || signature(runtime, /(?:^|[\\/@])claude(?:-[a-z-]+)?(?:@[^\\/]*)?$/)) {
-    return 'claude'
-  }
-  if (runtimeId === 'codex-acp' || signature(runtime, /(?:^|[\\/])codex-acp(?:@[^\\/]*)?$/)) {
-    return 'codex'
-  }
-  if (runtimeId === 'qoder-cli-cn' || signature(runtime, /(?:^|[\\/@])qoderclicn(?:@[^\\/]*)?$/)) {
-    return 'qoder-cn'
-  }
-  if (runtimeId === 'qoder-cli' || signature(runtime, /(?:^|[\\/@])qodercli(?:@[^\\/]*)?$/)) {
-    return 'qoder'
-  }
-  return undefined
-}
-
-function hostHome(env: NodeJS.ProcessEnv): string {
-  return env.HOME || homedir()
-}
-
-function absoluteConfiguredPath(raw: string, env: NodeJS.ProcessEnv, label: string): string {
-  const expanded = raw === '~' ? hostHome(env) : raw.startsWith('~/') ? join(hostHome(env), raw.slice(2)) : raw
-  if (!isAbsolute(expanded) || resolve(expanded) === sep) throw new Error(`unsafe ${label}: ${raw}`)
-  return resolve(expanded)
 }
 
 function ensureOwnedDirectory(path: string, label: string): string {
@@ -103,14 +75,6 @@ function secureCredentialFile(path: string): void {
   }
 }
 
-function jsonObject(path: string): Record<string, unknown> {
-  const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`Claude settings must contain a JSON object: ${path}`)
-  }
-  return parsed as Record<string, unknown>
-}
-
 function sameFileContents(a: string, b: string): boolean {
   const left = readFileSync(a)
   const right = readFileSync(b)
@@ -137,33 +101,9 @@ function claudeCredentialGeneration(path: string): number | undefined {
 }
 
 function prepareClaudeCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredentialAccess {
-  const configured = env.CLAUDE_CONFIG_DIR || join(hostHome(env), '.claude')
-  const configDir = ensureOwnedDirectory(
-    absoluteConfiguredPath(configured, env, 'host CLAUDE_CONFIG_DIR'),
-    'host Claude config directory'
-  )
-  let configuredSecureDir = env.CLAUDE_SECURESTORAGE_CONFIG_DIR
-  if (!configuredSecureDir) {
-    const settingsPath = join(configDir, 'settings.json')
-    const settings = existsSync(settingsPath) ? jsonObject(settingsPath) : {}
-    const rawSettingsEnv = settings.env
-    if (
-      rawSettingsEnv !== undefined &&
-      (!rawSettingsEnv || typeof rawSettingsEnv !== 'object' || Array.isArray(rawSettingsEnv))
-    ) {
-      throw new Error(`Claude settings.env must contain a JSON object: ${settingsPath}`)
-    }
-    const settingsEnv = (rawSettingsEnv ?? {}) as Record<string, unknown>
-    const setting = settingsEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR
-    if (setting !== undefined && typeof setting !== 'string') {
-      throw new Error(`Claude settings env.CLAUDE_SECURESTORAGE_CONFIG_DIR must be a string: ${settingsPath}`)
-    }
-    configuredSecureDir = setting
-  }
-  const credentialDir = ensureOwnedDirectory(
-    absoluteConfiguredPath(configuredSecureDir || configDir, env, 'Claude secure credential directory'),
-    'Claude secure credential directory'
-  )
+  const source = resolveClaudeCredentialSources(env)
+  ensureOwnedDirectory(source.configDir, 'host Claude config directory')
+  const credentialDir = ensureOwnedDirectory(source.credentialDir, 'Claude secure credential directory')
   const destination = join(credentialDir, '.credentials.json')
   if (existsSync(destination)) secureCredentialFile(existingFileTarget(destination))
 
@@ -236,8 +176,8 @@ function refreshTimestamp(path: string): number | undefined {
 }
 
 function prepareCodexCredentials(env: NodeJS.ProcessEnv): SharedRuntimeCredentialAccess {
-  const configured = env.CODEX_HOME || join(hostHome(env), '.codex')
-  const codexHome = ensureOwnedDirectory(absoluteConfiguredPath(configured, env, 'host CODEX_HOME'), 'host CODEX_HOME')
+  const source = resolveCodexCredentialSources(env)
+  const codexHome = ensureOwnedDirectory(source.configDir, 'host CODEX_HOME')
   const hostAuth = join(codexHome, 'auth.json')
   if (existsSync(hostAuth)) secureCredentialFile(existingFileTarget(hostAuth))
   const writablePaths = existsSync(hostAuth) ? [existingFileTarget(hostAuth)] : []
@@ -383,26 +323,11 @@ function migratePrivateQoderAuth(privateAuth: string, sharedAuth: string, label:
   rmdirSync(privateAuth)
 }
 
-function qoderConfigDirectory(profile: 'qoder' | 'qoder-cn', env: NodeJS.ProcessEnv): string {
-  const cn = profile === 'qoder-cn'
-  const configured = cn ? env.QODERCN_CONFIG_DIR : env.QODER_CONFIG_DIR
-  const base = (cn ? env.QODERCN_CLI_HOME : env.QODER_CLI_HOME) || env.GEMINI_CLI_HOME
-  const name = (
-    (cn ? env.QODERCN_CONFIG_DIR_NAME : env.QODER_CONFIG_DIR_NAME) || (cn ? '.qoder-cn' : '.qoder')
-  ).normalize('NFC')
-  return ensureOwnedDirectory(
-    absoluteConfiguredPath(
-      configured || (base ? join(base, name) : join(hostHome(env), name)),
-      env,
-      `${profile} config`
-    ),
-    `host ${profile} config directory`
-  )
-}
-
 function prepareQoderCredentials(profile: 'qoder' | 'qoder-cn', env: NodeJS.ProcessEnv): SharedRuntimeCredentialAccess {
   const configName = profile === 'qoder-cn' ? '.qoder-cn' : '.qoder'
-  const sharedAuth = ensureOwnedDirectory(join(qoderConfigDirectory(profile, env), '.auth'), `host ${profile} auth`)
+  const source = resolveQoderCredentialSources(profile, env)
+  const configDir = ensureOwnedDirectory(source.configDir, `host ${profile} config directory`)
+  const sharedAuth = ensureOwnedDirectory(join(configDir, '.auth'), `host ${profile} auth`)
   return {
     env: {},
     writablePaths: [sharedAuth],

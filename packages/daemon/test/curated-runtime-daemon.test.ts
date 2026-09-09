@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
+import { ConfigSchema } from '../src/config/config-schema.js'
 import { CuratedRuntimeAdmission } from '../src/runtimes/curated-admission.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { FakeClock } from './cp/fake-clock.js'
@@ -276,7 +277,7 @@ describe('daemon curated runtime admission', () => {
     const daemon = new Daemon({ clock, probeRuntimes: probe as never, sandboxMechanism: null })
 
     try {
-      ;(daemon as any).cfg = { security: { isolateAccountApps: true } }
+      ;(daemon as any).cfg = ConfigSchema.parse({ version: 1 })
       ;(daemon as any).root = '/tmp/curated-admission-ttl-test'
       ;(daemon as any).runtimeCatalog = catalog()
       ;(daemon as any).refreshAdmittedRuntimes()
@@ -312,7 +313,7 @@ describe('daemon curated runtime admission', () => {
     })
 
     try {
-      ;(daemon as any).cfg = { security: { isolateAccountApps: true } }
+      ;(daemon as any).cfg = ConfigSchema.parse({ version: 1 })
       ;(daemon as any).root = '/tmp/curated-admission-test'
       ;(daemon as any).runtimeCatalog = catalog()
       ;(daemon as any).refreshAdmittedRuntimes()
@@ -352,7 +353,7 @@ describe('daemon curated runtime admission', () => {
       return Object.keys(runtimes).map((runtime) => ({ runtime, ok: true, models: [] }))
     })
     const daemon = new Daemon({ probeRuntimes: probe as never, sandboxMechanism: null })
-    ;(daemon as any).cfg = { security: { isolateAccountApps: true } }
+    ;(daemon as any).cfg = ConfigSchema.parse({ version: 1 })
     ;(daemon as any).root = '/tmp/curated-admission-queue-test'
     ;(daemon as any).runtimeCatalog = catalog()
     ;(daemon as any).refreshAdmittedRuntimes()

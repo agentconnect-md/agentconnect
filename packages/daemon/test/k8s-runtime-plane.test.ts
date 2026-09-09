@@ -552,10 +552,14 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     expect(cluster.claims.has(plane.driver.claimName(session))).toBe(true)
     served.length = 0
 
-    // The read names the session's directory, so it waits for the SESSION pod's channel and refuses
-    // when none arrives — it is never answered by the agent pod, which is the whole bug.
+    // The session read must time out without falling back to the agent pod.
     const placement = plane.workspaceFsFor('agent-a')!
-    await expect(placement.fs.stat(sessionPath)).rejects.toThrow(`no shim channel bound for ${session} in time`)
+    // Clock rounding can surface either the binder's timeout or the dialer's underlying timeout.
+    await expect(placement.fs.stat(sessionPath)).rejects.toThrow(
+      new RegExp(
+        `^(?:no shim channel bound for ${session} in time|could not connect to sandbox shim: binding timed out after 250ms)$`
+      )
+    )
     expect(served).toEqual([])
     // Waking it is a resume of the claim the cluster already holds, never a new one.
     expect([...cluster.claims.keys()].sort()).toEqual(['agent-agent-a', plane.driver.claimName(session)].sort())

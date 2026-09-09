@@ -32,6 +32,7 @@ import { useProfile } from '@/lib/profile'
 import { featureFlagEnabled, type FeatureFlagId } from '@/lib/feature-flags'
 import {
   agentCapabilitySource,
+  IMAGE_BINARY_MISSING_LABEL,
   agentDaemonLabel,
   agentLabel,
   agentPlacementKind,
@@ -137,7 +138,11 @@ export default function HomeView() {
   // looking one up found nothing and every such agent read as signed in (never blocked, never fixed).
   const authRequiredFor = (a: Agent) =>
     !!agentCapabilitySource(a, daemons, memberSets)?.runtimeModels.find((r) => r.runtime === a.runtime)?.authRequired
-  const agentReady = (a: Agent) => isOnline(a) && !authRequiredFor(a)
+  const imageBinaryMissingFor = (a: Agent) =>
+    (a.runInSandbox || a.sandboxRequired) &&
+    agentCapabilitySource(a, daemons, memberSets)?.runtimeModels.find((r) => r.runtime === a.runtime)
+      ?.unavailableReason === 'image-binary-missing'
+  const agentReady = (a: Agent) => isOnline(a) && !authRequiredFor(a) && !imageBinaryMissingFor(a)
 
   // Preferred default agent: the "agentconnect" preset when it's READY, else the
   // first READY one, else the preset, else the first. Readiness outranks the preset:
@@ -314,13 +319,15 @@ export default function HomeView() {
   }))
 
   // Why the composer can't start a session for the selected agent (null ⇒ it can).
-  const blocked: 'offline' | 'auth' | null = !agent
+  const blocked: 'offline' | 'auth' | 'image' | null = !agent
     ? null
     : !agentOnline
       ? 'offline'
-      : authRequiredFor(agent)
-        ? 'auth'
-        : null
+      : imageBinaryMissingFor(agent)
+        ? 'image'
+        : authRequiredFor(agent)
+          ? 'auth'
+          : null
   // A multi-agent create needs every roster pick startable — the "+" menu only
   // OFFERS ready agents, but the @mention picker (unlike it) also lists unready
   // ones dimmed (so a typed name still resolves to a real candidate), and
@@ -448,7 +455,9 @@ export default function HomeView() {
           ? 'Add to this conversation'
           : !isOnline(a)
             ? `${agentLabel(a)} is offline — its daemon isn't serving`
-            : `${agentLabel(a)} has no AI runtime signed in`,
+            : imageBinaryMissingFor(a)
+              ? IMAGE_BINARY_MISSING_LABEL
+              : `${agentLabel(a)} has no AI runtime signed in`,
         leading: (
           <span className="av h-[18px] w-[18px] flex-none rounded-xs">
             <AgentIconView icon={a.icon} runtime={a.runtime} size={18} />
@@ -748,13 +757,17 @@ export default function HomeView() {
             title={
               blocked === 'offline'
                 ? `${agentLabel(agent!)} is offline — can't start a session`
-                : blocked === 'auth'
-                  ? `No AI runtime is signed in on ${placementName || 'the daemon'} — can't start a session`
-                  : notReadyMember
-                    ? !isOnline(notReadyMember)
-                      ? `${agentLabel(notReadyMember)} is offline — can't start a session`
-                      : `${agentLabel(notReadyMember)} has no AI runtime signed in — can't start a session`
-                    : 'Send'
+                : blocked === 'image'
+                  ? IMAGE_BINARY_MISSING_LABEL
+                  : blocked === 'auth'
+                    ? `No AI runtime is signed in on ${placementName || 'the daemon'} — can't start a session`
+                    : notReadyMember
+                      ? !isOnline(notReadyMember)
+                        ? `${agentLabel(notReadyMember)} is offline — can't start a session`
+                        : imageBinaryMissingFor(notReadyMember)
+                          ? IMAGE_BINARY_MISSING_LABEL
+                          : `${agentLabel(notReadyMember)} has no AI runtime signed in — can't start a session`
+                      : 'Send'
             }
           >
             <Icon name="arrow-up" size={15} color="#fff" />
@@ -774,6 +787,8 @@ export default function HomeView() {
                 <span className="font-semibold">{agentLabel(agent!)}</span>
                 {' is offline — you can’t start a session until its daemon reconnects.'}
               </>
+            ) : blocked === 'image' ? (
+              IMAGE_BINARY_MISSING_LABEL
             ) : (
               <>
                 {'No AI runtime is signed in'}

@@ -68,6 +68,18 @@ describe('runtime aggregation carries model display metadata', () => {
     expect(intersectRuntimes([member(), opus48, member()])[0]!.modelInfo).toEqual({})
   })
 
+  it('preserves a member image restriction without dropping host model knowledge', () => {
+    const members = [member(), member({ unavailableReason: 'image-binary-missing', authRequired: true })]
+    for (const aggregate of [unionRuntimes, intersectRuntimes]) {
+      expect(aggregate(members)[0]).toMatchObject({
+        runtime: 'claude',
+        models: ['opus[1m]', 'haiku'],
+        unavailableReason: 'image-binary-missing',
+        authRequired: true
+      })
+    }
+  })
+
   it('carries them through the intersection too', () => {
     const [rt] = intersectRuntimes([member(), member()])
     expect(rt!.modelInfo?.['opus[1m]']?.description).toBe('Opus 5 with 1M context')
