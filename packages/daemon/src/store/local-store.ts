@@ -3,6 +3,7 @@ import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
+  ManagedMemoryHome,
   QuotedMessageSchema,
   SessionImageAttachment as SessionImageAttachmentSchema,
   type DreamInfo,
@@ -1637,6 +1638,11 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS sandbox_generations (
         agentId TEXT PRIMARY KEY,
         generation INTEGER NOT NULL
+      );
+      -- The managed memory home this daemon last applied per agent: what a forced return is detected against on the first roster after a restart (memory-evolution.md §3.2.1).
+      CREATE TABLE IF NOT EXISTS memory_home_applied (
+        agentId TEXT PRIMARY KEY,
+        memoryHome TEXT NOT NULL          -- 'daemon' | 'control-plane'
       );
       CREATE TABLE IF NOT EXISTS duty_write_fence (
         groupId TEXT PRIMARY KEY,
@@ -5025,6 +5031,28 @@ export class LocalStore {
 
   async deleteRuntimeCommands(agentId: string): Promise<void> {
     await this.db.prepare('DELETE FROM runtime_commands WHERE agentId = ?').run(agentId)
+  }
+
+  /** The managed memory home this daemon last applied for an agent; undefined when no managed binding was ever applied. */
+  async getMemoryHomeApplied(agentId: string): Promise<ManagedMemoryHome | undefined> {
+    const row = (await this.db.prepare('SELECT memoryHome FROM memory_home_applied WHERE agentId = ?').get(agentId)) as
+      { memoryHome: string } | undefined
+    const parsed = ManagedMemoryHome.safeParse(row?.memoryHome)
+    return parsed.success ? parsed.data : undefined
+  }
+
+  /** Record the managed memory home just applied for an agent (latest-wins). */
+  async setMemoryHomeApplied(agentId: string, memoryHome: ManagedMemoryHome): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO memory_home_applied (agentId, memoryHome) VALUES (?, ?)
+         ON CONFLICT(agentId) DO UPDATE SET memoryHome = excluded.memoryHome`
+      )
+      .run(agentId, memoryHome)
+  }
+
+  async deleteMemoryHomeApplied(agentId: string): Promise<void> {
+    await this.db.prepare('DELETE FROM memory_home_applied WHERE agentId = ?').run(agentId)
   }
 
   async isChannelIntroSeeded(integrationId: string): Promise<boolean> {

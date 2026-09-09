@@ -343,7 +343,9 @@ the agent's rows and its change log, and the daemon starts from an empty tree, t
 pre-switch local tree archived aside rather than resurrected (a snapshot from before
 the switch is not the memory the agent has been using since): `memory/`, `channels/`
 and `memory-backups/` move under `<agent dir>/memory-archive-<timestamp>/` beside
-them, and `memory-dreams/` stays, since staging belongs to the host. The console offers the
+them, and `memory-dreams/` stays, since staging belongs to the host. The daemon records the
+last home it applied per agent in its local store, so a return that happens while it is
+offline is still archived on its next start rather than served again. The console offers the
 selector one way and the forced return behind its own confirmation; on the pool there
 is no return at all, since `daemon` is refused there. `daemon` stays the default for
 now; making `control-plane` the default is a later decision, not this one.

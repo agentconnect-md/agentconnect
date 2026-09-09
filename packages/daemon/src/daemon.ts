@@ -3537,9 +3537,7 @@ export class Daemon {
       if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
         this.permissions.disableChatPermissionSurfaces(a.id)
       }
-      // A forced return of the memory home archives the pre-switch tree BEFORE the binding is live: while the home was
-      // still `control-plane`, nothing on this disk was being written, so the move races no writer.
-      if (previous && memoryHomeReturnedToDaemon(previous, a)) await this.archiveMemoryHomeAside(a as LoadedAgent)
+      await this.applyMemoryHomeBinding(previous, a as LoadedAgent)
       // ALWAYS publish fresh config first, so live reads — output.mode (per dispatch),
       // per-session cwd/tools, routing (mergedRules reads this.agents) — see the new config.
       this.agents.set(a.id, a as LoadedAgent)
@@ -3615,6 +3613,7 @@ export class Daemon {
       if (change.integrations) connectionsDirty = true
     }
     for (const a of toStart) {
+      await this.applyMemoryHomeBinding(undefined, a as LoadedAgent)
       this.agents.set(a.id, a as LoadedAgent)
       // Rows may have been retained while this daemon did not own the agent. Adding it
       // already paused is still an explicit operator stop, so terminally discard that
@@ -3840,6 +3839,14 @@ export class Daemon {
   // let reconcile rebuild the session boundary, as it does for any memory-binding change.
   private async onMemoryHomeMigrated(agentId: string): Promise<void> {
     if (this.cpAgents?.settleMemoryHomeMigration(agentId)) await this.flushReconcile()
+  }
+
+  // The forced return archives the pre-switch tree before the binding is live (nothing wrote this disk while the home was `control-plane`); `previous` is this process's binding online, and after a restart the durable last-applied home stands in, so a return that happened while this daemon was offline is still archived rather than resurrected.
+  private async applyMemoryHomeBinding(previous: Pick<Agent, 'memory'> | undefined, next: LoadedAgent): Promise<void> {
+    const lastHome = previous ? undefined : await this.store.getMemoryHomeApplied(next.id)
+    const last = previous ?? (lastHome && { memory: { provider: 'managed' as const, home: lastHome } })
+    if (last && memoryHomeReturnedToDaemon(last, next)) await this.archiveMemoryHomeAside(next)
+    if (next.memory?.provider === 'managed') await this.store.setMemoryHomeApplied(next.id, next.memory.home)
   }
 
   // The forced return (memory-evolution.md §3.2.1): the CP has dropped its rows, so the tree this disk kept from before
