@@ -74,6 +74,27 @@ export class PgAgentMemoryTransactionRepo implements AgentMemoryTransactionRepo 
             return { operation: 'commit', receipt: MemoryTransactionReceipt.parse(prior.receipt), replayed: true }
           }
         }
+        if (
+          request.operation === 'capture-status' ||
+          (request.operation === 'commit' && request.source === 'distill' && request.sourceTurnId)
+        ) {
+          const explicit = await tx.agentMemoryMutation.findFirst({
+            where: {
+              agentId,
+              root: request.root,
+              sourceTurnId: request.sourceTurnId,
+              source: { in: ['tool', 'console'] }
+            },
+            select: { operationId: true }
+          })
+          if (request.operation === 'capture-status')
+            return { operation: 'capture-status', suppressed: explicit !== null }
+          if (explicit)
+            return failure(
+              'CONFLICT',
+              'automatic capture is suppressed by a completed explicit mutation from this turn'
+            )
+        }
         const before = await snapshot(tx, agentId, request.root)
         if (!before) return failure('TOO_LARGE', 'memory tree exceeds the transaction snapshot budget')
         if (request.operation === 'snapshot') return { operation: 'snapshot', revision: before.revision }

@@ -41,3 +41,11 @@ describe('memory transaction v1', () => {
     ).toBe(false)
   })
 })
+
+it('round-trips a bounded source-turn capture query and rejects content in that query', () => {
+  const query = { operation: 'capture-status', agentId: req.agentId, root: 'memory', sourceTurnId: req.operationId }
+  const frame = buildEnvelope('memory/transaction/v1', MemoryTransactionReq.parse(query))
+  expect(decodeEnvelope(encode(frame))).toEqual({ ok: true, frame })
+  expect(MemoryTransactionReq.safeParse({ ...query, content: 'private evidence' }).success).toBe(false)
+  expect(MemoryTransactionReq.safeParse({ ...query, sourceTurnId: '' }).success).toBe(false)
+})

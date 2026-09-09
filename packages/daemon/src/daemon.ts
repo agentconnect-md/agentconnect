@@ -1,3 +1,4 @@
+import { memorySourceTurnId } from './memory/source-turn.js'
 import {
   MEMORY_ENTRIES_V1_FEATURE,
   AgentActivate as AgentActivateSchema,
@@ -774,6 +775,7 @@ export class Daemon {
   private memoryExtractionSessions = new Map<string, string>()
   /** MCP token backing each agent's cached distillation session, released with it. */
   private memoryExtractionTokens = new Map<string, string>()
+  private memoryExtractionScopes = new Map<string, MemoryScope>()
 
   /** Drop the token behind a cached distillation session so a replaced or discarded
    *  session cannot leave a live tool grant behind. */
@@ -2859,7 +2861,12 @@ export class Daemon {
       // coords at call time so a policy change takes effect for an already-running ACP session.
       memoryAccessDecision: (ctx, mode) => this.memoryAccessDecisionFor(ctx, mode),
       requestMemoryWriteApproval: (ctx, ask) => this.requestMemoryWriteApprovalFor(ctx, ask),
-      memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
+      memoryScope: (ctx) => ({
+        ...this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
+        sourceTurnId: this.activeMemorySourceTurns.get(
+          sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        )
+      }),
       resolveAttachment: async (ctx, name) => {
         const found = await this.store.transcriptAttachmentByName(
           transcriptChannelKey(ctx.channel, ctx.transportScope),
@@ -5275,6 +5282,7 @@ export class Daemon {
         // The binding pins the ORIGINATING conversation's memory scope: a
         // channel-scoped agent must distill into that channel's folder, not into a
         // store derived from this synthetic session's coordinates.
+        const extractionScopes = this.memoryExtractionScopes
         const mcpToken = this.mcp.register({
           agentId,
           platform: 'distill',
@@ -5282,7 +5290,14 @@ export class Daemon {
           channel: 'memory',
           thread: 'distill',
           tools: MEMORY_TOOLS,
-          memoryBinding: { source: 'distill', scope }
+          memoryBinding: {
+            source: 'distill',
+            get scope() {
+              const active = extractionScopes.get(cacheKey)
+              if (!active) throw new MemoryHomeUnavailableError('scope-denied', 'memory extraction is not active')
+              return active
+            }
+          }
         })
         this.releaseMemoryExtractionToken(cacheKey)
         this.memoryExtractionTokens.set(cacheKey, mcpToken)
@@ -5322,6 +5337,7 @@ export class Daemon {
       const chunks: string[] = []
       this.memoryExtractionQuarantines.delete(key)
       this.memoryExtractionCollectors.set(key, { chunks })
+      this.memoryExtractionScopes.set(cacheKey, scope ?? { agentId })
       try {
         // Extraction runs read-only and shouldn't touch the config files, but keep
         // the invariant uniform: every host.prompt is preceded by re-materialization.
@@ -5345,6 +5361,7 @@ export class Daemon {
         }
         throw err
       } finally {
+        this.memoryExtractionScopes.delete(cacheKey)
         this.memoryExtractionQuarantines.set(key, agentId)
         this.memoryExtractionCollectors.delete(key)
       }
@@ -11169,6 +11186,10 @@ export class Daemon {
       if (storedTitle) p.chrome.sessionTitleToPush = await this.displayTitle(storedTitle)
     }
     const activeTurn = await this.installActiveTurnContext(run, sessionId)
+    this.activeMemorySourceTurns.set(
+      key,
+      memorySourceTurnId(agentId, p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg))
+    )
     const settlement: TurnSettlement = { finalPhase: 'end', propagatingTurnError: false }
     let turnModel: string | undefined
     const currentAttributionInfo = async (): Promise<SlackAttributionInfo> =>
@@ -12794,6 +12815,7 @@ export class Daemon {
     if (callMeta) this.activeTurnCallMeta.delete(key)
     this.activeTurnShare.delete(key)
     this.activeTurnSearchOrigin.delete(key)
+    this.activeMemorySourceTurns.delete(key)
     this.shareBudgetByTurn.delete(key)
     this.activeTurnCodeHost.delete(key)
     const activeGithub = activeTurn.github
@@ -13924,6 +13946,7 @@ export class Daemon {
    *  is authorized by. Only a real user message installs one: a cron or agent-to-agent wake has
    *  no triggering message, so its turn cannot search, and the tool says which. */
   private activeTurnSearchOrigin = new Map<string, string>()
+  private activeMemorySourceTurns = new Map<string, string>()
 
   /** Bytes `shareFile` has uploaded this turn, by the same key — the synchronous per-turn
    *  reservation of agent-authored-attachments.md §5. */

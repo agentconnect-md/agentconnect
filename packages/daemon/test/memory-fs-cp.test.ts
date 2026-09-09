@@ -299,3 +299,30 @@ it('stages complete UTF-8 content in bounded append frames without publishing it
   const empty = await fs.stageTransactionFile!('memory', '')
   expect(await fsp.readFile(join(link.tree, 'channels/channel-a/memory', empty.temp), 'utf8')).toBe('')
 })
+
+it('negotiates capture status separately and fences a captured getter after feature loss', async () => {
+  let supported = false
+  const calls: import('@agentconnect.md/protocol').MemoryTransactionReq[] = []
+  const link = fakeLink({
+    supportsServerFeature: (feature) => feature !== 'memory-capture-fence-v1' || supported,
+    memoryTransaction: async (request) => {
+      calls.push(request)
+      return { operation: 'capture-status', suppressed: true }
+    }
+  })
+  const fs = new CpMemoryFs(link, AGENT).subdir('channels/channel-a')
+  expect(fs.atomicTransaction).toBeDefined()
+  expect(fs.captureStatus).toBeUndefined()
+  await expect(
+    fs.atomicTransaction!({ operation: 'capture-status', root: 'memory', sourceTurnId: AGENT })
+  ).rejects.toThrow('no longer supports')
+  supported = true
+  const status = fs.captureStatus!
+  expect(await status('memory', AGENT)).toEqual({ suppressed: true })
+  expect(calls).toEqual([
+    { operation: 'capture-status', root: 'channels/channel-a/memory', sourceTurnId: AGENT, agentId: AGENT }
+  ])
+  supported = false
+  await expect(status('memory', AGENT)).rejects.toThrow('no longer supports')
+  expect(calls).toHaveLength(1)
+})

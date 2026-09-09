@@ -142,7 +142,7 @@ export const MEMORY_TOOL_ACCESS_MODES: Record<string, 'read' | 'write'> = {
 export function memoryScopeFor(ctx: SessionContext, deps: MemoryOpsDeps): MemoryScope {
   // A pinned binding wins: a synthetic session's own coordinates would resolve to the
   // wrong store for a channel-scoped agent.
-  return ctx.memoryBinding?.scope ?? deps.memoryScope?.(ctx) ?? { agentId: ctx.agentId }
+  return { ...(ctx.memoryBinding?.scope ?? deps.memoryScope?.(ctx) ?? { agentId: ctx.agentId }) }
 }
 
 /** Provenance for a write made through the shared tool surface. The ordinary

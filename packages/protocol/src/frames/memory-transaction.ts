@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { MemoryEntryErrorCode } from '../memory-entries.js'
 
 export const MEMORY_TRANSACTION_V1_FEATURE = 'memory-transaction-v1'
+export const MEMORY_CAPTURE_FENCE_V1_FEATURE = 'memory-capture-fence-v1'
 const digest = z.string().regex(/^[0-9a-f]{64}$/)
 export const MemoryTransactionPath = z
   .string()
@@ -23,6 +24,7 @@ const change = z.discriminatedUnion('action', [
 const scope = z.object({ agentId: z.string().uuid(), root: z.string().min(1).max(1024) })
 export const MemoryTransactionReq = z.discriminatedUnion('operation', [
   scope.extend({ operation: z.literal('snapshot') }).strict(),
+  scope.extend({ operation: z.literal('capture-status'), sourceTurnId: z.string().uuid() }).strict(),
   scope
     .extend({
       operation: z.literal('commit'),
@@ -61,6 +63,7 @@ export const MemoryTransactionReceipt = z
 export type MemoryTransactionReceipt = z.infer<typeof MemoryTransactionReceipt>
 export const MemoryTransactionResult = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('snapshot'), revision: digest }).strict(),
+  z.object({ operation: z.literal('capture-status'), suppressed: z.boolean() }).strict(),
   z.object({ operation: z.literal('commit'), receipt: MemoryTransactionReceipt, replayed: z.boolean() }).strict(),
   z.object({ operation: z.literal('error'), code: MemoryEntryErrorCode, message: z.string().max(512) }).strict()
 ])

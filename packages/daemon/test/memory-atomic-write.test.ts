@@ -55,6 +55,7 @@ function fixture(initial: Record<string, string> = {}) {
     }),
     atomicTransaction: vi.fn(async (req: MemoryFsTransactionRequest): Promise<MemoryTransactionResult> => {
       if (req.operation === 'snapshot') return { operation: 'snapshot', revision: 'a'.repeat(64) }
+      if (req.operation !== 'commit') throw new Error('unexpected operation')
       commands.push(req)
       return commit(req)
     })
@@ -86,6 +87,13 @@ describe('managed atomic publication', () => {
     expect(f.history.append).not.toHaveBeenCalled()
     expect(f.fs.writeFile).not.toHaveBeenCalled()
     expect(memoryWriteMarks(f.fs)).toMatchObject({ total: 1, nonDistill: 1 })
+  })
+
+  it('records the trusted source turn in the durable commit', async () => {
+    const f = fixture()
+    const sourceTurnId = randomUUID()
+    await writeMemoryFile(f.fs, 'topic.md', 'new', undefined, 'tool', f.history, sourceTurnId)
+    expect(f.commands[0]!.sourceTurnId).toBe(sourceTurnId)
   })
 
   it('keeps a handwritten index until a described topic adopts it and treats empty text as a write', async () => {

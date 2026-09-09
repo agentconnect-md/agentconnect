@@ -104,6 +104,8 @@ export type MemoryFsTransactionRequest = MemoryTransactionReq extends infer R
   : never
 
 export interface MemoryFs {
+  readonly captureStatus?: ((root: string, sourceTurnId: string) => Promise<{ suppressed: boolean }>) | undefined
+
   // Absent on native-writable homes and older peers; callers must not emulate this with sequential file writes.
   readonly stageTransactionFile?:
     ((root: string, content: string) => Promise<{ temp: string; revision: string }>) | undefined
