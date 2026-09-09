@@ -963,19 +963,59 @@ const CODEX_CUSTOM_ANSWER_META_KEY = 'codex'
 /** The longest question text a card carries under a field's label. */
 const ELICIT_DESCRIPTION_MAX = 300
 
+/** The marker namespaces above, each with the flag that binds a box inside its question. */
+const CUSTOM_ANSWER_MARKERS = [
+  [CUSTOM_ANSWER_META_KEY, 'isCustomAnswer'],
+  [CODEX_CUSTOM_ANSWER_META_KEY, 'isOtherAnswer']
+] as const
+
 /** The question a property's `_meta` claims this free-text box answers, or undefined when it
  *  claims none — an unmarked property is a question in its own right. */
 function customAnswerOwner(prop: Record<string, unknown>): string | undefined {
   const meta = prop._meta as Record<string, unknown> | undefined
-  for (const [key, flag] of [
-    [CUSTOM_ANSWER_META_KEY, 'isCustomAnswer'],
-    [CODEX_CUSTOM_ANSWER_META_KEY, 'isOtherAnswer']
-  ] as const) {
+  for (const [key, flag] of CUSTOM_ANSWER_MARKERS) {
     const marker = meta?.[key] as Record<string, unknown> | undefined
     const owner = marker?.questionId
     if (marker?.[flag] === true && typeof owner === 'string' && owner) return owner
   }
   return undefined
+}
+
+/** Whether a property speaks a marker namespace at all, flag or no flag. A producer that speaks
+ *  one has already said what the box is, so its silence is a statement and not shape to guess at. */
+function speaksCustomAnswerMarker(prop: Record<string, unknown>): boolean {
+  const meta = prop._meta as Record<string, unknown> | undefined
+  return CUSTOM_ANSWER_MARKERS.some(([key]) => !!meta?.[key])
+}
+
+// What a bridge appends to a question's property name when it adds that question's own box:
+// `question_0_custom`, `need_type__other`. Read as the marker of LAST resort, so a bridge that
+// marks nothing (DeepSeek Harness spells the pair by name alone) still folds its box inside the
+// question instead of asking "Other" as a question of its own.
+const CUSTOM_ANSWER_SUFFIXES = ['_custom', '_other', '-custom', '-other'] as const
+
+/** The select question this property name is the free-text box OF, by shape alone: another
+ *  rendered question's name plus a custom-answer suffix, with a doubled separator (`__other`)
+ *  read the same as a single one. Undefined when the name claims no question on this card. */
+function suffixedCustomAnswerOwner(propName: string, questions: Set<string>): string | undefined {
+  const lower = propName.toLowerCase()
+  for (const suffix of CUSTOM_ANSWER_SUFFIXES) {
+    if (!lower.endsWith(suffix)) continue
+    const stem = propName.slice(0, propName.length - suffix.length)
+    for (const owner of [stem, stem.slice(0, -1)]) if (owner && questions.has(owner)) return owner
+  }
+  return undefined
+}
+
+/** A target whose {@link ElicitTarget.defaultValue} still names one of its own options — the
+ *  seed of a control that lost an option must not be a value the control cannot show. */
+function withoutStaleDefault(target: ElicitTarget): ElicitTarget {
+  const values = new Set(target.options.map((o) => o.value))
+  const raw = target.defaultValue
+  const stale = Array.isArray(raw) ? raw.some((v) => !values.has(v)) : typeof raw === 'string' && !values.has(raw)
+  if (!stale) return target
+  const { defaultValue: _dropped, ...rest } = target
+  return rest
 }
 
 /**
@@ -1063,11 +1103,36 @@ function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurfa
   // A companion whose question this surface did not render has nothing to sit inside, so it
   // stands as a field of its own rather than pointing at a control that is not on the card.
   const questions = new Set(found.filter((t) => !t.customAnswerFor).map((t) => t.propName))
-  return found.map((t) => {
-    if (!t.customAnswerFor || questions.has(t.customAnswerFor)) return t
-    const { customAnswerFor: _orphan, ...rest } = t
-    return rest
+  // The unmarked pair, read by name off the questions that OFFER options — the shape only says
+  // "box for that question" where the question has choices this box is an alternative to.
+  const selects = new Set(found.filter((t) => t.kind === 'enum' || t.kind === 'multi-enum').map((t) => t.propName))
+  const bound = found.map((t) => {
+    if (t.customAnswerFor) return questions.has(t.customAnswerFor) ? t : dropCustomAnswerFor(t)
+    // Only where the property claimed no marker namespace of its own.
+    if (t.kind !== 'text' || speaksCustomAnswerMarker(p.requestedSchema?.properties?.[t.propName] ?? {})) return t
+    const owner = suffixedCustomAnswerOwner(t.propName, selects)
+    return owner ? { ...t, customAnswerFor: owner } : t
   })
+  // A question whose box the card offers ITSELF must not also offer that box as a choice: a
+  // bridge that appends an "Other" option to the enum means "type below", but picking it answers
+  // the question with a value the agent reads as no answer at all. Matched against the
+  // companion's own label rather than any word, and never down to an empty list of options.
+  const companionLabel = new Map<string, string>()
+  for (const t of bound)
+    if (t.customAnswerFor)
+      companionLabel.set(t.customAnswerFor, elicitFieldLabel(params, t.propName).trim().toLowerCase())
+  return bound.map((t) => {
+    const label = companionLabel.get(t.propName)
+    if (label === undefined || !t.options.length) return t
+    const options = t.options.filter((o) => o.label.trim().toLowerCase() !== label)
+    return options.length && options.length < t.options.length ? withoutStaleDefault({ ...t, options }) : t
+  })
+}
+
+/** The same target with no owning question — a companion that turned out to point at nothing. */
+function dropCustomAnswerFor(target: ElicitTarget): ElicitTarget {
+  const { customAnswerFor: _orphan, ...rest } = target
+  return rest
 }
 
 /** The elicitation's URL-mode target (ACP `ElicitationUrlMode`), or null when this is not a
