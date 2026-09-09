@@ -111,8 +111,8 @@ the fallback. (Org icons are console-only and need no daemon push.)
 **Client UX** (`AgentIconPicker`, reused for org): an _Upload_ button → file input
 (`accept="image/png,image/jpeg,image/webp"`) → **client-side square crop + resize to
 ≤256×256** on a `<canvas>` → `canvas.toBlob('image/png')` → `fetch(url, {method:'PUT',
-body: blob})`. Resizing client-side keeps upload validation header-only; `sharp` is
-used later only when Telegram profile sync must convert the canonical icon to JPG.
+body: blob})`. Upload validation reads headers with `sharp.metadata()` without decoding
+pixels; Telegram profile sync also uses `sharp` to convert the canonical icon to JPG.
 
 **Server validation / security (client resizing is untrusted).** A caller can POST
 arbitrary bytes straight at the API, so the CP re-validates independently:
@@ -120,7 +120,7 @@ arbitrary bytes straight at the API, so the CP re-validates independently:
 - `bodyLimit` ~512 KB.
 - **Magic bytes** → PNG / JPEG / WebP only (the caller `Content-Type` is ignored);
   **SVG rejected** (script vector). The sniffed type is what's stored + served.
-- **Decoded dimensions** → parse the header (`image-size`) and reject anything past a small
+- **Decoded dimensions** → parse the header (`sharp.metadata()`) and reject anything past a small
   cap (512²) — a valid signature says nothing about pixel size, and a tiny compressed
   payload can declare an enormous canvas (a decompression bomb the browser/Slack would
   allocate when decoding from the store).

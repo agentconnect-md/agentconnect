@@ -102,11 +102,10 @@
     "fastify-plugin": "^6.0.0",
     "fastify-type-provider-zod": "^7.0.0",
     "fflate": "^0.8.3",
-    "image-size": "^2.0.2",
     "jose": "^6.2.4",
     "lru-cache": "^11.5.2",
     "lucide": "^1.26.0",
-    "sharp": "^0.35.0",
+    "sharp": "^0.35.4",
     "ws": "^8.21.1",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"

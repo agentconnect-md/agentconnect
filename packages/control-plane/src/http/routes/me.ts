@@ -1,17 +1,4 @@
-/**
- * `http/routes/me.ts` — the caller's own profile (C2, root surface like `/orgs`:
- * identity-scoped, outside the org boundary).
- *
- *   GET   /me → the signed-in user's profile
- *   PATCH  /me         → edit the display name. The body schema is STRICT: email
- *                        is immutable on this surface (the OIDC provider owns it).
- *   PUT    /me/picture → upload a custom profile photo when object storage is on.
- *   DELETE /me/picture → restore the OIDC-provider photo.
- *
- * An uploaded photo takes precedence over the OIDC `picture` claim. The latter
- * remains stored separately and becomes visible again when the custom photo is
- * removed, so a later sign-in cannot overwrite a user's explicit choice.
- */
+// The caller's profile and uploaded photo; removing a custom photo restores the OIDC picture.
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -104,7 +91,7 @@ export function meRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         const bytes = req.body as Buffer
-        const validation = validateIconUpload(bytes)
+        const validation = await validateIconUpload(bytes)
         if (!validation.ok) {
           return reply
             .code(validation.status)

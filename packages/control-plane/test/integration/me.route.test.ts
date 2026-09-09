@@ -1,12 +1,4 @@
-/**
- * `/me` — the caller's own profile (root surface, identity-scoped).
- *
- * Under the devAuth stub the principal is the seeded owner. The suite pins the
- * contract the console relies on: the EMAIL IS IMMUTABLE on this surface — the
- * strict body means a request carrying `email` is a 400, not a silent drop.
- * Uploaded profile photos use a separately validated raw-image route and can
- * always be removed to restore the sign-in-provider picture.
- */
+// The caller's profile keeps email immutable and supports replacing or restoring profile photos.
 import { describe, it, expect, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
@@ -22,12 +14,10 @@ interface MeBody {
   pictureUploadEnabled: boolean
 }
 
-// A minimal but dimension-readable 1×1 PNG. The route still runs the real
-// server-side validation; this only avoids browser/canvas involvement in inject.
-const PNG = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
-  0, 0, 0
-])
+const PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4////fwAJ+wP9CNHoHgAAAABJRU5ErkJggg==',
+  'base64'
+)
 
 describe('GET /me', () => {
   it('returns the seeded owner', async () => {

@@ -1,27 +1,9 @@
-/**
- * `icons/icon-validate.ts` — server-side validation for uploaded icons.
- *
- * The client resizes/crops on a `<canvas>` and PUTs the bytes, but that is UNTRUSTED
- * (a caller can POST arbitrary bytes straight at the API). So the CP re-checks every
- * upload independently of the client:
- *  1. MAGIC BYTES → accept only raster PNG / JPEG / WebP. **SVG is rejected** (a script
- *     vector; these bytes are served from a public origin). The sniffed type — not the
- *     caller `Content-Type` — is what gets stored and served.
- *  2. DECODED DIMENSIONS → a valid signature says nothing about pixel size; a tiny
- *     compressed payload can declare enormous dimensions (a decompression bomb that
- *     browsers/Slack would allocate when decoding from the store). Parse the header
- *     dimensions and reject anything past a small cap so decode allocation is bounded.
- *
- * (`X-Content-Type-Options: nosniff` is NOT set here — the object is served directly
- *  from the store, bypassing the CP; that header is enforced at the CDN/bucket edge for
- *  `icon/*`. The stored `Content-Type` above still pins each object to an image type.)
- */
-import { imageSize } from 'image-size'
+// Validate untrusted icon bytes before storage; the CDN enforces nosniff on stored icons.
+import sharp from 'sharp'
 
 /** Hard cap on a stored icon's bytes. The client normalizes to ≤256×256; this backstops it. */
 export const MAX_ICON_BYTES = 512 * 1024
-/** Hard cap on either decoded dimension (px). The client emits 256²; the headroom
- *  tolerates direct/retina uploads while still bounding a decode-bomb allocation. */
+/** Bound decoded dimensions while allowing headroom above the client's 256² icons. */
 export const MAX_ICON_DIM = 512
 
 export type IconContentType = 'image/png' | 'image/jpeg' | 'image/webp'
@@ -66,9 +48,8 @@ export function sniffIconType(bytes: Uint8Array): IconContentType | null {
 export type IconValidation =
   { ok: true; contentType: IconContentType } | { ok: false; status: 413 | 415; message: string }
 
-/** Enforce the byte cap + magic-byte allowlist + decoded-dimension cap. Returns the
- *  sniffed content-type. */
-export function validateIconUpload(bytes: Uint8Array): IconValidation {
+/** Enforce byte, format, and dimension limits before returning the sniffed content-type. */
+export async function validateIconUpload(bytes: Uint8Array): Promise<IconValidation> {
   if (bytes.length === 0) return { ok: false, status: 415, message: 'empty upload' }
   if (bytes.length > MAX_ICON_BYTES) {
     return { ok: false, status: 413, message: `icon exceeds ${MAX_ICON_BYTES} bytes` }
@@ -77,12 +58,10 @@ export function validateIconUpload(bytes: Uint8Array): IconValidation {
   if (!contentType) {
     return { ok: false, status: 415, message: 'unsupported image type (allowed: PNG, JPEG, WebP)' }
   }
-  // Dimensions from the header — the magic bytes above don't bound pixel size, and an
-  // untrusted caller can declare a huge canvas (decompression bomb). Reject unreadable
-  // or over-cap images before they land in the public store.
+  // metadata() reads headers without decoding pixels; enforce our dimension cap below.
   let dims: { width?: number; height?: number }
   try {
-    dims = imageSize(bytes)
+    dims = await sharp(Buffer.from(bytes), { limitInputPixels: false }).metadata()
   } catch {
     return { ok: false, status: 415, message: 'unreadable image header' }
   }

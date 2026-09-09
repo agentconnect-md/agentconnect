@@ -8,10 +8,10 @@ import type { IconStore } from '../../src/icons/icon-store.js'
 import type { BotProfileIconAgent } from '../../src/http/bot-profile-icon.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
-const PNG = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
-  0, 0, 0
-])
+const PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4////fwAJ+wP9CNHoHgAAAABJRU5ErkJggg==',
+  'base64'
+)
 
 let running: HttpApp | undefined
 
