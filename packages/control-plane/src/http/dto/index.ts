@@ -234,6 +234,11 @@ export const DaemonViewDto = z.object({
    *  owns its agents outright. A member serves only what it holds a duty lease for, so this is
    *  what says whether an agent may be pinned here or must be placed on the set. */
   memberSetId: z.string().nullable(),
+  /** Whether an agent may be given a `daemon` placement naming THIS daemon (daemon-groups.md §3).
+   *  False for a member of the install-wide managed pool: the reconciler retires those Pods without
+   *  notice, so a pin outlives what it names — such an agent belongs on the pool itself. An org's
+   *  own machines stay pinnable whether or not they have joined a group. */
+  pinnable: z.boolean(),
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
   sharedWith: z.array(z.string()), // complete app_user.id audience when restricted

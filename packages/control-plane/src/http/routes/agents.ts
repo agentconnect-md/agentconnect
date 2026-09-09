@@ -115,6 +115,8 @@ import { reconcileAgentLinkedDms } from '../../orchestrator/linkedDmReconcile.js
 import { ProtocolError } from '../../domain/errors.js'
 import {
   AGENT_WORKSPACE_INTEGRATION_CONFLICT_MESSAGE,
+  AgentSetPlacementDenied,
+  DaemonPlacementInSet,
   MemoryConnectionBusy,
   MemoryConnectionMissing
 } from '../../persistence/errors.js'
@@ -424,6 +426,18 @@ async function placedOnInstallPool(
   if (target.setId) return target.setId === pool
   if (target.daemonId) return (await deps.repos.memberSet.setIdOf(DaemonId(target.daemonId))) === pool
   return false
+}
+
+/** The write-time placement invariants (daemon-groups.md §2, §3) are asserted inside the
+ *  transaction that writes the placement, so they surface as a throw from any route that
+ *  writes one. Both are caller refusals, not faults — a route that lets one escape answers
+ *  a bare 500. Returns the client-facing message, or null when the error is something else. */
+function placementRefusalMessage(e: unknown): string | null {
+  if (e instanceof DaemonPlacementInSet) {
+    return 'that daemon is a managed pool member, and a pool member is a replaceable identity that an agent may not be pinned to — place the agent on the pool itself instead (placementKind: "pool")'
+  }
+  if (e instanceof AgentSetPlacementDenied) return 'the agent may not be placed on that member set'
+  return null
 }
 
 /** The members of a set that could serve an agent right now. One read; reuse it for a page.
@@ -1821,6 +1835,8 @@ export function agentRoutes(deps: HttpDeps) {
           if (e instanceof OrganizationEnvironmentAdmissionError) {
             return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
           }
+          const refused = placementRefusalMessage(e)
+          if (refused) return conflict(refused)
           throw e
         }
       }
@@ -2803,6 +2819,8 @@ export function agentRoutes(deps: HttpDeps) {
                 app.log.warn({ err, agentId: existing.id }, 'agent move repair failed')
                 return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: err.message })
               }
+              const refusedRepair = placementRefusalMessage(err)
+              if (refusedRepair) return conflict(refusedRepair)
               throw err
             }
           }
@@ -2849,6 +2867,8 @@ export function agentRoutes(deps: HttpDeps) {
             app.log.warn({ err, agentId: existing.id }, 'agent move failed')
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: err.message })
           }
+          const refusedMove = placementRefusalMessage(err)
+          if (refusedMove) return conflict(refusedMove)
           throw err
         } finally {
           // Re-read usage instead of trusting a local "committed" flag: a move
