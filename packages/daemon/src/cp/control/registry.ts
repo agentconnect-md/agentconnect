@@ -1,4 +1,4 @@
-import { memoryEntriesRead } from './memory.js'
+import { memoryEntriesWrite, memoryEntriesRead } from './memory.js'
 import {
   agentActivate,
   agentDetach,
@@ -165,6 +165,7 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['sandbox/keepalive', sandboxKeepAlive],
   ['agent/wake', agentWake],
   ['memory/channels', memoryChannels],
+  ['memory/entries/write/v1', memoryEntriesWrite],
   ['memory/entries/read/v1', memoryEntriesRead],
   ['memory/list', memoryList],
   ['memory/read', memoryRead],

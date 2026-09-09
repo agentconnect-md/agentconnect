@@ -1,5 +1,10 @@
 import { MemoryTransactionReq, MemoryTransactionResult } from './frames/memory-transaction.js'
-import { MemoryEntriesReadReq, MemoryEntriesReadResult } from './frames/memory-entries.js'
+import {
+  MemoryEntriesWriteReq,
+  MemoryEntriesWriteResult,
+  MemoryEntriesReadReq,
+  MemoryEntriesReadResult
+} from './frames/memory-entries.js'
 import { z } from 'zod'
 
 import { AuthReq, AuthOk } from './frames/auth.js'
@@ -423,6 +428,8 @@ export const FRAME_SCHEMAS = {
   'memory/surface/info': MemorySurfaceInfo,
   'memory/record/search': MemoryRecordSearchReq,
   'memory/record/search/page': MemoryRecordSearchPage,
+  'memory/entries/write/v1': MemoryEntriesWriteReq,
+  'memory/entries/write/v1/result': MemoryEntriesWriteResult,
   'memory/entries/read/v1': MemoryEntriesReadReq,
   'memory/entries/read/v1/result': MemoryEntriesReadResult,
   'memory/record/list': MemoryRecordListReq,
@@ -697,6 +704,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('memory/surface/info', FRAME_SCHEMAS['memory/surface/info']),
   frame('memory/record/search', FRAME_SCHEMAS['memory/record/search']),
   frame('memory/record/search/page', FRAME_SCHEMAS['memory/record/search/page']),
+  frame('memory/entries/write/v1', FRAME_SCHEMAS['memory/entries/write/v1']),
+  frame('memory/entries/write/v1/result', FRAME_SCHEMAS['memory/entries/write/v1/result']),
   frame('memory/entries/read/v1', FRAME_SCHEMAS['memory/entries/read/v1']),
   frame('memory/entries/read/v1/result', FRAME_SCHEMAS['memory/entries/read/v1/result']),
   frame('memory/record/list', FRAME_SCHEMAS['memory/record/list']),

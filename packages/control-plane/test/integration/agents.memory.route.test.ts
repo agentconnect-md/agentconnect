@@ -707,3 +707,115 @@ it('reads refs returned by listing through the full HTTP router up to the contra
   }
   expect(seen).toEqual(entries.map((entry) => entry.ref))
 })
+
+it('proxies canonical admin mutations and preserves conflict/ambiguous/size refusals', async () => {
+  await seedDaemon(prisma, DAEMON)
+  await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+  const calls: import('@agentconnect.md/protocol').MemoryEntriesWriteReq[] = []
+  let error: import('@agentconnect.md/protocol').MemoryEntryErrorCode | undefined
+  const control = {
+    async memoryEntriesWrite(
+      _daemon: string,
+      req: import('@agentconnect.md/protocol').MemoryEntriesWriteReq
+    ): Promise<import('@agentconnect.md/protocol').MemoryEntriesWriteResult> {
+      calls.push(req)
+      if (error) return { operation: 'error', code: error, message: 'refused', currentRevision: 'current' }
+      return { operation: 'completed', result: { operationId: randomUUID(), state: 'completed' } }
+    }
+  }
+  running = buildHttpApp(prisma, undefined, LIVE, control as unknown as ControlSender)
+  const url = `${ORG}/agents/${AGENT}/memory/entries?channelKey=channel-a`
+  for (const [method, operation, payload] of [
+    ['POST', 'create', { label: 'topic', text: 'hello' }],
+    ['PATCH', 'update', { ref: 'opaque-ref', revision: 'old', edit: { oldText: 'hello', newText: '' } }],
+    ['DELETE', 'delete', { ref: 'opaque-ref', revision: 'old' }]
+  ] as const) {
+    const response = await running.app.inject({ method, url, payload })
+    expect(response.statusCode).toBe(200)
+    expect(calls.at(-1)).toEqual({ agentId: AGENT, channelKey: 'channel-a', operation, request: payload })
+  }
+  for (const [code, status] of [
+    ['CONFLICT', 409],
+    ['AMBIGUOUS_WRITE', 503],
+    ['TOO_LARGE', 413],
+    ['UNSUPPORTED', 501]
+  ] as const) {
+    error = code
+    const response = await running.app.inject({
+      method: 'DELETE',
+      url,
+      payload: { ref: 'opaque-ref', revision: 'old' }
+    })
+    expect(response.statusCode).toBe(status)
+    expect(response.json()).toMatchObject({ code, currentRevision: 'current' })
+  }
+  const before = calls.length
+  expect((await running.app.inject({ method: 'POST', url, payload: { text: 'x', source: 'tool' } })).statusCode).toBe(
+    400
+  )
+  expect(
+    (
+      await running.app.inject({
+        method: 'PATCH',
+        url,
+        payload: { ref: 'opaque-ref', text: 'x', edit: { oldText: 'x', newText: 'y' } }
+      })
+    ).statusCode
+  ).toBe(400)
+  expect(
+    (
+      await running.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents/${randomUUID()}/memory/entries`,
+        payload: { text: 'x' }
+      })
+    ).statusCode
+  ).toBe(404)
+  expect(calls).toHaveLength(before)
+})
+
+it('refuses viewer mutations before daemon I/O', async () => {
+  const { PgUserRepo } = await import('../../src/persistence/repositories/user.repo.js')
+  const users = new PgUserRepo(prisma)
+  const email = `memory-viewer-${randomUUID()}@acme.dev`
+  const { userId } = await users.provisionOidcUser({ oidcSubject: email, email, emailVerified: true })
+  await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'viewer')
+  await seedDaemon(prisma, DAEMON)
+  await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+  let calls = 0
+  const control = {
+    async memoryEntriesWrite() {
+      calls++
+      throw new Error('must not write')
+    },
+    async memoryEntriesRead(): Promise<import('@agentconnect.md/protocol').MemoryEntriesReadResult> {
+      return {
+        operation: 'describe',
+        result: {
+          version: 1,
+          operations: ['list', 'get', 'create', 'update', 'delete'],
+          supportedScopes: ['agent'],
+          writeConsistency: 'conditional',
+          exactCreate: true,
+          exactEdit: true,
+          enumeration: 'live',
+          graph: false,
+          limits: { maxItemBytes: 256000, maxPageItems: 100, maxMutationRequestBytes: 196608 }
+        }
+      }
+    }
+  }
+  running = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId }, LIVE, control as unknown as ControlSender)
+  for (const [method, payload] of [
+    ['POST', { text: 'x' }],
+    ['PATCH', { ref: 'opaque-ref', text: 'x' }],
+    ['DELETE', { ref: 'opaque-ref' }]
+  ] as const)
+    expect(
+      (await running.app.inject({ method, url: `${ORG}/agents/${AGENT}/memory/entries`, payload })).statusCode
+    ).toBe(403)
+  expect(calls).toBe(0)
+  const capabilities = await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/capabilities` })
+  expect(capabilities.statusCode).toBe(200)
+  expect(capabilities.json()).toMatchObject({ operations: ['list', 'get'], exactCreate: false, exactEdit: false })
+})

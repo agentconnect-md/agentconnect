@@ -17,7 +17,11 @@ export const MemoryEntryCapabilities = z
     exactCreate: z.boolean(),
     enumeration: z.enum(['snapshot', 'live', 'unavailable']),
     graph: z.boolean(),
-    limits: z.object({ maxItemBytes: z.number().int().positive(), maxPageItems: z.number().int().min(1).max(100) })
+    limits: z.object({
+      maxMutationRequestBytes: z.number().int().positive().optional(),
+      maxItemBytes: z.number().int().positive(),
+      maxPageItems: z.number().int().min(1).max(100)
+    })
   })
   .strict()
 export type MemoryEntryCapabilities = z.infer<typeof MemoryEntryCapabilities>

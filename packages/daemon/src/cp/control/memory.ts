@@ -1,4 +1,6 @@
 import type {
+  MemoryEntriesWriteReq,
+  MemoryEntriesWriteResult,
   MemoryEntriesReadReq,
   MemoryEntriesReadResult,
   AnyFrame,
@@ -29,6 +31,7 @@ import type { ControlHandler, ControlWire } from './context.js'
 
 export interface MemoryControlDeps {
   /** Read/write seam over the agents' memory dirs (`<agent-root>/memory/`, §1/§12). */
+  memoryEntriesWrite?: (req: MemoryEntriesWriteReq) => Promise<MemoryEntriesWriteResult>
   memoryEntriesRead?: (req: MemoryEntriesReadReq) => Promise<MemoryEntriesReadResult>
   memoryReader: MemoryReader
 }
@@ -160,4 +163,11 @@ export const memoryEntriesRead: ControlHandler<MemoryControlDeps> = async (frame
     ? await deps.memoryEntriesRead(frame.payload as MemoryEntriesReadReq)
     : { operation: 'error', code: 'UNSUPPORTED', message: 'memory entry reads are unavailable' }
   wire.reply(frame, 'memory/entries/read/v1/result', result)
+}
+
+export const memoryEntriesWrite: ControlHandler<MemoryControlDeps> = async (frame, deps, wire) => {
+  const result = deps.memoryEntriesWrite
+    ? await deps.memoryEntriesWrite(frame.payload as MemoryEntriesWriteReq)
+    : { operation: 'error', code: 'UNSUPPORTED', message: 'unified memory writes are unavailable' }
+  wire.reply(frame, 'memory/entries/write/v1/result', result)
 }

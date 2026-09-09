@@ -404,3 +404,31 @@ staged-root provenance, and adoption checks cannot be bypassed.
 Admin HTTP mutation transport and UI remain separate follow-up work. This MCP
 projection does not send large mutation bodies in the bounded daemon/CP read frame;
 the controlled writer continues using staged chunks and atomic home publication.
+
+### Admin conditional mutation projection
+
+The authorized BFF exposes `POST`, `PATCH`, and `DELETE` on
+`/agents/:id/memory/entries`, with the canonical create/update/delete body and an
+optional `channelKey` query. Update/delete carry the opaque `ref` in the body.
+Agent visibility and edit authorization run before dispatch; read-only callers
+also receive capabilities and entry summaries with write operations/editability
+removed. The daemon independently rechecks agent ownership and duty before
+resolving the active home. Console provenance is trusted server input, never a
+field the HTTP caller can choose.
+
+`memory-entries-write-v1` negotiates the new `memory/entries/write/v1` request and
+result. The first transport supports JSON requests up to 192 KiB, measured after
+normalizing the `{ agentId, channelKey?, operation, request }` payload and including
+JSON escaping. `limits.maxMutationRequestBytes` advertises that separate transport
+budget; `maxItemBytes` remains the provider's stored-content budget. CP refuses
+oversized mutations with `TOO_LARGE`/HTTP 413 before sending, leaving envelope
+headroom under the 256 KiB connection cap. The daemon repeats this check. This
+initial transport does not support all maximum-size stored documents; a future
+chunked admin upload may lift this limit. Home publication itself remains staged
+and atomic.
+
+An uncertain reply after dispatch returns `AMBIGUOUS_WRITE`/503 without replay.
+Clients must inspect current state before deciding whether to issue a new write;
+HTTP retries are not idempotency keys. Confirmed conditional conflicts retain
+`currentRevision` where known. Legacy file and record routes remain available.
+The console UI and catalog-refresh integration are subsequent slices.
