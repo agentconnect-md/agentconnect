@@ -71,10 +71,10 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   }
   const scopeDir = realpathSync(resolve(opts.scopeDir))
   const hostEnv = opts.stateSourceEnv ?? process.env
-  let runtimeHome =
-    opts.hostKey && hostKeySessionKey(opts.hostKey) !== undefined
-      ? join(scopeDir, SESSIONS_DIR, hostKeyDirName(opts.hostKey), 'home')
-      : privateRuntimeHomeFor(scopeDir, undefined)
+  let runtimeHome = privateRuntimeHomeFor(scopeDir, opts.hostKey)
+  if (opts.hostKey && hostKeySessionKey(opts.hostKey) !== undefined && runtimeHome === join(scopeDir, 'home')) {
+    runtimeHome = join(scopeDir, 'runtime-homes', hostKeyDirName(opts.hostKey), 'home')
+  }
   const sessionDir = opts.trustedSessionDir ? realpathSync(opts.trustedSessionDir) : undefined
   if (sessionDir) {
     const parts = relative(scopeDir, sessionDir).split(sep)
@@ -209,7 +209,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
       ...(sessionDir
         ? { sessionGitMetadataRoots: gitMetadataWriteRoots }
         : { writableGitMetadataRoots: gitMetadataWriteRoots }),
-      ...(sessionDir ? { sessionHomeRoot: runtimeHome } : {}),
+      ...(sessionDir || (opts.hostKey && hostKeySessionKey(opts.hostKey)) ? { sessionHomeRoot: runtimeHome } : {}),
       sharedWriteRoots,
       allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true,
       disableUnifiedExec: true

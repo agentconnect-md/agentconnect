@@ -193,10 +193,23 @@ describe('prepareMicrosandboxLaunch', () => {
     const cwd = join(opts.scopeDir, 'memory', 'extraction', 'input')
     mkdirSync(cwd, { recursive: true })
     const launch = prepareMicrosandboxLaunch({ ...opts, cwd, hostKey })
-    const home = join(opts.scopeDir, 'sessions', hostKeyDirName(hostKey), 'home')
+    const home = join(opts.scopeDir, 'runtime-homes', hostKeyDirName(hostKey), 'home')
     expect(launch.runtimeHome).toBe(home)
     expect(launch.microsandbox.mounts).toContainEqual({ source: home, target: home, readOnly: false })
     expect(launch.microsandbox.mounts.some((mount) => mount.source === dirname(home))).toBe(false)
+    expect(existsSync(join(opts.scopeDir, 'sessions'))).toBe(false)
+  })
+
+  it('gives shared-workspace sessions separate homes without creating isolated workspace directories', () => {
+    const opts = fixture()
+    const first = prepareMicrosandboxLaunch({ ...opts, hostKey: sessionHostKey('agent', 'first') })
+    const second = prepareMicrosandboxLaunch({ ...opts, hostKey: sessionHostKey('agent', 'second') })
+    expect(first.runtimeHome).not.toBe(second.runtimeHome)
+    for (const launch of [first, second]) {
+      expect(launch.microsandbox.mounts).toContainEqual({ source: opts.cwd, target: opts.cwd, readOnly: false })
+    }
+    expect(first.microsandbox.mounts.some(({ target }) => target === second.runtimeHome)).toBe(false)
+    expect(existsSync(join(opts.scopeDir, 'sessions'))).toBe(false)
   })
 
   it('preserves the host Git helper and protects its guest alias and nested Git config as read-only mounts', () => {

@@ -105,6 +105,21 @@ function makeRoutable(daemon: Daemon): void {
   })
 }
 
+function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
+  const manager = {
+    environmentIds: vi.fn(async () => environments),
+    suspend: vi.fn(async () => {}),
+    suspendIdle: vi.fn(async () => {}),
+    stopAll: vi.fn(async () => {}),
+    discard: vi.fn(async () => {})
+  }
+  ;(daemon as any).cfg.sandbox.backend = 'microsandbox'
+  ;(daemon as any).microsandbox = manager
+  ;(daemon as any).microsandboxCatalog = (daemon as any).runtimeCatalog
+  ;(daemon as any).microsandboxTable = { mcpBridge: { command: 'node', args: ['/image/mcp-bridge.js'] } }
+  return manager
+}
+
 const dm = (ts: string, text: string, thread: string) => ({
   msgId: `slack:C1:${ts}`,
   traceId: ts,
@@ -253,6 +268,76 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect(privateRuntimeHomeFor(agentDir, sessionHostKey('bot-a', KEY('T1')))).toBe(join(agentDir, 'home'))
     expect(existsSync(join(agentDir, 'sessions'))).toBe(false)
     await daemon.stop()
+  })
+
+  it('gives new microsandbox sessions separate hosts while keeping their shared workspace', async () => {
+    const root = scaffold({}, 'shared')
+    const { daemon, hosts, factory } = await startDaemon(root)
+    useMicrosandbox(daemon)
+    try {
+      await (daemon as any).hydrateMicrosandboxSessions()
+      await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+      await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+      expect(factory).toHaveBeenCalledTimes(2)
+      for (const [index, thread] of ['T1', 'T2'].entries()) {
+        const key = sessionHostKey('bot-a', KEY(thread))
+        expect((daemon as any).hosts.get(key)).toBe(hosts[index])
+        expect((daemon as any).hostLaunch.get(key).cwd).toBe(join(root, 'agents', 'bot-a', 'workspace'))
+      }
+      await (daemon as any).stopHost('bot-a')
+      await (daemon as any).dispatch('bot-a', dm('300', 'resume', 'T1'), 'int-a')
+      expect(hosts[2]!.loadSession).toHaveBeenCalled()
+      expect(hosts[2]!.newSession).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('preserves legacy shared VM sessions through restart and retires that VM only with its last session', async () => {
+    const root = scaffold({}, 'shared')
+    const { daemon, hosts } = await startDaemon(root)
+    try {
+      await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+      await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+      await (daemon as any).stopHost('bot-a')
+      const environments = ['bot-a/agent']
+      const manager = useMicrosandbox(daemon, environments)
+      await (daemon as any).hydrateMicrosandboxSessions()
+      await (daemon as any).dispatch('bot-a', dm('300', 'resume', 'T1'), 'int-a')
+      expect((daemon as any).hosts.get(agentHostKey('bot-a'))).toBe(hosts[1])
+      expect(hosts[1]!.loadSession).toHaveBeenCalled()
+      await (daemon as any).dispatch('bot-a', dm('400', 'new', 'T3'), 'int-a')
+      const fresh = sessionHostKey('bot-a', KEY('T3'))
+      expect((daemon as any).hosts.get(fresh)).toBe(hosts[2])
+      environments.push(`bot-a/${hostKeyDirName(fresh)}`)
+      await (daemon as any).hydrateMicrosandboxSessions()
+      expect((daemon as any).hostKeyFor('bot-a', KEY('T1'))).toBe(agentHostKey('bot-a'))
+      expect((daemon as any).hostKeyFor('bot-a', KEY('T3'))).toBe(fresh)
+
+      const store = (daemon as any).store
+      const expire = async (thread: string) => {
+        await store.db.prepare('UPDATE sessions SET updatedAt = ? WHERE key = ?').run(1, KEY(thread))
+        await (daemon as any).sweepExpiredSessions()
+        expect(await store.getSession(KEY(thread))).toBeUndefined()
+      }
+      await expire('T1')
+      expect(manager.discard).not.toHaveBeenCalledWith('bot-a/agent')
+      await expire('T2')
+      expect(manager.discard).toHaveBeenCalledWith('bot-a/agent')
+      expect(hosts[2]!.stop).not.toHaveBeenCalled()
+      const home = join(root, 'agents', 'bot-a', 'runtime-homes', hostKeyDirName(fresh), 'home')
+      mkdirSync(home, { recursive: true })
+      manager.discard.mockRejectedValueOnce(new Error('disk is still busy'))
+      await store.db.prepare('UPDATE sessions SET updatedAt = ? WHERE key = ?').run(1, KEY('T3'))
+      await (daemon as any).sweepExpiredSessions()
+      expect(await store.getSession(KEY('T3'))).toBeDefined()
+      expect(existsSync(home)).toBe(true)
+      await expire('T3')
+      expect(manager.discard).toHaveBeenCalledWith(`bot-a/${hostKeyDirName(fresh)}`)
+      expect(existsSync(home)).toBe(false)
+    } finally {
+      await daemon.stop()
+    }
   })
 
   // A session is served in the tier it was BORN in (§11): its clones record that, so losing the
