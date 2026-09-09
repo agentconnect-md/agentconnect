@@ -53,7 +53,7 @@ export class CuratedRuntimeAdmission {
   probeCandidates(catalog: ResolvedRuntimeCatalog): Record<string, RuntimeDef> {
     const candidates: Record<string, RuntimeDef> = {}
     for (const [id, entry] of Object.entries(catalog.entries)) {
-      if (entry.source === 'curated' && this.status(id, entry.source) === 'pending') {
+      if (!entry.aliasOf && entry.source === 'curated' && this.status(id, entry.source) === 'pending') {
         candidates[id] = entry.runtime
       }
     }
@@ -68,13 +68,17 @@ export class CuratedRuntimeAdmission {
    * warning — the runtime goes back to `pending` and is re-probed instead. */
   authRequiredIds(catalog: ResolvedRuntimeCatalog): string[] {
     return Object.entries(catalog.entries)
-      .filter(([id, entry]) => entry.source === 'curated' && this.fresh(id)?.result.authRequired === true)
+      .filter(
+        ([id, entry]) => entry.source === 'curated' && this.fresh(entry.aliasOf ?? id)?.result.authRequired === true
+      )
       .map(([id]) => id)
   }
 
   filterCatalog(catalog: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
     const entries = Object.fromEntries(
-      Object.entries(catalog.entries).filter(([id, entry]) => this.status(id, entry.source) === 'verified')
+      Object.entries(catalog.entries).filter(
+        ([id, entry]) => this.status(entry.aliasOf ?? id, entry.source) === 'verified'
+      )
     )
     return {
       entries,

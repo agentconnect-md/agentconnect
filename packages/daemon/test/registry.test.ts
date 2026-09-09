@@ -239,6 +239,35 @@ describe('resolveRuntimes', () => {
 })
 
 describe('curated native ACP runtimes', () => {
+  it('resolves the registry Qoder id to the installed native runtime identity', async () => {
+    const registry = {
+      agents: [
+        {
+          id: 'qoder',
+          name: 'Qoder CLI',
+          version: '0.2.14',
+          distribution: { npx: { package: '@qoder-ai/qodercli@0.2.14', args: ['--acp'] } }
+        }
+      ]
+    }
+    const fetchImpl = (async () => new Response(JSON.stringify(registry))) as typeof fetch
+    const catalog = await resolveRuntimeCatalog({} as any, tmpRoot(), { fetchImpl })
+
+    expect(catalog.entries.qoder).toEqual({ ...catalog.entries['qoder-cli'], aliasOf: 'qoder-cli' })
+    expect(catalog.runtimes.qoder).toBe(catalog.runtimes['qoder-cli'])
+    expect(catalog.runtimes.qoder!.command).toBe('qodercli')
+  })
+
+  it.each(['qoder', 'qoder-cli'])('keeps an explicit %s definition independent', async (id) => {
+    const runtime = { command: 'custom-runtime', args: [], env: [] }
+    const fetchImpl = (async () => new Response(JSON.stringify({ agents: [] }))) as typeof fetch
+    const catalog = await resolveRuntimeCatalog({ runtimes: { [id]: runtime } } as any, tmpRoot(), { fetchImpl })
+
+    expect(catalog.entries[id]).toMatchObject({ source: 'user', runtime })
+    expect(catalog.entries[id]?.aliasOf).toBeUndefined()
+    expect(catalog.entries.qoder?.aliasOf).toBeUndefined()
+  })
+
   it('declares the ten reviewed native ACP commands', () => {
     expect(CURATED_RUNTIME_CATALOG).toEqual({
       'hermes-agent': {

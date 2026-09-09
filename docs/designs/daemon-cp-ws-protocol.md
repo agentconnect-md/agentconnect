@@ -509,6 +509,7 @@ Uses an observed runtime-profile pattern. The daemon reports the **observed capa
 
 ```ts
 const FactsRuntimeProfile = z.object({
+  aliasOf: z.string().optional(), // compatibility id sharing another runtime's observed state
   runtime: z.string(), // "claude" / "codex" / ...
   version: z.string(),
   models: z.array(z.string()),

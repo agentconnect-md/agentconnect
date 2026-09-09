@@ -20,7 +20,8 @@ import {
   poolLabel,
   preferredModelFor,
   imageBinaryMissingRuntimeIds,
-  loginRequiredRuntimeIds
+  loginRequiredRuntimeIds,
+  selectableRuntimeIds
 } from '@/lib/data'
 import type { DaemonRow } from '@/lib/data'
 import type { AgentPlacementTarget, DaemonConnectDto } from '@/lib/api'
@@ -487,7 +488,9 @@ function WhereStep({
 // daemon's reported profiles (else the static fallback), models from the chosen
 // runtime's profile.
 function useRuntimeModel(daemon?: DaemonRow, initial?: { runtime?: string; model?: string }) {
-  const runtimeIds = daemon ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
+  // Preserve an existing preset's runtime and any explicit selection across daemon changes.
+  const [runtime, setRuntime] = useState(initial?.runtime ?? '')
+  const runtimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : FALLBACK_RUNTIME_IDS
   // Logged-out runtimes are marked, not blocked; the default just prefers a signed-in one.
   const runtimesNeedingLogin = daemon ? loginRequiredRuntimeIds(daemon) : []
   const runtimesMissingImageBinary = imageBinaryMissingRuntimeIds(daemon)
@@ -495,8 +498,6 @@ function useRuntimeModel(daemon?: DaemonRow, initial?: { runtime?: string; model
     runtimeIds.find((id) => !runtimesNeedingLogin.includes(id) && !runtimesMissingImageBinary.includes(id)) ??
     runtimeIds[0] ??
     ''
-  // Seeded from the agent's current config (a pool-born preset has one); '' = untouched.
-  const [runtime, setRuntime] = useState(initial?.runtime ?? '')
   const effectiveRuntime = runtime && runtimeIds.includes(runtime) ? runtime : defaultRuntime
   const models = daemon?.runtimeModels.find((r) => r.runtime === effectiveRuntime)?.models ?? []
   const [model, setModel] = useState(initial?.model ?? '')

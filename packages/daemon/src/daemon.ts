@@ -3754,7 +3754,8 @@ export class Daemon {
   } {
     if (!this.microsandbox)
       throw new Error(`microsandbox unavailable: ${this.microsandboxFailure ?? 'not initialized'}`)
-    const runtime = this.microsandboxCatalog?.runtimes[agent.runtime]
+    const runtimeEntry = this.microsandboxCatalog?.entries[agent.runtime]
+    const runtime = runtimeEntry?.runtime
     if (!runtime) throw new Error(`runtime "${agent.runtime}" is not provided by the microsandbox image`)
     const placement = this.microsandboxPlacement(agent, cwd, key)
     const github = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
@@ -3773,7 +3774,7 @@ export class Daemon {
           )
         : undefined
     const launch = prepareMicrosandboxLaunch({
-      runtimeId: agent.runtime,
+      runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       runtime,
       scopeDir: agent.dir,
       cwd: placement.trustedSessionDir ?? (key && hostKeySessionKey(key) ? cwd : agent.workspace.path),
@@ -4532,7 +4533,7 @@ export class Daemon {
     const catalog = micro ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
     const runtimeEntry = catalog?.entries[agent.runtime]
     if (runtimeEntry?.source === 'curated') {
-      this.curatedRuntimeAdmission.assertLaunch(agent.runtime, runtimeEntry.source)
+      this.curatedRuntimeAdmission.assertLaunch(runtimeEntry.aliasOf ?? agent.runtime, runtimeEntry.source)
     }
     // The hostFactory seam must obey the same static external-memory admission
     // gate as a real ACP child; otherwise tests/custom embedders could start an
@@ -4698,7 +4699,7 @@ export class Daemon {
               }
             }
           : {}),
-        runtimeId: agent.runtime,
+        runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
         runtime,
         provider: memoryKindOf(agent),
         scopeDir: agent.dir,
@@ -4815,7 +4816,7 @@ export class Daemon {
           }
         : {}),
       inheritProcessEnv: launch.inheritProcessEnv,
-      runtimeId: agent.runtime,
+      runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       isolateAccountApps: cfg.security.isolateAccountApps,
       sandbox: launch.sandbox,
       toolSandbox: launch.toolSandbox,
@@ -18625,7 +18626,9 @@ export class Daemon {
     const plane = this.k8sPlane
     if (!plane) return []
     this.refreshAdmittedRuntimes()
-    const runtimes = this.runtimes
+    const runtimes = Object.fromEntries(
+      Object.entries(this.runtimes).filter(([id]) => !this.runtimeCatalog.entries[id]?.aliasOf)
+    )
     if (Object.keys(runtimes).length === 0) return []
     this.log.info(`probe: reading models from the sandbox for ${Object.keys(runtimes).join(', ')}`)
     const results = await probeClusterRuntimes({

@@ -50,6 +50,7 @@ function normMcpServers(raw: unknown): FactsMcpServer[] {
 function toProfileView(p: RuntimeProfileRecord): DaemonRuntimeProfile {
   return {
     runtime: p.runtime,
+    aliasOf: p.aliasOf ?? null,
     version: p.version,
     hostVersion: p.hostVersion ?? null,
     hostAvailable: p.hostAvailable ?? null,

@@ -14,6 +14,7 @@ import {
   groupPlacementValue,
   imageBinaryMissingRuntimeIds,
   loginRequiredRuntimeIds,
+  selectableRuntimeIds,
   agentSlugFinalize,
   agentSlugSanitize,
   effortChoicesFor,
@@ -331,7 +332,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     sandboxRequired
   })
   // A selected daemon's reported profiles are authoritative, including an empty list.
-  const runtimeIds = daemon ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
+  const runtimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : FALLBACK_RUNTIME_IDS
   // Runtimes the daemon reports as logged out. Marked in the picker, never blocked —
   // creating on one is a supported state (docs/designs/preset-agents.md §3.2).
   const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)

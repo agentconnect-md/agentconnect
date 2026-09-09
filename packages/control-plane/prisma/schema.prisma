@@ -640,6 +640,7 @@ model RuntimeProfile {
   id                    String     @id @default(cuid())
   daemonId              String     @db.Uuid
   runtime               String // "claude" / "codex"
+  aliasOf               String?
   version               String
   hostVersion           String?
   hostAvailable         Boolean?

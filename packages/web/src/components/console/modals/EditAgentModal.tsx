@@ -8,6 +8,7 @@ import {
   FALLBACK_RUNTIME_IDS,
   imageBinaryMissingRuntimeIds,
   loginRequiredRuntimeIds,
+  selectableRuntimeIds,
   fastModeAvailableFor,
   modelCapability,
   modelOptionsFor,
@@ -470,7 +471,7 @@ export default function EditAgentModal({
   const sourceBlocksSafeMove = daemonChanged && sourceUnavailable && !forceMove
 
   // Preserve the configured runtime while keeping the selected daemon's reported choices authoritative.
-  const reportedRuntimeIds = daemon?.runtimeModels.map((r) => r.runtime) ?? []
+  const reportedRuntimeIds = daemon ? selectableRuntimeIds(daemon, runtime) : []
   const runtimeIds = daemon ? reportedRuntimeIds : FALLBACK_RUNTIME_IDS
   const runtimeOptions = runtime && !runtimeIds.includes(runtime) ? [runtime, ...runtimeIds] : runtimeIds
   // Runtimes the daemon reports as logged out — marked in the picker, never blocked.

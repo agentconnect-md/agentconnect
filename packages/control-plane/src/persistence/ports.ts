@@ -4936,6 +4936,7 @@ export interface RuntimeProfileRecord {
   id: string
   daemonId: DaemonId
   runtime: string
+  aliasOf?: string | null
   version: string
   models: string[]
   contextWindow: number | null

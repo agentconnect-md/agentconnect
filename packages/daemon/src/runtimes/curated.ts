@@ -38,9 +38,7 @@ export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntr
     name: 'Oh My Pi',
     runtime: { command: 'omp', args: ['acp'], env: [] }
   },
-  // Qoder CLI launches its ACP server via a `--acp` flag (not an `acp`
-  // subcommand). Distributed as @qoder-ai/qodercli; the `qodercli` binary is on
-  // PATH once installed globally.
+  // Qoder CLI launches its ACP server through the native `qodercli --acp` command.
   'qoder-cli': {
     name: 'Qoder CLI',
     runtime: { command: 'qodercli', args: ['--acp'], env: [], skillsAgentId: 'qoder' }

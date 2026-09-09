@@ -1044,6 +1044,7 @@ export interface RuntimeModelCatalogDto {
 // is the list the console offers per (machine, runtime) in the create-agent picker.
 export interface RuntimeProfileDto {
   runtime: string
+  aliasOf?: string | null
   version: string
   models: string[]
   contextWindow: number | null
@@ -2176,6 +2177,7 @@ export function withDaemonCapability(row: DaemonRow, cap: DaemonCapabilityDto | 
     caps: cap.capabilities,
     runtimeModels: cap.runtimeProfiles.map((p) => ({
       runtime: p.runtime,
+      aliasOf: p.aliasOf ?? null,
       version: p.version,
       hostVersion: p.hostVersion ?? null,
       hostAvailable: p.hostAvailable ?? null,
@@ -2227,6 +2229,7 @@ export function daemonFromDto(
     // Per-runtime available models, observed from the daemon's runtime profiles.
     runtimeModels: (d.runtimeProfiles ?? []).map((p) => ({
       runtime: p.runtime,
+      aliasOf: p.aliasOf ?? null,
       version: p.version,
       hostVersion: p.hostVersion ?? null,
       hostAvailable: p.hostAvailable ?? null,

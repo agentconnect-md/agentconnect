@@ -44,6 +44,7 @@ export interface ResolvedRuntimeEntry {
   source: RuntimeSource
   name: string
   version: string
+  aliasOf?: string
   /** Audited skills CLI identity; absent means this harness has not passed the
    * skill-discovery compatibility admission. */
   skillsAgentId: string | null
@@ -256,6 +257,11 @@ export async function resolveRuntimeCatalog(
   }
   for (const [id, runtime] of Object.entries(userRuntimes)) {
     entries[id] = resolvedRuntimeEntry(id, runtime, 'user', id, '')
+  }
+
+  // The registry's Qoder id names the same native CLI; explicit definitions remain independent.
+  if (!userRuntimes.qoder && !userRuntimes['qoder-cli']) {
+    entries.qoder = { ...entries['qoder-cli']!, aliasOf: 'qoder-cli' }
   }
 
   // The legacy explicit id is an operator override for the canonical automatic

@@ -172,7 +172,7 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
     expect(stub.lastSent('error')).toBeUndefined()
   })
 
-  it('keeps auth and missing-image warnings independent and clears omitted status', async () => {
+  it('keeps alias and availability facts independent and clears omitted status', async () => {
     const h = buildWsHarness(prisma)
     const { stub } = await connectReady(h)
     const repo = new PgRuntimeProfileRepo(prisma)
@@ -183,6 +183,7 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
       runtimes: [
         {
           ...profile('claude-acp'),
+          aliasOf: 'native-claude',
           hostVersion: '2.0.0',
           hostAvailable: true,
           credentialsConfigured: false,
@@ -193,6 +194,7 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
     })
     await vi.waitFor(async () => {
       expect((await repo.forDaemon(DaemonId(DAEMON)))[0]).toMatchObject({
+        aliasOf: 'native-claude',
         authRequired: true,
         hostVersion: '2.0.0',
         hostAvailable: true,
@@ -206,6 +208,7 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
     stub.inject('facts/daemon-runtimes', { runtimes: [profile('claude-acp')] })
     await vi.waitFor(async () => {
       expect((await repo.forDaemon(DaemonId(DAEMON)))[0]).toMatchObject({
+        aliasOf: null,
         authRequired: false,
         hostVersion: null,
         hostAvailable: null,

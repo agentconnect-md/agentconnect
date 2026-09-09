@@ -44,6 +44,7 @@ export function barColor(pct: number): string {
 /** A runtime as a whole SET offers it, aggregated over its serving members. */
 export interface FleetRuntime {
   runtime: string
+  aliases?: string[]
   version: string
   /** Members disagree on the version, so there is no single one to quote. */
   versionsDiffer?: boolean
@@ -108,11 +109,12 @@ export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
   const described = new Map<string, Array<Record<string, { name?: string; description?: string }>>>()
   for (const m of members) {
     for (const rt of m.runtimeModels) {
-      described.set(rt.runtime, [...(described.get(rt.runtime) ?? []), modelInfoOf(rt)])
-      const prev = byId.get(rt.runtime)
+      const id = rt.aliasOf ?? rt.runtime
+      described.set(id, [...(described.get(id) ?? []), modelInfoOf(rt)])
+      const prev = byId.get(id)
       if (!prev) {
-        byId.set(rt.runtime, {
-          runtime: rt.runtime,
+        byId.set(id, {
+          runtime: id,
           version: rt.version,
           models: [...rt.models],
           authRequired: rt.authRequired === true,
@@ -126,8 +128,18 @@ export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
       prev.unavailableReason ??= rt.unavailableReason
     }
   }
-  for (const rt of byId.values()) rt.modelInfo = consensusModelInfo(described.get(rt.runtime) ?? [])
+  for (const rt of byId.values()) {
+    rt.modelInfo = consensusModelInfo(described.get(rt.runtime) ?? [])
+    const aliases = runtimeAliases(members, rt.runtime)
+    if (aliases.length) rt.aliases = aliases
+  }
   return [...byId.values()]
+}
+
+function runtimeAliases(members: readonly DaemonRow[], id: string): string[] {
+  return [
+    ...new Set(members.flatMap((member) => member.runtimeModels.filter((r) => r.aliasOf === id).map((r) => r.runtime)))
+  ]
 }
 
 /**
@@ -146,13 +158,16 @@ export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[]
   if (!first) return []
   const out: FleetRuntime[] = []
   for (const rt of first.runtimeModels) {
+    if (rt.aliasOf) continue
     const peers = rest.map((m) => m.runtimeModels.find((other) => other.runtime === rt.runtime))
     // One member without it is enough to make it unavailable to the group.
     if (peers.some((peer) => peer === undefined)) continue
     const all = [rt, ...peers.filter((peer) => peer !== undefined)]
     const versions = new Set(all.map((peer) => peer.version).filter(Boolean))
+    const aliases = runtimeAliases(members, rt.runtime)
     out.push({
       runtime: rt.runtime,
+      ...(aliases.length ? { aliases } : {}),
       version: versions.size === 1 ? [...versions][0]! : '',
       versionsDiffer: versions.size > 1,
       models: rt.models.filter((model) => all.every((peer) => peer.models.includes(model))),
@@ -433,7 +448,9 @@ export function FleetRuntimesCard({
             const label = runtimeLabel(rt.runtime, meta?.name)
             // Id namespaces differ across daemon generations ('claude' vs 'claude-acp'),
             // so agents match on the display family rather than the raw id.
-            const users = agents.filter((a) => a.runtime === rt.runtime || runtimeLabel(a.runtime) === label)
+            const users = agents.filter(
+              (a) => a.runtime === rt.runtime || rt.aliases?.includes(a.runtime) || runtimeLabel(a.runtime) === label
+            )
             const usage = users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'
             const version = rt.versionsDiffer ? 'mixed' : rt.version ? `v${rt.version.replace(/^v/, '')}` : null
             const hasModels = rt.models.length > 0
