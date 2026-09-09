@@ -13,8 +13,8 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { home as hostHomeDir, runtimeStateLocations } from './probe.js'
 import { extractOmpCredentials } from './omp-credentials.js'
+import { MAX_SEED_FILE_BYTES } from './runtime-seeded-credentials.js'
 
-const MAX_SEED_FILE_BYTES = 2 * 1024 * 1024
 const LEGACY_RUNTIME_STATE: Record<string, string[]> = {
   'claude-acp': ['.claude'],
   'codex-acp': ['.codex']
@@ -89,6 +89,29 @@ function copySeedFile(
   if (existsSync(destination)) {
     if (lstatSync(destination).isSymbolicLink()) {
       throw new Error(`runtime HOME destination contains a symlink: ${destination}`)
+    }
+    if (seedJsonKeys?.includes('primaryApiKey')) {
+      try {
+        const sourceStat = lstatSync(source)
+        if (!sourceStat.isFile() || sourceStat.size > MAX_SEED_FILE_BYTES) return
+        const projected = JSON.parse(projectedJson(source, ['primaryApiKey']) ?? '{}') as Record<string, unknown>
+        const existing: unknown = JSON.parse(readFileSync(destination, 'utf8'))
+        if (
+          existing &&
+          typeof existing === 'object' &&
+          !Array.isArray(existing) &&
+          !Object.hasOwn(existing, 'primaryApiKey') &&
+          typeof projected.primaryApiKey === 'string' &&
+          projected.primaryApiKey.trim()
+        ) {
+          writeFileSync(destination, `${JSON.stringify({ ...existing, primaryApiKey: projected.primaryApiKey })}\n`, {
+            encoding: 'utf8',
+            mode: 0o600
+          })
+        }
+      } catch {
+        // Existing private config remains authoritative when either projection is unreadable.
+      }
     }
     return
   }
@@ -181,6 +204,9 @@ export function prepareRuntimeHome(
   ensurePrivateDir(home)
   const excluded = new Set(excludedDestinations.map((destination) => containedDestination(home, destination)))
   const locations = runtimeStateLocations(runtimeId, hostEnv)
+  const credentialDestinations = locations.flatMap((location) =>
+    (location.credentialFiles ?? []).map((file) => containedDestination(home, join(location.destination, file.path)))
+  )
   // rc.6-era native memory supported Claude and Codex and lived directly under
   // the agent root. Move only those historical paths before host seeding.
   if (!targetHome) {
@@ -197,7 +223,13 @@ export function prepareRuntimeHome(
   for (const location of locations) {
     const destination = containedDestination(home, location.destination)
     assertNoDestinationSymlink(home, destination)
-    seedLocation(home, location.source, destination, excluded, location.seedFiles, location.seedJsonKeys)
+    const locationExcluded = new Set([...excluded, ...credentialDestinations])
+    seedLocation(home, location.source, destination, locationExcluded, location.seedFiles, location.seedJsonKeys)
+    for (const file of location.credentialFiles ?? []) {
+      const credentialDestination = join(destination, file.path)
+      assertNoDestinationSymlink(home, credentialDestination)
+      seedLocation(home, join(location.source, file.path), credentialDestination, excluded)
+    }
     if (runtimeId === 'omp') {
       extractOmpCredentials(join(location.source, 'agent.db'), join(destination, 'agent.db'))
     }
@@ -225,10 +257,13 @@ const AMBIENT_STATE_ENV = new Set([
   'ZEROCLAW_DATA_DIR',
   'AMP_SETTINGS_FILE',
   'PI_CODING_AGENT_DIR',
+  'GROK_HOME',
+  'GROK_AUTH_PATH',
   'CLINE_DIR',
   'CLINE_DATA_DIR',
   'CLINE_PROVIDER_SETTINGS_PATH',
   'KIMI_CODE_HOME',
+  'KIMI_SHARE_DIR',
   // Qoder (a Gemini-CLI fork) resolves its config + agents dirs from these; drop
   // the host values so the child falls back to the private HOME. Covers both the
   // international and CN brands plus the shared Gemini fallback.
@@ -304,6 +339,7 @@ const RUNTIME_PRIVATE_ENV: Record<string, RuntimePrivateEnv> = {
   'qoder-cli-cn': (home) => ({ QODERCN_CONFIG_DIR: join(home, '.qoder-cn') }),
   omp: (home) => ({ PI_CODING_AGENT_DIR: join(home, '.omp', 'agent') }),
   'pi-acp': (home) => ({ PI_CODING_AGENT_DIR: join(home, '.pi', 'agent') }),
+  'grok-build': (home) => ({ GROK_HOME: join(home, '.grok'), GROK_AUTH_PATH: join(home, '.grok', 'auth.json') }),
   cline: (home) => ({
     CLINE_DIR: join(home, '.cline'),
     CLINE_DATA_DIR: join(home, '.cline', 'data')
@@ -320,6 +356,7 @@ const RUNTIME_PRIVATE_ENV: Record<string, RuntimePrivateEnv> = {
   kimi: (home, hostEnv) => {
     const env: Record<string, string> = {}
     if (hostEnv.KIMI_CODE_HOME) env.KIMI_CODE_HOME = join(home, '.kimi-code')
+    if (hostEnv.KIMI_SHARE_DIR) env.KIMI_SHARE_DIR = join(home, '.kimi')
     return env
   }
 }

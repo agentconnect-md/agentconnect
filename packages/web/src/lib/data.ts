@@ -884,6 +884,14 @@ export function loginRequiredRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'>
   return (daemon?.runtimeModels ?? []).filter((r) => r.authRequired).map((r) => r.runtime)
 }
 
+export const IMAGE_BINARY_MISSING_LABEL = 'Binary not installed in image'
+
+export function imageBinaryMissingRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'> | undefined): string[] {
+  return (daemon?.runtimeModels ?? [])
+    .filter((r) => r.unavailableReason === 'image-binary-missing')
+    .map((r) => r.runtime)
+}
+
 /** One rendered effort choice; `description` (when the runtime provides one)
  *  goes on the control's title attribute. */
 export interface EffortChoice {
@@ -2231,6 +2239,7 @@ export interface DaemonRow {
      *  the runtime needs a login on the daemon host (drives the warning strip
      *  on the daemon detail page). Absent ⇒ no warning. */
     authRequired?: boolean
+    unavailableReason?: 'image-binary-missing' | null
   }[]
   /** Daemon-configured MCP servers (name + transport, facts/daemon-runtimes). */
   mcpServers: McpServerInfo[]

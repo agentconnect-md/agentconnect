@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { hostPackageCacheEnv, prepareRuntimeHome, runtimeHomeEnvironment } from '../src/runtimes/runtime-home.js'
 import { extractOmpCredentials } from '../src/runtimes/omp-credentials.js'
+import { discoverSeededRuntimeCredentials } from '../src/runtimes/runtime-seeded-credentials.js'
 
 function fixture(): { root: string; hostHome: string; scopeDir: string } {
   const root = mkdtempSync(join(tmpdir(), 'ac-runtime-home-'))
@@ -56,6 +57,228 @@ describe('private runtime HOME', () => {
     const home = prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
     expect(existsSync(join(home, '.claude.json'))).toBe(false)
     expect(existsSync(join(home, '.claude', '.claude.json'))).toBe(false)
+  })
+
+  it('projects the active Claude file-login API key without host account or MCP state', () => {
+    const { hostHome, scopeDir } = fixture()
+    const config = join(hostHome, '.claude')
+    writeFileSync(
+      join(config, '.config.json'),
+      JSON.stringify({ primaryApiKey: 'synthetic-key', oauthAccount: { id: 'private' }, mcpServers: { private: {} } })
+    )
+    writeFileSync(join(hostHome, '.claude.json'), JSON.stringify({ primaryApiKey: 'ignored-key' }))
+    const home = prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+    expect(JSON.parse(readFileSync(join(home, '.claude', '.config.json'), 'utf8'))).toEqual({
+      primaryApiKey: 'synthetic-key'
+    })
+    expect(existsSync(join(home, '.claude.json'))).toBe(false)
+  })
+
+  it('fills a missing saved Claude API key in retained private config without replacing private settings', () => {
+    const { hostHome, scopeDir } = fixture()
+    const hostConfig = join(hostHome, '.claude.json')
+    writeFileSync(hostConfig, JSON.stringify({ additionalModelOptionsCache: ['initial'] }))
+    const home = prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+    const privateConfig = join(home, '.claude', '.claude.json')
+    writeFileSync(privateConfig, JSON.stringify({ additionalModelOptionsCache: ['private'], localSetting: true }))
+    writeFileSync(hostConfig, JSON.stringify({ primaryApiKey: 'synthetic-key', additionalModelOptionsCache: [] }))
+    prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+    expect(JSON.parse(readFileSync(privateConfig, 'utf8'))).toEqual({
+      additionalModelOptionsCache: ['private'],
+      localSetting: true,
+      primaryApiKey: 'synthetic-key'
+    })
+    writeFileSync(hostConfig, JSON.stringify({ primaryApiKey: 'another-synthetic-key' }))
+    prepareRuntimeHome('claude-acp', scopeDir, { HOME: hostHome })
+    expect(JSON.parse(readFileSync(privateConfig, 'utf8')).primaryApiKey).toBe('synthetic-key')
+  })
+
+  it.each([
+    {
+      runtime: 'grok-build',
+      path: join('.grok', 'auth.json'),
+      credential: {
+        'xai::api_key': { key: 'synthetic-key', auth_mode: 'api_key', expires_at: '2000-01-01T00:00:00Z' }
+      },
+      provider: 'xai'
+    },
+    {
+      runtime: 'pi-acp',
+      path: join('.pi', 'agent', 'auth.json'),
+      credential: {
+        anthropic: { type: 'oauth', access: 'synthetic-access', refresh: 'synthetic-refresh', expires: 1 }
+      },
+      provider: 'anthropic'
+    },
+    {
+      runtime: 'opencode',
+      path: join('.local', 'share', 'opencode', 'auth.json'),
+      credential: { openai: { type: 'oauth', access: 'synthetic-access', refresh: 'synthetic-refresh', expires: 1 } },
+      provider: 'openai'
+    },
+    {
+      runtime: 'auggie',
+      path: join('.augment', 'session.json'),
+      credential: { accessToken: 'synthetic', tenantURL: 'https://tenant.example.test', scopes: [] },
+      provider: 'augment'
+    },
+    {
+      runtime: 'amp-acp',
+      path: join('.local', 'share', 'amp', 'secrets.json'),
+      credential: { 'apiKey@https://amp.example.test': 'synthetic' },
+      provider: 'amp'
+    },
+    {
+      runtime: 'cline',
+      path: join('.cline', 'data', 'settings', 'providers.json'),
+      credential: {
+        version: 1,
+        providers: { custom: { settings: { provider: 'anthropic', auth: { accessToken: 'synthetic', expiresAt: 1 } } } }
+      },
+      provider: 'anthropic'
+    },
+    {
+      runtime: 'hermes-agent',
+      path: join('.hermes', 'auth.json'),
+      credential: { providers: { 'openai-codex': { tokens: { access_token: 'synthetic', expires_at: 1 } } } },
+      provider: 'openai-codex'
+    },
+    {
+      runtime: 'hermes-agent',
+      path: join('.hermes', '.anthropic_oauth.json'),
+      credential: { refreshToken: 'synthetic', expiresAt: 1 },
+      provider: 'anthropic'
+    },
+    {
+      runtime: 'kimi',
+      path: join('.kimi-code', 'credentials', 'kimi-code.json'),
+      credential: { access_token: 'synthetic', expires_at: 1 },
+      provider: 'kimi-code'
+    },
+    {
+      runtime: 'kimi',
+      path: join('.kimi', 'credentials', 'kimi-code.json'),
+      credential: { refresh_token: 'synthetic', expires_at: 1 },
+      provider: 'kimi-code'
+    }
+  ])(
+    'discovers $runtime records from the same exact file seeded into HOME without checking expiry',
+    ({ runtime, path, credential, provider }) => {
+      const { hostHome, scopeDir } = fixture()
+      const source = join(hostHome, path)
+      mkdirSync(join(source, '..'), { recursive: true })
+      expect(discoverSeededRuntimeCredentials(runtime, { HOME: hostHome })).toEqual({ paths: [], providers: [] })
+      writeFileSync(source, '{}')
+      expect(discoverSeededRuntimeCredentials(runtime, { HOME: hostHome })).toEqual({ paths: [], providers: [] })
+      writeFileSync(source, JSON.stringify(credential))
+      expect(discoverSeededRuntimeCredentials(runtime, { HOME: hostHome })).toEqual({
+        paths: [source],
+        providers: [provider]
+      })
+      const home = prepareRuntimeHome(runtime, scopeDir, { HOME: hostHome })
+      expect(JSON.parse(readFileSync(join(home, path), 'utf8'))).toEqual(credential)
+    }
+  )
+
+  it('uses Grok file and home overrides for both discovery and the private runtime', () => {
+    const { root, hostHome, scopeDir } = fixture()
+    const grokHome = join(root, 'grok-state')
+    const source = join(root, 'grok-login.json')
+    mkdirSync(grokHome)
+    writeFileSync(join(grokHome, 'auth.json'), JSON.stringify({ default: { key: 'ignored-key', auth_mode: 'oidc' } }))
+    writeFileSync(
+      source,
+      JSON.stringify({
+        'https://issuer.example.test::public-client': {
+          key: 'synthetic-key',
+          auth_mode: 'oidc',
+          oidc_issuer: 'https://issuer.example.test/',
+          oidc_client_id: 'public-client'
+        }
+      })
+    )
+    const hostEnv = { HOME: hostHome, GROK_HOME: grokHome, GROK_AUTH_PATH: source }
+    expect(discoverSeededRuntimeCredentials('grok-build', hostEnv)).toEqual({ paths: [source], providers: ['xai'] })
+    const home = prepareRuntimeHome('grok-build', scopeDir, hostEnv)
+    expect(readFileSync(join(home, '.grok', 'auth.json'), 'utf8')).toContain('synthetic-key')
+    const env = runtimeHomeEnvironment('grok-build', home, {}, hostEnv)
+    expect(env.GROK_HOME).toBe(join(home, '.grok'))
+    expect(env.GROK_AUTH_PATH).toBe(join(home, '.grok', 'auth.json'))
+  })
+
+  it.each([
+    {
+      runtime: 'pi-acp',
+      path: join('.pi', 'agent', 'auth.json'),
+      override: 'PI_CODING_AGENT_DIR',
+      credential: { anthropic: { type: 'api_key', key: 'ignored-key' } }
+    },
+    {
+      runtime: 'grok-build',
+      path: join('.grok', 'auth.json'),
+      override: 'GROK_AUTH_PATH',
+      credential: { 'xai::api_key': { key: 'ignored-key', auth_mode: 'api_key' } }
+    }
+  ])(
+    'keeps $runtime auth absent when its effective override has no login',
+    ({ runtime, path, override, credential }) => {
+      const { root, hostHome, scopeDir } = fixture()
+      const source = join(hostHome, path)
+      mkdirSync(join(source, '..'), { recursive: true })
+      writeFileSync(source, JSON.stringify(credential))
+      const env = { HOME: hostHome, [override]: join(root, 'empty-override') }
+      expect(discoverSeededRuntimeCredentials(runtime, env)).toEqual({ paths: [], providers: [] })
+      const home = prepareRuntimeHome(runtime, scopeDir, env)
+      expect(existsSync(join(home, path))).toBe(false)
+    }
+  )
+
+  it('discovers model credentials in both DSH layouts and ignores unrelated service keys', () => {
+    const { hostHome, scopeDir } = fixture()
+    const dsh = join(hostHome, '.dsh')
+    mkdirSync(dsh)
+    const source = join(dsh, '.credentials.yaml')
+    writeFileSync(source, 'MCP_SERVER_TOKEN: synthetic-service-key\n')
+    writeFileSync(join(dsh, '.env'), 'DEEPSEEK_BASE_URL=https://provider.example.test\n')
+    expect(discoverSeededRuntimeCredentials('dsh-acp', { HOME: hostHome }).paths).toEqual([])
+    writeFileSync(source, 'version: 1\nrecords:\n  llm-pi-ai/openai:\n    kind: api-key\n')
+    expect(discoverSeededRuntimeCredentials('dsh-acp', { HOME: hostHome }).paths).toEqual([])
+    for (const text of [
+      'DEEPSEEK_API_KEY: synthetic-key\n',
+      'version: 1\nrefs:\n  DEEPSEEK_API_KEY: synthetic-key\n'
+    ]) {
+      writeFileSync(source, text)
+      expect(discoverSeededRuntimeCredentials('dsh-acp', { HOME: hostHome })).toEqual({
+        paths: [source],
+        providers: ['deepseek']
+      })
+    }
+    const home = prepareRuntimeHome('dsh-acp', scopeDir, { HOME: hostHome })
+    expect(readFileSync(join(home, '.dsh', '.credentials.yaml'), 'utf8')).toContain('synthetic-key')
+  })
+
+  it.each([
+    {
+      runtime: 'grok-build',
+      path: join('.grok', 'auth.json'),
+      value: { unrelated: { key: 'synthetic', auth_mode: 'oidc' } }
+    },
+    {
+      runtime: 'hermes-agent',
+      path: join('.hermes', 'auth.json'),
+      value: { providers: { spotify: { access_token: 'synthetic' } } }
+    },
+    {
+      runtime: 'amp-acp',
+      path: join('.local', 'share', 'amp', 'secrets.json'),
+      value: { 'github-access-token@https://example.test': 'synthetic' }
+    }
+  ])('ignores unrelated records in the $runtime shared auth store', ({ runtime, path, value }) => {
+    const { hostHome } = fixture()
+    const source = join(hostHome, path)
+    mkdirSync(join(source, '..'), { recursive: true })
+    writeFileSync(source, JSON.stringify(value))
+    expect(discoverSeededRuntimeCredentials(runtime, { HOME: hostHome })).toEqual({ paths: [], providers: [] })
   })
 
   it('seeds only Pi auth/settings from its nested agent directory', () => {

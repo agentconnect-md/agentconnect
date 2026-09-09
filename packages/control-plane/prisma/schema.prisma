@@ -649,6 +649,7 @@ model RuntimeProfile {
   modelCatalog       Json?      @db.JsonB // wire RuntimeModelCatalog verbatim (runtime-model-catalog.md §5); null ⇒ no catalog reported
   modelsSource       String? // provenance of models[]: 'cached' | 'probed'; null ⇒ older daemon (probed semantics)
   authRequired       Boolean    @default(false) // last probe hit ACP auth-required (-32000): installed but needs a login on the daemon host
+  unavailableReason  String? // image-binary-missing; null means no reported sandbox restriction
   observedAt         DateTime   @default(now()) @db.Timestamptz(6)
 
   daemon Daemon @relation(fields: [daemonId], references: [id], onDelete: Cascade)

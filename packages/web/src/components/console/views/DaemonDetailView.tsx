@@ -16,6 +16,7 @@ import {
   platName,
   presentedDaemonStatus,
   runtimeLabel,
+  IMAGE_BINARY_MISSING_LABEL,
   status
 } from '@/lib/data'
 import { creatorLabel } from '@/lib/api'
@@ -118,9 +119,7 @@ export default function DaemonDetailView() {
   const canUpgrade = canRestart && daemon.availableVersions.some((v) => v !== daemon.version)
 
   const hosted = agents.filter((a) => a.daemon === daemon.daemonId)
-  const runtimes: FleetRuntime[] = daemon.runtimeModels.length
-    ? unionRuntimes([daemon])
-    : daemon.caps.runtimes.map((runtime) => ({ runtime, version: '', models: [], authRequired: false }))
+  const runtimes: FleetRuntime[] = unionRuntimes([daemon])
   const seen = daemon.uptime === '—' ? 'never connected' : `last seen ${daemon.uptime} ago`
   // `conns` is the daemon's agent ceiling; <= 0 is its UNBOUNDED sentinel, not a ceiling of zero.
   // Its numerator is the daemon's OWN heartbeat count, never `hosted`: a group duty this member
@@ -275,8 +274,7 @@ export default function DaemonDetailView() {
               )
               const usage = users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'
               const version = rt.version ? `v${rt.version.replace(/^v/, '')}` : null
-              // Expandable when the runtime reported models; the fallback rows
-              // built from caps.runtimes carry none.
+              // Expand only runtimes that reported models.
               const hasDetail = rt.models.length > 0
               const open = hasDetail && expandedRuntimes.has(rt.runtime)
               const rowCls = `box-border flex w-full items-center gap-[10px] border-0 bg-(--surface-card) px-4 py-[11px] text-left ${
@@ -318,6 +316,12 @@ export default function DaemonDetailView() {
                     </button>
                   ) : (
                     <div className={rowCls}>{rowInner}</div>
+                  )}
+                  {rt.unavailableReason === 'image-binary-missing' && (
+                    <div className="flex items-center gap-[6px] bg-(--status-paused-soft) px-4 py-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
+                      <Icon name="triangle-alert" size={12} className="flex-none" />
+                      {IMAGE_BINARY_MISSING_LABEL}
+                    </div>
                   )}
                   {rt.authRequired && (
                     <button
@@ -379,7 +383,7 @@ export default function DaemonDetailView() {
             })
           ) : (
             <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              No runtimes reported — this daemon hasn&apos;t advertised its runtime profiles yet.
+              No runtimes reported by this daemon.
             </div>
           )}
         </div>
@@ -725,7 +729,7 @@ export default function DaemonDetailView() {
         title="Runtimes"
         runtimes={runtimes}
         agents={hosted}
-        empty="No runtimes reported — this daemon hasn't advertised its runtime profiles yet."
+        empty="No runtimes reported by this daemon."
         daemonName={daemon.name}
       />
 

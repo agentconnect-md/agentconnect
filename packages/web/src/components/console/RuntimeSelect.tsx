@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { AgentMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { runtimeLabel } from '@/lib/data'
+import { IMAGE_BINARY_MISSING_LABEL, runtimeLabel } from '@/lib/data'
 
 const LOGIN_HINT = 'Not signed in on this daemon — you can still pick it, then sign in on the daemon host'
 
@@ -10,6 +10,7 @@ export function RuntimeSelect({
   value,
   options,
   needsLogin,
+  imageBinaryMissing,
   onChange,
   ariaLabel = 'Runtime'
 }: {
@@ -20,6 +21,7 @@ export function RuntimeSelect({
    *  an agent on a logged-out runtime is a supported state — creation and placement
    *  deliberately don't gate on readiness (docs/designs/preset-agents.md §3.2). */
   needsLogin?: readonly string[]
+  imageBinaryMissing?: readonly string[]
   onChange: (value: string) => void
   ariaLabel?: string
 }) {
@@ -27,7 +29,8 @@ export function RuntimeSelect({
   const rows = options.map((id) => ({
     id,
     label: runtimeLabel(id, acpRuntime(registry, id)?.name),
-    needsLogin: !!needsLogin?.includes(id)
+    needsLogin: !!needsLogin?.includes(id),
+    imageBinaryMissing: !!imageBinaryMissing?.includes(id)
   }))
   const selectedIndex = Math.max(
     0,
@@ -99,6 +102,7 @@ export function RuntimeSelect({
       <button
         ref={triggerRef}
         type="button"
+        disabled={rows.length === 0}
         className={`inp relative w-full cursor-pointer text-left outline-none transition-[background-color,border-color,box-shadow] ${
           open
             ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
@@ -123,8 +127,11 @@ export function RuntimeSelect({
               <span className="truncate">{selected?.label ?? value}</span>
               {/* The field is a 1/3 column, too narrow for the menu's text tag — carry
                   the same warning as a mark so the state survives the menu closing. */}
-              {selected?.needsLogin && (
-                <span className="flex-none" title={LOGIN_HINT}>
+              {(selected?.needsLogin || selected?.imageBinaryMissing) && (
+                <span
+                  className="flex-none"
+                  title={selected.imageBinaryMissing ? IMAGE_BINARY_MISSING_LABEL : LOGIN_HINT}
+                >
                   <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
                 </span>
               )}
@@ -152,10 +159,8 @@ export function RuntimeSelect({
             tabIndex={-1}
             aria-label={ariaLabel}
             aria-activedescendant={`${listboxId}-option-${activeIndex}`}
-            // Size to the widest option (never truncate a runtime name), with the
-            // trigger width as the floor — the Runtime field is a 1/3 column now,
-            // too narrow to clip "Claude Code" against.
-            className="fmenu left-0 z-40 w-max min-w-full rounded-lg p-2 shadow-(--shadow-xl) outline-none"
+            // Keep names and wrapped status text readable within the viewport.
+            className="fmenu left-0 z-40 w-max min-w-full max-w-[calc(100vw-64px)] rounded-lg p-2 shadow-(--shadow-xl) outline-none"
             onKeyDown={onListKeyDown}
           >
             {rows.map((row, index) => {
@@ -169,7 +174,7 @@ export function RuntimeSelect({
                   role="option"
                   tabIndex={-1}
                   aria-selected={isSelected}
-                  title={row.needsLogin ? LOGIN_HINT : undefined}
+                  title={row.imageBinaryMissing ? IMAGE_BINARY_MISSING_LABEL : row.needsLogin ? LOGIN_HINT : undefined}
                   className={`fopt min-h-10 gap-3 rounded-md px-2 py-[6px] text-[13px] ${
                     isSelected
                       ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
@@ -183,13 +188,25 @@ export function RuntimeSelect({
                   <span className="imark h-7 w-7 flex-none rounded-md">
                     <AgentMark model={row.id} />
                   </span>
-                  <span className="flex-1 whitespace-nowrap">{row.label}</span>
-                  {row.needsLogin && (
-                    <span className="flex flex-none items-center gap-[4px] font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
-                      <Icon name="triangle-alert" size={11} className="flex-none" />
-                      Login required
-                    </span>
-                  )}
+                  <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
+                    <span>{row.label}</span>
+                    {(row.imageBinaryMissing || row.needsLogin) && (
+                      <span className="flex flex-wrap gap-x-3 gap-y-1 font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
+                        {row.imageBinaryMissing && (
+                          <span className="flex items-start gap-[4px]">
+                            <Icon name="triangle-alert" size={11} className="mt-[2px] flex-none" />
+                            <span>{IMAGE_BINARY_MISSING_LABEL}</span>
+                          </span>
+                        )}
+                        {row.needsLogin && (
+                          <span className="flex items-start gap-[4px]">
+                            <Icon name="triangle-alert" size={11} className="mt-[2px] flex-none" />
+                            <span>Login required</span>
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </span>
                   {isSelected && <Icon name="check" size={16} color="var(--brand)" className="flex-none" />}
                 </button>
               )

@@ -1,10 +1,12 @@
 import { accessSync, constants, existsSync } from 'node:fs'
-import { basename, delimiter, join } from 'node:path'
+import { basename, delimiter, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { CURATED_RUNTIME_CATALOG } from './curated.js'
 import { parseArchiveLaunch } from './archive-store.js'
 import type { ResolvedRuntimeCatalog } from './registry.js'
+import type { SeededCredentialFile } from './runtime-seeded-credentials.js'
+import { resolveClaudeConfigSources, resolveOmpCredentialSource } from './runtime-credential-sources.js'
 
 /**
  * Host-availability probing for runtimes.
@@ -104,6 +106,8 @@ export type RuntimeProbe = (env: NodeJS.ProcessEnv) => boolean
 /** Host runtime state that can initialize an agent's private runtime HOME. */
 export interface RuntimeStateLocation {
   source: string
+  /** Exact credential files shared by private-HOME seeding and opt-in credential discovery. */
+  credentialFiles?: readonly SeededCredentialFile[]
   /** Path relative to the private runtime HOME. */
   destination: string
   /**
@@ -149,10 +153,19 @@ function state(
   source: string | undefined,
   destination: string,
   seedFiles?: readonly string[],
-  seedJsonKeys?: readonly string[]
+  seedJsonKeys?: readonly string[],
+  credentialFiles?: readonly SeededCredentialFile[]
 ): RuntimeStateLocation[] {
   return source
-    ? [{ source, destination, ...(seedFiles ? { seedFiles } : {}), ...(seedJsonKeys ? { seedJsonKeys } : {}) }]
+    ? [
+        {
+          source,
+          destination,
+          ...(seedFiles ? { seedFiles } : {}),
+          ...(seedJsonKeys ? { seedJsonKeys } : {}),
+          ...(credentialFiles ? { credentialFiles } : {})
+        }
+      ]
     : []
 }
 
@@ -174,28 +187,33 @@ const QODER_SEED = (brand: string): readonly string[] => [
   'mcp-oauth-tokens.json',
   'a2a-oauth-tokens.json'
 ]
-const CLAUDE_MODEL_CACHE_KEYS = ['additionalModelOptionsCache'] as const
+const CLAUDE_GLOBAL_SEED_KEYS = ['additionalModelOptionsCache', 'primaryApiKey'] as const
 /** DeepSeek Harness auth: the managed 0600 credential store plus its .env fallback. */
-const DSH_SEED = ['.credentials.yaml', '.env'] as const
+const DSH_CREDENTIALS = [
+  { path: '.credentials.yaml', format: 'dsh' },
+  { path: '.env', format: 'dsh-env' }
+] as const
 /** Antigravity login inputs: the ACP server's auth.type selection, the CLI's OAuth token, and the install identity. */
 const ANTIGRAVITY_SEED = ['settings.json', 'antigravity-oauth-token', 'installation_id'] as const
 /** OpenClaw acp bridge inputs: gateway address + token config and its .env fallback. */
 const OPENCLAW_SEED = ['openclaw.json', '.env'] as const
 
 export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
-  // Anthropic Claude Code — seed only the rollout-model cache from ~/.claude.json.
-  // The daemon pins CLAUDE_CONFIG_DIR=<private-home>/.claude (RUNTIME_PRIVATE_ENV),
-  // and Claude Code reads additionalModelOptionsCache from that directory on its first
-  // session. Projecting that one field preserves rollout models (e.g. Fable 5) without
-  // copying host MCP, project, account, or machine state. Host settings are daemon input
-  // and credentials are shared separately through CLAUDE_SECURESTORAGE_CONFIG_DIR.
-  // The HOME-root copy stays for Claude versions that ignore the config-dir env.
-  'claude-acp': (env) => [
-    ...state(env.CLAUDE_CONFIG_DIR, '.claude', ['.claude.json'], CLAUDE_MODEL_CACHE_KEYS),
-    ...state(join(home(env), '.claude'), '.claude', ['.claude.json'], CLAUDE_MODEL_CACHE_KEYS),
-    ...state(join(home(env), '.claude.json'), '.claude.json', undefined, CLAUDE_MODEL_CACHE_KEYS),
-    ...state(join(home(env), '.claude.json'), join('.claude', '.claude.json'), undefined, CLAUDE_MODEL_CACHE_KEYS)
-  ],
+  // Project only the active global file's saved API key and rollout cache; session and MCP state stay private.
+  'claude-acp': (env) => {
+    const { configDir, globalConfigFile } = resolveClaudeConfigSources(env)
+    if (dirname(globalConfigFile) === configDir) {
+      return [
+        ...state(configDir, '.claude', [basename(globalConfigFile)], CLAUDE_GLOBAL_SEED_KEYS),
+        ...state(join(home(env), '.claude.json'), '.claude.json', undefined, ['additionalModelOptionsCache'])
+      ]
+    }
+    return [
+      ...state(globalConfigFile, '.claude.json', undefined, CLAUDE_GLOBAL_SEED_KEYS),
+      ...state(globalConfigFile, join('.claude', '.claude.json'), undefined, CLAUDE_GLOBAL_SEED_KEYS),
+      ...state(configDir, '.claude', [])
+    ]
+  },
 
   // OpenAI Codex CLI — ~/.codex (honors $CODEX_HOME).
   'codex-acp': (env) => [...state(env.CODEX_HOME, '.codex'), ...state(join(home(env), '.codex'), '.codex')],
@@ -206,13 +224,22 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // seeds nothing.
   gemini: (env) => [
     ...state(join(home(env), '.gemini', 'settings.json'), join('.gemini', 'settings.json')),
-    ...state(join(home(env), '.gemini', 'oauth_creds.json'), join('.gemini', 'oauth_creds.json')),
+    ...state(
+      join(home(env), '.gemini', 'oauth_creds.json'),
+      join('.gemini', 'oauth_creds.json'),
+      undefined,
+      undefined,
+      [{ path: '', format: 'oauth', provider: 'google' }]
+    ),
     ...state(join(home(env), '.gemini', 'google_accounts.json'), join('.gemini', 'google_accounts.json')),
     ...state(join(home(env), '.gemini', 'tmp'), join('.gemini', 'tmp'), [])
   ],
 
   // Qwen Code (Gemini-CLI fork) — ~/.qwen.
-  'qwen-code': (env) => state(join(home(env), '.qwen'), '.qwen'),
+  'qwen-code': (env) =>
+    state(join(home(env), '.qwen'), '.qwen', undefined, undefined, [
+      { path: 'oauth_creds.json', format: 'oauth', provider: 'qwen' }
+    ]),
 
   // GitHub Copilot CLI — ~/.copilot (honors $COPILOT_HOME).
   'github-copilot-cli': (env) => [
@@ -235,23 +262,40 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // when opencode is run from home, so accept it as a fallback signal.
   opencode: (env) => [
     ...state(join(xdgConfigHome(env), 'opencode'), join('.config', 'opencode')),
-    ...state(join(xdgDataHome(env), 'opencode', 'auth.json'), join('.local', 'share', 'opencode', 'auth.json')),
+    ...state(
+      join(xdgDataHome(env), 'opencode', 'auth.json'),
+      join('.local', 'share', 'opencode', 'auth.json'),
+      undefined,
+      undefined,
+      [{ path: '', format: 'opencode' }]
+    ),
     ...state(join(home(env), '.opencode'), '.opencode')
   ],
 
   // pi (svkozak pi-acp npx adapter) — auth/settings live below the agent dir;
   // sessions, downloaded binaries, and adapter state must remain agent-private.
   'pi-acp': (env) => [
-    ...state(env.PI_CODING_AGENT_DIR, join('.pi', 'agent'), ['auth.json', 'settings.json']),
-    ...state(join(home(env), '.pi'), '.pi', [join('agent', 'auth.json'), join('agent', 'settings.json')])
+    ...state(
+      join(env.PI_CODING_AGENT_DIR || join(home(env), '.pi', 'agent'), 'auth.json'),
+      join('.pi', 'agent', 'auth.json'),
+      undefined,
+      undefined,
+      [{ path: '', format: 'pi' }]
+    ),
+    ...state(env.PI_CODING_AGENT_DIR, join('.pi', 'agent'), ['settings.json']),
+    ...state(join(home(env), '.pi'), '.pi', [join('agent', 'settings.json')])
   ],
 
   // Nous Research Hermes — ~/.hermes (honors $HERMES_HOME, which relocates the
   // whole home dir). Keep both the canonical proposed registry id and the legacy
   // AgentConnect alias on the same reviewed allowlist.
   'hermes-agent': (env) => [
-    ...state(env.HERMES_HOME, '.hermes', ['.env', 'config.yaml', '.anthropic_oauth.json', 'auth.json']),
-    ...state(join(home(env), '.hermes'), '.hermes', ['.env', 'config.yaml', '.anthropic_oauth.json', 'auth.json'])
+    ...state(env.HERMES_HOME || join(home(env), '.hermes'), '.hermes', ['.env', 'config.yaml'], undefined, [
+      { path: 'auth.json', format: 'hermes' },
+      { path: '.anthropic_oauth.json', format: 'claude-oauth', provider: 'anthropic' },
+      { path: '.env', format: 'dsh-env' }
+    ]),
+    ...state(join(home(env), '.hermes'), '.hermes', ['.env', 'config.yaml'])
   ],
   hermes: (env) => RUNTIME_STATE_LOCATIONS['hermes-agent']!(env),
 
@@ -285,10 +329,7 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
 
   // Oh My Pi — agent.db is handled by the structured credential extractor in
   // runtime-home.ts; the ordinary file seeder copies config only.
-  omp: (env) => [
-    ...state(env.PI_CODING_AGENT_DIR, join('.omp', 'agent'), ['config.yml']),
-    ...state(join(home(env), '.omp', 'agent'), join('.omp', 'agent'), ['config.yml'])
-  ],
+  omp: (env) => state(dirname(resolveOmpCredentialSource(env)), join('.omp', 'agent'), ['config.yml']),
 
   // Qoder CLI (a Gemini-CLI fork) — global config dir defaults to ~/.qoder, but
   // $QODER_CONFIG_DIR overrides it outright and $QODER_CLI_HOME / $GEMINI_CLI_HOME
@@ -325,6 +366,13 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // Sourcegraph Amp — $XDG_CONFIG_HOME/amp (honors $AMP_SETTINGS_FILE).
   'amp-acp': (env) => [
     ...state(
+      join(xdgDataHome(env), 'amp', 'secrets.json'),
+      join('.local', 'share', 'amp', 'secrets.json'),
+      undefined,
+      undefined,
+      [{ path: '', format: 'amp' }]
+    ),
+    ...state(
       env.AMP_SETTINGS_FILE,
       join('.config', 'amp', env.AMP_SETTINGS_FILE ? basename(env.AMP_SETTINGS_FILE) : 'settings.json')
     ),
@@ -332,23 +380,49 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   ],
 
   // Augment auggie — ~/.augment.
-  auggie: (env) => state(join(home(env), '.augment'), '.augment'),
+  auggie: (env) =>
+    state(join(home(env), '.augment'), '.augment', undefined, undefined, [{ path: 'session.json', format: 'auggie' }]),
 
   // Cline CLI — provider credentials live in <data-dir>/settings/providers.json.
   // CLINE_DATA_DIR names the data dir itself (normally ~/.cline/data), not ~/.cline.
   cline: (env) => [
-    ...state(env.CLINE_PROVIDER_SETTINGS_PATH, join('.cline', 'data', 'settings', 'providers.json')),
-    ...state(env.CLINE_DATA_DIR, join('.cline', 'data'), [join('settings', 'providers.json')]),
-    ...state(env.CLINE_DIR, '.cline', [join('data', 'settings', 'providers.json')]),
-    ...state(join(home(env), '.cline'), '.cline', [join('data', 'settings', 'providers.json')])
+    ...state(
+      env.CLINE_PROVIDER_SETTINGS_PATH?.trim() ||
+        join(
+          env.CLINE_DATA_DIR?.trim() || join(env.CLINE_DIR?.trim() || join(home(env), '.cline'), 'data'),
+          'settings',
+          'providers.json'
+        ),
+      join('.cline', 'data', 'settings', 'providers.json'),
+      undefined,
+      undefined,
+      [{ path: '', format: 'cline' }]
+    ),
+    ...state(env.CLINE_DATA_DIR, join('.cline', 'data'), []),
+    ...state(env.CLINE_DIR, '.cline', []),
+    ...state(join(home(env), '.cline'), '.cline', [])
   ],
 
-  // xAI Grok CLI — ~/.grok.
-  'grok-build': (env) => state(join(home(env), '.grok'), '.grok'),
+  // Grok's exact login source precedes its ordinary config files when seeding the private HOME.
+  'grok-build': (env) => [
+    ...state(
+      env.GROK_AUTH_PATH || join(env.GROK_HOME || join(home(env), '.grok'), 'auth.json'),
+      join('.grok', 'auth.json'),
+      undefined,
+      undefined,
+      [{ path: '', format: 'grok' }]
+    ),
+    ...state(env.GROK_HOME || join(home(env), '.grok'), '.grok')
+  ],
 
   // Moonshot Kimi CLI — ~/.kimi (legacy) or ~/.kimi-code (newer, honors $KIMI_CODE_HOME).
   kimi: (env) => [
-    ...state(env.KIMI_CODE_HOME, '.kimi-code'),
+    ...state(env.KIMI_CODE_HOME || join(home(env), '.kimi-code'), '.kimi-code', undefined, undefined, [
+      { path: join('credentials', 'kimi-code.json'), format: 'oauth', provider: 'kimi-code' }
+    ]),
+    ...state(env.KIMI_SHARE_DIR || join(home(env), '.kimi'), '.kimi', undefined, undefined, [
+      { path: join('credentials', 'kimi-code.json'), format: 'oauth', provider: 'kimi-code' }
+    ]),
     ...state(join(home(env), '.kimi'), '.kimi'),
     ...state(join(home(env), '.kimi-code'), '.kimi-code')
   ],
@@ -359,7 +433,10 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // DeepSeek Harness (via the dsh-acp adapter) — $DSH_HOME, default ~/.dsh. Seed
   // only the managed credential store and its .env fallback; sessions and logs
   // in the same directory stay agent-private.
-  'dsh-acp': (env) => [...state(env.DSH_HOME, '.dsh', DSH_SEED), ...state(join(home(env), '.dsh'), '.dsh', DSH_SEED)],
+  'dsh-acp': (env) => [
+    ...state(env.DSH_HOME || join(home(env), '.dsh'), '.dsh', [], undefined, DSH_CREDENTIALS),
+    ...state(join(home(env), '.dsh'), '.dsh', [])
+  ],
 
   // OpenClaw — ~/.openclaw, relocatable via $OPENCLAW_STATE_DIR (the dir itself),
   // $OPENCLAW_HOME (the home base), or $OPENCLAW_CONFIG_PATH (the config file

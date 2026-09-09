@@ -334,6 +334,16 @@ describe('onboarding — daemon online: configure + finish', () => {
     expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: null })
   })
 
+  it('keeps the runtime empty when the connected daemon reports no credential candidates', async () => {
+    mocks.daemons = [{ ...mocks.daemons[0], runtimeModels: [] }]
+    await render()
+    expect(host.textContent).not.toContain('runtime-claude')
+    expect(button('Finish').disabled).toBe(true)
+    await click('Finish')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+  })
+
   it('hides the pickers only when the org has no built-in agent at all', async () => {
     mocks.agents = []
     await render()

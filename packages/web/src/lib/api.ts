@@ -1064,6 +1064,7 @@ export interface RuntimeProfileDto {
   // runtime is installed but needs a login on the daemon host. Absent (older
   // CP) ⇒ no warning.
   authRequired?: boolean
+  unavailableReason?: 'image-binary-missing' | null
 }
 
 // One daemon-configured MCP server (name + transport), reported in the
@@ -2177,7 +2178,8 @@ export function withDaemonCapability(row: DaemonRow, cap: DaemonCapabilityDto | 
       acpProtocolVersion: p.acpProtocolVersion,
       mcpCapabilities: p.mcpCapabilities ?? null,
       modelCatalog: p.modelCatalog ?? null,
-      authRequired: p.authRequired ?? false
+      authRequired: p.authRequired ?? false,
+      unavailableReason: p.unavailableReason ?? null
     })),
     mcpServers: cap.mcpServers
   }
@@ -2224,7 +2226,8 @@ export function daemonFromDto(
       acpProtocolVersion: p.acpProtocolVersion,
       mcpCapabilities: p.mcpCapabilities ?? null,
       modelCatalog: p.modelCatalog ?? null,
-      authRequired: p.authRequired ?? false
+      authRequired: p.authRequired ?? false,
+      unavailableReason: p.unavailableReason ?? null
     })),
     mcpServers: d.mcpServers ?? [],
     activeSessions: String(d.activeSessions),

@@ -19,6 +19,7 @@ import {
   agentModelDisplay,
   effectiveAgentStatus,
   runtimeLabel,
+  IMAGE_BINARY_MISSING_LABEL,
   status,
   type Agent,
   type DaemonRow
@@ -51,6 +52,7 @@ export interface FleetRuntime {
    *  a set whose members resolve one alias differently has no single answer to quote. */
   modelInfo?: Record<string, { name?: string; description?: string }>
   authRequired: boolean
+  unavailableReason?: 'image-binary-missing' | null
 }
 
 /** The set's answer for each model id: what every member that describes it agrees on, and
@@ -111,13 +113,15 @@ export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
           runtime: rt.runtime,
           version: rt.version,
           models: [...rt.models],
-          authRequired: rt.authRequired === true
+          authRequired: rt.authRequired === true,
+          unavailableReason: rt.unavailableReason
         })
         continue
       }
       if (!prev.version) prev.version = rt.version
       for (const model of rt.models) if (!prev.models.includes(model)) prev.models.push(model)
       prev.authRequired ||= rt.authRequired === true
+      prev.unavailableReason ??= rt.unavailableReason
     }
   }
   for (const rt of byId.values()) rt.modelInfo = consensusModelInfo(described.get(rt.runtime) ?? [])
@@ -155,7 +159,8 @@ export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[]
       // Sticky, as in the union: one member needing a login qualifies the set's promise, so the
       // row is MARKED. Not withdrawn — placement is deliberately independent of login readiness
       // (preset-agents.md §3.2), which is why this does not exclude the runtime.
-      authRequired: all.some((peer) => peer.authRequired === true)
+      authRequired: all.some((peer) => peer.authRequired === true),
+      unavailableReason: all.find((peer) => peer.unavailableReason)?.unavailableReason
     })
   }
   return out
@@ -456,6 +461,12 @@ export function FleetRuntimesCard({
                     className={hasModels ? 'flex-none' : 'invisible flex-none'}
                   />
                 </button>
+                {rt.unavailableReason === 'image-binary-missing' && (
+                  <div className="flex items-center gap-[6px] bg-(--status-paused-soft) px-[13px] py-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
+                    <Icon name="triangle-alert" size={12} className="flex-none" />
+                    {IMAGE_BINARY_MISSING_LABEL}
+                  </div>
+                )}
                 {rt.authRequired && (
                   <button
                     type="button"

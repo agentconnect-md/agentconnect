@@ -157,6 +157,7 @@ export const RuntimeProfileDto = z.object({
   // runtime is installed but needs a login on the daemon host. Drives the
   // console's per-runtime "Login required" warning.
   authRequired: z.boolean(),
+  unavailableReason: z.literal('image-binary-missing').nullable().optional(),
   // ISO-8601 — when the daemon last reported this profile.
   observedAt: z.string().nullable()
 })

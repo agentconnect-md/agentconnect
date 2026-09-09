@@ -98,6 +98,7 @@ type DaemonDto = {
     } | null
     modelsSource: string | null
     authRequired: boolean
+    unavailableReason?: 'image-binary-missing' | null
     observedAt: string | null
   }[]
   mcpServers: {
@@ -259,9 +260,10 @@ describe('GET /daemons — live-status overlay', () => {
     expect(d.runtimeProfiles[0]!.modelsSource).toBeNull()
     // No login warning reported ⇒ explicit false (older daemons never send it).
     expect(d.runtimeProfiles[0]!.authRequired).toBe(false)
+    expect(d.runtimeProfiles[0]!.unavailableReason).toBeNull()
   })
 
-  it('surfaces the per-runtime authRequired login warning', async () => {
+  it('retains auth and missing-image warnings in capability and detail reads', async () => {
     await seedDaemon()
     await new PgRuntimeProfileRepo(prisma).record(
       DaemonId(DAEMON),
@@ -271,12 +273,24 @@ describe('GET /daemons — live-status overlay', () => {
         models: [],
         acpSupport: 'full',
         toolCalling: true,
-        authRequired: true
+        authRequired: true,
+        unavailableReason: 'image-binary-missing'
       },
       new Date()
     )
     running = buildHttpApp(prisma)
-    expect((await listCapabilities()).find((r) => r.daemonId === DAEMON)!.runtimeProfiles[0]!.authRequired).toBe(true)
+    expect((await listCapabilities()).find((r) => r.daemonId === DAEMON)!.runtimeProfiles[0]).toMatchObject({
+      runtime: 'claude',
+      authRequired: true,
+      unavailableReason: 'image-binary-missing'
+    })
+    const response = await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })
+    expect(response.statusCode).toBe(200)
+    expect((response.json() as DaemonDto).runtimeProfiles[0]).toMatchObject({
+      runtime: 'claude',
+      authRequired: true,
+      unavailableReason: 'image-binary-missing'
+    })
   })
 
   it('serves the reported modelCatalog, modelsSource and observedAt per runtime profile', async () => {

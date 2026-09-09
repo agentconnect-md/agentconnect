@@ -172,7 +172,7 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
     expect(stub.lastSent('error')).toBeUndefined()
   })
 
-  it('persists the per-runtime authRequired login warning and clears it when a later snapshot omits it', async () => {
+  it('keeps auth and missing-image warnings independent and clears omitted status', async () => {
     const h = buildWsHarness(prisma)
     const { stub } = await connectReady(h)
     const repo = new PgRuntimeProfileRepo(prisma)
@@ -180,17 +180,23 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
     // The probe was rejected with ACP auth-required: the runtime stays listed
     // (installed) but carries the login warning.
     stub.inject('facts/daemon-runtimes', {
-      runtimes: [{ ...profile('claude-acp'), authRequired: true }]
+      runtimes: [{ ...profile('claude-acp'), authRequired: true, unavailableReason: 'image-binary-missing' }]
     })
     await vi.waitFor(async () => {
-      expect((await repo.forDaemon(DaemonId(DAEMON)))[0]?.authRequired).toBe(true)
+      expect((await repo.forDaemon(DaemonId(DAEMON)))[0]).toMatchObject({
+        authRequired: true,
+        unavailableReason: 'image-binary-missing'
+      })
     })
 
     // Logged in meanwhile: the next snapshot omits the flag (a successful probe
     // never sends it) — the stored warning must clear, never stay stale.
     stub.inject('facts/daemon-runtimes', { runtimes: [profile('claude-acp')] })
     await vi.waitFor(async () => {
-      expect((await repo.forDaemon(DaemonId(DAEMON)))[0]?.authRequired).toBe(false)
+      expect((await repo.forDaemon(DaemonId(DAEMON)))[0]).toMatchObject({
+        authRequired: false,
+        unavailableReason: null
+      })
     })
     expect(stub.lastSent('error')).toBeUndefined()
   })

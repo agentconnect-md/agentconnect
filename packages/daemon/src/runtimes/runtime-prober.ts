@@ -13,9 +13,9 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { McpTransportCapabilities } from '@agentconnect.md/protocol'
+import { HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED, type McpTransportCapabilities } from '@agentconnect.md/protocol'
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
-import type { ModelOptions } from '../acp/acp-host.js'
+import { turnFailureCode, type ModelOptions } from '../acp/acp-host.js'
 import type { AcpProbeClient } from '../acp/probe-client.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
@@ -622,7 +622,8 @@ export async function probeRuntime(
   } catch (err) {
     const error = sanitizeProbeDiagnostic(err, opts.hostEnv ?? process.env, redactValues)
     opts.log?.warn(`probe: ${id} failed — ${error}`)
-    return { runtime: id, ok: false, models: [], error, ...(isAuthRequiredError(err) ? { authRequired: true } : {}) }
+    const authRequired = isAuthRequiredError(err) || turnFailureCode(err) === HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
+    return { runtime: id, ok: false, models: [], error, ...(authRequired ? { authRequired: true } : {}) }
   } finally {
     if (timer) clearTimeout(timer)
     if (onAbort) signal?.removeEventListener('abort', onAbort)

@@ -353,6 +353,25 @@ describe('HomeView readiness gate', () => {
     expect(host.textContent).toContain('No AI runtime is signed in')
   })
 
+  it.each([true, false])('requires the image binary only for sandboxed sessions (%s)', async (runInSandbox) => {
+    mocks.agents = [agent({ runInSandbox })]
+    mocks.daemons = [
+      daemon({
+        runtimeModels: [
+          {
+            runtime: 'claude',
+            models: ['claude-sonnet-4-5'],
+            modelCatalog: claudeCatalog,
+            unavailableReason: 'image-binary-missing'
+          }
+        ]
+      })
+    ]
+    await render()
+    expect(host.textContent?.includes('Binary not installed in image')).toBe(runInSandbox)
+    expect(host.textContent).not.toContain('No AI runtime is signed in')
+  })
+
   it('shows no banner when the selected agent’s daemon is healthy but ANOTHER daemon is not', async () => {
     mocks.agents = [agent()]
     mocks.daemons = [

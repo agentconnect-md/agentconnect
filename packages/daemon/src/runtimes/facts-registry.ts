@@ -62,8 +62,8 @@ export interface RuntimeFactsHost {
   draining(): boolean
   catalog(): ResolvedRuntimeCatalog
   localProbeCatalog(): ResolvedRuntimeCatalog
-  // The advertised runtime's execution location; a same-ID host install may also exist.
-  executionLocation(runtimeId: string): 'host' | 'sandbox'
+  imageVersion(runtimeId: string): string | undefined
+  unavailableReason(runtimeId: string): FactsRuntimeProfile['unavailableReason']
   admittedRuntimes(): Record<string, RuntimeDef>
   refreshAdmitted(): void
   reportedRuntimeIds(): string[]
@@ -162,10 +162,8 @@ export class RuntimeFactsRegistry {
   profileFor(id: string): FactsRuntimeProfile {
     return {
       runtime: id,
-      // Prefer the probed adapter version (the actual running release, learned at the
-      // last probe's `initialize`) over the registry's declared version; fall back to
-      // the declared version when a runtime hasn't been probed / reported none.
-      version: this.probedVersions.get(id) || this.versions[id] || '',
+      // VM versions come from the image; a host probe supplies models and capabilities only.
+      version: this.host.imageVersion(id) || this.probedVersions.get(id) || this.versions[id] || '',
       models: this.models.get(id) ?? [],
       acpSupport: 'full',
       acpProtocolVersion: this.acpVersions.get(id),
@@ -175,6 +173,7 @@ export class RuntimeFactsRegistry {
       // Capability matrix rides every frame it exists for — including probe-failure
       // rounds where models[] empties (advertisement ≠ capability knowledge).
       modelCatalog: this.catalogs.get(id),
+      ...(this.host.unavailableReason(id) ? { unavailableReason: this.host.unavailableReason(id) } : {}),
       ...(this.authRequired.has(id) || this.authRequiredLive.has(id) ? { authRequired: true } : {})
     }
   }
@@ -250,10 +249,10 @@ export class RuntimeFactsRegistry {
    *  runtime may only be temporarily unresolved); rows older than 30 days are
    *  garbage-collected. The store reads only this member's rows, so a member can
    *  never boot advertising models a peer's image runs and its own does not. */
-  async hydrateFromCache(excludedRuntimeIds: ReadonlySet<string> = new Set()): Promise<void> {
+  async hydrateFromCache(): Promise<void> {
     try {
       for (const meta of await this.host.store().listRuntimeCatalogMetas()) {
-        if (excludedRuntimeIds.has(meta.runtimeId) || !this.host.catalog().entries[meta.runtimeId]) continue
+        if (!this.host.catalog().entries[meta.runtimeId]) continue
         await this.rebuildCatalog(meta.runtimeId)
         const cachedModels = (await this.host.store().listRuntimeModelCaps(meta.runtimeId)).map((r) => r.modelId)
         if (cachedModels.length > 0 && (this.models.get(meta.runtimeId) ?? []).length === 0) {
@@ -275,7 +274,7 @@ export class RuntimeFactsRegistry {
       this.catalogs.delete(id)
       return
     }
-    const rt = this.host.catalog().entries[id]?.runtime
+    const rt = (this.host.localProbeCatalog().entries[id] ?? this.host.catalog().entries[id])?.runtime
     const claude = rt ? isClaudeRuntimeDef(rt) : false
     const models = (await this.host.store().listRuntimeModelCaps(id)).map((r) => ({
       id: r.modelId,
@@ -301,7 +300,7 @@ export class RuntimeFactsRegistry {
    * continuously connected daemon rechecks curated winners on the same TTL. */
   armProbeRefresh(): void {
     if (this.host.draining() || this.probeTimer !== undefined) return
-    if (!Object.values(this.host.catalog().entries).some((entry) => entry.source === 'curated')) return
+    if (!Object.values(this.host.localProbeCatalog().entries).some((entry) => entry.source === 'curated')) return
     this.probeTimer = this.host.clock().setTimeout(() => {
       this.probeTimer = undefined
       if (this.host.draining()) return
@@ -369,7 +368,7 @@ export class RuntimeFactsRegistry {
         ? {}
         : Object.fromEntries(
             Object.entries(catalog.entries)
-              .filter(([id, entry]) => entry.source !== 'curated' && this.host.executionLocation(id) === 'host')
+              .filter(([, entry]) => entry.source !== 'curated')
               .map(([id, entry]) => [id, entry.runtime])
           )
     const probeCount = Object.keys(ordinaryRuntimes).length + Object.keys(curatedCandidates).length
@@ -397,11 +396,6 @@ export class RuntimeFactsRegistry {
       const onResult = async (result: RuntimeProbeResult): Promise<void> => {
         if (applied.has(result.runtime)) return
         applied.add(result.runtime)
-        // A same-ID host runtime needs admission, but its probe must not replace the image's facts.
-        if (this.host.executionLocation(result.runtime) !== 'host') {
-          if (catalog.entries[result.runtime]?.source === 'curated') this.host.curatedAdmission().record(result)
-          return
-        }
         await this.applyProbeResult(result)
         this.emitFacts()
         emitted = true
@@ -539,7 +533,7 @@ export class RuntimeFactsRegistry {
   /** Fold one probe result into admission, advertised models/caps and the model
    *  catalog. Called per result so a slow runtime delays only itself. */
   private async applyProbeResult(r: RuntimeProbeResult): Promise<void> {
-    if (this.host.catalog().entries[r.runtime]?.source === 'curated') this.host.curatedAdmission().record(r)
+    if (this.host.localProbeCatalog().entries[r.runtime]?.source === 'curated') this.host.curatedAdmission().record(r)
     this.host.refreshAdmitted()
     // Successful probes (including empty selectors) and auth failures are
     // authoritative. Preserve a non-empty cache-hydrated list across other
@@ -579,7 +573,7 @@ export class RuntimeFactsRegistry {
    *  the last-good catalog is never cleared. */
   private async seedCatalogFromProbe(r: RuntimeProbeResult): Promise<void> {
     if (!r.ok) return
-    const entry = this.host.catalog().entries[r.runtime]
+    const entry = this.host.localProbeCatalog().entries[r.runtime] ?? this.host.catalog().entries[r.runtime]
     if (!entry || this.host.admittedRuntimes()[r.runtime] === undefined) return // curated candidates pre-admission stay out
     const store = this.host.store()
     try {
@@ -647,8 +641,8 @@ export class RuntimeFactsRegistry {
         }
         await this.rebuildCatalog(r.runtime)
       }
-      // Phase 2 uses host executables, so image runtimes stop at the sandbox's phase-1 facts.
-      if (this.host.executionLocation(r.runtime) === 'host') {
+      // Self-hosted model discovery always uses host executables, including for VM sessions.
+      if (!this.host.launch().k8s) {
         this.host.noteCatalogProbe({
           runtimeId: r.runtime,
           rt: entry.runtime,

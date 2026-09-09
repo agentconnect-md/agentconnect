@@ -22,6 +22,37 @@ function rowBytes(row: Record<string, SQLInputValue>): number {
   return Object.values(row).reduce<number>((total, value) => total + valueBytes(value), 0)
 }
 
+/** Query provider names only; expired or disabled logins remain discoverable for reauthentication. */
+export function discoverOmpCredentialProviders(sourcePath: string): string[] {
+  let source: DatabaseSync | undefined
+  try {
+    if (!lstatSync(sourcePath).isFile()) return []
+    source = new DatabaseSync(sourcePath, { readOnly: true })
+    return source
+      .prepare(
+        `
+      SELECT DISTINCT provider FROM auth_credentials
+      WHERE typeof(provider) = 'text' AND length(trim(provider)) > 0
+        AND length(data) <= ${MAX_ROW_BYTES}
+        AND CASE WHEN json_valid(data) THEN
+          (credential_type = 'api_key' AND json_type(data, '$.key') = 'text'
+            AND length(trim(json_extract(data, '$.key'))) > 0)
+          OR (credential_type = 'oauth' AND (
+            (json_type(data, '$.access') = 'text' AND length(trim(json_extract(data, '$.access'))) > 0)
+            OR (json_type(data, '$.refresh') = 'text' AND length(trim(json_extract(data, '$.refresh'))) > 0)))
+        ELSE 0 END
+      ORDER BY provider
+    `
+      )
+      .all()
+      .map((row) => String(row.provider))
+  } catch {
+    return []
+  } finally {
+    source?.close()
+  }
+}
+
 /**
  * Copy only OMP's credential schema and rows into a fresh private database.
  * Reviewed against can1357/oh-my-pi b0d04e517335ada4e00ef8dc93aad9f4d1be8d21.
