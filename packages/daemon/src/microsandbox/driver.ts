@@ -95,6 +95,18 @@ export class MicrosandboxManager {
     return (this.preparation ??= this.probe())
   }
 
+  async prepareImage(): Promise<void> {
+    const started = performance.now()
+    const { command, args } = this.options.msbCommand
+    this.options.log?.info(`microsandbox: preparing image ${this.options.config.image}`)
+    await runFile(command, [...args, 'pull', this.options.config.image, '--materialize', 'layered', '--quiet'], {
+      env: { ...process.env, MSB_HOME: join(this.options.root, 'microsandbox'), MSB_BACKEND: 'local' },
+      timeout: 5 * 60_000,
+      maxBuffer: 1024 * 1024
+    })
+    this.options.log?.info(`microsandbox: image prepared in ${((performance.now() - started) / 1000).toFixed(1)}s`)
+  }
+
   driverFor(environment: MicrosandboxEnvironment): SpawnDriver {
     return { launch: (request) => this.launch(environment, request) }
   }
@@ -254,12 +266,7 @@ export class MicrosandboxManager {
         }
       }
     }
-    const { command, args } = this.options.msbCommand
-    await runFile(command, [...args, 'pull', this.options.config.image, '--materialize', 'all', '--quiet'], {
-      env: { ...process.env, MSB_HOME: join(this.options.root, 'microsandbox'), MSB_BACKEND: 'local' },
-      timeout: 5 * 60_000,
-      maxBuffer: 1024 * 1024
-    })
+    await this.prepareImage()
     const name = `${this.name('probe')}-${randomUUID().slice(0, 8)}`
     let sandbox = await this.builder(name, []).create()
     try {

@@ -8,15 +8,31 @@
 //
 // This check turns that silent degradation into a hard build failure. It runs
 // after tsdown in the daemon's `build` script; it ships nowhere (files: ["dist"]).
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { builtinModules } from 'node:module'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const nodeBuiltins = new Set(builtinModules.flatMap((spec) => [spec, `node:${spec}`]))
 
 const bundlePath = new URL('../dist/index.js', import.meta.url)
 const bundle = readFileSync(bundlePath, 'utf8')
+
+const prepareRoot = mkdtempSync(join(tmpdir(), 'ac-prepare-upgrade-'))
+try {
+  const prepared = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('../dist/prepare-upgrade.js', import.meta.url)), '--root', prepareRoot],
+    { encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH ?? '' } }
+  )
+  if (prepared.status !== 0 || existsSync(join(prepareRoot, 'microsandbox'))) {
+    throw new Error(`bundled SRT upgrade preparation failed: ${prepared.stderr}`)
+  }
+} finally {
+  rmSync(prepareRoot, { recursive: true, force: true })
+}
 
 // These packages must be embedded because the published manifest has no runtime
 // dependencies. Cover both static imports and the dynamic import used by the

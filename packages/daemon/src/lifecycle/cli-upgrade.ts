@@ -22,11 +22,14 @@ export async function runCliUpgrade(
   cliEntry: string,
   targetVersion: string,
   root: string,
-  log: UpgradeLog
+  log: UpgradeLog,
+  configPath?: string
 ): Promise<boolean> {
   log.info(`cp: installing daemon ${targetVersion} via ${cliEntry}`)
   return await new Promise<boolean>((resolve) => {
-    const child = spawn(process.execPath, [cliEntry, 'upgrade', '--to', targetVersion, '--root', root], {
+    const args = [cliEntry, 'upgrade', '--to', targetVersion, '--root', root]
+    if (configPath) args.push('--config', configPath)
+    const child = spawn(process.execPath, args, {
       stdio: 'inherit'
     })
     child.on('exit', (code) => {

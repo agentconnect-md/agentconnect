@@ -279,6 +279,32 @@ async function fixture() {
 }
 
 describe('microsandbox process and VM ownership', () => {
+  it('prepares only layered image artifacts without stopping an existing VM', async () => {
+    const { manager, options, environment, request, created } = await fixture()
+    const runtime = await manager.driverFor(environment).launch(request)
+    const argsFile = join(options.root, 'pull.json')
+    options.msbCommand = {
+      command: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(1)))`
+      ]
+    }
+    await manager.prepareImage()
+    expect(JSON.parse(await readFile(argsFile, 'utf8'))).toEqual([
+      'pull',
+      'test-image',
+      '--materialize',
+      'layered',
+      '--quiet'
+    ])
+    expect(created).toHaveLength(1)
+    expect(created[0]!.status).toBe('running')
+    expect(created[0]!.stopWithTimeout).not.toHaveBeenCalled()
+    await runtime.stop(0)
+    await manager.discard(environment.id)
+  })
+
   it('retains Docker data across manager restarts and retries failed volume cleanup without losing ownership', async () => {
     const { manager, options, environment, request, created, volumes, removeVolume } = await fixture()
     const runtime = await manager.driverFor(environment).launch(request)

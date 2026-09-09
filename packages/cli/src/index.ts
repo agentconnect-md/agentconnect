@@ -324,6 +324,7 @@ async function main(): Promise<void> {
       try {
         await runUpgrade(root, {
           to: o.to,
+          configPath: program.opts().config,
           channel: asChannel(o.channel),
           restart: Boolean(o.restart),
           keep: keepOption(o.keep)

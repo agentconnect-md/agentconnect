@@ -28,7 +28,7 @@
 # The shim's own build (tsdown.shim.config.ts) inlines every dependency so this image installs
 # no node_modules for it. That separation is asserted at build time by the daemon package's
 # assert-self-contained step and re-asserted here against the copied artifact.
-FROM node:24-bookworm-slim AS shim-builder
+FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS shim-builder
 WORKDIR /build
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH
@@ -64,7 +64,7 @@ RUN pnpm --filter "@agentconnect.md/daemon^..." build \
 # layer receives only the verified binary and never sees the curl this needs, so "the shim and nothing the shim
 # does not need" still holds. Pinned by version AND sha256 — an unpinned download would make the contents of an
 # image that runs half-trusted code a function of whatever a mirror served on build day.
-FROM node:24-bookworm-slim AS gh-cli
+FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS gh-cli
 ARG GH_CLI_VERSION=2.97.0
 ARG GH_CLI_SHA256_AMD64=a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112
 ARG GH_CLI_SHA256_ARM64=73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5
@@ -89,7 +89,7 @@ RUN set -eu; \
 # ─────────────────────────── Chrome for Testing ─────────────────────────────
 # Baked so a browser turn costs no download: `agent-browser install` fetches 391 MB into $HOME, per workspace VOLUME.
 # Own stage, version- and sha256-pinned, for the reasons gh's is. No --version here — that needs the runtime layer's libraries.
-FROM node:24-bookworm-slim AS chrome
+FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS chrome
 ARG CHROME_VERSION=152.0.7977.75
 ARG CHROME_SHA256_AMD64=a16d36890636bd72251133b27f05825f7f9269c2425b3408fa3a76e10dccd8f1
 ARG TARGETARCH
@@ -108,7 +108,7 @@ RUN set -eu; \
   chmod -R a-w /out
 
 # Standalone runtimes for the full image; their downloads never enter the pool image.
-FROM node:24-bookworm-slim AS full-native-runtimes
+FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS full-native-runtimes
 ARG OMP_VERSION=17.0.5
 ARG OMP_SHA256_AMD64=319d08ab8e5fb80c73f734907d5f47aa8bbd4ea31f7a19bacf8611c5aba26c31
 ARG ANTIGRAVITY_VERSION=1.1.1
@@ -142,7 +142,7 @@ RUN curl --retry 5 -fsSL -o /tmp/devin.tar.gz \
   && rm -rf /tmp/devin.tar.gz /tmp/bin
 
 # ─────────────────────────────── runtime ────────────────────────────────────
-FROM node:24-bookworm-slim AS runtime-base
+FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS runtime-base
 
 # Exact pins keep the published runtime table truthful.
 ARG CLAUDE_ACP_VERSION=0.75.1

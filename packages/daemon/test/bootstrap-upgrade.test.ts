@@ -77,6 +77,7 @@ describe('auth-only daemon bootstrap upgrade', () => {
     const run = runBootstrapUpgrade(
       {
         root: rootWithCli(),
+        configPath: '/custom/config.json',
         supervisor: 'service',
         overrides: { apiUrl: 'ws://cp.test', apiKey: 'key' }
       },
@@ -103,6 +104,12 @@ describe('auth-only daemon bootstrap upgrade', () => {
     transport.pushInbound(encode(buildEnvelope('ack', { ok: true }, { corr: result.id as string })))
 
     await expect(run).resolves.toBe('restart')
-    expect(install).toHaveBeenCalledWith(expect.any(String), '9.9.9', expect.any(String), expect.any(Object))
+    expect(install).toHaveBeenCalledWith(
+      expect.any(String),
+      '9.9.9',
+      expect.any(String),
+      expect.any(Object),
+      '/custom/config.json'
+    )
   })
 })
