@@ -1,5 +1,7 @@
 import type {
   MemoryContextResult,
+  MemoryEntryCreateRequest,
+  MemoryEntryUpdateRequest,
   MemoryEntryCapabilities,
   MemoryEntryErrorCode,
   MemoryEntrySummary
@@ -8,7 +10,8 @@ import type {
 export class MemoryEntriesError extends Error {
   constructor(
     readonly code: MemoryEntryErrorCode,
-    message: string
+    message: string,
+    readonly currentRevision?: string
   ) {
     super(message)
     this.name = 'MemoryEntriesError'
@@ -40,6 +43,14 @@ export interface MemoryEntriesView {
   capabilities: MemoryEntryCapabilities
   list?(request: { cursor?: string; limit: number }): Promise<EntryPage>
   get?(coordinate: EntryCoordinate): Promise<EntryDocument | null>
+  create?(request: MemoryEntryCreateRequest): Promise<EntryMutationResult>
+  update?(
+    coordinate: EntryCoordinate,
+    request:
+      | Omit<Extract<MemoryEntryUpdateRequest, { text: string }>, 'ref'>
+      | Omit<Extract<MemoryEntryUpdateRequest, { edit: unknown }>, 'ref'>
+  ): Promise<EntryMutationResult>
+  delete?(coordinate: EntryCoordinate, request: { revision?: string }): Promise<EntryMutationResult>
   context(request: { maxBytes: number }): Promise<MemoryContextResult>
 }
 
@@ -47,4 +58,10 @@ export interface MemoryEntriesView {
 export interface MemoryContinuationStore {
   put(value: string, expiresAt: number): Promise<string>
   get(token: string, now: number): Promise<string | undefined>
+}
+
+export interface EntryMutationResult {
+  operationId: string
+  entry?: EntrySummary
+  catalogRevision?: string
 }

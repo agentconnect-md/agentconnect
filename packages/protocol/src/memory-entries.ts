@@ -120,3 +120,36 @@ export const MemoryEntryErrorCode = z.enum([
   'AMBIGUOUS_WRITE'
 ])
 export type MemoryEntryErrorCode = z.infer<typeof MemoryEntryErrorCode>
+
+const mutationText = z.string().max(256_000)
+const mutationMetadata = z.record(z.string(), z.unknown()).optional()
+export const MemoryEntryCreateRequest = z
+  .object({ label: z.string().min(1).max(512).optional(), text: mutationText, metadata: mutationMetadata })
+  .strict()
+export type MemoryEntryCreateRequest = z.infer<typeof MemoryEntryCreateRequest>
+const updateTarget = {
+  ref: MemoryEntryRef,
+  revision: z.string().min(1).max(512).optional(),
+  metadata: mutationMetadata
+}
+export const MemoryEntryUpdateRequest = z.union([
+  z.object({ ...updateTarget, text: mutationText }).strict(),
+  z
+    .object({ ...updateTarget, edit: z.object({ oldText: mutationText.min(1), newText: mutationText }).strict() })
+    .strict()
+])
+export type MemoryEntryUpdateRequest = z.infer<typeof MemoryEntryUpdateRequest>
+export const MemoryEntryDeleteRequest = z
+  .object({ ref: MemoryEntryRef, revision: z.string().min(1).max(512).optional() })
+  .strict()
+export type MemoryEntryDeleteRequest = z.infer<typeof MemoryEntryDeleteRequest>
+export const MemoryEntryMutationReceipt = z
+  .object({
+    operationId: z.string().uuid(),
+    state: z.literal('completed'),
+    entry: MemoryEntrySummary.optional(),
+    deletedRef: MemoryEntryRef.optional(),
+    catalogRevision: z.string().max(512).optional()
+  })
+  .strict()
+export type MemoryEntryMutationReceipt = z.infer<typeof MemoryEntryMutationReceipt>

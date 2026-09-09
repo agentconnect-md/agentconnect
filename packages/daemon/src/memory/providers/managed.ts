@@ -84,8 +84,12 @@ export class ManagedMemoryProvider implements MemoryProvider {
     return disabledRuntimeMemoryEnv(runtime, effectiveEnv, runtimeId)
   }
 
-  entryView(scope: MemoryScope) {
-    return managedMemoryEntries(this.readRoots(scope), scope.agentId)
+  entryView(scope: MemoryScope, writeSource?: MemoryWriteSource) {
+    return managedMemoryEntries(
+      this.readRoots(scope),
+      scope.agentId,
+      writeSource ? { source: writeSource, sourceTurnId: scope.sourceTurnId } : undefined
+    )
   }
 
   async ensure(scope: MemoryScope, agentName: string): Promise<void> {
