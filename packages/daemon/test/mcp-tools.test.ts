@@ -392,6 +392,9 @@ describe('toolsForIntegrations', () => {
     // Universal, platform-independent; no Slack/Telegram read tools. `sendMessage` is
     // always present (session-concept §3); `messageAgent` is gone (merged into it).
     expect(tools.map((t) => t.name)).toEqual([
+      'describeMemoryEntries',
+      'listMemoryEntries',
+      'getMemoryEntry',
       'readMemory',
       'writeMemory',
       'listAgents',
@@ -510,6 +513,8 @@ describe('toolsForIntegrations', () => {
 
   it('projects only reviewed external-memory capabilities onto stable core tool names', () => {
     expect(externalMemoryTools(new Set(['recall', 'capture', 'get', 'delete'])).map((tool) => tool.name)).toEqual([
+      'describeMemoryEntries',
+      'getMemoryEntry',
       'searchMemory',
       'getMemory',
       'deleteMemory'

@@ -1,5 +1,6 @@
-import type { MemoryEntriesReadReq, MemoryEntriesReadResult } from '@agentconnect.md/protocol'
 import type {
+  MemoryEntriesReadReq,
+  MemoryEntriesReadResult,
   AnyFrame,
   MemoryChannelsReq,
   MemoryHistoryReq,

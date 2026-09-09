@@ -5,18 +5,7 @@ import {
   MemoryEntryGetRequest,
   MemoryEntryContent,
   MemoryEntryErrorCode,
-  type MemoryEntriesReadReq
-} from '@agentconnect.md/protocol'
-/**
- * `http/routes/agents.ts` (design §2.1) — CRUD for agent definitions through the
- * C6 `AgentRepo`. The CP mints the agent UUID (the wire id used across
- * `route/*`, `agent/*`, `event/session`). Scoped to the caller's org (the
- * devAuth/OIDC principal). Placement/launch happen over the WS edge — not here.
- */
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { randomUUID } from 'node:crypto'
-import { z } from 'zod'
-import type {
+  type MemoryEntriesReadReq,
   WorkspaceListPage,
   WorkspaceReadContent,
   WorkspaceGitStatus,
@@ -43,6 +32,15 @@ import type {
   DreamFilesPage,
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
+/**
+ * `http/routes/agents.ts` (design §2.1) — CRUD for agent definitions through the
+ * C6 `AgentRepo`. The CP mints the agent UUID (the wire id used across
+ * `route/*`, `agent/*`, `event/session`). Scoped to the caller's org (the
+ * devAuth/OIDC principal). Placement/launch happen over the WS edge — not here.
+ */
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
 import type { GitlabLiveProject } from '../../gitlab/provisioner.js'
 import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import {
@@ -953,14 +951,12 @@ export function agentRoutes(deps: HttpDeps) {
       const agent = await getServingAgent(req, id)
       if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
       if (!agent.daemonId)
-        return reply
-          .code(503)
-          .send({
-            error: 'Service Unavailable',
-            statusCode: 503,
-            message: 'agent has no live daemon',
-            code: 'UNAVAILABLE'
-          })
+        return reply.code(503).send({
+          error: 'Service Unavailable',
+          statusCode: 503,
+          message: 'agent has no live daemon',
+          code: 'UNAVAILABLE'
+        })
       try {
         const answer = await deps.control.memoryEntriesRead(agent.daemonId, {
           ...operation,

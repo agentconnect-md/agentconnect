@@ -670,3 +670,40 @@ describe('unified memory entry routes', () => {
     expect(calls).toHaveLength(before)
   })
 })
+
+it('reads refs returned by listing through the full HTTP router up to the contract limit', async () => {
+  await seedDaemon(prisma, DAEMON)
+  await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+  const entries = [400, 4096].map((length) => ({
+    ref: Buffer.alloc((length * 3) / 4, 7).toString('base64url'),
+    label: `entry-${length}`,
+    format: 'markdown' as const,
+    byteSize: 4,
+    origin: 'active' as const,
+    editable: false
+  }))
+  const seen: string[] = []
+  const control = {
+    async memoryEntriesRead(
+      _daemon: string,
+      req: import('@agentconnect.md/protocol').MemoryEntriesReadReq
+    ): Promise<import('@agentconnect.md/protocol').MemoryEntriesReadResult> {
+      if (req.operation === 'list')
+        return { operation: 'list', result: { entries, consistency: 'live', order: 'topic' } }
+      if (req.operation !== 'get') throw new Error('unexpected operation')
+      seen.push(req.request.ref)
+      const entry = entries.find((entry) => entry.ref === req.request.ref)
+      return { operation: 'get', result: entry ? { entry, text: 'text', complete: true } : null }
+    }
+  }
+  running = buildHttpApp(prisma, undefined, LIVE, control as unknown as ControlSender)
+  const url = `${ORG}/agents/${AGENT}/memory/entries`
+  const list = await running.app.inject({ method: 'GET', url })
+  expect(list.statusCode).toBe(200)
+  for (const entry of list.json().entries) {
+    const response = await running.app.inject({ method: 'GET', url: `${url}/${encodeURIComponent(entry.ref)}` })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({ entry: { ref: entry.ref }, text: 'text', complete: true })
+  }
+  expect(seen).toEqual(entries.map((entry) => entry.ref))
+})

@@ -1,21 +1,7 @@
 import {
   MEMORY_ENTRIES_V1_FEATURE,
   type MemoryEntriesReadReq,
-  type MemoryEntriesReadResult
-} from '@agentconnect.md/protocol'
-/**
- * `ControlSender` (design §4.7, the single fencing site) — the ONLY place that
- * stamps the `ControlExt` fencing block on outbound C→D control frames.
- * Centralizing it keeps the invariants (epoch from the live connection and the
- * current `launchId` fence) in one auditable spot.
- *
- * It is transport-aware only through the {@link ConnChannel} firewall held by the
- * `ConnectionRegistry` — it never imports `ws`. The CP sends control metadata,
- * never message bodies; daemons construct any resulting prompt locally.
- */
-import { createHash } from 'node:crypto'
-import { daemonSupportsAgent, encodeSpecWorkspaceForPeer } from '../domain/daemon-features.js'
-import type {
+  type MemoryEntriesReadResult,
   Ack,
   AgentLaunch,
   AutoMergeSetReq,
@@ -138,6 +124,18 @@ import type {
   SessionPullRequestFeedbackResult,
   CodeHostNoteDesired
 } from '@agentconnect.md/protocol'
+/**
+ * `ControlSender` (design §4.7, the single fencing site) — the ONLY place that
+ * stamps the `ControlExt` fencing block on outbound C→D control frames.
+ * Centralizing it keeps the invariants (epoch from the live connection and the
+ * current `launchId` fence) in one auditable spot.
+ *
+ * It is transport-aware only through the {@link ConnChannel} firewall held by the
+ * `ConnectionRegistry` — it never imports `ws`. The CP sends control metadata,
+ * never message bodies; daemons construct any resulting prompt locally.
+ */
+import { createHash } from 'node:crypto'
+import { daemonSupportsAgent, encodeSpecWorkspaceForPeer } from '../domain/daemon-features.js'
 import {
   MAX_ORGANIZATION_SUGGESTION_BODY_BYTES,
   ORGANIZATION_SUGGESTION_CHUNK_BYTES,
