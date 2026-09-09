@@ -151,7 +151,7 @@ export interface MemoryProvider {
   readonly kind: MemoryProviderKind
 
   // Additive read contract; native and none keep their existing lifecycle and file compatibility view.
-  entryView?(scope: MemoryScope): Promise<MemoryEntriesView | null>
+  entryView?(scope: MemoryScope, writeSource?: MemoryWriteSource): Promise<MemoryEntriesView | null>
 
   /** Env delta to merge into the runtime child so its OWN memory goes where this
    *  provider wants it: `managed` disables it; `native` redirects it under the

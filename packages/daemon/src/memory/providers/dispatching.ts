@@ -100,9 +100,9 @@ export class DispatchingMemoryProvider implements MemoryProvider {
     throw new Error('DispatchingMemoryProvider.runtimeEnv must not be called — use memoryProviderFor at spawn')
   }
 
-  async entryView(scope: MemoryScope) {
+  async entryView(scope: MemoryScope, writeSource?: MemoryWriteSource) {
     const provider = scope.root ? this.managed : this.forAgent(scope.agentId)
-    return (await provider.entryView?.(scope)) ?? null
+    return (await provider.entryView?.(scope, writeSource)) ?? null
   }
 
   ensure(scope: MemoryScope, agentName: string): Promise<void> {

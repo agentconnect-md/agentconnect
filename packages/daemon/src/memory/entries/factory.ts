@@ -1,3 +1,4 @@
+import type { MemoryWriteSource } from '../store.js'
 import type { MemoryProvider, MemoryScope } from '../types.js'
 import type { LocalStore } from '../../store/local-store.js'
 import { MemoryEntriesError } from './contract.js'
@@ -10,12 +11,14 @@ export async function createMemoryEntryService(input: {
   scope: MemoryScope
   store: LocalStore
   canRead: () => boolean | Promise<boolean>
+  write?: { source: MemoryWriteSource; canWrite: () => boolean | Promise<boolean> }
 }): Promise<MemoryEntries> {
   const scope = { ...input.scope }
   return new MemoryEntries(
     async () => {
       if (!(await input.canRead())) throw new MemoryEntriesError('FORBIDDEN', 'memory read access is not allowed')
-      const view = await input.provider.entryView?.(scope)
+      const writeSource = input.write && (await input.write.canWrite()) ? input.write.source : undefined
+      const view = await input.provider.entryView?.(scope, writeSource)
       if (view) return view
       return {
         identity: memoryDigest(['no-entry-view', scope.agentId]),
@@ -36,6 +39,11 @@ export async function createMemoryEntryService(input: {
       }
     },
     await memoryEntryTokens(input.store),
-    memoryContinuations(input.store, scope.agentId)
+    memoryContinuations(input.store, scope.agentId),
+    Date.now,
+    async () => {
+      if (!input.write || !(await input.write.canWrite()))
+        throw new MemoryEntriesError('FORBIDDEN', 'memory write access is not allowed')
+    }
   )
 }

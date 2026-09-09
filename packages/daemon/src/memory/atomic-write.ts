@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import type { MemoryTransactionResult } from '@agentconnect.md/protocol'
+import type { MemoryTransactionResult, MemoryTransactionReceipt } from '@agentconnect.md/protocol'
 import {
   MemoryConflictError,
   MemoryHomeUnavailableError,
   MemoryPathError,
   MemoryTooLargeError,
   type MemoryFs,
+  type MemoryFsFile,
   type MemoryFsTransactionRequest
 } from './fs.js'
 import { deriveMemoryIndex, listMemory, MEMORY_DIRNAME, MEMORY_INDEX, type MemoryWriteSource } from './store.js'
@@ -36,6 +37,27 @@ export async function atomicWriteMemoryFileHoldingLock(
   source: MemoryWriteSource,
   sourceTurnId?: string
 ): Promise<{ size: number; mtime: string }> {
+  const result = await atomicMutateMemoryFileHoldingLock(
+    fs,
+    topic,
+    (current) => {
+      if (ifMatchMtime && current?.mtime !== ifMatchMtime) throw new MemoryConflictError('memory file changed')
+      return content
+    },
+    source,
+    sourceTurnId
+  )
+  return { size: Buffer.byteLength(content), mtime: result.receipt.files.find((file) => file.path === topic)!.mtime! }
+}
+
+// Prepare under the root fingerprint; null means an explicit delete, while an empty string remains a file.
+export async function atomicMutateMemoryFileHoldingLock(
+  fs: MemoryFs,
+  topic: string,
+  prepare: (current: MemoryFsFile | null) => string | null,
+  source: MemoryWriteSource,
+  sourceTurnId?: string
+): Promise<{ content: string | null; receipt: MemoryTransactionReceipt }> {
   const transact = fs.atomicTransaction
   const stage = fs.stageTransactionFile
   if (!transact || !stage) throw new MemoryHomeUnavailableError('feature', 'atomic memory publication is unavailable')
@@ -44,7 +66,8 @@ export async function atomicWriteMemoryFileHoldingLock(
   if (snapshot.operation !== 'snapshot')
     throw new MemoryHomeUnavailableError('connection', 'unexpected memory snapshot reply')
   const current = await fs.readFile(`${MEMORY_DIRNAME}/${topic}`)
-  if (ifMatchMtime && current?.mtime !== ifMatchMtime) throw new MemoryConflictError('memory file changed')
+  const content = prepare(current)
+  if (content === null && !current) throw new MemoryConflictError('memory file is absent')
   const replacements = [{ path: topic, content, previous: current?.content ?? null }]
   if (topic !== MEMORY_INDEX) {
     const entries = []
@@ -62,8 +85,10 @@ export async function atomicWriteMemoryFileHoldingLock(
         description: header.description ?? ''
       })
     }
-    const { header } = parseMemoryFrontmatter(content)
-    entries.push({ topic, name: header.name || memoryNameForTopic(topic), description: header.description ?? '' })
+    if (content !== null) {
+      const { header } = parseMemoryFrontmatter(content)
+      entries.push({ topic, name: header.name || memoryNameForTopic(topic), description: header.description ?? '' })
+    }
     const index = await fs.readFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`)
     const next = deriveMemoryIndex(entries, index?.content)
     if (next !== undefined) replacements.push({ path: MEMORY_INDEX, content: next, previous: index?.content ?? null })
@@ -72,6 +97,10 @@ export async function atomicWriteMemoryFileHoldingLock(
   let dispatched = false
   try {
     for (const replacement of replacements) {
+      if (replacement.content === null) {
+        changes.push({ action: 'delete', path: replacement.path, expectedRevision: digest(replacement.previous!) })
+        continue
+      }
       const staged = await stage(MEMORY_DIRNAME, replacement.content)
       changes.push({
         action: 'put',
@@ -116,17 +145,14 @@ export async function atomicWriteMemoryFileHoldingLock(
         result.receipt.files.some(
           (file) =>
             file.path === change.path &&
-            change.action === 'put' &&
-            file.revision === change.stagedRevision &&
-            file.mtime !== null
+            (change.action === 'put'
+              ? file.revision === change.stagedRevision && file.mtime !== null
+              : file.revision === null && file.mtime === null)
         )
       )
     )
       throw new MemoryAmbiguousWriteError(request.operationId)
-    const committed = result.receipt.files.find((file) => file.path === topic)
-    if (!committed?.mtime || committed.revision !== digest(content))
-      throw new MemoryAmbiguousWriteError(request.operationId)
-    return { size: Buffer.byteLength(content), mtime: committed.mtime }
+    return { content, receipt: result.receipt }
   } finally {
     // Never remove staging after an ambiguous commit; the home owns expiration of abandoned staging.
     if (!dispatched)

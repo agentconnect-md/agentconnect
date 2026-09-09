@@ -8,7 +8,11 @@ import {
   MemoryEntryGetRequest,
   MemoryEntryListRequest,
   MemoryEntryListResult,
-  MemoryEntrySummary
+  MemoryEntrySummary,
+  MemoryEntryCreateRequest,
+  MemoryEntryUpdateRequest,
+  MemoryEntryDeleteRequest,
+  MemoryEntryMutationReceipt
 } from '@agentconnect.md/protocol'
 import {
   MemoryEntriesError,
@@ -71,8 +75,65 @@ export class MemoryEntries {
     private readonly resolve: () => Promise<MemoryEntriesView>,
     private readonly tokens: MemoryEntryTokens,
     private readonly continuations: MemoryContinuationStore,
-    private readonly now: () => number = Date.now
+    private readonly now: () => number = Date.now,
+    private readonly authorizeWrite?: () => void | Promise<void>
   ) {}
+
+  async create(request: unknown): Promise<MemoryEntryMutationReceipt> {
+    const req = this.parse(MemoryEntryCreateRequest, request)
+    return this.mutation(async (view) => {
+      if (!view.capabilities.operations.includes('create') || !view.create)
+        throw new MemoryEntriesError('UNSUPPORTED', 'memory creation is unavailable')
+      const result = await view.create(req)
+      return MemoryEntryMutationReceipt.parse({
+        operationId: result.operationId,
+        state: 'completed',
+        ...(result.entry ? { entry: this.summary(view, result.entry) } : {}),
+        catalogRevision: result.catalogRevision
+      })
+    })
+  }
+
+  async update(request: unknown): Promise<MemoryEntryMutationReceipt> {
+    const req = this.parse(MemoryEntryUpdateRequest, request)
+    return this.mutation(async (view) => {
+      if (!view.capabilities.operations.includes('update') || !view.update)
+        throw new MemoryEntriesError('UNSUPPORTED', 'memory update is unavailable')
+      const coordinate = this.tokens.coordinate(view.identity, req.ref)
+      const { ref: _ref, ...replacement } = req
+      const result = await view.update(coordinate, replacement)
+      return MemoryEntryMutationReceipt.parse({
+        operationId: result.operationId,
+        state: 'completed',
+        ...(result.entry ? { entry: this.summary(view, result.entry) } : {}),
+        catalogRevision: result.catalogRevision
+      })
+    })
+  }
+
+  async delete(request: unknown): Promise<MemoryEntryMutationReceipt> {
+    const req = this.parse(MemoryEntryDeleteRequest, request)
+    return this.mutation(async (view) => {
+      if (!view.capabilities.operations.includes('delete') || !view.delete)
+        throw new MemoryEntriesError('UNSUPPORTED', 'memory deletion is unavailable')
+      const coordinate = this.tokens.coordinate(view.identity, req.ref)
+      const result = await view.delete(coordinate, { revision: req.revision })
+      return MemoryEntryMutationReceipt.parse({
+        operationId: result.operationId,
+        state: 'completed',
+        deletedRef: req.ref,
+        catalogRevision: result.catalogRevision
+      })
+    })
+  }
+
+  private mutation<T>(operation: (view: MemoryEntriesView) => Promise<T>): Promise<T> {
+    return this.call(async () => {
+      if (!this.authorizeWrite) throw new MemoryEntriesError('FORBIDDEN', 'memory write access is not allowed')
+      await this.authorizeWrite()
+      return operation(await this.resolve())
+    })
+  }
 
   async describe(): Promise<MemoryEntryCapabilities> {
     return this.call(async () => MemoryEntryCapabilities.parse((await this.resolve()).capabilities))

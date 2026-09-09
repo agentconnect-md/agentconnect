@@ -1,5 +1,12 @@
+import { mutateManagedMemoryEntry, type ManagedEntryMutation } from './writer.js'
+import type { MemoryWriteSource } from '../store.js'
 import { randomUUID } from 'node:crypto'
-import type { MemoryContextResult, MemoryEntryCapabilities } from '@agentconnect.md/protocol'
+import type {
+  MemoryContextResult,
+  MemoryEntryCapabilities,
+  MemoryEntryCreateRequest,
+  MemoryEntryUpdateRequest
+} from '@agentconnect.md/protocol'
 import {
   listMemory,
   MemoryConflictError,
@@ -41,10 +48,20 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
 
   constructor(
     private readonly roots: readonly MemoryFs[],
-    bindingGeneration: string
+    bindingGeneration: string,
+    private readonly writeContext?: { source: MemoryWriteSource; sourceTurnId?: string }
   ) {
     if (roots.length < 1 || roots.length > 2) throw new Error('managed memory requires one root or an overlay')
     this.identity = memoryDigest(['managed', bindingGeneration, roots.map((root) => root.key)])
+    if (writeContext && roots[0]!.atomicTransaction && roots[0]!.stageTransactionFile && roots[0]!.captureStatus) {
+      this.capabilities = {
+        ...this.capabilities,
+        operations: ['list', 'get', 'create', 'update', 'delete'],
+        writeConsistency: 'conditional',
+        exactCreate: true,
+        exactEdit: true
+      }
+    }
   }
 
   async list(): Promise<EntryPage> {
@@ -121,8 +138,72 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
         updatedAt: file.mtime,
         revision: memoryDigest(file.content),
         origin: layer === 0 ? 'active' : 'inherited',
-        editable: false
+        editable: layer === 0 && this.capabilities.operations.includes('update')
       }
+    }
+  }
+
+  async create(request: MemoryEntryCreateRequest) {
+    if (request.metadata !== undefined)
+      throw new MemoryEntriesError('UNSUPPORTED', 'managed metadata belongs in Markdown frontmatter')
+    const name = request.label ?? randomUUID()
+    const topic = name.endsWith('.md') ? name : `${name}.md`
+    return this.mutate(topic, { operation: 'create', text: request.text })
+  }
+
+  async update(
+    coordinate: EntryCoordinate,
+    request:
+      | Omit<Extract<MemoryEntryUpdateRequest, { text: string }>, 'ref'>
+      | Omit<Extract<MemoryEntryUpdateRequest, { edit: unknown }>, 'ref'>
+  ) {
+    this.writableCoordinate(coordinate)
+    if (!request.revision) throw new MemoryEntriesError('INVALID_ARGUMENT', 'managed update requires a revision')
+    if (request.metadata !== undefined)
+      throw new MemoryEntriesError('UNSUPPORTED', 'managed metadata belongs in Markdown frontmatter')
+    return this.mutate(
+      coordinate.id,
+      'text' in request
+        ? { operation: 'update', revision: request.revision, text: request.text }
+        : { operation: 'update', revision: request.revision, edit: request.edit }
+    )
+  }
+
+  async delete(coordinate: EntryCoordinate, request: { revision?: string }) {
+    this.writableCoordinate(coordinate)
+    if (!request.revision) throw new MemoryEntriesError('INVALID_ARGUMENT', 'managed delete requires a revision')
+    return this.mutate(coordinate.id, { operation: 'delete', revision: request.revision })
+  }
+
+  private writableCoordinate(coordinate: EntryCoordinate) {
+    if (coordinate.partition !== '0')
+      throw new MemoryEntriesError('FORBIDDEN', 'inherited entries cannot be changed from this view')
+  }
+
+  private async mutate(topic: string, mutation: ManagedEntryMutation) {
+    if (!this.writeContext || !this.capabilities.operations.includes(mutation.operation))
+      throw new MemoryEntriesError('UNSUPPORTED', 'memory entry mutations are unavailable')
+    const result = await mutateManagedMemoryEntry(this.roots[0]!, topic, mutation, this.writeContext)
+    const file = result.receipt.files.find((entry) => entry.path === topic)!
+    const header = result.content === null ? undefined : parseMemoryFrontmatter(result.content).header
+    return {
+      operationId: result.receipt.operationId,
+      catalogRevision: result.receipt.revision,
+      ...(result.content === null
+        ? {}
+        : {
+            entry: {
+              coordinate: { partition: '0', id: topic },
+              label: header?.name ?? topic.replace(/\.md$/, ''),
+              ...(header?.description ? { description: header.description } : {}),
+              format: 'markdown' as const,
+              byteSize: Buffer.byteLength(result.content),
+              updatedAt: file.mtime!,
+              revision: result.revision,
+              origin: 'active' as const,
+              editable: true
+            }
+          })
     }
   }
 
@@ -146,7 +227,8 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
 // The marker travels with the logical tree; replacing the tree invalidates references to its old entries.
 export async function managedMemoryEntries(
   roots: readonly MemoryFs[],
-  bindingGeneration: string
+  bindingGeneration: string,
+  writeContext?: { source: MemoryWriteSource; sourceTurnId?: string }
 ): Promise<ManagedMemoryEntries> {
   const lineages: string[] = []
   for (const root of roots) {
@@ -168,5 +250,5 @@ export async function managedMemoryEntries(
       })
     )
   }
-  return new ManagedMemoryEntries(roots, memoryDigest([bindingGeneration, lineages]))
+  return new ManagedMemoryEntries(roots, memoryDigest([bindingGeneration, lineages]), writeContext)
 }
