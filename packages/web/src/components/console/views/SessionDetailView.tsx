@@ -4931,16 +4931,15 @@ export default function SessionDetailView() {
                             // collapsed work. A turn carries at most one (the row is upserted), but
                             // a merged conversation interleaves turns from several sources.
                             const planSteps = turn.steps.filter((s) => s.lane === PLAN_LANE)
-                            // The agent's in-band questions — their own block, above the answer,
-                            // because they are addressed to the reader rather than spoken at them.
-                            const elicitSteps = turn.steps.filter((s) => s.lane === ELICIT_LANE)
-                            const textSteps = turn.steps.filter(
-                              (s) =>
-                                !WORK_LANES.has(s.lane) &&
-                                s.lane !== NOTICE_LANE &&
-                                s.lane !== PLAN_LANE &&
-                                s.lane !== ELICIT_LANE
+                            // What the turn SAID, in the order it said it: spoken bubbles and the
+                            // agent's in-band question cards interleaved. A card gets its own
+                            // block rather than a bubble — it is addressed to the reader, not
+                            // spoken at them — but it stays where it was asked, since an agent
+                            // that explains itself and then asks must not read as asking first.
+                            const saidSteps = turn.steps.filter(
+                              (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE
                             )
+                            const textSteps = saidSteps.filter((s) => s.lane !== ELICIT_LANE)
                             const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
                             // Reasoning steps / tool commands / edited FILES (distinct paths across
                             // EDIT rows, since one EDIT row can touch several files).
@@ -5030,7 +5029,7 @@ export default function SessionDetailView() {
                                   </div>
                                   {noticeSteps.length > 0 && (
                                     <div
-                                      className={`flex min-w-0 flex-col gap-[3px] ${textSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
+                                      className={`flex min-w-0 flex-col gap-[3px] ${saidSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
                                     >
                                       {noticeSteps.map((st, si) => (
                                         <span
@@ -5044,20 +5043,21 @@ export default function SessionDetailView() {
                                   )}
                                   {planSteps.length > 0 && (
                                     <div
-                                      className={`flex min-w-0 flex-col gap-2 ${textSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
+                                      className={`flex min-w-0 flex-col gap-2 ${saidSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
                                     >
                                       {planSteps.map((st, si) => (
                                         <PlanBlock key={`p:${si}`} step={st} />
                                       ))}
                                     </div>
                                   )}
-                                  {elicitSteps.length > 0 && (
-                                    <div
-                                      className={`flex min-w-0 flex-col gap-2 ${textSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
-                                    >
-                                      {elicitSteps.map((st, si) => (
+                                  {/* One bubble per text step: a turn that answers in two chunks
+                            arrives as two delivered messages, so one wrapper around the set
+                            would merge messages the platform kept apart. A question card sits
+                            between them wherever the agent asked it. */}
+                                  {saidSteps.map((st, si) =>
+                                    st.lane === ELICIT_LANE ? (
+                                      <div key={`e:${st.elicit?.requestId ?? si}`} className={si > 0 ? 'mt-2' : ''}>
                                         <ElicitationCard
-                                          key={`e:${st.elicit?.requestId ?? si}`}
                                           step={st}
                                           {...(answerElicitation
                                             ? {
@@ -5066,29 +5066,25 @@ export default function SessionDetailView() {
                                               }
                                             : {})}
                                         />
-                                      ))}
-                                    </div>
+                                      </div>
+                                    ) : (
+                                      <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
+                                        {st.image && (
+                                          <img
+                                            src={`data:${st.image.mimeType};base64,${st.image.data}`}
+                                            alt={st.image.name}
+                                            className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
+                                          />
+                                        )}
+                                        {st.text && (
+                                          <div className="whitespace-pre-wrap">
+                                            <MessageText text={st.text} platform={st.platform} />
+                                          </div>
+                                        )}
+                                        <StepExtras step={st} sessionId={toolSid} />
+                                      </div>
+                                    )
                                   )}
-                                  {/* One bubble per text step: a turn that answers in two chunks
-                            arrives as two delivered messages, so one wrapper around the set
-                            would merge messages the platform kept apart. */}
-                                  {textSteps.map((st, si) => (
-                                    <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
-                                      {st.image && (
-                                        <img
-                                          src={`data:${st.image.mimeType};base64,${st.image.data}`}
-                                          alt={st.image.name}
-                                          className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
-                                        />
-                                      )}
-                                      {st.text && (
-                                        <div className="whitespace-pre-wrap">
-                                          <MessageText text={st.text} platform={st.platform} />
-                                        </div>
-                                      )}
-                                      <StepExtras step={st} sessionId={toolSid} />
-                                    </div>
-                                  ))}
                                   {workSteps.length > 0 && (
                                     <>
                                       {/* One row: the work toggle, with the bubble's copy button at

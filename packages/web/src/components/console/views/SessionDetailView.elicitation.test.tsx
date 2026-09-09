@@ -231,6 +231,25 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(live.answered[1]).toEqual(['session-1', 'agent-1', 'elicit-1', null, 'conv-1'])
   })
 
+  it('asks where it asked — after the words that set the question up, not above them', async () => {
+    // One live turn that speaks and THEN asks. The card used to be hoisted to the head of its
+    // turn, so the reader met the form before the sentence explaining it, and an earlier round's
+    // acknowledgement below the card read as an answer to this one.
+    live.steps = [
+      { kind: 'done', turnId: 'turn-1', agentId: 'agent-1', boundary: true, text: 'Before I cut it, one question.' },
+      CARD
+    ]
+    await render()
+
+    const shown = text()
+    const said = shown.indexOf('Before I cut it')
+    const asked = shown.indexOf('Which branch should I cut from?')
+    expect(said).toBeGreaterThanOrEqual(0)
+    expect(asked).toBeGreaterThan(said)
+    // And it is still the answerable card, not a record of one.
+    expect(buttonNamed('main')?.disabled).toBe(false)
+  })
+
   it('toggles a multi-select and answers with the list only on Confirm', async () => {
     live.steps = [
       { ...CARD, text: 'Which checks should I run?', elicit: { ...CARD.elicit, multi: { minItems: 1, maxItems: 2 } } }
