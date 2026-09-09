@@ -246,7 +246,8 @@ describe('daemon curated runtime admission', () => {
       // The fast runtime is reported while the curated probe is still in flight.
       await vi.waitFor(() => expect(emitted.at(-1)).toContain('explicit'), WAIT)
       expect((daemon as any).runtimeFacts.probing).toBe(true)
-      expect(emitted.at(-1)).not.toContain('hermes-agent')
+      expect(emitted.at(-1)).toContain('hermes-agent')
+      expect((daemon as any).runtimes['hermes-agent']).toBeUndefined()
 
       releaseCurated()
       await sweep

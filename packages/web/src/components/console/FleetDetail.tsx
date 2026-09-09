@@ -21,6 +21,7 @@ import {
   runtimeLabel,
   runtimeWarning,
   IMAGE_BINARY_MISSING_LABEL,
+  HOST_BINARY_MISSING_LABEL,
   status,
   type Agent,
   type DaemonRow
@@ -53,7 +54,7 @@ export interface FleetRuntime {
    *  a set whose members resolve one alias differently has no single answer to quote. */
   modelInfo?: Record<string, { name?: string; description?: string }>
   authRequired: boolean
-  unavailableReason?: 'image-binary-missing' | null
+  unavailableReason?: DaemonRow['runtimeModels'][number]['unavailableReason']
 }
 
 /** The set's answer for each model id: what every member that describes it agrees on, and
@@ -466,16 +467,16 @@ export function FleetRuntimesCard({
                     className={hasModels ? 'flex-none' : 'invisible flex-none'}
                   />
                 </button>
-                {warning === 'image-binary-missing' && (
+                {(warning === 'image-binary-missing' || warning === 'host-binary-missing') && (
                   <div className="flex items-center gap-[6px] bg-(--status-paused-soft) px-[13px] py-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
                     <Icon name="triangle-alert" size={12} className="flex-none" />
-                    {IMAGE_BINARY_MISSING_LABEL}
+                    {warning === 'host-binary-missing' ? HOST_BINARY_MISSING_LABEL : IMAGE_BINARY_MISSING_LABEL}
                   </div>
                 )}
                 {warning === 'auth-required' && (
                   <button
                     type="button"
-                    title="The runtime rejected a probe with 'authentication required' — show the command that logs it in on the daemon host."
+                    title="Show the command to sign in on the daemon host."
                     onClick={() =>
                       openModal('runtimeLogin', {
                         runtimeId: rt.runtime,

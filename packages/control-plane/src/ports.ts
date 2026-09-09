@@ -214,8 +214,10 @@ export interface DaemonRuntimeProfile {
    *  (-32000): the runtime is installed but needs a login on the daemon host.
    *  Drives the console's per-runtime login warning. */
   authRequired: boolean
-  unavailableReason?: 'image-binary-missing' | null
+  unavailableReason?: 'image-binary-missing' | 'host-binary-missing' | null
   hostVersion?: string | null
+  hostAvailable?: boolean | null
+  credentialsConfigured?: boolean | null
   /** When the daemon last reported this profile. */
   observedAt: Date
 }

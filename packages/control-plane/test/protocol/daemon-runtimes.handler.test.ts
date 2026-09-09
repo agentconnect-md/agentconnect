@@ -184,6 +184,8 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
         {
           ...profile('claude-acp'),
           hostVersion: '2.0.0',
+          hostAvailable: true,
+          credentialsConfigured: false,
           authRequired: true,
           unavailableReason: 'image-binary-missing'
         }
@@ -193,6 +195,8 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
       expect((await repo.forDaemon(DaemonId(DAEMON)))[0]).toMatchObject({
         authRequired: true,
         hostVersion: '2.0.0',
+        hostAvailable: true,
+        credentialsConfigured: false,
         unavailableReason: 'image-binary-missing'
       })
     })
@@ -204,6 +208,8 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
       expect((await repo.forDaemon(DaemonId(DAEMON)))[0]).toMatchObject({
         authRequired: false,
         hostVersion: null,
+        hostAvailable: null,
+        credentialsConfigured: null,
         unavailableReason: null
       })
     })

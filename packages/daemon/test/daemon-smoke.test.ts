@@ -1856,7 +1856,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         id: 'solo',
         name: 'solo',
         status: 'active',
-        runtime: 'claude',
+        runtime: 'codex-acp',
         workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
         integrations: [],
         output: { mode: 'medium' }
@@ -1879,6 +1879,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       root,
       agentName: 'solo',
       overrides: { agentsDir },
+      installed: (runtimes) => runtimes,
       hostFactory: () => fakeHost as any
     })
     await daemon.start()

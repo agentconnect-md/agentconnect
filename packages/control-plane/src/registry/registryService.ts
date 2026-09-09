@@ -52,6 +52,8 @@ function toProfileView(p: RuntimeProfileRecord): DaemonRuntimeProfile {
     runtime: p.runtime,
     version: p.version,
     hostVersion: p.hostVersion ?? null,
+    hostAvailable: p.hostAvailable ?? null,
+    credentialsConfigured: p.credentialsConfigured ?? null,
     models: p.models,
     contextWindow: p.contextWindow,
     acpSupport: p.acpSupport,

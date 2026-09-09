@@ -129,14 +129,6 @@ describe('isRuntimeAvailable / custom probes', () => {
     expect(isRuntimeAvailable('goose', npx(), env())).toBe(true)
   })
 
-  it('opencode counts XDG config, XDG-data auth, or the ~/.opencode fallback', () => {
-    const rt: RuntimeDef = { command: 'opencode', args: ['acp'], env: [] }
-    makeExecutable(binDir, 'opencode')
-    expect(isRuntimeAvailable('opencode', rt, env())).toBe(false)
-    mkdirSync(join(home, '.opencode'))
-    expect(isRuntimeAvailable('opencode', rt, env())).toBe(true)
-  })
-
   it('pi-acp needs ~/.pi even when npx is present', () => {
     makeExecutable(binDir, 'npx')
     expect(isRuntimeAvailable('pi-acp', npx(), env())).toBe(false)
@@ -144,124 +136,23 @@ describe('isRuntimeAvailable / custom probes', () => {
     expect(isRuntimeAvailable('pi-acp', npx(), env())).toBe(true)
   })
 
-  it('hermes needs ~/.hermes and honors $HERMES_HOME', () => {
-    makeExecutable(binDir, 'hermes')
-    const rt: RuntimeDef = { command: 'hermes', args: [], env: [] }
-    expect(isRuntimeAvailable('hermes', rt, env())).toBe(false)
-    mkdirSync(join(home, '.hermes'))
-    expect(isRuntimeAvailable('hermes', rt, env())).toBe(true)
-
-    const hermesHome = mkdtempSync(join(tmpdir(), 'ac-hermes-'))
-    const cleanHome = mkdtempSync(join(tmpdir(), 'ac-home2-'))
-    expect(isRuntimeAvailable('hermes', rt, env({ HOME: cleanHome }))).toBe(false)
-    expect(isRuntimeAvailable('hermes', rt, env({ HOME: cleanHome, HERMES_HOME: hermesHome }))).toBe(true)
-  })
-
   it.each([
-    ['hermes-agent', 'hermes', 'HERMES_HOME'],
-    ['open-interpreter', 'interpreter', 'INTERPRETER_HOME'],
-    ['kiro-cli', 'kiro-cli', 'KIRO_HOME'],
-    ['zeroclaw', 'zeroclaw', 'ZEROCLAW_CONFIG_DIR'],
-    ['omp', 'omp', 'PI_CODING_AGENT_DIR']
-  ])('%s honors its reviewed state-root override', (id, command, variable) => {
-    makeExecutable(binDir, command)
-    const stateDir = mkdtempSync(join(tmpdir(), `ac-${id}-state-`))
-    const cleanHome = mkdtempSync(join(tmpdir(), `ac-${id}-home-`))
+    ['opencode', 'opencode'],
+    ['hermes-agent', 'hermes'],
+    ['open-interpreter', 'interpreter'],
+    ['kiro-cli', 'kiro-cli'],
+    ['zeroclaw', 'zeroclaw'],
+    ['omp', 'omp'],
+    ['maki', 'maki'],
+    ['qoder-cli', 'qodercli'],
+    ['qoder-cli-cn', 'qoderclicn'],
+    ['openclaw', 'openclaw'],
+    ['cursor', 'cursor-agent']
+  ])('%s is installed when its binary exists, even with an empty HOME', (id, command) => {
     const rt: RuntimeDef = { command, args: ['acp'], env: [] }
-
-    expect(isRuntimeAvailable(id, rt, env({ HOME: cleanHome }))).toBe(false)
-    expect(isRuntimeAvailable(id, rt, env({ HOME: cleanHome, [variable]: stateDir }))).toBe(true)
-  })
-
-  it('Maki accepts XDG state and the legacy ~/.maki fallback', () => {
-    makeExecutable(binDir, 'maki')
-    const rt: RuntimeDef = { command: 'maki', args: ['acp'], env: [] }
-    const xdgConfig = mkdtempSync(join(tmpdir(), 'ac-maki-config-'))
-
-    expect(isRuntimeAvailable('maki', rt, env())).toBe(false)
-    mkdirSync(join(xdgConfig, 'maki'))
-    expect(isRuntimeAvailable('maki', rt, env({ XDG_CONFIG_HOME: xdgConfig }))).toBe(true)
-
-    const legacyHome = mkdtempSync(join(tmpdir(), 'ac-maki-legacy-'))
-    mkdirSync(join(legacyHome, '.maki'))
-    expect(isRuntimeAvailable('maki', rt, env({ HOME: legacyHome }))).toBe(true)
-  })
-
-  it('qoder-cli needs ~/.qoder even when qodercli is on PATH', () => {
-    makeExecutable(binDir, 'qodercli')
-    const rt: RuntimeDef = { command: 'qodercli', args: ['--acp'], env: [] }
-    expect(isRuntimeAvailable('qoder-cli', rt, env())).toBe(false)
-    mkdirSync(join(home, '.qoder'))
-    expect(isRuntimeAvailable('qoder-cli', rt, env())).toBe(true)
-  })
-
-  it('qoder-cli honors $QODER_CONFIG_DIR and $QODER_CLI_HOME overrides', () => {
-    makeExecutable(binDir, 'qodercli')
-    const rt: RuntimeDef = { command: 'qodercli', args: ['--acp'], env: [] }
-    const cleanHome = mkdtempSync(join(tmpdir(), 'ac-qoder-home-'))
-
-    const configDir = mkdtempSync(join(tmpdir(), 'ac-qoder-cfg-'))
-    expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: cleanHome }))).toBe(false)
-    expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: cleanHome, QODER_CONFIG_DIR: configDir }))).toBe(true)
-
-    const cliHome = mkdtempSync(join(tmpdir(), 'ac-qoder-clihome-'))
-    mkdirSync(join(cliHome, '.qoder'))
-    expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: cleanHome, QODER_CLI_HOME: cliHome }))).toBe(true)
-    expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: cleanHome, GEMINI_CLI_HOME: cliHome }))).toBe(true)
-
-    const namedHome = mkdtempSync(join(tmpdir(), 'ac-qoder-named-home-'))
-    mkdirSync(join(namedHome, '\u00e9-qoder'))
-    expect(isRuntimeAvailable('qoder-cli', rt, env({ HOME: namedHome, QODER_CONFIG_DIR_NAME: 'e\u0301-qoder' }))).toBe(
-      true
-    )
-  })
-
-  it('qoder-cli-cn needs ~/.qoder-cn even when qoderclicn is on PATH', () => {
-    makeExecutable(binDir, 'qoderclicn')
-    const rt: RuntimeDef = { command: 'qoderclicn', args: ['--acp'], env: [] }
-    expect(isRuntimeAvailable('qoder-cli-cn', rt, env())).toBe(false)
-    mkdirSync(join(home, '.qoder-cn'))
-    expect(isRuntimeAvailable('qoder-cli-cn', rt, env())).toBe(true)
-  })
-
-  it('qoder-cli-cn honors its config directory overrides', () => {
-    makeExecutable(binDir, 'qoderclicn')
-    const rt: RuntimeDef = { command: 'qoderclicn', args: ['--acp'], env: [] }
-    const cleanHome = mkdtempSync(join(tmpdir(), 'ac-qodercn-home-'))
-    const configDir = mkdtempSync(join(tmpdir(), 'ac-qodercn-cfg-'))
-    expect(isRuntimeAvailable('qoder-cli-cn', rt, env({ HOME: cleanHome }))).toBe(false)
-    expect(isRuntimeAvailable('qoder-cli-cn', rt, env({ HOME: cleanHome, QODERCN_CONFIG_DIR: configDir }))).toBe(true)
-
-    mkdirSync(join(cleanHome, 'custom-qoder-cn'))
-    expect(
-      isRuntimeAvailable('qoder-cli-cn', rt, env({ HOME: cleanHome, QODERCN_CONFIG_DIR_NAME: 'custom-qoder-cn' }))
-    ).toBe(true)
-  })
-
-  it('openclaw needs ~/.openclaw even when openclaw is on PATH', () => {
-    makeExecutable(binDir, 'openclaw')
-    const rt: RuntimeDef = { command: 'openclaw', args: ['acp'], env: [] }
-    expect(isRuntimeAvailable('openclaw', rt, env())).toBe(false)
-    mkdirSync(join(home, '.openclaw'))
-    expect(isRuntimeAvailable('openclaw', rt, env())).toBe(true)
-  })
-
-  it('openclaw honors $OPENCLAW_STATE_DIR and $OPENCLAW_HOME overrides', () => {
-    makeExecutable(binDir, 'openclaw')
-    const rt: RuntimeDef = { command: 'openclaw', args: ['acp'], env: [] }
-    const cleanHome = mkdtempSync(join(tmpdir(), 'ac-openclaw-home-'))
-
-    const stateDir = mkdtempSync(join(tmpdir(), 'ac-openclaw-state-'))
-    expect(isRuntimeAvailable('openclaw', rt, env({ HOME: cleanHome }))).toBe(false)
-    expect(isRuntimeAvailable('openclaw', rt, env({ HOME: cleanHome, OPENCLAW_STATE_DIR: stateDir }))).toBe(true)
-
-    const openclawHome = mkdtempSync(join(tmpdir(), 'ac-openclaw-base-'))
-    mkdirSync(join(openclawHome, '.openclaw'))
-    expect(isRuntimeAvailable('openclaw', rt, env({ HOME: cleanHome, OPENCLAW_HOME: openclawHome }))).toBe(true)
-
-    const configPath = join(mkdtempSync(join(tmpdir(), 'ac-openclaw-cfg-')), 'openclaw.json')
-    writeFileSync(configPath, '{}')
-    expect(isRuntimeAvailable('openclaw', rt, env({ HOME: cleanHome, OPENCLAW_CONFIG_PATH: configPath }))).toBe(true)
+    expect(isRuntimeAvailable(id, rt, env())).toBe(false)
+    makeExecutable(binDir, command)
+    expect(isRuntimeAvailable(id, rt, env())).toBe(true)
   })
 
   it('dsh-acp is fetched by npx, so ~/.dsh (or $DSH_HOME) is the only install signal', () => {
@@ -278,15 +169,6 @@ describe('isRuntimeAvailable / custom probes', () => {
 
     mkdirSync(join(home, '.dsh'))
     expect(isRuntimeAvailable('dsh-acp', rt, env())).toBe(true)
-  })
-
-  it('cursor needs the CLI-specific cli-config.json (dir alone is not enough)', () => {
-    makeExecutable(binDir, 'cursor-agent')
-    const rt: RuntimeDef = { command: 'cursor-agent', args: [], env: [] }
-    mkdirSync(join(home, '.cursor')) // shared with the editor — not sufficient
-    expect(isRuntimeAvailable('cursor', rt, env())).toBe(false)
-    writeFileSync(join(home, '.cursor', 'cli-config.json'), '{}')
-    expect(isRuntimeAvailable('cursor', rt, env())).toBe(true)
   })
 
   it('a custom-probed runtime is still dropped when the launcher is missing', () => {
@@ -369,7 +251,7 @@ describe('installedRuntimes', () => {
     expect(Object.keys(installedRuntimeCatalog(catalog(), env()).runtimes)).toEqual(['antigravity-acp'])
   })
 
-  it('applies curated state gates only when the curated source wins', () => {
+  it('keeps direct curated binaries without state and rejects an unconfigured package launcher', () => {
     makeExecutable(binDir, 'hermes')
     makeExecutable(binDir, 'custom-hermes')
     makeExecutable(binDir, 'npx')
@@ -396,7 +278,7 @@ describe('installedRuntimes', () => {
       runtimes: { omp: packageRuntime }
     }
 
-    expect(Object.keys(installedRuntimeCatalog(curatedCatalog, env()).runtimes)).toEqual([])
+    expect(Object.keys(installedRuntimeCatalog(curatedCatalog, env()).runtimes)).toEqual(['hermes-agent'])
     expect(Object.keys(installedRuntimeCatalog(userCatalog, env()).runtimes)).toEqual(['hermes-agent', 'hermes'])
     expect(Object.keys(installedRuntimeCatalog(registryCatalog, env()).runtimes)).toEqual([])
   })

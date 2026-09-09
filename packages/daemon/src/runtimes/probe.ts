@@ -8,34 +8,7 @@ import type { ResolvedRuntimeCatalog } from './registry.js'
 import type { SeededCredentialFile } from './runtime-seeded-credentials.js'
 import { resolveClaudeConfigSources, resolveOmpCredentialSource } from './runtime-credential-sources.js'
 
-/**
- * Host-availability probing for runtimes.
- *
- * `resolveRuntimes()` produces a runtime for every ACP-registry entry that has a
- * distribution for this platform — but that says nothing about whether the tool
- * is actually runnable *here*. This module answers that question so the daemon
- * only advertises genuinely-installed runtimes in `RegisterReq.capabilities`.
- *
- * Two layers:
- *  1. A generic launcher check — is the runtime's `command` resolvable? For a
- *     runtime distributed as a real binary (`command` is the tool's own
- *     executable) this is a meaningful signal: the binary on `$PATH` means it's
- *     installed.
- *  2. For runtimes distributed via a package launcher (`npx`/`uvx`), (1) is
- *     meaningless — the launcher fetches on demand, so "npx exists" is true on
- *     virtually every dev host and tells us nothing about the wrapped agent. For
- *     those we REQUIRE a per-runtime custom probe (`CUSTOM_PROBES`) that looks for
- *     the wrapped CLI's own config/state dir, which appears once the user has
- *     installed and run/initialized it. A launcher-distributed runtime with no
- *     probe is treated as NOT installed — otherwise every npx/uvx agent in the
- *     ACP registry would be falsely advertised just because `npx` is on `$PATH`.
- *
- * The custom probes test for the config *directory* (the "installed & initialized
- * on this host" signal). A stricter "is logged in" check would look for the auth
- * file instead (e.g. `~/.codex/auth.json`), but that yields false negatives for
- * users who authenticate via an API-key env var, so directory presence is the
- * pragmatic signal. Paths verified against each tool's docs (July 2026).
- */
+// Direct executables establish installation; package launchers still need the product's own host state.
 
 const isWin = process.platform === 'win32'
 
@@ -497,12 +470,8 @@ const CURATED_RUNTIME_IDS = new Set([...Object.keys(CURATED_RUNTIME_CATALOG), 'h
 /** Is this runtime actually usable on this host? */
 export function isRuntimeAvailable(id: string, rt: RuntimeDef, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!isCommandAvailable(rt.command, env)) return false
-  const custom = CUSTOM_PROBES[id]
-  if (custom) return custom(env)
-  // No bespoke probe: trust the launcher check only for real-binary distributions.
-  // Package-launcher runtimes (npx/uvx) without a probe are NOT considered
-  // installed — the launcher is present on almost every host regardless.
-  return !PACKAGE_LAUNCHERS.has(rt.command)
+  // A real executable needs no login or initialized HOME to count as installed.
+  return !PACKAGE_LAUNCHERS.has(rt.command) || (CUSTOM_PROBES[id]?.(env) ?? false)
 }
 
 /**
@@ -532,12 +501,9 @@ export function installedRuntimeCatalog(
   const runtimes: Record<string, RuntimeDef> = {}
   const entries: ResolvedRuntimeCatalog['entries'] = {}
   for (const [id, entry] of Object.entries(catalog.entries)) {
-    // Ask the store itself whether it can install this entry: an archive format it does not
-    // inflate stays on the command probe below, which is what the host already passes.
+    // Installable archives can use initialized product state until the store supplies their executable.
     const available = parseArchiveLaunch(id, entry)
-      ? // The store fetches this binary, so the command cannot be on `$PATH` yet — the host signal
-        // is the product's own state, exactly as it is for an `npx` adapter.
-        (CUSTOM_PROBES[id]?.(env) ?? false)
+      ? isCommandAvailable(entry.runtime.command, env) || (CUSTOM_PROBES[id]?.(env) ?? false)
       : entry.source === 'curated' || !CURATED_RUNTIME_IDS.has(id)
         ? isRuntimeAvailable(id, entry.runtime, env)
         : isCommandAvailable(entry.runtime.command, env) && !PACKAGE_LAUNCHERS.has(entry.runtime.command)

@@ -4954,8 +4954,10 @@ export interface RuntimeProfileRecord {
   /** The daemon's last probe was rejected with the ACP auth-required error
    *  (-32000): installed but needing a login on the daemon host. */
   authRequired: boolean
-  unavailableReason?: 'image-binary-missing' | null
+  unavailableReason?: 'image-binary-missing' | 'host-binary-missing' | null
   hostVersion?: string | null
+  hostAvailable?: boolean | null
+  credentialsConfigured?: boolean | null
   /** When the daemon last reported this profile. */
   observedAt: Date
 }

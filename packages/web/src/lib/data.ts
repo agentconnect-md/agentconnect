@@ -885,12 +885,13 @@ export function loginRequiredRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'>
 }
 
 export const IMAGE_BINARY_MISSING_LABEL = 'Binary not installed in image'
+export const HOST_BINARY_MISSING_LABEL = 'Binary not installed on host'
 
 // Show the installation issue before a login warning without discarding either observed fact.
 export function runtimeWarning(
   profile: Pick<DaemonRow['runtimeModels'][number], 'authRequired' | 'unavailableReason'>
 ) {
-  if (profile.unavailableReason === 'image-binary-missing') return 'image-binary-missing'
+  if (profile.unavailableReason) return profile.unavailableReason
   return profile.authRequired === true ? 'auth-required' : null
 }
 
@@ -2247,8 +2248,10 @@ export interface DaemonRow {
      *  the runtime needs a login on the daemon host (drives the warning strip
      *  on the daemon detail page). Absent ⇒ no warning. */
     authRequired?: boolean
-    unavailableReason?: 'image-binary-missing' | null
+    unavailableReason?: 'image-binary-missing' | 'host-binary-missing' | null
     hostVersion?: string | null
+    hostAvailable?: boolean | null
+    credentialsConfigured?: boolean | null
   }[]
   /** Daemon-configured MCP servers (name + transport, facts/daemon-runtimes). */
   mcpServers: McpServerInfo[]

@@ -63,6 +63,8 @@ export interface RuntimeFactsHost {
   catalog(): ResolvedRuntimeCatalog
   localProbeCatalog(): ResolvedRuntimeCatalog
   imageVersion(runtimeId: string): string | undefined
+  hostAvailable(runtimeId: string): boolean | undefined
+  credentialsConfigured(runtimeId: string): boolean | undefined
   unavailableReason(runtimeId: string): FactsRuntimeProfile['unavailableReason']
   admittedRuntimes(): Record<string, RuntimeDef>
   refreshAdmitted(): void
@@ -158,22 +160,27 @@ export class RuntimeFactsRegistry {
 
   /** Report the current runtime profile, preserving both host and image versions. */
   profileFor(id: string): FactsRuntimeProfile {
-    const hostVersion = this.probedVersions.get(id) || this.versions[id] || ''
+    const hostAvailable = this.host.hostAvailable(id)
+    const credentialsConfigured = this.host.credentialsConfigured(id)
+    const hostVersion = hostAvailable === false ? '' : this.probedVersions.get(id) || this.versions[id] || ''
     return {
       runtime: id,
       version: this.host.imageVersion(id) || hostVersion,
       ...(!this.host.launch().k8s ? { hostVersion } : {}),
+      ...(hostAvailable !== undefined ? { hostAvailable } : {}),
+      ...(credentialsConfigured !== undefined ? { credentialsConfigured } : {}),
       models: this.models.get(id) ?? [],
       acpSupport: 'full',
       acpProtocolVersion: this.acpVersions.get(id),
       toolCalling: true,
       mcpCapabilities: this.mcpCaps.get(id),
       modelsSource: this.modelsSource.get(id),
-      // Capability matrix rides every frame it exists for — including probe-failure
-      // rounds where models[] empties (advertisement ≠ capability knowledge).
+      // Retain cached capabilities even when a failed probe empties the advertised models.
       modelCatalog: this.catalogs.get(id),
       ...(this.host.unavailableReason(id) ? { unavailableReason: this.host.unavailableReason(id) } : {}),
-      ...(this.authRequired.has(id) || this.authRequiredLive.has(id) ? { authRequired: true } : {})
+      ...(credentialsConfigured === false || this.authRequired.has(id) || this.authRequiredLive.has(id)
+        ? { authRequired: true }
+        : {})
     }
   }
 

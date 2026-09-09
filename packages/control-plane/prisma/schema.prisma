@@ -637,22 +637,24 @@ enum AcpSupport {
 }
 
 model RuntimeProfile {
-  id                 String     @id @default(cuid())
-  daemonId           String     @db.Uuid
-  runtime            String // "claude" / "codex"
-  version            String
-  hostVersion        String?
-  models             String[]   @default([])
-  contextWindow      Int?
-  acpSupport         AcpSupport @default(none)
-  acpProtocolVersion Int? // ACP protocol version negotiated at initialize
-  toolCalling        Boolean    @default(false)
-  mcpCapabilities    Json?      @db.JsonB // MCP transports advertised at initialize {http,sse}; null ⇒ not probed (assume stdio-only)
-  modelCatalog       Json?      @db.JsonB // wire RuntimeModelCatalog verbatim (runtime-model-catalog.md §5); null ⇒ no catalog reported
-  modelsSource       String? // provenance of models[]: 'cached' | 'probed'; null ⇒ older daemon (probed semantics)
-  authRequired       Boolean    @default(false) // last probe hit ACP auth-required (-32000): installed but needs a login on the daemon host
-  unavailableReason  String? // image-binary-missing; null means no reported sandbox restriction
-  observedAt         DateTime   @default(now()) @db.Timestamptz(6)
+  id                    String     @id @default(cuid())
+  daemonId              String     @db.Uuid
+  runtime               String // "claude" / "codex"
+  version               String
+  hostVersion           String?
+  hostAvailable         Boolean?
+  credentialsConfigured Boolean?
+  models                String[]   @default([])
+  contextWindow         Int?
+  acpSupport            AcpSupport @default(none)
+  acpProtocolVersion    Int? // ACP protocol version negotiated at initialize
+  toolCalling           Boolean    @default(false)
+  mcpCapabilities       Json?      @db.JsonB // MCP transports advertised at initialize {http,sse}; null ⇒ not probed (assume stdio-only)
+  modelCatalog          Json?      @db.JsonB // wire RuntimeModelCatalog verbatim (runtime-model-catalog.md §5); null ⇒ no catalog reported
+  modelsSource          String? // provenance of models[]: 'cached' | 'probed'; null ⇒ older daemon (probed semantics)
+  authRequired          Boolean    @default(false) // no stored login, or a probe/live turn requires authentication
+  unavailableReason     String? // host-binary-missing or image-binary-missing; null means no installation warning
+  observedAt            DateTime   @default(now()) @db.Timestamptz(6)
 
   daemon Daemon @relation(fields: [daemonId], references: [id], onDelete: Cascade)
 

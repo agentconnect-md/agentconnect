@@ -235,6 +235,80 @@ describe('daemon activation gate provenance rule', () => {
 })
 
 describe('microsandbox runtime facts', () => {
+  it.each(['srt', 'microsandbox'])('reports installation and stored login independently with %s', async (backend) => {
+    const dir = root()
+    const hostHome = join(dir, 'host-home')
+    for (const part of ['.grok', '.pi/agent', '.local/share/opencode'])
+      mkdirSync(join(hostHome, part), { recursive: true })
+    writeFileSync(
+      join(hostHome, '.grok/auth.json'),
+      JSON.stringify({ 'xai::api_key': { key: 'fixture-key', auth_mode: 'api_key' } })
+    )
+    writeFileSync(
+      join(hostHome, '.pi/agent/auth.json'),
+      JSON.stringify({ anthropic: { type: 'api_key', key: 'fixture-key' } })
+    )
+    let catalog = catalogOf({})
+    const probe = vi.fn(async (runtimes: Record<string, RuntimeDef>): Promise<RuntimeProbeResult[]> =>
+      Object.keys(runtimes).map((runtime) => ({ runtime, ok: true, models: ['enumerated-without-login'] }))
+    )
+    const daemon = new Daemon({
+      root: dir,
+      clock: new FakeClock(),
+      resolveCatalog: async () => catalog,
+      probeRuntimes: probe,
+      hostFactory: () => ({}) as never,
+      sandboxMechanism: null
+    })
+    try {
+      await daemon.start()
+      vi.stubEnv('HOME', hostHome)
+      vi.stubEnv('USERPROFILE', hostHome)
+      vi.stubEnv('GROK_AUTH_PATH', join(hostHome, '.grok/auth.json'))
+      vi.stubEnv('PI_CODING_AGENT_DIR', join(hostHome, '.pi/agent'))
+      vi.stubEnv('XDG_DATA_HOME', join(hostHome, '.local/share'))
+      const available = { command: process.execPath, args: [], env: [] }
+      const missing = { command: join(dir, 'missing-binary'), args: [], env: [] }
+      catalog = catalogOf({ 'grok-build': available, opencode: available, 'pi-acp': missing, gemini: missing })
+      const d = daemon as any
+      d.cfg.sandbox.backend = backend
+      if (backend === 'microsandbox') {
+        d.microsandboxTable = {
+          runtimes: ['grok-build', 'opencode'].map((id) => ({ id, command: `/image/bin/${id}`, args: ['acp'] }))
+        }
+      }
+      await d.discoverRuntimes(dir, d.cfg, [])
+      expect(d.reportedRuntimeIds().sort()).toEqual(['grok-build', 'opencode', 'pi-acp'])
+      await d.runtimeFacts.probeAndEmit(true)
+      expect(probe.mock.calls.map(([runtimes]) => Object.keys(runtimes))).toEqual([['grok-build', 'opencode']])
+      expect(d.runtimeFacts.profileFor('grok-build')).toMatchObject({
+        hostAvailable: true,
+        credentialsConfigured: true
+      })
+      expect(d.runtimeFacts.profileFor('grok-build').authRequired).toBeUndefined()
+      expect(d.runtimeFacts.profileFor('opencode')).toMatchObject({
+        hostAvailable: true,
+        credentialsConfigured: false,
+        authRequired: true,
+        models: ['enumerated-without-login']
+      })
+      expect(d.runtimeFacts.profileFor('pi-acp')).toMatchObject({
+        hostAvailable: false,
+        credentialsConfigured: true,
+        unavailableReason: backend === 'microsandbox' ? 'image-binary-missing' : 'host-binary-missing'
+      })
+      writeFileSync(
+        join(hostHome, '.local/share/opencode/auth.json'),
+        JSON.stringify({ anthropic: { type: 'api', key: 'fixture-key' } })
+      )
+      expect(d.runtimeFacts.profileFor('opencode').credentialsConfigured).toBe(true)
+      expect(d.runtimeFacts.profileFor('opencode').authRequired).toBeUndefined()
+    } finally {
+      vi.unstubAllEnvs()
+      await daemon.stop()
+    }
+  })
+
   it.each([true, false])(
     'retains stored logins through host probes and model refreshes (expired runtime in image: %s)',
     async (expiredInImage) => {
@@ -305,8 +379,8 @@ describe('microsandbox runtime facts', () => {
           }))
         }
         await d.discoverRuntimes(dir, d.cfg, [])
-        expect(d.reportedRuntimeIds().sort()).toEqual(['codex-acp', 'grok-build', 'pi-acp'])
-        expect(d.microsandboxCatalog.entries.opencode).toBeUndefined()
+        expect(d.reportedRuntimeIds().sort()).toEqual(['codex-acp', 'grok-build', 'opencode', 'pi-acp'])
+        expect(d.microsandboxCatalog.entries.opencode).toBeDefined()
         await d.hydrateRuntimeCaches()
         expect(d.runtimeFacts.profileFor('codex-acp').models).toEqual([])
         expect(d.runtimeFacts.profileFor('codex-acp').hostVersion).toBe('')
@@ -317,10 +391,14 @@ describe('microsandbox runtime facts', () => {
         await d.runtimeFacts.probeAndEmit(true)
 
         expect(probe.mock.calls.map(([runtimes]) => Object.keys(runtimes))).toEqual([
-          ['grok-build'],
+          ['grok-build', 'opencode'],
           ['codex-acp', 'pi-acp']
         ])
-        expect(noteProbe.mock.calls.map(([input]) => input.runtimeId).sort()).toEqual(['codex-acp', 'grok-build'])
+        expect(noteProbe.mock.calls.map(([input]) => input.runtimeId).sort()).toEqual([
+          'codex-acp',
+          'grok-build',
+          'opencode'
+        ])
         expect(d.runtimeFacts.profileFor('codex-acp')).toMatchObject({
           runtime: 'codex-acp',
           version: 'image-version',
@@ -336,12 +414,16 @@ describe('microsandbox runtime facts', () => {
           unavailableReason: 'image-binary-missing'
         })
         expect(d.runtimeFacts.profileFor('pi-acp')).toMatchObject({ authRequired: true })
+        expect(d.runtimeFacts.profileFor('opencode')).toMatchObject({
+          authRequired: true,
+          credentialsConfigured: false
+        })
         expect(d.runtimeFacts.profileFor('pi-acp').unavailableReason).toBe(
           expiredInImage ? undefined : 'image-binary-missing'
         )
         expect(d.curatedRuntimeAdmission.status('codex-acp', 'curated')).toBe('verified')
         expect(d.curatedRuntimeAdmission.status('pi-acp', 'curated')).toBe('failed')
-        expect(d.reportedRuntimeIds().sort()).toEqual(['codex-acp', 'grok-build', 'pi-acp'])
+        expect(d.reportedRuntimeIds().sort()).toEqual(['codex-acp', 'grok-build', 'opencode', 'pi-acp'])
         expect(d.localRuntimeCatalog.runtimes['codex-acp'].command).toBe('fake-agent')
         expect(d.microsandboxCatalog.runtimes['codex-acp'].command).toBe('/image/bin/codex-acp')
         await onCatalogUpdated('codex-acp')
@@ -350,7 +432,7 @@ describe('microsandbox runtime facts', () => {
             .at(-1)
             ?.map((profile) => profile.runtime)
             .sort()
-        ).toEqual(['codex-acp', 'grok-build', 'pi-acp'])
+        ).toEqual(['codex-acp', 'grok-build', 'opencode', 'pi-acp'])
         probe.mockClear()
         d.runtimeFacts.armProbeRefresh()
         clock.advance(5 * 60_000)
