@@ -11,6 +11,15 @@ const mocks = vi.hoisted(() => ({
   wake: 'starting' as 'running' | 'starting' | 'unsupported'
 }))
 
+vi.mock('@/components/console/UnifiedMemoryPanel', () => ({
+  UnifiedMemoryPanel: ({ children, onOpenLegacy }: { children: ReactNode; onOpenLegacy?: () => Promise<void> }) => (
+    <>
+      <button onClick={() => void onOpenLegacy?.()}>Open retained memory tools</button>
+      {children}
+    </>
+  )
+}))
+
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
 
 vi.mock('@/lib/data-context', () => ({
@@ -1014,4 +1023,28 @@ describe('MemoryPanel memory home', () => {
     expect(vi.mocked(fetchAgentMemoryChannels).mock.calls.length).toBeGreaterThan(before)
     expect(container?.textContent).toContain('general')
   })
+})
+
+it('refreshes retained file listing and preview before opening its tools', async () => {
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () =>
+    root?.render(
+      <MemoryPanel
+        agentId="22222222-2222-4222-8222-222222222222"
+        canEdit
+        memoryProvider="managed"
+        autoDistill={false}
+      />
+    )
+  )
+  const before = vi.mocked(fetchAgentMemoryFull).mock.calls.length
+  vi.mocked(listAgentMemory).mockResolvedValue({
+    exists: true,
+    files: [{ name: 'new-entry.md', size: 12, mtime: '2026-09-10T00:00:00Z' }]
+  })
+  await clickButton(container, 'Open retained memory tools')
+  expect(container.textContent).toContain('new-entry.md')
+  expect(vi.mocked(fetchAgentMemoryFull).mock.calls.length).toBeGreaterThan(before)
 })

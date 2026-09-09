@@ -1,5 +1,7 @@
 'use client'
 
+import { UnifiedMemoryPanel } from '@/components/console/UnifiedMemoryPanel'
+
 // Agent memory viewer/editor — the memory DIRECTORY at the agent root
 // (<agent-root>/memory/): a MEMORY.md index plus topic files the agent maintains
 // across sessions. Content is proxied through the CP straight from the owning
@@ -1200,11 +1202,17 @@ export function MemoryPanel({
           </div>
         </div>
       ) : persistedProvider === 'external' ? (
-        <RecordMemoryPanel
+        <UnifiedMemoryPanel
           key={`${agentId}:${persistedSettings.external.connectionId}`}
           agentId={agentId}
           canEdit={canEdit}
-        />
+        >
+          <RecordMemoryPanel
+            key={`${agentId}:${persistedSettings.external.connectionId}`}
+            agentId={agentId}
+            canEdit={canEdit}
+          />
+        </UnifiedMemoryPanel>
       ) : persistedProvider === 'none' ? (
         <div className="rounded-(--radius-lg) border border-(--border-subtle) p-5 text-[13px] text-(--text-secondary)">
           Persistent memory is disabled for this agent. Existing memory remains stored but is not loaded.
@@ -1232,67 +1240,77 @@ export function MemoryPanel({
               ) : null}
             </div>
           ) : null}
-          <FileBrowserShell
-            title={
-              <FileBrowserBreadcrumb
-                root="Memory"
-                path={editor?.target ?? selected}
-                creating={editor?.target === ''}
-                draftName={editor?.name ?? ''}
-                onDraftNameChange={(name) =>
-                  setEditor((current) => (current?.target === '' ? { ...current, name, error: null } : current))
-                }
-                onBack={isMobile && editor ? backFromEditor : undefined}
-                disabled={editor?.saving}
-                nested={false}
-                ariaLabel="Memory file path"
-                inputAriaLabel="New memory file name"
-              />
-            }
-            headerEnd={
-              editor ? (
-                <FileBrowserEditorActions
-                  saving={editor.saving}
-                  onCancel={closeEditor}
-                  onSave={() => void save()}
-                  disabled={editor.loading || (!editor.target && !editor.name.trim())}
-                />
-              ) : canEdit ? (
-                <div className="flex flex-none items-center gap-2">
-                  <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
-                    <Icon name="file-plus" size={13} />
-                    Add file
-                  </Button>
-                  {!loading && !error && fileExists !== null ? (
-                    <Button variant="secondary" size="xs" className="flex-none" onClick={startEdit}>
-                      <Icon name="pencil" size={13} />
-                      Edit
-                    </Button>
-                  ) : null}
-                </div>
-              ) : undefined
-            }
+          <UnifiedMemoryPanel
+            key={`${agentId}:${persistedSettings.home}:${selectedChannel}`}
+            agentId={agentId}
+            channelKey={selectedChannel}
+            canEdit={canEdit}
+            onOpenLegacy={async () => {
+              await Promise.all([loadList(), loadFile(selected)])
+            }}
           >
-            <FileBrowserLayout
-              resetKey={`${agentId}:${mobileListSignal}`}
-              previewOpen={editor !== null}
-              tree={renderFileTree}
-              preview={
-                editor
-                  ? () => (
-                      <FileBrowserEditor
-                        draft={editor}
-                        onContentChange={(content) =>
-                          setEditor((current) => (current ? { ...current, content, error: null } : current))
-                        }
-                        onCancel={closeEditor}
-                        onSubmit={() => void save()}
-                      />
-                    )
-                  : renderPreview
+            <FileBrowserShell
+              title={
+                <FileBrowserBreadcrumb
+                  root="Memory"
+                  path={editor?.target ?? selected}
+                  creating={editor?.target === ''}
+                  draftName={editor?.name ?? ''}
+                  onDraftNameChange={(name) =>
+                    setEditor((current) => (current?.target === '' ? { ...current, name, error: null } : current))
+                  }
+                  onBack={isMobile && editor ? backFromEditor : undefined}
+                  disabled={editor?.saving}
+                  nested={false}
+                  ariaLabel="Memory file path"
+                  inputAriaLabel="New memory file name"
+                />
               }
-            />
-          </FileBrowserShell>
+              headerEnd={
+                editor ? (
+                  <FileBrowserEditorActions
+                    saving={editor.saving}
+                    onCancel={closeEditor}
+                    onSave={() => void save()}
+                    disabled={editor.loading || (!editor.target && !editor.name.trim())}
+                  />
+                ) : canEdit ? (
+                  <div className="flex flex-none items-center gap-2">
+                    <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
+                      <Icon name="file-plus" size={13} />
+                      Add file
+                    </Button>
+                    {!loading && !error && fileExists !== null ? (
+                      <Button variant="secondary" size="xs" className="flex-none" onClick={startEdit}>
+                        <Icon name="pencil" size={13} />
+                        Edit
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : undefined
+              }
+            >
+              <FileBrowserLayout
+                resetKey={`${agentId}:${mobileListSignal}`}
+                previewOpen={editor !== null}
+                tree={renderFileTree}
+                preview={
+                  editor
+                    ? () => (
+                        <FileBrowserEditor
+                          draft={editor}
+                          onContentChange={(content) =>
+                            setEditor((current) => (current ? { ...current, content, error: null } : current))
+                          }
+                          onCancel={closeEditor}
+                          onSubmit={() => void save()}
+                        />
+                      )
+                    : renderPreview
+                }
+              />
+            </FileBrowserShell>
+          </UnifiedMemoryPanel>
           {/* Dreaming is managed-only and is secondary to the live memory
               content, so it sits below the browser. Only render it when the
               persisted policy is on; otherwise its trigger would be noise. */}
