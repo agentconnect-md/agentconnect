@@ -1,4 +1,5 @@
 import {
+  memoryEntryWriteAsk,
   describeMemoryEntries,
   listMemoryEntries,
   getMemoryEntry,
@@ -35,7 +36,6 @@ import {
   getMemory,
   GET_MEMORY_ARGS,
   MEMORY_TOOL_ACCESS_MODES,
-  memoryWriteAsk,
   readMemory,
   READ_MEMORY_ARGS,
   saveMemory,
@@ -355,7 +355,9 @@ export async function executeTool(
     if (decision === 'deny') throw new Error(MEMORY_WRITE_NO_APPROVER)
     if (decision === 'ask') {
       // The approval covers THIS call's payload and nothing else: it is awaited inline, never cached.
-      const verdict = (await deps.requestMemoryWriteApproval?.(ctx, memoryWriteAsk(name, args))) ?? 'no_approver'
+      const verdict =
+        (await deps.requestMemoryWriteApproval?.(ctx, await memoryEntryWriteAsk(ctx, name, args, deps))) ??
+        'no_approver'
       if (verdict === 'no_approver') throw new Error(MEMORY_WRITE_NO_APPROVER)
       if (verdict !== 'allowed') throw new Error(MEMORY_WRITE_NOT_APPROVED)
       // This call's approval survives service rechecks; a subsequent deny still wins.

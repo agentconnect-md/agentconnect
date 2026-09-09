@@ -271,12 +271,14 @@ it('executes conditional MCP writes with trusted scope, approvals and synthetic-
   let decision: 'allow' | 'ask' | 'deny' = 'allow'
   let approve = true
   let approvals = 0
+  const targets: string[] = []
   const deps = {
     memory: f.provider,
     memoryEntryStore: f.db,
     memoryScope: () => ({ agentId: 'agent', sourceTurnId: f.sourceTurnId }),
     memoryAccessDecision: (_ctx: unknown, mode: string) => (mode === 'write' ? decision : 'allow'),
-    requestMemoryWriteApproval: () => {
+    requestMemoryWriteApproval: (_ctx: unknown, ask: { target: string }) => {
+      targets.push(ask.target)
       approvals++
       return approve ? 'allowed' : 'denied'
     }
@@ -292,11 +294,28 @@ it('executes conditional MCP writes with trusted scope, approvals and synthetic-
   expect(f.commits[0]).toMatchObject({ source: 'tool', sourceTurnId: f.sourceTurnId })
   await expect(invoke('createMemoryEntry', { label: 'forged', text: 'x', source: 'distill' })).rejects.toThrow()
   decision = 'ask'
+  await expect(
+    executeTool(
+      ctx,
+      'deleteMemoryEntry',
+      { ref: created.entry!.ref, revision: created.entry!.revision },
+      {
+        ...deps,
+        memoryAccessDecision: (_ctx, mode) => (mode === 'read' ? 'deny' : 'ask')
+      }
+    )
+  ).rejects.toMatchObject({ code: 'FORBIDDEN' })
+  expect(approvals).toBe(0)
   const updated = (await invoke('updateMemoryEntry', {
     ref: created.entry!.ref,
     revision: created.entry!.revision,
     edit: { oldText: 'before', newText: '$& after' }
   })) as import('@agentconnect.md/protocol').MemoryEntryMutationReceipt
+  expect(approvals).toBe(1)
+  expect(targets).toEqual(['model'])
+  await expect(
+    invoke('deleteMemoryEntry', { ref: created.entry!.ref, revision: created.entry!.revision })
+  ).rejects.toMatchObject({ code: 'CONFLICT' })
   expect(approvals).toBe(1)
   expect(await invoke('getMemoryEntry', { ref: updated.entry!.ref })).toMatchObject({
     text: expect.stringContaining('$& after')
@@ -305,6 +324,7 @@ it('executes conditional MCP writes with trusted scope, approvals and synthetic-
   await expect(
     invoke('deleteMemoryEntry', { ref: updated.entry!.ref, revision: updated.entry!.revision })
   ).rejects.toThrow('did not approve')
+  expect(targets).toEqual(['model', 'model'])
   expect(f.commits).toHaveLength(2)
   decision = 'deny'
   await expect(

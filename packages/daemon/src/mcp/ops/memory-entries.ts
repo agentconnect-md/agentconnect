@@ -1,9 +1,13 @@
 import { createMemoryEntryService } from '../../memory/entries/factory.js'
 import { MemoryEntriesError } from '../../memory/entries/contract.js'
 import type { MemoryEntries } from '../../memory/entries/service.js'
-import { DESCRIBE_MEMORY_ENTRIES_ARGS } from '../../memory/entries/tools.js'
+import {
+  DESCRIBE_MEMORY_ENTRIES_ARGS,
+  UPDATE_MEMORY_ENTRY_ARGS,
+  DELETE_MEMORY_ENTRY_ARGS
+} from '../../memory/entries/tools.js'
 import type { MemoryOpsDeps } from './memory.js'
-import { memoryScopeFor } from './memory.js'
+import { memoryScopeFor, memoryWriteAsk } from './memory.js'
 import type { SessionContext } from './context.js'
 
 async function entries(ctx: SessionContext, deps: MemoryOpsDeps) {
@@ -25,7 +29,7 @@ async function entries(ctx: SessionContext, deps: MemoryOpsDeps) {
     canRead: async () => !deps.memoryAccessDecision || (await deps.memoryAccessDecision(ctx, 'read')) === 'allow'
   })
 }
-async function call(ctx: SessionContext, deps: MemoryOpsDeps, action: (service: MemoryEntries) => Promise<unknown>) {
+async function call<T>(ctx: SessionContext, deps: MemoryOpsDeps, action: (service: MemoryEntries) => Promise<T>) {
   try {
     return await action(await entries(ctx, deps))
   } catch (error) {
@@ -53,4 +57,27 @@ export async function updateMemoryEntry(ctx: SessionContext, args: Record<string
 }
 export async function deleteMemoryEntry(ctx: SessionContext, args: Record<string, unknown>, deps: MemoryOpsDeps) {
   return call(ctx, deps, (service) => service.delete(args))
+}
+
+/** Resolve opaque mutation targets under the same trusted read scope before asking a human. */
+export async function memoryEntryWriteAsk(
+  ctx: SessionContext,
+  tool: string,
+  args: Record<string, unknown>,
+  deps: MemoryOpsDeps
+) {
+  const ask = memoryWriteAsk(tool, args)
+  if (tool !== 'updateMemoryEntry' && tool !== 'deleteMemoryEntry') return ask
+  const request = (tool === 'updateMemoryEntry' ? UPDATE_MEMORY_ENTRY_ARGS : DELETE_MEMORY_ENTRY_ARGS).parse(args)
+  return call(ctx, deps, async (service) => {
+    const current = await service.get({ ref: request.ref, maxBytes: 32768 })
+    if (!current) throw new MemoryEntriesError('NOT_FOUND', 'memory entry no longer exists')
+    if (current.entry.revision !== request.revision)
+      throw new MemoryEntriesError(
+        'CONFLICT',
+        'memory entry changed; read it again before requesting approval',
+        current.entry.revision
+      )
+    return { ...ask, target: current.entry.label.replace(/\s+/g, ' ').trim().slice(0, 200) }
+  })
 }
