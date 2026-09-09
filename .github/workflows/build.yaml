@@ -334,7 +334,7 @@ jobs:
           # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
           version: 11.19.0
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: startsWith(matrix.verify, 'runtime-sandbox')
         with:
           node-version-file: .nvmrc

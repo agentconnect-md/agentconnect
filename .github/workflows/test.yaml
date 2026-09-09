@@ -60,7 +60,7 @@ jobs:
           # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
           version: 11.19.0
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       - name: Restore Next.js build cache
@@ -98,7 +98,7 @@ jobs:
           # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
           version: 11.19.0
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       - name: Install
@@ -153,7 +153,7 @@ jobs:
           # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
           version: 11.19.0
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       - name: Install
@@ -286,7 +286,7 @@ jobs:
           # against 56 s for installing from the registry with none, ranges disjoint. The Linux
           # jobs keep theirs — there the trade runs the other way.
           cache: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       # Only what this job runs, plus its workspace closure — 7 of the 14 projects. A full install
@@ -366,7 +366,7 @@ jobs:
           # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
           version: 11.19.0
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       - name: Install
@@ -413,7 +413,7 @@ jobs:
           cache_dependency_path: |
             pnpm-lock.yaml
             packages/daemon/package.json
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       # Only the daemon and its workspace closure — this job runs nothing else. No Prisma step
@@ -475,7 +475,7 @@ jobs:
           cache_dependency_path: |
             pnpm-lock.yaml
             packages/daemon/package.json
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       # Only the daemon and its workspace closure — this job runs nothing else.
@@ -516,7 +516,7 @@ jobs:
           # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
           version: 11.19.0
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       - name: Install
