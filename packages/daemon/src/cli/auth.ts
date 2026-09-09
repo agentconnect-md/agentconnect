@@ -10,6 +10,7 @@ import { AcpHost } from '../acp/acp-host.js'
 import { loadConfig } from '../config/load-config.js'
 import { resolveRoot } from '../paths.js'
 import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from '../runtimes/archive-store.js'
+import { cliLoginLaunch } from '../runtimes/cli-login.js'
 import { installedRuntimeCatalog } from '../runtimes/probe.js'
 import { probeAllRuntimes, type RuntimeProbeResult } from '../runtimes/runtime-prober.js'
 import { defaultProbeHostFactory } from '../acp/probe-host-factory.js'
@@ -453,10 +454,14 @@ export async function runAuth(opts: RunAuthOpts): Promise<void> {
     }
     out.write(`Using ${method.id} — ${method.name}\n`)
 
-    if (isTerminalMethod(method)) {
+    // A runtime that cannot finish this login over ACP is driven through its own CLI instead —
+    // same handover as a `terminal` method, on a launch that names the login subcommand.
+    const cli = cliLoginLaunch(runtimeId, method.id, runtime)
+    if (isTerminalMethod(method) || cli) {
       // The client owns this one: hand the operator's terminal to the agent program itself.
+      if (cli) out.write(`${cli.reason}\n`)
       await host.stop(5000, EOF_GRACE_MS)
-      const code = await (opts.runTerminalAuth ?? spawnTerminalAuth)(runtime, method)
+      const code = await (opts.runTerminalAuth ?? spawnTerminalAuth)(cli?.runtime ?? runtime, method)
       if (code !== 0) throw new Error(`interactive login exited with code ${code}`)
     } else {
       const login = host.authenticate(method.id)
