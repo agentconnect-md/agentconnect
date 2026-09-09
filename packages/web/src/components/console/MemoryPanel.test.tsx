@@ -726,7 +726,9 @@ describe('MemoryPanel sandbox wake', () => {
     vi.mocked(fetchAgentMemoryFull).mockImplementation(() => Promise.reject(error()))
   }
 
-  const mount = async (props: { sandboxed?: boolean; memoryProvider?: string } = {}) => {
+  const mount = async (
+    props: { sandboxed?: boolean; memoryProvider?: string; memoryHome?: 'daemon' | 'control-plane' } = {}
+  ) => {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -736,6 +738,7 @@ describe('MemoryPanel sandbox wake', () => {
           agentId={AGENT}
           canEdit
           memoryProvider={props.memoryProvider ?? 'managed'}
+          memoryHome={props.memoryHome}
           autoDistill={false}
           sandboxed={props.sandboxed}
         />
@@ -814,6 +817,14 @@ describe('MemoryPanel sandbox wake', () => {
     // The reads answered, so nothing is left on screen to explain.
     expect(text()).not.toContain('Starting the agent’s sandbox')
     expect(text()).not.toContain('Memory is not available right now')
+  })
+
+  it('never presses for a sandboxed agent whose memory home is the Control Plane', async () => {
+    // The tree is read through the daemon's Control Plane connection; the pod has nothing to do with it.
+    await mount({ sandboxed: true, memoryHome: 'control-plane' })
+
+    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+    expect(startButton()).toBeUndefined()
   })
 
   it('never presses for a backend that does not live on the sandbox volume', async () => {

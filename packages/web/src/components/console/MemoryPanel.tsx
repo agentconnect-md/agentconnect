@@ -583,6 +583,8 @@ export function MemoryPanel({
   // Only the managed directory lives on the sandbox volume: a runtime-native, external or off backend reads nothing
   // from a pod, so it reports `ready` and can never press a wake.
   const managedMemory = persistedProvider === 'managed'
+  // A `control-plane` home is read through the daemon's connection, never from the pod: no wake on open for it.
+  const sandboxedMemory = sandboxed && managedMemory && persistedSettings.home !== 'control-plane'
   const readState: SandboxReadState = !managedMemory
     ? 'ready'
     : listErrorCode === SANDBOX_ASLEEP_CODE || errorCode === SANDBOX_ASLEEP_CODE
@@ -601,10 +603,10 @@ export function MemoryPanel({
     void loadList()
     void loadFile(selectedRef.current)
   }, [loadFile, loadList])
-  const wake = useSandboxWake(agentId, readState, retryRead, { sandboxed })
+  const wake = useSandboxWake(agentId, readState, retryRead, { sandboxed: sandboxedMemory })
   // The asleep story outranks the offline one on either pane: the memory is fine, just behind a pod that is not running.
   const asleepRead = readState === 'asleep'
-  const startable = sandboxed || asleepRead
+  const startable = sandboxedMemory || asleepRead
 
   useEffect(() => {
     loadRequest.current += 1
