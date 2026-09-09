@@ -30,7 +30,7 @@ jobs:
       # Persist the App token as the git credential so the push below is authored
       # by the App and therefore triggers Release.
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.inputs.commit }}
