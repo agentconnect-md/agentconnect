@@ -225,6 +225,9 @@ describe('ExternalMemoryProvider', () => {
     const h = harness(['recall', 'capture', 'list', 'get', 'create', 'update', 'delete', 'history'])
     const provider = new ExternalMemoryProvider(binding(), h.deps)
     expect(provider.toolsForAgent().map((tool) => tool.name)).toEqual([
+      'describeMemoryEntries',
+      'listMemoryEntries',
+      'getMemoryEntry',
       'searchMemory',
       'saveMemory',
       'getMemory',

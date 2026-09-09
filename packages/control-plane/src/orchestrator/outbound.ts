@@ -1,3 +1,8 @@
+import {
+  MEMORY_ENTRIES_V1_FEATURE,
+  type MemoryEntriesReadReq,
+  type MemoryEntriesReadResult
+} from '@agentconnect.md/protocol'
 /**
  * `ControlSender` (design §4.7, the single fencing site) — the ONLY place that
  * stamps the `ControlExt` fencing block on outbound C→D control frames.
@@ -702,6 +707,14 @@ export class ControlSender {
   async memoryRecordSearch(daemonId: string, req: MemoryRecordSearchReq): Promise<MemoryRecordSearchPage> {
     const c = this.must(daemonId)
     return c.conn.request<MemoryRecordSearchPage>('memory/record/search', req, { epoch: c.sessionEpoch })
+  }
+
+  async memoryEntriesRead(daemonId: string, req: MemoryEntriesReadReq): Promise<MemoryEntriesReadResult> {
+    const c = this.must(daemonId)
+    if (!c.capabilities?.features?.includes(MEMORY_ENTRIES_V1_FEATURE)) {
+      return { operation: 'error', code: 'UNSUPPORTED', message: 'this daemon does not support unified memory reads' }
+    }
+    return c.conn.request<MemoryEntriesReadResult>('memory/entries/read/v1', req, { epoch: c.sessionEpoch })
   }
 
   async memoryRecordList(daemonId: string, req: MemoryRecordListReq): Promise<MemoryRecordListPage> {

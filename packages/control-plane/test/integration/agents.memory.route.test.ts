@@ -596,3 +596,77 @@ describe('provider-aware external record routes', () => {
     expect(response.json()).toMatchObject({ error: 'Conflict', statusCode: 409 })
   })
 })
+
+describe('unified memory entry routes', () => {
+  it('proxies scoped reads, preserves null and maps typed failures without using legacy routes', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const calls: import('@agentconnect.md/protocol').MemoryEntriesReadReq[] = []
+    let error: import('@agentconnect.md/protocol').MemoryEntryErrorCode | undefined
+    const control = {
+      async memoryEntriesRead(
+        _daemon: string,
+        req: import('@agentconnect.md/protocol').MemoryEntriesReadReq
+      ): Promise<import('@agentconnect.md/protocol').MemoryEntriesReadResult> {
+        calls.push(req)
+        if (error) return { operation: 'error', code: error, message: 'bounded refusal' }
+        if (req.operation === 'get') return { operation: 'get', result: null }
+        if (req.operation === 'list')
+          return {
+            operation: 'list',
+            result: { entries: [], consistency: 'live', order: 'backend', nextCursor: 'next' }
+          }
+        return {
+          operation: 'describe',
+          result: {
+            version: 1,
+            operations: ['list', 'get'],
+            supportedScopes: ['agent'],
+            writeConsistency: 'last-write-wins',
+            exactEdit: false,
+            exactCreate: false,
+            enumeration: 'live',
+            graph: false,
+            limits: { maxItemBytes: 1000, maxPageItems: 20 }
+          }
+        }
+      }
+    }
+    running = buildHttpApp(prisma, undefined, LIVE, control as unknown as ControlSender)
+    const url = `${ORG}/agents/${AGENT}/memory`
+    expect((await running.app.inject({ method: 'GET', url: `${url}/capabilities` })).statusCode).toBe(200)
+    const list = await running.app.inject({
+      method: 'GET',
+      url: `${url}/entries?limit=10&cursor=first&channelKey=channel-a`
+    })
+    expect(list.statusCode).toBe(200)
+    expect(calls.at(-1)).toEqual({
+      agentId: AGENT,
+      channelKey: 'channel-a',
+      operation: 'list',
+      request: { limit: 10, cursor: 'first' }
+    })
+    expect(list.json()).toMatchObject({ nextCursor: 'next', consistency: 'live' })
+    const get = await running.app.inject({ method: 'GET', url: `${url}/entries/opaque-ref?maxBytes=100` })
+    expect(get.statusCode).toBe(200)
+    expect(get.json()).toBeNull()
+    for (const [code, status] of [
+      ['UNSUPPORTED', 501],
+      ['FORBIDDEN', 403],
+      ['STALE_BINDING', 409],
+      ['CURSOR_EXPIRED', 410],
+      ['UNAVAILABLE', 503]
+    ] as const) {
+      error = code
+      const response = await running.app.inject({ method: 'GET', url: `${url}/entries` })
+      expect(response.statusCode).toBe(status)
+      expect(response.json().code).toBe(code)
+    }
+    const before = calls.length
+    expect((await running.app.inject({ method: 'GET', url: `${url}/entries?limit=101` })).statusCode).toBe(400)
+    expect(
+      (await running.app.inject({ method: 'GET', url: `${ORG}/agents/${randomUUID()}/memory/entries` })).statusCode
+    ).toBe(404)
+    expect(calls).toHaveLength(before)
+  })
+})

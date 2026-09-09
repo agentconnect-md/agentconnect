@@ -1,3 +1,4 @@
+import { MEMORY_ENTRIES_V1_FEATURE } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import { installMicrosandbox, microsandboxGuestEntry } from './microsandbox/install.js'
@@ -2850,6 +2851,7 @@ export class Daemon {
       replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
       codeHostEffect: (req) => this.runCodeHostEffect(req),
       memory: this.memory,
+      memoryEntryStore: this.store,
       // Every session may READ shared agent memory; a private session's WRITE asks the human in it
       // first (#653; capture stays gated like post-turn distillation). Resolved from trusted session
       // coords at call time so a policy change takes effect for an already-running ACP session.
@@ -4893,6 +4895,7 @@ export class Daemon {
       ...((this.cfg.sandbox.backend === 'microsandbox' ? this.microsandbox : this.sandboxMechanism) ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
+      MEMORY_ENTRIES_V1_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
       ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),
       SESSION_VISIBILITY_FEATURE,

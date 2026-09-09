@@ -358,3 +358,94 @@ it('retains every concurrent allocation from separate store handles while capaci
   )
   expect(values).toEqual(Array.from({ length: 16 }, (_, index) => String(index)))
 })
+
+it('projects bounded entry reads through MCP without changing legacy file tools', async () => {
+  const f = await fixture('managed', 3)
+  const { executeTool } = await import('../src/mcp/ops.js')
+  const { MEMORY_TOOLS } = await import('../src/memory/tools.js')
+  const ctx = { agentId: 'a', platform: 'slack', isDm: false, channel: 'C', thread: 'T', tools: MEMORY_TOOLS }
+  const provider = new ManagedMemoryProvider(() => localMemoryHome(f.root))
+  const deps = { memory: provider, memoryEntryStore: f.db } as unknown as import('../src/mcp/ops.js').OpsDeps
+  const page = (await executeTool(
+    ctx,
+    'listMemoryEntries',
+    { limit: 1 },
+    deps
+  )) as import('@agentconnect.md/protocol').MemoryEntryListResult
+  expect(page.entries).toHaveLength(1)
+  expect(page.nextCursor).toBeTruthy()
+  expect(await executeTool(ctx, 'getMemoryEntry', { ref: page.entries[0]!.ref }, deps)).toMatchObject({
+    text: 'Fact 0',
+    complete: true
+  })
+  expect(await executeTool(ctx, 'readMemory', { path: 'topic-000.md' }, deps)).toMatchObject({ content: 'Fact 0' })
+  await expect(executeTool(ctx, 'listMemoryEntries', { agentId: 'other' }, deps)).rejects.toThrow()
+  await expect(executeTool(ctx, 'getMemoryEntry', { id: 'topic-00.md' }, deps)).rejects.toThrow()
+  await expect(
+    executeTool(ctx, 'listMemoryEntries', {}, { ...deps, memoryAccessDecision: () => 'deny' })
+  ).rejects.toThrow()
+  await expect(
+    executeTool({ ...ctx, agentId: 'other' }, 'getMemoryEntry', { ref: page.entries[0]!.ref }, deps)
+  ).rejects.toMatchObject({ code: 'STALE_BINDING' })
+})
+
+it('rechecks daemon ownership and returns bounded typed read errors to admin callers', async () => {
+  const f = await fixture('managed', 2)
+  const { createMemoryEntriesReader } = await import('../src/cp/memory-entries.js')
+  let owned = true
+  const read = createMemoryEntriesReader(f.provider, f.db, (id) => id === 'a' && owned)
+  const list = await read({ agentId: 'a', operation: 'list', request: { limit: 1 } })
+  expect(list.operation).toBe('list')
+  if (list.operation !== 'list') throw new Error('expected list')
+  const ref = list.result.entries[0]!.ref
+  expect(await read({ agentId: 'a', operation: 'get', request: { ref, maxBytes: 32768 } })).toMatchObject({
+    operation: 'get',
+    result: { text: 'Fact 0' }
+  })
+  owned = false
+  expect(await read({ agentId: 'a', operation: 'get', request: { ref, maxBytes: 32768 } })).toMatchObject({
+    operation: 'error',
+    code: 'FORBIDDEN'
+  })
+  expect(await read({ agentId: 'foreign', operation: 'describe' })).toMatchObject({
+    operation: 'error',
+    code: 'FORBIDDEN'
+  })
+})
+
+it('pins synthetic MCP reads to the Dream draft even after the live provider changes', async () => {
+  const { db, dir } = await store()
+  const draft = new LocalMemoryFs(join(dir, 'draft'))
+  await draft.writeFile('memory/draft.md', 'only the staged proposal')
+  const memory = createMemoryProvider({
+    memoryHomePortsFor: () => localMemoryHome(new LocalMemoryFs(dir)),
+    agentDirByAgent: () => dir,
+    runtimeFor: () => undefined,
+    providerKindFor: () => 'external'
+  })
+  const { executeTool } = await import('../src/mcp/ops.js')
+  const ctx = {
+    agentId: 'a',
+    platform: 'slack',
+    isDm: false,
+    channel: 'synthetic',
+    thread: 'T',
+    tools: [],
+    memoryBinding: { source: 'dream' as const, scope: { agentId: 'a', root: draft } }
+  }
+  const deps = {
+    memory,
+    memoryEntryStore: db,
+    memoryScope: () => ({ agentId: 'a', channelKey: 'live-channel' })
+  } as unknown as import('../src/mcp/ops.js').OpsDeps
+  const page = (await executeTool(
+    ctx,
+    'listMemoryEntries',
+    {},
+    deps
+  )) as import('@agentconnect.md/protocol').MemoryEntryListResult
+  expect(page.entries.map((entry) => entry.label)).toEqual(['draft'])
+  expect(await executeTool(ctx, 'getMemoryEntry', { ref: page.entries[0]!.ref }, deps)).toMatchObject({
+    text: 'only the staged proposal'
+  })
+})

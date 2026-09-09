@@ -1,3 +1,5 @@
+import { createMemoryEntriesReader } from './memory-entries.js'
+import type { MemoryProvider } from '../memory/provider.js'
 // The `CpClientDeps` literal the daemon hands `CpClient`, hoisted out of `Daemon.startCpClient`.
 // Construction order is load-bearing (the workspace resolvers feed the file, git and skills seams),
 // so `buildCpClientDeps` is the single wiring site and keeps it verbatim.
@@ -142,7 +144,7 @@ export interface CpClientSeamHost {
   agents(): ReadonlyMap<string, LoadedAgent>
   workspaces(): WorkspaceManager
   k8sPlane(): K8sRuntimePlane | undefined
-  memory(): AgentMemoryAdminResolver
+  memory(): AgentMemoryAdminResolver & MemoryProvider
   dreamRunner(): DreamRunner
   runtimeCommands(): RuntimeCommandsCache
   memoryHomePortsFor(agentId: string): MemoryHomePorts | undefined
@@ -406,6 +408,11 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         host.dutyCoordinator().dutyEnforced() && (await host.dutyCoordinator().claimDutyForTrigger(id)).granted,
       log: host.log()
     }),
+    memoryEntriesRead: createMemoryEntriesReader(
+      host.memory(),
+      host.store(),
+      (id) => host.agents().has(id) && (!host.dutyCoordinator().dutyEnforced() || host.duties().holdsAgent(id))
+    ),
     memoryReader: createMemoryReader((id) => host.memoryHomePortsFor(id), host.memory()),
     dreamReader: createDreamReader(host.dreamRunner()),
     localSkillsReader: createLocalSkillsReader(

@@ -1,3 +1,4 @@
+import type { MemoryEntriesReadReq, MemoryEntriesReadResult } from '@agentconnect.md/protocol'
 import type {
   AnyFrame,
   MemoryChannelsReq,
@@ -27,6 +28,7 @@ import type { ControlHandler, ControlWire } from './context.js'
 
 export interface MemoryControlDeps {
   /** Read/write seam over the agents' memory dirs (`<agent-root>/memory/`, §1/§12). */
+  memoryEntriesRead?: (req: MemoryEntriesReadReq) => Promise<MemoryEntriesReadResult>
   memoryReader: MemoryReader
 }
 
@@ -150,4 +152,11 @@ function memoryError(wire: ControlWire, corr: string, op: string, err: unknown):
   }
   wire.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
   wire.sendError(corr, 'INTERNAL', `${op} failed`, false)
+}
+
+export const memoryEntriesRead: ControlHandler<MemoryControlDeps> = async (frame, deps, wire) => {
+  const result = deps.memoryEntriesRead
+    ? await deps.memoryEntriesRead(frame.payload as MemoryEntriesReadReq)
+    : { operation: 'error', code: 'UNSUPPORTED', message: 'memory entry reads are unavailable' }
+  wire.reply(frame, 'memory/entries/read/v1/result', result)
 }
