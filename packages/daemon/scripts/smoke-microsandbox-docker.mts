@@ -40,14 +40,15 @@ for (const path of Object.values(sockets)) {
   })
   servers.push(server)
 }
-const manager = new MicrosandboxManager({
+const managerOptions = {
   root,
   sdk,
   sockets,
   msbCommand: { command: resolve(msbBinary), args: [] },
   config: { image, cpus: 2, memoryMiB: 2048, diskGiB: 8 },
   log: { info: console.log, warn: console.warn, error: console.error, debug: () => {}, trace: () => {} }
-})
+}
+let manager = new MicrosandboxManager(managerOptions)
 const environments: MicrosandboxEnvironment[] = []
 const env = {
   HOME: '/agent',
@@ -107,8 +108,11 @@ try {
   await manager.prepare()
   const beforeFirst = await freeBytes()
   const first = await session('first')
+  const started = performance.now()
   assert.equal(await run(first, '/usr/bin/id', ['-u']), '10001')
-  step('runtime-user', { identity: await run(first, '/usr/bin/id', []) })
+  step('runtime-user', { createMs: performance.now() - started, identity: await run(first, '/usr/bin/id', []) })
+  assert.equal(await run(first, '/usr/bin/findmnt', ['-n', '-o', 'FSTYPE', '-T', '/']), 'overlay')
+  assert.equal(await run(first, '/usr/bin/findmnt', ['-n', '-o', 'FSTYPE', '-T', '/var/lib/docker']), 'ext4')
   const version = await startDocker(first)
   step('docker-manually-started-as-runtime-user', { version })
   await writeFile(
@@ -162,6 +166,8 @@ volumes:
   assert.equal((await readFile(join(first.workspaceRoot, 'container-marker'), 'utf8')).trim(), 'BIND_OK')
   step('compose-build-service-dns-and-workspace-bind-passed')
   await manager.suspend(first.id)
+  await manager.stopAll()
+  manager = new MicrosandboxManager(managerOptions)
   const remaining = await freeBytes()
   const firstAllocation = Math.max(0, beforeFirst - remaining)
   assert.ok(remaining - firstAllocation >= 2 * 1024 ** 3, 'second VM would leave less than 2 GiB free')
@@ -185,6 +191,13 @@ volumes:
   ])
   await startDocker(first)
   assert.equal(await run(first, '/usr/bin/docker', ['image', 'inspect', imageName, '--format', '{{.Id}}']), built)
+  const rebuild = await manager.exec(first, '/usr/bin/docker', ['compose', '--progress', 'plain', 'build'], {
+    cwd: first.workspaceRoot,
+    env,
+    timeoutMs: 180_000
+  })
+  assert.equal(rebuild.exitCode, 0, rebuild.stderr)
+  assert.match(rebuild.stdout + rebuild.stderr, /CACHED/, 'build cache was lost across resume')
   assert.equal(
     await run(first, '/usr/bin/docker', [
       'run',
@@ -293,8 +306,9 @@ try {
   step('testcontainers-random-port-and-cleanup-passed')
   for (const environment of environments) await manager.discard(environment.id)
   assert.deepEqual(await manager.environmentIds(), [])
+  assert.deepEqual(await sdk.Volume.list(), [])
   passed = true
-  step('discarded-all-session-vms')
+  step('discarded-all-session-vms-and-disks')
 } finally {
   for (const environment of environments) await manager.discard(environment.id).catch((error) => console.error(error))
   await manager.stopAll()

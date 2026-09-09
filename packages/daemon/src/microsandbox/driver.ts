@@ -49,7 +49,10 @@ export interface MicrosandboxExecResult {
 export interface MicrosandboxManagerOptions {
   root: string
   config: { image: string; cpus: number; memoryMiB: number; diskGiB: number }
-  sdk: Pick<typeof import('microsandbox'), 'Sandbox' | 'SandboxNotFoundError' | 'AgentClient'>
+  sdk: Pick<
+    typeof import('microsandbox'),
+    'Sandbox' | 'SandboxNotFoundError' | 'AgentClient' | 'Volume' | 'VolumeNotFoundError' | 'InvalidConfigError'
+  >
   msbCommand: { command: string; args: string[] }
   log?: Logger
   sockets: { mcp: string; gitcred: string }
@@ -73,6 +76,7 @@ interface Binding {
   sandboxId: string
   configHash: string
   environmentId: string
+  dockerVolume?: string
 }
 
 /** Owns VM lifecycle while exposing the existing ACP process-stream contract. */
@@ -214,18 +218,16 @@ export class MicrosandboxManager {
   private builder(name: string, mounts: SandboxMount[]) {
     const builder = this.options.sdk.Sandbox.builder(name)
       .image(this.options.config.image)
-      .rootDisk((disk) =>
-        disk
-          .flat()
-          .size(this.options.config.diskGiB * 1024)
-          .cloneStrategy('auto')
-      )
+      .rootDisk((disk) => disk.size(this.options.config.diskGiB * 1024))
       .cpus(this.options.config.cpus)
       .memory(this.options.config.memoryMiB)
       .deploymentProfile('single-tenant')
       .detached(true)
       .ephemeral(false)
       .volume('/run', (volume) => volume.tmpfs())
+      .volume('/var/lib/docker', (volume) =>
+        volume.namedWith(`${name}-docker`, 'create', 'disk', this.options.config.diskGiB * 1024)
+      )
       .quietLogs()
     for (const mount of mounts) {
       builder.volume(mount.target, (volume) => {
@@ -255,7 +257,8 @@ export class MicrosandboxManager {
       timeout: 5 * 60_000,
       maxBuffer: 1024 * 1024
     })
-    const sandbox = await this.builder(`${this.name('probe')}-${randomUUID().slice(0, 8)}`, []).create()
+    const name = `${this.name('probe')}-${randomUUID().slice(0, 8)}`
+    let sandbox = await this.builder(name, []).create()
     try {
       const output = await sandbox.exec(MICROSANDBOX_NODE, [
         '-e',
@@ -267,12 +270,15 @@ export class MicrosandboxManager {
         throw new Error(`microsandbox image preflight failed (exit ${output.code}): ${output.stderr().trim()}`)
       const table = K8sRuntimeTableSchema.parse(JSON.parse(output.stdout()))
       await sandbox.stopWithTimeout(STOP_TIMEOUT_MS)
-      const resumed = await (await this.options.sdk.Sandbox.get(sandbox.name)).startDetached()
-      await resumed.ping()
+      await sandbox.detach()
+      sandbox = await this.retryDiskOperation(async () => (await this.options.sdk.Sandbox.get(name)).startDetached())
+      await sandbox.ping()
       this.options.log?.info('microsandbox: image, Node, Python/vsock, runtime table and disk resume verified')
       return table
     } finally {
-      await sandbox.destroy({ timeoutMs: STOP_TIMEOUT_MS })
+      await (await this.options.sdk.Sandbox.get(name)).destroy({ timeoutMs: STOP_TIMEOUT_MS })
+      await sandbox.detach()
+      await this.removeDockerVolume(`${name}-docker`)
     }
   }
 
@@ -307,6 +313,34 @@ export class MicrosandboxManager {
     }
   }
 
+  private async removeDockerVolume(name: string): Promise<void> {
+    try {
+      await this.retryDiskOperation(() => this.options.sdk.Volume.remove(name))
+    } catch (error) {
+      if (!(error instanceof this.options.sdk.VolumeNotFoundError)) throw error
+    }
+  }
+
+  private async retryDiskOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const deadline = Date.now() + 1_000
+    for (;;) {
+      try {
+        return await operation()
+      } catch (error) {
+        if (
+          !(error instanceof this.options.sdk.InvalidConfigError) ||
+          !/volume ".+" is (?:currently attached by a running sandbox|already attached with an incompatible disk mode)$/.test(
+            error.message
+          ) ||
+          Date.now() >= deadline
+        )
+          throw error
+        // The pinned SDK can observe stopped state before disk locks are released.
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+    }
+  }
+
   private async readBinding(id: string): Promise<Binding | undefined> {
     try {
       const value: unknown = JSON.parse(await readFile(this.bindingPath(id), 'utf8'))
@@ -317,7 +351,8 @@ export class MicrosandboxManager {
         binding.environmentId !== id ||
         typeof binding.spec !== 'string' ||
         typeof binding.sandboxId !== 'string' ||
-        typeof binding.configHash !== 'string'
+        typeof binding.configHash !== 'string' ||
+        (binding.dockerVolume !== undefined && binding.dockerVolume !== `${this.name(id)}-docker`)
       ) {
         throw new Error('invalid binding')
       }
@@ -366,12 +401,13 @@ export class MicrosandboxManager {
       if (existing.status === 'running' || existing.status === 'starting' || existing.status === 'draining') {
         await existing.stopWithTimeout(STOP_TIMEOUT_MS)
       }
-      const sandbox = await existing.connectOrStart({ detached: true })
+      const sandbox = await this.retryDiskOperation(() => existing.connectOrStart({ detached: true }))
       try {
         await this.startBridge(environment.id, sandbox)
         return sandbox
       } catch (error) {
         await sandbox.stopWithTimeout(STOP_TIMEOUT_MS)
+        await sandbox.detach()
         throw error
       }
     }
@@ -386,7 +422,8 @@ export class MicrosandboxManager {
         environmentId: environment.id,
         spec,
         sandboxId: persisted.id,
-        configHash: hash(stableJson(persisted.config()))
+        configHash: hash(stableJson(persisted.config())),
+        dockerVolume: `${name}-docker`
       }
       const path = this.bindingPath(environment.id)
       await mkdir(dirname(path), { recursive: true, mode: 0o700 })
@@ -401,6 +438,8 @@ export class MicrosandboxManager {
       return sandbox
     } catch (error) {
       await sandbox.destroy({ timeoutMs: STOP_TIMEOUT_MS })
+      await sandbox.detach()
+      await this.removeDockerVolume(`${name}-docker`)
       await rm(this.bindingPath(environment.id), { force: true })
       throw error
     }
@@ -623,8 +662,10 @@ export class MicrosandboxManager {
           if (remove) await handle.destroy({ timeoutMs: STOP_TIMEOUT_MS })
           else await handle.stopWithTimeout(STOP_TIMEOUT_MS)
         }
-        if (remove) await rm(this.bindingPath(id), { force: true })
+        if (state) await (await state.sandbox).detach()
         this.environments.delete(id)
+        if (remove && binding?.dockerVolume) await this.removeDockerVolume(binding.dockerVolume)
+        if (remove) await rm(this.bindingPath(id), { force: true })
       } finally {
         if (state) state.closing = undefined
       }
