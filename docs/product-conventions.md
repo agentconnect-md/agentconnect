@@ -1215,6 +1215,15 @@ and its child processes.
 
 ## Sandbox availability and feature support
 
+The daemon's **Runtimes** section defaults to **Host** and offers a **Host / Sandbox**
+view switch when sandboxing is optional. A daemon that requires sandboxing, including
+a managed pool member, shows only the sandbox view. The switch changes only the
+displayed runtime facts; it does not change an agent's execution setting. Image-only
+installation warnings belong to the sandbox view, while the host view retains the
+host's runtime version and login result. A missing image binary must not mark the
+host runtime unavailable. Self-hosted models and capabilities continue to use the
+existing host probe; this switch does not add another probe sweep.
+
 Every feature is supported in environments both **with and without** an OS sandbox,
 and a trusted agent may deliberately run unsandboxed. A sandbox is a best-effort
 isolation layer, never a precondition: no feature may fail closed just because the

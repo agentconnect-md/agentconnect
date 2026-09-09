@@ -640,6 +640,7 @@ model RuntimeProfile {
   daemonId           String     @db.Uuid
   runtime            String // "claude" / "codex"
   version            String
+  hostVersion        String?
   models             String[]   @default([])
   contextWindow      Int?
   acpSupport         AcpSupport @default(none)

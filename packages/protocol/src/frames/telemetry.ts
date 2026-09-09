@@ -306,6 +306,8 @@ export type RuntimeModelCatalog = z.infer<typeof RuntimeModelCatalog>
 export const FactsRuntimeProfile = z.object({
   runtime: z.string(), // "claude" / "codex" / ...
   version: z.string(),
+  // The host probe's version, kept separate from a sandbox image's runtime version.
+  hostVersion: z.string().optional(),
   models: z.array(z.string()),
   contextWindow: z.number().int().optional(),
   acpSupport: z.enum(['full', 'partial', 'none']), // gates the dual-mode decision (#1)

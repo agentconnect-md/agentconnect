@@ -139,6 +139,7 @@ export const RuntimeModelCatalogDto = z.object({
 export const RuntimeProfileDto = z.object({
   runtime: z.string(),
   version: z.string(),
+  hostVersion: z.string().nullable().optional(),
   models: z.array(z.string()),
   contextWindow: z.number().int().nullable(),
   acpSupport: z.string(),

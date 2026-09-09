@@ -180,11 +180,19 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
     // The probe was rejected with ACP auth-required: the runtime stays listed
     // (installed) but carries the login warning.
     stub.inject('facts/daemon-runtimes', {
-      runtimes: [{ ...profile('claude-acp'), authRequired: true, unavailableReason: 'image-binary-missing' }]
+      runtimes: [
+        {
+          ...profile('claude-acp'),
+          hostVersion: '2.0.0',
+          authRequired: true,
+          unavailableReason: 'image-binary-missing'
+        }
+      ]
     })
     await vi.waitFor(async () => {
       expect((await repo.forDaemon(DaemonId(DAEMON)))[0]).toMatchObject({
         authRequired: true,
+        hostVersion: '2.0.0',
         unavailableReason: 'image-binary-missing'
       })
     })
@@ -195,6 +203,7 @@ describe('facts/daemon-runtimes handler — reconciles the runtime list to the s
     await vi.waitFor(async () => {
       expect((await repo.forDaemon(DaemonId(DAEMON)))[0]).toMatchObject({
         authRequired: false,
+        hostVersion: null,
         unavailableReason: null
       })
     })

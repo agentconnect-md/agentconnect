@@ -17,6 +17,7 @@ function toRecord(p: RuntimeProfile): RuntimeProfileRecord {
     daemonId: DaemonId(p.daemonId),
     runtime: p.runtime,
     version: p.version,
+    hostVersion: p.hostVersion,
     models: p.models,
     contextWindow: p.contextWindow,
     acpSupport: p.acpSupport as AcpSupport,
@@ -50,6 +51,7 @@ export class PgRuntimeProfileRepo implements RuntimeProfileRepo {
         daemonId,
         runtime: f.runtime,
         version: f.version,
+        hostVersion: f.hostVersion ?? null,
         models: f.models,
         contextWindow: f.contextWindow,
         acpSupport: f.acpSupport,
@@ -64,6 +66,7 @@ export class PgRuntimeProfileRepo implements RuntimeProfileRepo {
       },
       update: {
         version: f.version,
+        hostVersion: f.hostVersion ?? null,
         models: f.models,
         contextWindow: f.contextWindow,
         acpSupport: f.acpSupport,
