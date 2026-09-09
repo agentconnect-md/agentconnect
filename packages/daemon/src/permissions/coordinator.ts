@@ -2014,12 +2014,16 @@ export class PermissionCoordinator {
       const form = this.cardForm(rec)
       if (!form) continue
       const claimed = rec.facet.claimReply(rec, { requestId, params: rec.params, form }, reply)
-      if (!claimed || claimed.kind !== 'submit') continue
-      await this.submitElicitForm({
-        requestId,
-        fields: claimed.fields,
-        ...(reply.actor ? { actor: reply.actor } : {})
-      })
+      if (!claimed) continue
+      // `pending` is still a CLAIM: the words answered this card, they just filled one field of a
+      // form the reader has yet to Confirm. Treating it as unclaimed would send that field's own
+      // answer on to the agent as a fresh prompt.
+      if (claimed.kind === 'submit')
+        await this.submitElicitForm({
+          requestId,
+          fields: claimed.fields,
+          ...(reply.actor ? { actor: reply.actor } : {})
+        })
       return true
     }
     return false

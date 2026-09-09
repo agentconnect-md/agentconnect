@@ -17,8 +17,10 @@ import {
   TELEGRAM_ELICIT_SURFACE,
   parseTelegramElicit,
   telegramElicitButtons,
+  telegramCardShape,
   telegramElicitCheckboxes,
   telegramElicitData,
+  telegramElicitFieldToken,
   telegramElicitFormText,
   telegramElicitDataFits,
   telegramElicitCards
@@ -91,7 +93,7 @@ describe('what Telegram declares it can collect, and what it declines', () => {
     expect(elicitForm(form(many(25)), TELEGRAM_ELICIT_SURFACE)).toBeNull()
   })
 
-  it('builds nothing for a URL consent, a multi-field form, or an optionless field', () => {
+  it('builds nothing for a URL consent or an optionless field', () => {
     const host = { postCardSerialized: async () => undefined, sessionTarget: () => undefined, turnState: () => ({}) }
     const turn = { plan: { platform: 'telegram', channel: '-100', statusThread: 'T', agentName: 'a' } }
     const ask = { requestId: REQUEST_ID, params: form(BRANCH), message: 'q', fallback: 'q' }
@@ -100,6 +102,7 @@ describe('what Telegram declares it can collect, and what it declines', () => {
       telegramElicitCards.build(host, turn, { ...ask, url: { elicitationId: 'e1', url: 'https://x.example' } })
     ).toBeNull()
     expect(telegramElicitCards.build(host, turn, ask)).toBeNull()
+    // A form of several questions DOES build now — one row per field over the same keyboard.
     const two = form({ ...BRANCH, also: { type: 'string', enum: ['a', 'b'] } })
     expect(
       telegramElicitCards.build(host, turn, {
@@ -107,7 +110,7 @@ describe('what Telegram declares it can collect, and what it declines', () => {
         params: two,
         form: elicitForm(two, TELEGRAM_ELICIT_SURFACE) ?? undefined
       })
-    ).toBeNull()
+    ).not.toBeNull()
   })
 })
 
@@ -287,9 +290,8 @@ describe('a Telegram turn posts an elicitation card and settles it in place', ()
 
   it('declines an ask Telegram has no card for, and says so in the chat', async () => {
     const h = telegramTurn()
-    // Several questions: one prompt at a time is a state machine across fields, and a reader who
-    // walks away mid-way leaves half a form standing.
-    const req = form({ note: { type: 'string' }, count: { type: 'integer' } }, ['note', 'count'])
+    // An option list past what one keyboard holds: declined whole rather than shown in part.
+    const req = form({ pick: { type: 'string', enum: Array.from({ length: 25 }, (_, i) => `o${i}`) } }, ['pick'])
     await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
     expect(h.cards).toEqual([])
     expect(h.notices()[0]).toContain("this chat can't collect an answer for")
@@ -599,5 +601,123 @@ describe('a Telegram typed answer is written into a force-reply box', () => {
     await tap(h, requestId, 'x')
     await expect(result).resolves.toEqual({ action: 'decline' })
     expect(h.edits[0]!.text).toContain('🚫 Dismissed')
+  })
+})
+
+describe('a Telegram form of several questions is filled in over one keyboard', () => {
+  async function tap(h: Harness, requestId: string, token: string): Promise<void> {
+    await h.daemon.handleTelegramCallback(
+      { id: `cb-${token}`, data: telegramElicitData(requestId, token), channel: '-100', messageId: 4242, userId: '77' },
+      h.conn
+    )
+  }
+  const CONV = '-100\u001ftelegram:bot-a'
+  const rows = (h: Harness) => (h.edits.at(-1) ?? h.cards[0]!).buttons.map((r) => r[0]!.text)
+
+  const TWO = {
+    branch: { type: 'string', enum: ['main', 'develop'], title: 'Base branch' },
+    checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test'] }, title: 'Checks' }
+  }
+
+  it('is the shape a reduction of several fields takes, and each single field keeps its own', () => {
+    expect(telegramCardShape(elicitForm(form(TWO), TELEGRAM_ELICIT_SURFACE)!)).toBe('form')
+    expect(telegramCardShape(elicitForm(form(BRANCH), TELEGRAM_ELICIT_SURFACE)!)).toBe('buttons')
+    expect(telegramCardShape(elicitForm(form(CHECKS), TELEGRAM_ELICIT_SURFACE)!)).toBe('checkboxes')
+    expect(telegramCardShape(elicitForm(form({ note: { type: 'string' } }), TELEGRAM_ELICIT_SURFACE)!)).toBe('prompt')
+  })
+
+  it('shows one row per field with what it holds, and ONE Confirm for the whole card', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form(TWO, ['branch']))
+    expect(rows(h)).toEqual(['Base branch: —', 'Checks: —', 'Confirm'])
+
+    // Opening a single-select shows its options; picking one closes the field and returns.
+    await tap(h, requestId, telegramElicitFieldToken(0))
+    expect(rows(h)).toEqual(['⚪ main', '⚪ develop', 'Back'])
+    await tap(h, requestId, telegramElicitFieldToken(0, 1))
+    expect(rows(h)).toEqual(['Base branch: develop', 'Checks: —', 'Confirm'])
+
+    // A multi-select's ticks accumulate, so its own keyboard closes on Done.
+    await tap(h, requestId, telegramElicitFieldToken(1))
+    await tap(h, requestId, telegramElicitFieldToken(1, 0))
+    expect(rows(h)).toEqual(['☑️ lint', '⬜️ test', 'Done'])
+    await tap(h, requestId, 'bk')
+    expect(rows(h)).toEqual(['Base branch: develop', 'Checks: lint', 'Confirm'])
+
+    // Nothing has been answered until the card's own Confirm.
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    await tap(h, requestId, 'ok')
+    await expect(result).resolves.toEqual({
+      action: 'accept',
+      content: { branch: 'develop', checks: ['lint'] }
+    })
+  })
+
+  it('leaves an untouched optional field out, and refuses a Confirm missing a required one', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form(TWO, ['branch']))
+    // Required field still empty: refused by name, card left live.
+    await tap(h, requestId, 'ok')
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.notices().at(-1)).toContain('Base branch')
+
+    await tap(h, requestId, telegramElicitFieldToken(0))
+    await tap(h, requestId, telegramElicitFieldToken(0, 0))
+    await tap(h, requestId, 'ok')
+    // The optional multi-select nobody touched is an OMISSION, not an empty answer.
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
+  })
+
+  it('gives a question that brought its own free-text box both controls', async () => {
+    // "Pick one, or type your own" — the AskUserQuestion shape, which is two TARGETS. Before this
+    // card existed the companion was dropped by the reduction and the reader could only pick.
+    const h = telegramTurn()
+    const withOther = {
+      sessionId: 's1',
+      mode: 'form',
+      message: 'Which branch should I cut from?',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          branch: { type: 'string', enum: ['main', 'develop'], title: 'Base branch' },
+          other: {
+            type: 'string',
+            title: 'Other',
+            _meta: { _askUserQuestionCustomAnswer: { isCustomAnswer: true, questionId: 'branch' } }
+          }
+        },
+        required: []
+      }
+    } as unknown as CreateElicitationRequest
+    const { requestId, result } = await raise(h, withOther)
+    expect(rows(h)).toEqual(['Base branch: —', 'Base branch (Other): —', 'Confirm'])
+
+    // The typed half opens a box straight away — there is no keyboard control for characters.
+    await tap(h, requestId, telegramElicitFieldToken(1))
+    expect(h.prompts).toHaveLength(1)
+    // And it fills ONE field rather than submitting: the card is still submitted by its Confirm.
+    expect(
+      await h.daemon.permissions.claimElicitReply({ conversation: CONV, replyTo: '5150', text: 'release/2.4' })
+    ).toBe(true)
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(rows(h)).toEqual(['Base branch: —', 'Base branch (Other): release/2.4', 'Confirm'])
+    // The answered box is retired now, not at settlement: the card lives on.
+    expect(h.deleted).toEqual(['5150'])
+
+    await tap(h, requestId, 'ok')
+    await expect(result).resolves.toEqual({ action: 'accept', content: { other: 'release/2.4' } })
+  })
+
+  it('refuses a field or an option the card never offered', async () => {
+    const h = telegramTurn()
+    const { requestId } = await raise(h, form(TWO, ['branch']))
+    await tap(h, requestId, telegramElicitFieldToken(9))
+    await tap(h, requestId, telegramElicitFieldToken(0, 9))
+    expect(h.edits).toEqual([])
+    expect(h.notices()).toEqual([
+      "That answer wasn't accepted — the question is still open.",
+      "That answer wasn't accepted — the question is still open."
+    ])
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
   })
 })
