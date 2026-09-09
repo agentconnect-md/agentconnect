@@ -17,6 +17,10 @@ export const SANDBOX_ASLEEP_NOTICE =
 export const MEMORY_SANDBOX_ASLEEP_NOTICE =
   'Memory is not available right now — this agent runs in a cluster sandbox and its pod is not running. It starts again on the agent’s next turn, and its memory comes back with it.'
 
+/** And for a dream's staged store, which stays on that volume whatever the agent's memory home. */
+export const DREAM_SANDBOX_ASLEEP_NOTICE =
+  'The staged dream is not available right now — this agent runs in a cluster sandbox and its pod is not running. It starts again on the agent’s next turn, and the staged files come back with it.'
+
 /** What is drawn while the sandbox is being started. Not an error: nothing is wrong, and the read is being polled. */
 export function SandboxStartingNotice({ compact = false }: { compact?: boolean }) {
   return (

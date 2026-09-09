@@ -21,7 +21,8 @@ const api = vi.hoisted(() => ({
   listAgentMemory: vi.fn(),
   acceptDreamSkill: vi.fn(),
   dismissDreamSkill: vi.fn(),
-  fetchDreamSkill: vi.fn()
+  fetchDreamSkill: vi.fn(),
+  wakeAgent: vi.fn()
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -65,6 +66,7 @@ const dream = (over: Partial<Record<string, unknown>> = {}) => ({
 beforeEach(() => {
   for (const [key, fn] of Object.entries(api)) if (key !== 'ApiError') (fn as ReturnType<typeof vi.fn>).mockReset()
   api.listDreams.mockResolvedValue([])
+  api.wakeAgent.mockResolvedValue({ state: 'resumed' })
   api.startDream.mockResolvedValue(dream({ status: 'pending' }))
   api.listDreamFiles.mockResolvedValue({
     exists: true,
@@ -255,6 +257,39 @@ describe('DreamPanel', () => {
     // The store review token from listDreamFiles is echoed on adopt (task #36 Phase B).
     expect(api.adoptDream).toHaveBeenCalledWith(AGENT, 'drm-1', false, 'sha256:store')
     expect(host.textContent).toContain('Outdated proposals were moved to History')
+  })
+
+  it('wakes the sandbox when the staged store refuses as asleep, then reads it once the pod answers', async () => {
+    // Dream staging stays on the pod whatever the memory home (#1078): a Control-Plane-home agent's Memory tab no
+    // longer wakes on open, so the review presses the wake itself and polls the listing until the pod answers.
+    vi.useFakeTimers()
+    try {
+      api.listDreams.mockResolvedValue([dream()])
+      api.listDreamFiles.mockRejectedValueOnce(
+        Object.assign(new FakeApiError(503), { code: 'WORKSPACE_SANDBOX_UNAVAILABLE' })
+      )
+      const host = await render()
+
+      await act(async () => button(host, 'Review')?.click())
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(api.wakeAgent).toHaveBeenCalledWith(AGENT)
+      expect(host.textContent).toContain('Starting the agent’s sandbox')
+      // The refusal is a state, not an error line.
+      expect(host.textContent).not.toContain('http 503')
+
+      // The wake answered; the first poll re-issues the listing, which the pod now serves.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_100)
+      })
+      const lineDiff = host.querySelector('table[aria-label="Line changes"]')
+      expect(lineDiff?.querySelector('[data-diff-kind="add"]')?.textContent).toContain('# Memory (rebuilt)')
+      expect(host.textContent).not.toContain('Starting the agent’s sandbox')
+      expect(api.wakeAgent).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('discards a ready dream from its row without making the user open review', async () => {
@@ -525,6 +560,43 @@ describe('DreamPanel', () => {
     expect(host.textContent).not.toContain('Suggested skills')
     expect(host.textContent).not.toContain('deploy-staging')
     vi.useRealTimers()
+  })
+
+  it('wakes the sandbox when a suggested skill’s staged body refuses as asleep, then enables Accept once it loads', async () => {
+    // The skill body is staged content on the pod too; an adopted dream has no Review button, so this read
+    // must carry its own wake rather than lean on the memory-store review's.
+    vi.useFakeTimers()
+    try {
+      const skills = [{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }]
+      api.listDreams.mockResolvedValue([dream({ status: 'adopted', skills })])
+      api.fetchDreamSkill.mockRejectedValueOnce(
+        Object.assign(new FakeApiError(503), { code: 'WORKSPACE_SANDBOX_UNAVAILABLE' })
+      )
+      const host = await render()
+      const details = host.querySelector<HTMLDetailsElement>('details')!
+      await act(async () => {
+        details.open = true
+        details.dispatchEvent(new Event('toggle'))
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(api.wakeAgent).toHaveBeenCalledWith(AGENT)
+      expect(host.textContent).toContain('Starting the agent’s sandbox')
+      expect(host.textContent).not.toContain('http 503')
+      expect(button(host, 'Accept')?.disabled).toBe(true)
+
+      // The wake answered; the first poll re-issues the read, the body renders, and Accept opens up.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_100)
+      })
+      expect(host.textContent).toContain('echo deploying')
+      expect(host.textContent).not.toContain('Starting the agent’s sandbox')
+      expect(button(host, 'Accept')?.disabled).toBe(false)
+      expect(api.wakeAgent).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps Accept disabled while the body is loading, and on error or missing staging', async () => {
