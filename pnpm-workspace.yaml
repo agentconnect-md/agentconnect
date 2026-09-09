@@ -20,16 +20,12 @@ allowBuilds:
 
 minimumReleaseAge: 60
 
-# Pin vite/rolldown past 1.1.3: its native binding flaky-segfaults on process
-# teardown under Linux CI (vitest crashes with SIGSEGV / exit 139 *after* all
-# tests pass — rolldown is the only substantial native addon in the vitest
-# process). vite 8.1.3 depends on rolldown ~1.1.3, so this pulls the 1.1.4 fix.
+# Custom ACP evaluations do not use these optional providers with unpatched dependencies.
+ignoredOptionalDependencies:
+  - '@huggingface/transformers'
+  - '@openai/codex-security'
+
+# Prisma 7 still pins these affected dependencies; remove when upstream updates them.
 overrides:
-  vite: 8.1.3
-  rolldown: 1.1.4
-  # Prisma 7 pins an affected deepmerge-ts release.
   '@prisma/config@7>deepmerge-ts': 8.0.2
-  'mysql2@<3.24.4': 3.24.4
-  # Custom ACP evaluations do not use these optional providers with unpatched dependencies.
-  'promptfoo>@huggingface/transformers': '-'
-  'promptfoo>@openai/codex-security': '-'
+  'prisma@7>mysql2': 3.24.4
