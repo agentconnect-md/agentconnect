@@ -137,6 +137,16 @@ export interface ElicitCardTapTarget {
   readonly form: readonly ElicitTarget[]
 }
 
+/** One typed answer as core offers it to a card: the conversation it was written in, the message
+ *  it was written as a reply to, and its words. A surface matches it against whatever it asked the
+ *  reader to reply TO — which is how one answer reaches exactly one card. */
+export interface ElicitCardReply {
+  readonly channel: string
+  /** The message this reply answers, in the surface's own dialect. Absent ⇒ not a reply at all. */
+  readonly replyTo?: string
+  readonly text: string
+}
+
 /** One chat surface's elicitation-card facet. Registered on that platform's
  *  {@link TurnOutputSurface}; absent ⇒ the surface cannot collect an answer and core declines the
  *  ask with the in-channel notice. */
@@ -167,6 +177,11 @@ export interface ElicitCardFacet {
    *  `form` is re-derived by core from the card's own params, so it is the very field list the
    *  card rendered. Null ⇒ the tap named nothing this card offers, and core refuses it aloud. */
   tap?(handle: ElicitCardHandle, card: ElicitCardTapTarget, token: string): ElicitCardTap | null
+  /** Whether this typed message answers THIS card, and with what. Absent ⇒ the surface collects no
+   *  typed answer and every message in its chats is a prompt, which is what a Slack card's is.
+   *  Null ⇒ not this card's answer, and core keeps looking. The fields are keyed as a Confirm's
+   *  are, so a typed answer is validated by the same re-derivation every other answer is. */
+  claimReply?(handle: ElicitCardHandle, card: ElicitCardTapTarget, reply: ElicitCardReply): ElicitCardTap | null
   /** The namespace a tapping actor's id is scoped to on this surface, recorded beside an approval
    *  resolver so it is globally unique. Absent where the surface's user ids already are — a
    *  Telegram user id names one account across every chat, a Slack one only within its workspace. */

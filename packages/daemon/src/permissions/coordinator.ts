@@ -32,6 +32,7 @@ import type {
   ElicitCardHandle,
   ElicitCardHost,
   ElicitCardMark,
+  ElicitCardReply,
   ElicitCardSettlement
 } from '../platforms/elicit-card.js'
 import {
@@ -1935,6 +1936,36 @@ export class PermissionCoordinator {
     }
     if (folded.kind === 'pending') return
     await this.submitElicitForm({ requestId: a.requestId, fields: folded.fields, ...actor })
+  }
+
+  /**
+   * Offer one typed message to the live cards of its own conversation, answering the first that
+   * claims it. True ⇒ it WAS an answer and must never also reach the agent as a prompt.
+   *
+   * A surface with no typed control claims nothing, so this is a no-op on every chat but the one
+   * that asked someone to type. Where it does claim, the reply is validated by the same
+   * {@link submitElicitForm} a Confirm goes through — a number that is not a number, a string
+   * breaking its own `pattern`, are refused with the field's own words and the card left live.
+   *
+   * The claim is per CARD, never per person: anyone who can see a card may answer it, which is the
+   * same rule its buttons follow. What keeps one answer to one card is the message it replies TO.
+   */
+  async claimElicitReply(reply: ElicitCardReply & { actor?: InteractionActor }): Promise<boolean> {
+    if (reply.replyTo === undefined) return false
+    for (const [requestId, rec] of this.pendingElicits) {
+      if (rec.surface !== 'chat' || !rec.facet.claimReply || !rec.form || rec.channel !== reply.channel) continue
+      const form = this.cardForm(rec)
+      if (!form) continue
+      const claimed = rec.facet.claimReply(rec, { requestId, params: rec.params, form }, reply)
+      if (!claimed || claimed.kind !== 'submit') continue
+      await this.submitElicitForm({
+        requestId,
+        fields: claimed.fields,
+        ...(reply.actor ? { actor: reply.actor } : {})
+      })
+      return true
+    }
+    return false
   }
 
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP

@@ -36,6 +36,7 @@ import type {
   ElicitCardHandle,
   ElicitCardHost,
   ElicitCardMark,
+  ElicitCardReply,
   ElicitCardSettlement,
   ElicitCardTap,
   ElicitCardTapTarget,
@@ -47,6 +48,7 @@ import type { TelegramTurnState } from './turn-output.js'
 import {
   clampTo,
   elicitCardShape,
+  elicitFieldExpectation,
   elicitFormFieldHint,
   elicitOptionToken,
   type ElicitKind,
@@ -83,6 +85,10 @@ const TELEGRAM_ELICIT_DISMISS = 'x'
  *  for the same reason Dismiss is not: it names no option, it names the set of them. */
 const TELEGRAM_ELICIT_CONFIRM = 'ok'
 
+/** The token the button that OPENS A PROMPT carries — the one control a keyboard has for a field
+ *  that must be typed. It names no option either: it asks for the box, it does not answer. */
+const TELEGRAM_ELICIT_PROMPT = 'ed'
+
 /** How an assembled card draws one option's checkbox. Literal emoji, as the marks are. */
 const TELEGRAM_ELICIT_CHECKED = '\u2611\ufe0f'
 const TELEGRAM_ELICIT_UNCHECKED = '\u2b1c\ufe0f'
@@ -112,13 +118,16 @@ const TELEGRAM_ELICIT_MARK: Record<ElicitCardMark, string> = {
 }
 
 /**
- * What a Telegram elicitation card can render AND collect: the two kinds one TAP answers, plus the
- * multi-select a keyboard of checkboxes assembles over several taps. A typed box is still absent —
- * nothing in a keyboard accepts characters — so `text` and `number`, and therefore every form
- * carrying one, stay declined rather than posted as a control that cannot take an answer.
+ * What a Telegram elicitation card can render AND collect: the two kinds one TAP answers, the
+ * multi-select a keyboard of checkboxes assembles over several taps, and — since a `force_reply`
+ * IS the Bot API's input box — a typed one. A keyboard accepts no characters, so the card carries
+ * a button that opens the box instead, and the reply comes back naming the message it answers.
+ *
+ * A form of SEVERAL questions is still declined: one prompt at a time is a state machine across
+ * fields, and a reader who walks away mid-way would leave half a form standing.
  */
 export const TELEGRAM_ELICIT_SURFACE: ElicitSurface = {
-  kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum']),
+  kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum', 'text', 'number']),
   optionLimits: {
     enum: { maxOptions: TELEGRAM_ELICIT_MAX_BUTTONS },
     // A checkbox keyboard is the SAME keyboard, one row longer for its Confirm — so it is bounded
@@ -201,11 +210,31 @@ export function telegramElicitFormText(message: string, target: ElicitTarget): s
   return `${telegramElicitText(clampTo(message, Math.max(0, TELEGRAM_ELICIT_MESSAGE_CAP - hint.length - 1)))}\n${hint}`
 }
 
-/** The one field an assembled Telegram card renders, or null when this form is not one — today
- *  exactly a lone multi-select, the only kind a keyboard can assemble without a typed box. Pure. */
+/** The one field an assembled Telegram card renders, or null when this form is not one — a LONE
+ *  multi-select, which the keyboard ticks, or a lone typed field, which a prompt collects. Several
+ *  questions are not one of these: they would need a prompt per field. Pure. */
 export function telegramAssembledField(form: readonly ElicitTarget[]): ElicitTarget | null {
   const only = form.length === 1 ? form[0]! : null
-  return only && only.kind === 'multi-enum' ? only : null
+  if (!only) return null
+  return only.kind === 'multi-enum' || only.kind === 'text' || only.kind === 'number' ? only : null
+}
+
+/** The keyboard under a card whose answer must be TYPED: the button that opens the box, and
+ *  Dismiss. There is no Confirm — the reply IS the submission, so a second tap would only be a
+ *  chance to lose it. Pure. */
+export function telegramElicitPromptButtons(requestId: string): InlineButton[][] {
+  return [
+    [
+      { text: 'Answer', callbackData: telegramElicitData(requestId, TELEGRAM_ELICIT_PROMPT) },
+      { text: 'Dismiss', callbackData: telegramElicitData(requestId, TELEGRAM_ELICIT_DISMISS) }
+    ]
+  ]
+}
+
+/** What the prompt message says above the reader's own compose box: the question again, because a
+ *  reply box on Telegram quotes only a snippet and the card may have scrolled away. Pure. */
+export function telegramElicitPromptText(message: string, target: ElicitTarget): string {
+  return telegramElicitFormText(message, target)
 }
 
 /** Telegram's per-turn elicitation draft: the message and the keyboard under it. */
@@ -220,6 +249,9 @@ interface TelegramElicitDraft {
  *  record, so a card that ends without a Confirm leaves nothing behind. */
 interface TelegramElicitCardState {
   chosen: Set<number>
+  /** The open `force_reply` prompt's own message id, which is what a reply to it names. Absent
+   *  until the reader asks for the box, and again once the prompt has been answered. */
+  promptTs?: string
 }
 
 function cardStateOf(handle: ElicitCardHandle): TelegramElicitCardState {
@@ -241,16 +273,24 @@ export const telegramElicitCards: ElicitCardFacet = {
     const assembled = oneTap ? null : telegramAssembledField(ask.form)
     if (!oneTap && !assembled) return null
     const target = assembled ?? ask.form[0]!
-    if (!target.options.length || !telegramElicitDataFits(ask.requestId, target.options.length)) return null
-    const draft: TelegramElicitDraft = assembled
+    // A typed field offers no options at all; every other card's widest button must fit 64 bytes.
+    const typed = target.kind === 'text' || target.kind === 'number'
+    if (!typed && (!target.options.length || !telegramElicitDataFits(ask.requestId, target.options.length))) return null
+    if (typed && !telegramElicitDataFits(ask.requestId, 1)) return null
+    const draft: TelegramElicitDraft = typed
       ? {
-          text: telegramElicitFormText(ask.message, assembled),
-          buttons: telegramElicitCheckboxes(ask.requestId, assembled.options, new Set())
+          text: telegramElicitFormText(ask.message, target),
+          buttons: telegramElicitPromptButtons(ask.requestId)
         }
-      : {
-          text: telegramElicitText(ask.message),
-          buttons: telegramElicitButtons(ask.requestId, target.options)
-        }
+      : assembled
+        ? {
+            text: telegramElicitFormText(ask.message, assembled),
+            buttons: telegramElicitCheckboxes(ask.requestId, assembled.options, new Set())
+          }
+        : {
+            text: telegramElicitText(ask.message),
+            buttons: telegramElicitButtons(ask.requestId, target.options)
+          }
     return draft
   },
 
@@ -289,6 +329,25 @@ export const telegramElicitCards: ElicitCardFacet = {
     const target = telegramAssembledField(card.form)
     if (!target) return null
     const state = cardStateOf(handle)
+    const messageId = handle.ts === undefined ? NaN : Number(handle.ts)
+    // A typed field is answered in a box, never on the keyboard: the one button it has asks for
+    // that box. Opening it is not an answer, so the card stays exactly as open as it was.
+    if (target.kind === 'text' || target.kind === 'number') {
+      if (token !== TELEGRAM_ELICIT_PROMPT || !Number.isInteger(messageId)) return null
+      const message = (card.params as { message?: string }).message?.trim() || 'The agent needs your input'
+      // The prompt REPLIES to the card, which is also what keeps it inside a forum topic: Telegram
+      // places a reply where the message it answers is, so no thread coordinate is re-derived here.
+      void (handle.conn as TelegramConnection)
+        .postPrompt(handle.channel, telegramElicitPromptText(message, target), {
+          replyTo: messageId,
+          placeholder: elicitFieldExpectation(target)
+        })
+        .then((ts) => {
+          if (ts !== undefined) state.promptTs = ts
+        })
+        .catch(() => {})
+      return { kind: 'pending' }
+    }
     if (token === TELEGRAM_ELICIT_CONFIRM) {
       const picked = [...state.chosen].sort((a, b) => a - b).map(elicitOptionToken)
       return { kind: 'submit', fields: { [elicitFormBlockId(0)]: picked } }
@@ -299,7 +358,6 @@ export const telegramElicitCards: ElicitCardFacet = {
     // submit are ONE fact here — unlike Slack, where the message itself holds the reader's half-
     // filled state — so a card with no addressable message refuses the tap instead of remembering
     // a selection its own boxes still show unticked.
-    const messageId = handle.ts === undefined ? NaN : Number(handle.ts)
     if (!Number.isInteger(messageId)) return null
     if (state.chosen.has(index)) state.chosen.delete(index)
     else state.chosen.add(index)
@@ -317,6 +375,29 @@ export const telegramElicitCards: ElicitCardFacet = {
     return { kind: 'pending' }
   },
 
+  /**
+   * Claim a typed reply for this card: it answers only the PROMPT this card opened, matched by the
+   * message the reply names. That is the whole of the scoping — anyone who can see the card may
+   * answer it, exactly as its buttons allow, and one prompt belongs to one card, so an answer can
+   * never land on a question its writer never saw (#1828's rule, kept).
+   *
+   * The words go back as the field's own carried value, which for a typed field IS the text: core
+   * then validates it the way it validates a Confirm, so a number that is not a number and a
+   * string breaking its own `pattern` are refused with the field's own words.
+   */
+  claimReply(handle: ElicitCardHandle, card: ElicitCardTapTarget, reply: ElicitCardReply): ElicitCardTap | null {
+    const target = telegramAssembledField(card.form)
+    if (!target || (target.kind !== 'text' && target.kind !== 'number')) return null
+    const state = handle.cardState as TelegramElicitCardState | undefined
+    if (!state?.promptTs || state.promptTs !== reply.replyTo) return null
+    const text = reply.text.trim()
+    if (!text) return null
+    // The prompt is deliberately NOT spent here. An accepted answer settles the card, and a card
+    // that is gone claims nothing more; a REFUSED one is still open, and the reader who has just
+    // been told what was wrong is typing into the very box that should still take their retry.
+    return { kind: 'submit', fields: { [elicitFormBlockId(0)]: text } }
+  },
+
   settle(handle: ElicitCardHandle, card: ElicitCardSettlement): void {
     if (handle.ts === undefined) return
     const messageId = Number(handle.ts)
@@ -331,5 +412,11 @@ export const telegramElicitCards: ElicitCardFacet = {
     const text = clampTo(`${telegramElicitText(message)}\n${decision}`, TELEGRAM_MESSAGE_LIMIT)
     // An empty keyboard is what drops the buttons; the answered card stays readable in the chat.
     void (handle.conn as TelegramConnection).editCard(handle.channel, messageId, text, []).catch(() => {})
+    // And a prompt still standing would keep offering a box for a question that is over. Editing
+    // it is what drops its `force_reply`, so no reader is left typing into a closed card.
+    const promptTs = (handle.cardState as TelegramElicitCardState | undefined)?.promptTs
+    const promptId = promptTs === undefined ? NaN : Number(promptTs)
+    if (Number.isInteger(promptId))
+      void (handle.conn as TelegramConnection).editCard(handle.channel, promptId, decision, []).catch(() => {})
   }
 }

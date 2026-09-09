@@ -73,16 +73,16 @@ describe("the wire a Telegram tap comes back on — 64 bytes, so it carries the 
 })
 
 describe('what Telegram declares it can collect, and what it declines', () => {
-  it('claims the two kinds one tap answers, plus the multi-select a keyboard assembles', () => {
-    expect([...TELEGRAM_ELICIT_SURFACE.kinds].sort()).toEqual(['boolean', 'enum', 'multi-enum'])
+  it('claims every kind a keyboard can answer, a typed one included', () => {
+    expect([...TELEGRAM_ELICIT_SURFACE.kinds].sort()).toEqual(['boolean', 'enum', 'multi-enum', 'number', 'text'])
   })
 
-  it('reduces an enum, a boolean and a multi-select, but nothing that has to be TYPED', () => {
+  it('reduces each kind to the control that collects it', () => {
     expect(elicitTarget(form(BRANCH), TELEGRAM_ELICIT_SURFACE)?.kind).toBe('enum')
     expect(elicitTarget(form({ ok: { type: 'boolean' } }), TELEGRAM_ELICIT_SURFACE)?.kind).toBe('boolean')
     expect(elicitTarget(form(CHECKS), TELEGRAM_ELICIT_SURFACE)?.kind).toBe('multi-enum')
-    for (const prop of [{ note: { type: 'string' } }, { count: { type: 'integer' } }])
-      expect(elicitForm(form(prop, Object.keys(prop)), TELEGRAM_ELICIT_SURFACE)).toBeNull()
+    expect(elicitTarget(form({ note: { type: 'string' } }), TELEGRAM_ELICIT_SURFACE)?.kind).toBe('text')
+    expect(elicitTarget(form({ count: { type: 'integer' } }), TELEGRAM_ELICIT_SURFACE)?.kind).toBe('number')
   })
 
   it('declines an option list past what one keyboard holds, rather than showing part of it', () => {
@@ -134,11 +134,12 @@ interface Harness {
   daemon: any
   conn: any
   cards: { text: string; buttons: InlineButton[][]; opts: { threadTs?: string; replyTo?: number } }[]
-  edits: { text: string; buttons: InlineButton[][] }[]
+  edits: { text: string; buttons: InlineButton[][]; id?: number }[]
   acked: string[]
   notices: () => string[]
   /** Hold the next card post's response, so a tap can be made to beat its own send. */
   holdPost: (release: Promise<void>) => void
+  prompts: { text: string; opts: { replyTo?: number; placeholder?: string } }[]
 }
 
 /** @param turn the turn's THREAD coordinate and its Telegram reply anchor — a plain supergroup
@@ -151,7 +152,8 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
     upsertElicit: vi.fn(async () => {})
   }
   const cards: { text: string; buttons: InlineButton[][]; opts: { threadTs?: string; replyTo?: number } }[] = []
-  const edits: { text: string; buttons: InlineButton[][] }[] = []
+  const edits: { text: string; buttons: InlineButton[][]; id?: number }[] = []
+  const prompts: { text: string; opts: { replyTo?: number; placeholder?: string } }[] = []
   const acked: string[] = []
   const conn = Object.create(TelegramConnection.prototype)
   let held: Promise<void> | undefined
@@ -165,8 +167,12 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
     if (held) await held
     return '4242'
   }
-  conn.editCard = async (_c: string, _id: number, text: string, buttons: InlineButton[][]) => {
-    edits.push({ text, buttons })
+  conn.editCard = async (_c: string, id: number, text: string, buttons: InlineButton[][]) => {
+    edits.push({ text, buttons, id })
+  }
+  conn.postPrompt = async (_c: string, text: string, opts: { replyTo?: number; placeholder?: string } = {}) => {
+    prompts.push({ text, opts })
+    return '5150'
   }
   conn.answerCallback = async (id: string) => void acked.push(id)
   daemon.pending.set(JSON.stringify(['agent-1', 's1']), {
@@ -206,7 +212,8 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
     edits,
     acked,
     notices: () => applied.filter((a) => a.kind === 'notice').map((a) => a.text as string),
-    holdPost: (release: Promise<void>) => void (held = release)
+    holdPost: (release: Promise<void>) => void (held = release),
+    prompts
   }
 }
 
@@ -270,9 +277,11 @@ describe('a Telegram turn posts an elicitation card and settles it in place', ()
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
   })
 
-  it('declines a kind Telegram has no control for, and says so in the chat', async () => {
+  it('declines an ask Telegram has no card for, and says so in the chat', async () => {
     const h = telegramTurn()
-    const req = form({ note: { type: 'string' } }, ['note'])
+    // Several questions: one prompt at a time is a state machine across fields, and a reader who
+    // walks away mid-way leaves half a form standing.
+    const req = form({ note: { type: 'string' }, count: { type: 'integer' } }, ['note', 'count'])
     await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
     expect(h.cards).toEqual([])
     expect(h.notices()[0]).toContain("this chat can't collect an answer for")
@@ -468,5 +477,95 @@ describe('a Telegram multi-select is assembled on the keyboard and submitted by 
     expect(h.edits).toEqual([])
     expect(h.notices()).toEqual(["That answer wasn't accepted — the question is still open."])
     expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+  })
+})
+
+describe('a Telegram typed answer is written into a force-reply box', () => {
+  async function tap(h: Harness, requestId: string, token: string): Promise<void> {
+    await h.daemon.handleTelegramCallback(
+      { id: `cb-${token}`, data: telegramElicitData(requestId, token), channel: '-100', messageId: 4242, userId: '77' },
+      h.conn
+    )
+  }
+  const reply = (text: string, replyTo?: string) => ({ channel: '-100', text, ...(replyTo ? { replyTo } : {}) })
+
+  it('offers a box rather than a control that cannot take characters, and takes what is typed', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form({ note: { type: 'string' } }, ['note']))
+    expect(h.cards[0]!.buttons).toEqual([
+      [
+        { text: 'Answer', callbackData: telegramElicitData(requestId, 'ed') },
+        { text: 'Dismiss', callbackData: telegramElicitData(requestId, 'x') }
+      ]
+    ])
+    // Opening the box is not an answer: the card is exactly as open as it was.
+    await tap(h, requestId, 'ed')
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    // The prompt REPLIES to the card, which is also what keeps it inside a forum topic.
+    expect(h.prompts).toHaveLength(1)
+    expect(h.prompts[0]!.opts.replyTo).toBe(4242)
+
+    expect(await h.daemon.permissions.claimElicitReply(reply('ship it', '5150'))).toBe(true)
+    await expect(result).resolves.toEqual({ action: 'accept', content: { note: 'ship it' } })
+    // Both the card and the prompt stop offering anything: no reader is left typing into a
+    // question that is over.
+    expect(h.edits.map((e) => e.id)).toEqual([4242, 5150])
+    expect(h.edits[0]!.text).toContain('✅ note: ship it')
+  })
+
+  it('answers only the prompt it opened — never a reply to anything else', async () => {
+    const h = telegramTurn()
+    const { requestId } = await raise(h, form({ note: { type: 'string' } }, ['note']))
+    // Before the box is even asked for, nothing in this chat is an answer.
+    expect(await h.daemon.permissions.claimElicitReply(reply('ship it', '5150'))).toBe(false)
+    await tap(h, requestId, 'ed')
+    // A message that replies to nothing, and one replying to some other message, are both prompts.
+    expect(await h.daemon.permissions.claimElicitReply(reply('ship it'))).toBe(false)
+    expect(await h.daemon.permissions.claimElicitReply(reply('ship it', '4242'))).toBe(false)
+    // Another conversation's reply cannot reach this card either.
+    expect(await h.daemon.permissions.claimElicitReply({ channel: '-200', text: 'x', replyTo: '5150' })).toBe(false)
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+  })
+
+  it('takes the first answer and nothing after it, because the answered card is gone', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form({ note: { type: 'string' } }, ['note']))
+    await tap(h, requestId, 'ed')
+    expect(await h.daemon.permissions.claimElicitReply(reply('first', '5150'))).toBe(true)
+    expect(await h.daemon.permissions.claimElicitReply(reply('second', '5150'))).toBe(false)
+    await expect(result).resolves.toEqual({ action: 'accept', content: { note: 'first' } })
+  })
+
+  it('keeps the SAME box open after a refusal, so the retry goes where the reader is typing', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form({ count: { type: 'integer' } }, ['count']))
+    await tap(h, requestId, 'ed')
+    expect(await h.daemon.permissions.claimElicitReply(reply('nope', '5150'))).toBe(true)
+    expect(h.prompts).toHaveLength(1)
+    expect(await h.daemon.permissions.claimElicitReply(reply('7', '5150'))).toBe(true)
+    await expect(result).resolves.toEqual({ action: 'accept', content: { count: 7 } })
+  })
+
+  it('gives a number field a real number, and refuses words with the field’s own message', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form({ count: { type: 'integer', minimum: 1 } }, ['count']))
+    await tap(h, requestId, 'ed')
+    expect(await h.daemon.permissions.claimElicitReply(reply('not a number', '5150'))).toBe(true)
+    // Claimed but refused: the words were an answer to THIS card, and a bad one leaves it live.
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.notices().at(-1)).toContain('Enter')
+
+    await tap(h, requestId, 'ed')
+    expect(await h.daemon.permissions.claimElicitReply(reply('42', '5150'))).toBe(true)
+    await expect(result).resolves.toEqual({ action: 'accept', content: { count: 42 } })
+  })
+
+  it('still reads Dismiss as the decline it is on every card', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form({ note: { type: 'string' } }, ['note']))
+    await tap(h, requestId, 'ed')
+    await tap(h, requestId, 'x')
+    await expect(result).resolves.toEqual({ action: 'decline' })
+    expect(h.edits[0]!.text).toContain('🚫 Dismissed')
   })
 })
