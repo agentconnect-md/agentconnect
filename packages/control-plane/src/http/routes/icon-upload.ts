@@ -1,20 +1,4 @@
-/**
- * `http/routes/icon-upload.ts` — uploaded-icon write surface (docs/designs/icon-uploads.md).
- *
- * Org-scoped, mounted ONLY when the object store is configured (`deps.iconStore`);
- * absent ⇒ these routes don't exist and the console hides the Upload button.
- *
- *   PUT    /agents/:agentId/icon  → store an uploaded avatar (agent-edit authz)
- *   DELETE /agents/:agentId/icon  → drop it, reset to a random glyph
- *   PUT    /icon                  → the ORG's uploaded icon (owner-only)
- *   DELETE /icon
- *
- * The CP proxies the upload (browser → CP → store): the raw `image/*` body is
- * sniffed here (magic bytes; SVG rejected) so the client `Content-Type` is never
- * trusted, then written to the store under the owner's stable key. The agent/org
- * row keeps an image descriptor; each agent upload gets an opaque generation so
- * detached platform-profile updates can distinguish rapid overwrites.
- */
+// Agent and organization icon uploads, validated before storage and platform sync.
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -98,7 +82,7 @@ export function iconUploadRoutes(deps: HttpDeps) {
             .send({ error: 'Forbidden', statusCode: 403, message: 'built-in agent icon cannot be changed' })
         }
         const bytes = req.body as Buffer
-        const v = validateIconUpload(bytes)
+        const v = await validateIconUpload(bytes)
         if (!v.ok) return reply.code(v.status).send({ error: 'Unsupported', statusCode: v.status, message: v.message })
 
         await iconStore.put(agentIconKey(agent.id), bytes, v.contentType)
@@ -177,7 +161,7 @@ export function iconUploadRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         const bytes = req.body as Buffer
-        const v = validateIconUpload(bytes)
+        const v = await validateIconUpload(bytes)
         if (!v.ok) return reply.code(v.status).send({ error: 'Unsupported', statusCode: v.status, message: v.message })
 
         const orgId = req.orgCtx!.orgId
