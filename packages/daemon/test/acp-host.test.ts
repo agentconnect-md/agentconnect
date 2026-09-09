@@ -585,6 +585,30 @@ describe('turnFailureReason (actionable message from a failed ACP request)', () 
     expect(turnFailureReason(new Error('status 401: nope, url: http://x'))).toBe('status 401: nope, url: http://x')
   })
 
+  it('strips Claude Code’s "API Error" wrapper as claude-agent-acp relays it, including the authenticate guess on a 401', () => {
+    // claude-agent-acp rejects the prompt with the CLI's own result text (RequestError.internalError with
+    // the text as data.message). For a gateway 401 that text is the CLI's non-interactive rendering.
+    const err = Object.assign(new Error('Internal error'), {
+      code: -32603,
+      data: { message: `Failed to authenticate. API Error: 401 ${GATEWAY_STOP}` }
+    })
+    expect(turnFailureReason(err)).toBe(GATEWAY_STOP)
+    // Interactive rendering, a plain status, and no status at all.
+    expect(turnFailureReason(new Error(`Please run /login · API Error: 403 ${GATEWAY_STOP}`))).toBe(GATEWAY_STOP)
+    expect(turnFailureReason(new Error('API Error: 402 Payment is required.'))).toBe('Payment is required.')
+    expect(turnFailureReason(new Error('API Error: Request was aborted.'))).toBe('Request was aborted.')
+    // A wrapper around nothing keeps a status line; a bare label is not a wrapper.
+    expect(turnFailureReason(new Error('API Error: 500 '))).toBe('API error 500')
+    expect(turnFailureReason(new Error('API Error'))).toBe('API Error')
+  })
+
+  it('strips the DeepSeek Harness adapter’s "turn failed:" prefix, then whatever the harness wrapped', () => {
+    expect(turnFailureReason(new Error(`turn failed: ${GATEWAY_STOP}`))).toBe(GATEWAY_STOP)
+    expect(turnFailureReason(new Error(`turn failed: unexpected status 401 Unauthorized: ${GATEWAY_STOP}`))).toBe(
+      GATEWAY_STOP
+    )
+  })
+
   it('prefers data.message over a generic JSON-RPC title (codex-acp quota exhaustion)', () => {
     // Exactly what codex-acp rejects session/prompt with when Codex is out of usage.
     const err = Object.assign(new Error('Internal error'), {

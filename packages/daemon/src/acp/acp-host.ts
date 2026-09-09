@@ -188,18 +188,39 @@ export function turnFailureReason(err: unknown): string {
 }
 
 /**
- * Codex reports a non-2xx model response as `unexpected status <code> <reason>: <provider message>`,
- * newer versions with `, url: <request url>` appended. Neither wrapper is for the person reading the
- * turn: the status is implied by the provider's sentence, and the URL is the gateway or proxy the
- * runtime was pointed at — an internal address that means nothing to them and should not be shown.
- * Only that exact shape is unwrapped; the provider's own text passes through untouched, and any other
- * message is returned as is. A message that is nothing but the wrapper keeps its status line.
+ * The wrappers runtimes put around a provider's own error sentence, unwrapped so what reaches the person
+ * is the sentence the provider wrote — nothing else in it is for them:
+ *
+ * - **Codex**: `unexpected status <code> <reason>: <sentence>`, newer versions with `, url: <request
+ *   url>` appended. The status is implied by the sentence; the url is the gateway or proxy the runtime
+ *   was pointed at, an internal address.
+ * - **Claude Code** (through claude-agent-acp, which rejects the prompt with the CLI's result text): a
+ *   401/403 renders as `Failed to authenticate. API Error: <code> <sentence>` in non-interactive mode
+ *   (`Please run /login · API Error: …` interactively); other statuses as `API Error: <code> <sentence>`
+ *   or `API Error: <sentence>`. "Failed to authenticate" is the CLI's guess at what a 401 means, wrong
+ *   for a gateway that refuses a stopped org with its own sentence.
+ * - **DeepSeek Harness** (deepseek-harness-acp): `turn failed: <reason>`.
+ *
+ * Only those exact shapes are unwrapped; the sentence inside passes through untouched, and any other
+ * message is returned as is. A wrapper around nothing keeps a status line rather than answering with an
+ * empty string.
  */
 export function undecorateRuntimeError(text: string): string {
-  const m = /^unexpected status (\d{3})(?: [A-Za-z][A-Za-z '-]*)?: ([\s\S]*?)(?:, url: \S+)?$/.exec(text.trim())
-  if (!m) return text
-  const inner = m[2]!.trim()
-  return inner || `unexpected status ${m[1]}`
+  const t = text.trim()
+  const codex = /^unexpected status (\d{3})(?: [A-Za-z][A-Za-z '-]*)?: ([\s\S]*?)(?:, url: \S+)?$/.exec(t)
+  if (codex) {
+    const inner = codex[2]!.trim()
+    return inner || `unexpected status ${codex[1]}`
+  }
+  const claude =
+    /^(?:Failed to authenticate\. |Please run \/login (?:·|\u00b7) )?API Error: (?:(\d{3})(?: |$))?([\s\S]*)$/.exec(t)
+  if (claude) {
+    const inner = claude[2]!.trim()
+    return inner || (claude[1] ? `API error ${claude[1]}` : text)
+  }
+  const harness = /^turn failed: ([\s\S]+)$/.exec(t)
+  if (harness) return undecorateRuntimeError(harness[1]!)
+  return text
 }
 
 /** Machine-stable classification for a failed ACP turn. Keep the default conservative:
