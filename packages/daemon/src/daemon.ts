@@ -1,9 +1,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative, sep } from 'node:path'
-import { installMicrosandbox, microsandboxGuestEntry } from './microsandbox/install.js'
+import { installMicrosandbox } from './microsandbox/install.js'
 import { prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
-import { MICROSANDBOX_TUNNEL_PATHS, microsandboxGitRunner, microsandboxWorkspaceFs } from './microsandbox/guest.js'
+import { microsandboxGitRunner } from './microsandbox/git.js'
+import { createMicrosandboxWorkspaceMutations } from './microsandbox/files.js'
+import { MICROSANDBOX_TUNNEL_PATHS } from './microsandbox/socket-bridge.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
 import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
@@ -1916,7 +1918,7 @@ export class Daemon {
                   (path === mount.target || path.startsWith(`${mount.target}${sep}`))
               )
               return manager && environment && mounted
-                ? microsandboxWorkspaceFs({
+                ? createMicrosandboxWorkspaceMutations({
                     workspaceRoot: environment.workspaceRoot,
                     execute: (command, args, options) => manager.exec(environment, command, args, options)
                   })
@@ -3783,8 +3785,7 @@ export class Daemon {
         ? [placement.trustedSessionDir]
         : this.workspaces.trustedWorkspaceWriteRoots(agent),
       trustedMounts: microsandboxSupportMounts(this.root, git?.GIT_CONFIG_GLOBAL),
-      mounts: this.cfg.sandbox.mounts,
-      guestEntry: microsandboxGuestEntry(this.root)
+      mounts: this.cfg.sandbox.mounts
     })
     return { environment: { id: placement.id, ...launch.microsandbox }, launch }
   }
@@ -4694,7 +4695,6 @@ export class Daemon {
           ? {
               microsandbox: {
                 mounts: this.cfg.sandbox.mounts,
-                guestEntry: microsandboxGuestEntry(this.root),
                 trustedMounts: microsandboxSupportMounts(this.root, sessionGitInjection?.GIT_CONFIG_GLOBAL),
                 ...this.microsandboxPlacement(agent, opts.cwd, opts.hostKey)
               }

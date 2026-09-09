@@ -3,7 +3,9 @@ import { LocalWorkspaceFs, type WorkspaceFs } from '../workspace/workspace-fs.js
 // Existing VMs perform mutations themselves so virtiofs observes directory renames immediately.
 export class MicrosandboxWorkspaceFs extends LocalWorkspaceFs {
   constructor(
-    private readonly resolve: (path: string) => WorkspaceFs | undefined,
+    private readonly resolve: (
+      path: string
+    ) => Pick<WorkspaceFs, 'mkdir' | 'writeFile' | 'rename' | 'rmdir' | 'rmTree'> | undefined,
     private readonly releaseMount?: (path: string) => Promise<boolean>
   ) {
     super()

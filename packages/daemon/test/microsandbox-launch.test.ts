@@ -14,7 +14,6 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { prepareMicrosandboxLaunch, type PrepareMicrosandboxLaunchOptions } from '../src/microsandbox/launch.js'
-import { MICROSANDBOX_GUEST_ENTRY } from '../src/microsandbox/guest.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
 import { gitcredShimPath } from '../src/cp/gitcred-server.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
@@ -32,17 +31,14 @@ function fixture(): PrepareMicrosandboxLaunchOptions & { root: string; hostHome:
   const scopeDir = join(root, 'agent')
   const cwd = join(scopeDir, 'workspace')
   const hostHome = join(root, 'host')
-  const guestEntry = join(root, 'guest.js')
   mkdirSync(cwd, { recursive: true })
   mkdirSync(hostHome)
-  writeFileSync(guestEntry, 'export {}')
   return {
     root,
     hostHome,
     runtimeId: 'test',
     scopeDir,
     cwd,
-    guestEntry,
     mounts: [],
     stateSourceEnv: { HOME: hostHome }
   }
@@ -114,8 +110,7 @@ describe('prepareMicrosandboxLaunch', () => {
         { source: opts.cwd, target: opts.cwd, readOnly: false },
         { source: join(opts.scopeDir, 'home'), target: join(opts.scopeDir, 'home'), readOnly: false },
         { source: tool, target: tool, readOnly: true },
-        { source: tool, target: '/tools/tool.js', readOnly: true },
-        { source: opts.guestEntry, target: MICROSANDBOX_GUEST_ENTRY, readOnly: true }
+        { source: tool, target: '/tools/tool.js', readOnly: true }
       ])
     )
     expect(launch.microsandbox.mounts.some((mount) => mount.source === opts.scopeDir)).toBe(false)
@@ -237,12 +232,11 @@ describe('prepareMicrosandboxLaunch', () => {
     }
   })
 
-  it('rejects operator mounts shadowing private data, helper code, or socket bridges', () => {
+  it('rejects operator mounts shadowing private data or socket bridges', () => {
     const opts = fixture()
     for (const target of [
       opts.scopeDir,
       join(opts.scopeDir, 'home', 'replacement'),
-      dirname(MICROSANDBOX_GUEST_ENTRY),
       '/run',
       '/var/run',
       '/run/docker',

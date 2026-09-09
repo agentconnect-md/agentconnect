@@ -239,16 +239,21 @@ stop sends a termination signal and escalates to a kill when needed. Native tool
 run inside the existing harness and VM. There is no external CLI invocation for
 each tool call.
 
-Daemon-owned Git operations for mounted workspaces use the existing shim Git
-handler through SDK execution. Canonical clone preparation outside an exposed
+Daemon-owned Git operations for mounted workspaces execute Git through the SDK,
+sharing command policy and result parsing with the pool runner. A small shell
+checks physical guest paths and then replaces itself with Git; no Node dispatcher
+starts per command. Canonical clone preparation outside an exposed
 workspace remains host-side. Workspace reads and attachment access use host-backed
 directories mounted at the same guest paths. Once a VM exists, workspace mutations
-use the existing guest filesystem handler: renaming a staged clone on the host
+run a small Python operation in the guest: renaming a staged clone on the host
 can leave the VM's cached directory view stale, while a guest rename is immediately
 visible to guest Git. Initial directory preparation remains local before VM boot.
 This does not require a second filesystem copy or a Kubernetes tunnel. Command
-lookup and generated launch files use the guest execution/file APIs. Small
-daemon tool channels use the guest helper and vsock; the image's Kubernetes
+lookup and generated launch files use the guest execution/file APIs. Filesystem
+mutations retain descriptor-anchored paths, no-follow checks, and atomic writes;
+write content streams over stdin and its complete byte count is checked before
+publication. A Python process bridges MCP and Git credential sockets over vsock;
+the image's Kubernetes
 entrypoint and control connection are not started.
 
 VM identity follows workspace placement. Shared mode reuses the agent's
@@ -262,14 +267,14 @@ paths. This change does not redesign Git storage.
 ### Current image contract and flat disks
 
 The resolved OCI image must contain Node at
-`/usr/local/bin/node`, Python 3 for the guest helper, the declared runtime tools,
+`/usr/local/bin/node`, `/usr/bin/git`, Python 3.11+ for filesystem operations and socket bridges, the declared runtime tools,
 and `/opt/agentconnect/runtime/k8s-runtimes.json`. The daemon's full image also
 includes `bubblewrap` and `socat` for the native Claude sandbox.
 Startup reads and validates that table in a real VM; individual
 runtime execution and full-session compatibility still need workload checks.
 
 The SDK's `create()` does not execute OCI ENTRYPOINT/CMD automatically. The manager
-explicitly starts the bundled local guest helper and requested runtime commands.
+explicitly starts the Python socket bridge and requested runtime commands.
 The pool's Kubernetes security context, volumes, and resource limits do not
 travel inside its OCI image. In particular, the pool's shim startup and UID/HOME
 configuration are not a substitute for the local VM's launch settings. See the
@@ -295,7 +300,7 @@ files are written after boot through the guest file API.
 
 Each VM mounts `/run` as tmpfs so process IDs and service sockets cannot survive
 a stop/start while application data remains on the persistent disk. Operator
-mounts cannot replace `/run`. The local guest helper creates its private socket
+mounts cannot replace `/run`. The Python bridge creates its private socket
 directory at `/tmp/agentconnect` as the image's ordinary user; the pool keeps its
 existing `/run/agentconnect` paths.
 
@@ -406,8 +411,11 @@ added for them.
   ACP; use runtime `session/load` when supported. It does not resume process memory,
   an old TCP connection, or an interrupted guest process.
 - Before admitting new VM launches, daemon restart stops recorded owned VMs that
-  are still running. It retains their disks and replaces the guest helper and ACP
+  are still running. It retains their disks and replaces the socket bridge and ACP
   processes on the next start; it does not adopt the old running processes.
+- Existing bindings may retain the retired helper's exact read-only mount. Its
+  file remains an inert mount source; new VMs do not mount it. VM identity and the
+  full persisted configuration hash still have to match.
 - Retirement uses existing dirty/unpushed-work protection before deleting a
   session's retained storage. VM removal deletes its private disk and binding;
   operator-owned host mount contents are not deleted by VM removal.

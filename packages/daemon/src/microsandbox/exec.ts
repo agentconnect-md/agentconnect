@@ -1,6 +1,24 @@
 import type { ExecEvent, Sandbox } from 'microsandbox'
 import { z } from 'zod'
 
+export const MICROSANDBOX_NODE = '/usr/local/bin/node'
+
+export interface MicrosandboxExecuteOptions {
+  env?: Record<string, string>
+  inheritEnv?: boolean
+  cwd?: string
+  abort?: AbortSignal
+  timeoutMs?: number
+  maxBytes?: number
+  stdin?: string
+}
+
+export type MicrosandboxExecute = (
+  command: string,
+  args: string[],
+  options?: MicrosandboxExecuteOptions
+) => Promise<{ exitCode: number; stdout: string; stderr: string }>
+
 const MessageSchema = z.object({ v: z.literal(7), t: z.string(), p: z.instanceof(Uint8Array) })
 const DataSchema = z.object({ data: z.instanceof(Uint8Array) })
 const ErrorSchema = z.object({ message: z.string() })
@@ -15,21 +33,27 @@ export async function openExecStream(
   sandbox: Sandbox,
   command: string,
   args: string[],
-  options: { cwd?: string; env?: Record<string, string> } = {}
+  options: Pick<MicrosandboxExecuteOptions, 'cwd' | 'env' | 'inheritEnv'> = {}
 ) {
   const { decode, encode } = await import('cborg')
   const message = (type: string, payload: unknown) =>
     Buffer.from(encode({ v: 7, t: `core.exec.${type}`, p: encode(payload) }))
   const config = ConfigSchema.parse(await sandbox.config())
-  const env = { ...Object.fromEntries(config.env.map(({ key, value }) => [key, value])), ...options.env }
+  const env = {
+    ...(options.inheritEnv === false ? {} : Object.fromEntries(config.env.map(({ key, value }) => [key, value]))),
+    ...options.env
+  }
+  const entries = Object.entries(env).map(([key, value]) => `${key}=${value}`)
+  // The guest agent inherits its own environment even when the request sends none.
+  const replaceEnv = options.inheritEnv === false
   const client = await sdk.AgentClient.connectSandbox(sandbox.name)
   try {
     const stream = await client.stream(
       2,
       message('request', {
-        cmd: command,
-        args,
-        env: Object.entries(env).map(([key, value]) => `${key}=${value}`),
+        cmd: replaceEnv ? '/usr/bin/env' : command,
+        args: replaceEnv ? ['-i', '--', ...entries, command, ...args] : args,
+        env: replaceEnv ? [] : entries,
         cwd: options.cwd ?? config.runtime.workdir ?? '/',
         user: config.runtime.user ?? null,
         tty: false

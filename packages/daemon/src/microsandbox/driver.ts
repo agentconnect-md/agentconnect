@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, posix } from 'node:path'
 import { promisify } from 'node:util'
 import type { Sandbox, SandboxHandle } from 'microsandbox'
@@ -10,8 +10,14 @@ import type { Logger } from '../log.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import { SinkRelPathSchema } from '../shim/file-sink.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
-import { MICROSANDBOX_GUEST_ENTRY, MICROSANDBOX_NODE } from './guest.js'
-import { openExecStream, type MicrosandboxExecStdin, type MicrosandboxExecStream } from './exec.js'
+import { MICROSANDBOX_SOCKET_BRIDGE_COMMAND, MICROSANDBOX_SOCKET_BRIDGE_ARGS } from './socket-bridge.js'
+import {
+  MICROSANDBOX_NODE,
+  openExecStream,
+  type MicrosandboxExecuteOptions,
+  type MicrosandboxExecStdin,
+  type MicrosandboxExecStream
+} from './exec.js'
 
 const runFile = promisify(execFile)
 const STOP_TIMEOUT_MS = 10_000
@@ -19,7 +25,7 @@ const RUNTIME_TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 const IMAGE_PROBE_SCRIPT = `
 const { existsSync, readFileSync } = require('node:fs');
 const { execFileSync } = require('node:child_process');
-execFileSync('/usr/bin/python3', ['-c', 'import socket; socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM).close()'], { timeout: 10000 });
+execFileSync('/usr/bin/python3', ['-I', '-c', 'import shutil, socket, sys; assert sys.version_info >= (3, 11) and shutil.rmtree.avoids_symlink_attacks, "Python 3.11+ with safe directory removal is required"; socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM).close()'], { timeout: 10000 });
 const table = JSON.parse(readFileSync(process.argv[1], 'utf8'));
 const bridge = process.argv[2];
 if (existsSync(bridge)) table.mcpBridge = { command: process.execPath, args: [bridge] };
@@ -32,13 +38,7 @@ export interface MicrosandboxEnvironment {
   workspaceRoot: string
 }
 
-export interface MicrosandboxExecOptions {
-  env?: Record<string, string>
-  cwd?: string
-  abort?: AbortSignal
-  timeoutMs?: number
-  maxBytes?: number
-}
+export type MicrosandboxExecOptions = MicrosandboxExecuteOptions
 
 export interface MicrosandboxExecResult {
   stdout: string
@@ -123,8 +123,26 @@ export class MicrosandboxManager {
           }, options.timeoutMs)
     if (options.abort?.aborted) abort()
     try {
-      await runtime.closeStdin()
-      for await (const chunk of runtime.fromAgent) append(stdout, chunk)
+      await Promise.all([
+        (async () => {
+          for await (const chunk of runtime.fromAgent) append(stdout, chunk)
+        })(),
+        (async () => {
+          const writer = runtime.toAgent.getWriter()
+          try {
+            if (options.stdin !== undefined) {
+              const input = Buffer.from(options.stdin, 'utf8')
+              for (let offset = 0; offset < input.length; offset += 64 * 1024) {
+                options.abort?.throwIfAborted()
+                await writer.write(input.subarray(offset, offset + 64 * 1024))
+              }
+            }
+            await writer.close()
+          } finally {
+            writer.releaseLock()
+          }
+        })()
+      ])
       const exitCode = await runtime.exited
       if (failure !== undefined) throw failure
       return {
@@ -316,10 +334,28 @@ export class MicrosandboxManager {
     const binding = await this.readBinding(environment.id)
     const existing = await this.find(name)
     if (binding || existing) {
+      let matchingSpec = binding?.spec === spec
+      if (binding && !matchingSpec) {
+        const source = await realpath(join(this.options.root, 'microsandbox', 'helpers', 'guest.js')).catch(
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT') return undefined
+            throw error
+          }
+        )
+        // Retain an older VM's disk when only the retired, read-only guest helper mount differs.
+        if (source) {
+          matchingSpec =
+            binding.spec ===
+            this.spec({
+              ...environment,
+              mounts: [...environment.mounts, { source, target: '/opt/agentconnect-local/guest.js', readOnly: true }]
+            })
+        }
+      }
       if (
         !binding ||
         !existing ||
-        binding.spec !== spec ||
+        !matchingSpec ||
         binding.sandboxId !== existing.id ||
         binding.configHash !== hash(stableJson(existing.config()))
       ) {
@@ -371,10 +407,12 @@ export class MicrosandboxManager {
   }
 
   private async startBridge(id: string, sandbox: Sandbox): Promise<void> {
-    const handle = await openExecStream(this.options.sdk, sandbox, MICROSANDBOX_NODE, [
-      MICROSANDBOX_GUEST_ENTRY,
-      'sockets'
-    ])
+    const handle = await openExecStream(
+      this.options.sdk,
+      sandbox,
+      MICROSANDBOX_SOCKET_BRIDGE_COMMAND,
+      MICROSANDBOX_SOCKET_BRIDGE_ARGS
+    )
     const stdin = await handle.takeStdin()
     if (!stdin) {
       await handle.close()
@@ -473,7 +511,7 @@ export class MicrosandboxManager {
     environment: MicrosandboxEnvironment,
     command: string,
     args: string[],
-    options: Pick<MicrosandboxExecOptions, 'env' | 'cwd' | 'abort'>,
+    options: Pick<MicrosandboxExecOptions, 'env' | 'cwd' | 'abort' | 'inheritEnv'>,
     stderr: (data: Uint8Array) => void,
     files: SpawnRequest['files'] = [],
     hints: SpawnRequest['hints'] = []
@@ -511,7 +549,8 @@ export class MicrosandboxManager {
       options.abort?.throwIfAborted()
       const handle = await openExecStream(this.options.sdk, sandbox, command, args, {
         cwd: options.cwd ?? environment.workspaceRoot,
-        env
+        env,
+        inheritEnv: options.inheritEnv
       })
       const stdin = await handle.takeStdin()
       if (!stdin) {

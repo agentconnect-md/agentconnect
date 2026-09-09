@@ -11,68 +11,8 @@ import type { ShimCapability } from './protocol.js'
 import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
 import { applyMemoryFsPayload, isMemoryFsPayload } from './memory-fs-channel.js'
 
-// Enforce the daemon's workspace Git command inventory where Git actually runs.
-export const ALLOWED_GIT_SUBCOMMANDS = new Set([
-  'add',
-  'branch',
-  'check-ref-format',
-  'clean',
-  'clone',
-  'commit',
-  'config',
-  'diff',
-  'fetch',
-  'log',
-  'ls-files',
-  'ls-remote',
-  'pull',
-  'push',
-  'remote',
-  'reset',
-  'rev-list',
-  'rev-parse',
-  'show-ref',
-  'status',
-  'symbolic-ref',
-  'update-ref',
-  'worktree'
-])
-
-/**
- * Argument forms refused regardless of subcommand: each turns a git invocation into an
- * arbitrary-execution primitive, so no member of the inventory above may carry one.
- *
- * Matched as PREFIXES, never as exact tokens. Every one of these has at least three accepted
- * spellings — separated (`-c k=v`), attached (`-ck=v`) and long-with-equals (`--config=k=v`) —
- * all measured against git 2.43, and an exact-token list catches only the first. `-c` in
- * particular is not just a global option: `git clone -c` is clone's OWN option, which is how
- * `-cprotocol.ext.allow=always ext::<helper>` reaches a helper the caller names.
- *
- * No argv the daemon sends starts with `-c` or `--config` (`--count` does not match `/^-c/`,
- * whose second character is `c`), so the width costs nothing real.
- */
-const REFUSED_ARGUMENT = [
-  /^-c/, // ad-hoc config in any spelling: -c k=v, -ck=v
-  /^--config/, // --config=k=v, --config-env=…
-  /^--exec-path/, // relocates git's helper binaries
-  /^--upload-pack/,
-  /^--receive-pack/
-]
-
-/**
- * Options that reach execution for ONE subcommand, where the same spelling is ordinary
- * elsewhere — so the check has to be subcommand-aware rather than a blanket ban.
- *
- * `git clone -u <program>` is `--upload-pack` and runs the program, attached spelling included
- * (`-u<program>`); measured, not assumed. Meanwhile `status -u` is `--untracked-files` and
- * `fetch -u` is `--update-head-ok`, and the daemon sends both — a blanket `-u` refusal would
- * break every status call. `git config -e` opens `GIT_EDITOR`, also measured, and no call site
- * edits config.
- */
-const REFUSED_SUBCOMMAND_ARGUMENT: Record<string, RegExp[]> = {
-  clone: [/^-u/],
-  config: [/^-e$/, /^--edit/]
-}
+export { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError } from '../workspace/git-command-policy.js'
+import { ExecRefusedError, validateGitArgs } from '../workspace/git-command-policy.js'
 
 /**
  * Per-stream raw ceiling — a cheap first bound, NOT the authoritative one.
@@ -114,13 +54,6 @@ export interface ExecHandlerDeps {
 /** Applied when the caller names no deadline; the ceiling bounds one that is too generous. */
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 15 * 60_000
-
-export class ExecRefusedError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'ExecRefusedError'
-  }
-}
 
 /** Resolve symlinks before comparing: a lexical prefix check passes for `<root>/link` even when
  *  the link points outside, so containment has to be decided on canonical paths. */
@@ -247,23 +180,8 @@ async function probeRuntimes(deps: ExecHandlerDeps, abort?: AbortSignal): Promis
 
 async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSignal): Promise<GitExecResult> {
   const parsed = GitExecPayloadSchema.parse(payload)
+  validateGitArgs(parsed.args)
   const [subcommand, ...rest] = parsed.args
-  if (!subcommand || !ALLOWED_GIT_SUBCOMMANDS.has(subcommand)) {
-    throw new ExecRefusedError(`git ${subcommand ?? '(none)'} is not in the permitted inventory`)
-  }
-  const perSubcommand = REFUSED_SUBCOMMAND_ARGUMENT[subcommand] ?? []
-  for (const argument of parsed.args) {
-    if (REFUSED_ARGUMENT.some((pattern) => pattern.test(argument))) {
-      // These reach execution through git rather than around it, so the subcommand being
-      // permitted is not sufficient.
-      throw new ExecRefusedError(`argument ${argument} is refused`)
-    }
-  }
-  for (const argument of rest) {
-    if (perSubcommand.some((pattern) => pattern.test(argument))) {
-      throw new ExecRefusedError(`argument ${argument} is refused for git ${subcommand}`)
-    }
-  }
   const cwd = resolveCwd(deps.workspaceRoot, parsed.cwd)
   // Both WRITE a path from argv, which the cwd fence never looks at: a clone's target, and the
   // directory `worktree add`/`remove` creates or deletes. EVERY operand is checked, resolved as git
