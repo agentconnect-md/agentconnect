@@ -17,6 +17,7 @@ import {
   uninstallService
 } from './service/index.js'
 import { runUpgrade, versionInstall, versionList, versionPrune, versionUse } from './version-commands.js'
+import { DEFAULT_KEEP_VERSIONS } from './version-ops.js'
 import { CLI_VERSION } from './version.js'
 
 const fail = (cmd: string, err: unknown): never => {
@@ -243,6 +244,14 @@ async function main(): Promise<void> {
       : c === undefined
         ? undefined
         : fail('version', new Error(`unknown channel '${c}' (use stable|rc)`))
+  // `--keep <n>` → a non-negative retention count; 0 disables cleanup, a non-number is rejected.
+  const keepOption = (n?: string): number | undefined => {
+    if (n === undefined) return undefined
+    const k = Number(n)
+    if (!Number.isInteger(k) || k < 0)
+      return fail('version', new Error(`invalid --keep '${n}' (use a whole number ≥ 0)`))
+    return k
+  }
 
   const version = program.command('version').description('Manage installed daemon versions')
   // Bare `agentconnect version` → list (and the CLI's own version prints via --version).
@@ -255,9 +264,10 @@ async function main(): Promise<void> {
     .command('install [version]')
     .description('Download and unpack a daemon version (defaults to the channel dist-tag)')
     .option('--channel <channel>', 'stable|rc (default: the stored channel)')
-    .action(async (v: string | undefined, o: { channel?: string }) => {
+    .option('--keep <n>', 'how many versions to keep afterwards (0 disables cleanup)', String(DEFAULT_KEEP_VERSIONS))
+    .action(async (v: string | undefined, o: { channel?: string; keep?: string }) => {
       try {
-        await versionInstall(root, { to: v, channel: asChannel(o.channel) })
+        await versionInstall(root, { to: v, channel: asChannel(o.channel), keep: keepOption(o.keep) })
       } catch (err) {
         fail('version install', err)
       }
@@ -274,11 +284,11 @@ async function main(): Promise<void> {
     })
   version
     .command('prune')
-    .description('Remove old daemon versions, keeping the newest N (current/previous always kept)')
-    .option('--keep <n>', 'how many prunable versions to keep', '2')
+    .description('Remove old daemon versions, keeping the newest N in total (current/previous always kept)')
+    .option('--keep <n>', 'how many versions to keep in total', String(DEFAULT_KEEP_VERSIONS))
     .action(async (o: { keep: string }) => {
       try {
-        await versionPrune(root, Math.max(0, Number(o.keep) || 0))
+        await versionPrune(root, keepOption(o.keep) ?? DEFAULT_KEEP_VERSIONS)
       } catch (err) {
         fail('version prune', err)
       }
@@ -290,9 +300,10 @@ async function main(): Promise<void> {
     .command('install [version]')
     .description('Download, unpack, and (on a fresh host) activate a daemon version')
     .option('--channel <channel>', 'stable|rc (default: the stored channel)')
-    .action(async (v: string | undefined, o: { channel?: string }) => {
+    .option('--keep <n>', 'how many versions to keep afterwards (0 disables cleanup)', String(DEFAULT_KEEP_VERSIONS))
+    .action(async (v: string | undefined, o: { channel?: string; keep?: string }) => {
       try {
-        await versionInstall(root, { to: v, channel: asChannel(o.channel) })
+        await versionInstall(root, { to: v, channel: asChannel(o.channel), keep: keepOption(o.keep) })
       } catch (err) {
         fail('install', err)
       }
@@ -304,9 +315,19 @@ async function main(): Promise<void> {
     .option('--to <version>', 'upgrade to a specific version instead of the channel latest')
     .option('--channel <channel>', 'stable|rc (default: the stored channel)')
     .option('--restart', 'restart the service now and roll back if it fails its health check')
-    .action(async (o: { to?: string; channel?: string; restart?: boolean }) => {
+    .option(
+      '--keep <n>',
+      'how many versions to keep after upgrading (0 disables cleanup)',
+      String(DEFAULT_KEEP_VERSIONS)
+    )
+    .action(async (o: { to?: string; channel?: string; restart?: boolean; keep?: string }) => {
       try {
-        await runUpgrade(root, { to: o.to, channel: asChannel(o.channel), restart: Boolean(o.restart) })
+        await runUpgrade(root, {
+          to: o.to,
+          channel: asChannel(o.channel),
+          restart: Boolean(o.restart),
+          keep: keepOption(o.keep)
+        })
       } catch (err) {
         fail('upgrade', err)
       }

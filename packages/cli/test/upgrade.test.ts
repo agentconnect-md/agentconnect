@@ -22,12 +22,70 @@ function deps(over: Partial<UpgradeDeps> = {}): UpgradeDeps {
     serviceInstalled: () => true,
     restartService: vi.fn(async () => {}),
     health: async () => ({ healthy: true, reason: 'stable pid 1' }),
+    prune: vi.fn(() => []),
     log: () => {},
     ...over
   }
 }
 
 describe('upgrade', () => {
+  it('prunes with the default retention after switching, protecting the target', async () => {
+    const r = root()
+    install(r, '1.0.0')
+    const { useVersion } = await import('../src/version-ops.js')
+    useVersion(r, '1.0.0')
+    const prune = vi.fn(() => ['0.9.0'])
+    await upgrade(r, { to: '2.0.0' }, deps({ prune }))
+    expect(prune).toHaveBeenCalledWith({ keep: 3, protect: ['2.0.0'], assumeIdle: false })
+  })
+
+  it('passes an explicit --keep through to the prune', async () => {
+    const r = root()
+    install(r, '1.0.0')
+    const { useVersion } = await import('../src/version-ops.js')
+    useVersion(r, '1.0.0')
+    const prune = vi.fn(() => [])
+    await upgrade(r, { to: '2.0.0', keep: 1 }, deps({ prune }))
+    expect(prune).toHaveBeenCalledWith({ keep: 1, protect: ['2.0.0'], assumeIdle: false })
+    await upgrade(r, { to: '3.0.0', keep: 0 }, deps({ prune }))
+    expect(prune).toHaveBeenLastCalledWith({ keep: 0, protect: ['3.0.0'], assumeIdle: false })
+  })
+
+  it('prunes even when the target is already current', async () => {
+    const r = root()
+    install(r, '2.0.0')
+    const { useVersion } = await import('../src/version-ops.js')
+    useVersion(r, '2.0.0')
+    const prune = vi.fn(() => [])
+    await upgrade(r, { to: '2.0.0' }, deps({ prune }))
+    expect(prune).toHaveBeenCalledWith({ keep: 3, protect: ['2.0.0'], assumeIdle: false })
+  })
+
+  it('prunes as idle only after a restart proved healthy', async () => {
+    const r = root()
+    install(r, '1.0.0')
+    const { useVersion } = await import('../src/version-ops.js')
+    useVersion(r, '1.0.0')
+    const prune = vi.fn(() => [])
+    await upgrade(r, { to: '2.0.0', restart: true }, deps({ prune }))
+    expect(prune).toHaveBeenCalledWith({ keep: 3, protect: ['2.0.0'], assumeIdle: true })
+  })
+
+  it('does not prune when the upgrade rolled back', async () => {
+    const r = root()
+    install(r, '1.0.0')
+    const { useVersion } = await import('../src/version-ops.js')
+    useVersion(r, '1.0.0')
+    const prune = vi.fn(() => [])
+    await expect(
+      upgrade(
+        r,
+        { to: '2.0.0', restart: true },
+        deps({ prune, health: async () => ({ healthy: false, reason: 'exited' }) })
+      )
+    ).rejects.toThrow(/rolled back/)
+    expect(prune).not.toHaveBeenCalled()
+  })
   it('installs, flips current, restarts, and stays on the new version when healthy', async () => {
     const r = root()
     install(r, '1.0.0')
