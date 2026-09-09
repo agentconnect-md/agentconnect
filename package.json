@@ -47,7 +47,7 @@
     "semantic-release": "^25.0.8",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.65.0",
-    "vitest": "^4.1.10",
+    "vitest": "^5.0.0",
     "yaml": "^2.9.0"
   },
   "engines": {
