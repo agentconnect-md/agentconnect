@@ -8477,14 +8477,16 @@ export class Daemon {
           msg.remoteMcp,
           op.mentions,
           op.post,
-          op.worktree
+          op.worktree,
+          op.steer
         )
         return {
           msgId: msg.msgId,
           accepted: ack.accepted,
           turnId: ack.turnId,
           ...(ack.reason ? { reason: ack.reason } : {}),
-          ...(ack.detail ? { detail: ack.detail } : {})
+          ...(ack.detail ? { detail: ack.detail } : {}),
+          ...(ack.steered ? { steered: true } : {})
         }
       }
       case 'context': {
@@ -10191,6 +10193,9 @@ export class Daemon {
     callMeta?: CallMeta,
     opts?: {
       isQueueCmd?: boolean
+      /** Steer into the live turn or refuse `busy` — never queue. For a caller that keeps its own
+       *  queue (the console composer) and must learn the verdict from the admission ACK. */
+      steerOnly?: boolean
       /** Recovery of a row whose loop-guard admission was already counted. */
       replay?: boolean
       /** A startup replay may wait for an interrupt safety drain instead of being dropped. */
@@ -10508,6 +10513,14 @@ export class Daemon {
             // queue below is the fallback for everything the runtime or the policy declines.
             if (await this.steerIntoLiveTurn(key, entry)) {
               await settleAdmission({ accepted: true, steered: true })
+              return
+            }
+            // A steer-only delivery is refused rather than parked: its caller still holds the
+            // message and re-sends it when the turn ends. The durable row must not outlive it.
+            if (opts?.steerOnly) {
+              await this.removeInbox(entry).catch(() => undefined)
+              await settleAdmission({ accepted: false, reason: 'busy' })
+              resolve(null)
               return
             }
             // Place the entry BEFORE the revision plan's interrupts: those await, and a gate that
@@ -13657,6 +13670,10 @@ export class Daemon {
           }
         : {}),
       ...(allowRuntimeChangesInChat && fast ? { fastModeAvailable: true } : {}),
+      // Steerable while this host owns the live session and advertised `_session/steering`.
+      ...(this.cfg.features.sessionSteering && modelSessionIsLive && host?.steeringSupported?.() === true
+        ? { steerable: true }
+        : {}),
       // The console deep-links from this, so it is the session's outward id (§1.1), not the hop's.
       ...(outwardSessionId ? { sessionId: outwardSessionId } : {})
     }

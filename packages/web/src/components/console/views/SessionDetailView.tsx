@@ -1921,6 +1921,8 @@ type Turn =
       image?: SessionImage
       isCron: boolean
       cronId: string | null
+      /** Sent into the agent's running turn (#1847) rather than as a turn of its own. */
+      steer?: boolean
       /** The platform this message was authored on — see `FmtStep.platform`. */
       platform?: string
       /** The facts behind a delivery turn (transcript-full-tool-body.md §9) — the bubble's "more". */
@@ -3959,8 +3961,14 @@ export default function SessionDetailView() {
     }
   } else {
     let firstMsg = true
+    // Steers fence the running turn's block: the reply that continues after one starts a
+    // fresh block below it instead of merging back into the block above (#1847).
+    let steerSegment = 0
+    const segmentedKey = (turnKey: string | undefined): string | undefined =>
+      turnKey && steerSegment > 0 ? `${turnKey}:s${steerSegment}` : turnKey
     session.steps.forEach((stp) => {
       if (stp.kind === 'msg') {
+        if (stp.steer) steerSegment += 1
         const who = stp.who ?? session.user
         if (isBgTaskWake(stp.who)) {
           pushOwnerWakeTurn(
@@ -4001,6 +4009,7 @@ export default function SessionDetailView() {
           image: stp.image,
           isCron: !!cron,
           cronId: cron?.id ?? null,
+          ...(stp.steer ? { steer: true } : {}),
           platform: session.platform
         })
         firstMsg = false
@@ -4015,7 +4024,7 @@ export default function SessionDetailView() {
         if (stp.agentId && stp.agentId !== session.agentId) {
           rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
         }
-        const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
+        const turnKey = segmentedKey(liveBotTurnKey(stp.turnId, stp.agentId))
         let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
         last = bindWakeBlock(last, { agentId: stp.agentId, agentName: stepAgentName }, turnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
@@ -4046,8 +4055,12 @@ export default function SessionDetailView() {
   // turns you send THIS visit below its fetched history, like a synthetic
   // playground session.
   if (isWebchat || isContinuable) {
+    let steerSegment = 0
+    const segmentedKey = (turnKey: string | undefined): string | undefined =>
+      turnKey && steerSegment > 0 ? `${turnKey}:s${steerSegment}` : turnKey
     for (const stp of liveSteps) {
       if (stp.kind === 'msg') {
+        if (stp.steer) steerSegment += 1
         const who = stp.who ?? session.user
         if (isBgTaskWake(stp.who)) {
           pushOwnerWakeTurn(
@@ -4083,6 +4096,7 @@ export default function SessionDetailView() {
           image: stp.image,
           isCron: false,
           cronId: null,
+          ...(stp.steer ? { steer: true } : {}),
           platform: session.platform
         })
       } else {
@@ -4091,7 +4105,7 @@ export default function SessionDetailView() {
         if (stp.agentId && stp.agentId !== session.agentId) {
           rememberAgentParticipant(stp.agentId, stepAgentName, stepAgent ?? null)
         }
-        const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
+        const turnKey = segmentedKey(liveBotTurnKey(stp.turnId, stp.agentId))
         let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
         last = bindWakeBlock(last, { agentId: stp.agentId, agentName: stepAgentName }, turnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
@@ -4882,6 +4896,11 @@ export default function SessionDetailView() {
                                   ) : (
                                     <span>{turn.sp.name}</span>
                                   )}
+                                </span>
+                              )}
+                              {turn.steer && (
+                                <span className="pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                                  Steered into the running reply
                                 </span>
                               )}
                               <div className={SELF_BUBBLE}>

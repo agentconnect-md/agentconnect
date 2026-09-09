@@ -66,7 +66,10 @@ export const WebchatAck = z.object({
     .optional(),
   // One bounded, path-free line naming the fault, so the client can state the cause instead of
   // guessing at it. The daemon redacts it; nothing here reveals its filesystem layout.
-  detail: z.string().max(240).optional()
+  detail: z.string().max(240).optional(),
+  // The turn was delivered INTO the running turn over `_session/steering` (#1847); its own
+  // stream ends at once with `stopReason: 'steered_into_turn'` and the live reply continues.
+  steered: z.boolean().optional()
 })
 export type WebchatAck = z.infer<typeof WebchatAck>
 
@@ -316,6 +319,9 @@ export const WebchatStatus = z.object({
   // config option only appears once a fast-capable model is selected). Absent/false ⇒
   // no fast toggle shown.
   fastModeAvailable: z.boolean().optional(),
+  // Whether a message sent while this turn runs can be steered into it over the runtime's
+  // `_session/steering` (#1847): the composer then sends at once instead of queueing locally.
+  steerable: z.boolean().optional(),
   // This conversation's session, by its outward id (session-concept.md §1.1), so the console can
   // deep-link to the session detail page. Absent until the session is created.
   sessionId: z.string().optional()

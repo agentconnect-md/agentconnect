@@ -174,7 +174,10 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     runtime: WebchatRuntimeConfig.optional(),
     // Per-conversation workspace override. The daemon honors it only while
     // creating the logical session; later turns cannot move an existing session.
-    worktree: z.boolean().optional()
+    worktree: z.boolean().optional(),
+    // Steer-or-refuse (#1847): the browser sent this while a turn was running and keeps its
+    // own queue, so the daemon steers it into that turn or refuses `busy` — never parks it.
+    steer: z.boolean().optional()
   }),
   // A conversation post another participant produced (a user turn targeted
   // elsewhere, or a peer agent's reply), fanned out by the relay so THIS frame's
@@ -530,6 +533,8 @@ export const RdAck = z.object({
   reason: z.string().optional(),
   /** Bounded human-readable cause for a refusal the browser should explain (see WebchatAck.detail). */
   detail: z.string().max(240).optional(),
+  /** Webchat `turn` verdicts only: delivered into the running turn (see WebchatAck.steered). */
+  steered: z.boolean().optional(),
   /** `attach` verdicts only: the named stream's current resume generation — the browser
    *  seeds its cursor from it so the follow-up `resume` outruns pre-reload generations. */
   generation: z.number().int().min(0).optional(),

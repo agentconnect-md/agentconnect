@@ -148,7 +148,8 @@ export function parseBrowserFrame(
       ...(mentions ? { mentions } : {}),
       ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
       ...(m.runtime !== undefined ? { runtime: m.runtime } : {}),
-      ...(m.worktree !== undefined ? { worktree: m.worktree } : {})
+      ...(m.worktree !== undefined ? { worktree: m.worktree } : {}),
+      ...(m.steer === true ? { steer: true } : {})
     })
     if (!parsed.success || parsed.data.op !== 'turn') return null
     const targets = m.targets !== undefined ? uuidArray(m.targets, 16) : undefined
@@ -463,7 +464,8 @@ export class RelayBrowserConnection implements ChatSink {
         agentId,
         ...(ack.reason ? { reason: ack.reason } : {}),
         ...(ack.detail ? { detail: ack.detail } : {}),
-        ...(ack.generation !== undefined ? { generation: ack.generation } : {})
+        ...(ack.generation !== undefined ? { generation: ack.generation } : {}),
+        ...(ack.steered ? { steered: true } : {})
       }
       // A refusal is the whole story of a stream that "never came back" — name it, and who
       // refused. Attach misses are the normal idle answer, not worth a line.

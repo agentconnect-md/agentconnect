@@ -41,6 +41,8 @@ const { PlaygroundProvider, usePlayground } = await import('./PlaygroundProvider
 // the synchronous return value instead of the streaming machinery.
 class StubSocket {
   static CONNECTING = 0
+  // The provider reuses a socket only while `readyState` reads as OPEN against the class constant.
+  static OPEN = 1
   readyState = 0
   send = vi.fn()
   close = vi.fn()
@@ -1075,5 +1077,128 @@ describe('in-band elicitation cards', () => {
     // The daemon owns the outcome: nothing settles locally on the send alone.
     expect(getLiveSteps('s1').find((s) => s.kind === 'elicit')?.elicit?.outcome).toBeUndefined()
     expect(ElicitSocket.instances).toHaveLength(1) // one socket, card in and answer out
+  })
+})
+
+// #547: once the daemon's status frame says the running turn is steerable, a send while it
+// streams goes straight to the wire as a steer instead of into the composer's queue.
+describe('mid-turn steering', () => {
+  class SteerSocket extends StubSocket {
+    static instances: SteerSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      SteerSocket.instances.push(this)
+    }
+  }
+
+  async function openSteerableStream() {
+    SteerSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', SteerSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello', 'c1')
+    })
+    const socket = SteerSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId: turn.turnId, agentId: 'agent-1', index: 0, status: { steerable: true } }
+        })
+      })
+    })
+    return { socket, turnId: turn.turnId }
+  }
+  const frames = (socket: SteerSocket) =>
+    socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+
+  it('steers a follow-up into the running turn instead of queueing it', async () => {
+    const { socket, turnId } = await openSteerableStream()
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'use staging instead', 'c1')).toBe(true)
+    })
+    expect(getPgQueue('s1')).toEqual([])
+    const steer = frames(socket).find((f) => f.steer === true)
+    expect(steer).toMatchObject({ text: 'use staging instead', steer: true })
+    expect(steer!.turnId).not.toBe(turnId)
+    const step = getLiveSteps('s1').find((s) => s.text === 'use staging instead')
+    expect(step).toMatchObject({ kind: 'msg', who: '@you', steer: true })
+
+    // The daemon steered it: its own stream ends at once and the first turn keeps streaming —
+    // a further send is still a steer, not a fresh turn.
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'ack',
+          ack: { accepted: true, turnId: steer!.turnId, agentId: 'agent-1', steered: true }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'done',
+          done: { turnId: steer!.turnId, agentId: 'agent-1', stopReason: 'steered_into_turn' }
+        })
+      })
+    })
+    expect(getLiveSteps('s1').find((s) => s.text === 'use staging instead')).toMatchObject({ steer: true })
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'and skip the migration', 'c1')).toBe(true)
+    })
+    expect(frames(socket).filter((f) => f.steer === true)).toHaveLength(2)
+    expect(getPgQueue('s1')).toEqual([])
+  })
+
+  it('puts a steer the daemon refused back at the head of the queue', async () => {
+    const { socket } = await openSteerableStream()
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'declined steer', 'c1')).toBe(true)
+    })
+    const steer = frames(socket).find((f) => f.steer === true)!
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'ack',
+          ack: { accepted: false, turnId: steer.turnId, agentId: 'agent-1', reason: 'busy' }
+        })
+      })
+    })
+    expect(getPgQueue('s1').map((q) => q.text)).toEqual(['declined steer'])
+    expect(getLiveSteps('s1').some((s) => s.text === 'declined steer')).toBe(false)
+    // With something already queued, the next send waits behind it — FIFO beats steering.
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'after it', 'c1')).toBe(true)
+    })
+    expect(getPgQueue('s1').map((q) => q.text)).toEqual(['declined steer', 'after it'])
+    expect(frames(socket).filter((f) => f.steer === true)).toHaveLength(1)
+  })
+
+  it('keeps queueing while the daemon has not declared the turn steerable', async () => {
+    SteerSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', SteerSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello', 'c1')
+    })
+    const socket = SteerSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'queued as before', 'c1')).toBe(true)
+    })
+    expect(getPgQueue('s1').map((q) => q.text)).toEqual(['queued as before'])
+    expect(frames(socket).some((f) => f.steer === true)).toBe(false)
   })
 })
