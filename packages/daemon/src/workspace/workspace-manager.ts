@@ -44,7 +44,7 @@ import {
   originOnManagedHost,
   type ManagedCredentialScope
 } from './git-injection.js'
-import { LocalGitRunner, type GitRunner } from './git-runner.js'
+import { GitTransportError, LocalGitRunner, type GitRunner } from './git-runner.js'
 import { localWorkspaceFs, type WorkspaceFs, type WorkspacePlacement } from './workspace-fs.js'
 import { gitmoduleRepos } from './gitmodules.js'
 import {
@@ -983,6 +983,7 @@ export class WorkspaceManager {
     try {
       current = (await git.raw(['remote', 'get-url', 'origin'])).trim()
     } catch (cause) {
+      if (cause instanceof GitTransportError) throw cause
       if (root.githubApp) throw new UntrustedGithubWorkspaceOriginError({ cause })
       return
     }

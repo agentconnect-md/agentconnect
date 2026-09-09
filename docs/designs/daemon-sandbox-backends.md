@@ -159,10 +159,17 @@ Podman/runsc with systrap remains a future no-KVM option, not a hidden fallback.
 The manager persists each environment ID, sandbox ID, requested image/resources/
 mount specification, and a hash of the SDK's saved configuration. Reuse rejects
 missing or changed bindings and configuration rather than silently recreating the
-VM. A retained VM keeps its original configuration. Restarting the daemon does
-not upgrade it or migrate its disk; configuration changes require an explicit
-retirement/recreation or a future data-migration operation. Image digest
-resolution and upgrade tooling remain proposed.
+VM. Each new session owns a VM using the image configured at creation, including
+sessions that share workspace files. Its private HOME lives under
+`runtime-homes/<session-leaf>/home` unless it already owns a confined session
+directory. For shared workspaces, native-memory directories mount the agent's
+existing memory store so Console reads and edits reach every session; runtime
+credentials stay in the session's HOME. Image changes apply to new sessions;
+resume keeps the original image, runtime versions, HOME and disks until session
+retention removes them. Sessions created in a legacy shared agent VM continue
+using that VM until its last session retires. Resource and mount changes still
+require environment recreation. Image
+digest resolution and in-place disk migration remain proposed.
 
 Kubernetes mode retains `K8sDriver`, its resource configuration, and image rollout.
 An explicitly configured local microsandbox backend
@@ -270,9 +277,9 @@ publication. A Python process bridges MCP and Git credential sockets over vsock;
 the image's Kubernetes
 entrypoint and control connection are not started.
 
-VM identity follows workspace placement. Shared mode reuses the agent's
-`agent/agent` environment. An isolated session uses its own `agent/session-…`
-environment, writable runtime HOME, disk, and guest network namespace. Existing
+New sessions use their own `agent/session-…` environment, writable runtime HOME,
+disk, and guest network namespace. Retained legacy sessions and canonical
+workspace preparation continue using the `agent/agent` environment. Existing
 shared-workspace versus session-workspace choices still govern repository data;
 separate VMs do not make a deliberately shared host mount private. Linked-worktree
 Git metadata, secondary repositories, and file attachments keep consistent guest
@@ -369,12 +376,13 @@ AVX in the guest CPU; amd64 emulation without AVX cannot run that runtime.
 
 An explicit daemon image overrides this metadata. Development builds remove
 release metadata and require an explicit image; they do not derive a default
-from the development package version. Upgrading to a different default image
-reference remains a configuration change under the persisted-VM checks above.
-Pin an explicit image to retain the same reference across daemon upgrades.
+from the development package version. Release defaults and explicit image
+overrides select the image for newly created VMs. Retained VMs continue using
+their recorded image.
 
-The full image contains `bubblewrap` and `socat` for native Claude credential
-shields, plus pinned Docker Engine, CLI, containerd, Buildx, and Compose packages.
+The full image contains `bubblewrap` and `socat` for native credential shields;
+bubblewrap supports `--argv0` so Codex can start while its state directory is
+hidden. It also includes pinned Docker Engine, CLI, containerd, Buildx, and Compose packages.
 The pool image does not include those tools or the Docker sudo grant.
 The full image's ordinary container user and shim entrypoint remain in
 place. Image construction installs and verifies the tools; it does not start

@@ -188,8 +188,10 @@ function fakeSdk() {
       },
       builder(name: string) {
         let dockerVolume: string | undefined
+        let image = 'test-image'
         const builder = {
-          image() {
+          image(value: string) {
+            image = value
             return builder
           },
           rootDisk() {
@@ -232,6 +234,7 @@ function fakeSdk() {
               volumes.set(dockerVolume, { attached: true })
             }
             const sandbox = new FakeSandbox(name, dockerVolume)
+            sandbox.spec.image = image
             created.push(sandbox)
             sandboxes.set(name, sandbox)
             return sandbox
@@ -456,6 +459,38 @@ describe('microsandbox process and VM ownership', () => {
     await manager.discard(environment.id)
   })
 
+  it('pins retained VM images while new environments use the configured image', async () => {
+    const { manager, options, environment, request, created } = await fixture()
+    await (await manager.driverFor(environment).launch(request)).stop(0)
+    await manager.stopAll()
+    const upgraded = { ...options, config: { ...options.config, image: 'next-image' } }
+    await expect(
+      new MicrosandboxManager({ ...upgraded, config: { ...upgraded.config, cpus: 4 } })
+        .driverFor(environment)
+        .launch(request)
+    ).rejects.toThrow('changed persisted configuration')
+    const resumed = new MicrosandboxManager(upgraded)
+    await expect(
+      resumed
+        .driverFor({ ...environment, mounts: [{ source: '/extra', target: '/extra', readOnly: true }] })
+        .launch(request)
+    ).rejects.toThrow('changed persisted configuration')
+    await (await resumed.driverFor(environment).launch(request)).stop(0)
+    expect(created).toHaveLength(1)
+    expect(created[0]!.spec.image).toBe('test-image')
+    expect(created[0]!.destroy).not.toHaveBeenCalled()
+    const next = { ...environment, id: 'agent/new-session' }
+    await (await resumed.driverFor(next).launch(request)).stop(0)
+    expect(created[1]!.spec.image).toBe('next-image')
+    await resumed.stopAll()
+    const restarted = new MicrosandboxManager({ ...upgraded, config: { ...upgraded.config, image: 'later-image' } })
+    for (const env of [environment, next]) {
+      await (await restarted.driverFor(env).launch(request)).stop(0)
+      await restarted.discard(env.id)
+    }
+    expect(created).toHaveLength(2)
+  })
+
   it('resumes the retained VM after retiring only the known guest helper mount', async () => {
     const { manager, options, environment, request, created } = await fixture()
     const helpers = join(options.root, 'microsandbox', 'helpers')
@@ -469,7 +504,10 @@ describe('microsandbox process and VM ownership', () => {
     const runtime = await manager.driverFor(legacy).launch(request)
     await runtime.stop(0)
     await manager.stopAll()
-    const resumed = new MicrosandboxManager(options)
+    const resumed = new MicrosandboxManager({
+      ...options,
+      config: { ...options.config, image: 'next-image' }
+    })
     await expect(
       resumed
         .driverFor({

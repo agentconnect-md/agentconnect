@@ -215,6 +215,7 @@ export function prepareRuntimeLaunch(opts: {
   hostPackageCache?: boolean
   microsandbox?: {
     mounts: SandboxMount[]
+    nativeMemory?: boolean
     trustedSessionDir?: string
     trustedMounts?: SandboxMount[]
   }

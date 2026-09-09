@@ -343,6 +343,21 @@ USER 10001:10001
 # the runtime only after the channel is bound.
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentconnect/shim/index.js"]
 
+# Codex needs --argv0 to re-enter its sandbox while its credential directory stays hidden.
+FROM node:24-bookworm-slim AS bubblewrap-builder
+ARG BUBBLEWRAP_VERSION=0.11.2
+ARG BUBBLEWRAP_SHA256=69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
+RUN apt-get update \
+  && apt-get install --no-install-recommends -y ca-certificates curl gcc libc6-dev meson pkg-config libcap-dev xz-utils \
+  && curl -fsSL --retry 5 "https://github.com/containers/bubblewrap/releases/download/v${BUBBLEWRAP_VERSION}/bubblewrap-${BUBBLEWRAP_VERSION}.tar.xz" -o /tmp/bubblewrap.tar.xz \
+  && printf '%s  %s\n' "${BUBBLEWRAP_SHA256}" /tmp/bubblewrap.tar.xz | sha256sum --check --strict \
+  && mkdir /src \
+  && tar -xJf /tmp/bubblewrap.tar.xz -C /src --strip-components=1 \
+  && meson setup /build /src --prefix=/usr/local -Dman=disabled -Dtests=false \
+    -Dselinux=disabled -Dbash_completion=disabled -Dzsh_completion=disabled -Dsupport_setuid=false \
+  && meson compile -C /build \
+  && DESTDIR=/out meson install -C /build
+
 # Self-hosted daemon VMs add the broader runtime catalog, native shields and Docker.
 FROM runtime-base AS runtime-sandbox-full
 USER root
@@ -360,8 +375,10 @@ ARG CONTAINERD_VERSION=2.3.5-1~debian.12~bookworm
 ARG DOCKER_BUILDX_VERSION=0.37.0-1~debian.12~bookworm
 ARG DOCKER_COMPOSE_VERSION=5.5.1-1~debian.12~bookworm
 RUN apt-get update \
-  && apt-get install --no-install-recommends -y bubblewrap socat ripgrep \
+  && apt-get install --no-install-recommends -y libcap2 socat ripgrep \
   && rm -rf /var/lib/apt/lists/*
+COPY --from=bubblewrap-builder --chown=0:0 /out/usr/local/bin/bwrap /usr/local/bin/bwrap
+RUN bwrap --help | rg -- '--argv0'
 
 # pi-acp delegates to the separately installed pi CLI; all launches use local executables.
 RUN export HOME=/root \

@@ -2483,6 +2483,7 @@ export class Daemon {
   /** Phase 16 — the local (or data-plane) store plus the one rule table every row retention runs from. */
   private async openStoreAndRetention(root: string): Promise<void> {
     this.store = this.dataPlane?.store ?? (await LocalStore.open(statePath(root)))
+    await this.hydrateMicrosandboxSessions()
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     // Every table's row retention, from one rule table. This member owns the cache rows it
     // stamped, so a peer's are reclaimed on the shorter window; no control-plane read here.
@@ -3776,6 +3777,7 @@ export class Daemon {
     const launch = prepareMicrosandboxLaunch({
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       runtime,
+      nativeMemory: memoryKindOf(agent) === 'native',
       scopeDir: agent.dir,
       cwd: placement.trustedSessionDir ?? (key && hostKeySessionKey(key) ? cwd : agent.workspace.path),
       hostKey: key,
@@ -3902,6 +3904,24 @@ export class Daemon {
   // What each session's row says its isolation is, as the requests that reached this member reported it — the one fact host keying needs without a store round trip.
   private readonly sessionIsolation = new Map<string, 'shared' | 'session'>()
 
+  // Sessions created before VM ownership became per-session still resume in their original shared VM.
+  private readonly legacyMicrosandboxSessions = new Set<HostKey>()
+
+  private async hydrateMicrosandboxSessions(): Promise<void> {
+    this.legacyMicrosandboxSessions.clear()
+    if (!this.microsandbox) return
+    const environments = new Set(await this.microsandbox.environmentIds())
+    for (const session of await this.store.listSessions()) {
+      const key = sessionHostKey(session.agentId, session.key)
+      if (
+        environments.has(`${session.agentId}/agent`) &&
+        !environments.has(`${session.agentId}/${hostKeyDirName(key)}`)
+      ) {
+        this.legacyMicrosandboxSessions.add(key)
+      }
+    }
+  }
+
   /**
    * git-workspace-model §11: whether one logical session is served on the CONFINED tier — its own
    * clones, its own ACP host (its own pod on a pool member), its own private HOME. The single rule
@@ -3915,7 +3935,7 @@ export class Daemon {
    */
   private confinedSession(agent: Agent, sessionKey?: string): boolean {
     if (sessionKey === undefined) return false
-    // A shared session has no tier of its own at all: no host, no pod, no HOME, no directory.
+    // Workspace isolation is independent of whether the runtime owns a VM.
     if (!this.sessionIsolated(agent, sessionKey)) return false
     return this.workspaces.confinedSessionTier(agent, sessionKey, this.k8s || this.agentRunsInSandbox(agent))
   }
@@ -3938,11 +3958,14 @@ export class Daemon {
     return effectiveSessionIsolation(agent) === 'session'
   }
 
-  /** The host that serves `sessionKey` of this agent: its own when the session is confined, else the shared one. */
+  // Microsandbox sessions own their runtime even when they share workspace files.
   private hostKeyFor(agentId: string, sessionKey?: string): HostKey {
     const agent = this.agents.get(agentId)
-    return sessionKey !== undefined && agent && this.confinedSession(agent, sessionKey)
-      ? sessionHostKey(agentId, sessionKey)
+    if (sessionKey === undefined || !agent) return agentHostKey(agentId)
+    const key = sessionHostKey(agentId, sessionKey)
+    return this.confinedSession(agent, sessionKey) ||
+      (this.usesMicrosandbox(agent) && !this.legacyMicrosandboxSessions.has(key))
+      ? key
       : agentHostKey(agentId)
   }
 
@@ -5607,7 +5630,9 @@ export class Daemon {
     } catch (error) {
       await this.microsandbox
         ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
-        .then(() => rm(join(agent.dir, 'sessions', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
+        .then(() =>
+          rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true })
+        )
         .catch((error: unknown) => {
           this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
         })
@@ -5625,7 +5650,9 @@ export class Daemon {
       await host.stop().catch(() => {})
       await this.microsandbox
         ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
-        .then(() => rm(join(agent.dir, 'sessions', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
+        .then(() =>
+          rm(join(agent.dir, 'runtime-homes', hostKeyDirName(dreamHostKey)), { recursive: true, force: true })
+        )
         .catch((error: unknown) => {
           this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
         })
@@ -16431,6 +16458,7 @@ export class Daemon {
           this.memoryWriteGrants.delete(rec.key)
           if (rec.acpSessionId)
             this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
+          this.legacyMicrosandboxSessions.delete(sessionHostKey(rec.agentId, rec.key))
           await this.modelSessions.release(rec.key)
           if (!this.microsandbox) {
             await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
@@ -16931,12 +16959,24 @@ export class Daemon {
     }
   }
 
-  /** Cluster only: a retired session's pod goes with its row — the claim, and the clones and HOME on its volume (§11). Best effort like the agent's; the orphan reconciler collects a leftover. */
+  // Retire a session's VM and HOME with its row; a legacy shared VM lives until its last session retires.
   private async discardSessionSandbox(agentId: string, sessionKey: string): Promise<void> {
-    await this.microsandbox?.discard(`${agentId}/${hostKeyDirName(sessionHostKey(agentId, sessionKey))}`)
+    const key = sessionHostKey(agentId, sessionKey)
+    const leaf = hostKeyDirName(key)
+    if (this.microsandbox) {
+      if (this.legacyMicrosandboxSessions.has(key)) {
+        if ([...this.legacyMicrosandboxSessions].some((other) => other !== key && hostKeyAgentId(other) === agentId))
+          return
+        await this.stopHostByKey(agentHostKey(agentId))
+        await this.microsandbox.discard(`${agentId}/agent`)
+      } else {
+        await this.microsandbox.discard(`${agentId}/${leaf}`)
+        const agent = this.agents.get(agentId)
+        if (agent) await rm(join(agent.dir, 'runtime-homes', leaf), { recursive: true, force: true })
+      }
+    }
     const plane = this.k8sPlane
     if (!plane) return
-    const leaf = hostKeyDirName(sessionHostKey(agentId, sessionKey))
     try {
       await plane.discardSession(agentId, leaf)
     } catch (err) {

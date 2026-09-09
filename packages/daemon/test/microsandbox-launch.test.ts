@@ -18,6 +18,9 @@ import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
 import { gitcredShimPath } from '../src/cp/gitcred-server.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
+import { composeRuntimeLaunch } from '../src/launch/compose.js'
+import { nativeRuntimeMemorySpecFor } from '../src/memory/runtime/capabilities.js'
+import { nativeMemoryRead, nativeMemoryWrite } from '../src/memory/runtime/native.js'
 import * as credentials from '../src/runtimes/runtime-credentials.js'
 import {
   CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
@@ -193,11 +196,54 @@ describe('prepareMicrosandboxLaunch', () => {
     const cwd = join(opts.scopeDir, 'memory', 'extraction', 'input')
     mkdirSync(cwd, { recursive: true })
     const launch = prepareMicrosandboxLaunch({ ...opts, cwd, hostKey })
-    const home = join(opts.scopeDir, 'sessions', hostKeyDirName(hostKey), 'home')
+    const home = join(opts.scopeDir, 'runtime-homes', hostKeyDirName(hostKey), 'home')
     expect(launch.runtimeHome).toBe(home)
     expect(launch.microsandbox.mounts).toContainEqual({ source: home, target: home, readOnly: false })
     expect(launch.microsandbox.mounts.some((mount) => mount.source === dirname(home))).toBe(false)
+    expect(existsSync(join(opts.scopeDir, 'sessions'))).toBe(false)
   })
+
+  it('gives shared-workspace sessions separate homes without creating isolated workspace directories', () => {
+    const opts = fixture()
+    const first = prepareMicrosandboxLaunch({ ...opts, hostKey: sessionHostKey('agent', 'first') })
+    const second = prepareMicrosandboxLaunch({ ...opts, hostKey: sessionHostKey('agent', 'second') })
+    expect(first.runtimeHome).not.toBe(second.runtimeHome)
+    for (const launch of [first, second]) {
+      expect(launch.microsandbox.mounts).toContainEqual({ source: opts.cwd, target: opts.cwd, readOnly: false })
+    }
+    expect(first.microsandbox.mounts.some(({ target }) => target === second.runtimeHome)).toBe(false)
+    expect(existsSync(join(opts.scopeDir, 'sessions'))).toBe(false)
+  })
+
+  it.each(['claude-acp', 'codex-acp'])(
+    'keeps %s native memory on the Console store across shared-workspace VMs',
+    async (runtimeId) => {
+      const opts = fixture()
+      const runtime = { command: runtimeId, args: [], env: [] }
+      const agentHome = join(opts.scopeDir, 'home')
+      const memory = nativeRuntimeMemorySpecFor(runtime, runtimeId)!
+      const source = memory.readRoot(agentHome)
+      for (const session of ['first', 'second']) {
+        const { launch } = composeRuntimeLaunch({
+          ...opts,
+          runtimeId,
+          runtime,
+          provider: 'native',
+          hostKey: sessionHostKey('agent', session),
+          runInSandbox: true,
+          microsandbox: { mounts: [] }
+        })
+        const mounts = launch.microsandbox!.mounts
+        expect(mounts).toContainEqual({ source, target: memory.readRoot(launch.runtimeHome!), readOnly: false })
+        expect(mounts.some((mount) => mount.source === agentHome)).toBe(false)
+        expect(mounts.some((mount) => mount.source === join(agentHome, '.codex'))).toBe(false)
+        writeFileSync(join(source, 'MEMORY.md'), session)
+        expect((await nativeMemoryRead(agentHome, runtime, 'MEMORY.md')).content).toBe(session)
+        await nativeMemoryWrite(agentHome, runtime, 'MEMORY.md', 'console edit')
+        expect(readFileSync(join(source, 'MEMORY.md'), 'utf8')).toBe('console edit')
+      }
+    }
+  )
 
   it('preserves the host Git helper and protects its guest alias and nested Git config as read-only mounts', () => {
     const opts = fixture()

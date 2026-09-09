@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { Agent } from '../src/agents/agent-schema.js'
+import { GitTransportError } from '../src/workspace/git-runner.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { configureWorkspaceGitOrigins } from '../src/workspace/git-origin-policy.js'
 import { DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS } from '@agentconnect.md/protocol'
@@ -1056,6 +1057,19 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       'origin',
       'https://github.com/acme/new-name'
     ])
+  })
+
+  it('preserves sandbox startup failures instead of reporting an untrusted Git origin', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-ws-transport-'))
+    mkdirSync(join(dir, '.git'))
+    const error = new GitTransportError('sandbox could not resume its persisted configuration')
+    rawMock.mockRejectedValueOnce(error)
+    try {
+      await expect(workspaces.prepareWorkspace(githubAppAgent(dir))).rejects.toBe(error)
+      expect(pullMock).not.toHaveBeenCalled()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('refuses to run an App-backed checkout whose origin is not GitHub', async () => {

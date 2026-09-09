@@ -6,6 +6,7 @@ import { applyCodexPermissionProfile } from '../acp/codex-permission-profiles.js
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 import { privateRuntimeHomeFor, runtimeGitMetadataRoots, type PreparedRuntimeLaunch } from '../launch/prepare.js'
+import { nativeRuntimeMemorySpecFor } from '../memory/runtime/capabilities.js'
 import {
   claudeProviderCredentialFiles,
   isClaudeRuntimeDef,
@@ -49,6 +50,7 @@ export interface PrepareMicrosandboxLaunchOptions {
   hostKey?: HostKey
   explicitEnv?: Record<string, string>
   stateSourceEnv?: NodeJS.ProcessEnv
+  nativeMemory?: boolean
   trustedSessionDir?: string
   trustedWorkspaceWriteRoots?: string[]
   trustedRuntimeReadRoots?: string[]
@@ -71,10 +73,10 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   }
   const scopeDir = realpathSync(resolve(opts.scopeDir))
   const hostEnv = opts.stateSourceEnv ?? process.env
-  let runtimeHome =
-    opts.hostKey && hostKeySessionKey(opts.hostKey) !== undefined
-      ? join(scopeDir, SESSIONS_DIR, hostKeyDirName(opts.hostKey), 'home')
-      : privateRuntimeHomeFor(scopeDir, undefined)
+  let runtimeHome = privateRuntimeHomeFor(scopeDir, opts.hostKey)
+  if (opts.hostKey && hostKeySessionKey(opts.hostKey) !== undefined && runtimeHome === join(scopeDir, 'home')) {
+    runtimeHome = join(scopeDir, 'runtime-homes', hostKeyDirName(opts.hostKey), 'home')
+  }
   const sessionDir = opts.trustedSessionDir ? realpathSync(opts.trustedSessionDir) : undefined
   if (sessionDir) {
     const parts = relative(scopeDir, sessionDir).split(sep)
@@ -116,15 +118,25 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
     return source
   }
   const writeRoots = compactReadRoots(writable.map(automaticSource))
+  const nativeMemory = opts.nativeMemory && nativeRuntimeMemorySpecFor(opts.runtime, opts.runtimeId)
+  const memoryMounts: SandboxMount[] = []
+  if (nativeMemory && !sessionDir && runtimeHome !== join(scopeDir, 'home')) {
+    const source = scopePath(nativeMemory.readRoot(join(scopeDir, 'home')))
+    const target = scopePath(nativeMemory.readRoot(runtimeHome))
+    for (const path of [source, target]) mkdirSync(path, { recursive: true, mode: 0o700 })
+    memoryMounts.push({ source, target, readOnly: false })
+  }
   const automatic: SandboxMount[] = [
     ...compactReadRoots([...configDirs, ...readRoots].map(automaticSource))
       .filter((path) => !writeRoots.some((write) => contains(write, path)))
       .map((source) => ({ source, target: source, readOnly: true })),
     ...writeRoots.map((source) => ({ source, target: source, readOnly: false })),
-    ...normalizeSandboxMounts(opts.trustedMounts ?? [], hostEnv, 'microsandbox').map((mount) => ({
-      ...mount,
-      source: automaticSource(mount.source)
-    }))
+    ...normalizeSandboxMounts([...(opts.trustedMounts ?? []), ...memoryMounts], hostEnv, 'microsandbox').map(
+      (mount) => ({
+        ...mount,
+        source: automaticSource(mount.source)
+      })
+    )
   ]
   const configured = normalizeSandboxMounts(opts.mounts, hostEnv, 'microsandbox')
   const ownedTargets = [
@@ -209,7 +221,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
       ...(sessionDir
         ? { sessionGitMetadataRoots: gitMetadataWriteRoots }
         : { writableGitMetadataRoots: gitMetadataWriteRoots }),
-      ...(sessionDir ? { sessionHomeRoot: runtimeHome } : {}),
+      ...(sessionDir || (opts.hostKey && hostKeySessionKey(opts.hostKey)) ? { sessionHomeRoot: runtimeHome } : {}),
       sharedWriteRoots,
       allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true,
       disableUnifiedExec: true

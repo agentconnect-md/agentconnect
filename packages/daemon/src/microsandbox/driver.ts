@@ -4,6 +4,7 @@ import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:
 import { dirname, join, posix } from 'node:path'
 import { promisify } from 'node:util'
 import type { Sandbox, SandboxHandle } from 'microsandbox'
+import { z } from 'zod'
 import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
@@ -78,6 +79,8 @@ interface Binding {
   environmentId: string
   dockerVolume?: string
 }
+
+const SpecImageSchema = z.object({ config: z.object({ image: z.string().min(1) }) })
 
 /** Owns VM lifecycle while exposing the existing ACP process-stream contract. */
 export class MicrosandboxManager {
@@ -206,10 +209,10 @@ export class MicrosandboxManager {
     return join(this.options.root, 'microsandbox', 'bindings', `${this.name(id)}.json`)
   }
 
-  private spec(environment: MicrosandboxEnvironment): string {
+  private spec(environment: MicrosandboxEnvironment, image = this.options.config.image): string {
     return stableJson({
       version: 2,
-      config: this.options.config,
+      config: { ...this.options.config, image },
       environment: { ...environment, mounts: [...environment.mounts].sort((a, b) => a.target.localeCompare(b.target)) },
       sockets: this.options.sockets
     })
@@ -365,8 +368,10 @@ export class MicrosandboxManager {
 
   private async open(environment: MicrosandboxEnvironment): Promise<Sandbox> {
     const name = this.name(environment.id)
-    const spec = this.spec(environment)
     const binding = await this.readBinding(environment.id)
+    // Image changes apply to new environments; retained disks keep their original image.
+    const image = binding ? SpecImageSchema.parse(JSON.parse(binding.spec)).config.image : this.options.config.image
+    const spec = this.spec(environment, image)
     const existing = await this.find(name)
     if (binding || existing) {
       let matchingSpec = binding?.spec === spec
@@ -381,10 +386,13 @@ export class MicrosandboxManager {
         if (source) {
           matchingSpec =
             binding.spec ===
-            this.spec({
-              ...environment,
-              mounts: [...environment.mounts, { source, target: '/opt/agentconnect-local/guest.js', readOnly: true }]
-            })
+            this.spec(
+              {
+                ...environment,
+                mounts: [...environment.mounts, { source, target: '/opt/agentconnect-local/guest.js', readOnly: true }]
+              },
+              image
+            )
         }
       }
       if (
