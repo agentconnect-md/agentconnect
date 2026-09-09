@@ -1,5 +1,5 @@
 import type { PlanBody } from '@/lib/api'
-import type { ElicitBody } from '@/lib/data'
+import type { ElicitBody, ElicitFieldSpec } from '@/lib/data'
 
 // 2b chat style: an agent turn shows its spoken answer (MSG/DONE lanes) as plain
 // text and collapses its "work" — reasoning (THINK/PLAN), tool calls (TOOL), and
@@ -75,6 +75,74 @@ export function elicitCard(body: string | undefined): ElicitBody | null {
 /** One elicitation card's identity across the two places it can be rendered from: the agent that
  *  owns the request, and the request itself. A uuid request id could stand alone, but identity
  *  here is (owner, request) and saying so keeps a future non-unique id from silently colliding. */
+// What a bridge appends to a question's property name when it adds that question's own
+// free-text box: `question_0_custom`, `need_type__other`. The daemon binds a box to its
+// question from the elicitation schema's `_meta` marker, which never crosses this wire — so
+// where that binding arrives unset, the pair's NAMES are all this side has to read it from.
+const CUSTOM_ANSWER_SUFFIXES = ['_custom', '_other', '-custom', '-other']
+
+/** The select question a field name is the free-text box OF: another field's name plus one of
+ *  the suffixes above, with a doubled separator (`need_type__other`) read like a single one.
+ *  Undefined when the name claims no question that offers choices. */
+function suffixedCustomAnswerOwner(propName: string, selects: Set<string>): string | undefined {
+  const lower = propName.toLowerCase()
+  for (const suffix of CUSTOM_ANSWER_SUFFIXES) {
+    if (!lower.endsWith(suffix)) continue
+    const stem = propName.slice(0, propName.length - suffix.length)
+    for (const owner of [stem, stem.slice(0, -1)]) if (owner && selects.has(owner)) return owner
+  }
+  return undefined
+}
+
+/** A field whose `defaultValue` still names one of its own options — the seed of a control
+ *  that just lost an option must not be a value that control can no longer show. */
+function withoutStaleDefault(field: ElicitFieldSpec): ElicitFieldSpec {
+  const values = new Set(field.options.map((o) => o.value))
+  const raw = field.defaultValue
+  const stale = Array.isArray(raw) ? raw.some((v) => !values.has(v)) : typeof raw === 'string' && !values.has(raw)
+  if (!stale) return field
+  const { defaultValue: _dropped, ...rest } = field
+  return rest
+}
+
+/**
+ * A form card's fields with every UNBOUND custom-answer box folded into the question it
+ * belongs to, read from the pair's names.
+ *
+ * An AskUserQuestion bridge gives each select question its own free-text box, and says so with
+ * a `_meta` marker the daemon turns into `customAnswerFor`. A bridge that marks nothing leaves
+ * it unset, and the box then reads as a question of its own titled "Other" — asked once per
+ * real question, numbered and counted among them. Such a bridge also tends to append an
+ * "Other" CHOICE to the enum whose only meaning is "type below": picking it answers the
+ * question with a value the agent reads as no answer at all, so where the card offers the box
+ * itself that choice goes. Matched on the companion's own label rather than any word, and never
+ * down to an empty option list.
+ *
+ * Only OPTIONAL fields the daemon left unbound are read this way, so a newer daemon that already
+ * folded them passes through untouched, and a field the daemon deliberately kept standalone and
+ * REQUIRED is never folded out of sight. Pure.
+ */
+export function foldCustomAnswers(fields: ElicitFieldSpec[]): ElicitFieldSpec[] {
+  const selects = new Set(fields.filter((f) => f.kind === 'enum' || f.kind === 'multi-enum').map((f) => f.propName))
+  const bound = fields.map((f) => {
+    // A REQUIRED field is never a box read this way: a companion is an optional alternative to
+    // a pick, so a required one is a question in its own right whatever it is named. Folding it
+    // would hide it behind its question's chip, where nothing can report that the answer the
+    // card is about to send leaves a required field out.
+    if (f.customAnswerFor || f.kind !== 'text' || f.required) return f
+    const owner = suffixedCustomAnswerOwner(f.propName, selects)
+    return owner ? { ...f, customAnswerFor: owner } : f
+  })
+  const companionLabel = new Map<string, string>()
+  for (const f of bound) if (f.customAnswerFor) companionLabel.set(f.customAnswerFor, f.label.trim().toLowerCase())
+  return bound.map((f) => {
+    const label = companionLabel.get(f.propName)
+    if (label === undefined || !f.options.length) return f
+    const options = f.options.filter((o) => o.label.trim().toLowerCase() !== label)
+    return options.length && options.length < f.options.length ? withoutStaleDefault({ ...f, options }) : f
+  })
+}
+
 export function elicitStepKey(agentId: string | undefined, requestId: string): string {
   return `${agentId ?? ''}\u0000${requestId}`
 }

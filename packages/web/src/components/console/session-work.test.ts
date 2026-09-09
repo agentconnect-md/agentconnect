@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  foldCustomAnswers,
   PLAN_LANE,
   WORK_LANES,
   planEntries,
@@ -191,5 +192,64 @@ describe('PLAN_LANE', () => {
   it('is not a work lane, and does not collide with the playground live PLAN lane', () => {
     expect(WORK_LANES.has(PLAN_LANE)).toBe(false)
     expect(PLAN_LANE).not.toBe('PLAN')
+  })
+})
+
+describe('foldCustomAnswers', () => {
+  // The shape a bridge that marks NOTHING sends: the pair named by convention alone, plus an
+  // "Other" CHOICE on the enum whose only meaning is "type below".
+  const q = (propName: string, kind: 'enum' | 'multi-enum', labels: string[]) => ({
+    propName,
+    label: propName,
+    kind,
+    options: labels.map((label) => ({ value: label, label }))
+  })
+  const box = (propName: string) => ({ propName, label: 'Other', kind: 'text' as const, options: [] })
+
+  it('folds a box named for its question, and drops the choice that duplicates it', () => {
+    const folded = foldCustomAnswers([q('question_0', 'enum', ['Installed', 'Other']), box('question_0_custom')])
+    expect(folded.map((f) => f.customAnswerFor)).toEqual([undefined, 'question_0'])
+    expect(folded[0]?.options.map((o) => o.label)).toEqual(['Installed'])
+  })
+
+  it('reads a doubled separator, a hyphen, and a multi-select the same way', () => {
+    for (const name of ['need_type__other', 'need_type-custom', 'need_type_other']) {
+      expect(foldCustomAnswers([q('need_type', 'enum', ['a']), box(name)])[1]?.customAnswerFor).toBe('need_type')
+    }
+    const multi = foldCustomAnswers([q('formats', 'multi-enum', ['brief', 'Other']), box('formats_custom')])
+    expect(multi[1]?.customAnswerFor).toBe('formats')
+    expect(multi[0]?.options.map((o) => o.label)).toEqual(['brief'])
+  })
+
+  it('leaves alone what it cannot claim', () => {
+    // A name matching no question on the card is a question of its own, as it always was.
+    expect(foldCustomAnswers([q('pick', 'enum', ['a']), box('note_custom')])[1]?.customAnswerFor).toBeUndefined()
+    // A box named for a question that offers NO choices is not an alternative to anything.
+    const typedOwner = [{ propName: 'name', label: 'Name', kind: 'text' as const, options: [] }, box('name_custom')]
+    expect(foldCustomAnswers(typedOwner).every((f) => f.customAnswerFor === undefined)).toBe(true)
+    // And a binding the daemon already made passes through untouched.
+    const bound = [q('a', 'enum', ['x']), { ...box('a_custom'), customAnswerFor: 'a' }]
+    expect(foldCustomAnswers(bound)[1]?.customAnswerFor).toBe('a')
+  })
+
+  it('never folds a REQUIRED field, which the daemon may have kept standalone on purpose', () => {
+    // An absent `customAnswerFor` can also be the daemon's deliberate refusal — a property with
+    // a known `_meta` namespace whose binding flag is off. Folded, a REQUIRED one hides behind
+    // its question's chip and the card enables Submit for an answer the daemon then rejects,
+    // because nothing on this side reports the omission. A companion is optional by
+    // construction, so requiredness is the signal that this is a question of its own.
+    const standalone = [q('a', 'enum', ['x']), { ...box('a__other'), required: true }]
+    expect(foldCustomAnswers(standalone).every((f) => f.customAnswerFor === undefined)).toBe(true)
+    // The QUESTION being required says nothing about the box, which still folds.
+    const requiredOwner = [{ ...q('a', 'enum', ['x']), required: true }, box('a_custom')]
+    expect(foldCustomAnswers(requiredOwner)[1]?.customAnswerFor).toBe('a')
+  })
+
+  it('never empties a question, and drops a default its options no longer offer', () => {
+    // "Other" as the ONLY choice is a real answer: dropping it would leave nothing to pick.
+    const only = foldCustomAnswers([q('q', 'enum', ['Other']), box('q_custom')])
+    expect(only[0]?.options.map((o) => o.label)).toEqual(['Other'])
+    const seeded = foldCustomAnswers([{ ...q('q', 'enum', ['keep', 'Other']), defaultValue: 'Other' }, box('q_custom')])
+    expect(seeded[0]?.defaultValue).toBeUndefined()
   })
 })

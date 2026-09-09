@@ -104,6 +104,7 @@ import {
   elicitCard,
   ELICIT_LANE,
   elicitStepKey,
+  foldCustomAnswers,
   liveElicitKeys,
   NOTICE_LANE,
   PLAN_LANE,
@@ -1038,16 +1039,19 @@ const ELICIT_ACTIONS = 'flex flex-wrap items-center gap-[8px] border-t border-(-
  *  Without `onAnswer` — a reader with no live socket to answer over — the same card renders
  *  as a plain record of the ask, controls inert rather than missing. */
 function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: ElicitAnswerValue) => void }) {
+  // A custom-answer box the daemon could not bind — a bridge that marks the pair with no
+  // `_meta`, or an older daemon that read no marker — is folded into its question HERE, off
+  // the pair's names, so the box is never asked as a question of its own titled "Other".
+  const fields = step.elicit?.fields?.length ? foldCustomAnswers(step.elicit.fields) : undefined
   const [picked, setPicked] = useState<string[]>(() => pickedDefaults(step.elicit))
   const [draft, setDraft] = useState<string>(() => typedDraft(step.elicit))
-  const [drafts, setDrafts] = useState<Record<string, string>>(() => formDrafts(step.elicit?.fields))
-  const [picks, setPicks] = useState<Record<string, string[]>>(() => formPicks(step.elicit?.fields))
-  const [others, setOthers] = useState<Record<string, boolean>>(() => formOthers(step.elicit?.fields))
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => formDrafts(fields))
+  const [picks, setPicks] = useState<Record<string, string[]>>(() => formPicks(fields))
+  const [others, setOthers] = useState<Record<string, boolean>>(() => formOthers(fields))
   const elicit = step.elicit
   const multi = elicit?.multi
   const consentUrl = elicit?.url
   const consent = consentUrl ? readConsentUrl(consentUrl) : null
-  const fields = elicit?.fields?.length ? elicit.fields : undefined
   // The card's QUESTIONS: a select question's free-text companion is part of the question it
   // names, not one of its own, so it is never numbered, counted, or asked twice.
   const rows = fields?.filter((f) => !f.customAnswerFor)

@@ -568,6 +568,90 @@ describe('the agent’s elicitation card on the session page', () => {
     ])
   })
 
+  it('folds a box a bridge marked with nothing, off the pair’s names alone', async () => {
+    // The wire shape a bridge that sets no `_meta` marker sends — the DeepSeek Harness one, and
+    // what an older daemon that read no marker forwards: `customAnswerFor` unset on the box, and
+    // an "Other" CHOICE on the enum whose only meaning is "type below". Unfolded, the box was a
+    // question of its own titled "Other", asked once per real question, and picking that choice
+    // answered with a value the agent reads as blank.
+    const other = { value: 'custom_0', label: 'Other' }
+    live.steps = [
+      {
+        ...CARD,
+        text: 'The agent needs your input.',
+        elicit: {
+          requestId: 'elicit-1',
+          options: [],
+          fields: [
+            {
+              propName: 'question_0',
+              label: 'GitHub App',
+              kind: 'enum',
+              options: [{ value: 'option_0', label: 'Installed' }, other]
+            },
+            {
+              propName: 'question_0_custom',
+              label: 'Other',
+              description: 'Type a custom answer.',
+              kind: 'text',
+              options: []
+            },
+            {
+              propName: 'question_1',
+              label: 'Runtime',
+              kind: 'enum',
+              options: [
+                { value: 'option_0', label: 'Claude' },
+                { ...other, value: 'custom_1' }
+              ]
+            },
+            {
+              propName: 'question_1_custom',
+              label: 'Other',
+              description: 'Type a custom answer.',
+              kind: 'text',
+              options: []
+            }
+          ]
+        }
+      }
+    ]
+    await render()
+
+    // Two questions, 01 and 02 — not four, and no row titled "Other".
+    const numbers = [...(container?.querySelectorAll('span.font-mono') ?? [])]
+      .map((n) => n.textContent ?? '')
+      .filter((t) => /^\d\d$/.test(t))
+    expect(numbers).toEqual(['01', '02'])
+    expect(text()).toContain('0/2 answered')
+    expect(text()).not.toContain('Type a custom answer.')
+    // The duplicate CHOICE is gone; the box is offered as the card's own disclosure instead.
+    expect(buttonsNamed('Other')).toHaveLength(0)
+    expect(buttonsNamed('Other…')).toHaveLength(2)
+    expect(buttonNamed('Installed')?.disabled).toBe(false)
+
+    // And the box answers its question: typed, it counts, and it submits under its own property.
+    await openOther()
+    await typeInto(inputNamed('GitHub App — Other')!, 'installed org-wide')
+    expect(text()).toContain('1/2')
+    await act(async () => {
+      buttonNamed('Claude')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(text()).toContain('2/2')
+    await act(async () => {
+      buttonNamed('Submit answers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(live.answered).toEqual([
+      [
+        'session-1',
+        'agent-1',
+        'elicit-1',
+        { question_0_custom: 'installed org-wide', question_1: 'option_0' },
+        'conv-1'
+      ]
+    ])
+  })
+
   it('closes a question’s box back up, and answers with the options rather than a hidden draft', async () => {
     live.steps = [
       {

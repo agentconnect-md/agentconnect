@@ -2335,6 +2335,104 @@ describe('elicitation card', () => {
     ])
   })
 
+  // A bridge that marks NOTHING is still readable from the schema's shape: DeepSeek Harness
+  // (@openma/deepseek-harness-acp) names the pair `question_0` / `question_0_custom` and adds an
+  // "Other" choice to the enum, with no `_meta` on either. Read as a question of its own, the box
+  // was asked twice per question and the choice answered with a value the harness reads as blank.
+  it('folds an UNMARKED custom-answer box into the question its name belongs to', () => {
+    const asked = req(
+      {
+        question_0: {
+          type: 'string',
+          title: 'GitHub App',
+          oneOf: [
+            { const: 'option_0', title: 'Installed' },
+            { const: 'option_1', title: 'Not installed' },
+            { const: 'custom_0', title: 'Other' }
+          ]
+        },
+        question_0_custom: { type: 'string', title: 'Other', description: 'Type a custom answer.' },
+        question_1: {
+          type: 'array',
+          title: 'Formats',
+          items: { anyOf: [{ const: 'option_0' }, { const: 'custom_1', title: 'Other' }] }
+        },
+        question_1_custom: { type: 'string', title: 'Other', description: 'Type a custom answer.' }
+      },
+      []
+    )
+    const form = elicitForm(asked, WEBCHAT_ELICIT_SURFACE)
+    expect(form?.map((t) => [t.propName, t.customAnswerFor])).toEqual([
+      ['question_0', undefined],
+      ['question_0_custom', 'question_0'],
+      ['question_1', undefined],
+      ['question_1_custom', 'question_1']
+    ])
+    // The enum's own "Other" is that same box under another name — the card offers the box, so
+    // the choice goes, and only the choices the agent actually meant are left.
+    expect(form?.[0]?.options.map((o) => o.value)).toEqual(['option_0', 'option_1'])
+    expect(form?.[2]?.options.map((o) => o.value)).toEqual(['option_0'])
+  })
+
+  it('reads a doubled separator the same way, and only where nothing was marked', () => {
+    const unmarked = req(
+      { need_type: { type: 'string', enum: ['a'] }, need_type__other: { type: 'string', title: 'Other' } },
+      []
+    )
+    expect(elicitForm(unmarked, WEBCHAT_ELICIT_SURFACE)?.map((t) => t.customAnswerFor)).toEqual([
+      undefined,
+      'need_type'
+    ])
+    // A name that matches nothing on the card is a question of its own, as it always was.
+    const stray = req({ pick: { type: 'string', enum: ['a'] }, note_custom: { type: 'string' } }, [])
+    expect(elicitForm(stray, WEBCHAT_ELICIT_SURFACE)?.every((t) => t.customAnswerFor === undefined)).toBe(true)
+    // And a box named for a question that offers NO choices is not an alternative to anything.
+    const typedOwner = req({ name: { type: 'string' }, name_custom: { type: 'string' } }, [])
+    expect(elicitForm(typedOwner, WEBCHAT_ELICIT_SURFACE)?.every((t) => t.customAnswerFor === undefined)).toBe(true)
+  })
+
+  it("never reads a REQUIRED text property as another question's box", () => {
+    // A companion is an ALTERNATIVE to a pick, so it is optional by construction. A required
+    // property named like one is a question of its own: folded, it would sit behind its
+    // question's disclosure chip while the schema still refuses any answer that omits it.
+    const req0 = req(
+      { question_0: { type: 'string', enum: ['a'] }, question_0_custom: { type: 'string', title: 'Other' } },
+      ['question_0_custom']
+    )
+    expect(elicitForm(req0, WEBCHAT_ELICIT_SURFACE)?.every((t) => t.customAnswerFor === undefined)).toBe(true)
+    // The question's OWN requiredness says nothing about the box, which still folds.
+    const reqOwner = req(
+      { question_0: { type: 'string', enum: ['a'] }, question_0_custom: { type: 'string', title: 'Other' } },
+      ['question_0']
+    )
+    expect(elicitForm(reqOwner, WEBCHAT_ELICIT_SURFACE)?.[1]?.customAnswerFor).toBe('question_0')
+  })
+
+  it('keeps an option that is a real answer, and never empties a question', () => {
+    // "Other" here is one of the agent's OWN choices, and the only one: dropping it would leave
+    // a question with nothing to pick, so the list stands as offered.
+    const only = req(
+      { q: { type: 'string', oneOf: [{ const: 'x', title: 'Other' }] }, q_custom: { type: 'string', title: 'Other' } },
+      []
+    )
+    expect(elicitForm(only, WEBCHAT_ELICIT_SURFACE)?.[0]?.options.map((o) => o.value)).toEqual(['x'])
+  })
+
+  it('drops a default the deduped option list no longer offers', () => {
+    const seeded = req(
+      {
+        q: {
+          type: 'string',
+          default: 'custom_0',
+          oneOf: [{ const: 'option_0' }, { const: 'custom_0', title: 'Other' }]
+        },
+        q_custom: { type: 'string', title: 'Other' }
+      },
+      []
+    )
+    expect(elicitForm(seeded, WEBCHAT_ELICIT_SURFACE)?.[0]?.defaultValue).toBeUndefined()
+  })
+
   it('ignores a codex marker that claims no question', () => {
     // `isOtherAnswer` absent (or false) makes the box a question of its own, exactly as an
     // unmarked property is — the flag, not the namespace, is what binds it.
@@ -2358,6 +2456,27 @@ describe('elicitation card', () => {
     // A marker on something that is not a typed box claims nothing.
     const notText = req({ a: { type: 'string', enum: ['x'] }, b: { ...custom('a'), type: 'boolean' } }, [])
     expect(elicitForm(notText, WEBCHAT_ELICIT_SURFACE)?.every((t) => t.customAnswerFor === undefined)).toBe(true)
+  })
+
+  it('counts an UNMARKED pair as one question against the cap too', () => {
+    // The cap counts QUESTIONS. Before the pair was read by name an unmarked bridge's boxes each
+    // counted as one, so a 6-question ask (12 properties) blew a 10-question cap and the whole
+    // card was DECLINED — the reader got "couldn't be answered here" rather than a long form.
+    const unmarked = (n: number) =>
+      Object.fromEntries(
+        Array.from({ length: n }, (_, i) => [
+          [`question_${i}`, { type: 'string', title: `Q${i}`, oneOf: [{ const: 'option_0', title: 'a' }] }],
+          [`question_${i}_custom`, { type: 'string', title: 'Other', description: 'Type a custom answer.' }]
+        ]).flat() as [string, unknown][]
+      )
+    const six = elicitForm(req(unmarked(6), []), WEBCHAT_ELICIT_SURFACE)
+    expect(six).toHaveLength(12)
+    expect(six?.filter((t) => !t.customAnswerFor)).toHaveLength(6)
+    // At the cap it still renders; one question past it the card declines, as it should.
+    expect(elicitForm(req(unmarked(ELICIT_FORM_FIELD_CAP), []), WEBCHAT_ELICIT_SURFACE)).toHaveLength(
+      ELICIT_FORM_FIELD_CAP * 2
+    )
+    expect(elicitForm(req(unmarked(ELICIT_FORM_FIELD_CAP + 1), []), WEBCHAT_ELICIT_SURFACE)).toBeNull()
   })
 
   it('counts questions, not their custom-answer boxes, against the form cap', () => {
