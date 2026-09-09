@@ -17,6 +17,7 @@ export const MEMORY_TOOLS: ToolDescriptor[] = [
   {
     name: 'readMemory',
     description:
+      'Compatibility file reader for the index, linked files, and legacy sessions. Prefer listMemoryEntries/getMemoryEntry for topic entries when available. ' +
       'Read one of your memory files. Omit `path` (or pass "MEMORY.md") to read the index; pass a topic file name ' +
       '(e.g. "deploys.md") to read that topic. The index is already shown to you at the start of each session (you ' +
       'do NOT need to read it first) — use this to pull the detail behind an index entry, or the current contents of ' +
@@ -33,6 +34,7 @@ export const MEMORY_TOOLS: ToolDescriptor[] = [
   {
     name: 'writeMemory',
     description:
+      'Compatibility file writer. For ordinary topic changes, first check describeMemoryEntries and prefer its supported createMemoryEntry/updateMemoryEntry/deleteMemoryEntry operations with current refs and revisions. Never use this tool to bypass a denied, conflicting, or ambiguous unified mutation. Keep this path for legacy file/index operations, unsupported homes, and explicitly bound extraction/Dream workflows. ' +
       'Save durable facts across sessions (conventions, decisions, who to ask, things you had to re-learn). Omit ' +
       '`path` to target the MEMORY.md index; pass a topic file name (e.g. "deploys.md") for a topic. Keep the INDEX ' +
       'short — a scannable list linking to topic files (e.g. "- [deploys](deploys.md) — how we ship"); put the detail ' +

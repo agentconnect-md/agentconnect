@@ -105,7 +105,7 @@ the picture it draws.
 
 - [memory-system-plan.md](designs/memory-system-plan.md) — The managed memory system.
 - [memory-evolution.md](designs/memory-evolution.md) — `MemoryProvider` and external memory plugins.
-- [unified-memory-interface.md](designs/unified-memory-interface.md) — Proposed shared entry operations, context freshness, and managed/external compatibility.
+- [unified-memory-interface.md](designs/unified-memory-interface.md) — Implemented common entry operations and console, supported activation catalogs, and remaining live-refresh/compatibility work.
 - [memory-dreaming.md](designs/memory-dreaming.md) — Offline memory consolidation ("dreaming").
 - [organization-knowledge.md](designs/organization-knowledge.md) — Organization knowledge bundles and dream suggestions.
 - [shared-skills.md](designs/shared-skills.md) — One isolated `skills` CLI for git and local skill sources.

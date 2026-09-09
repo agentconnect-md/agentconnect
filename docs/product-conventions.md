@@ -840,6 +840,21 @@ contract test compares that declaration with the production policy. Adding or ch
 a policy requires a focused env assertion and a source comment naming the verified
 runtime lever.
 
+## Common memory operations and compatibility
+
+The common memory browser and model tools expose actual provider capabilities.
+Managed conditional mutations require a capable authoritative home; external and
+older homes must not inherit guarantees their provider cannot enforce. Show only
+supported actions and retain explicit provider tools for index/history and other
+compatibility workflows. Conflicts and unknown write outcomes require inspection;
+never silently retry through an unconditional legacy write.
+
+Memory catalogs are reference context delivered through supported session system
+context. New/native-resumed delivery does not imply automatic updates inside an
+already-live runtime. Do not turn a catalog refresh into a user message or title.
+See [unified memory operations](designs/unified-memory-interface.md) for the
+implemented boundaries and remaining compatibility-retirement conditions.
+
 ## Managed-memory prompt provenance
 
 The session-start `MEMORY.md` index must be enclosed in an explicit, labeled start/end

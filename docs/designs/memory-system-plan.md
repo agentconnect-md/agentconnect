@@ -2,7 +2,7 @@
 
 **Status:** Implemented.
 
-For the proposed common managed/external entry interface and context workflow, see [Unified Memory Operations and Context](unified-memory-interface.md). That proposal does not change the implemented storage behavior described here.
+The [unified memory interface](unified-memory-interface.md) now supplies common reads, conditional managed mutations, model/admin projections, and a capability-driven console. Supported new/native-resumed sessions receive a bounded catalog; continuously live refresh remains pending. The lifecycle and compatibility paths below remain relevant.
 
 Agent memory is isolated per agent, lives outside the workspace, and is
 selected through a provider-neutral lifecycle. The implementation authority is
@@ -17,8 +17,9 @@ provider lifecycle.
 - Memory belongs to an agent, not to a workspace checkout.
 - Workspace reset, replacement, or repository operations must not modify agent
   memory.
-- The Control Plane proxies memory administration but does not persist memory
-  bodies.
+- The Control Plane proxies memory administration. Managed memory with
+  `home: control-plane` is the curated-content exception: its home authority
+  persists memory bodies, history, and atomic mutation receipts.
 - Runtime-native memory must be isolated per agent or explicitly disabled so
   two memory systems do not run concurrently.
 - Agent-facing tools expose a stable AgentConnect contract rather than
@@ -32,7 +33,7 @@ Each agent selects one provider:
 
 | Provider       | Behavior                                                                                          |
 | -------------- | ------------------------------------------------------------------------------------------------- |
-| **`managed`**  | AgentConnect owns Markdown memory, injects the index, and exposes file-oriented memory tools.     |
+| **`managed`**  | AgentConnect owns Markdown memory, exposes common entries, and retains file compatibility tools.  |
 | **`native`**   | The runtime owns memory; the daemon redirects its memory/configuration directory into agent root. |
 | **`external`** | A registered memory plugin supplies per-turn recall and capture through the canonical plugin ABI. |
 | **`none`**     | Persistent memory is disabled, including verified runtime-native memory mechanisms.               |
@@ -43,7 +44,8 @@ mixing memory from different providers.
 
 ## 3. Managed Memory Layout
 
-Daemon root (`--root`, default `~/.agentconnect`):
+Daemon-local home layout (`--root`, default `~/.agentconnect`); a Control Plane
+home stores the same logical topics at its authority instead:
 
 ```text
 ~/.agentconnect/
@@ -73,7 +75,10 @@ File operations accept only safe relative Markdown paths within the memory
 directory. They reject traversal, subdirectories, symlink escapes, unsupported
 extensions, and writes that exceed the configured limits. Writes replace the
 whole named file and use modification-time checks where the caller supplies an
-expected version.
+expected version. These are legacy file semantics. Common entry mutations on
+capable Control Plane homes require create-if-absent or a current revision, and
+commit topic/index/history together. Native-writable and older homes do not
+advertise those strong guarantees.
 
 ## 4. Runtime Integration
 
@@ -87,8 +92,11 @@ The provider supplies spawn-time environment overrides:
   host-global memory directory.
 
 Managed memory is runtime-neutral. It supplies standing context through prompt
-injection and exposes `readMemory` and `writeMemory` through the daemon-owned
-MCP server. The daemon resolves the agent identity and path; the model cannot
+injection and exposes common entry tools through the daemon-owned MCP server,
+with `readMemory`/`writeMemory` retained for compatibility and bound extraction
+workflows. Common mutations are preferred when capability discovery supports
+them; a conflict or unknown outcome must not fall back to an unconditional write.
+The daemon resolves the agent identity and path; the model cannot
 select an arbitrary filesystem location.
 
 External memory uses record-oriented recall and capture rather than pretending
@@ -108,22 +116,30 @@ File-oriented providers use the daemon-control protocol:
 The Control Plane exposes agent-scoped memory routes and forwards requests to
 the owning daemon. Authorization uses the same organization and agent
 visibility rules as the rest of the agent API. An offline or unplaced daemon is
-reported as unavailable; content is never copied into Control Plane storage.
+reported as unavailable. Proxying does not change content ownership; a managed
+Control Plane home is the explicit persistence exception.
 
-The console selects the admin surface from the provider:
+The console first uses common capability discovery and list/get, exposing only
+actual supported mutations. The common `memory/entries/read/v1` and
+`memory/entries/write/v1` transport projects the same service with console
+authority. Conditional writes are not automatically replayed after an unknown
+outcome. Unsupported peers and the explicit additional-tools view retain these
+provider-specific compatibility surfaces:
 
 - `files`: index/topic list with read and edit operations; managed files also
   expose lazy, newest-first change history with expandable before/after snapshots;
 - `records`: search, inspect, create, update, delete, and history operations;
 - `none`: no memory administration surface.
 
-The web and protocol layers discriminate on these representation shapes and do
-not expose a concrete external backend name.
+Representation-specific tools preserve index editing, links/history, external
+record operations, and native administration. They cannot be removed until old
+sessions/clients are drained or a documented compatibility window ends, and
+legacy hand-authored indexes have an explicit preservation path.
 
 ## 6. Security and Privacy Boundaries
 
-- Memory bodies remain daemon-local for managed/native providers or in the
-  selected external backend.
+- Memory bodies belong to the configured managed home (daemon-local or Control
+  Plane), the isolated native runtime store, or the selected external backend.
 - Provider configuration contains references and non-secret settings only.
   Credentials use the platform secret store and are never returned in read
   DTOs.
@@ -140,8 +156,10 @@ not expose a concrete external backend name.
 ## 7. Extension Boundary
 
 `MemoryProvider` owns product policy: runtime environment, standing context,
-per-turn recall, post-turn capture, model tools, and the console
-representation. External plugins translate the canonical memory profile to a
+per-turn recall and post-turn capture. The common entry service owns entry
+authorization/contracts; core projections own model descriptors and the common
+console. Provider-specific representations remain compatibility capabilities.
+External plugins translate the canonical memory profile to a
 backend protocol; they do not control scope, prompt trust, retry policy, or
 agent-visible tool definitions.
 
