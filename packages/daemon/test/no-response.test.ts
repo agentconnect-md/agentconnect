@@ -28,6 +28,15 @@ describe('no-response sentinel', () => {
     expect(isNoResponseBody('')).toBe(false)
   })
 
+  it('isNoResponseBody treats a body of only repeated sentinels as silent (#1920)', () => {
+    expect(isNoResponseBody('AC_NO_RESPONSEAC_NO_RESPONSE')).toBe(true)
+    expect(isNoResponseBody('AC_NO_RESPONSE AC_NO_RESPONSE')).toBe(true)
+    expect(isNoResponseBody('AC_NO_RESPONSE\nAC_NO_RESPONSE')).toBe(true)
+    // Any real residue stays an ordinary reply
+    expect(isNoResponseBody('AC_NO_RESPONSE\nAC_NO_RESPONSE.')).toBe(false)
+    expect(isNoResponseBody('No. AC_NO_RESPONSE AC_NO_RESPONSE')).toBe(false)
+  })
+
   it('isNoResponsePrefix holds only genuine (case-sensitive) prefixes of the sentinel', () => {
     // empty + every proper prefix of the sentinel is held while it may still complete
     expect(isNoResponsePrefix('')).toBe(true)

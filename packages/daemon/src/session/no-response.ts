@@ -75,8 +75,14 @@ export function isNoResponsePrefix(trimmedBody: string): boolean {
 /** True when the turn is the bare sentinel, or when a non-compliant model explains itself
  *  and then emits the sentinel as the final standalone line. The terminal-line fallback is
  *  deliberately narrow: inline mentions, punctuation, fenced examples, and any content
- *  after the sentinel remain ordinary replies. */
+ *  after the sentinel remain ordinary replies. A body that is nothing but repeated
+ *  sentinel occurrences and whitespace is unambiguously a silent turn (#1920). */
 export function isNoResponseBody(trimmedBody: string): boolean {
   const terminalLine = trimmedBody.split(/\r?\n/).at(-1)?.trim()
-  return terminalLine === NO_RESPONSE_SENTINEL
+  if (terminalLine === NO_RESPONSE_SENTINEL) return true
+  // Only-sentinel bodies (repeated or whitespace-separated) are unambiguous.
+  return (
+    trimmedBody.length > 0 &&
+    trimmedBody.split(NO_RESPONSE_SENTINEL).every((part) => part.trim() === '')
+  )
 }
