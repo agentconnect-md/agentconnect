@@ -7,7 +7,7 @@
 
 ---
 
-The proposed [unified memory interface](unified-memory-interface.md) extends this lifecycle with common entry operations, a bounded context catalog, and shared mutation semantics. It preserves the plugin ABI and storage choices; the current file/record surfaces remain compatibility contracts until that proposal is implemented.
+The [unified memory interface](unified-memory-interface.md) implements common reads, conditional managed mutations, model/admin projections, and a capability-driven console on this lifecycle. New/native-resumed sessions have bounded catalog delivery; continuously live refresh is still pending. The plugin ABI and storage choices are unchanged. File/record tools remain compatibility contracts pending old-client drainage and preservation of legacy index workflows.
 
 ## 1. Background and Current State
 
