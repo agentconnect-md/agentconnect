@@ -1,6 +1,7 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { splitIntoSections } from '../messages/split-sections.js'
-import { flattenUnsafeLinks } from '../messages/agent-links.js'
+import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
+import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { AgentMessageRun } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
@@ -198,7 +199,8 @@ export class TelegramConverger {
    *  reply to it could not resolve back to this session (the hint would be a lie there). */
   constructor(
     private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
-    opts: { continueHint?: boolean } = {}
+    opts: { continueHint?: boolean } = {},
+    private readonly resolveFileLink?: WorkspaceFileLinkResolver
   ) {
     this.hintEnabled = opts.continueHint === true && (mode === 'low' || mode === 'medium' || mode === 'high')
     this.bodyLimit = this.hintEnabled
@@ -225,17 +227,19 @@ export class TelegramConverger {
    *  the whole buffer, paragraph break or not — otherwise the runtime's own error text is
    *  dropped and replaced by the generic failure notice. */
   flushTerminal(): TelegramAction[] {
-    if (this.mode === 'minimal') return this.liveRefresh()
+    if (this.mode === 'minimal') return this.liveRefresh(true)
     return [...this.drainReasoning(), ...this.flush()]
   }
 
   /** minimal: refresh the single in-place `live-reply` with the current segment. */
-  private liveRefresh(): TelegramAction[] {
+  private liveRefresh(complete = false): TelegramAction[] {
     const trimmed = this.buf.trim()
     // Hold the live reply while the body could still be the bare response-control marker, so a
     // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
     if (!trimmed || isNoResponsePrefix(trimmed)) return []
-    return [{ kind: 'live-reply', text: this.liveDisplay(flattenUnsafeLinks(this.buf)) }]
+    const raw = complete ? this.buf : this.buf.slice(0, referenceBufferStart(this.buf))
+    const text = flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
+    return text.trim() ? [{ kind: 'live-reply', text: this.liveDisplay(text) }] : []
   }
 
   /** minimal: a Telegram message caps at 4096 chars; head-clamp the live view when longer
@@ -254,8 +258,9 @@ export class TelegramConverger {
     // Hold while the body may still be / is the bare sentinel — a suppressed reply must not be
     // recorded or shown; onFinal makes the final drop. Non-sentinel bodies close normally.
     if (isNoResponsePrefix(this.buf.trim())) return []
-    const text = flattenUnsafeLinks(this.buf)
+    const text = flattenUnsafeLinks(this.buf, { resolveFileLink: this.resolveFileLink })
     this.recordDirty = false
+    if (!text.trim()) return []
     return [
       { kind: 'live-reply', text: this.liveDisplay(text) },
       ...splitIntoSections(text, TELEGRAM_MESSAGE_LIMIT).map(
@@ -267,7 +272,8 @@ export class TelegramConverger {
   private drainReasoning(): TelegramAction[] {
     if (!this.reasoningDirty) return []
     this.reasoningDirty = false
-    return [{ kind: 'reasoning', text: renderReasoning(flattenUnsafeLinks(this.reasoningBuf)), parseMode: 'HTML' }]
+    const text = flattenUnsafeLinks(this.reasoningBuf, { resolveFileLink: this.resolveFileLink })
+    return text.trim() ? [{ kind: 'reasoning', text: renderReasoning(text), parseMode: 'HTML' }] : []
   }
 
   /** `final` marks the turn-closing flush: its LAST post carries the continue hint (so a
@@ -301,7 +307,8 @@ export class TelegramConverger {
   }
 
   private emitBody(raw: string, final: boolean): TelegramAction[] {
-    const text = flattenUnsafeLinks(raw)
+    const text = flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
+    if (!text.trim()) return []
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.
     const recordOnly = this.mode === 'none'

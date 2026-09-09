@@ -13,6 +13,7 @@ import {
 import { MEMORY_INDEX, MemoryConflictError, MemoryPathError } from '../src/memory/store.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { isNativeRuntimeSupported, nativeRuntimeEnv } from '../src/memory/runtime/native.js'
+import { localMemoryHome } from '../src/memory/home.js'
 
 function newDir(): string {
   return mkdtempSync(join(tmpdir(), 'ac-m2-'))
@@ -130,7 +131,8 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
   const runtimes: Record<string, RuntimeDef> = { 'bot-m': claude, 'bot-n': claude, 'bot-0': claude }
   function provider() {
     return createMemoryProvider({
-      memoryFsFor: (id) => (roots[id] === undefined ? undefined : new LocalMemoryFs(roots[id]!)),
+      memoryHomePortsFor: (id) =>
+        roots[id] === undefined ? undefined : localMemoryHome(new LocalMemoryFs(roots[id]!)),
       agentDirByAgent: (id) => roots[id],
       runtimeFor: (id) => runtimes[id],
       providerKindFor: (id) => kinds[id] ?? 'managed'

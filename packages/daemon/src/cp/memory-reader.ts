@@ -52,9 +52,12 @@ import {
   MemoryPathError,
   MemoryTooLargeError,
   MemoryConflictError,
+  MemoryHistoryNotLocalError,
+  MemoryHomeUnavailableError,
   MemorySandboxUnavailableError,
   type MemoryFs
 } from '../memory/store.js'
+import type { MemoryHomePorts } from '../memory/home.js'
 import type { MemoryAdminSurface, MemoryScope } from '../memory/provider.js'
 
 /** Unknown-agent violation → `BAD_PAYLOAD` on the wire (path escapes surface as
@@ -66,7 +69,14 @@ export class MemoryViolationError extends Error {
   }
 }
 
-export { MemoryPathError, MemoryTooLargeError, MemoryConflictError, MemorySandboxUnavailableError }
+export {
+  MemoryPathError,
+  MemoryTooLargeError,
+  MemoryConflictError,
+  MemoryHistoryNotLocalError,
+  MemoryHomeUnavailableError,
+  MemorySandboxUnavailableError
+}
 
 export interface MemoryReader {
   channels(req: MemoryChannelsReq): Promise<MemoryChannelsPage>
@@ -92,25 +102,29 @@ function isErrno(err: unknown, code: string): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === code
 }
 
-/** `memoryFsFor` resolves an agent id → the port over its managed memory tree
- *  (undefined for an unknown agent); it throws `MemorySandboxUnavailableError` for a
- *  cluster agent whose sandbox is not running. */
+// `memoryHomePortsFor` resolves an agent id → the ports over its managed memory home (undefined for an unknown agent);
+// it throws `MemoryHomeUnavailableError` while the home is out of reach — a sleeping sandbox, or a `control-plane` tree
+// whose connection, feature, or migration copy is missing — and that refusal carries its reason to the CP.
 export function createMemoryReader(
-  memoryFsFor: (agentId: string) => MemoryFs | undefined,
+  memoryHomePortsFor: (agentId: string) => MemoryHomePorts | undefined,
   provider?: AgentMemoryAdminResolver
 ): MemoryReader {
-  function dirFor(agentId: string): MemoryFs {
-    const fs = memoryFsFor(agentId)
-    if (!fs) throw new MemoryViolationError(`unknown agent "${agentId}"`)
-    return fs
+  function portsFor(agentId: string): MemoryHomePorts {
+    const ports = memoryHomePortsFor(agentId)
+    if (!ports) throw new MemoryViolationError(`unknown agent "${agentId}"`)
+    return ports
   }
 
-  /** Identity only: a known agent whose sandbox is asleep is still a known agent. */
+  function dirFor(agentId: string): MemoryFs {
+    return portsFor(agentId).live
+  }
+
+  /** Identity only: a known agent whose home is out of reach is still a known agent. */
   function assertKnown(agentId: string): void {
     try {
-      dirFor(agentId)
+      portsFor(agentId)
     } catch (err) {
-      if (!(err instanceof MemorySandboxUnavailableError)) throw err
+      if (!(err instanceof MemoryHomeUnavailableError)) throw err
     }
   }
 
@@ -124,10 +138,22 @@ export function createMemoryReader(
         list: async (scope) => listMemory(dirFor(scope.agentId)),
         read: async (scope, path) => ({ path, content: await readMemoryFile(dirFor(scope.agentId), path) }),
         write: async (scope, path, content, ifMatch, source) => {
-          const result = await writeMemoryFile(dirFor(scope.agentId), path, content, ifMatch, source)
+          const ports = portsFor(scope.agentId)
+          const result = await writeMemoryFile(
+            ports.live,
+            path,
+            content,
+            ifMatch,
+            source ?? 'console',
+            ports.historyFor(ports.live)
+          )
           return { ok: true, path, ...result }
         },
-        history: async (scope, req) => listMemoryHistory(dirFor(scope.agentId), req.path, req.cursor, req.limit)
+        // Pages the store's sink; a home whose sink has no `list` (the CP's) answers the console itself, and a page asked here refuses.
+        history: async (scope, req) => {
+          const ports = portsFor(scope.agentId)
+          return listMemoryHistory(ports.historyFor(ports.live), req.path, req.cursor, req.limit)
+        }
       }
     )
   }

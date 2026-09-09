@@ -38,6 +38,8 @@ export const WINDOWS_EXCLUDED = [
   'test/shim-channels.test.ts',
   'test/skills-cli-cell.test.ts',
   'test/runtime-launch.test.ts',
+  'test/microsandbox-launch.test.ts',
+  'test/microsandbox-guest.test.ts',
   // The sandbox-pod plane. A pod is always Linux, so its coordinates, its shim and its confined
   // `gh`/`glab` shells are POSIX by construction — a Windows daemon never stands one up. A new suite
   // over that plane belongs here; the ones absent from this list do pass on Windows today.

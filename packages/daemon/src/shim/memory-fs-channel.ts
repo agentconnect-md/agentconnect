@@ -1,23 +1,18 @@
-/**
- * The memory-tree half of the `read` capability: a cluster agent's managed memory lives on its
- * sandbox volume, and this channel is how the daemon's `MemoryFs` port reaches it.
- *
- * Unlike the workspace channel, the daemon does not name one memory operation and let the pod
- * answer it: the memory logic (history, retention, the write ledger, the dream fence) is policy the
- * daemon keeps in its own process, and only the port's primitives cross the wire. They are shaped
- * for the 256 KiB frame: a read answers one budgeted slice at an offset, and a write is staged as
- * appended chunks into a sibling temp file, then committed by one rename that carries the mtime
- * precondition — so the atomic publish and its check still sit adjacent, on the pod.
- *
- * The pod side (`fd-memory-fs.ts`) works from open descriptors like the workspace's; the daemon
- * side (`ShimMemoryFs`) is a pass-through that reassembles slices and chunks into the port's calls.
- *
- * The primitives are not memory's alone — `shim/workspace-fs-channel.ts` is a second caller, for the
- * worktree tree on the same mount. The `memory-` op names are the wire contract a running pod already
- * speaks and are left as they are; the prefix is that contract's history, not the channel's scope.
- */
+// The client half of the memory-fs op set (protocol `frames/memory-store.ts`) over any carrier, plus the sandbox carrier.
+// Only the port's primitives cross the wire — history, retention, the write ledger and the dream fence stay daemon policy.
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import {
+  MemoryFsAppendReplySchema,
+  MemoryFsCommitReplySchema,
+  MemoryFsPayloadSchema,
+  MemoryFsReadReplySchema,
+  MemoryFsReaddirReplySchema,
+  MemoryFsReplySchema,
+  type MemoryFsPayload,
+  type MemoryFsReadReply,
+  type MemoryFsReply
+} from '@agentconnect.md/protocol'
 import { REPLY_BUDGET, fitToBudget, utf8Boundary } from '../wire-slice.js'
 import {
   MemoryConflictError,
@@ -34,84 +29,11 @@ import { createFdMemoryFsExecutor } from './fd-memory-fs.js'
 import type { WorkspaceFsKind } from '../workspace/workspace-fs.js'
 import type { ShimRequester } from './channels.js'
 
-/** Absolute because it is a path in the POD's coordinates, and the shim's fence compares absolutes. */
-const RootSchema = z.string().min(1).max(4096)
-const RelSchema = z.string().max(4096)
-
-export const MemoryFsPayloadSchema = z.discriminatedUnion('op', [
-  z.object({
-    op: z.literal('memory-read'),
-    root: RootSchema,
-    rel: RelSchema,
-    offset: z.number().int().nonnegative(),
-    limit: z.number().int().positive().max(REPLY_BUDGET),
-    encoding: z.enum(['utf8', 'base64']).optional()
-  }),
-  z.object({
-    op: z.literal('memory-append'),
-    root: RootSchema,
-    rel: RelSchema,
-    content: z.string(),
-    encoding: z.enum(['utf8', 'base64']).optional(),
-    create: z.boolean(),
-    mode: z.number().int().optional()
-  }),
-  z.object({
-    op: z.literal('memory-commit'),
-    root: RootSchema,
-    rel: RelSchema,
-    temp: RelSchema,
-    ifMatchMtime: z.string().optional()
-  }),
-  z.object({ op: z.literal('memory-create-commit'), root: RootSchema, rel: RelSchema, temp: RelSchema }),
-  z.object({ op: z.literal('memory-stat'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-readdir'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-mkdir'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-rmdir'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-rename'), root: RootSchema, from: RelSchema, to: RelSchema }),
-  z.object({ op: z.literal('memory-rm'), root: RootSchema, rel: RelSchema }),
-  z.object({ op: z.literal('memory-utimes'), root: RootSchema, rel: RelSchema, mtime: z.string() })
-])
-export type MemoryFsPayload = z.infer<typeof MemoryFsPayloadSchema>
-
 /** Cheap discrimination for the exec handler, ahead of the full parse. */
 export function isMemoryFsPayload(payload: unknown): boolean {
   const op = (payload as { op?: unknown } | null)?.op
   return typeof op === 'string' && op.startsWith('memory-')
 }
-
-const ReadReplySchema = z.discriminatedUnion('exists', [
-  z.object({ exists: z.literal(false) }),
-  z.object({
-    exists: z.literal(true),
-    size: z.number().int().nonnegative(),
-    mtime: z.string(),
-    content: z.string(),
-    nextOffset: z.number().int().nonnegative()
-  })
-])
-export type MemoryFsReadReply = z.infer<typeof ReadReplySchema>
-
-const StatReplySchema = z.object({ size: z.number().int().nonnegative(), mtime: z.string() })
-export const KindReplySchema = z.enum(['file', 'dir', 'missing', 'other'])
-const EntriesReplySchema = z.array(
-  z.object({
-    name: z.string(),
-    kind: z.enum(['file', 'dir', 'other']),
-    size: z.number().int().nonnegative().optional(),
-    mtime: z.string().optional()
-  })
-)
-
-/** The reply, with the two typed refusals as data so they survive the channel as themselves. */
-export const MemoryFsReplySchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), value: z.unknown() }),
-  z.object({
-    ok: z.literal(false),
-    refusal: z.object({ kind: z.enum(['path', 'conflict']), message: z.string().max(500) })
-  })
-])
-export type MemoryFsReply = z.infer<typeof MemoryFsReplySchema>
 
 /** The pod-side primitive set the payloads map onto. `rel` paths are relative to `root`. */
 export interface MemoryFsExecutor {
@@ -196,16 +118,21 @@ const BASE64_READ_LIMIT = Math.floor(REPLY_BUDGET / 4) * 3
 /** A bound shim channel that knows which agent it serves (a `ShimSession`). */
 export type ShimMemoryChannel = ShimRequester & { readonly agentId: string }
 
-/** One channel round trip, with the two typed refusals rebuilt as the SAME classes the local port
- *  throws, so callers cannot tell the two trees apart. */
-export async function requestMemoryFs<T>(
-  channel: ShimMemoryChannel,
+/** One op to whichever carrier holds the tree, answered as the wire reply — the only thing the homes differ in. */
+export type MemoryFsRequester = (op: MemoryFsPayload) => Promise<MemoryFsReply>
+
+/** The shim channel as a requester: one `read`-capability round trip per op. */
+export function shimMemoryFsRequester(channel: ShimRequester, timeoutMs: number): MemoryFsRequester {
+  return async (op) => MemoryFsReplySchema.parse(await channel.request('read', op, { timeoutMs }))
+}
+
+/** Send one op and settle it, the two typed refusals rebuilt as the SAME classes the local port throws. */
+export async function settleMemoryFs<T>(
+  requester: MemoryFsRequester,
   payload: MemoryFsPayload,
-  schema: z.ZodType<T>,
-  timeoutMs: number
+  schema: z.ZodType<T>
 ): Promise<T> {
-  const raw = await channel.request('read', payload, { timeoutMs })
-  const reply = MemoryFsReplySchema.parse(raw)
+  const reply = await requester(payload)
   if (!reply.ok) {
     if (reply.refusal.kind === 'conflict') throw new MemoryConflictError(reply.refusal.message)
     throw new MemoryPathError(reply.refusal.message)
@@ -213,29 +140,31 @@ export async function requestMemoryFs<T>(
   return schema.parse(reply.value)
 }
 
-/**
- * The daemon's side: the port over an agent's bound shim channel. Every containment check and every
- * refusal happens on the pod, where the files are; this class only reassembles what one frame cannot
- * carry. `key` is per agent and root, so the daemon's locks and write ledger follow the tree across
- * channel renewals and rebinds.
- */
-export class ShimMemoryFs implements MemoryFs {
-  readonly key: string
+/** One channel round trip: {@link settleMemoryFs} over the shim requester, for the workspace seam's own primitive. */
+export function requestMemoryFs<T>(
+  channel: ShimMemoryChannel,
+  payload: MemoryFsPayload,
+  schema: z.ZodType<T>,
+  timeoutMs: number
+): Promise<T> {
+  return settleMemoryFs(shimMemoryFsRequester(channel, timeoutMs), payload, schema)
+}
 
-  constructor(
-    private readonly channel: ShimMemoryChannel,
+// The daemon's side of the op set over any requester: refusals happen where the files are; this reassembles frames.
+// A carrier supplies the requester, `root` in its coordinates, and a `key` that names the tree the same way across
+// renewals, rebinds and restarts, so the daemon's locks and write ledger follow it.
+export abstract class MemoryFsClient implements MemoryFs {
+  protected constructor(
+    private readonly requester: MemoryFsRequester,
     readonly root: string,
-    private readonly timeoutMs = 30_000
-  ) {
-    this.key = `sandbox:${channel.agentId}:${root}`
-  }
+    readonly key: string
+  ) {}
 
-  subdir(rel: string): MemoryFs {
-    return new ShimMemoryFs(this.channel, joinRel(this.root, rel), this.timeoutMs)
-  }
+  /** The same port re-rooted below this one; how roots compose is the carrier's business. */
+  abstract subdir(rel: string): MemoryFs
 
   private run<T>(payload: MemoryFsPayload, schema: z.ZodType<T>): Promise<T> {
-    return requestMemoryFs(this.channel, payload, schema, this.timeoutMs)
+    return settleMemoryFs(this.requester, payload, schema)
   }
 
   /**
@@ -257,7 +186,7 @@ export class ShimMemoryFs implements MemoryFs {
     const read = (offset: number) =>
       this.run(
         { op: 'memory-read', root: this.root, rel, offset, limit: BASE64_READ_LIMIT, encoding: 'base64' },
-        ReadReplySchema
+        MemoryFsReadReplySchema
       )
     for (let attempt = 0; attempt < READ_RESTARTS; attempt++) {
       const first = await read(0)
@@ -283,7 +212,10 @@ export class ShimMemoryFs implements MemoryFs {
 
   async readFile(rel: string, encoding: MemoryFsEncoding = 'utf8'): Promise<MemoryFsFile | null> {
     const read = (offset: number) =>
-      this.run({ op: 'memory-read', root: this.root, rel, offset, limit: REPLY_BUDGET, encoding }, ReadReplySchema)
+      this.run(
+        { op: 'memory-read', root: this.root, rel, offset, limit: REPLY_BUDGET, encoding },
+        MemoryFsReadReplySchema
+      )
     for (let attempt = 0; attempt < READ_RESTARTS; attempt++) {
       const first = await read(0)
       if (!first.exists) return null
@@ -336,7 +268,7 @@ export class ShimMemoryFs implements MemoryFs {
             create,
             ...(options.mode === undefined ? {} : { mode: options.mode })
           },
-          z.object({ size: z.number() })
+          MemoryFsAppendReplySchema
         )
         create = false
         offset += end
@@ -349,7 +281,7 @@ export class ShimMemoryFs implements MemoryFs {
           temp,
           ...(options.ifMatchMtime ? { ifMatchMtime: options.ifMatchMtime } : {})
         },
-        StatReplySchema
+        MemoryFsCommitReplySchema
       )
     } catch (err) {
       await this.run({ op: 'memory-rm', root: this.root, rel: temp }, z.null()).catch(() => {})
@@ -358,7 +290,7 @@ export class ShimMemoryFs implements MemoryFs {
   }
 
   readdir(rel: string): Promise<MemoryFsEntry[]> {
-    return this.run({ op: 'memory-readdir', root: this.root, rel }, EntriesReplySchema)
+    return this.run({ op: 'memory-readdir', root: this.root, rel }, MemoryFsReaddirReplySchema)
   }
 
   async mkdir(rel: string): Promise<void> {
@@ -375,6 +307,21 @@ export class ShimMemoryFs implements MemoryFs {
 
   async utimes(rel: string, mtime: string): Promise<void> {
     await this.run({ op: 'memory-utimes', root: this.root, rel, mtime }, z.null())
+  }
+}
+
+/** The port over an agent's bound shim channel: `root` is pod-absolute and `key` is per agent and root. */
+export class ShimMemoryFs extends MemoryFsClient {
+  constructor(
+    private readonly channel: ShimMemoryChannel,
+    root: string,
+    private readonly timeoutMs = 30_000
+  ) {
+    super(shimMemoryFsRequester(channel, timeoutMs), root, `sandbox:${channel.agentId}:${root}`)
+  }
+
+  subdir(rel: string): MemoryFs {
+    return new ShimMemoryFs(this.channel, joinRel(this.root, rel), this.timeoutMs)
   }
 }
 

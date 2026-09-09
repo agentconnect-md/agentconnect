@@ -135,7 +135,7 @@ The daemon does not implement these, but interacts with them through the section
 | `--agent <name>`                 | Selector                       | Select by `agent.id`: single-agent `run` ignoring status, or disambiguate `chat`.                                                                  |
 | `--max-agents <n>`               | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
 | `--require-sandbox`              | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
-| n/a (config only)                | `sandbox.backend`              | Select the local sandbox backend; defaults to `srt`, currently the only supported value.                                                           |
+| n/a (config only)                | `sandbox.backend`              | Select the local sandbox backend; defaults to `srt`; `microsandbox` selects Linux VMs with an explicit image.                                      |
 | n/a (config only)                | `sandbox.mounts`               | Operator-owned host path mappings; `readOnly` defaults to true. SRT requires equal normalized source and target paths.                             |
 | `--k8s`                          | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
 | `--key-server <url>`             | `KEY_SERVER`                   | Cloud-only service for session-scoped model credentials, http or https as the deployment chooses; see [key-server.md](key-server.md).              |
@@ -371,10 +371,10 @@ agent directories and higher custom parents are left unchanged.
 
 ### Linux ACP runtime sandbox
 
-`sandbox.backend` defaults to `srt`, currently the only supported backend.
+`sandbox.backend` defaults to `srt`; Linux hosts with KVM can select `microsandbox`.
 Operator-owned filesystem access is configured through `sandbox.mounts`.
-The [sandbox backend design](daemon-sandbox-backends.md) documents this
-configuration and the proposed microsandbox extension. The behavior below
+The [sandbox backend design](daemon-sandbox-backends.md) documents configuration,
+the implemented VM backend, and its remaining image/networking extensions. The behavior below
 describes the current SRT implementation.
 
 AgentConnect currently enables runtime sandboxing on Linux only. The daemon uses

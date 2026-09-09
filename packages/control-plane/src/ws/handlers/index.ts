@@ -63,6 +63,7 @@ import {
   handleManagedSkillRead,
   handleOrganizationSuggestionsSync
 } from './organization-knowledge.js'
+import { handleMemoryHistoryAppend, handleMemoryHomeMigrated, handleMemoryStore } from './memory-store.js'
 
 export type Handler = (frame: AnyFrame, conn: DaemonConnection, deps: DaemonWsDeps) => Promise<void>
 
@@ -113,6 +114,9 @@ export class FrameRouter {
       'skills/org': handleOrgSkills,
       'knowledge/suggestions/sync': handleOrganizationSuggestionsSync,
       'managed-skill/read': handleManagedSkillRead,
+      'memory/store': handleMemoryStore,
+      'memory/history/append': handleMemoryHistoryAppend,
+      'memory/home/migrated': handleMemoryHomeMigrated,
       ...overrides
     }
   }
@@ -158,5 +162,8 @@ export {
   handleWebchatMcpGrantRevoke,
   handleKnowledgeSearch,
   handleOrganizationSuggestionsSync,
-  handleManagedSkillRead
+  handleManagedSkillRead,
+  handleMemoryStore,
+  handleMemoryHistoryAppend,
+  handleMemoryHomeMigrated
 }

@@ -43,6 +43,8 @@ const MAX_ASSOCIATION_PAGES = 10
 const ASSOCIATION_PAGE_SIZE = 100
 const RETRY_BASE_MS = 2_000
 const RETRY_MAX_MS = 5 * 60_000
+// How long a marker-bearing write may stay unobserved before its absence counts as proof it never landed.
+const AMBIGUOUS_WRITE_GRACE_MS = 10 * 60_000
 
 const CHECK_OUTPUT_TITLE: Record<ProjectionDesiredState, string> = {
   queued: 'Waiting for review',
@@ -84,6 +86,12 @@ interface CheckRunResponse {
 interface CheckRunsResponse {
   total_count: number
   check_runs: CheckRunResponse[]
+}
+
+/** `exhaustive` is false when the listing hit the page cap, so absence proves nothing. */
+interface CreatedCheckSearch {
+  found: CheckRunResponse | null
+  exhaustive: boolean
 }
 
 interface AssociatedPullResponse {
@@ -804,6 +812,8 @@ export class GithubRunReporter {
     const marker = projection.writeMarker!
     try {
       let recovered: CheckRunResponse | null = null
+      // True only when GitHub answered with the Check (update) or a complete listing (create) and neither carries the marker.
+      let provablyAbsent = false
       if (projection.checkRunId) {
         const remote = await githubRequest<CheckRunResponse>(
           `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${encodeURIComponent(projection.checkRunId)}`,
@@ -815,8 +825,11 @@ export class GithubRunReporter {
           }
         )
         if (hasWriteMarker(remote, marker)) recovered = remote
+        else provablyAbsent = true
       } else {
-        recovered = await this.findCreatedCheck(projection, marker, token, owner, repo)
+        const search = await this.findCreatedCheck(projection, marker, token, owner, repo)
+        recovered = search.found
+        provablyAbsent = search.exhaustive
       }
       if (recovered) {
         const recoveredState = recoveredWriteState(recovered, marker)
@@ -840,8 +853,19 @@ export class GithubRunReporter {
         await this.finish(projection, marker, checkRunId, installationId, recoveredState, associationError)
         return
       }
-      // GitHub list/get can lag an accepted mutation. Preserve the mutex and
-      // reconcile again after backoff; never issue another POST/PATCH.
+      if (provablyAbsent && this.writeGraceElapsed(projection)) {
+        // Past the grace window an absent marker proves the request never reached GitHub: release the mutex so the next pass re-issues it.
+        await this.deps.hooks.retryProjectionWrite(
+          projection.id,
+          projection.generation,
+          this.workerId,
+          new Date(this.deps.clock.now()),
+          'ambiguous_write_reissued',
+          false
+        )
+        return
+      }
+      // Within the grace window GitHub may still be lagging: keep the mutex and reconcile again after backoff.
       await this.retry(projection, 'ambiguous_write', true)
     } catch (err) {
       // Even a definite GET failure says nothing about the earlier mutation.
@@ -862,22 +886,26 @@ export class GithubRunReporter {
     }
   }
 
+  private writeGraceElapsed(projection: HookReviewProjectionRecord): boolean {
+    if (!projection.writeStartedAt) return false
+    return this.deps.clock.now() - projection.writeStartedAt.getTime() >= AMBIGUOUS_WRITE_GRACE_MS
+  }
+
   private async findCreatedCheck(
     projection: HookReviewProjectionRecord,
     marker: string,
     token: string,
     owner: string,
     repo: string
-  ): Promise<CheckRunResponse | null> {
-    // Creates publish the display name directly. The legacy recovery name is
-    // still searched so a POST left in flight by an earlier binary — which
-    // named its creates `agentconnect/info/review/<hookId>` and repaired the
-    // label afterwards — stays recoverable across the upgrade.
+  ): Promise<CreatedCheckSearch> {
+    // The legacy name (`agentconnect/info/review/<hookId>`) is still searched so a POST left in flight by an earlier binary stays recoverable.
+    let exhaustive = true
     for (const candidate of [checkName(projection), legacyCheckName(projection)]) {
-      const found = await this.findCreatedCheckByName(projection, marker, token, owner, repo, candidate)
-      if (found) return found
+      const search = await this.findCreatedCheckByName(projection, marker, token, owner, repo, candidate)
+      if (search.found) return search
+      exhaustive &&= search.exhaustive
     }
-    return null
+    return { found: null, exhaustive }
   }
 
   private async findCreatedCheckByName(
@@ -887,7 +915,7 @@ export class GithubRunReporter {
     owner: string,
     repo: string,
     checkRunName: string
-  ): Promise<CheckRunResponse | null> {
+  ): Promise<CreatedCheckSearch> {
     const name = encodeURIComponent(checkRunName)
     for (let page = 1; page <= MAX_RECOVERY_PAGES; page++) {
       const response = await githubRequest<CheckRunsResponse>(
@@ -902,11 +930,11 @@ export class GithubRunReporter {
       const recovered = response.check_runs.find(
         (run) => run.external_id === projection.externalId && hasWriteMarker(run, marker)
       )
-      if (recovered) return recovered
-      if (response.check_runs.length < 100) return null
+      if (recovered) return { found: recovered, exhaustive: true }
+      if (response.check_runs.length < 100) return { found: null, exhaustive: true }
     }
-    // A capped/incomplete recovery read is not evidence of no effect.
-    return null
+    // A capped recovery read is not evidence of no effect.
+    return { found: null, exhaustive: false }
   }
 
   private async finish(

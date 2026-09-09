@@ -27,7 +27,12 @@ import { BotId } from '../../domain/ids.js'
 import { denyViewerWrite, orgOf } from '../rbac.js'
 import { SlackBotRefreshDto, ErrorDto, IdParam, type SlackBotRefreshDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
-import { checkSlackBotScopes, mergeManagedSlackManifest, slackOAuthRedirectUri } from '../slack-manifest.js'
+import {
+  checkSlackBotScopes,
+  mergeManagedSlackManifest,
+  missingDeclaredBotScopes,
+  slackOAuthRedirectUri
+} from '../slack-manifest.js'
 import { relayHttpBase } from '../relay-ingress.js'
 
 /** Slack errors from the manifest export/update that mean "this app is not
@@ -122,16 +127,18 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         if (checked?.status === 'ok' && checked.scopes?.length) {
           await deps.repos.bot.setGrantedScopes(bot.orgId, bot.id, checked.scopes)
         }
-        // A built-in app's manifest is deployment-managed rather than owned by
-        // the signed-in user's Slack config token. Refresh still verifies its
-        // installed scopes so the Console can offer the platform OAuth reinstall.
-        let manifest: SlackBotRefreshDtoT['manifest'] = bot.prebuilt ? 'synced' : 'manual_update_required'
+        // A built-in app's manifest belongs to the deployment: it is only AUDITED here
+        // (read-only, when the caller's config token can export it) and fixed from the
+        // Setup Server. A custom app's manifest is synced in place. Neither is assumed
+        // synced: unverified stays `manual_update_required`, which claims nothing.
+        let manifest: SlackBotRefreshDtoT['manifest'] = 'manual_update_required'
+        let manifestMissingScopes: string[] = []
         const api = slack.configApi
         // Manifest sync needs a config token that owns THIS app — i.e. the caller's
         // own (per-user), resolved through the §9 tooling-credential facet: the SAME
         // instance the registry advertises and the install funnel uses, so the two
         // flows cannot disagree about which store answers or when a token is stale.
-        if (!bot.prebuilt && api && appIdentityMatches && req.principal) {
+        if (api && appIdentityMatches && req.principal) {
           const config = (await slack.toolingCredentials?.resolveAccessToken(
             bot.orgId,
             req.principal.userId,
@@ -139,7 +146,10 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           )) ?? { ok: false as const, reason: 'unreachable' as const }
           if (config.ok) {
             const exported = await api.exportApp(config.accessToken, bot.slackAppId)
-            if (exported.ok) {
+            if (exported.ok && bot.prebuilt) {
+              manifestMissingScopes = missingDeclaredBotScopes(exported.manifest)
+              manifest = manifestMissingScopes.length > 0 ? 'deployment_update_required' : 'synced'
+            } else if (exported.ok) {
               const redirectUrl = deps.config.PUBLIC_CP_URL
                 ? slackOAuthRedirectUri(deps.config.PUBLIC_CP_URL)
                 : undefined
@@ -184,6 +194,7 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
 
         return {
           manifest,
+          manifestMissingScopes,
           authorization,
           rejection: checked?.status === 'invalid' ? checked.error : null,
           missingScopes,

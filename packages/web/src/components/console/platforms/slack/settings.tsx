@@ -211,7 +211,9 @@ function SlackRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) 
   const card = useSlackBotCard()
   if (!bot.slackAppId || !canWrite) return null
   const entry = card.entryFor(bot.id)
-  const needsAttention = entry?.result ? slackRefreshNoticeState(entry.result).needsAttention : false
+  const needsAttention = entry?.result
+    ? slackRefreshNoticeState(entry.result, { builtin: bot.prebuilt }).needsAttention
+    : false
   const refreshing = card.refreshingBot(bot.id)
   return (
     <button
@@ -267,7 +269,12 @@ function SlackRefreshNotice({
   reinstalling?: boolean
   onReinstall?: () => void
 }) {
-  const { needsAttention, message: defaultMessage, action, scopeFragment } = slackRefreshNoticeState(result)
+  const {
+    needsAttention,
+    message: defaultMessage,
+    action,
+    scopeFragment
+  } = slackRefreshNoticeState(result, { builtin })
   const [copied, setCopied] = useState(false)
   const message =
     builtin && result.authorization === 'invalid'
@@ -294,6 +301,9 @@ function SlackRefreshNotice({
     >
       <span className="min-w-0">
         <span>{message}</span>
+        {result.manifestMissingScopes.length > 0 && (
+          <span className="mono ml-1 text-[11px]">Manifest missing: {result.manifestMissingScopes.join(', ')}</span>
+        )}
         {result.missingScopes.length > 0 && (
           <span className="mono ml-1 text-[11px]">Missing: {result.missingScopes.join(', ')}</span>
         )}

@@ -16,8 +16,9 @@ import type {
 } from '@agentconnect.md/protocol'
 import {
   MemoryConflictError,
+  MemoryHistoryNotLocalError,
+  MemoryHomeUnavailableError,
   MemoryPathError,
-  MemorySandboxUnavailableError,
   MemoryTooLargeError,
   MemoryViolationError,
   type MemoryReader
@@ -129,10 +130,18 @@ function memoryError(wire: ControlWire, corr: string, op: string, err: unknown):
     wire.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
     return
   }
-  // The memory tree is on a sandbox that is not running: refused with the workspace reader's
-  // reason, so the CP answers 503 with the code the console wakes on (#1077) — not a 400.
-  if (err instanceof MemorySandboxUnavailableError) {
+  // The home is out of reach — a sleeping sandbox, a `control-plane` tree behind a missing connection, feature, or
+  // migration copy, or a `daemon` home on a pool member awaiting the CP's flip: every reason is "not now" for the
+  // console, so it is refused WITH the reason and the CP answers 503
+  // (for `sandbox-unavailable` with the code the console wakes on, #1077) — never a 400 that would stop the retry.
+  if (err instanceof MemoryHomeUnavailableError) {
     wire.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
+    return
+  }
+  // A page of a change log the home keeps itself was routed to this daemon: a routing bug that must show as one.
+  if (err instanceof MemoryHistoryNotLocalError) {
+    wire.log.warn(`cp: ${op} failed: ${err.message}`)
+    wire.sendError(corr, 'INTERNAL', `${op} failed: ${err.message}`, false)
     return
   }
   if (err instanceof MemoryViolationError || err instanceof MemoryPathError || err instanceof MemoryTooLargeError) {

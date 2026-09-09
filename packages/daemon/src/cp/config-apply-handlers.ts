@@ -211,6 +211,7 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
             try {
               if (action === 'remove') {
                 cpAgents.remove(agentId)
+                await host.store().deleteMemoryHomeApplied(agentId)
                 await host.discardClusterSandbox(agentId)
                 host.moveStageMetadata().delete(agentId)
                 host.moveStagedAgents().delete(agentId)
@@ -409,6 +410,7 @@ export function applyAgentRemove(host: ConfigApplyHost, agentId: string): Promis
       if (!cpAgents) throw new Error('agent registry is not ready')
       try {
         cpAgents.remove(agentId)
+        await host.store().deleteMemoryHomeApplied(agentId)
       } catch (cleanupError) {
         if (removal.markerError) {
           throw new AggregateError(

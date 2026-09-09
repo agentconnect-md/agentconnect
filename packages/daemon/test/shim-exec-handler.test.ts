@@ -7,6 +7,7 @@ import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError, createExecHandler } from '../src/shim/exec-handler.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
 import type { GitExecResult } from '../src/shim/git-exec.js'
+import { workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
 
 /**
  * The sandbox side of the exec channel, which is where the declared git inventory is actually
@@ -71,11 +72,11 @@ describe('sandbox exec handler', () => {
 
   it('refuses a subcommand outside the declared inventory', async () => {
     const root = repository()
-    for (const subcommand of ['push', 'submodule', 'daemon', 'gc', 'apply', 'checkout', 'for-each-ref']) {
+    for (const subcommand of ['submodule', 'daemon', 'gc', 'apply', 'checkout', 'for-each-ref']) {
       await expect(handler(root)('exec', { tool: 'git', args: [subcommand] })).rejects.toBeInstanceOf(ExecRefusedError)
     }
     // And the inventory is the daemon's declared list, not a superset invented here.
-    expect(ALLOWED_GIT_SUBCOMMANDS.has('push')).toBe(false)
+    expect(ALLOWED_GIT_SUBCOMMANDS.has('submodule')).toBe(false)
     expect(ALLOWED_GIT_SUBCOMMANDS.has('status')).toBe(true)
   })
 
@@ -87,11 +88,36 @@ describe('sandbox exec handler', () => {
       ['status', '-c', 'protocol.ext.allow=always'],
       ['--exec-path=/tmp/evil', 'status'],
       ['fetch', '--upload-pack=sh -c "id"', 'origin'],
+      ['push', '--receive-pack=sh -c "id"', 'origin'],
       ['--config-env=core.pager=EVIL', 'status']
     ]
     for (const args of attacks) {
       await expect(handler(root)('exec', { tool: 'git', args })).rejects.toBeInstanceOf(ExecRefusedError)
     }
+  })
+
+  it('pushes the explicit Console refspec to a local bare repository', async () => {
+    const root = repository()
+    const remote = mkdtempSync(join(tmpdir(), 'ac-execguard-remote-'))
+    roots.push(remote)
+    execFileSync('git', ['init', '--bare', '--initial-branch=main'], { cwd: remote })
+    const env = workspaceGitLocalEnv()
+    const configCount = Number(env.GIT_CONFIG_COUNT)
+    const result = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['push', '--porcelain', 'agentconnect-test', 'refs/heads/main:refs/heads/main'],
+      env: {
+        ...env,
+        GIT_ALLOW_PROTOCOL: 'file',
+        GIT_CONFIG_COUNT: String(configCount + 1),
+        [`GIT_CONFIG_KEY_${configCount}`]: 'remote.agentconnect-test.url',
+        [`GIT_CONFIG_VALUE_${configCount}`]: remote
+      }
+    })) as GitExecResult
+    expect(result.code).toBe(0)
+    expect(execFileSync('git', ['rev-parse', 'refs/heads/main'], { cwd: remote, encoding: 'utf8' })).toBe(
+      execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' })
+    )
   })
 
   it('serves the worktree inventory the pod-side session paths need', async () => {
@@ -250,9 +276,7 @@ describe('sandbox exec handler', () => {
   })
 
   it('applies the request env as given rather than merging the sandbox environment', async () => {
-    // Verified through `config`, which IS in the inventory. An earlier version of this test used
-    // `commit` — and the guard refused it, correctly: the daemon never commits, so `commit` is
-    // not on the list. The test reaching for a convenient command it does not use was the bug.
+    // Read config to verify that the request replaces the sandbox's environment.
     const root = repository()
     const globalConfig = join(root, 'from-request.gitconfig')
     writeFileSync(globalConfig, '[user]\n\tname = Only From Request\n')

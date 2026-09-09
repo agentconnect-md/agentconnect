@@ -10,6 +10,7 @@ export function ConfirmationDialog({
   busy = false,
   busyLabel = 'Saving…',
   error,
+  destructive = false,
   onConfirm,
   onClose
 }: {
@@ -19,6 +20,8 @@ export function ConfirmationDialog({
   busy?: boolean
   busyLabel?: string
   error?: string | null
+  /** The confirmed action keeps nothing: error-toned glyph and a danger button, the way the delete modals read. */
+  destructive?: boolean
   onConfirm: () => void
   onClose: () => void
 }) {
@@ -36,9 +39,15 @@ export function ConfirmationDialog({
     <div className="scrim">
       <div className="modal max-w-[480px]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div className="modalhead">
-          <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-paused-soft)">
-            <Icon name="triangle-alert" size={16} color="var(--amber-500)" />
-          </span>
+          {destructive ? (
+            <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
+              <Icon name="triangle-alert" size={16} color="var(--status-error)" />
+            </span>
+          ) : (
+            <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-paused-soft)">
+              <Icon name="triangle-alert" size={16} color="var(--amber-500)" />
+            </span>
+          )}
           <span id={titleId} className="flex-1 font-sans text-[16px] font-semibold leading-normal">
             {title}
           </span>
@@ -62,7 +71,7 @@ export function ConfirmationDialog({
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={busy} onClick={onConfirm}>
+          <Button variant={destructive ? 'danger' : 'primary'} disabled={busy} onClick={onConfirm}>
             {busy ? busyLabel : confirmLabel}
           </Button>
         </div>

@@ -1,17 +1,32 @@
-import type { Stats } from 'node:fs'
-import { basename, isAbsolute, relative, sep } from 'node:path'
+import { existsSync, type Stats } from 'node:fs'
+import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import type { MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { effectiveMemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { SandboxError, sandboxBoundary } from '../acp/sandbox.js'
 import type { Agent } from '../agents/agent-schema.js'
-import type { LoadedAgent } from '../agents/load-agents.js'
+import { CP_AGENT_ROOT_MARKER, type LoadedAgent } from '../agents/load-agents.js'
 import type { Config } from '../config/config-schema.js'
+import { DAEMON_OWNED_AGENT_DIRNAMES, MEMORY_ARCHIVE_DIRNAME_PREFIX } from '../memory/store.js'
 import { runtimeHomePath } from '../runtimes/runtime-home.js'
 
 export function ignoreAgentWatchPath(agentsDir: string, path: string, stats?: Stats): boolean {
   const segments = relative(agentsDir, path).split(sep)
   if (segments.some((segment) => segment === 'node_modules' || segment.startsWith('.'))) return true
+  // The watcher only wants `agent.json`; the memory tree is the daemon's own, and Windows cannot rename a watched dir.
+  // Only beneath an actual agent root — discovery is recursive, so a grouping dir may hold an agent named like one.
+  const owned = segments[1]
+  if (
+    owned !== undefined &&
+    (DAEMON_OWNED_AGENT_DIRNAMES.includes(owned) || owned.startsWith(MEMORY_ARCHIVE_DIRNAME_PREFIX)) &&
+    isAgentRoot(join(agentsDir, segments[0]!))
+  )
+    return true
   return stats !== undefined && !stats.isDirectory() && basename(path) !== 'agent.json'
+}
+
+/** A local agent root holds `agent.json`; a Control-Plane-managed one holds the `.cp-agent-id` marker instead. */
+function isAgentRoot(dir: string): boolean {
+  return existsSync(join(dir, 'agent.json')) || existsSync(join(dir, CP_AGENT_ROOT_MARKER))
 }
 
 /** Validate the same trusted workspace boundary that every real ACP spawn will

@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MEMORY_ENTRY_FRAME_BYTES } from '@agentconnect.md/protocol'
+import { localMemoryHome } from '../src/memory/home.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { ManagedMemoryProvider } from '../src/memory/providers/managed.js'
 import { createMemoryProvider } from '../src/memory/provider.js'
@@ -38,7 +39,7 @@ async function fixture(kind: 'managed' | 'external', count = 37) {
   const records = new Map<string, MemoryRecord>()
   const requests: { cursor?: string; limit: number }[] = []
   const root = new LocalMemoryFs(dir)
-  const provider = new ManagedMemoryProvider(() => root)
+  const provider = new ManagedMemoryProvider(() => localMemoryHome(root))
   for (let i = 0; i < count; i++) {
     const id = `topic-${String(i).padStart(3, '0')}.md`
     const text = `Fact ${i}`
@@ -252,7 +253,7 @@ it('binds a Dream to its staged root before consulting a changed live provider',
   const { db, dir } = await store()
   const staged = new LocalMemoryFs(join(dir, 'draft'))
   const provider = createMemoryProvider({
-    memoryFsFor: () => new LocalMemoryFs(dir),
+    memoryHomePortsFor: () => localMemoryHome(new LocalMemoryFs(dir)),
     agentDirByAgent: () => dir,
     runtimeFor: () => undefined,
     providerKindFor: () => 'external'

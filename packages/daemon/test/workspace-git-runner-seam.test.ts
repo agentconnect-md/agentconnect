@@ -11,6 +11,7 @@ import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 const workspaces = new WorkspaceManager()
 import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import { gitFor } from '../src/workspace/git-injection.js'
+import { localWorkspaceFs } from '../src/workspace/workspace-fs.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
 // The resolver seam that lets a cluster workspace run git on its sandbox pod instead of this disk.
@@ -21,6 +22,7 @@ const roots: string[] = []
 
 afterEach(() => {
   workspaces.setGitRunnerResolver(undefined)
+  workspaces.setFsResolver(undefined)
   workspaces.setSandboxMode(false)
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -201,12 +203,13 @@ describe('workspace-manager git runner seam', () => {
     expect(existsSync(worktree)).toBe(false)
   })
 
-  it('does not coalesce two CLUSTER agents onto one clone, even at the same path', async () => {
+  it.each([true, false])('deduplicates clones by filesystem ownership (remote=%s)', async (remote) => {
     // The single-flight lock was keyed on the textual cwd. For local agents that is the intent:
     // one path means one checkout. For cluster agents the same path is a different filesystem per
     // agent, so coalescing hands one agent the other's clone — and it looks like success.
-    const home = mkdtempSync(join(tmpdir(), 'ac-seam-clone-'))
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'ac-seam-clone-')))
     roots.push(home)
+    if (remote) workspaces.setFsResolver(() => ({ mount: home, fs: localWorkspaceFs }))
     const shared = join(home, 'checkout')
     const cloned: string[] = []
     let release!: () => void
@@ -235,7 +238,7 @@ describe('workspace-manager git runner seam', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
     release()
     await Promise.all([first, second])
-    expect(cloned.sort()).toEqual(['bot-one', 'bot-two'])
+    expect(cloned.sort()).toEqual(remote ? ['bot-one', 'bot-two'] : ['bot-one'])
   })
 
   it('has no git call site left outside the seam', () => {

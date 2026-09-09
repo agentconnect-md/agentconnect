@@ -21,7 +21,7 @@ import {
   runtimeMemoryPolicyId
 } from '../memory/runtime/capabilities.js'
 import { MemoryProviderUnavailableError, type MemoryProviderKind } from '../memory/provider.js'
-import type { RuntimeDef } from '../config/config-schema.js'
+import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
 import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
 import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
@@ -169,6 +169,12 @@ export function composeRuntimeLaunch(opts: {
   k8s?: boolean
   /** Probe launches only — keep npx/uvx on the host package cache. */
   hostPackageCache?: boolean
+  microsandbox?: {
+    mounts: SandboxMount[]
+    guestEntry: string
+    trustedSessionDir?: string
+    trustedMounts?: SandboxMount[]
+  }
 }): ComposedRuntimeLaunch {
   const policyId = runtimeMemoryPolicyId(opts.runtime, opts.runtimeId)
   const capabilities = runtimeMemoryCapabilities(opts.runtime, opts.runtimeId)
@@ -185,10 +191,11 @@ export function composeRuntimeLaunch(opts: {
   // externalExecution can never launch sandboxed — skip executable resolution so
   // prepareRuntimeLaunch reports the refusal instead of a resolution failure.
   const sandboxAccess =
-    opts.runInSandbox && opts.runtime.externalExecution !== true
+    opts.runInSandbox && !opts.microsandbox && opts.runtime.externalExecution !== true
       ? runtimeSandboxReadRoots(opts.runtime, stateSourceEnv)
       : undefined
   const launch = prepareRuntimeLaunch({
+    ...(opts.microsandbox ? { microsandbox: opts.microsandbox } : {}),
     ...(opts.k8s === true ? { k8s: true } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,

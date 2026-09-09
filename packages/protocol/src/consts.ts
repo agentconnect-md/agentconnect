@@ -387,3 +387,6 @@ export const APPROVAL_DM_ROUTE_V1_FEATURE = 'approval-dm-route-v1'
  *  grant's echoed access. A daemon must not name that purpose before seeing this: a new enum value
  *  in a daemon→CP frame is frame-fatal to an older CP (§17.3), not a stripped field. */
 export const GITLAB_EFFECT_V1_FEATURE = 'gitlab-effect-v1'
+
+/** CP serves the `memory/store` family (memory-evolution.md §3.2.1); a daemon refuses a `control-plane` home without it. */
+export const AGENT_MEMORY_STORE_V1_FEATURE = 'agent-memory-store-v1'

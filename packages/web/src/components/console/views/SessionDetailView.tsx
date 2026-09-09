@@ -2266,17 +2266,20 @@ export default function SessionDetailView() {
   const viewerPath = searchParams.get('file') || null
   // Which workspace that path was read from. A merged conversation's header focus is component state that defaults to the current REPRESENTATIVE, and the representative changes as another participant becomes newest — so without this a link copied while focused on agent B reopens B's path against A's checkout.
   const viewerAgentParam = searchParams.get('agent')
+  const viewerRepo = searchParams.get('repo') || undefined
   // Which read of that path is on screen (§4's M2 addition to the same param set): the file, its unstaged diff, or its staged diff. A value this console does not know degrades to File mode — the one read every workspace can answer — rather than to an error.
   const viewerMode = viewerModeFromParam(searchParams.get('mode'))
   // REPLACE, never push. The viewer is a pane mode inside one route, not a place: pushing would spend a history entry per tree click, so a reader who read six files would need seven Back presses to leave the session, and Back would stop meaning "leave this session". The cost, accepted: Back does not step file-by-file within a visit. Writing through URLSearchParams is also what makes a path with slashes and spaces round-trip — `router.replace` on `.toString()`, `searchParams.get` back.
   const setViewerFile = useCallback(
-    (next: string | null, agentId?: string | null, mode: ViewerMode = 'file') => {
+    (next: string | null, agentId?: string | null, mode: ViewerMode = 'file', repo?: string) => {
       const query = new URLSearchParams(searchParams)
       if (next) query.set('file', next)
       else query.delete('file')
       // The workspace travels with the path, so the link resolves to the checkout it was made from rather than to whichever agent the header happens to focus on reopening.
       if (next && agentId) query.set('agent', agentId)
       else query.delete('agent')
+      if (next && repo) query.set('repo', repo)
+      else query.delete('repo')
       // File mode is the DEFAULT, so it writes no parameter at all: an M1 link stays byte-identical, and closing the viewer takes the mode with the path rather than leaving a mode behind for the next file opened.
       if (next && mode !== 'file') query.set('mode', mode)
       else query.delete('mode')
@@ -3535,8 +3538,11 @@ export default function SessionDetailView() {
   const workspaceTitle = hasSessionWorktree
     ? `Open ${focusedAgentLabel}’s ${focusedIsolation.checkout}`
     : `Open ${focusedAgentLabel}’s workspace`
-  // Scoped to this session's OWN worktree only where it has one. `hasSessionWorktree` is the same gate the Workspace link above uses, and it is load-bearing for the reads: the daemon answers a shared workspace's sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline".
-  const filesSessionId = hasSessionWorktree && headerFocusSessionId ? headerFocusSessionId : undefined
+  // Keep the historical scope after purge or workspace replacement so an unavailable checkout never falls back to primary.
+  const filesSessionId =
+    (focusedSessionDetail?.workspaceIsolation ?? focusedSession?.workspaceIsolation) === 'session'
+      ? headerFocusSessionId
+      : undefined
   const filesWorkdir = focusedAgent && focusedAgent.workdir !== '—' ? focusedAgent.workdir : undefined
   // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
   const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
@@ -4747,13 +4753,14 @@ export default function SessionDetailView() {
             {viewerOpen && viewerPath && filesAgentId ? (
               // Keyed on the whole WORKSPACE SCOPE, not just the path: the viewer resets its slice in a passive effect, which runs AFTER paint, so without a fresh mount one committed frame draws the previous read's bytes — and its line count and size — under the new heading. The path alone is not that scope: switching header focus from one agent to another while `?file=` holds still is the same stale paint. Same hazard `transcriptMatchesSession` guards for the transcript; nothing inside the viewer is worth carrying across either axis.
               <SessionViewer
-                key={`${filesAgentId}:${filesSessionId ?? 'primary'}:${viewerPath}`}
+                key={`${filesAgentId}:${filesSessionId ?? 'primary'}:${viewerRepo ?? 'workspace'}:${viewerPath}`}
                 agentId={filesAgentId}
                 {...(filesSessionId ? { sessionId: filesSessionId } : {})}
+                {...(viewerRepo ? { repo: viewerRepo } : {})}
                 path={viewerPath}
                 // NOT part of the mount key: the pill must redraw the pane it already has, and a remount would re-read the file (and the diff) on every toggle.
                 mode={viewerMode}
-                onModeChange={(mode) => setViewerFile(viewerPath, filesAgentId, mode)}
+                onModeChange={(mode) => setViewerFile(viewerPath, filesAgentId, mode, viewerRepo)}
                 diffRefreshTick={viewerDiffTick}
                 {...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})}
                 onClose={() => {

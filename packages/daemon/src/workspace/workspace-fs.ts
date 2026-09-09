@@ -64,8 +64,8 @@ export interface WorkspaceFs {
  */
 export interface WorkspacePlacement {
   fs: WorkspaceFs
-  /** The pod's workspace mount; every path the manager composes for this agent hangs off it. */
-  mount: string
+  /** The workspace mount; omit to keep paths in the daemon host's coordinates. */
+  mount?: string
 }
 
 /** Today's behaviour: the daemon's own disk, through `node:fs`. */

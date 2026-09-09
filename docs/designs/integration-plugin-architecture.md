@@ -498,6 +498,13 @@ adapter owns everything platform-shaped. The GitHub poster/collector
 implements this same interface (no Layer-1 facets), removing the hardcoded
 `github` turn field from the dispatch path.
 
+After opening the runtime session, core supplies an optional file-link resolver to
+the output context. It captures the session's exact working directory, the roots the
+Console can browse, and the outward session URL. A surface calls it on assembled
+Markdown through the shared link sanitizer; it never receives filesystem roots or
+reads core session machinery. The webchat stream and code-host final surface use the
+same resolver, while file access remains fenced by the existing workspace reader.
+
 ### 7.4 Adapter strategy functions
 
 The ~20 branches that are neither transport nor pre-dispatch capability

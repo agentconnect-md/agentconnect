@@ -50,6 +50,25 @@ describe('diffAgents', () => {
     expect(toChange[0]!.agent.id).toBe('x')
   })
 
+  it('classifies a managed memory home change — the flip, its completed copy, the forced return — as a host-spawn change', () => {
+    const at = (memory: Agent['memory']) => ({ ...a('x'), memory }) as Agent
+    const local = at({ provider: 'managed', home: 'daemon' })
+    const flipped = at({ provider: 'managed', home: 'control-plane', homeMigration: 'pending' })
+    const settled = at({ provider: 'managed', home: 'control-plane' })
+    for (const [before, after] of [
+      [local, flipped],
+      [flipped, settled],
+      [settled, local]
+    ]) {
+      expect(diffAgents([after!], actual(before!)).toChange[0]).toMatchObject({
+        hostRespawn: true,
+        workspace: false,
+        integrations: false
+      })
+    }
+    expect(diffAgents([settled], actual(at({ provider: 'managed', home: 'control-plane' }))).toChange).toEqual([])
+  })
+
   it('classifies enabling or disabling the OS sandbox as a host-spawn change', () => {
     const unsandboxed = a('x')
     const sandboxed = { ...unsandboxed, runInSandbox: true } as Agent

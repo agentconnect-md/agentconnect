@@ -90,6 +90,16 @@ class McpEnableDenied extends Error {}
 class SkillEnableDenied extends Error {}
 import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skillSource.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
+import {
+  MemoryHomeRefusedError,
+  POOL_MOVE_NEEDS_CP_HOME,
+  managedMemoryHomeOf,
+  memoryHomedInControlPlane,
+  resolveMemoryBindingOnCreate,
+  resolveMemoryBindingOnUpdate
+} from '../../agent-memory/home.js'
+import { memoryHistoryRoot, toHistoryEvent } from '../../agent-memory/history.js'
+import { memoryHomeUnavailable, SANDBOX_UNAVAILABLE_CODE } from '../../agent-memory/unavailable.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import { canView, canViewSession, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
@@ -400,6 +410,19 @@ async function resolveTargetSetId(
   if (body.placementKind !== 'set' || body.setId === undefined) return null
   const set = await deps.repos.memberSet.get(body.setId)
   return set && (set.orgId === null || set.orgId === orgId) ? set.id : null
+}
+
+/** Whether a placement lands on the install-wide pool: the org-less set itself, or a machine that is a member of it.
+ *  The pool keeps agent memory in the Control Plane (memory-evolution.md §3.2.1), so the memory rules read this. */
+async function placedOnInstallPool(
+  deps: HttpDeps,
+  target: { setId?: string | null; daemonId?: string | null }
+): Promise<boolean> {
+  const pool = await deps.repos.memberSet.crossOrgSetId()
+  if (!pool) return false
+  if (target.setId) return target.setId === pool
+  if (target.daemonId) return (await deps.repos.memberSet.setIdOf(DaemonId(target.daemonId))) === pool
+  return false
 }
 
 /** The members of a set that could serve an agent right now. One read; reuse it for a page.
@@ -722,7 +745,7 @@ export function workspaceErrorCode(err: ProtocolError): string | null {
  *  running, so its files are unreachable until it is. 503 like an offline daemon, because that is
  *  what it is — but WITH the code, which is how the console tells "come back in a moment" from a
  *  daemon that may never come back, and from an empty workspace. */
-const SANDBOX_UNAVAILABLE = 'WORKSPACE_SANDBOX_UNAVAILABLE'
+const SANDBOX_UNAVAILABLE = SANDBOX_UNAVAILABLE_CODE
 
 /** Status a console can act on instead of the 503 that reads as an offline daemon:
  *  a worktree the daemon lacks is 404 (as when the CP pre-empts the read), a bad path
@@ -762,13 +785,13 @@ function sendWorkspaceFailure(reply: FastifyReply, err: unknown): boolean {
   return true
 }
 
-/** A memory or dream request refused because the agent's sandbox is not running: the workspace
- *  reader's transient 503 + code, so the console wakes the sandbox (#1077). false ⇒ not that. */
-function sendSandboxUnavailable(reply: FastifyReply, err: unknown): boolean {
-  if (!(err instanceof ProtocolError) || workspaceErrorCode(err) !== SANDBOX_UNAVAILABLE) return false
-  void reply
-    .code(503)
-    .send({ error: 'Service Unavailable', statusCode: 503, message: err.message, code: SANDBOX_UNAVAILABLE })
+/** A memory request refused because the agent's memory home is out of reach (a sleeping sandbox, a Control-Plane
+ *  tree behind a missing connection, feature, scope, or migration): a 503 with the reason as `code`, so the console
+ *  retries — and wakes the sandbox on the one code it knows (#1077). false ⇒ not that. */
+function sendMemoryHomeUnavailable(reply: FastifyReply, err: unknown): boolean {
+  const failure = memoryHomeUnavailable(err)
+  if (!failure) return false
+  void reply.code(503).send({ error: failure.error, statusCode: 503, message: failure.message, code: failure.code })
   return true
 }
 
@@ -844,11 +867,9 @@ function memoryAdminFailure(err: unknown): {
   message: string
   code?: string
 } | null {
-  // A cluster agent's memory tree is on its sandbox volume: asleep is the workspace reader's transient
-  // 503 + code, which the console answers by waking the sandbox (#1077) — never a 400.
-  if (err instanceof ProtocolError && workspaceErrorCode(err) === SANDBOX_UNAVAILABLE) {
-    return { status: 503, error: 'Service Unavailable', message: err.message, code: SANDBOX_UNAVAILABLE }
-  }
+  // The memory home is out of reach (asleep sandbox, unreachable Control-Plane tree): transient 503 + reason, never a 400.
+  const unreachable = memoryHomeUnavailable(err)
+  if (unreachable) return unreachable
   if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
     return { status: 400, error: 'Bad Request', message: `daemon rejected the request: ${err.message}` }
   }
@@ -1456,7 +1477,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Create an agent',
           description:
-            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding.',
+            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding. A managed memory binding is stored with its resolved home: an agent placed on the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon.',
           operationId: 'createAgent',
           body: CreateAgentBody,
           querystring: z.object({ connect: z.stringbool().default(false) }),
@@ -1583,12 +1604,19 @@ export function agentRoutes(deps: HttpDeps) {
         if (managedSkillError) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: managedSkillError })
         }
+        // The memory home is resolved here, once, so a later placement change never flips it (§3.2.1).
+        const resolvedMemory = resolveMemoryBindingOnCreate(
+          req.body.memory,
+          await placedOnInstallPool(deps, { setId: targetSetId, daemonId: wantsSet ? undefined : req.body.daemonId })
+        )
+        if ('refused' in resolvedMemory) return conflict(resolvedMemory.message)
+        const memory = resolvedMemory.memory
         // The friendly external-memory validation runs here; the authoritative
         // fence (connection advisory try-lock + in-transaction existence
         // re-check) lives inside the create transaction (PgAgentRepo) and
         // surfaces as MemoryConnectionBusy/Missing in the catch below.
         try {
-          const memoryError = await validateExternalMemoryBinding(req.body.memory, orgOf(req))
+          const memoryError = await validateExternalMemoryBinding(memory, orgOf(req))
           if (memoryError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: memoryError })
           }
@@ -1653,7 +1681,7 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.mcpServers !== undefined ? { mcpServers: req.body.mcpServers } : {}),
                   ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
                   ...(req.body.managedSkills !== undefined ? { managedSkills: req.body.managedSkills } : {}),
-                  ...(req.body.memory !== undefined ? { memory: req.body.memory } : {}),
+                  ...(memory !== undefined ? { memory } : {}),
                   ...(targetSetId !== null
                     ? { placementKind: 'set' as const, setId: targetSetId }
                     : req.body.daemonId !== undefined
@@ -2036,7 +2064,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an agent',
           description:
-            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch.',
+            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent on the managed pool cannot name the daemon home.',
           operationId: 'updateAgent',
           params: IdParam,
           body: UpdateAgentBody,
@@ -2080,7 +2108,6 @@ export function agentRoutes(deps: HttpDeps) {
         // connections and the in-transaction existence re-check) happens inside
         // the update transaction (PgAgentRepo); MemoryConnectionBusy/Missing
         // surface in the catch below.
-        const targetMemory = req.body.memory === undefined ? existing.memory : req.body.memory
         try {
           if (!(await refreshMutationAgent(existing))) {
             return reply
@@ -2187,6 +2214,18 @@ export function agentRoutes(deps: HttpDeps) {
               })
             }
           }
+          // The memory home rules (memory-evolution.md §3.2.1): an absent home keeps the current one, the forward
+          // switch flags the migration, the reverse needs `force` and drops the CP tree, the pool refuses `daemon`.
+          // This pass is the friendly refusal and names the target for the external check; the authoritative
+          // resolution runs again inside the row-locked write (`opts.memoryHome`), against the binding as it is then.
+          const onPool = await placedOnInstallPool(deps, { setId: existing.setId, daemonId: existing.daemonId })
+          const force = req.body.force === true
+          const memoryHome = req.body.memory !== undefined ? { input: req.body.memory, onPool, force } : undefined
+          const memoryChange = resolveMemoryBindingOnUpdate(existing.memory, req.body.memory, onPool, force)
+          if (memoryChange.kind === 'refused') {
+            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: memoryChange.message })
+          }
+          const targetMemory = memoryChange.kind === 'write' ? memoryChange.memory : existing.memory
           const memoryError = await validateExternalMemoryBinding(targetMemory ?? undefined, orgOf(req))
           if (memoryError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: memoryError })
@@ -2198,7 +2237,8 @@ export function agentRoutes(deps: HttpDeps) {
           // transaction) and fenced per submitted skill-ref source name INSIDE
           // that transaction (the skillSources opts), so the row can't commit
           // inside a concurrent registry-delete's check→drop window.
-          const { secrets: secretsPatch, ...bodyPatch } = req.body
+          // `force` and the submitted binding are consumed above; the row gets the resolved binding.
+          const { secrets: secretsPatch, force: _force, memory: _memory, ...bodyPatch } = req.body
           const skillsFence = skillSourceFenceFor(orgOf(req), ctxOf(req), req.body.skills)
           let agent: AgentRecord
           try {
@@ -2212,17 +2252,26 @@ export function agentRoutes(deps: HttpDeps) {
                   AgentId(req.params.id),
                   {
                     ...bodyPatch,
+                    ...(memoryChange.kind === 'write' ? { memory: memoryChange.memory } : {}),
                     ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
                   },
                   secretsPatch,
                   // Evaluated inside the row-locked transaction, against the same
                   // committed lists this write merges onto (see the fence helpers).
-                  { authorizeMcpServers, ...(skillsFence ? { skillSources: skillsFence } : {}) }
+                  {
+                    authorizeMcpServers,
+                    ...(skillsFence ? { skillSources: skillsFence } : {}),
+                    ...(memoryHome ? { memoryHome } : {})
+                  }
                 )
             )
           } catch (e) {
             if (e instanceof McpEnableDenied || e instanceof SkillEnableDenied) {
               return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message })
+            }
+            // The binding changed under the edit (a forced return, a completion) and the locked resolution refused.
+            if (e instanceof MemoryHomeRefusedError) {
+              return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
             }
             throw e
           }
@@ -2509,7 +2558,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Move an agent to another daemon',
           description:
-            'Hard-cut an agent over to another READY daemon. Active source turns are cancelled without a final reply, and subsequent messages start fresh on the target; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated or replayed.',
+            'Hard-cut an agent over to another READY daemon. Active source turns are cancelled without a final reply, and subsequent messages start fresh on the target; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated or replayed; managed memory follows the agent only when its home is the Control Plane, and an agent whose memory home is the daemon is refused a move onto the managed pool (409) until the home is switched.',
           operationId: 'moveAgentDaemon',
           params: IdParam,
           body: SetAgentDaemonBody,
@@ -2573,6 +2622,19 @@ export function agentRoutes(deps: HttpDeps) {
         const samePlacementTarget = targetSetId
           ? placement.kind === 'set' && placement.setId === targetSetId
           : placement.kind === 'daemon' && placement.daemonId === req.body.daemonId
+
+        // A daemon-home tree stays in the source archive; the pool has nowhere to keep one (memory-evolution.md §3.2.1).
+        // A same-target repair is not a move onto the pool, so an agent already there is not refused its retry.
+        if (
+          !samePlacementTarget &&
+          managedMemoryHomeOf(existing.memory) === 'daemon' &&
+          (await placedOnInstallPool(deps, {
+            setId: targetSetId,
+            daemonId: targetSetId ? undefined : req.body.daemonId
+          }))
+        ) {
+          return conflict(POOL_MOVE_NEEDS_CP_HOME)
+        }
 
         // The org registry rows the agent enables — read once for every candidate's facts check
         // below, then staged on the target.
@@ -3449,7 +3511,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Read the agent memory index',
           description:
-            "Proxy the agent's memory index (<agent-root>/memory/MEMORY.md) live from the owning daemon; a not-yet-created file is data (exists:false). 503 when unplaced or the daemon is offline.",
+            "Proxy the agent's memory index (<agent-root>/memory/MEMORY.md) live from the owning daemon; a not-yet-created file is data (exists:false). 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'readAgentMemory',
           params: IdParam,
           querystring: MemoryFileQueryDto,
@@ -3482,7 +3544,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toAgentMemoryDto(rep)
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3500,7 +3562,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List agent memory files',
           description:
-            "List the files in the agent's memory dir (MEMORY.md index + topic files) live from the owning daemon. 503 when unplaced or the daemon is offline.",
+            "List the files in the agent's memory dir (MEMORY.md index + topic files) live from the owning daemon. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.",
           operationId: 'listAgentMemoryFiles',
           params: IdParam,
           querystring: MemoryFilesQueryDto,
@@ -3530,7 +3592,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toMemoryFilesDto(rep)
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3548,7 +3610,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List agent channel memory folders',
           description:
-            'List the channels that have their own memory folder for a channel-scoped agent, live from the owning daemon (empty for agent-scoped agents). 503 when unplaced or the daemon is offline.',
+            'List the channels that have their own memory folder for a channel-scoped agent, live from the owning daemon (empty for agent-scoped agents). 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'listAgentMemoryChannels',
           params: IdParam,
           response: { 200: MemoryChannelsDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
@@ -3575,7 +3637,7 @@ export function agentRoutes(deps: HttpDeps) {
             }))
           }
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3593,7 +3655,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Read a memory file',
           description:
-            'Proxy one byte slice of a memory file (?path defaults to MEMORY.md) live from the owning daemon; a missing file is data (exists:false). 503 when unplaced or the daemon is offline.',
+            'Proxy one byte slice of a memory file (?path defaults to MEMORY.md) live from the owning daemon; a missing file is data (exists:false). 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'readAgentMemoryFile',
           params: IdParam,
           querystring: MemoryFileQueryDto,
@@ -3626,7 +3688,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toAgentMemoryDto(rep)
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
@@ -3645,7 +3707,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Replace a memory file',
           description:
-            'Replace one memory file (?path defaults to MEMORY.md) on the owning daemon; returns the written size/mtime. `ifMatchMtime` (optional) is optimistic concurrency — a 409 if the file changed under you. Requires edit permission. 503 when unplaced or the daemon is offline.',
+            'Replace one memory file (?path defaults to MEMORY.md) on the owning daemon; returns the written size/mtime. `ifMatchMtime` (optional) is optimistic concurrency — a 409 if the file changed under you. Requires edit permission. 503 when unplaced or the daemon is offline. 503 also when the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'putAgentMemoryFile',
           params: IdParam,
           querystring: PutMemoryFileQueryDto,
@@ -3691,7 +3753,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return { path: ok.path, size: ok.size, mtime: ok.mtime }
         } catch (err) {
-          if (sendSandboxUnavailable(reply, err)) return
+          if (sendMemoryHomeUnavailable(reply, err)) return
           // The daemon rejects a stale write (CONFLICT) or an over-budget / bad-path
           // write (BAD_PAYLOAD) — surface those as 409 / 400, not the generic 503.
           if (err instanceof ProtocolError && err.code === 'CONFLICT') {
@@ -3718,7 +3780,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List memory file history',
           description:
-            'Return one newest-first page of add/update/delete provenance for a managed memory file. History bodies are proxied live from the owning daemon and are not persisted here.',
+            'Return one newest-first page of add/update/delete provenance for a managed memory file. For a memory home on the daemon the page is proxied live from the owning daemon and not persisted here; for a home in the Control Plane it is answered from the change log the Control Plane keeps, with no daemon involved. 503 when unplaced, the daemon is offline, or the memory home of the agent is not reachable right now; `code` says why.',
           operationId: 'listAgentMemoryFileHistory',
           params: IdParam,
           querystring: MemoryHistoryQueryDto,
@@ -3740,6 +3802,17 @@ export function agentRoutes(deps: HttpDeps) {
             statusCode: 400,
             message: 'file change history is available only for managed memory'
           })
+        }
+        // A Control-Plane home keeps its change log here, so the read needs no daemon at all (§3.2.1).
+        if (memoryHomedInControlPlane(agent.memory)) {
+          const page = await deps.repos.agentMemoryHistory.page(
+            AgentId(agent.id),
+            memoryHistoryRoot(req.query.channelKey),
+            req.query.path,
+            req.query.cursor,
+            req.query.limit ?? 5
+          )
+          return { events: page.records.map(toHistoryEvent), nextCursor: page.nextCursor ?? null }
         }
         if (!agent.daemonId) {
           return reply

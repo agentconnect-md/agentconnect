@@ -170,6 +170,28 @@ function pendingFor(daemon: Daemon, acpSessionId: string): any {
 }
 
 describe('Daemon session lifecycle (#118)', () => {
+  it.each([true, false])('installs a host runtime only for local execution (runInSandbox=%s)', async (runInSandbox) => {
+    const root = scaffold()
+    const host = quietHost()
+    const daemon = new Daemon({ root, hostFactory: () => host as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      d.cfg.sandbox.backend = 'microsandbox'
+      d.agents.get('bot-a').runInSandbox = runInSandbox
+      vi.spyOn(d, 'prepareAgentWorkspace').mockResolvedValue(join(root, 'workspace'))
+      const install = vi.spyOn(d, 'ensureRuntimeInstalled').mockResolvedValue(undefined)
+
+      await d.ensureHostAsync('bot-a')
+
+      expect(host.start).toHaveBeenCalledOnce()
+      if (runInSandbox) expect(install).not.toHaveBeenCalled()
+      else expect(install).toHaveBeenCalledExactlyOnceWith('claude', true)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it('prepares the workspace before every direct cold-host lifecycle start', async () => {
     const root = scaffold()
     const workspace = join(root, 'agents', 'bot-a', 'workspace')
@@ -2573,6 +2595,34 @@ describe('Daemon session retention GC (#485)', () => {
     expect(await (daemon as any).store.getSession('expired-gated')).toBeDefined()
 
     await daemon.stop()
+  })
+
+  it('keeps the session row until VM destruction succeeds and retries the next sweep', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any,
+      clock: new FakeClock()
+    })
+    await daemon.start()
+    await sweepRetention(daemon)
+    const discard = vi
+      .fn(async () => {
+        expect(await (daemon as any).store.getSession('expired-vm')).toBeDefined()
+        expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(true)
+      })
+      .mockRejectedValueOnce(new Error('temporary VM destroy failure'))
+    ;(daemon as any).microsandbox = { discard, stopAll: vi.fn(async () => {}) }
+    try {
+      await seedSession(daemon, 'expired-vm', 'closed', -8 * 24 * 3_600_000)
+      await sweepRetention(daemon)
+      expect(await (daemon as any).store.getSession('expired-vm')).toBeDefined()
+      await sweepRetention(daemon)
+      expect(await (daemon as any).store.getSession('expired-vm')).toBeUndefined()
+      expect(discard).toHaveBeenCalledTimes(2)
+    } finally {
+      await daemon.stop()
+    }
   })
 
   it('retention "never" disables the sweep entirely', async () => {

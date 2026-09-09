@@ -54,6 +54,7 @@ import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
   diffSlackManifest,
+  reconcileSlackManifest,
   requireProviderAppEndpoints,
   slackConfiguredUrls
 } from '../slack-app.js'
@@ -186,7 +187,7 @@ export interface SetupServerDeps {
   makeLogtoSetupClient?: (config: LogtoManagementConfig) => Pick<LogtoAdminClaimClient, 'reconcileSetup'>
   feishuRegistrationProvider?: Pick<FeishuRegistrationProvider, 'begin' | 'poll'>
   auditFeishuAppSetup?: FeishuAppSetupAuditor
-  slackConfigApi?: Pick<SlackConfigApi, 'createApp' | 'exportApp'>
+  slackConfigApi?: Pick<SlackConfigApi, 'createApp' | 'exportApp' | 'updateApp'>
   localAuthBootstrap?: {
     issuer: string
     managementEndpoint?: string
@@ -1301,6 +1302,65 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       actual: observed,
       expected,
       settingsUrl: `https://api.slack.com/apps/${encodeURIComponent(slack.appId)}`,
+      restartRequired: false as const
+    }
+  })
+
+  // The deployment app's manifest is the one thing `check/slack` can see but not fix: `SLACK_BOT_SCOPES`
+  // grows with releases while the app on Slack keeps the set it was created with, and a Slack-side
+  // reinstall then grants only that stale set. This applies the same diff the check reports.
+  app.post('/api/v1/reconcile/slack', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = CheckSlackBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'a Slack App configuration token is required')
+    const current = await deps.store.getAdmin()
+    const slack = current?.values.slack
+    if (!current || !slack) return problem(reply, 409, 'the deployment Slack App is not configured')
+    let manifest: Record<string, unknown>
+    try {
+      manifest = expectedSlackManifest(current.values, await resolveLogtoConnectorIds())
+    } catch (error) {
+      return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
+    }
+    const settingsUrl = `https://api.slack.com/apps/${encodeURIComponent(slack.appId)}`
+    const exported = await slackConfigApi.exportApp(parsed.data.configToken, slack.appId)
+    if (!exported.ok) return problem(reply, 502, `Slack App settings could not be read: ${exported.error}`)
+    const before = auditSlackManifest(exported.manifest, manifest)
+    if (before.length === 0) {
+      return {
+        provider: 'slack' as const,
+        status: 'pass' as const,
+        applied: [] as string[],
+        missing: [] as string[],
+        diff: [],
+        permissionsUpdated: false,
+        settingsUrl,
+        restartRequired: false as const
+      }
+    }
+    const updated = await slackConfigApi.updateApp(
+      parsed.data.configToken,
+      slack.appId,
+      reconcileSlackManifest(exported.manifest, manifest)
+    )
+    if (!updated.ok) return problem(reply, 502, `Slack App settings could not be updated: ${updated.error}`)
+    // Re-read rather than trust the write: what Slack kept is the only truth the badge may show.
+    const after = await slackConfigApi.exportApp(parsed.data.configToken, slack.appId)
+    if (!after.ok)
+      return problem(reply, 502, `Slack App settings were updated but could not be re-read: ${after.error}`)
+    const missing = auditSlackManifest(after.manifest, manifest)
+    return {
+      provider: 'slack' as const,
+      status: missing.length === 0 ? ('pass' as const) : ('fail' as const),
+      applied: before.filter((id) => !missing.includes(id)),
+      missing,
+      diff: diffSlackManifest(after.manifest, manifest).map(({ field, current, expected }) => ({
+        field,
+        current,
+        expected
+      })),
+      // Scopes changed ⇒ every workspace must reinstall to pick them up; Slack says so on the update.
+      permissionsUpdated: updated.permissionsUpdated,
+      settingsUrl,
       restartRequired: false as const
     }
   })

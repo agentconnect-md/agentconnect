@@ -61,6 +61,9 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     optional: true,
     overrides: { agentsDir: opts.agentsDir }
   })
+  if (cfg.sandbox.backend === 'microsandbox') {
+    throw new Error('chat does not support microsandbox yet; use a daemon session with this sandbox backend')
+  }
   configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
   // Validate operator mounts before selecting or probing a runtime.
   const mounts = normalizeSandboxMounts(cfg.sandbox.mounts)

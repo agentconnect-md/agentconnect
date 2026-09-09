@@ -25,16 +25,11 @@ import {
   MemoryFileHistoryEvent as MemoryFileHistoryEventSchema,
   type MemoryFileHistoryEvent
 } from '@agentconnect.md/protocol'
-import {
-  MemoryConflictError,
-  MemoryPathError,
-  MemoryTooLargeError,
-  type MemoryFs,
-  type MemoryFsFileStat
-} from './fs.js'
+import { MemoryPathError, MemoryTooLargeError, type MemoryFs, type MemoryFsFileStat } from './fs.js'
 
 export {
   MemoryConflictError,
+  MemoryHomeUnavailableError,
   MemoryPathError,
   MemorySandboxUnavailableError,
   MemoryTooLargeError,
@@ -71,6 +66,13 @@ export const MAX_MEMORY_FILE_BYTES = 256_000
  *  (who/what/when changed a file). Dotfile so it never surfaces as a topic. */
 export const MEMORY_HISTORY_FILENAME = '.history'
 
+/** Dream staging beside the live store (`<root>/memory-dreams/<dreamId>/`), which belongs to the extraction host, never the home. */
+export const MEMORY_DREAMS_DIRNAME = 'memory-dreams'
+/** The retained pre-adoption copy of the store (`<root>/memory-backups/`), the undo path for the last dream. */
+export const MEMORY_BACKUPS_DIRNAME = 'memory-backups'
+/** Prefix of the `<root>/memory-archive-<stamp>/` dir the forced home return moves the live store into. */
+export const MEMORY_ARCHIVE_DIRNAME_PREFIX = 'memory-archive-'
+
 /** Cap on a `before`/`after` snapshot stored in a history line — keeps a single log
  *  entry bounded even for a large file. Over this, the snapshot is truncated (with a
  *  `…` marker) rather than omitted, so the line stays small but still human-readable. */
@@ -96,6 +98,26 @@ export interface ManagedMemoryHistoryPage {
   nextCursor?: string
 }
 
+// Where one store's change log goes (memory-evolution.md §3.2.1): the `.history` sidecar inside the store, or the
+// CP's event table under a `control-plane` home. A writer calls it after its write, holding the memory-dir lock, and
+// swallows a failure itself — provenance never fails the write. `memory/home.ts` picks the sink beside the store's port.
+export interface MemoryHistorySink {
+  /** Record writes already made, oldest first; every record carries the id the daemon minted. */
+  append(records: MemoryHistoryRecord[]): Promise<void>
+  /** Adoption is about to swap `memory/` for the tree at `replacement`: a log kept inside the store copies itself there. */
+  carryInto(replacement: string): Promise<void>
+  /** Page the log back on this daemon; absent when the home answers the console itself (no local history to read). */
+  list?(relPath: string, cursor: string | undefined, limit: number): Promise<ManagedMemoryHistoryPage>
+}
+
+/** Raised when this daemon is asked to page a change log its home keeps elsewhere (the CP's table): a routing bug, never an empty page. */
+export class MemoryHistoryNotLocalError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MemoryHistoryNotLocalError'
+  }
+}
+
 export interface MemoryHistoryRetentionLimits {
   maxBytes: number
   maxVersionsPerFile: number
@@ -114,6 +136,13 @@ export function memoryDir(agentDir: string): string {
 /** Sibling of `memory/` that holds one self-contained memory subtree per channel
  *  when the agent's memory scope is `channel` (#653). */
 export const CHANNEL_MEMORY_DIRNAME = 'channels'
+/** The daemon-owned dirs directly under an agent dir that never hold `agent.json`; the archive dirs join by prefix. */
+export const DAEMON_OWNED_AGENT_DIRNAMES: readonly string[] = [
+  MEMORY_DIRNAME,
+  CHANNEL_MEMORY_DIRNAME,
+  MEMORY_BACKUPS_DIRNAME,
+  MEMORY_DREAMS_DIRNAME
+]
 
 /** A deterministic, filesystem-safe folder name for one channel's memory. Keeps a
  *  readable prefix and appends a short digest so distinct (transportScope, channel)
@@ -364,20 +393,6 @@ async function readHistoryRaw(fs: MemoryFs): Promise<string> {
   return (await fs.readFile(HISTORY_PATH))?.content ?? ''
 }
 
-/** Take a canonical history snapshot while the caller already holds the memory-dir
- * lock. Dream adoption uses this in the same critical section as its final live-store
- * snapshot and directory swap. */
-export async function snapshotMemoryHistoryHoldingLock(fs: MemoryFs): Promise<string> {
-  const raw = await readHistoryRaw(fs)
-  return raw ? canonicalizeMemoryHistory(raw) : ''
-}
-
-/** Take a canonical snapshot for a replacement store. The brief shared lock makes the
- * copied sidecar line up with ordinary appends. */
-export function snapshotMemoryHistory(fs: MemoryFs): Promise<string> {
-  return withMemoryDirLock(fs, () => snapshotMemoryHistoryHoldingLock(fs))
-}
-
 /** Compact one sidecar atomically. Invalid legacy/torn rows are discarded and
  * rows written before stable event IDs existed are upgraded during the rewrite. */
 async function compactHistoryFile(fs: MemoryFs): Promise<void> {
@@ -388,52 +403,95 @@ async function compactHistoryFile(fs: MemoryFs): Promise<void> {
   await fs.writeFile(HISTORY_PATH, canonical, { mode: 0o600 })
 }
 
-/** Apply system retention while the caller already holds the memory-dir lock.
- * Exported for dream adoption, whose directory swap is one larger critical
- * section. Calling this without the shared lock would race ordinary writes. */
-export async function enforceMemoryHistoryRetentionHoldingLock(fs: MemoryFs): Promise<void> {
+// One store's whole change log, oldest first, every record carrying a durable id: the sidecar is compacted first (a
+// no-op on a canonical file), so a legacy row is given its id on disk before anyone copies it and a re-read yields
+// the same rows. The caller holds the store's memory-dir lock.
+export async function readMemoryHistoryHoldingLock(fs: MemoryFs): Promise<MemoryHistoryRecord[]> {
   await compactHistoryFile(fs)
+  return parseHistory(await readHistoryRaw(fs)).records
 }
 
-/** Apply system retention to an existing sidecar (including legacy files).
- * Callers decide whether failure is best-effort. */
-export function enforceMemoryHistoryRetention(fs: MemoryFs): Promise<void> {
-  return withMemoryDirLock(fs, () => enforceMemoryHistoryRetentionHoldingLock(fs))
+/** The sidecar sink: `<root>/memory/.history`, rewritten once per append, the fixed retention applied in the same pass. */
+export class SidecarMemoryHistorySink implements MemoryHistorySink {
+  constructor(private readonly fs: MemoryFs) {}
+
+  // Canonicalize the current file first: a torn tail, or a legacy row without its newline, would swallow the append.
+  async append(records: MemoryHistoryRecord[]): Promise<void> {
+    if (records.length === 0) return
+    const canonical = canonicalizeMemoryHistory(await readHistoryRaw(this.fs))
+    const lines = records.map((record) => historyLine({ ...record, id: record.id ?? randomUUID() })).join('')
+    await this.fs.writeFile(HISTORY_PATH, canonicalizeMemoryHistory(canonical + lines), { mode: 0o600 })
+  }
+
+  /** The canonical log copied into the replacement store, so the swap keeps it and the adoption rows append to it. */
+  async carryInto(replacement: string): Promise<void> {
+    const canonical = canonicalizeMemoryHistory(await readHistoryRaw(this.fs))
+    await this.fs.writeFile(join(replacement, MEMORY_HISTORY_FILENAME), canonical, { mode: 0o600 })
+  }
+
+  list(relPath: string, cursor: string | undefined, limit: number): Promise<ManagedMemoryHistoryPage> {
+    return pageSidecarHistory(this.fs, relPath, cursor, limit)
+  }
 }
 
-/** Append one line to the memory change log and enforce fixed retention: the current
- * sidecar is canonicalized first (a legacy row without its final newline, or a torn
- * tail, would otherwise absorb this append into one invalid row), then rewritten once
- * with the new row retained. Best-effort: provenance failure never fails the write. */
-async function appendHistoryHoldingLock(fs: MemoryFs, record: MemoryHistoryRecord): Promise<void> {
-  const canonical = canonicalizeMemoryHistory(await readHistoryRaw(fs))
-  const next = canonicalizeMemoryHistory(canonical + historyLine({ ...record, id: record.id ?? randomUUID() }))
-  await fs.writeFile(HISTORY_PATH, next, { mode: 0o600 })
-}
-
+/** One sidecar append under the memory-dir lock; best-effort, as every writer treats its sink. */
 export async function appendHistory(fs: MemoryFs, record: MemoryHistoryRecord): Promise<void> {
   try {
-    await withMemoryDirLock(fs, () => appendHistoryHoldingLock(fs, record))
+    await withMemoryDirLock(fs, () => new SidecarMemoryHistorySink(fs).append([record]))
   } catch {
     // Provenance is best-effort — retry compaction on the next append/read.
   }
 }
 
-/**
- * Page one file's managed-memory history newest first. The cursor is the stable ID
- * of the next event, so appends and retention cannot shift or duplicate older pages.
- *
- * Invalid/corrupt lines are skipped. History is provenance rather than the source
- * of truth, so one torn or legacy row must not make every valid row unreadable.
- */
+/** The change-log record for a write that just landed: snapshots clamped, the id minted here so every sink sees it. */
+export function memoryHistoryRecord(
+  path: string,
+  before: string | undefined,
+  after: string | undefined,
+  at: string,
+  source: MemoryWriteSource
+): MemoryHistoryRecord {
+  const beforeClamped = before === undefined ? undefined : clampMemoryHistoryValue(before)
+  const afterClamped = clampMemoryHistoryValue(after ?? '')
+  return {
+    id: randomUUID(),
+    path,
+    event: before === undefined ? 'add' : after === undefined ? 'delete' : 'update',
+    ...(beforeClamped ? { before: beforeClamped.value } : {}),
+    after: afterClamped.value,
+    at,
+    scope: 'agent',
+    source,
+    ...(beforeClamped?.truncated || afterClamped.truncated ? { truncated: true } : {})
+  }
+}
+
+// Page one file's change log through the store's sink, newest first. A home that keeps the log itself (the CP's table)
+// hands out a sink without `list`, and the CP answers the console from its own rows: a daemon-side page of it is a
+// routing bug that must show as one, never as an empty page.
 export async function listMemoryHistory(
+  history: MemoryHistorySink,
+  relPath: string,
+  cursor: string | undefined,
+  limit: number
+): Promise<ManagedMemoryHistoryPage> {
+  if (!history.list) {
+    throw new MemoryHistoryNotLocalError(
+      "this store's change log is kept by its memory home and answered from there, not paged on the daemon"
+    )
+  }
+  return history.list(relPath, cursor, limit)
+}
+
+// The sidecar's page: the cursor is the stable id of the next event, so appends and retention cannot shift or duplicate
+// older pages; invalid or torn lines are skipped, since provenance must not make every valid row unreadable.
+async function pageSidecarHistory(
   fs: MemoryFs,
   relPath: string,
   cursor: string | undefined,
   limit: number
 ): Promise<ManagedMemoryHistoryPage> {
-  // Apply the same containment/flat-path validation as ordinary memory reads,
-  // even though `relPath` is used only as a filter below.
+  // The same containment/flat-path validation as an ordinary memory read, though `relPath` is only a filter below.
   memoryTopicName(relPath)
 
   return withMemoryDirLock(fs, async () => {
@@ -536,41 +594,33 @@ function bumpWriteMarks(fs: MemoryFs, source: MemoryWriteSource): void {
   writeMarks.set(key, marks)
 }
 
-/** Overwrite a memory file with `content` (creating the dir if needed). Atomic
- *  (tmp + rename) so a concurrent read never sees a partial file. Appends a line to
- *  the change log (`.history`) recording the add/update, its `before`/`after`
- *  snapshot (bounded), and the `source`.
- *
- *  - Rejects content over {@link MAX_MEMORY_FILE_BYTES} ({@link MemoryTooLargeError}).
- *  - `ifMatchMtime` (optimistic concurrency): when given, the current file's mtime
- *    must equal it, else {@link MemoryConflictError} — so a console edit can't
- *    clobber a newer write. A brand-new file (no mtime) matches `ifMatchMtime`
- *    only when the caller passes none (or the empty string). */
+// Overwrite a memory file with `content` (creating the dir if needed), atomically, so a concurrent read never sees a
+// partial file; rejects content over `MAX_MEMORY_FILE_BYTES` (`MemoryTooLargeError`). A non-empty `ifMatchMtime` must
+// equal the current file's mtime, else `MemoryConflictError` (a brand-new file matches only an absent one). The
+// `history` sink — the home's choice, named by every caller so no write can fall back to the sidecar by omission —
+// receives one record of the add/update with its bounded `before`/`after` snapshot and the `source`.
 export function writeMemoryFile(
   fs: MemoryFs,
   relPath: string,
   content: string,
-  ifMatchMtime?: string,
-  source: MemoryWriteSource = 'tool'
+  ifMatchMtime: string | undefined,
+  source: MemoryWriteSource,
+  history: MemoryHistorySink
 ): Promise<{ size: number; mtime: string }> {
   // Serialize every write behind the shared per-dir lock so it can't interleave
   // with a dream adoption's fence-and-swap (nor another write).
-  return withMemoryDirLock(fs, () => writeMemoryFileHoldingLock(fs, relPath, content, ifMatchMtime, source))
+  return withMemoryDirLock(fs, () => writeMemoryFileHoldingLock(fs, relPath, content, ifMatchMtime, source, history))
 }
 
-/**
- * The write itself, WITHOUT taking the memory-dir lock — for a caller that
- * already holds it and needs several writes to be one critical section (the
- * distiller's topic+index batch: an adoption slipping between those two writes
- * would be overwritten by the batch's stale index). The lock is not reentrant,
- * so calling {@link writeMemoryFile} from inside it would deadlock.
- */
+// The write itself, WITHOUT taking the memory-dir lock — for a caller that already holds it and needs several writes to
+// be one critical section; the lock is not reentrant, so calling `writeMemoryFile` from inside it would deadlock.
 export async function writeMemoryFileHoldingLock(
   fs: MemoryFs,
   relPath: string,
   content: string,
   ifMatchMtime: string | undefined,
-  source: MemoryWriteSource
+  source: MemoryWriteSource,
+  history: MemoryHistorySink
 ): Promise<{ size: number; mtime: string }> {
   const topic = memoryTopicName(relPath)
   // Keep a written header truthful (`name` from the filename, fresh `modified`).
@@ -594,24 +644,12 @@ export async function writeMemoryFileHoldingLock(
   // adoption fence authorizes from these counters, never from `.history`.
   bumpWriteMarks(fs, source)
 
-  const existed = current !== null
-  const beforeClamped = existed ? clampMemoryHistoryValue(current.content) : undefined
-  const afterClamped = clampMemoryHistoryValue(content)
   try {
-    await appendHistoryHoldingLock(fs, {
-      path: relPath,
-      event: existed ? 'update' : 'add',
-      ...(beforeClamped ? { before: beforeClamped.value } : {}),
-      after: afterClamped.value,
-      at: st.mtime,
-      scope: 'agent',
-      source,
-      ...(afterClamped.truncated || beforeClamped?.truncated ? { truncated: true } : {})
-    })
+    await history.append([memoryHistoryRecord(relPath, current?.content, content, st.mtime, source)])
   } catch {
     // Provenance is best-effort — retry compaction on the next append/read.
   }
-  if (topic !== MEMORY_INDEX) await regenerateMemoryIndexHoldingLock(fs, source)
+  if (topic !== MEMORY_INDEX) await regenerateMemoryIndexHoldingLock(fs, source, { history })
   return { size: st.size, mtime: st.mtime }
 }
 
@@ -669,7 +707,7 @@ export function renderMemoryIndex(entries: MemoryIndexEntry[], heading = '# Memo
 export async function regenerateMemoryIndexHoldingLock(
   fs: MemoryFs,
   source: MemoryWriteSource,
-  opts: { force?: boolean } = {}
+  opts: { force?: boolean; history: MemoryHistorySink }
 ): Promise<void> {
   const entries: { topic: string; name: string; description: string }[] = []
   for (const file of await listMemory(fs)) {
@@ -698,18 +736,7 @@ export async function regenerateMemoryIndexHoldingLock(
 
   const st = await fs.writeFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`, next, {})
   try {
-    const before = current ? clampMemoryHistoryValue(current.content) : undefined
-    const after = clampMemoryHistoryValue(next)
-    await appendHistoryHoldingLock(fs, {
-      path: MEMORY_INDEX,
-      event: current ? 'update' : 'add',
-      ...(before ? { before: before.value } : {}),
-      after: after.value,
-      at: st.mtime,
-      scope: 'agent',
-      source,
-      ...(after.truncated || before?.truncated ? { truncated: true } : {})
-    })
+    await opts.history.append([memoryHistoryRecord(MEMORY_INDEX, current?.content, next, st.mtime, source)])
   } catch {
     // Provenance is best-effort, exactly as in the topic write above.
   }

@@ -139,6 +139,26 @@ agent finishes the text block (a tool call, a plan, a thinking step), or until t
 ends. Splits the reader already expects — a completed text block before the agent starts
 working, or a body longer than the platform's per-message limit — are unaffected.
 
+A Markdown reference can depend on a link definition near the end of the same text
+block. Once a paragraph contains a reference, a definition, or bracketed text that could
+become a reference, it and the following text stay together until the agent finishes that
+text block. Earlier paragraphs continue streaming normally, including in live previews,
+so an incomplete link definition cannot expose a local file target before it is resolved.
+
+File links in agent replies open the Console viewer for the replying Agent's workspace
+and session. Relative paths resolve from the runtime's working directory, including a
+configured subdirectory or an authorized additional repository. Isolated sessions keep
+their own checkout in the link; an unavailable or purged checkout must never fall back
+to a same-named file in the primary workspace. The viewer requires the reader's usual
+Agent, session, and repository access. The URL contains only workspace-relative paths.
+
+Inline links, reference-style links, and workspace image references use the same file
+viewer. Line or column citations open the file without a line jump. Ordinary web links
+stay unchanged, and code-host replies retain repository-relative links. Targets outside
+the known workspaces keep the readable text fallback, with host paths reduced to their
+file names. Webchat holds link-bearing text until its logical message is complete so its
+live reply and saved transcript use the same destination.
+
 ## A cold sandbox pod is announced, not waited out in silence
 
 A turn whose agent runs in the cluster and has no pod up yet must first claim (or resume) a

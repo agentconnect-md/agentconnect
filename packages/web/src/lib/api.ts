@@ -276,8 +276,19 @@ export interface MemoryDreamingConfig {
  *  `channel` gives each channel its own memory folder (#653). */
 export type ManagedMemoryScope = 'agent' | 'channel'
 
+/** Where the managed tree lives (memory-evolution.md §3.2.1); absent on a binding written before the field existed. */
+export type ManagedMemoryHome = 'daemon' | 'control-plane'
+
 export type AgentMemoryConfig =
-  | { provider: 'managed'; autoDistill?: boolean; dreaming?: MemoryDreamingConfig; scope?: ManagedMemoryScope }
+  | {
+      provider: 'managed'
+      autoDistill?: boolean
+      dreaming?: MemoryDreamingConfig
+      scope?: ManagedMemoryScope
+      home?: ManagedMemoryHome
+      /** CP-owned and read-only: set by the `daemon` → `control-plane` switch, cleared by the owning daemon's completion report. */
+      homeMigration?: 'pending'
+    }
   | { provider: 'native' | 'none'; autoDistill?: boolean }
   | {
       provider: 'external'
@@ -924,7 +935,10 @@ export interface BotDto {
 }
 
 export interface SlackBotRefreshDto {
-  manifest: 'synced' | 'manual_update_required' | 'unknown'
+  /** `deployment_update_required`: a built-in app's manifest, audited read-only, lacks required scopes; the Setup Server fixes it. */
+  manifest: 'synced' | 'manual_update_required' | 'deployment_update_required' | 'unknown'
+  /** The required bot scopes the manifest does not declare (`deployment_update_required` only). */
+  manifestMissingScopes: string[]
   authorization: 'current' | 'reinstall_required' | 'invalid' | 'app_mismatch' | 'unknown'
   /** Slack's own code behind `invalid` (`invalid_auth`, `token_revoked`, …); null otherwise. */
   rejection: string | null
@@ -976,6 +990,8 @@ export interface UpdateAgentInput {
   managedSkills?: string[]
   /** Memory backend; null clears (revert to managed default). */
   memory?: AgentMemoryConfig | null
+  /** Accept a change the CP otherwise refuses with a 409, such as moving the memory home back to `daemon` (keeps no memory). */
+  force?: boolean
 }
 
 /** The ONE workspace input shape, shared verbatim by agent creation and workspace
@@ -1874,6 +1890,10 @@ export function agentFromDto(d: AgentDto): Agent {
     memoryAutoDistill: d.memory?.provider === 'managed' ? (d.memory.autoDistill ?? false) : false,
     ...(d.memory?.provider === 'managed' && d.memory.scope === 'channel' ? { memoryScope: 'channel' as const } : {}),
     ...(d.memory?.provider === 'managed' && d.memory.dreaming ? { memoryDreaming: d.memory.dreaming } : {}),
+    ...(d.memory?.provider === 'managed' && d.memory.home ? { memoryHome: d.memory.home } : {}),
+    ...(d.memory?.provider === 'managed' && d.memory.homeMigration
+      ? { memoryHomeMigration: d.memory.homeMigration }
+      : {}),
     ...(d.memory?.provider === 'external'
       ? {
           memoryConnectionId: d.memory.connectionId,
@@ -3217,10 +3237,11 @@ export interface WorkspaceGitLogDto {
 // `WORKSPACE_*` code ⇒ the daemon rejected the path; 503 ⇒ offline or unplaced.
 export async function fetchWorkspaceGitDiff(
   agentId: string,
-  opts: { path: string; scope?: WorkspaceDiffScope; sessionId?: string }
+  opts: { path: string; scope?: WorkspaceDiffScope; sessionId?: string; repo?: string }
 ): Promise<WorkspaceGitDiffDto> {
   const q = new URLSearchParams({ path: opts.path })
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.repo) q.set('repo', opts.repo)
   if (opts.scope) q.set('scope', opts.scope)
   return apiGet<WorkspaceGitDiffDto>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitdiff?${q.toString()}`
@@ -3305,10 +3326,11 @@ export interface WorkspaceGitMessageResultDto {
 // too old (`DAEMON_FEATURE_MISSING`); 403 ⇒ no edit access; 503 ⇒ offline or unplaced.
 export async function stageWorkspacePaths(
   agentId: string,
-  opts: { paths: string[]; sessionId?: string }
+  opts: { paths: string[]; sessionId?: string; repo?: string }
 ): Promise<WorkspaceGitStatusDto> {
   const q = new URLSearchParams()
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.repo) q.set('repo', opts.repo)
   const query = q.size ? `?${q.toString()}` : ''
   return apiPost<WorkspaceGitStatusDto>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitstage${query}`,
@@ -3320,10 +3342,11 @@ export async function stageWorkspacePaths(
 // is lost. Same fresh-status answer and same failure surface as staging.
 export async function unstageWorkspacePaths(
   agentId: string,
-  opts: { paths: string[]; sessionId?: string }
+  opts: { paths: string[]; sessionId?: string; repo?: string }
 ): Promise<WorkspaceGitStatusDto> {
   const q = new URLSearchParams()
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.repo) q.set('repo', opts.repo)
   const query = q.size ? `?${q.toString()}` : ''
   return apiPost<WorkspaceGitStatusDto>(
     `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitunstage${query}`,

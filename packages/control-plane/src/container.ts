@@ -95,6 +95,8 @@ import {
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
   PgExternalMemoryGrantRepo,
+  PgAgentMemoryFileRepo,
+  PgAgentMemoryHistoryRepo,
   PgThreadAffinityStore,
   PgSlackInstallStore,
   PgSlackPlatformInstallStore,
@@ -149,6 +151,8 @@ import {
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
+import { AgentMemoryStagingSweeper } from './orchestrator/agentMemoryStagingSweeper.js'
+import { AgentMemoryStoreService } from './agent-memory/store.service.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
 import { resolveApprovalRoute, type ApprovalRouteResolver } from './orchestrator/approvalRoute.js'
@@ -198,6 +202,7 @@ import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.
 import { registerPoolMetrics } from './observability/pool-metrics.js'
 import { registerOrgMetrics } from './observability/org-metrics.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
+import { PoolMemoryHomeReconciler } from './orchestrator/poolMemoryHomeReconciler.js'
 import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
 import { PlacementResolver, type ResolvableAgent } from './orchestrator/placementResolver.js'
 import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
@@ -422,6 +427,9 @@ export function buildContainer(
     externalMemoryConnection: new PgExternalMemoryConnectionRepo(prisma),
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, secretCipher),
     externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, secretCipher),
+    // The `control-plane` memory home (memory-evolution.md §3.2.1): both own their transactions.
+    agentMemoryFile: new PgAgentMemoryFileRepo(prisma),
+    agentMemoryHistory: new PgAgentMemoryHistoryRepo(prisma),
     // Owns its transactions: every external-memory check-then-write pair runs
     // under the advisory mutation scopes, so it stays serialized across CP
     // instances (rolling updates included).
@@ -1497,6 +1505,7 @@ export function buildContainer(
       externalMemoryConnectionSecret: repos.externalMemoryConnectionSecret,
       externalMemoryGrant: repos.externalMemoryGrant,
       memoryConnectionWriter: repos.memoryConnectionWriter,
+      agentMemoryHistory: repos.agentMemoryHistory,
       slackInstall: repos.slackInstall,
       slackPlatformInstall: repos.slackPlatformInstall,
       feishuAppRegistration: repos.feishuAppRegistration,
@@ -1592,6 +1601,11 @@ export function buildContainer(
     http.log
   )
 
+  // The `control-plane` memory home's op set, and the sweep behind the staged rows an abandoned append
+  // sequence leaves (memory-evolution.md §3.2.1); the sweep is armed only by `startBackground()`.
+  const agentMemoryStore = new AgentMemoryStoreService(repos.agentMemoryFile, clock)
+  const agentMemoryStagingSweeper = new AgentMemoryStagingSweeper(repos.agentMemoryFile, clock, http.log)
+
   // Durable one-time assertion recovery. Invocation rows are reaped before
   // expired delegations so a parent is never removed while cached/recoverable
   // invocation state still depends on it.
@@ -1643,6 +1657,14 @@ export function buildContainer(
   // `agentconnect` general preset; the preset_agent row is the per-org marker, so
   // the sweep converges to a no-op after its first complete run.
   const presetBackfill = config.PRESET_AGENTS_ENABLED ? new PresetAgentBackfill(prisma, http.log) : undefined
+
+  // The memory-home rollout flip (memory-evolution.md §3.2.1): one idempotent pass per boot, armed by startBackground().
+  const poolMemoryHome = new PoolMemoryHomeReconciler({
+    agents: repos.agent,
+    memberSets: repos.memberSet,
+    delivery: agentDelivery,
+    log: http.log
+  })
 
   // Relay failover sweep (shared-bot-relay.md §5): deletes `relay` rows whose
   // heartbeat lapsed and re-fans the shrunk roster to daemons. Same lifecycle as
@@ -1934,6 +1956,8 @@ export function buildContainer(
     agent: repos.agent,
     organizationKnowledge: repos.organizationKnowledge,
     externalMemoryConnection: repos.externalMemoryConnection,
+    agentMemoryStore,
+    agentMemoryHistory: repos.agentMemoryHistory,
     ...(github ? { github } : {}),
     // gitcred v2 (§13.1): the gitlab arm serves the agent's own account PATs; absent ⇒ disabled.
     ...(gitlab
@@ -2292,6 +2316,7 @@ export function buildContainer(
       hookRunReaper.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
+      agentMemoryStagingSweeper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
       gitlabRotator?.start()
@@ -2306,12 +2331,14 @@ export function buildContainer(
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
       void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
+      void poolMemoryHome.run().catch((err) => http.log.error({ err }, 'pool-memory-home: pass failed'))
     },
     async shutdown() {
       cronRunReaper.stop()
       hookRunReaper.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
+      agentMemoryStagingSweeper.stop()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       gitlabRotator?.stop()

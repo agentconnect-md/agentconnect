@@ -29,6 +29,8 @@ import { ShimGitRunner, type GitExecPayload } from '../src/shim/git-exec.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 import { sessionHomeIn } from '../src/workspace/session-layout.js'
 import { WorkspaceManager, type PrepareSessionWorkspaceRequest } from '../src/workspace/workspace-manager.js'
+import { MicrosandboxWorkspaceFs } from '../src/microsandbox/workspace-fs.js'
+import { LocalWorkspaceFs } from '../src/workspace/workspace-fs.js'
 
 // Real git against real repositories (git-workspace-model.md §11): the claims are about the disk — where a confined session's clones land, that nothing of theirs reaches the primary, that a review is fetched and verified inside the clone, and what retirement removes or keeps.
 
@@ -53,6 +55,7 @@ afterAll(() => rmSync(join(SHIM, '..'), { recursive: true, force: true }))
 afterEach(() => {
   gitRuns.length = 0
   workspaces.setGitRunnerResolver(undefined)
+  workspaces.setFsResolver(undefined)
   remotes.clear()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -492,6 +495,49 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
 })
 
 describe('retiring a confined session', () => {
+  it('checks Git safety before stopping a mounted session and removes its host source only after stop succeeds', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    const sessionDir = leafOf(agent)
+    let stopFails = true
+    let stopAttempts = 0
+    let active = true
+    const guest = new LocalWorkspaceFs()
+    guest.rmTree = async () => {
+      throw new Error('EBUSY: cannot remove guest mountpoint')
+    }
+    const fs = new MicrosandboxWorkspaceFs(
+      () => (active ? guest : undefined),
+      async (path) => {
+        if (path !== sessionDir) return false
+        expect(gitRuns.some(({ args }) => args[0] === 'rev-list' && args.includes('--all'))).toBe(true)
+        stopAttempts++
+        if (stopFails) throw new Error('VM still has active executions')
+        expect(existsSync(sessionDir)).toBe(true)
+        active = false
+        return true
+      }
+    )
+    workspaces.setFsResolver(() => ({ fs }))
+    gitRuns.length = 0
+    const dirty = join(cwd, 'wip.md')
+    writeFileSync(dirty, 'keep until safe')
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({ outcome: 'retained', reason: 'dirty' })
+    expect(stopAttempts).toBe(0)
+    rmSync(dirty)
+
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({
+      outcome: 'failed',
+      error: 'VM still has active executions'
+    })
+    expect(existsSync(sessionDir)).toBe(true)
+    stopFails = false
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({ outcome: 'removed' })
+    expect(stopAttempts).toBe(2)
+    expect(existsSync(sessionDir)).toBe(false)
+  })
+
   it('removes the whole session directory, its HOME included, when every clone is clean and pushed', async () => {
     const agent = agentFixture({ additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }] })
     serveAll(agent)

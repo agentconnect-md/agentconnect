@@ -24,7 +24,8 @@ export {
   type SlackViewState
 } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
-import { flattenUnsafeLinks } from '../messages/agent-links.js'
+import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
+import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { AgentMessageRun } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
@@ -2179,7 +2180,8 @@ export class OutputConverger {
    */
   constructor(
     private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
-    private protectedAddresses: readonly string[] = []
+    private protectedAddresses: readonly string[] = [],
+    private readonly resolveFileLink?: WorkspaceFileLinkResolver
   ) {}
 
   /** True while body text OR reasoning is pending — the daemon uses this to (re)arm
@@ -2437,7 +2439,7 @@ export class OutputConverger {
    *  the whole buffer, paragraph break or not — otherwise the runtime's own error text is
    *  dropped and replaced by the generic failure notice. */
   flushTerminal(): SlackAction[] {
-    if (this.mode === 'minimal') return this.liveRefresh()
+    if (this.mode === 'minimal') return this.liveRefresh(true)
     // A crashed turn settles like a stopped one: whatever was still in flight did not finish
     // BECAUSE the turn died, so those cards are honestly `error` under a "Failed" label — while
     // steps that already finished keep their state, (failed)-prefixed ones included. The ⚠️
@@ -2447,12 +2449,14 @@ export class OutputConverger {
 
   /** minimal: refresh the single in-place `live-reply` with the current segment (display only;
    *  the transcript record happens at segment boundaries). */
-  private liveRefresh(): SlackAction[] {
+  private liveRefresh(complete = false): SlackAction[] {
     const trimmed = this.buf.trim()
     // Hold the live reply while the body could still be the bare response-control marker, so a
     // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
     if (!trimmed || isNoResponsePrefix(trimmed)) return []
-    return [{ kind: 'live-reply', text: this.liveDisplay(flattenUnsafeLinks(this.buf)) }]
+    const raw = complete ? this.buf : this.buf.slice(0, referenceBufferStart(this.buf))
+    const text = flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
+    return text.trim() ? [{ kind: 'live-reply', text: this.liveDisplay(text) }] : []
   }
 
   /** minimal: the single live message can hold one Block Kit `markdown` block (≤12000
@@ -2474,8 +2478,9 @@ export class OutputConverger {
     // Hold while the body may still be / is the bare sentinel — a suppressed reply must not be
     // recorded or shown; onFinal makes the final drop. Non-sentinel bodies close normally.
     if (isNoResponsePrefix(this.buf.trim())) return []
-    const text = flattenUnsafeLinks(this.buf)
+    const text = flattenUnsafeLinks(this.buf, { resolveFileLink: this.resolveFileLink })
     this.recordDirty = false
+    if (!text.trim()) return []
     return [
       final ? { kind: 'final-live-reply', text } : { kind: 'live-reply', text: this.liveDisplay(text) },
       ...splitIntoSections(text, undefined, this.protectedAddresses).map(
@@ -2492,7 +2497,8 @@ export class OutputConverger {
     // line of it under the container that already holds them.
     if (this.streaming || !this.reasoningDirty) return []
     this.reasoningDirty = false
-    return [{ kind: 'reasoning', text: renderReasoning(flattenUnsafeLinks(this.reasoningBuf)) }]
+    const text = flattenUnsafeLinks(this.reasoningBuf, { resolveFileLink: this.resolveFileLink })
+    return text.trim() ? [{ kind: 'reasoning', text: renderReasoning(text) }] : []
   }
 
   private flush(): SlackAction[] {
@@ -2525,7 +2531,8 @@ export class OutputConverger {
   }
 
   private emitBody(raw: string): SlackAction[] {
-    const text = flattenUnsafeLinks(raw)
+    const text = flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
+    if (!text.trim()) return []
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` is handled
     // before the connection check on every platform, so it lands even though replyConn is unset.
     const recordOnly = this.mode === 'none'

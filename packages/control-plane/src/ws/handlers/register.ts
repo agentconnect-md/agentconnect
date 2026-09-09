@@ -13,6 +13,7 @@
 import {
   isFrame,
   AGENT_EXISTS_FEATURE,
+  AGENT_MEMORY_STORE_V1_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
@@ -115,7 +116,9 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ORGANIZATION_KNOWLEDGE_FEATURE,
       AGENT_EXISTS_FEATURE,
       // slack-approval-dm.md §4.2: this CP resolves and revalidates approval-DM recipients.
-      APPROVAL_DM_ROUTE_V1_FEATURE
+      APPROVAL_DM_ROUTE_V1_FEATURE,
+      // memory-evolution.md §3.2.1: this CP serves the whole `memory/store` family, the migration completion included.
+      AGENT_MEMORY_STORE_V1_FEATURE
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)

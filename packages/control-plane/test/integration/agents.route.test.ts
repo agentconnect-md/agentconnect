@@ -1242,3 +1242,22 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(res.json()).toEqual({ status: 'ok' })
   })
 })
+
+describe('agent rows written before the memory binding carried `home`', () => {
+  it('GET /agents fills the default on read instead of failing the response schema', async () => {
+    const app = build()
+    const id = 'c3c3c3c3-cccc-4ccc-8ccc-cccccccccccc'
+    // Written by a CP older than the field: a managed binding with no `home`, as every pre-#1865 row is.
+    await seedAgent(prisma, id, { runtimeOverrides: { memory: { provider: 'managed', autoDistill: true } } })
+
+    type Row = { id: string; memory?: { provider: string; autoDistill?: boolean; home?: string } }
+    const list = await app.app.inject({ method: 'GET', url: `${ORG}/agents` })
+    expect(list.statusCode).toBe(200)
+    const listed = (list.json() as Row[]).find((a) => a.id === id)
+    expect(listed?.memory).toEqual({ provider: 'managed', autoDistill: true, home: 'daemon' })
+
+    const one = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${id}` })
+    expect(one.statusCode).toBe(200)
+    expect((one.json() as Row).memory).toEqual({ provider: 'managed', autoDistill: true, home: 'daemon' })
+  })
+})

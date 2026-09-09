@@ -1658,6 +1658,123 @@ describe('GithubRunReporter', () => {
     )
   })
 
+  it('re-issues an update whose marker is still absent from the Check after the grace window', async () => {
+    const marker = 'lost-patch-marker'
+    const p = projection({
+      desiredState: 'success',
+      checkRunId: '90071992547409931',
+      writeMarker: marker,
+      writePhase: 'update',
+      writeStartedAt: new Date(NOW - 11 * 60_000)
+    })
+    const fetchImpl = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () =>
+      Response.json({
+        id: p.checkRunId,
+        external_id: p.externalId,
+        status: 'in_progress',
+        conclusion: null,
+        output: { summary: 'Phase: in_progress\n<!-- agentconnect-write:earlier-marker -->' }
+      })
+    )
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    // Reconciliation stays read-only; the mutex is released so the next pass mints a fresh marker.
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(fetchImpl.mock.calls[0]![1]?.method).toBe('GET')
+    expect(hooks.beginProjectionWrite).not.toHaveBeenCalled()
+    expect(hooks.completeProjectionWrite).not.toHaveBeenCalled()
+    expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      'worker-1',
+      new Date(NOW),
+      'ambiguous_write_reissued',
+      false
+    )
+  })
+
+  it('keeps the write mutex for an absent update marker inside the grace window', async () => {
+    const marker = 'fresh-patch-marker'
+    const p = projection({
+      desiredState: 'success',
+      checkRunId: '90071992547409931',
+      writeMarker: marker,
+      writePhase: 'update',
+      writeStartedAt: new Date(NOW - 1_000)
+    })
+    const fetchImpl = vi.fn(async () =>
+      Response.json({
+        id: p.checkRunId,
+        external_id: p.externalId,
+        status: 'in_progress',
+        conclusion: null,
+        output: { summary: 'Phase: in_progress\n<!-- agentconnect-write:earlier-marker -->' }
+      })
+    )
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      'worker-1',
+      expect.any(Date),
+      'ambiguous_write',
+      true
+    )
+  })
+
+  it('re-issues a create whose marker is absent from an exhaustive listing after the grace window', async () => {
+    const marker = 'lost-post-marker'
+    const p = projection({ writeMarker: marker, writePhase: 'create', writeStartedAt: new Date(NOW - 11 * 60_000) })
+    const fetchImpl = vi.fn(async () => Response.json({ total_count: 0, check_runs: [] }))
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    // Both the display name and the legacy name were listed to completion.
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(hooks.beginProjectionWrite).not.toHaveBeenCalled()
+    expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      'worker-1',
+      new Date(NOW),
+      'ambiguous_write_reissued',
+      false
+    )
+  })
+
+  it('keeps the write mutex when the create listing hit the page cap without the marker', async () => {
+    const marker = 'lost-post-marker'
+    const p = projection({ writeMarker: marker, writePhase: 'create', writeStartedAt: new Date(NOW - 11 * 60_000) })
+    const page = Array.from({ length: 100 }, (_, i) => ({
+      id: String(10_000 + i),
+      external_id: 'someone-else',
+      status: 'completed',
+      conclusion: 'success',
+      output: { summary: 'Phase: success' }
+    }))
+    const fetchImpl = vi.fn(async () => Response.json({ total_count: 1_000, check_runs: page }))
+    const { reporter, hooks } = worker(p, fetchImpl)
+
+    await reporter.tick()
+
+    // A capped listing is not evidence of no effect, however old the write is.
+    expect(fetchImpl).toHaveBeenCalledTimes(20)
+    expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      'worker-1',
+      expect.any(Date),
+      'ambiguous_write',
+      true
+    )
+  })
+
   it('clears a definite 429 marker and retries with exponential backoff', async () => {
     const p = projection({ attempts: 2 })
     const { reporter, hooks } = worker(

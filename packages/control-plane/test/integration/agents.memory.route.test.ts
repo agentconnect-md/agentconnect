@@ -335,6 +335,49 @@ describe('PUT /agents/:id/memory/file (replace, edit-gated, proxied)', () => {
     }
   })
 
+  it('answers every other unreachable-home reason with 503 + the reason on the write and history routes', async () => {
+    // A `control-plane` home behind a missing connection, feature, scope, migration copy, or a pool member's daemon home
+    // is "not now" exactly like a sleeping sandbox (§3.2.1) — a 503 the console retries, never a 400 that stops it. Only
+    // the sandbox carries the wake code; these carry the reason as their own code.
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    for (const reason of ['connection', 'feature', 'scope-denied', 'migrating', 'pool-daemon-home']) {
+      const unreachable = () => {
+        throw new ProtocolError('BAD_PAYLOAD', `memory/write failed: home unreachable (${reason})`, {
+          details: { reason }
+        })
+      }
+      const s = { memoryWrite: unreachable, memoryHistory: unreachable }
+      running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
+      for (const request of [
+        { method: 'PUT' as const, url: `${ORG}/agents/${AGENT}/memory/file`, payload: { content: 'x' } },
+        { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory/history?path=MEMORY.md` }
+      ]) {
+        const res = await running.app.inject(request)
+        const label = `${reason} ${request.url}`
+        expect(res.statusCode, label).toBe(503)
+        expect((res.json() as { code?: string }).code, label).toBe(
+          `MEMORY_HOME_${reason.toUpperCase().replaceAll('-', '_')}`
+        )
+      }
+      await running.close()
+      running = undefined
+    }
+  })
+
+  it('keeps 400 for a refusal that names no home reason on the history route', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const s = {
+      async memoryHistory(): Promise<MemoryHistoryPage> {
+        throw new ProtocolError('BAD_PAYLOAD', 'memory/history failed: path escapes the memory root')
+      }
+    }
+    running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}/memory/history?path=../x.md` })
+    expect(res.statusCode).toBe(400)
+  })
+
   it('rejects an unknown body field (.strict)', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })

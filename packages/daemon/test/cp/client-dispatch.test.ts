@@ -2,7 +2,11 @@ import { describe, it, expect, vi } from 'vitest'
 import { buildEnvelope, decodeEnvelope, MAX_FRAME_BYTES, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { WorkspaceConflictError, WorkspaceViolationError } from '../../src/cp/workspace-reader.js'
-import { MemorySandboxUnavailableError } from '../../src/cp/memory-reader.js'
+import {
+  MemoryHistoryNotLocalError,
+  MemoryHomeUnavailableError,
+  MemorySandboxUnavailableError
+} from '../../src/cp/memory-reader.js'
 import { TaskViolationError } from '../../src/cp/task-reader.js'
 import { AgentWakeViolationError } from '../../src/cp/agent-wake.js'
 import { createRuntimeCommandsReader } from '../../src/cp/runtime-commands-reader.js'
@@ -892,6 +896,67 @@ describe('CpClient dispatch', () => {
     expect(err.payload.details).toEqual({ reason: 'sandbox-unavailable' })
   })
 
+  it('refuses a control-plane home that is out of reach with its own reason, and shows a misrouted change-log page as a bug', async () => {
+    // Every home reason is "not now" for the console and rides the same shape, so the CP answers 503 with it; a page
+    // of a change log the home keeps itself was routed to the wrong side — that is INTERNAL, with the message, not an empty page.
+    const warn = vi.fn()
+    const { t } = await readyClient({
+      log: { ...silent, warn },
+      memoryReader: {
+        list: async () => {
+          throw new MemoryHomeUnavailableError(
+            'migrating',
+            'agent "a1" keeps its memory in the Control Plane, which is still receiving the copy of its tree'
+          )
+        },
+        history: async () => {
+          throw new MemoryHistoryNotLocalError("this store's change log is kept by its memory home")
+        }
+      } as any
+    })
+    const list = JSON.parse(frame('memory/list', { agentId: 'a1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(list))
+    await tick()
+    const refused = JSON.parse(t.sent[0]!)
+    expect(refused.type).toBe('error')
+    expect(refused.corr).toBe(list.id)
+    expect(refused.payload.code).toBe('BAD_PAYLOAD')
+    expect(refused.payload.details).toEqual({ reason: 'migrating' })
+    expect(refused.payload.message).toContain('still receiving the copy')
+
+    const history = JSON.parse(frame('memory/history', { agentId: 'a1', path: 'notes.md', limit: 5 }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(history))
+    await tick()
+    const bug = JSON.parse(t.sent[1]!)
+    expect(bug.type).toBe('error')
+    expect(bug.corr).toBe(history.id)
+    expect(bug.payload.code).toBe('INTERNAL')
+    expect(bug.payload.message).toContain('change log is kept by its memory home')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('memory/history failed'))
+  })
+
+  it('refuses a daemon home on a pool member with pool-daemon-home, the same 503 shape as every other home reason', async () => {
+    const { t } = await readyClient({
+      memoryReader: {
+        list: async () => {
+          throw new MemoryHomeUnavailableError(
+            'pool-daemon-home',
+            'agent "a1" has a daemon memory home, but the pool keeps memory in the Control Plane: waiting for the binding to be flipped (homeMigration)'
+          )
+        }
+      } as any
+    })
+    const list = JSON.parse(frame('memory/list', { agentId: 'a1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(list))
+    await tick()
+    const refused = JSON.parse(t.sent[0]!)
+    expect(refused.type).toBe('error')
+    expect(refused.corr).toBe(list.id)
+    expect(refused.payload.code).toBe('BAD_PAYLOAD')
+    expect(refused.payload.details).toEqual({ reason: 'pool-daemon-home' })
+    expect(refused.payload.message).toContain('homeMigration')
+  })
+
   it('maps an unknown-agent workspace git violation to BAD_PAYLOAD', async () => {
     const { t } = await readyClient({
       workspaceGit: {
@@ -1092,5 +1157,174 @@ describe('CpClient dispatch', () => {
     const rep = JSON.parse(t.sent[0]!)
     expect(rep.type).toBe('session/child-status/probe/ok')
     expect(rep.corr).toBe(f.id)
+  })
+})
+
+describe('CpClient memory/home/migrated (D→C REQ)', () => {
+  it('names the agent, stamps its org, unwraps memory/home/migrated/ok, and surfaces CONFLICT by code', async () => {
+    const { client, t } = await readyClient(
+      { orgForAgent: (agentId) => (agentId === CRON_AGENT_ID ? 'org-1' : undefined) },
+      ['agent-memory-store-v1'],
+      'frame'
+    )
+    const pending = client.memoryHomeMigrated({ agentId: CRON_AGENT_ID })
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    expect(req).toMatchObject({ type: 'memory/home/migrated', orgId: 'org-1', payload: { agentId: CRON_AGENT_ID } })
+    t.pushInbound(
+      JSON.stringify(buildEnvelope('memory/home/migrated/ok', { accepted: true }, { corr: req.id, orgId: 'org-1' }))
+    )
+    await expect(pending).resolves.toEqual({ accepted: true })
+
+    // The home moved on since the flip: the CP's refusal arrives as itself, for the caller to stop on.
+    const moved = client.memoryHomeMigrated({ agentId: CRON_AGENT_ID })
+    await tick()
+    const second = JSON.parse(t.sent[1]!)
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'error',
+          { code: 'CONFLICT', message: 'the agent memory home is no longer the Control Plane', retryable: false },
+          { corr: second.id }
+        )
+      )
+    )
+    await expect(moved).rejects.toMatchObject({ code: 'CONFLICT', retryable: false })
+  })
+
+  it('refuses before sending when the CP never advertised the feature, and sends exactly once on one deadline', async () => {
+    const older = await readyClient({}, [])
+    await expect(older.client.memoryHomeMigrated({ agentId: CRON_AGENT_ID })).rejects.toMatchObject({
+      code: 'INTERNAL',
+      retryable: false
+    })
+    expect(older.t.sent).toHaveLength(0)
+
+    const { client, t, clock } = await readyClient({}, ['agent-memory-store-v1'])
+    const reports = () => t.sent.filter((raw) => JSON.parse(raw).type === 'memory/home/migrated')
+    const pending = client.memoryHomeMigrated({ agentId: CRON_AGENT_ID })
+    await tick()
+    clock.advance(29_000)
+    expect(reports()).toHaveLength(1)
+    clock.advance(1_000)
+    await expect(pending).rejects.toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(reports()).toHaveLength(1)
+  })
+})
+
+describe('CpClient memory/store (D→C REQ)', () => {
+  const op = { op: 'memory-read', root: '.', rel: 'memory/index.md', offset: 0, limit: 1024 } as const
+
+  it('names the agent, stamps its org, and unwraps memory/store/ok', async () => {
+    const { client, t } = await readyClient(
+      { orgForAgent: (agentId) => (agentId === CRON_AGENT_ID ? 'org-1' : undefined) },
+      ['agent-memory-store-v1'],
+      'frame'
+    )
+    const pending = client.memoryStore({ agentId: CRON_AGENT_ID, op })
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    expect(req).toMatchObject({ type: 'memory/store', orgId: 'org-1', payload: { agentId: CRON_AGENT_ID, op } })
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope('memory/store/ok', { ok: true, value: { exists: false } }, { corr: req.id, orgId: 'org-1' })
+      )
+    )
+    await expect(pending).resolves.toEqual({ ok: true, value: { exists: false } })
+  })
+
+  it('refuses before sending when the CP never advertised the feature, and surfaces an error REP by code', async () => {
+    const older = await readyClient({}, [])
+    await expect(older.client.memoryStore({ agentId: CRON_AGENT_ID, op })).rejects.toMatchObject({
+      code: 'INTERNAL',
+      retryable: false
+    })
+    expect(older.t.sent).toHaveLength(0)
+
+    const { client, t } = await readyClient({}, ['agent-memory-store-v1'])
+    const pending = client.memoryStore({ agentId: CRON_AGENT_ID, op })
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'error',
+          { code: 'SCOPE_DENIED', message: 'agent is not served here', retryable: false },
+          { corr: req.id }
+        )
+      )
+    )
+    await expect(pending).rejects.toMatchObject({ code: 'SCOPE_DENIED', retryable: false })
+  })
+
+  it('sends an op exactly once — a late reply must never append a chunk twice — and fails on one deadline', async () => {
+    const { client, t, clock } = await readyClient({}, ['agent-memory-store-v1'])
+    const stores = () => t.sent.filter((raw) => JSON.parse(raw).type === 'memory/store')
+    const pending = client.memoryStore({ agentId: CRON_AGENT_ID, op })
+    await tick()
+    // Well past the default ack timeout and its retransmissions: still the one frame.
+    clock.advance(29_000)
+    expect(stores()).toHaveLength(1)
+    clock.advance(1_000)
+    await expect(pending).rejects.toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(stores()).toHaveLength(1)
+  })
+
+  it('fails fast off the legal states instead of queueing on a dead socket', async () => {
+    const { client, t } = await readyClient({}, ['agent-memory-store-v1'])
+    expect(client.connected()).toBe(true)
+    t.simulateClose(1006, 'gone')
+    await tick()
+    expect(client.connected()).toBe(false)
+    await expect(client.memoryStore({ agentId: CRON_AGENT_ID, op })).rejects.toMatchObject({
+      code: 'INTERNAL',
+      retryable: true
+    })
+    expect(t.sent).toHaveLength(0)
+  })
+})
+
+describe('CpClient memory/history/append (D→C REQ)', () => {
+  const record = {
+    id: '99999999-9999-4999-8999-999999999999',
+    path: 'notes.md',
+    event: 'add',
+    after: 'v1',
+    at: '2026-01-01T00:00:00.000Z',
+    scope: 'agent',
+    source: 'tool'
+  } as const
+  const batch = { agentId: CRON_AGENT_ID, root: '.', records: [record] }
+
+  it('names the agent, stamps its org, and unwraps memory/history/append/ok', async () => {
+    const { client, t } = await readyClient(
+      { orgForAgent: (agentId) => (agentId === CRON_AGENT_ID ? 'org-1' : undefined) },
+      ['agent-memory-store-v1'],
+      'frame'
+    )
+    const pending = client.memoryHistoryAppend(batch)
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    expect(req).toMatchObject({ type: 'memory/history/append', orgId: 'org-1', payload: batch })
+    t.pushInbound(
+      JSON.stringify(buildEnvelope('memory/history/append/ok', { accepted: true }, { corr: req.id, orgId: 'org-1' }))
+    )
+    await expect(pending).resolves.toEqual({ accepted: true })
+  })
+
+  it('refuses before sending without the feature, sends exactly once, and fails on one deadline', async () => {
+    const older = await readyClient({}, [])
+    await expect(older.client.memoryHistoryAppend(batch)).rejects.toMatchObject({ code: 'INTERNAL', retryable: false })
+    expect(older.t.sent).toHaveLength(0)
+
+    const { client, t, clock } = await readyClient({}, ['agent-memory-store-v1'])
+    const appends = () => t.sent.filter((raw) => JSON.parse(raw).type === 'memory/history/append')
+    const pending = client.memoryHistoryAppend(batch)
+    await tick()
+    clock.advance(29_000)
+    expect(appends()).toHaveLength(1)
+    clock.advance(1_000)
+    await expect(pending).rejects.toMatchObject({ code: 'INTERNAL', retryable: true })
+    expect(appends()).toHaveLength(1)
   })
 })

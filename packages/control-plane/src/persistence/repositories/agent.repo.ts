@@ -3,7 +3,7 @@
  */
 import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
-import { redactGitUrlSecrets, type AgentMemoryBinding } from '@agentconnect.md/protocol'
+import { AgentMemoryBinding, redactGitUrlSecrets } from '@agentconnect.md/protocol'
 import type { PrismaLike } from '../prisma.js'
 import type {
   AgentCallPolicy,
@@ -39,6 +39,8 @@ import {
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
+import { MemoryHomeRefusedError, resolveMemoryBindingOnUpdate } from '../../agent-memory/home.js'
+import { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './agent-memory.repo.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockAgentPlacement, settlePlacementChange } from './agent-placement.js'
 import { assertAgentMayUseSet, assertDaemonNotInSet } from './member-set.repo.js'
@@ -189,6 +191,13 @@ function overridesOf(a: Agent): RuntimeOverrides {
   return (a.runtimeOverrides as RuntimeOverrides | null) ?? {}
 }
 
+// A stored binding predates the fields the schema now defaults (`home`): fill on read what the input path fills on write.
+function storedMemoryBinding(memory: AgentMemoryBinding | undefined): AgentMemoryBinding | null {
+  if (!memory) return null
+  const parsed = AgentMemoryBinding.safeParse(memory)
+  return parsed.success ? parsed.data : memory
+}
+
 // Preset one-shot settle (preset-agents.md §3.2): the FIRST placement of any
 // kind — and an explicit delete — permanently stamps `placementSettledAt`, so
 // M1 auto-placement never fights a user who placed, moved, or removed the
@@ -273,7 +282,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     mcpServers: ov.mcpServers ?? [],
     skills: ov.skills ?? [],
     managedSkills: a.managedSkills,
-    memory: ov.memory ?? null,
+    memory: storedMemoryBinding(ov.memory),
     status: a.status as AgentRecord['status'],
     placementKind: a.placementKind,
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
@@ -454,6 +463,22 @@ export class PgAgentRepo implements AgentRepo {
     return this.transaction(async (tx) => this.updateInTx(tx, orgId, agentId, patch, opts))
   }
 
+  settleMemoryHomeMigration(orgId: OrgId, agentId: AgentId): Promise<'cleared' | 'conflict' | 'missing'> {
+    return this.transaction(async (tx) => {
+      // The row lock makes the read and the clear one step, so a concurrent edit cannot slip between them.
+      const rows = await tx.$queryRaw<Array<{ runtimeOverrides: unknown; orgId: string }>>(
+        Prisma.sql`SELECT "runtimeOverrides", "orgId" FROM "agent" WHERE "id" = ${agentId} FOR UPDATE`
+      )
+      if (!rows[0] || rows[0].orgId !== orgId) return 'missing'
+      const memory = (rows[0].runtimeOverrides as RuntimeOverrides | null)?.memory
+      if (memory?.provider !== 'managed' || memory.home !== 'control-plane') return 'conflict'
+      if (memory.homeMigration === undefined) return 'cleared'
+      const { homeMigration: _done, ...settled } = memory
+      await this.updateInTx(tx, orgId, agentId, { memory: settled })
+      return 'cleared'
+    })
+  }
+
   private async updateInTx(
     tx: Prisma.TransactionClient,
     orgId: OrgId,
@@ -507,7 +532,8 @@ export class PgAgentRepo implements AgentRepo {
       patch.env !== undefined ||
       patch.mcpServers !== undefined ||
       patch.skills !== undefined ||
-      patch.memory !== undefined
+      patch.memory !== undefined ||
+      opts?.memoryHome !== undefined
     ) {
       // Row-lock the read: overrides are ONE JsonB bag, so the read-merge-write
       // below replaces keys this patch OMITS with whatever it read. Unlocked,
@@ -586,6 +612,28 @@ export class PgAgentRepo implements AgentRepo {
       if (patch.memory !== undefined) {
         if (patch.memory === null) delete next.memory
         else next.memory = patch.memory
+      }
+      // The managed home is decided here, against the locked binding (memory-evolution.md §3.2.1): a completion
+      // `memory/home/migrated` recorded since the caller read the agent is what this write sees, not the caller's copy.
+      if (opts?.memoryHome) {
+        const { input, onPool, force } = opts.memoryHome
+        const locked = cur?.memory ?? null
+        const change = resolveMemoryBindingOnUpdate(
+          locked,
+          typeof input === 'function' ? input(locked) : input,
+          onPool,
+          force
+        )
+        if (change.kind === 'refused') throw new MemoryHomeRefusedError(change.refused, change.message)
+        if (change.kind === 'write') {
+          if (change.memory === null) delete next.memory
+          else next.memory = change.memory
+          // The forced return keeps nothing: the CP tree and its change log go with the binding, or neither does.
+          if (change.dropHome) {
+            await new PgAgentMemoryFileRepo(tx).deleteTree(agentId)
+            await new PgAgentMemoryHistoryRepo(tx).deleteTree(agentId)
+          }
+        }
       }
       overrides = next
     }
@@ -1054,6 +1102,15 @@ export class PgAgentRepo implements AgentRepo {
   async listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]> {
     const rows = await this.db.agent.findMany({
       where: { daemonId, placementKind: 'daemon' },
+      orderBy: { createdAt: 'asc' },
+      include: withUsers
+    })
+    return rows.map(toRecord)
+  }
+
+  async listForSet(setId: string): Promise<AgentRecord[]> {
+    const rows = await this.db.agent.findMany({
+      where: { setId, placementKind: 'set' },
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })

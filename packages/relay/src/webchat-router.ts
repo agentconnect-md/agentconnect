@@ -1,13 +1,4 @@
-/**
- * `WebchatRouter` — the relay's `chatId → browser connection` index (shared-bot-relay.md
- * §7.2). A daemon streams a turn's reply back as `rd/chat { chatId, seq, event }` over
- * its rd/* socket; the relay looks the chatId up here and forwards each chunk to the
- * browser that owns that conversation. Registered when a browser socket opens, removed
- * (only-if-still-ours) on close. A completed reply post (`rd/webchat-post`) resolves
- * through the same index: the browser connection holds the conversation's verified
- * roster, so it both renders the post and fans the context copies out
- * (webchat-multi-agents.md §5.2).
- */
+// Fan conversation output to its verified browser connections; cache rosters separately for peer-daemon context.
 import type { RdChat, RdWebchatPost } from '@agentconnect.md/protocol'
 
 /** The browser sink the router delivers a reply chunk to. */
@@ -71,11 +62,13 @@ export function bindWebchatPostAuthor(
 }
 
 export class WebchatRouter {
-  private byChatId = new Map<string, ChatSink>()
+  private byChatId = new Map<string, Set<ChatSink>>()
   private rosterByChatId = new Map<string, CachedParticipant[]>()
 
   register(chatId: string, sink: ChatSink): void {
-    this.byChatId.set(chatId, sink)
+    let sinks = this.byChatId.get(chatId)
+    if (!sinks) this.byChatId.set(chatId, (sinks = new Set()))
+    sinks.add(sink)
   }
 
   /** Cache a conversation's CP-verified roster (called on every browser connect,
@@ -97,22 +90,22 @@ export class WebchatRouter {
     return this.rosterByChatId.get(chatId) ?? []
   }
 
-  /** Remove only if `sink` is still the registered one (a stale close must not evict a resume). */
+  /** Remove only this connection; sibling tabs and reconnects remain subscribed. */
   unregister(chatId: string, sink: ChatSink): void {
-    if (this.byChatId.get(chatId) === sink) this.byChatId.delete(chatId)
+    const sinks = this.byChatId.get(chatId)
+    if (!sinks) return
+    sinks.delete(sink)
+    if (sinks.size === 0) this.byChatId.delete(chatId)
   }
 
-  /** Route one `rd/chat` to the browser owning its chatId (dropped if none is attached). */
+  /** Route output and completion to every browser subscribed to this conversation. */
   deliver(chat: RdChat): void {
-    this.byChatId.get(chat.chatId)?.onChat(chat)
+    for (const sink of this.byChatId.get(chat.chatId) ?? []) sink.onChat(chat)
   }
 
-  /** Render one `rd/webchat-post` to the browser owning its conversation, when one is
-   *  attached (the live stream already showed the text; this is the canonical record).
-   *  Peer-daemon context fan-out happens SEPARATELY from the roster cache — never
-   *  through the browser sink, which may be gone mid-turn. */
+  /** Render the canonical post to every subscriber; peer-daemon context uses the independent roster cache. */
   deliverPost(post: RdWebchatPost): void {
-    this.byChatId.get(post.conversationId)?.onPost?.(post)
+    for (const sink of this.byChatId.get(post.conversationId) ?? []) sink.onPost?.(post)
   }
 
   size(): number {

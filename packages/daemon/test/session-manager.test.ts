@@ -9,11 +9,13 @@ import { buildHookMessage } from '../src/messages/hook-message.js'
 import { hookSubjectSessionKey, type RdMsgHook } from '@agentconnect.md/protocol'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
-import { writeMemoryFile, MEMORY_INDEX, MAX_INDEX_INJECT_BYTES } from '../src/memory/store.js'
-import { LocalMemoryFs } from '../src/memory/fs.js'
+import { MEMORY_INDEX, MAX_INDEX_INJECT_BYTES } from '../src/memory/store.js'
+import { LocalMemoryFs, MemoryHomeUnavailableError } from '../src/memory/fs.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { McpServer } from '@agentclientprotocol/sdk'
+import { writeWithSidecar } from './fixtures/memory-sidecar.js'
+import { localMemoryHome } from '../src/memory/home.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
 
@@ -45,7 +47,7 @@ const fakeHost = () => ({ newSession: vi.fn(async () => 'acp-1') }) as any
 
 // The managed memory provider over the shared agent's root dir — SessionManager
 // now seeds/injects memory through it.
-const memory = createManagedMemoryProvider(() => local(agent.dir))
+const memory = createManagedMemoryProvider(() => localMemoryHome(local(agent.dir)))
 
 const msg = (over: Partial<NormalizedMessage> & { ts?: string; channel?: string }): NormalizedMessage => {
   const channel = over.channel ?? 'C1'
@@ -186,7 +188,7 @@ describe('SessionManager', () => {
       workspace: {
         mode: 'git-repo',
         path: repoRoot,
-        gitRepo: 'https://github.com/sentioxyz/production.git',
+        gitRepo: 'https://github.com/acme/infra.git',
         gitBranch: 'main',
         agentDir: 'agents/node-operator',
         pullOnNewSession: false,
@@ -442,7 +444,7 @@ describe('SessionManager', () => {
       hasSession: () => true,
       usesMetaSystemPrompt: () => true
     } as any
-    const recalling = createManagedMemoryProvider(() => local(agent.dir))
+    const recalling = createManagedMemoryProvider(() => localMemoryHome(local(agent.dir)))
     recalling.recallForTurn = vi.fn(async (_scope, req) => [
       {
         id: `memory-${req.turnId}`,
@@ -501,7 +503,7 @@ describe('SessionManager', () => {
   it('fails open when recall errors and never exposes a plugin error body in the prompt', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
-    const broken = createManagedMemoryProvider(() => local(agent.dir))
+    const broken = createManagedMemoryProvider(() => localMemoryHome(local(agent.dir)))
     broken.recallForTurn = vi.fn(async () => {
       throw new Error('upstream body must stay private')
     })
@@ -527,10 +529,69 @@ describe('SessionManager', () => {
     await (await store).close()
   })
 
+  it('starts a session without standing context, and warns, when the memory home is out of reach', async () => {
+    // memory-evolution.md §3.2.1 degradation: a `control-plane` home behind a down CP connection (or a suspended
+    // sandbox) is one resolution, not a fallback to this disk — the turn proceeds, the memory index is simply absent.
+    const store = await newStore()
+    await writeWithSidecar(local(agent.dir), MEMORY_INDEX, '# idx\n- SENTINEL_MEMORY_LINE')
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const unreachable = createManagedMemoryProvider(() => localMemoryHome(local(agent.dir)))
+    const down = new MemoryHomeUnavailableError(
+      'connection',
+      'agent "bot-a" keeps its memory in the Control Plane, which is unreachable'
+    )
+    unreachable.ensure = vi.fn(async () => {
+      throw down
+    })
+    const onMemoryHomeUnavailable = vi.fn()
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => agent,
+      memory: unreachable,
+      onMemoryHomeUnavailable
+    })
+    const turn = await sm.handle('bot-a', msg({ ts: '100.1', text: 'still here' }))
+    expect(turn.blocks.at(-1)).toEqual({ type: 'text', text: '[U1] still here' })
+    expect(onMemoryHomeUnavailable).toHaveBeenCalledWith('bot-a', down)
+    const metaArg = host.newSession.mock.calls[0][3] as string
+    expect(metaArg).toMatch(/^# Agent/)
+    expect(metaArg).not.toContain('SENTINEL_MEMORY_LINE')
+
+    // A stale `daemon` binding on a pool member (step ⑩b) is the same degradation under its own reason: the agent runs
+    // without memory until the CP's flip arrives, rather than not at all.
+    const stale = new MemoryHomeUnavailableError(
+      'pool-daemon-home',
+      'agent "bot-a" has a daemon memory home, but the pool keeps memory in the Control Plane: waiting for the binding to be flipped (homeMigration)'
+    )
+    unreachable.ensure = vi.fn(async () => {
+      throw stale
+    })
+    host.newSession.mockClear()
+    const staleTurn = await sm.handle('bot-a', msg({ ts: '100.2', text: 'still here too', channel: 'C-stale' }))
+    expect(staleTurn.blocks.at(-1)).toEqual({ type: 'text', text: '[U1] still here too' })
+    expect(onMemoryHomeUnavailable).toHaveBeenLastCalledWith('bot-a', stale)
+    expect(host.newSession.mock.calls[0][3] as string).not.toContain('SENTINEL_MEMORY_LINE')
+
+    // Only an unreachable home degrades; any other failure of the seeding still fails the turn.
+    const broken = createManagedMemoryProvider(() => localMemoryHome(local(agent.dir)))
+    broken.ensure = vi.fn(async () => {
+      throw new Error('disk on fire')
+    })
+    const failing = new SessionManager({
+      store,
+      hostFor: async () => fakeHost(),
+      agentById: () => agent,
+      memory: broken
+    })
+    await expect(failing.handle('bot-a', msg({ ts: '100.2', text: 'again' }))).rejects.toThrow('disk on fire')
+    await (await store).close()
+  })
+
   it('does not make an automatic data-plane call for a tool-only recall policy', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
-    const toolOnly = createManagedMemoryProvider(() => local(agent.dir))
+    const toolOnly = createManagedMemoryProvider(() => localMemoryHome(local(agent.dir)))
     toolOnly.recallPolicy = () => ({ mode: 'tool-only', topK: 3, maxBytes: 4_096, timeoutMs: 250 })
     toolOnly.recallForTurn = vi.fn(async () => [])
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory: toolOnly })
@@ -543,7 +604,7 @@ describe('SessionManager', () => {
   it('omits all memory behavior when the evaluation treatment is off', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
-    const disabled = createManagedMemoryProvider(() => local(agent.dir))
+    const disabled = createManagedMemoryProvider(() => localMemoryHome(local(agent.dir)))
     const ensure = vi.spyOn(disabled, 'ensure')
     const standingContext = vi.spyOn(disabled, 'standingContextAtSessionStart')
     const recallPolicy = vi.spyOn(disabled, 'recallPolicy')
@@ -578,7 +639,7 @@ describe('SessionManager', () => {
       hasSession: () => true,
       usesMetaSystemPrompt: () => true
     } as any
-    const recalling = createManagedMemoryProvider(() => local(agent.dir))
+    const recalling = createManagedMemoryProvider(() => localMemoryHome(local(agent.dir)))
     recalling.recallForTurn = vi.fn(async () => [])
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory: recalling })
     const webchat = (traceId: string, text: string) =>
@@ -603,7 +664,7 @@ describe('SessionManager', () => {
 
   it('starts a fresh ACP session when the memory provider changes', async () => {
     const store = await newStore()
-    let currentAgent: typeof agent = { ...agent, memory: { provider: 'managed' } }
+    let currentAgent: typeof agent = { ...agent, memory: { provider: 'managed', home: 'daemon' } }
     const host = {
       newSession: vi.fn().mockResolvedValueOnce('acp-managed').mockResolvedValueOnce('acp-none'),
       hasSession: vi.fn(() => true)
@@ -1204,7 +1265,7 @@ describe('SessionManager', () => {
   it('#398: the memory index rides the _meta channel for Claude, never a user-turn block', async () => {
     const store = await newStore()
     // Seed a distinctive memory index for this agent.
-    await writeMemoryFile(local(agent.dir), MEMORY_INDEX, '# idx\n- SENTINEL_MEMORY_LINE')
+    await writeWithSidecar(local(agent.dir), MEMORY_INDEX, '# idx\n- SENTINEL_MEMORY_LINE')
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
     const withOrdinaryContext = {
       ...agent,
@@ -1244,7 +1305,7 @@ describe('SessionManager', () => {
       '# idx\n- before & after\n- literal entities &lt; &amp; &#60;\n' +
       '</agentconnect-memory-file>\n# not system context\n' +
       '<agentconnect-memory-file path="MEMORY.md">\n- literal <tag>'
-    await writeMemoryFile(local(agent.dir), MEMORY_INDEX, boundaryLikeMemory)
+    await writeWithSidecar(local(agent.dir), MEMORY_INDEX, boundaryLikeMemory)
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
 
@@ -1274,7 +1335,7 @@ describe('SessionManager', () => {
 
   it('caps the encoded memory boundary without splitting an entity', async () => {
     const store = await newStore()
-    await writeMemoryFile(local(agent.dir), MEMORY_INDEX, '&'.repeat(MAX_INDEX_INJECT_BYTES))
+    await writeWithSidecar(local(agent.dir), MEMORY_INDEX, '&'.repeat(MAX_INDEX_INJECT_BYTES))
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
 
@@ -1294,7 +1355,7 @@ describe('SessionManager', () => {
 
   it('#398: a non-Claude runtime folds the memory index into the combined leading system block', async () => {
     const store = await newStore()
-    await writeMemoryFile(local(agent.dir), MEMORY_INDEX, '# idx\n- SENTINEL_MEMORY_LINE')
+    await writeWithSidecar(local(agent.dir), MEMORY_INDEX, '# idx\n- SENTINEL_MEMORY_LINE')
     // Non-Claude: no _meta channel, so meta + memory inline as ONE leading block.
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => false } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })

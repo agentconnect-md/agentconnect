@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { DreamInfo, MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { parse as parseYaml } from 'yaml'
@@ -22,17 +22,47 @@ import {
   MEMORY_HISTORY_FILENAME,
   MEMORY_INDEX,
   MAX_MEMORY_FILE_BYTES,
+  listMemory,
   memoryDir,
-  type MemoryHistoryRecord
+  type MemoryHistoryRecord,
+  type MemoryHistorySink
 } from '../src/memory/store.js'
 import { LocalMemoryFs, MemorySandboxUnavailableError } from '../src/memory/fs.js'
 import { acceptedDreamSkillSources } from '../src/skills/dream-skills.js'
 import { storeDigest } from '../src/dream/dreamer.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
 import type { MemoryFs } from '../src/memory/fs.js'
+import { sidecarMemoryHistory, type MemoryHomePorts } from '../src/memory/home.js'
 import { pod } from './fixtures/memory-fs-pod.js'
+import { WAIT } from './wait-support.js'
+import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
+/** One tree for both roles and the sidecar sink, the way the daemon resolves a home today. */
+const home = (fs: MemoryFs, historyFor = sidecarMemoryHistory): MemoryHomePorts => ({
+  live: fs,
+  staging: fs,
+  historyFor
+})
+
+/** The same port, noting every root-relative path it is asked for, `/`-separated on every platform (a subdir's paths are prefixed). */
+function recording(fs: MemoryFs, touched: string[], prefix = ''): MemoryFs {
+  const note = (rel: string): void => {
+    touched.push(join(prefix, rel).split(sep).join('/'))
+  }
+  return {
+    key: fs.key,
+    root: fs.root,
+    subdir: (rel) => recording(fs.subdir(rel), touched, join(prefix, rel)),
+    readFile: (rel, encoding) => (note(rel), fs.readFile(rel, encoding)),
+    writeFile: (rel, content, options) => (note(rel), fs.writeFile(rel, content, options)),
+    readdir: (rel) => (note(rel), fs.readdir(rel)),
+    mkdir: (rel) => (note(rel), fs.mkdir(rel)),
+    rename: (from, to) => (note(from), note(to), fs.rename(from, to)),
+    rm: (rel) => (note(rel), fs.rm(rel)),
+    utimes: (rel, mtime) => (note(rel), fs.utimes(rel, mtime))
+  }
+}
 
 const silent = { info() {}, warn() {} }
 
@@ -156,17 +186,20 @@ async function setup(opts: {
   now?: () => Date
   /** Put the agent's memory tree on a sandbox volume reached through the shim channel. */
   sandbox?: boolean
+  /** The change-log sink for the store, instead of the sidecar inside it. */
+  historyFor?: MemoryHomePorts['historyFor']
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   const sandbox = opts.sandbox ? pod() : undefined
   const root: MemoryFs = sandbox?.fs ?? local(dir)
+  const historyFor = opts.historyFor ?? sidecarMemoryHistory
   await ensureMemory(root, 'bot')
-  await writeMemoryFile(root, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
+  await writeMemoryFile(root, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool', historyFor(root))
   const store = new FakeStore()
   const prompts: { systemPrompt: string; prompt: string; inputDir: string }[] = []
   const runner = new DreamRunner({
     agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-    memoryFsFor: (id) => (id === 'a1' ? root : undefined),
+    memoryHomePortsFor: (id) => (id === 'a1' ? home(root, historyFor) : undefined),
     dreamingPolicyFor: () => opts.policy ?? { enabled: true },
     operationPolicy: opts.operationPolicy ?? 'test-only',
     store,
@@ -307,7 +340,7 @@ describe('DreamRunner pipeline', () => {
     // topic the model never rewrote is simply gone, because staging replaces the store.
     const { dir, store, runner } = await setup({
       stagedWrite: async (stagedStore) => {
-        await writeMemoryFile(
+        await writeWithSidecar(
           stagedStore,
           'deploys.md',
           '---\ndescription: how we ship\n---\n\n- ship from main\n',
@@ -353,7 +386,7 @@ describe('DreamRunner pipeline', () => {
     // the proposal is refused rather than reviewed.
     const { dir, store, runner } = await setup({
       stagedWrite: async (stagedStore) => {
-        await writeMemoryFile(stagedStore, 'smuggled.md', 'written with the runtime file tool\n', undefined, 'dream')
+        await writeWithSidecar(stagedStore, 'smuggled.md', 'written with the runtime file tool\n', undefined, 'dream')
         return [] // ...and reported by nobody: no bound tool call happened
       }
     })
@@ -373,7 +406,7 @@ describe('DreamRunner pipeline', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? fs : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(fs) : undefined),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'test-only',
       store,
@@ -471,7 +504,7 @@ describe('DreamRunner pipeline', () => {
     const sources = vi.spyOn(store, 'dreamSessionSources')
     const runner = new DreamRunner({
       agentDirByAgent,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor,
       store,
       extract,
@@ -517,7 +550,7 @@ describe('DreamRunner pipeline', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'test-only',
       store,
@@ -544,11 +577,11 @@ describe('DreamRunner pipeline', () => {
     // forward self-reference is safe.
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     await ensureMemory(local(dir), 'bot')
-    await writeMemoryFile(local(dir), 'prefs.md', '- seed\n', undefined, 'tool')
+    await writeWithSidecar(local(dir), 'prefs.md', '- seed\n', undefined, 'tool')
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'test-only',
       store,
@@ -575,16 +608,23 @@ describe('DreamRunner pipeline', () => {
   })
 
   it('cancel during extraction wins: the late output is never staged', async () => {
+    let markExtractionReady!: () => void
+    const extractionReady = new Promise<void>((resolve) => (markExtractionReady = resolve))
     let release!: (v: string) => void
-    const gate = new Promise<string>((r) => (release = r))
-    const { store, runner } = await setup({ extract: () => gate })
+    const gate = new Promise<string>((resolve) => (release = resolve))
+    const { store, runner } = await setup({
+      extract: () => {
+        markExtractionReady()
+        return gate
+      }
+    })
     const started = await runner.start('a1', { trigger: 'manual' })
-    // allow the pending → running transition to land
-    await new Promise((r) => setTimeout(r, 10))
+    await extractionReady
     const canceled = await runner.cancel('a1', started.dreamId)
     expect(canceled.status).toBe('canceled')
     release(PROPOSAL)
-    await new Promise((r) => setTimeout(r, 20))
+    // The canceled status precedes the late extraction's staging cleanup.
+    await vi.waitFor(() => expect(runner.inFlight('a1')).toBe(false), WAIT)
     expect(store.dreams.get(started.dreamId)?.status).toBe('canceled')
     expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
   })
@@ -701,7 +741,7 @@ describe('DreamRunner adoption', () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     const { fs, root } = pod()
     await ensureMemory(fs, 'bot')
-    await writeMemoryFile(fs, 'prefs.md', '- uses tabs\n', undefined, 'tool')
+    await writeWithSidecar(fs, 'prefs.md', '- uses tabs\n', undefined, 'tool')
     let bound = false
     let holds = 0
     let maxHolds = 0
@@ -709,10 +749,10 @@ describe('DreamRunner adoption', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => {
+      memoryHomePortsFor: (id) => {
         if (id !== 'a1') return undefined
         if (!bound) throw new MemorySandboxUnavailableError('agent "a1" has no running sandbox')
-        return fs
+        return home(fs)
       },
       // The daemon's seam: `ensureChannel` + `withSandbox` — bind, then count the hold the idle sweep reads.
       withMemoryHome: async (_agentId, work) => {
@@ -762,7 +802,7 @@ describe('DreamRunner adoption', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? fs : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(fs) : undefined),
       dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
       operationPolicy: 'test-only',
       store,
@@ -799,7 +839,7 @@ describe('DreamRunner adoption', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? fs : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(fs) : undefined),
       dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
       operationPolicy: 'test-only',
       store,
@@ -845,7 +885,7 @@ describe('DreamRunner adoption', () => {
     const store = new FakeStore()
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(local(dir)) : undefined),
       // The snapshot's acquisition succeeds; the run's rejects before its callback starts (a wake that failed).
       withMemoryHome: async (_agentId, work) => {
         acquisitions += 1
@@ -895,6 +935,105 @@ describe('DreamRunner adoption', () => {
     expect(await readdir(dir)).toEqual([])
   })
 
+  it('stages through the staging port and swaps through the live port when the two are different trees', async () => {
+    // The shape a store home other than the daemon's disk will have: staging stays beside the
+    // extraction host, and nothing under memory-dreams/ reaches the store's tree (memory-evolution.md §3.2.1).
+    const liveDir = await mkdtemp(join(tmpdir(), 'ac-dream-live-'))
+    const stagingDir = await mkdtemp(join(tmpdir(), 'ac-dream-staging-'))
+    const liveTouched: string[] = []
+    const stagingTouched: string[] = []
+    const ports: MemoryHomePorts = {
+      live: recording(local(liveDir), liveTouched),
+      staging: recording(local(stagingDir), stagingTouched),
+      historyFor: sidecarMemoryHistory
+    }
+    await ensureMemory(ports.live, 'bot')
+    await writeWithSidecar(ports.live, 'prefs.md', '- uses tabs\n- uses tabs again\n', undefined, 'tool')
+    const store = new FakeStore()
+    const inputDirs: string[] = []
+    const runner = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? liveDir : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? ports : undefined),
+      dreamingPolicyFor: () => ({ enabled: true }),
+      operationPolicy: 'test-only',
+      store,
+      extract: async (_agentId, _systemPrompt, _prompt, _signal, context) => {
+        inputDirs.push(context.inputDir)
+        return { output: PROPOSAL, memoryTopics: await writeStagedProposal(context.stagedStore) }
+      },
+      log: silent
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    expect((await settle(store, started.dreamId)).status).toBe('completed')
+
+    // The extraction host's cwd and every staged byte are on the staging tree; the live tree has no staging.
+    expect(inputDirs).toEqual([join(stagingDir, 'memory-dreams', started.dreamId, 'input')])
+    expect(await readdir(stagingDir)).toEqual(['memory-dreams'])
+    expect(await readdir(liveDir)).not.toContain('memory-dreams')
+
+    // Review reads staging; adoption reads it once more and then writes only through live.
+    const token = await runner.stagedStoreReviewToken('a1', started.dreamId)
+    expect(token).not.toBeNull()
+    expect((await runner.stagedRead('a1', started.dreamId, 'prefs.md'))?.content).toContain('Uses tabs, not spaces')
+    expect((await runner.adopt('a1', started.dreamId, false, token!)).status).toBe('adopted')
+
+    expect(stagingTouched.every((rel) => rel === 'memory-dreams' || rel.startsWith('memory-dreams/'))).toBe(true)
+    expect(liveTouched.some((rel) => rel.startsWith('memory-dreams'))).toBe(false)
+    expect(liveTouched.some((rel) => rel.startsWith(`.memory.adopting-${started.dreamId}`))).toBe(true)
+    expect((await readdir(liveDir)).sort()).toEqual(['memory', 'memory-backups'])
+    expect(await readdir(stagingDir)).toEqual(['memory-dreams'])
+    // The adopted store is the reviewed proposal, byte for byte.
+    const adoptedFiles = await Promise.all(
+      (await listMemory(ports.live)).map(async (file) => ({
+        name: file.name,
+        content: await readMemoryFile(ports.live, file.name)
+      }))
+    )
+    expect(storeDigest(adoptedFiles)).toBe(token)
+  })
+
+  it("sends one dream row per changed file through the store's sink and carries no sidecar when the sink is not one", async () => {
+    // The shape a `control-plane` home has: the log is a table beside the store, so nothing inside `memory/` moves.
+    const batches: MemoryHistoryRecord[][] = []
+    const carried: string[] = []
+    const sink: MemoryHistorySink = {
+      append: async (records) => void batches.push(records),
+      carryInto: async (replacement) => void carried.push(replacement)
+    }
+    const { dir, store, runner } = await setup({
+      stagedFiles: [
+        { path: 'prefs.md', content: '- consolidated preference' },
+        { path: 'fresh.md', content: '- newly learned fact' }
+      ],
+      historyFor: () => sink
+    })
+    await writeMemoryFile(local(dir), 'obsolete.md', '- no longer relevant\n', undefined, 'tool', sink)
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+    batches.length = 0
+
+    await runner.adopt('a1', started.dreamId, false)
+
+    expect(carried).toEqual([`.memory.adopting-${started.dreamId}`])
+    // The first batch after the swap is the change set — one row per changed file, the rendered index among them —
+    // sorted by path and all dream-sourced.
+    const adoption = batches[0]!
+    expect(adoption.map((record) => [record.path, record.event])).toEqual([
+      ['fresh.md', 'add'],
+      [MEMORY_INDEX, 'update'],
+      ['obsolete.md', 'delete'],
+      ['prefs.md', 'update']
+    ])
+    expect(adoption.every((record) => record.source === 'dream' && record.id)).toBe(true)
+    expect(adoption.find((record) => record.path === 'prefs.md')).toMatchObject({
+      before: '- uses tabs\n- uses tabs again\n',
+      after: '- consolidated preference\n'
+    })
+    // No sidecar anywhere on the tree: not in the adopted store, and none was ever written to carry.
+    expect(await readdir(memoryDir(dir))).not.toContain(MEMORY_HISTORY_FILENAME)
+    expect(await readMemoryFile(local(dir), 'prefs.md')).toBe('- consolidated preference\n')
+  })
+
   it('preserves the mtime of files the dream left unchanged, refreshing only changed ones', async () => {
     // A dream rebuilds the whole store and swaps it in, so without care every
     // file would show the adoption time. Only files whose content actually
@@ -914,7 +1053,7 @@ describe('DreamRunner adoption', () => {
     // A dream stages into a real memory store now, so its files live under `memory/`.
     const out = join(dir, 'memory-dreams', started.dreamId, 'memory')
     const stagedKeep = await readFile(join(out, 'keep.md'), 'utf8')
-    await writeMemoryFile(local(dir), 'keep.md', stagedKeep, undefined, 'tool')
+    await writeWithSidecar(local(dir), 'keep.md', stagedKeep, undefined, 'tool')
     const OLD = new Date('2020-01-01T00:00:00.000Z')
     for (const name of ['keep.md', 'prefs.md', MEMORY_INDEX]) {
       await utimes(join(memoryDir(dir), name), OLD, OLD).catch(() => {})
@@ -972,7 +1111,7 @@ describe('DreamRunner adoption', () => {
         { path: 'fresh.md', content: '- newly learned fact' }
       ]
     })
-    await writeMemoryFile(local(dir), 'obsolete.md', '- no longer relevant\n', undefined, 'tool')
+    await writeWithSidecar(local(dir), 'obsolete.md', '- no longer relevant\n', undefined, 'tool')
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 
@@ -1054,7 +1193,7 @@ describe('DreamRunner adoption', () => {
     // the new store. The marker must be present in the final live store.
     await Promise.allSettled([
       runner.adopt('a1', started.dreamId, false),
-      writeMemoryFile(local(dir), 'marker.md', '- concurrent write\n', undefined, 'console')
+      writeWithSidecar(local(dir), 'marker.md', '- concurrent write\n', undefined, 'console')
     ])
     expect(await readMemoryFile(local(dir), 'marker.md')).toContain('concurrent write')
   })
@@ -1064,7 +1203,7 @@ describe('DreamRunner adoption', () => {
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 
-    await writeMemoryFile(local(dir), 'prefs.md', '- console edit after snapshot\n', undefined, 'console')
+    await writeWithSidecar(local(dir), 'prefs.md', '- console edit after snapshot\n', undefined, 'console')
     await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
 
     const adopted = await runner.adopt('a1', started.dreamId, true)
@@ -1106,7 +1245,7 @@ describe('DreamRunner adoption', () => {
       policy: { enabled: true, autoAdopt: true },
       // Hold the extraction open so a console write lands inside the dream window.
       extract: async () => {
-        await writeMemoryFile(local(dir), 'notes.md', '- human note mid-dream\n', undefined, 'console')
+        await writeWithSidecar(local(dir), 'notes.md', '- human note mid-dream\n', undefined, 'console')
         return PROPOSAL
       }
     })
@@ -1129,7 +1268,7 @@ describe('DreamRunner adoption', () => {
     const { dir, store, runner } = await setup({})
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- distilled after\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- distilled after\n', undefined, 'distill')
 
     const dream = store.dreams.get(started.dreamId)!
     // Same counts (so the count checks still pass), different daemon process.
@@ -1152,7 +1291,7 @@ describe('DreamRunner adoption', () => {
     await settle(store, b.dreamId)
 
     await runner.adopt('a1', a.dreamId, false)
-    await writeMemoryFile(
+    await writeWithSidecar(
       local(dir),
       'prefs.md',
       '- Uses tabs, not spaces (2026-07-24).\n- later distilled\n',
@@ -1173,7 +1312,7 @@ describe('DreamRunner adoption', () => {
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 
-    await writeMemoryFile(local(dir), 'notes.md', '- human note\n', undefined, 'console')
+    await writeWithSidecar(local(dir), 'notes.md', '- human note\n', undefined, 'console')
     // Erase the console row from the log, leaving only the distill one.
     const historyPath = join(memoryDir(dir), MEMORY_HISTORY_FILENAME)
     const kept = (await readFile(historyPath, 'utf8'))
@@ -1181,7 +1320,7 @@ describe('DreamRunner adoption', () => {
       .filter((line) => !line.includes('"source":"console"'))
       .join('\n')
     await writeFile(historyPath, kept, 'utf8')
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- distilled later\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- distilled later\n', undefined, 'distill')
 
     await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
     expect(await readMemoryFile(local(dir), 'notes.md')).toContain('human note')
@@ -1195,7 +1334,7 @@ describe('DreamRunner adoption', () => {
     const started = await runner.start('a1', { trigger: 'manual' })
     await settle(store, started.dreamId)
 
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- one more distilled line\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- one more distilled line\n', undefined, 'distill')
     await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
   })
 
@@ -1207,7 +1346,7 @@ describe('DreamRunner adoption', () => {
     // Per-turn capture landed a NEW fact while the dream ran. The digest now
     // differs, but every post-snapshot .history row is distill-sourced, so the
     // fence must rebase rather than refuse.
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- prefers pnpm over npm\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- prefers pnpm over npm\n', undefined, 'distill')
 
     const adopted = await runner.adopt('a1', started.dreamId, false)
     expect(adopted.status).toBe('adopted')
@@ -1225,8 +1364,8 @@ describe('DreamRunner adoption', () => {
 
     // A distill write is rebasable, but the console write in the same window is
     // not — a mixed window must refuse rather than silently drop the edit.
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n- distilled\n', undefined, 'distill')
-    await writeMemoryFile(local(dir), 'notes.md', '- a human wrote this\n', undefined, 'console')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n- distilled\n', undefined, 'distill')
+    await writeWithSidecar(local(dir), 'notes.md', '- a human wrote this\n', undefined, 'console')
 
     await expect(runner.adopt('a1', started.dreamId, false)).rejects.toThrow(/changed since/)
     expect(await readMemoryFile(local(dir), 'notes.md')).toContain('a human wrote this')
@@ -1238,7 +1377,7 @@ describe('DreamRunner adoption', () => {
     await settle(store, started.dreamId)
 
     // The distiller re-states, in its own words, the very fact the dream wrote.
-    await writeMemoryFile(
+    await writeWithSidecar(
       local(dir),
       'prefs.md',
       '- uses tabs\n- Uses tabs, not spaces (2026-07-24).\n',
@@ -1302,7 +1441,7 @@ describe('DreamRunner crash recovery', () => {
     })
     await new DreamRunner({
       agentDirByAgent: () => undefined,
-      memoryFsFor: () => undefined,
+      memoryHomePortsFor: () => undefined,
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
@@ -1332,7 +1471,7 @@ describe('DreamRunner crash recovery', () => {
     const failures: string[] = []
     const runner = new DreamRunner({
       agentDirByAgent: () => undefined,
-      memoryFsFor: () => undefined,
+      memoryHomePortsFor: () => undefined,
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
@@ -1408,7 +1547,7 @@ describe('DreamRunner crash recovery', () => {
 
     await new DreamRunner({
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
-      memoryFsFor: (agentId) => (agentId === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (agentId) => (agentId === 'a1' ? home(local(dir)) : undefined),
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
@@ -1429,7 +1568,7 @@ describe('DreamRunner production security hold', () => {
   it('blocks every staged-content operation without changing files or metadata', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-held-'))
     await ensureMemory(local(dir), 'bot')
-    await writeMemoryFile(local(dir), 'prefs.md', '- live value\n', undefined, 'tool')
+    await writeWithSidecar(local(dir), 'prefs.md', '- live value\n', undefined, 'tool')
 
     const dreamId = 'drm-held'
     const candidateId = '11111111-1111-4111-8111-111111111111'
@@ -1472,7 +1611,7 @@ describe('DreamRunner production security hold', () => {
     const before = JSON.stringify(await store.getDream('a1', dreamId))
     const runner = new DreamRunner({
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
-      memoryFsFor: (agentId) => (agentId === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (agentId) => (agentId === 'a1' ? home(local(dir)) : undefined),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'blocked',
       store,
@@ -1560,7 +1699,7 @@ describe('DreamRunner production security hold', () => {
     const supersededDreams = vi.spyOn(store, 'supersededDreams')
     const runner = new DreamRunner({
       agentDirByAgent: (agentId) => (agentId === 'a1' ? dir : undefined),
-      memoryFsFor: (agentId) => (agentId === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (agentId) => (agentId === 'a1' ? home(local(dir)) : undefined),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'blocked',
       store,
@@ -1644,11 +1783,11 @@ describe('DreamRunner store persistence', () => {
   it('the real runner persists snapshotWrites end to end', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     await ensureMemory(local(dir), 'bot')
-    await writeMemoryFile(local(dir), 'prefs.md', '- uses tabs\n', undefined, 'tool')
+    await writeWithSidecar(local(dir), 'prefs.md', '- uses tabs\n', undefined, 'tool')
     const store = await LocalStore.open(join(await mkdtemp(join(tmpdir(), 'ac-dream-store-')), 'local.sqlite'))
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }),
       operationPolicy: 'test-only',
       store,
@@ -1900,7 +2039,7 @@ describe('capture/adoption serialization', () => {
 
     // Fire capture and adoption concurrently at the same store.
     const [, adoptResult] = await Promise.allSettled([
-      writeMemoryFile(local(dir), 'captured.md', '- a captured fact\n', undefined, 'distill'),
+      writeWithSidecar(local(dir), 'captured.md', '- a captured fact\n', undefined, 'distill'),
       runner.adopt('a1', started.dreamId, false)
     ])
 
@@ -1966,7 +2105,7 @@ describe('DreamRunner skill mining (D-3)', () => {
     await ensureMemory(local(dir), 'bot')
     const runner = new DreamRunner({
       agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
-      memoryFsFor: (id) => (id === 'a1' ? local(dir) : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(local(dir)) : undefined),
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
       operationPolicy: 'test-only',
       store,
@@ -2001,7 +2140,7 @@ describe('DreamRunner skill mining (D-3)', () => {
     const prompts: string[] = []
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }), // mineSkills off
       operationPolicy: 'test-only',
       store,
@@ -2135,7 +2274,7 @@ describe('DreamRunner skill mining — review findings', () => {
     let inputDir = ''
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
       operationPolicy: 'test-only',
       store,
@@ -2172,7 +2311,7 @@ describe('DreamRunner skill mining — review findings', () => {
     const prompts: string[] = []
     const runner = new DreamRunner({
       agentDirByAgent: () => dir,
-      memoryFsFor: () => local(dir),
+      memoryHomePortsFor: () => home(local(dir)),
       dreamingPolicyFor: () => ({ enabled: true }), // mining off
       operationPolicy: 'test-only',
       store,

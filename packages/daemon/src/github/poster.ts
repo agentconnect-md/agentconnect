@@ -21,7 +21,7 @@
  */
 
 import type { GithubPublishedComment } from '@agentconnect.md/protocol'
-import { flattenUnsafeLinks } from '../messages/agent-links.js'
+import { flattenUnsafeLinks, type FlattenOptions } from '../messages/agent-links.js'
 import { renderAttributionMessage } from '../messages/attribution.js'
 import { isNoResponseBody } from '../session/no-response.js'
 
@@ -82,12 +82,10 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : undefined
 }
 
-function publicReplyText(text: string | undefined): string | undefined {
+function publicReplyText(text: string | undefined, linkOptions: FlattenOptions): string | undefined {
   const trimmed = text?.trim()
   if (!text || !trimmed || isNoResponseBody(trimmed)) return undefined
-  // A code host resolves a relative target against the repository, so only the host-absolute
-  // one is both broken and a disclosure of the daemon's filesystem layout.
-  return flattenUnsafeLinks(text, { resolvesRelativeTargets: true })
+  return flattenUnsafeLinks(text, linkOptions)
 }
 
 /**
@@ -167,9 +165,9 @@ export class GithubReplyCollector {
     }
   }
 
-  finalText(completed = true): string | undefined {
+  finalText(completed = true, linkOptions: FlattenOptions = { resolvesRelativeTargets: true }): string | undefined {
     const explicit = this.explicitFinalText()
-    if (explicit || !completed) return publicReplyText(explicit)
+    if (explicit || !completed) return publicReplyText(explicit, linkOptions)
 
     // Some codex-acp versions learn an item's phase only after its final delta,
     // so a real final can remain `unknown`. `exitedReviewMode` is also deliberately
@@ -186,7 +184,7 @@ export class GithubReplyCollector {
       )
       .sort((a, b) => a.lastSeen - b.lastSeen)
       .at(-1)?.text
-    return publicReplyText(unknown)
+    return publicReplyText(unknown, linkOptions)
   }
 
   private explicitFinalText(): string | undefined {

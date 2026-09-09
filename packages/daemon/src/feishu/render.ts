@@ -1,7 +1,8 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import type { WireFeishuCardActionTarget } from '@agentconnect.md/protocol'
 import { AgentMessageRun } from '../messages/message-boundary.js'
-import { flattenUnsafeLinks } from '../messages/agent-links.js'
+import { flattenUnsafeLinks, referenceBufferStart } from '../messages/agent-links.js'
+import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 import { extractToolOutput } from '../session/tool-output.js'
@@ -413,7 +414,10 @@ export class FeishuConverger {
   // The runtime's own message identity, which is the only boundary a speak-only run offers.
   private readonly messages = new AgentMessageRun()
 
-  constructor(private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high') {}
+  constructor(
+    private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high',
+    private readonly resolveFileLink?: WorkspaceFileLinkResolver
+  ) {}
 
   onStart(): FeishuAction[] {
     return this.mode === 'none' ? [] : [{ kind: 'card-start' }]
@@ -427,20 +431,27 @@ export class FeishuConverger {
 
   /** Whether a newer safe answer snapshot is ready for the periodic CardKit stream timer. */
   hasStreamingUpdate(): boolean {
-    const trimmed = this.cardText.trim()
-    return (
-      this.mode !== 'none' &&
-      trimmed.length > 0 &&
-      !isNoResponsePrefix(trimmed) &&
-      this.cardText !== this.lastStreamText
-    )
+    const text = this.cardSnapshot()
+    return text.trim().length > 0 && text !== this.lastStreamText
+  }
+
+  /** A timed preview holds reference-bearing blocks; completed messages release the whole snapshot. */
+  private cardSnapshot(complete = false): string {
+    const held = complete ? undefined : referenceBufferStart(this.buf)
+    // The pending buffer is the raw card's suffix; previously completed messages remain visible.
+    const raw =
+      held === undefined ? this.cardText : this.cardText.slice(0, this.cardText.length - this.buf.length + held)
+    return this.mode === 'none' || isNoResponsePrefix(raw.trim())
+      ? ''
+      : flattenUnsafeLinks(raw, { resolveFileLink: this.resolveFileLink })
   }
 
   /** Return one cumulative CardKit element update and mark that snapshot as emitted. */
-  streamUpdate(): FeishuAction[] {
-    if (!this.hasStreamingUpdate()) return []
-    this.lastStreamText = this.cardText
-    return [{ kind: 'card-stream', text: flattenUnsafeLinks(this.cardText) }]
+  streamUpdate(complete = false): FeishuAction[] {
+    const text = this.cardSnapshot(complete)
+    if (!text.trim() || text === this.lastStreamText) return []
+    this.lastStreamText = text
+    return [{ kind: 'card-stream', text }]
   }
 
   /** Idle-timer flush: update the answer card, record the buffered body, and drain
@@ -455,11 +466,12 @@ export class FeishuConverger {
    * stays one message and is replaced with the next answer segment after a tool boundary. */
   private closeSegment(includeStream = true): FeishuAction[] {
     this.segmentReset = true
-    const stream = includeStream ? this.streamUpdate() : []
+    const stream = includeStream ? this.streamUpdate(true) : []
     if (!this.recordDirty || !this.buf.trim()) return stream
     if (isNoResponsePrefix(this.buf.trim())) return []
-    const text = flattenUnsafeLinks(this.buf)
+    const text = flattenUnsafeLinks(this.buf, { resolveFileLink: this.resolveFileLink })
     this.recordDirty = false
+    if (!text.trim()) return stream
     return [
       ...stream,
       ...chunkForFeishu(text, FEISHU_MESSAGE_LIMIT).map(
@@ -471,25 +483,29 @@ export class FeishuConverger {
   private drainReasoning(): FeishuAction[] {
     if (!this.reasoningDirty) return []
     this.reasoningDirty = false
-    return [{ kind: 'reasoning', text: renderReasoning(flattenUnsafeLinks(this.reasoningBuf)) }]
+    const text = flattenUnsafeLinks(this.reasoningBuf, { resolveFileLink: this.resolveFileLink })
+    return text.trim() ? [{ kind: 'reasoning', text: renderReasoning(text) }] : []
   }
 
-  /** Record one non-minimal body window. A semantic boundary starts the next answer
-   * chunk on a fresh paragraph inside the same card; an idle flush does not. */
+  /** Record a body window, keeping reference-bearing blocks together until a semantic boundary. */
   private flush(boundary: boolean, includeStream = true): FeishuAction[] {
     const trimmed = this.buf.trim()
     if (!trimmed) {
       this.buf = ''
       if (!this.cardText.trim()) this.cardText = ''
       if (boundary && this.cardText.trim()) this.cardBoundary = true
-      return includeStream ? this.streamUpdate() : []
+      return includeStream ? this.streamUpdate(boundary) : []
     }
     if (isNoResponsePrefix(trimmed)) return []
-    const text = flattenUnsafeLinks(this.buf)
-    this.buf = ''
+    const cut = boundary ? this.buf.length : (referenceBufferStart(this.buf) ?? this.buf.length)
+    if (cut === 0) return includeStream ? this.streamUpdate(boundary) : []
+    const text = flattenUnsafeLinks(this.buf.slice(0, cut), { resolveFileLink: this.resolveFileLink })
+    this.buf = this.buf.slice(cut)
     if (boundary) this.cardBoundary = true
+    const stream = includeStream ? this.streamUpdate(boundary) : []
+    if (!text.trim()) return stream
     return [
-      ...(includeStream ? this.streamUpdate() : []),
+      ...stream,
       ...chunkForFeishu(text, FEISHU_MESSAGE_LIMIT).map(
         (t) => ({ kind: 'post', text: t, recordOnly: true }) as FeishuAction
       )
@@ -609,7 +625,7 @@ export class FeishuConverger {
   /** Turn end: persist the last body window and replace the streaming entity with the
    * completed answer. Optional shared attribution stays inside that same final card. */
   onFinal(attribution?: ReplyAttributionInfo): FeishuAction[] {
-    this.cardText = flattenUnsafeLinks(this.cardText)
+    this.cardText = flattenUnsafeLinks(this.cardText, { resolveFileLink: this.resolveFileLink })
     const display = this.cardText.trim()
     if (isNoResponseBody(display)) {
       this.buf = ''
@@ -618,7 +634,7 @@ export class FeishuConverger {
       return this.mode === 'none' ? [] : [{ kind: 'card-cancel' }]
     }
     const actions =
-      this.mode === 'minimal' ? this.closeSegment(false) : [...this.drainReasoning(), ...this.flush(false, false)]
+      this.mode === 'minimal' ? this.closeSegment(false) : [...this.drainReasoning(), ...this.flush(true, false)]
     if (this.mode === 'none') return actions
     if (!display) return [...actions, { kind: 'card-cancel' }]
     this.cardText = display
@@ -629,7 +645,7 @@ export class FeishuConverger {
   /** Prompt failure after the card has started: preserve any useful runtime-authored
    * error text, otherwise append one concise failure line, then close the card. */
   onFailure(reason: string, attribution?: ReplyAttributionInfo): FeishuAction[] {
-    this.cardText = flattenUnsafeLinks(this.cardText)
+    this.cardText = flattenUnsafeLinks(this.cardText, { resolveFileLink: this.resolveFileLink })
     const display = this.cardText.trim()
     if (isNoResponseBody(display)) {
       this.buf = ''
@@ -641,7 +657,7 @@ export class FeishuConverger {
     const covered = display.includes(reason)
     const finalText = covered ? this.cardText : display ? `${this.cardText}\n\n${notice}` : notice
     const actions =
-      this.mode === 'minimal' ? this.closeSegment(false) : [...this.drainReasoning(), ...this.flush(false, false)]
+      this.mode === 'minimal' ? this.closeSegment(false) : [...this.drainReasoning(), ...this.flush(true, false)]
     if (!covered) actions.push({ kind: 'post', text: notice, recordOnly: true })
     if (this.mode === 'none') return actions
     this.cardText = finalText

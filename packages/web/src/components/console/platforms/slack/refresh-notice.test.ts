@@ -4,6 +4,7 @@ import { slackManifestScopeFragment, slackRefreshNoticeState } from './refresh-n
 
 const refreshResult = (overrides: Partial<SlackBotRefreshDto> = {}): SlackBotRefreshDto => ({
   manifest: 'synced',
+  manifestMissingScopes: [],
   authorization: 'current',
   rejection: null,
   missingScopes: [],
@@ -68,6 +69,50 @@ describe('slackRefreshNoticeState', () => {
         label: 'Open App Manifest'
       },
       scopeFragment: '"chat:write.customize",\n"lists:read",'
+    })
+  })
+
+  it('sends a built-in app with a short grant to the platform reinstall, claiming nothing about its manifest', () => {
+    expect(
+      slackRefreshNoticeState(
+        refreshResult({
+          manifest: 'manual_update_required',
+          authorization: 'reinstall_required',
+          missingScopes: ['lists:read']
+        }),
+        { builtin: true }
+      )
+    ).toMatchObject({
+      needsAttention: true,
+      message: 'Reinstall the workspace to grant the missing scopes.',
+      action: {
+        href: 'https://api.slack.com/apps/A0123/install-on-team?',
+        label: 'Reinstall workspace'
+      },
+      scopeFragment: null
+    })
+  })
+
+  it('flags a built-in app whose manifest lacks required scopes, with the list to paste and the Setup Server as the fix', () => {
+    expect(
+      slackRefreshNoticeState(
+        refreshResult({
+          manifest: 'deployment_update_required',
+          manifestMissingScopes: ['im:read', 'lists:read'],
+          authorization: 'reinstall_required',
+          missingScopes: ['lists:read']
+        }),
+        { builtin: true }
+      )
+    ).toMatchObject({
+      needsAttention: true,
+      message:
+        "This app's manifest is missing scopes AgentConnect requires. Update it from the Setup Server (Slack → Apply update), or paste the copied list into oauth_config.scopes.bot in the App Manifest editor, then reinstall the workspace.",
+      action: {
+        href: 'https://app.slack.com/app-settings/T0123/A0123/app-manifest',
+        label: 'Open App Manifest'
+      },
+      scopeFragment: '"im:read",\n"lists:read",'
     })
   })
 

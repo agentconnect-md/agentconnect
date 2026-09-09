@@ -58,6 +58,12 @@ import type {
   KnowledgeSearchOk,
   KnowledgeListReq,
   KnowledgeListOk,
+  MemoryStoreReq,
+  MemoryFsReply,
+  MemoryHistoryAppendReq,
+  MemoryHistoryAppendOk,
+  MemoryHomeMigratedReq,
+  MemoryHomeMigratedOk,
   OrgSkillsReq,
   OrgSkillsOk,
   OrganizationSuggestionsSyncReq,
@@ -77,6 +83,7 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  AGENT_MEMORY_STORE_V1_FEATURE,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
   checkInboundFrameOrg,
   checkReplyFrameOrg,
@@ -104,6 +111,8 @@ import type { Logger } from '../log.js'
 export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
 
 const ACK_TIMEOUT_MS = 5000
+/** One deadline for a `memory/store` op, the shim carrier's per-op timeout; there is never a second send. */
+const MEMORY_STORE_TIMEOUT_MS = 30_000
 const BACKOFF_BASE_MS = 1000
 const BACKOFF_CAP_MS = 30000
 // No-split invariant `T_reassign > T_fence`. The CP frees a lease at `renewedAt + leaseMs` and tells the member
@@ -922,8 +931,13 @@ export class CpClient {
     return rep.payload as WebchatMcpGrantRevoked
   }
 
+  /** The §2.1 legal-state gate every request checks: READY or DRAINING, over a live transport. */
+  connected(): boolean {
+    return (this.state === 'READY' || this.state === 'DRAINING') && this.transport !== undefined
+  }
+
   private requireReady(op: string): void {
-    if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
+    if (!this.connected()) {
       throw new WireError('INTERNAL', `control plane unreachable for ${op} (client ${this.state})`, true)
     }
   }
@@ -1114,6 +1128,63 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected knowledge/search/ok, got ${rep.type}`, false)
     }
     return rep.payload as KnowledgeSearchOk
+  }
+
+  // `memory/store` (D→C REQ): one op against the named agent's CP-homed tree (memory-evolution.md §3.2.1), gated like
+  // `knowledgeSearch`. The typed refusals ride inside the reply; an error REP (`SCOPE_DENIED`, ...) rejects by its code.
+  async memoryStore(payload: MemoryStoreReq): Promise<MemoryFsReply> {
+    this.requireReady('memory/store')
+    if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not serve the memory store', false)
+    }
+    // One send, never a retransmit: `memory-append` onto a staged file is not idempotent, and the CP does not
+    // deduplicate request ids, so a reply that is merely late must not become a chunk written twice.
+    const frame = this.scopedFrame('memory/store', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: MEMORY_STORE_TIMEOUT_MS
+    })
+    if (rep.type !== 'memory/store/ok') {
+      throw new WireError('INTERNAL', `expected memory/store/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as MemoryFsReply
+  }
+
+  // `memory/history/append` (D→C REQ): one best-effort batch of change-log records for a CP-homed store, sent like
+  // `memoryStore` — one send on one deadline. Every record carries its own id, so the CP could take a resend, but the
+  // sender holds the store's memory-dir lock while it waits, and one deadline keeps that wait bounded.
+  async memoryHistoryAppend(payload: MemoryHistoryAppendReq): Promise<MemoryHistoryAppendOk> {
+    this.requireReady('memory/history/append')
+    if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not serve the memory store', false)
+    }
+    const frame = this.scopedFrame('memory/history/append', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: MEMORY_STORE_TIMEOUT_MS
+    })
+    if (rep.type !== 'memory/history/append/ok') {
+      throw new WireError('INTERNAL', `expected memory/history/append/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as MemoryHistoryAppendOk
+  }
+
+  // `memory/home/migrated` (D→C REQ): the one-way copy of this agent's tree is complete — one send on one deadline, like
+  // `memoryStore`. A repeated report is the same success on the CP, so a lost reply is retried by the caller, never here.
+  async memoryHomeMigrated(payload: MemoryHomeMigratedReq): Promise<MemoryHomeMigratedOk> {
+    this.requireReady('memory/home/migrated')
+    if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not serve the memory store', false)
+    }
+    const frame = this.scopedFrame('memory/home/migrated', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: MEMORY_STORE_TIMEOUT_MS
+    })
+    if (rep.type !== 'memory/home/migrated/ok') {
+      throw new WireError('INTERNAL', `expected memory/home/migrated/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as MemoryHomeMigratedOk
   }
 
   async knowledgeList(payload: KnowledgeListReq): Promise<KnowledgeListOk> {

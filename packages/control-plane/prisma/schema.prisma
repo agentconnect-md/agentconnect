@@ -122,6 +122,8 @@ model Org {
   dutyGroups                DutyGroup[]
   codeHostReviewLeases      CodeHostReviewLease[]
   codeHostReviewOutcomes    CodeHostReviewAttemptOutcome[]
+  agentMemoryFiles          AgentMemoryFile[]
+  agentMemoryHistory        AgentMemoryHistory[]
 
   @@index([createdByUserId])
   @@map("org")
@@ -829,6 +831,8 @@ model Agent {
   presetRecords         PresetAgent[]
 
   organizationEnvironmentAssignments OrganizationEnvironmentAssignment[]
+  memoryFiles           AgentMemoryFile[]
+  memoryHistory         AgentMemoryHistory[]
 
   @@unique([orgId, name]) // slug is unique within an org
   // Referenced by the composite assignment FK: a binding cannot name an agent in
@@ -3548,4 +3552,55 @@ model DutyGroupMember {
   @@index([groupId])
   @@index([orgId])
   @@map("duty_group_member")
+}
+
+// ── The managed memory home in the Control Plane (memory-evolution.md §3.2.1) ──
+
+// One row per file of an agent's managed memory tree under a `control-plane` home. Directories are
+// implicit — a path prefix with rows — so `mkdir` writes nothing and an empty directory does not exist.
+// `stagedAt` marks a row an append sequence is still building; `commit` renames it into place and clears
+// it, and the staging sweeper removes what an abandoned sequence left behind.
+model AgentMemoryFile {
+  agentId  String    @db.Uuid
+  orgId    String
+  path     String // root-relative, `/`-joined plain segments; the store root is the leading prefix
+  content  Bytes
+  size     Int // bytes, kept beside `content` so listings never read it
+  mtime    DateTime  @db.Timestamptz(3) // the optimistic-concurrency token; strictly monotonic per (agentId, path)
+  stagedAt DateTime? @db.Timestamptz(3)
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  org   Org   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, path])
+  @@index([orgId])
+  @@index([stagedAt])
+  @@map("agent_memory_file")
+}
+
+// The change log of a `control-plane` home as an event table: one row per record the daemon composed,
+// keyed by the record's own id so a re-sent batch is idempotent. `root` names the store the record
+// belongs to (an agent's channel stores share relative paths); `bytes` is the record's encoded size,
+// the unit the byte cap counts. Retention is a delete, never a rewrite.
+model AgentMemoryHistory {
+  id        String   @id @db.Uuid
+  seq       BigInt   @default(autoincrement()) // insertion order, the tiebreak under an equal `at`
+  agentId   String   @db.Uuid
+  orgId     String
+  root      String
+  path      String
+  event     String // add | update | delete
+  before    String?
+  after     String
+  at        DateTime @db.Timestamptz(3)
+  source    String // tool | console | distill | dream
+  truncated Boolean?
+  bytes     Int
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  org   Org   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, root, path, at])
+  @@index([orgId])
+  @@map("agent_memory_history")
 }

@@ -58,11 +58,8 @@ DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packag
 # docker-bake.hcl. Changes to that pin, its owned Dockerfile, or this resolver
 # rebuild the image; unrelated app/package changes leave it on its effective tag.
 MEM0_BACKEND_PATHS="docker/mem0-backend.Dockerfile docker-bake.hcl scripts/component-versions.sh"
-# The runtime sandbox has its OWN Dockerfile, so it deliberately does not share COMMON's
-# docker/Dockerfile. Its inputs are the shim's source graph — the shim ships inside it and the two
-# halves of that channel must not drift apart — plus the pinned runtime versions and table
-# generator that the published runtime table describes.
-RUNTIME_SANDBOX_PATHS="docker/runtime-sandbox.Dockerfile docker/runtime-sandbox packages/daemon/src/shim packages/daemon/tsdown.shim.config.ts packages/daemon/package.json packages/protocol packages/connection docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
+# Keep runtime-image selection and the daemon's bundled default on the same input closure.
+. "$(dirname "$0")/runtime-sandbox-inputs.sh"
 
 # The channel's tags (prerelease tags carry a `-`), oldest → newest. Within one
 # channel `sort -V` compares version fields numerically (rc.9 < rc.10), so the

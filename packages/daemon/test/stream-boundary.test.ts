@@ -44,6 +44,22 @@ describe('splitAtParagraphBoundary', () => {
     expect(splitAtParagraphBoundary('\n\nreal text')).toEqual({ ready: '', tail: '\n\nreal text' })
   })
 
+  it.each([
+    'Read [the digest][r].\n\nThe definition is still arriving.',
+    '[r]: https://example.test/digest\n\nRead [r].\n\n',
+    '- Read [the digest][r].\n\n- Another item.\n\n'
+  ])('keeps a reference-bearing block with later definitions and usages: %s', (tail) => {
+    expect(splitAtParagraphBoundary(`Earlier paragraph.\n\n${tail}`)).toEqual({
+      ready: 'Earlier paragraph.\n\n',
+      tail
+    })
+  })
+
+  it('still streams complete inline links and bracketed code samples', () => {
+    const ready = 'Read [the docs](https://example.test).\n\n`[sample]`\n\n```md\n[r]: /sample.md\n```\n\n'
+    expect(splitAtParagraphBoundary(`${ready}More text`)).toEqual({ ready, tail: 'More text' })
+  })
+
   it('is lossless — ready + tail reconstructs the input', () => {
     for (const text of ['a\n\nb\n\nc', '```\nx\n\ny\n```\n\nz', 'no break at all', '\n\n\n', '']) {
       const { ready, tail } = splitAtParagraphBoundary(text)

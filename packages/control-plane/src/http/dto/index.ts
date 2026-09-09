@@ -10,6 +10,10 @@ import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentMemoryBinding,
   AgentPermissionRequestRecord,
+  ExternalMemoryBinding,
+  ManagedMemoryBinding,
+  ManagedMemoryHome,
+  RuntimeMemoryBinding,
   CanonicalMemoryRecord,
   DecimalAmount,
   FeishuRegion,
@@ -582,6 +586,14 @@ const ManagedSkillEnableBody = z
 // carries only a connection reference + product policy; credentials and plugin
 // transport stay on the daemon-private connection data plane.
 const MemoryConfigBody = AgentMemoryBinding
+// The INPUT shape (memory-evolution.md §3.2.1/§6): `home` has no default here — absent means "keep the current home"
+// on an edit and "resolve it" on create — and the CP-owned `homeMigration` is never accepted from a client. Reusing
+// the wire binding would turn every console save from a Control-Plane-homed agent into a forbidden reverse change.
+const ManagedMemoryConfigInput = ManagedMemoryBinding.omit({ home: true, homeMigration: true })
+  .extend({ home: ManagedMemoryHome.optional() })
+  .strict()
+export const MemoryConfigInputBody = z.union([ManagedMemoryConfigInput, RuntimeMemoryBinding, ExternalMemoryBinding])
+export type MemoryConfigInputBodyT = z.infer<typeof MemoryConfigInputBody>
 
 // Console avatar (docs: the "Agent Avatar" picker), INPUT shape (create/update body).
 // Only `runtime` and `glyph` are settable via a JSON body — the glyph color is
@@ -626,7 +638,9 @@ export const CreateAgentBody = z.object({
   mcpServers: McpServerNamesBody.optional(),
   skills: SkillEnableBody.optional(),
   managedSkills: ManagedSkillEnableBody.optional(),
-  memory: MemoryConfigBody.optional(), // memory backend; absent ⇒ managed default
+  // Memory backend; absent ⇒ managed default. The CP resolves `home`: the managed pool gets `control-plane`
+  // (an explicit `daemon` there is refused), anywhere else the given value or `daemon`.
+  memory: MemoryConfigInputBody.optional(),
   // Placement at create. `set` uses `setId`; `daemon` (the default) uses `daemonId`. `pool` is
   // accepted API sugar for "the org-less set" and is resolved to it at the edge.
   placementKind: z.enum(['daemon', 'pool', 'set']).optional(),
@@ -682,10 +696,16 @@ export const UpdateAgentBody = z
     mcpServers: McpServerNamesBody.nullable().optional(), // replaced wholesale; null clears
     skills: SkillEnableBody.nullable().optional(), // enabled skills; replaced wholesale; null clears
     managedSkills: ManagedSkillEnableBody.nullable().optional(), // accepted managed-skill ids; null clears
-    memory: MemoryConfigBody.nullable().optional() // memory backend; null clears (revert to managed)
+    // Memory backend; null clears (revert to managed). A managed `home` moves one way, `daemon` → `control-plane`;
+    // the reverse is refused unless `force` is set, and never accepted on the managed pool.
+    memory: MemoryConfigInputBody.nullable().optional(),
+    // Confirms the one destructive edit: returning a memory home from the Control Plane to the daemon keeps nothing.
+    force: z.boolean().optional()
   })
   .strict()
-  .refine((b) => Object.values(b).some((v) => v !== undefined), { message: 'no fields to update' })
+  .refine((b) => Object.entries(b).some(([key, v]) => key !== 'force' && v !== undefined), {
+    message: 'no fields to update'
+  })
 
 /** Explicit cold placement move. Kept separate from spec PATCH because it
  * drains one daemon, reprovisions another, and does not migrate local state.
@@ -779,7 +799,9 @@ export const AgentDto = z.object({
   mcpServers: z.array(z.string()), // enabled daemon-configured MCP server names ([] ⇒ none)
   skills: z.array(z.string()), // enabled shared-skills "<source>/<skill>" / "<source>/*" ([] ⇒ none)
   managedSkills: z.array(z.string().uuid()), // explicitly enabled accepted managed-skill ids
-  memory: MemoryConfigBody.nullable(), // memory backend (null ⇒ managed default)
+  // Memory backend (null ⇒ managed default). A managed binding carries its resolved `home` and, while a
+  // `daemon` → `control-plane` copy is under way, the read-only `homeMigration: 'pending'`.
+  memory: MemoryConfigBody.nullable(),
   status: z.string(),
   // What the placement NAMES. `set` carries a null `daemonId` on purpose: no member id is
   // durable, so the console must read readiness from `placementReady` rather than from a machine.
@@ -1777,7 +1799,10 @@ export const BotListDto = z.array(BotDto)
  * manifest into an existing Slack app and checking the workspace installation's
  * actually granted bot scopes. URLs are public Slack settings deep links only. */
 export const SlackBotRefreshDto = z.object({
-  manifest: z.enum(['synced', 'manual_update_required', 'unknown']),
+  /** `deployment_update_required`: a built-in app's manifest, audited read-only, lacks required scopes; the Setup Server fixes it. */
+  manifest: z.enum(['synced', 'manual_update_required', 'deployment_update_required', 'unknown']),
+  /** The required bot scopes the manifest does not declare (`deployment_update_required` only). */
+  manifestMissingScopes: z.array(z.string()),
   authorization: z.enum(['current', 'reinstall_required', 'invalid', 'app_mismatch', 'unknown']),
   /** Slack's own code behind `invalid` (`invalid_auth`, `token_revoked`, …): the diagnosis, since `invalid_auth` also answers an IP-allowlisted caller. Null otherwise. */
   rejection: z.string().nullable(),

@@ -51,6 +51,24 @@ describe('CpAgentRegistry (memory-only CP specs)', () => {
     expect(onChange).toHaveBeenCalledOnce()
   })
 
+  it('mirrors the CP clearing the memory home migration marker — once, and only where the marker is', () => {
+    const { reg, onChange } = makeReg()
+    reg.upsert(A1, spec({ memory: { provider: 'managed', home: 'control-plane', homeMigration: 'pending' } }))
+    reg.upsert(A2, spec({ name: 'other', memory: { provider: 'managed', home: 'control-plane' } }))
+    onChange.mockClear()
+    expect(reg.settleMemoryHomeMigration(A1)).toBe(true)
+    expect(reg.agents().find((agent) => agent.id === A1)?.memory).toEqual({
+      provider: 'managed',
+      home: 'control-plane'
+    })
+    expect(onChange).toHaveBeenCalledOnce()
+    // Nothing to drop: a settled binding, a binding without the marker, an unknown agent.
+    expect(reg.settleMemoryHomeMigration(A1)).toBe(false)
+    expect(reg.settleMemoryHomeMigration(A2)).toBe(false)
+    expect(reg.settleMemoryHomeMigration('33333333-3333-4333-8333-333333333333')).toBe(false)
+    expect(onChange).toHaveBeenCalledOnce()
+  })
+
   it('deletes only the same-id agent.json and preserves every other local file', () => {
     const { dir, reg } = makeReg()
     const matching = writeLocal(dir, 'custom', A1, { description: 'legacy' })

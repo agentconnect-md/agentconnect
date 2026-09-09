@@ -294,12 +294,13 @@ export const SETUP_HTML = String.raw`<!doctype html>
         </div>
         <div class="subsection">
           <label id="slack-name-field" class="field">App name<input id="slack-name" value="AgentConnect"></label>
-          <label class="field">Temporary App configuration token<input id="slack-token" type="password" autocomplete="new-password" placeholder="Used only for create or check"></label>
+          <label class="field">Temporary App configuration token<input id="slack-token" type="password" autocomplete="new-password" placeholder="Used only for create, check or update"></label>
         </div>
         <div class="row">
           <button id="create-slack">Create Slack App</button>
           <button id="connect-slack-login" hidden>Use for Logto sign-in</button>
           <button id="check-slack" hidden>Check match</button>
+          <button id="reconcile-slack" hidden>Apply update</button>
           <button id="clear-slack" class="danger" hidden>Clear configuration</button>
           <a id="slack-settings" class="button" target="_blank" rel="noopener" hidden>Open Slack settings</a>
         </div>
@@ -720,6 +721,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('connect-slack-login').hidden = !slack || !values.logto || Boolean(values.logto.slackConnector) || !bootstrapInfo?.slackAvailable;
       el('clear-slack').hidden = !slack;
       el('check-slack').hidden = !slack;
+      el('reconcile-slack').hidden = !slack;
       el('slack-settings').hidden = !slack;
       if (slack) {
         el('slack-settings').href = 'https://api.slack.com/apps/' + encodeURIComponent(slack.appId);
@@ -1283,6 +1285,27 @@ export const SETUP_HTML = String.raw`<!doctype html>
       message(result.status === 'pass' ? 'Slack App matches the default integration manifest.' : 'Slack App settings need an update.', result.status !== 'pass');
     }
 
+    async function reconcileSlack() {
+      const token = requiredInput('slack-token', 'the temporary Slack App configuration token');
+      const result = await json(await fetch(api + '/reconcile/slack', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({ configToken: token })
+      }));
+      el('slack-token').value = '';
+      showDiff('slack-drift', result.diff || []);
+      match('slack-match', result.status === 'pass' ? 'pass' : 'warn', result.status === 'pass' ? 'Matches' : 'Update required');
+      message(
+        result.status !== 'pass'
+          ? 'Slack App was updated but some settings still differ.'
+          : result.applied.length === 0
+            ? 'Slack App already matches the default integration manifest.'
+            : result.permissionsUpdated
+              ? 'Slack App updated. Reinstall it in each workspace to grant the added scopes.'
+              : 'Slack App updated.',
+        result.status !== 'pass'
+      );
+    }
+
     async function checkGoogle() {
       const report = await checkLogto();
       const connector = report.findings.find((finding) => finding.id === 'logto.connectors');
@@ -1623,6 +1646,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('cancel-slack-configuration').onclick = cancelConfigurationEdit;
     el('clear-slack').onclick = () => clearProvider('slack').catch((error) => message(error.message, true));
     el('check-slack').onclick = () => checkSlack().catch((error) => message(error.message, true));
+    el('reconcile-slack').onclick = () => reconcileSlack().catch((error) => message(error.message, true));
     el('save-gitlab').onclick = () => saveGitlab().catch((error) => message(error.message, true));
     el('cancel-gitlab-configuration').onclick = cancelConfigurationEdit;
     el('clear-gitlab').onclick = () => clearProvider('gitlab').catch((error) => message(error.message, true));

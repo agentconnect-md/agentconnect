@@ -9,6 +9,7 @@
  * Record types are lightweight, domain-facing shapes (NOT raw Prisma models) so
  * nothing above this layer imports `@prisma/client`.
  */
+import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
   AuthReq,
   RegisterReq,
@@ -815,6 +816,11 @@ export interface AgentSkillSourceFence {
 export interface AgentUpdateOpts {
   authorizeMcpServers?: (currentlyHeld: readonly string[]) => void
   skillSources?: AgentSkillSourceFence
+  /** Resolve the managed memory `home` against the binding under the row lock, not the caller's earlier read — so an
+   *  ordinary save cannot restore a flag `memory/home/migrated` cleared in between. It decides the stored binding
+   *  (`patch.memory` still names the target for the external-connection fence), throws `MemoryHomeRefusedError`,
+   *  and on the forced return drops the agent's CP tree and change log in the same transaction. */
+  memoryHome?: MemoryHomeUpdate
 }
 
 export interface AgentCreateOpts {
@@ -852,6 +858,9 @@ export interface AgentRepo {
    *  Org-fenced: throws {@link AgentMissing} when `agentId` does not exist in
    *  `orgId` — a cross-org id is indistinguishable from a missing row. */
   update(orgId: OrgId, agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord>
+  /** Clear `homeMigration` once the daemon reports the copy done (memory-evolution.md §3.2.1), atomically against the
+   *  binding it reads: `conflict` when the home is no longer the Control Plane; an already-clear flag is `cleared`. */
+  settleMemoryHomeMigration(orgId: OrgId, agentId: AgentId): Promise<'cleared' | 'conflict' | 'missing'>
   /** Compare-and-set a workspace edit. The caller has already drained/proved
    *  an owning daemon when one exists. Org-fenced: a cross-org id misses the
    *  CAS exactly like a stale expectation (null). */
@@ -942,6 +951,8 @@ export interface AgentRepo {
   /** Agents placed on a specific daemon — the reconcile roster (`register/ok.agents`).
    *  A daemon only ever receives the specs of the agents it owns (1 agent : 1 machine). */
   listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]>
+  /** Agents placed on a set — unscoped, for the boot-time pass that walks the install-wide pool. */
+  listForSet(setId: string): Promise<AgentRecord[]>
   /** Unscoped batch read by id — the duty half of the reconcile roster, whose
    *  agents are named by the ledger rather than by placement. */
   listByIds(agentIds: readonly AgentId[]): Promise<AgentRecord[]>
@@ -5818,6 +5829,119 @@ export interface OrganizationKnowledgeRepo {
     expectedSnapshotToken: string,
     reviewedByUserId?: string
   ): Promise<AcceptOrganizationSuggestionResult>
+}
+
+// ── The managed memory home in the Control Plane (memory-evolution.md §3.2.1) ──
+
+/** One slice of a memory file, in bytes: the whole row's `size`/`mtime` and `slice = content[offset, offset+limit)`. */
+export interface AgentMemoryFileSlice {
+  size: number
+  mtime: Date
+  slice: Uint8Array
+}
+
+/** A listed row — never its content, so a directory listing costs no bytes. */
+export interface AgentMemoryFileEntry {
+  path: string
+  size: number
+  mtime: Date
+  staged: boolean
+}
+
+export type AgentMemoryAppendOutcome =
+  { ok: true; size: number } | { ok: false; reason: 'missing' | 'exists' | 'too-large' }
+
+export type AgentMemoryCommitOutcome =
+  { ok: true; size: number; mtime: Date } | { ok: false; reason: 'temp-missing' | 'target-is-directory' | 'conflict' }
+
+/** `moved` / `absent` answer the port's boolean; `occupied` is a target that already has rows, which disk refuses too. */
+export type AgentMemoryRenameOutcome = 'moved' | 'absent' | 'occupied'
+
+// The `agent_memory_file` table: one row per file, directories implicit, paths the resolved `root/rel` strings (`''` = tree root).
+// Every method is ONE transaction serialized per agent — the conditional-write primitive unified-memory-interface.md §5 reuses.
+export interface AgentMemoryFileRepo {
+  read(agentId: AgentId, path: string, offset: number, limit: number): Promise<AgentMemoryFileSlice | null>
+  /** Concatenate `chunk` into the row at `path`, creating it as a staged row when `create` is set. */
+  append(
+    agentId: AgentId,
+    orgId: OrgId,
+    path: string,
+    chunk: Uint8Array,
+    create: boolean,
+    now: Date
+  ): Promise<AgentMemoryAppendOutcome>
+  /** Publish `temp` as `path` under the `ifMatchMtime` precondition; the temp row is gone either way. */
+  commit(
+    agentId: AgentId,
+    path: string,
+    temp: string,
+    ifMatchMtime: string | undefined,
+    now: Date,
+    ifAbsent?: boolean
+  ): Promise<AgentMemoryCommitOutcome>
+  stat(agentId: AgentId, path: string): Promise<'file' | 'dir' | 'missing'>
+  /** Every row at or beneath `path` (`''` ⇒ the whole tree), for the listing to fold into entries. */
+  listUnder(agentId: AgentId, path: string): Promise<AgentMemoryFileEntry[]>
+  /** Whether nothing is left at or beneath `path`; removes nothing. */
+  rmdir(agentId: AgentId, path: string): Promise<boolean>
+  /** Remove the row at `path` and every row beneath it; absence is fine. */
+  rm(agentId: AgentId, path: string): Promise<void>
+  /** A file row is renamed; a directory prefix is rewritten on every row beneath it. */
+  rename(agentId: AgentId, from: string, to: string): Promise<AgentMemoryRenameOutcome>
+  utimes(agentId: AgentId, path: string, mtime: Date): Promise<void>
+  /** Delete up to `limit` staged rows older than `before` — what an abandoned append sequence left. */
+  sweepStaged(before: Date, limit: number): Promise<number>
+  /** Every row of the agent — the forced return to a daemon home; the store service refuses `rm` of the root on purpose. */
+  deleteTree(agentId: AgentId): Promise<void>
+}
+
+/** One change-log record as stored: the wire event plus the store `root` it belongs to. */
+export interface AgentMemoryHistoryInput {
+  id: string
+  path: string
+  event: 'add' | 'update' | 'delete'
+  before?: string
+  after: string
+  at: Date
+  source: 'tool' | 'console' | 'distill' | 'dream'
+  truncated?: boolean
+  /** The record's encoded size — the unit `MAX_HISTORY_FILE_BYTES` counts. */
+  bytes: number
+}
+
+export interface AgentMemoryHistoryRetention {
+  maxVersionsPerFile: number
+  maxBytesPerRoot: number
+}
+
+/** One stored change-log record, as the console's `memory/history` page carries it. */
+export type AgentMemoryHistoryRecord = AgentMemoryHistoryInput
+
+/** One newest-first page of a file's change log; `nextCursor` is the id of the next not-yet-returned record. */
+export interface AgentMemoryHistoryPage {
+  records: AgentMemoryHistoryRecord[]
+  nextCursor?: string
+}
+
+/** The `agent_memory_history` table: insert a batch, then retain by deleting — newest N per file, then a byte cap per store. */
+export interface AgentMemoryHistoryRepo {
+  append(
+    agentId: AgentId,
+    orgId: OrgId,
+    root: string,
+    records: AgentMemoryHistoryInput[],
+    retention: AgentMemoryHistoryRetention
+  ): Promise<void>
+  /** Page one file's records newest first; `cursor` names the record the page starts at, and an evicted one is an empty page. */
+  page(
+    agentId: AgentId,
+    root: string,
+    path: string,
+    cursor: string | undefined,
+    limit: number
+  ): Promise<AgentMemoryHistoryPage>
+  /** Every record of the agent — the forced return to a daemon home. */
+  deleteTree(agentId: AgentId): Promise<void>
 }
 
 // ── External-memory plugin control plane (memory-evolution M-5A) ──

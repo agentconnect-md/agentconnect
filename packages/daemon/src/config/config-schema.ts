@@ -134,6 +134,24 @@ const SandboxMountSchema = z
   .strict()
 export type SandboxMount = z.infer<typeof SandboxMountSchema>
 
+const SandboxBackendSchema = z.enum(['srt', 'microsandbox'])
+export type SandboxBackend = z.infer<typeof SandboxBackendSchema>
+
+export const MicrosandboxConfigSchema = z
+  .object({
+    image: z.string().trim().min(1).optional(),
+    // The backend accepts u8 CPUs and u32 MiB resource sizes.
+    cpus: z.number().int().positive().max(255).default(2),
+    memoryMiB: z.number().int().positive().max(0xffffffff).default(2048),
+    diskGiB: z
+      .number()
+      .int()
+      .positive()
+      .max(Math.floor(0xffffffff / 1024))
+      .default(10)
+  })
+  .strict()
+
 export const ConfigSchema = z.object({
   version: z.literal(1),
   daemonId: z.string().optional(),
@@ -170,8 +188,9 @@ export const ConfigSchema = z.object({
   memoryPlugins: z.record(MemoryPluginCommandRef, StdioMemoryPluginDefSchema).optional(),
   sandbox: z
     .object({
-      backend: z.literal('srt').default('srt'),
-      mounts: z.array(SandboxMountSchema).default([])
+      backend: SandboxBackendSchema.default('srt'),
+      mounts: z.array(SandboxMountSchema).default([]),
+      microsandbox: MicrosandboxConfigSchema.optional()
     })
     .strict()
     .default({ backend: 'srt', mounts: [] }),

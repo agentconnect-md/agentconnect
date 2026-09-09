@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ensureMemory, readMemoryFile } from '../src/memory/store.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
+import { localMemoryHome } from '../src/memory/home.js'
 import {
   buildDistillationPrompt,
   MEMORY_DISTILLATION_SYSTEM_PROMPT,
@@ -51,7 +52,7 @@ describe('managed memory auto-distillation', () => {
     await ensureMemory(local(dir), 'bot')
     let calls = 0
     const provider = new ManagedMemoryProvider(
-      () => local(dir),
+      () => localMemoryHome(local(dir)),
       (id) => id === 'enabled',
       async () => {
         calls++

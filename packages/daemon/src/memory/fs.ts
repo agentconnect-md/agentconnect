@@ -3,10 +3,11 @@
  *
  * Every managed-memory writer and reader (`memory/store.ts`, the memory provider, the dream
  * runner, the CP memory reader) is a DIRECTORY abstraction over this port, so where the tree lives
- * is a placement decision, not a policy one: a local agent's home is `<agent.dir>` on this daemon's
+ * is a placement decision (`memory/home.ts`), not a policy one: a local agent's home is `<agent.dir>` on this daemon's
  * disk (`LocalMemoryFs`), a cluster agent's is one root on its sandbox volume reached through the
- * shim (`shim/memory-fs-channel.ts`), and a later home is another implementation. Paths are relative
- * to the root; the root itself is absolute in the coordinates of the filesystem that holds it.
+ * shim (`shim/memory-fs-channel.ts`), and a `control-plane` home is that same client over the CP
+ * connection (`cp/memory-fs.ts`). Paths are relative to the root; the root itself is in the
+ * coordinates of whatever holds the tree — absolute on a disk, tree-relative on the CP.
  *
  * SECURITY (local): the daemon is outside the agent's sandbox, so a symlink planted in the writable
  * memory dir must not redirect a read or a write. Every operation canonicalises the parent chain one
@@ -42,11 +43,26 @@ export class MemoryConflictError extends Error {
   }
 }
 
-/** Raised when a cluster agent's memory home is on a sandbox that is not running — one resolution, no local fallback. */
-export class MemorySandboxUnavailableError extends Error {
-  readonly reason = 'sandbox-unavailable' as const
-  constructor(message: string) {
+/** Why a home is out of reach: no bound pod; the CP connection, its feature, or this member's duty missing; a migration copy still pending; or a `daemon` home on a pool member, which keeps memory in the CP. */
+export type MemoryHomeUnavailableReason =
+  'sandbox-unavailable' | 'connection' | 'feature' | 'scope-denied' | 'migrating' | 'pool-daemon-home'
+
+/** Raised when an agent's memory home cannot be reached — one resolution, never a fallback to this member's disk. */
+export class MemoryHomeUnavailableError extends Error {
+  constructor(
+    readonly reason: MemoryHomeUnavailableReason,
+    message: string
+  ) {
     super(message)
+    this.name = 'MemoryHomeUnavailableError'
+  }
+}
+
+/** The sandbox home's case: a cluster agent's memory sits on a pod that is not running. */
+export class MemorySandboxUnavailableError extends MemoryHomeUnavailableError {
+  declare readonly reason: 'sandbox-unavailable'
+  constructor(message: string) {
+    super('sandbox-unavailable', message)
     this.name = 'MemorySandboxUnavailableError'
   }
 }
@@ -410,29 +426,4 @@ export class LocalMemoryFs implements MemoryFs {
       // best-effort: a vanished file keeps whatever mtime it has
     }
   }
-}
-
-/** The sandbox plane as the factory sees it: the port over a bound sandbox volume, or nothing. */
-export interface SandboxMemoryFsSource {
-  memoryFsFor(agentId: string): MemoryFs | undefined
-}
-
-/**
- * The ONE decision about where an agent's managed memory tree lives. With a sandbox plane (every
- * agent of a `--k8s` daemon runs in a pod) it is the port over the agent's sandbox volume, reachable
- * exactly while the pod is bound — no fallback to this member's disk, since a duty move would leave
- * the memory behind; without one, the local port over the agent dir.
- */
-export function resolveMemoryFs(
-  agent: { id: string; dir: string },
-  sandbox: SandboxMemoryFsSource | undefined
-): MemoryFs {
-  if (!sandbox) return new LocalMemoryFs(agent.dir)
-  const fs = sandbox.memoryFsFor(agent.id)
-  if (!fs) {
-    throw new MemorySandboxUnavailableError(
-      `agent "${agent.id}" has no running sandbox, so its memory cannot be reached`
-    )
-  }
-  return fs
 }

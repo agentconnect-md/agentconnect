@@ -5,27 +5,22 @@ import { join, parse } from 'node:path'
 import {
   LocalMemoryFs,
   MemoryConflictError,
+  MemoryHomeUnavailableError,
   MemoryPathError,
   MemorySandboxUnavailableError,
-  resolveMemoryFs,
   type MemoryFs
 } from '../src/memory/fs.js'
-import {
-  MEMORY_HISTORY_FILENAME,
-  MEMORY_INDEX,
-  ensureMemory,
-  listMemory,
-  listMemoryHistory,
-  readMemoryFile,
-  writeMemoryFile
-} from '../src/memory/store.js'
+import { localMemoryHome, resolveMemoryFs } from '../src/memory/home.js'
+import { MEMORY_HISTORY_FILENAME, MEMORY_INDEX, ensureMemory, listMemory, readMemoryFile } from '../src/memory/store.js'
 import { ManagedMemoryProvider } from '../src/memory/provider.js'
 import { createMemoryReader } from '../src/cp/memory-reader.js'
-import { MemoryFsPayloadSchema, ShimMemoryFs } from '../src/shim/memory-fs-channel.js'
+import { MemoryFsPayloadSchema } from '@agentconnect.md/protocol'
+import { ShimMemoryFs } from '../src/shim/memory-fs-channel.js'
 import { createFdMemoryFsExecutor } from '../src/shim/fd-memory-fs.js'
 import { createExecHandler } from '../src/shim/exec-handler.js'
 import { REPLY_BUDGET } from '../src/wire-slice.js'
 import { pod, shimRequester } from './fixtures/memory-fs-pod.js'
+import { listSidecarHistory, writeWithSidecar } from './fixtures/memory-sidecar.js'
 
 const roots: string[] = []
 afterAll(() => {
@@ -120,10 +115,10 @@ describe('ShimMemoryFs over the read capability (the port over a sandbox volume)
     const { root, fs, requester } = pod()
     await ensureMemory(fs, 'bot-a')
     expect(await fsp.readFile(join(root, 'memory', MEMORY_INDEX), 'utf8')).toContain('# bot-a memory')
-    await writeMemoryFile(fs, 'deploys.md', '- region sea\n', undefined, 'tool')
+    await writeWithSidecar(fs, 'deploys.md', '- region sea\n', undefined, 'tool')
     expect(await readMemoryFile(fs, 'deploys.md')).toBe('- region sea\n')
     expect((await listMemory(fs)).map((f) => f.name)).toEqual([MEMORY_INDEX, 'deploys.md'])
-    const history = await listMemoryHistory(fs, 'deploys.md', undefined, 10)
+    const history = await listSidecarHistory(fs, 'deploys.md', undefined, 10)
     expect(history.events.map((e) => e.event)).toEqual(['add'])
     expect(await fsp.readFile(join(root, 'memory', MEMORY_HISTORY_FILENAME), 'utf8')).toContain('"source":"tool"')
     // Every touch crossed the channel as a memory-fs frame; nothing landed on this side's disk.
@@ -187,7 +182,7 @@ describe('ShimMemoryFs over the read capability (the port over a sandbox volume)
     let bound: MemoryFs | undefined = fs
     const rootFor = () => {
       if (!bound) throw new MemorySandboxUnavailableError('agent "bot-a" has no running sandbox')
-      return bound
+      return localMemoryHome(bound)
     }
     const provider = new ManagedMemoryProvider(rootFor)
     await provider.ensure({ agentId: 'bot-a' }, 'bot-a')
@@ -208,14 +203,25 @@ describe('ShimMemoryFs over the read capability (the port over a sandbox volume)
 })
 
 describe('resolveMemoryFs (the one placement decision)', () => {
-  it('gives a local agent the local port, a bound cluster agent the shim port, and refuses an unbound one', () => {
+  it('gives a local agent the local port, and does not serve a daemon home on a pool member, bound or not', () => {
     const agent = { id: 'bot-a', dir: tempRoot() }
-    const local = resolveMemoryFs(agent, undefined)
+    const log = { warn: () => {} }
+    const local = resolveMemoryFs(agent, { log })
     expect(local).toBeInstanceOf(LocalMemoryFs)
     expect(local.root).toBe(agent.dir)
+    // The pool keeps memory in the Control Plane: a `daemon` home there is a stale binding awaiting the CP's flip.
     const { fs } = pod()
-    expect(resolveMemoryFs(agent, { memoryFsFor: () => fs })).toBe(fs)
-    expect(() => resolveMemoryFs(agent, { memoryFsFor: () => undefined })).toThrow(MemorySandboxUnavailableError)
+    for (const sandbox of [{ memoryFsFor: () => fs }, { memoryFsFor: () => undefined }]) {
+      const refusal = (() => {
+        try {
+          resolveMemoryFs(agent, { sandbox, log })
+        } catch (err) {
+          return err
+        }
+      })()
+      expect(refusal).toBeInstanceOf(MemoryHomeUnavailableError)
+      expect((refusal as MemoryHomeUnavailableError).reason).toBe('pool-daemon-home')
+    }
   })
 })
 
@@ -226,7 +232,7 @@ describe.skipIf(process.platform !== 'linux')('the descriptor-bound executor (po
     const requester = shimRequester(mount, createFdMemoryFsExecutor(mount))
     const fs = new ShimMemoryFs(requester, root)
     await ensureMemory(fs, 'bot-a')
-    const st = await writeMemoryFile(fs, 'deploys.md', 'é'.repeat(120_000), undefined, 'tool')
+    const st = await writeWithSidecar(fs, 'deploys.md', 'é'.repeat(120_000), undefined, 'tool')
     expect(await readMemoryFile(fs, 'deploys.md')).toBe('é'.repeat(120_000))
     await fs.writeFile('memory/big.md', 'é'.repeat(300_000))
     expect((await fs.readFile('memory/big.md'))?.content).toBe('é'.repeat(300_000))

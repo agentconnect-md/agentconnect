@@ -6,6 +6,7 @@ import {
   dreamingConfigForDraft,
   memoryBackendChanged,
   memoryConfigForDraft,
+  memoryHomeMovesForward,
   memorySettingsBlocker,
   memorySettingsChanged,
   memorySettingsDraft
@@ -74,7 +75,8 @@ describe('memory settings UX model', () => {
     // default, so it remains compact on the wire.
     expect(memoryConfigForDraft(memorySettingsDraft({ provider: 'managed', autoDistill: true }))).toEqual({
       provider: 'managed',
-      autoDistill: true
+      autoDistill: true,
+      home: 'daemon'
     })
     expect(memoryConfigForDraft(memorySettingsDraft({ provider: 'native', autoDistill: true }))).toEqual({
       provider: 'native',
@@ -100,7 +102,7 @@ describe('memory settings UX model', () => {
       autoAdopt: true,
       mineSkills: true
     })
-    expect(memoryConfigForDraft(defaults)).toEqual({ provider: 'managed', autoDistill: false })
+    expect(memoryConfigForDraft(defaults)).toEqual({ provider: 'managed', autoDistill: false, home: 'daemon' })
     expect(dreamingConfigForDraft(defaults.dreaming)).toBeUndefined()
 
     const manualReview = {
@@ -111,6 +113,7 @@ describe('memory settings UX model', () => {
     expect(memoryConfigForDraft(manualReview)).toEqual({
       provider: 'managed',
       autoDistill: false,
+      home: 'daemon',
       dreaming: { enabled: true, mineSkills: true, autoAdopt: false }
     })
 
@@ -118,6 +121,7 @@ describe('memory settings UX model', () => {
     expect(memoryConfigForDraft(disabled)).toEqual({
       provider: 'managed',
       autoDistill: false,
+      home: 'daemon',
       dreaming: { enabled: false, schedule: '0 4 * * *', mineSkills: true, autoAdopt: true }
     })
 
@@ -125,6 +129,7 @@ describe('memory settings UX model', () => {
     expect(memoryConfigForDraft(noSkills)).toEqual({
       provider: 'managed',
       autoDistill: false,
+      home: 'daemon',
       dreaming: { enabled: true, schedule: '0 4 * * *', mineSkills: false, autoAdopt: true }
     })
   })
@@ -137,7 +142,12 @@ describe('memory settings UX model', () => {
     const channel = memorySettingsDraft({ provider: 'managed', autoDistill: false, scope: 'channel' })
     expect(channel.scope).toBe('channel')
     // Serializing channel scope never carries a dreaming policy.
-    expect(memoryConfigForDraft(channel)).toEqual({ provider: 'managed', autoDistill: false, scope: 'channel' })
+    expect(memoryConfigForDraft(channel)).toEqual({
+      provider: 'managed',
+      autoDistill: false,
+      scope: 'channel',
+      home: 'daemon'
+    })
 
     // Switching agent → channel is a change (even though dreaming fields are equal).
     expect(memorySettingsChanged(agent, { ...agent, scope: 'channel' })).toBe(true)
@@ -186,6 +196,7 @@ describe('memory settings UX model', () => {
     expect(memoryConfigForDraft(edited)).toEqual({
       provider: 'managed',
       autoDistill: true,
+      home: 'daemon',
       dreaming: {
         enabled: true,
         sessionWindow: 40,
@@ -254,5 +265,33 @@ describe('dreaming schedule validation gates the save', () => {
       dreaming: { enabled: false, schedule: 'not a cron' } as never
     })
     expect(memorySettingsBlocker(off)).toBeNull()
+  })
+})
+
+describe('memory home travels with the managed draft (memory-evolution.md §3.2.1)', () => {
+  it('reads an absent home as daemon and sends the home on every managed save', () => {
+    const legacy = memorySettingsDraft({ provider: 'managed', autoDistill: false })
+    expect(legacy.home).toBe('daemon')
+    const moved = memorySettingsDraft({ provider: 'managed', autoDistill: false, home: 'control-plane' })
+    expect(moved.home).toBe('control-plane')
+    expect(memoryConfigForDraft(moved)).toEqual({ provider: 'managed', autoDistill: false, home: 'control-plane' })
+    expect(memoryConfigForDraft({ ...moved, scope: 'channel' })).toEqual({
+      provider: 'managed',
+      autoDistill: false,
+      scope: 'channel',
+      home: 'control-plane'
+    })
+  })
+
+  it('counts a home change as a change, and only daemon → control-plane as the forward move', () => {
+    const daemon = memorySettingsDraft({ provider: 'managed', autoDistill: false })
+    const controlPlane = { ...daemon, home: 'control-plane' as const }
+    expect(memorySettingsChanged(daemon, controlPlane)).toBe(true)
+    expect(memoryHomeMovesForward(daemon, controlPlane)).toBe(true)
+    expect(memoryHomeMovesForward(controlPlane, daemon)).toBe(false)
+    expect(memoryHomeMovesForward(daemon, daemon)).toBe(false)
+    // A backend switch is not a home move, even when the managed draft says control-plane.
+    const native = memorySettingsDraft({ provider: 'native', autoDistill: false })
+    expect(memoryHomeMovesForward(native, controlPlane)).toBe(false)
   })
 })

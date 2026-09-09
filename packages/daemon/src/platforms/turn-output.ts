@@ -35,12 +35,12 @@
  */
 
 import type { ElicitCardFacet } from './elicit-card.js'
+import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 
-/** A turn's INPUTS, as a platform sees them. Deliberately limited to the
- *  triggering event and the two rendering switches: a surface may read what its
- *  own platform delivered, never core turn machinery — that limit is what keeps
- *  the `apply` bodies honest when they move to their platform modules. */
+/** Platform inputs and narrow rendering capabilities; core turn state stays inside the daemon. */
 export interface TurnOutputContext<TMessage> {
+  /** Rewrite a workspace target through the daemon's trusted session scope. */
+  resolveFileLink?: WorkspaceFileLinkResolver
   /** Resolved output mode for this turn (`none` … `high`). */
   mode: string
   /** Whether the conversation is a direct message. Telegram's continue-the-topic

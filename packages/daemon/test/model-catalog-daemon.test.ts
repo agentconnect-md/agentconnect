@@ -234,6 +234,104 @@ describe('daemon activation gate provenance rule', () => {
   })
 })
 
+describe('microsandbox runtime facts', () => {
+  it('probes host definitions while preserving image facts and same-ID host admission', async () => {
+    const dir = root()
+    await seedCache(
+      dir,
+      ['local', 'shared', 'guest-only'].map((runtimeId) => ({
+        runtimeId,
+        models: [{ id: 'old-host-model', caps: { fastMode: true } }]
+      }))
+    )
+    const clock = new FakeClock()
+    clock.advance(10_000)
+    let catalog = catalogOf({ local: FAKE_RT })
+    const probe = vi.fn(async (runtimes: Record<string, RuntimeDef>): Promise<RuntimeProbeResult[]> =>
+      Object.keys(runtimes).map((runtime) => ({
+        runtime,
+        ok: true,
+        models: ['host-model'],
+        probedVersion: 'host-version',
+        acpProtocolVersion: 1
+      }))
+    )
+    const daemon = new Daemon({
+      root: dir,
+      clock,
+      resolveCatalog: async () => catalog,
+      installed: (runtimes) => Object.fromEntries(Object.entries(runtimes).filter(([id]) => id !== 'guest-only')),
+      probeRuntimes: probe,
+      hostFactory: () => ({}) as never,
+      sandboxMechanism: null
+    })
+
+    try {
+      await daemon.start()
+      catalog = catalogOf({ local: FAKE_RT, shared: FAKE_RT, 'guest-only': FAKE_RT })
+      catalog.entries.shared!.source = 'curated'
+      const d = daemon as any
+      d.cfg.sandbox.backend = 'microsandbox'
+      d.microsandboxTable = {
+        runtimes: ['shared', 'guest-only'].map((id) => ({
+          id,
+          command: `/image/bin/${id}`,
+          args: ['acp'],
+          version: 'image-version',
+          models: ['image-model'],
+          acp: { protocolVersion: 9 }
+        }))
+      }
+      const install = vi.spyOn(d, 'installManagedRuntimePackages')
+      const agents = [
+        { runtime: 'shared', runInSandbox: true },
+        { runtime: 'local', runInSandbox: false }
+      ]
+      await d.discoverRuntimes(dir, d.cfg, agents)
+      expect(install.mock.calls[0]![1]).toEqual(['local'])
+      d.cfg.security.requireSandbox = true
+      await d.discoverRuntimes(dir, d.cfg, agents)
+      expect(install.mock.calls[1]![1]).toEqual([])
+      d.cfg.security.requireSandbox = false
+      await d.hydrateRuntimeCaches()
+      expect(d.runtimeFacts.profileFor('local').modelCatalog.models[0].id).toBe('old-host-model')
+      const noteProbe = stubCatalogSvc(daemon)
+      const emitted = captureEmits(daemon)
+
+      await d.runtimeFacts.probeAndEmit(true)
+
+      expect(probe.mock.calls.map(([runtimes]) => runtimes)).toEqual([{ local: FAKE_RT }, { shared: FAKE_RT }])
+      expect(noteProbe).toHaveBeenCalledOnce()
+      expect(noteProbe.mock.calls[0]![0]).toMatchObject({ runtimeId: 'local', rt: FAKE_RT })
+      expect(() => d.curatedRuntimeAdmission.assertLaunch('shared', 'curated')).not.toThrow()
+      for (const id of ['shared', 'guest-only']) {
+        expect(d.runtimeFacts.profileFor(id)).toMatchObject({
+          runtime: id,
+          version: 'image-version',
+          models: ['image-model'],
+          modelsSource: 'cached',
+          acpProtocolVersion: 9
+        })
+        expect(d.runtimeFacts.profileFor(id).modelCatalog).toBeUndefined()
+        expect(await d.store.getRuntimeCatalogMeta(id)).toMatchObject({ fingerprint: 'fp-cache' })
+      }
+      expect(d.localRuntimeCatalog.runtimes.shared.command).toBe('fake-agent')
+      expect(d.microsandboxCatalog.runtimes.shared.command).toBe('/image/bin/shared')
+
+      d.localRuntimeCatalog = catalogOf({})
+      clock.advance(5 * 60_000)
+      probe.mockClear()
+      emitted.length = 0
+      await d.runtimeFacts.probeAndEmit(true)
+      expect(probe).not.toHaveBeenCalled()
+      expect(emitted).toHaveLength(1)
+      expect(emitted[0]!.find((profile) => profile.runtime === 'shared')?.models).toEqual(['image-model'])
+    } finally {
+      await daemon.stop()
+    }
+  })
+})
+
 describe('daemon last-good advertisement fallback', () => {
   it('a transient first probe failure keeps cached models + catalog; a later success replaces them without phase 2', async () => {
     const dir = root()

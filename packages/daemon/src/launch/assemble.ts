@@ -3,7 +3,7 @@ import { composeRuntimeLaunch, type ComposedRuntimeLaunch } from './compose.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
 import type { HostKey } from '../acp/host-key.js'
 import type { MemoryProviderKind } from '../memory/provider.js'
-import type { RuntimeDef } from '../config/config-schema.js'
+import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
 
 /** Config-file materialization result plus the pre-strip env it was planned from
  * (the daemon snapshots that env so an idle sweep can re-write the files later). */
@@ -53,6 +53,12 @@ export interface AssembleRuntimeLaunchOptions {
   hostEnv?: NodeJS.ProcessEnv
   k8s?: boolean
   hostPackageCache?: boolean
+  microsandbox?: {
+    mounts: SandboxMount[]
+    guestEntry: string
+    trustedSessionDir?: string
+    trustedMounts?: SandboxMount[]
+  }
 }
 
 /**
@@ -84,6 +90,7 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
     typeof opts.runtimeReadRoots === 'function' ? opts.runtimeReadRoots(launchEnv) : opts.runtimeReadRoots
 
   const composed = composeRuntimeLaunch({
+    ...(opts.microsandbox ? { microsandbox: opts.microsandbox } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     provider: opts.provider,

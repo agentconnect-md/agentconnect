@@ -1,5 +1,12 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, relative, sep } from 'node:path'
+import { installMicrosandbox, microsandboxGuestEntry } from './microsandbox/install.js'
+import { prepareMicrosandboxLaunch } from './microsandbox/launch.js'
+import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
+import { MICROSANDBOX_TUNNEL_PATHS, microsandboxGitRunner, microsandboxWorkspaceFs } from './microsandbox/guest.js'
+import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
+import { microsandboxSupportMounts } from './microsandbox/support.js'
+import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
@@ -264,7 +271,12 @@ import {
 } from './runtimes/runtime-commands.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
+import {
+  declaredRuntimeCatalog,
+  loadK8sRuntimeTable,
+  type K8sRuntimeAcpSnapshot,
+  type K8sRuntimeTable
+} from './runtimes/k8s-runtimes.js'
 import {
   K8S_PROBE_CLAIM_TTL_MS,
   K8S_PROBE_FRESH_MS,
@@ -376,6 +388,7 @@ import { z } from 'zod'
 import { isNoResponseBody } from './session/no-response.js'
 import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
+import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
 import { TaskViolationError } from './cp/task-reader.js'
@@ -388,8 +401,14 @@ import {
   type MemoryScope,
   type PreparedExternalMemoryCapture
 } from './memory/provider.js'
-import { memoryChannelKey, MemorySandboxUnavailableError, type MemoryFs } from './memory/store.js'
-import { resolveMemoryFs } from './memory/fs.js'
+import { memoryChannelKey, MemoryHomeUnavailableError, type MemoryFs } from './memory/store.js'
+import {
+  memoryHomeUnavailable,
+  resolveMemoryHomePorts,
+  type MemoryHomeDeps,
+  type MemoryHomePorts
+} from './memory/home.js'
+import { MemoryHomeMigrator, archiveMemoryTreeAside, memoryHomeReturnedToDaemon } from './memory/home-migration.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
 import { DutyRegistry } from './cp/duty-registry.js'
 import { DutyCoordinator, type DutyHost } from './cp/duty-coordinator.js'
@@ -699,7 +718,7 @@ export class Daemon {
   // agent runs in the sandbox). Backs the memory MCP tools, the session-start index
   // injection, and the CP console's memory reads.
   private memory: DispatchingMemoryProvider = createMemoryProvider({
-    memoryFsFor: (id) => this.memoryFsFor(id),
+    memoryHomePortsFor: (id) => this.memoryHomePortsFor(id),
     agentDirByAgent: (id) => {
       const agent = this.agents.get(id)
       if (!agent) return undefined
@@ -928,7 +947,8 @@ export class Daemon {
       const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
         platform: 'slack',
         elicitCards: slackElicitCards,
-        createConverger: (ctx) => new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? []),
+        createConverger: (ctx) =>
+          new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? [], ctx.resolveFileLink),
         initialTurnState: (ctx): SlackTurnState => {
           const recipient = slackStreamRecipient(ctx.message)
           return recipient ? { recipient } : {}
@@ -975,7 +995,7 @@ export class Daemon {
         // reply chain is the ONLY way back into this session; a DM already has one
         // implicit thread. Gated on showFooter, the delivery-chrome switch.
         createConverger: (ctx) =>
-          new TelegramConverger(ctx.mode as never, { continueHint: ctx.showFooter && !ctx.isDm }),
+          new TelegramConverger(ctx.mode as never, { continueHint: ctx.showFooter && !ctx.isDm }, ctx.resolveFileLink),
         initialTurnState: (ctx): TelegramTurnState => {
           const replyTo = this.telegramReplyTarget(ctx.message)
           return replyTo !== undefined ? { replyTo } : {}
@@ -984,13 +1004,13 @@ export class Daemon {
       })
       registry.register({
         platform: 'discord',
-        createConverger: (ctx) => new DiscordConverger(ctx.mode as never),
+        createConverger: (ctx) => new DiscordConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: () => ({}),
         apply: (p, action) => this.applyDiscordAction(p, action as DiscordAction)
       })
       registry.register({
         platform: 'feishu',
-        createConverger: (ctx) => new FeishuConverger(ctx.mode as never),
+        createConverger: (ctx) => new FeishuConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: (): FeishuTurnState => ({}),
         apply: (p, action) => this.applyFeishuAction(p, action as FeishuAction),
         // Suppression teardown: stop the stream timer and cancel the CardKit
@@ -1137,6 +1157,11 @@ export class Daemon {
   private readonly clusterIdentityToken?: () => string | undefined
   // The k8s execution plane: shim dialer + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
+  private microsandbox?: MicrosandboxManager
+  private microsandboxTable?: K8sRuntimeTable
+  private microsandboxFailure?: string
+  private microsandboxCatalog?: ResolvedRuntimeCatalog
+  private localRuntimeCatalog?: ResolvedRuntimeCatalog
   // The resolved catalog the probed table is projected onto; it supplies command/args, which the
   // table never does — the table only says which ids this image provides.
   private k8sResolvedCatalog?: ResolvedRuntimeCatalog
@@ -1162,6 +1187,15 @@ export class Daemon {
   private memoryConnections?: CpMemoryConnectionRegistry
   /** Durable reply-after-delivery capture pump. Bodies remain in LocalStore. */
   private memoryOutbox?: MemoryCaptureOutbox
+  // The one-way memory home migration (memory-evolution.md §3.2.1): runs for every held agent whose binding still
+  // carries the CP's `homeMigration: 'pending'`, re-run from the start on CP READY, its completion mirrored below.
+  private readonly memoryHomeMigrations = new MemoryHomeMigrator({
+    agents: () => this.heldManagedMemoryAgents(),
+    homes: () => ({ ...this.memoryHomeDeps(), cp: this.cpClient }),
+    withMemoryHome: (agentId, work) => this.withMemoryHome(agentId, work),
+    onMigrated: (agentId) => this.onMemoryHomeMigrated(agentId),
+    log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
+  })
   private cpClient?: CpClient
   private remoteWebchatGrants?: RemoteWebchatGrantManager
   private managedSkillCache?: ManagedSkillCache
@@ -1777,7 +1811,7 @@ export class Daemon {
   async start(): Promise<void> {
     await this.bootReadinessGate()
     const { root, cfg } = this.resolvePathAndConfig()
-    this.sandboxPreflight(cfg)
+    await this.sandboxPreflight(cfg, root)
     await this.startClusterPlanes(root, cfg)
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
@@ -1848,7 +1882,7 @@ export class Daemon {
     })
     this.cfg = cfg
     // Validate operator mounts before startup can create any runtime hosts.
-    cfg.sandbox.mounts = normalizeSandboxMounts(cfg.sandbox.mounts)
+    cfg.sandbox.mounts = normalizeSandboxMounts(cfg.sandbox.mounts, process.env, cfg.sandbox.backend)
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     // §24.4: an excluded origin is named at SPEC admission. All this knows is the operator list —
     // whether a spec names an instance of its own, which stays cloneable either way, is per-agent.
@@ -1861,7 +1895,65 @@ export class Daemon {
   }
 
   /** Phase 3 — report the host sandbox mechanism and refuse a boot that cannot honor requireSandbox. */
-  private sandboxPreflight(cfg: Config): void {
+  private async sandboxPreflight(cfg: Config, root: string): Promise<void> {
+    if (cfg.sandbox.backend === 'microsandbox') {
+      if (this.k8s) throw new Error('sandbox.backend=microsandbox cannot be combined with --k8s')
+      this.workspaces.setGitRunnerResolver((agentId, cwd, abort) => this.microsandboxGit(agentId, cwd, abort))
+      this.workspaces.setFsResolver((agentId) => {
+        const agent = this.agents.get(agentId)
+        if (!agent || !this.usesMicrosandbox(agent)) return undefined
+        return {
+          fs: new MicrosandboxWorkspaceFs(
+            (path) => {
+              const manager = this.microsandbox
+              const environment = manager?.environment(this.microsandboxPlacement(agent, path).id)
+              const mounted = environment?.mounts.some(
+                (mount) =>
+                  !mount.readOnly &&
+                  mount.source === mount.target &&
+                  (path === mount.target || path.startsWith(`${mount.target}${sep}`))
+              )
+              return manager && environment && mounted
+                ? microsandboxWorkspaceFs({
+                    workspaceRoot: environment.workspaceRoot,
+                    execute: (command, args, options) => manager.exec(environment, command, args, options)
+                  })
+                : undefined
+            },
+            async (path) => {
+              const manager = this.microsandbox
+              const environment = manager?.environment(this.microsandboxPlacement(agent, path).id)
+              if (
+                !manager ||
+                !environment?.mounts.some((mount) => !mount.readOnly && mount.source === path && mount.target === path)
+              ) {
+                return false
+              }
+              await manager.suspend(environment.id)
+              return true
+            }
+          )
+        }
+      })
+      this.workspaces.setSessionsDiscarder((agentId, exceptLeaf) => this.discardSessionSandboxes(agentId, exceptLeaf))
+      try {
+        this.microsandbox = await installMicrosandbox({
+          root,
+          config: cfg.sandbox.microsandbox,
+          sockets: { mcp: mcpSocketPath(root), gitcred: gitcredSocketPath(root) },
+          log: this.log
+        })
+        this.microsandboxTable = await this.microsandbox.prepare()
+        this.log.info('sandbox: microsandbox image and VM startup verified')
+      } catch (error) {
+        await this.microsandbox?.stopAll().catch((stopError: unknown) => this.log.warn(formatErr(stopError)))
+        this.microsandbox = undefined
+        this.microsandboxFailure = formatErr(error)
+        if (cfg.security.requireSandbox) throw new Error(`microsandbox startup refused: ${formatErr(error)}`)
+        this.log.warn(`microsandbox unavailable: ${formatErr(error)}; requested VM launches will be refused`)
+      }
+      return
+    }
     this.logSandboxPreflight()
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error(
@@ -2234,12 +2326,23 @@ export class Daemon {
     // first host start instead, so a host with six logged-in harnesses does not fetch all six here.
     const storedCatalog = await this.installManagedRuntimePackages(
       installedCatalog,
-      discoveredAgents.map((agent) => agent.runtime)
+      discoveredAgents.filter((agent) => !this.usesMicrosandbox(agent)).map((agent) => agent.runtime)
     )
     const { runtimes: installed, entries: installedEntries } = storedCatalog
-    this.runtimeCatalog = storedCatalog
+    this.localRuntimeCatalog = cfg.sandbox.backend === 'microsandbox' ? storedCatalog : undefined
+    if (this.microsandboxTable) {
+      const declared = declaredRuntimeCatalog(resolvedCatalog, this.microsandboxTable)
+      this.microsandboxCatalog = declared.catalog
+      this.k8sDeclaredModels = declared.models
+      this.k8sDeclaredAcp = declared.acp
+      this.runtimeCatalog = {
+        entries: { ...storedCatalog.entries, ...declared.catalog.entries },
+        runtimes: { ...storedCatalog.runtimes, ...declared.catalog.runtimes }
+      }
+    } else this.runtimeCatalog = storedCatalog
     this.refreshAdmittedRuntimes()
     this.runtimeFacts.setInstalled(installedEntries)
+    if (this.microsandboxCatalog) this.runtimeFacts.noteImageCatalog(this.microsandboxCatalog.entries)
     this.log.info(`runtimes ready: ${Object.keys(this.runtimes).join(', ') || '(none)'}`)
     const pendingCurated = Object.keys(installed).filter((id) => installedEntries[id]?.source === 'curated')
     if (pendingCurated.length) this.log.info(`runtimes pending ACP admission: ${pendingCurated.join(', ')}`)
@@ -2320,7 +2423,11 @@ export class Daemon {
 
   /** Install the adapter for a runtime the start-time sweep did not cover — an agent the CP assigned
    *  after boot. The store memoizes, so this resolves once for the runtime and never once per spawn. */
-  private async ensureRuntimeInstalled(runtimeId: string): Promise<void> {
+  private async ensureRuntimeInstalled(runtimeId: string, local = false): Promise<void> {
+    if (local && this.localRuntimeCatalog) {
+      this.localRuntimeCatalog = await this.installManagedRuntimePackages(this.localRuntimeCatalog, [runtimeId])
+      return
+    }
     const entry = this.runtimeCatalog.entries[runtimeId]
     if (!entry || !Daemon.STORE_MANAGED_SOURCES.has(entry.source)) return
     if (!parseNpxLaunch(entry.runtime) && !parseArchiveLaunch(runtimeId, entry)) return
@@ -2380,15 +2487,12 @@ export class Daemon {
     this.memoryOutbox = new MemoryCaptureOutbox(
       this.store,
       withManagedDistill(this.memoryConnections!, {
-        agentIds: () =>
-          [...this.agents.values()]
-            .filter(
-              (agent) =>
-                memoryKindOf(agent) === 'managed' &&
-                (!this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agent.id))
-            )
-            .map((agent) => agent.id),
-        reachable: (agentId) => !this.k8sPlane || this.k8sPlane.sandboxBound(agentId),
+        agentIds: () => this.heldManagedMemoryAgents().map((agent) => agent.id),
+        // "The home is reachable", not "the pod is bound": the CP READY with the feature for a `control-plane` tree.
+        reachable: (agentId) => {
+          const agent = this.agents.get(agentId)
+          return agent !== undefined && memoryHomeUnavailable(agent, this.memoryHomeDeps()) === undefined
+        },
         distill: async (agentId, turn) => {
           const agent = this.agents.get(agentId)
           if (!agent) throw new Error(`unknown agent ${agentId}`)
@@ -2421,7 +2525,8 @@ export class Daemon {
     // Model-catalog cache: synchronous last-good hydrate BEFORE the CP client
     // starts, so the register-time facts snapshot already carries models + the
     // capability matrix instead of blanking the CP until the sweep completes.
-    await this.runtimeFacts.hydrateFromCache()
+    // Image runtimes must not inherit model catalogs cached by a previous host execution.
+    await this.runtimeFacts.hydrateFromCache(new Set(Object.keys(this.microsandboxCatalog?.entries ?? {})))
     // The image's declared models are the fresher truth than any cached row, and stay
     // `cached` provenance: no live probe confirmed them, so model gates remain permissive.
     this.runtimeFacts.applyDeclaredFacts(this.k8sDeclaredModels, this.k8sDeclaredAcp)
@@ -2962,6 +3067,10 @@ export class Daemon {
         this.log.warn(
           `memory recall degraded for agent ${agentId}: ${error instanceof Error ? error.name : 'unknown'}`
         ),
+      onMemoryHomeUnavailable: (agentId, error) =>
+        this.log.warn(
+          `memory home unreachable for agent ${agentId} (${error.reason}): session starts without memory — ${error.message}`
+        ),
       onMemoryRecallInjected: (_agentId, bytes) => defaultMemoryPluginMetrics.recallInjected(bytes),
       onMemoryRecallEvent: (agentId, event) =>
         this.evalHooks.emit({
@@ -3042,7 +3151,7 @@ export class Daemon {
             agentName: agent.displayName?.trim() || agent.name,
             ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
           })
-          servers.push(...this.mcpToolServerSpec(token))
+          servers.push(...this.mcpToolServerSpec(token, agent))
         }
         servers.push(
           ...resolveAgentMcpServers({
@@ -3428,6 +3537,7 @@ export class Daemon {
       if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
         this.permissions.disableChatPermissionSurfaces(a.id)
       }
+      await this.applyMemoryHomeBinding(previous, a as LoadedAgent)
       // ALWAYS publish fresh config first, so live reads — output.mode (per dispatch),
       // per-session cwd/tools, routing (mergedRules reads this.agents) — see the new config.
       this.agents.set(a.id, a as LoadedAgent)
@@ -3503,6 +3613,7 @@ export class Daemon {
       if (change.integrations) connectionsDirty = true
     }
     for (const a of toStart) {
+      await this.applyMemoryHomeBinding(undefined, a as LoadedAgent)
       this.agents.set(a.id, a as LoadedAgent)
       // Rows may have been retained while this daemon did not own the agent. Adding it
       // already paused is still an explicit operator stop, so terminally discard that
@@ -3535,6 +3646,8 @@ export class Daemon {
     // capabilities. No-op when nothing changed. Optional call: tests inject
     // partial cpClient fakes (same as emitDaemonRuntimes).
     this.cpClient?.updateCapabilities?.()
+    // A binding that arrived with the CP's migration marker starts its copy now; one whose marker moved on is forgotten.
+    this.memoryHomeMigrations.reconcile()
   }
 
   /**
@@ -3606,16 +3719,159 @@ export class Daemon {
       executableCommands,
       moduleEntries: [cliEntry, ...nodeExecArgvModuleEntries()],
       paths,
-      readRoots: this.cfg.sandbox.mounts.map((mount) => mount.source)
+      readRoots: this.cfg.sandbox.backend === 'srt' ? this.cfg.sandbox.mounts.map((mount) => mount.source) : []
     })
   }
 
-  /** The one factory every memory consumer is built on: the port over the agent's managed memory
-   *  tree, decided by placement (`resolveMemoryFs`); undefined for an unknown agent, and it throws
-   *  `MemorySandboxUnavailableError` for a cluster agent whose sandbox is not bound. */
-  private memoryFsFor(agentId: string): MemoryFs | undefined {
+  private usesMicrosandbox(agent: Agent): boolean {
+    return this.cfg.sandbox.backend === 'microsandbox' && this.agentRunsInSandbox(agent)
+  }
+
+  private microsandboxPlacement(
+    agent: LoadedAgent,
+    cwd: string,
+    key?: HostKey
+  ): { id: string; trustedSessionDir?: string } {
+    const parts = relative(agent.dir, cwd).split(sep)
+    if (parts[0] === 'sessions' && /^session-[a-f0-9]{24}$/.test(parts[1] ?? '')) {
+      return { id: `${agent.id}/${parts[1]}`, trustedSessionDir: join(agent.dir, 'sessions', parts[1]!) }
+    }
+    return { id: `${agent.id}/${hostKeyDirName(key)}` }
+  }
+
+  private microsandboxContext(
+    agent: LoadedAgent,
+    cwd: string,
+    key?: HostKey,
+    excludeAgentToolCredentials = false
+  ): {
+    environment: MicrosandboxEnvironment
+    launch: ReturnType<typeof prepareMicrosandboxLaunch>
+  } {
+    if (!this.microsandbox)
+      throw new Error(`microsandbox unavailable: ${this.microsandboxFailure ?? 'not initialized'}`)
+    const runtime = this.microsandboxCatalog?.runtimes[agent.runtime]
+    if (!runtime) throw new Error(`runtime "${agent.runtime}" is not provided by the microsandbox image`)
+    const placement = this.microsandboxPlacement(agent, cwd, key)
+    const github = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
+    const gitlab = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'gitlab'
+    const scope = managedCredentialScope(
+      gitlab ? 'gitlab' : github ? 'github' : undefined,
+      agent.gitlabHost,
+      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
+    )
+    const git =
+      github || gitlab || agent.workspace.mode === 'git-repo'
+        ? sessionGitEnv(
+            agent.id,
+            github || gitlab ? this.gitCommitIdentity : undefined,
+            github || gitlab ? scope : null
+          )
+        : undefined
+    const launch = prepareMicrosandboxLaunch({
+      runtimeId: agent.runtime,
+      runtime,
+      scopeDir: agent.dir,
+      cwd: placement.trustedSessionDir ?? (key && hostKeySessionKey(key) ? cwd : agent.workspace.path),
+      hostKey: key,
+      ...placement,
+      trustedWorkspaceWriteRoots: placement.trustedSessionDir
+        ? [placement.trustedSessionDir]
+        : this.workspaces.trustedWorkspaceWriteRoots(agent),
+      trustedMounts: microsandboxSupportMounts(this.root, git?.GIT_CONFIG_GLOBAL),
+      mounts: this.cfg.sandbox.mounts,
+      guestEntry: microsandboxGuestEntry(this.root)
+    })
+    return { environment: { id: placement.id, ...launch.microsandbox }, launch }
+  }
+
+  private microsandboxGit(agentId: string, cwd?: string, abort?: AbortSignal) {
     const agent = this.agents.get(agentId)
-    return agent ? resolveMemoryFs(agent, this.k8sPlane) : undefined
+    if (!agent || !cwd || !this.usesMicrosandbox(agent)) return undefined
+    if (!this.microsandbox)
+      throw new Error(`microsandbox unavailable: ${this.microsandboxFailure ?? 'not initialized'}`)
+    // The daemon's own parent directory is used to prepare canonical clones before exposing a checkout.
+    if (cwd === agent.dir) return undefined
+    const { environment, launch } = this.microsandboxContext(agent, cwd)
+    return microsandboxGitRunner({
+      workspaceRoot: environment.workspaceRoot,
+      cwd,
+      env: launch.env,
+      abort,
+      execute: (command, args, options) => this.microsandbox!.exec(environment, command, args, options),
+      mapEnv: (env) => ({
+        ...env,
+        ...Object.fromEntries(
+          Object.entries(launch.env).filter(
+            ([name]) => name === 'HOME' || name === 'PATH' || name.startsWith('XDG_') || name === GITCRED_SOCKET_ENV
+          )
+        )
+      })
+    })
+  }
+
+  /** Where a memory home is reached from: this member's sandbox plane (under `--k8s`) and its CP connection. */
+  private memoryHomeDeps(): MemoryHomeDeps {
+    return { sandbox: this.k8sPlane, cp: this.cpClient, log: this.log }
+  }
+
+  /** The managed-memory agents this member serves right now — under duty, only the ones it holds. */
+  private heldManagedMemoryAgents(): LoadedAgent[] {
+    return [...this.agents.values()].filter(
+      (agent) =>
+        memoryKindOf(agent) === 'managed' && (!this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agent.id))
+    )
+  }
+
+  // Authorized background work over an agent's `daemon`-home tree, like a turn: under --k8s wake and bind the sandbox
+  // (the tree, or the dream host and its staging, live there) and hold it against the idle sweep for the job's
+  // duration; a local agent's home is always up.
+  private async withMemoryHome<T>(agentId: string, work: () => Promise<T>): Promise<T> {
+    const plane = this.k8sPlane
+    if (!plane) return work()
+    return plane.withSandbox(agentId, async () => {
+      await plane.ensureChannel(agentId)
+      return work()
+    })
+  }
+
+  // The CP recorded the copy: mirror its clear on the local replica now — the next resolution serves the CP tree — and
+  // let reconcile rebuild the session boundary, as it does for any memory-binding change.
+  private async onMemoryHomeMigrated(agentId: string): Promise<void> {
+    if (this.cpAgents?.settleMemoryHomeMigration(agentId)) await this.flushReconcile()
+  }
+
+  // The forced return archives the pre-switch tree before the binding is live (nothing wrote this disk while the home was `control-plane`); `previous` is this process's binding online, and after a restart the durable last-applied home stands in, so a return that happened while this daemon was offline is still archived rather than resurrected.
+  private async applyMemoryHomeBinding(previous: Pick<Agent, 'memory'> | undefined, next: LoadedAgent): Promise<void> {
+    const lastHome = previous ? undefined : await this.store.getMemoryHomeApplied(next.id)
+    const last = previous ?? (lastHome && { memory: { provider: 'managed' as const, home: lastHome } })
+    if (last && memoryHomeReturnedToDaemon(last, next)) await this.archiveMemoryHomeAside(next)
+    if (next.memory?.provider === 'managed') await this.store.setMemoryHomeApplied(next.id, next.memory.home)
+  }
+
+  // The forced return (memory-evolution.md §3.2.1): the CP has dropped its rows, so the tree this disk kept from before
+  // the switch moves aside and the agent starts from an empty one. Nothing to move on the pool, where the tree never
+  // lived on this disk; a failed move is logged, never a reason to keep the binding from applying.
+  private async archiveMemoryHomeAside(agent: LoadedAgent): Promise<void> {
+    if (this.k8sPlane) return
+    try {
+      const archive = await archiveMemoryTreeAside(agent.dir, new Date(this.clock.now()))
+      if (archive) {
+        this.log.info(
+          `memory: agent "${agent.id}" returned its memory home to this daemon; the pre-switch tree is archived at ${archive}`
+        )
+      }
+    } catch (err) {
+      this.log.error(
+        `memory: agent "${agent.id}" returned its memory home to this daemon, but the pre-switch tree could not be archived aside: ${formatErr(err)}`
+      )
+    }
+  }
+
+  /** The ports every managed-memory consumer is built on — `live` for the store, `staging` for `memory-dreams/`, the change-log sink — decided by the agent's `home` and this member's placement; undefined for an unknown agent, and it throws `MemoryHomeUnavailableError` while the home is out of reach. */
+  private memoryHomePortsFor(agentId: string): MemoryHomePorts | undefined {
+    const agent = this.agents.get(agentId)
+    return agent ? resolveMemoryHomePorts(agent, this.memoryHomeDeps()) : undefined
   }
 
   /** The one daemon-owned workspace preparation contract used by ordinary
@@ -3623,6 +3879,9 @@ export class Daemon {
    * cache, trusted installer state, and runtime CLI identity together prevents
    * a non-session warmup from spawning with a weaker preparation path. */
   private agentRunsInSandbox(agent: Agent): boolean {
+    if (this.cfg.sandbox.backend === 'microsandbox') {
+      return this.cfg.security.requireSandbox || agent.runInSandbox
+    }
     // Sandbox-optional principle (#36): skills follow the agent's OWN sandbox
     // decision, never a forced fleet-wide requirement. Only the explicit operator
     // `security.requireSandbox` still forces confinement; a trusted/unsandboxed
@@ -3807,7 +4066,12 @@ export class Daemon {
   }
 
   /** That tool server's `session/new` spec, in the coordinates of wherever the runtime runs. */
-  private mcpToolServerSpec(token: string): McpStdioServer[] {
+  private mcpToolServerSpec(token: string, agent?: Agent): McpStdioServer[] {
+    if (agent && this.usesMicrosandbox(agent)) {
+      const bridge = this.microsandboxTable?.mcpBridge
+      if (!bridge) throw new Error('microsandbox image does not provide the AgentConnect MCP bridge')
+      return buildSandboxMcpServers({ bridge, token, socketPath: MICROSANDBOX_TUNNEL_PATHS.mcp })
+    }
     if (!this.k8sPlane) {
       return buildMcpServers({
         socketPath: mcpSocketPath(this.root),
@@ -4261,7 +4525,9 @@ export class Daemon {
   } {
     const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(opts.hostKey, sid, u)
-    const runtimeEntry = this.runtimeCatalog.entries[agent.runtime]
+    const micro = opts.runInSandbox && this.cfg.sandbox.backend === 'microsandbox'
+    const catalog = micro ? this.microsandboxCatalog : (this.localRuntimeCatalog ?? this.runtimeCatalog)
+    const runtimeEntry = catalog?.entries[agent.runtime]
     if (runtimeEntry?.source === 'curated') {
       this.curatedRuntimeAdmission.assertLaunch(agent.runtime, runtimeEntry.source)
     }
@@ -4285,8 +4551,11 @@ export class Daemon {
     if (this.opts.hostFactory) {
       return { host: this.opts.hostFactory(agent, onUpdate), configFileState }
     }
-    const runtime = this.runtimes[agent.runtime]
+    const runtime = catalog?.runtimes[agent.runtime]
     if (!runtime) throw new Error(this.runtimeUnavailableMessage(agent.runtime))
+    const microContext = micro
+      ? this.microsandboxContext(agent, opts.cwd, opts.hostKey, opts.excludeAgentToolCredentials === true)
+      : undefined
     // A dream reads only its materialized inputs to produce a memory proposal, so
     // it never needs the agent's TOOL credentials (github-app git helper, gh
     // wrapper, or materialized `*_DATA` config-file secrets like KUBECONFIG /
@@ -4323,7 +4592,7 @@ export class Daemon {
     // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11).
     const memoryAgent =
       memoryKindOf(agent) === 'native' && runInSandbox
-        ? { ...agent, dir: privateRuntimeHomeFor(agent.dir, opts.hostKey) }
+        ? { ...agent, dir: microContext?.launch.runtimeHome ?? privateRuntimeHomeFor(agent.dir, opts.hostKey) }
         : agent
     const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
     // On --k8s the runtime runs in the agent's pod, so the session gitconfig has to be COMPUTED in
@@ -4382,11 +4651,11 @@ export class Daemon {
       }
     }
     // The cluster driver routes every pod launch by AC_AGENT_ID, credentials or not.
-    if (this.k8sPlane) env.AC_AGENT_ID = agent.id
+    if (this.k8sPlane || micro) env.AC_AGENT_ID = agent.id
     const shimDirs = new Set<string>()
     // The gh wrapper is a DAEMON path: prepending it to a pod launch would name a dir the pod
     // never had, and the pod image ships no wrapper (gh there degrades to unauthenticated).
-    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane) {
+    if (githubAppCredentials && this.ghBinDir && !this.k8sPlane && !micro) {
       // gh wrapper (multi-repo #457): PATH prepend + the agent identity the
       // wrapper hands to the hidden token helper. sessionGitEnv supplies the
       // matching runtime-only capability; a user PATH override must not
@@ -4394,7 +4663,7 @@ export class Daemon {
       env.AC_AGENT_ID = agent.id
       shimDirs.add(this.ghBinDir)
     }
-    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane) {
+    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane && !micro) {
       // glab wrapper (§13.3): read-only project tokens for the managed workspace.
       env.AC_AGENT_ID = agent.id
       // §24.4: point the real CLI at the deployment's instance, prefix and port included.
@@ -4402,7 +4671,7 @@ export class Daemon {
       shimDirs.add(this.glabBinDir)
     }
     if (shimDirs.size > 0) {
-      env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? process.env.PATH ?? ''}`
+      env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? microContext?.launch.env.PATH ?? process.env.PATH ?? ''}`
     }
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // OS sandbox decision (issue #312). security.requireSandbox forces every agent
@@ -4417,6 +4686,16 @@ export class Daemon {
     let launchRuntime = runtime
     try {
       const assembled = assembleRuntimeLaunch({
+        ...(microContext
+          ? {
+              microsandbox: {
+                mounts: this.cfg.sandbox.mounts,
+                guestEntry: microsandboxGuestEntry(this.root),
+                trustedMounts: microsandboxSupportMounts(this.root, sessionGitInjection?.GIT_CONFIG_GLOBAL),
+                ...this.microsandboxPlacement(agent, opts.cwd, opts.hostKey)
+              }
+            }
+          : {}),
         runtimeId: agent.runtime,
         runtime,
         provider: memoryKindOf(agent),
@@ -4441,16 +4720,17 @@ export class Daemon {
           if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
           if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
         },
-        runtimeReadRoots: runInSandbox
-          ? () =>
-              this.sandboxRuntimeReadRoots(
-                agent,
-                runtime,
-                sessionGitInjection?.GIT_CONFIG_GLOBAL,
-                githubAppCredentials,
-                gitlabCredentials
-              )
-          : undefined,
+        runtimeReadRoots:
+          runInSandbox && !micro
+            ? () =>
+                this.sandboxRuntimeReadRoots(
+                  agent,
+                  runtime,
+                  sessionGitInjection?.GIT_CONFIG_GLOBAL,
+                  githubAppCredentials,
+                  gitlabCredentials
+                )
+            : undefined,
         runtimeWriteRoots: runInSandbox
           ? this.cfg.sandbox.mounts.filter((mount) => !mount.readOnly).map((mount) => mount.source)
           : undefined,
@@ -4497,6 +4777,12 @@ export class Daemon {
     const constructed: { host?: AcpHost } = {}
     const podSubject = this.k8sPlane ? this.podSubjectFor(agent, opts.hostKey) : undefined
     const host = new AcpHost(launchRuntime, {
+      ...(microContext
+        ? {
+            driver: this.microsandbox!.driverFor({ ...microContext.environment, ...launch.microsandbox }),
+            hostKey: opts.hostKey
+          }
+        : {}),
       // In --k8s the runtime runs in a Sandbox pod — the agent's own, or the session's own for an isolated
       // session's host (§11); everywhere else AcpHost falls back to its LocalDriver, which is what a
       // self-hosted daemon wants.
@@ -4599,7 +4885,7 @@ export class Daemon {
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
-      ...(this.sandboxMechanism ? ['sandbox'] : []),
+      ...((this.cfg.sandbox.backend === 'microsandbox' ? this.microsandbox : this.sandboxMechanism) ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -4853,8 +5139,8 @@ export class Daemon {
           })
         }
       } catch (error) {
-        // A deferred managed capture (sandbox asleep) is not a failure: it completes from the outbox.
-        if (observableCapture && !(error instanceof MemorySandboxUnavailableError)) {
+        // A deferred managed capture (the home out of reach) is not a failure: it completes from the outbox.
+        if (observableCapture && !(error instanceof MemoryHomeUnavailableError)) {
           this.evalHooks.emit({
             type: 'memory.capture.failed',
             agentId,
@@ -4867,7 +5153,9 @@ export class Daemon {
       }
     }
     const logFailure = (err: unknown) =>
-      this.log.warn(`memory post-turn failed for agent ${agentId}: ${err instanceof Error ? err.name : 'unknown'}`)
+      this.log.warn(
+        `memory post-turn failed for agent ${agentId}: ${err instanceof Error ? err.name : 'unknown'}${err instanceof MemoryHomeUnavailableError ? ` (${err.reason})` : ''}`
+      )
 
     // External recordTurn performs only a synchronous SQLite enqueue before it
     // returns its promise. Do it immediately after delivery, rather than placing
@@ -4886,9 +5174,9 @@ export class Daemon {
         await record()
       })
       .catch(async (err: unknown) => {
-        // The tree is on a sandbox that has gone to sleep since the turn: keep the capture durably and
-        // distill it once the pod is bound again, instead of dropping the turn with a warning.
-        if (err instanceof MemorySandboxUnavailableError && this.memoryOutbox) {
+        // The home went out of reach since the turn (the pod asleep, the CP connection down): keep the capture durably
+        // and distill it once the home is reachable again, instead of dropping the turn with a warning.
+        if (err instanceof MemoryHomeUnavailableError && this.memoryOutbox) {
           const result = await this.memoryOutbox.enqueue(
             managedDistillCapture({ agentId, turnId, sessionId, input, output })
           )
@@ -4968,7 +5256,7 @@ export class Daemon {
         })
         this.releaseMemoryExtractionToken(cacheKey)
         this.memoryExtractionTokens.set(cacheKey, mcpToken)
-        const mcpServers = this.mcpToolServerSpec(mcpToken)
+        const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId))
         sessionId = trusted
           ? await host.newSession(
               cwd,
@@ -5267,6 +5555,12 @@ export class Daemon {
     try {
       host = await this.buildDreamHost(agent, context.inputDir, dreamHostKey, issued)
     } catch (error) {
+      await this.microsandbox
+        ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
+        .then(() => rm(join(agent.dir, 'sessions', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
+        .catch((error: unknown) => {
+          this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
+        })
       removeHostSandboxState(agent.dir, dreamHostKey)
       if (issued) await this.modelSessions.revokeKeyQuietly(issued.grant.keyId)
       throw error
@@ -5279,6 +5573,12 @@ export class Daemon {
       // attacker-influenced context never lingers (dreams are rare). Stopping the
       // child also kills a runtime that ignored `session/cancel`.
       await host.stop().catch(() => {})
+      await this.microsandbox
+        ?.discard(`${agent.id}/${hostKeyDirName(dreamHostKey)}`)
+        .then(() => rm(join(agent.dir, 'sessions', hostKeyDirName(dreamHostKey)), { recursive: true, force: true }))
+        .catch((error: unknown) => {
+          this.log.warn(`microsandbox: could not discard extraction VM (${formatErr(error)})`)
+        })
       removeHostSandboxState(agent.dir, dreamHostKey)
       if (issued) {
         await this.modelSessions.revokeKey(issued.grant.keyId)
@@ -5426,7 +5726,7 @@ export class Daemon {
         maxTopics: MAX_DREAM_FILES
       }
     })
-    const mcpServers = this.mcpToolServerSpec(mcpToken)
+    const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId))
     try {
       const sessionId = trusted
         ? await host.newSession(
@@ -5818,7 +6118,7 @@ export class Daemon {
     if (this.dreamRunnerInstance) return this.dreamRunnerInstance
     const runner = new DreamRunner({
       agentDirByAgent: (id) => this.agents.get(id)?.dir,
-      memoryFsFor: (id) => this.memoryFsFor(id),
+      memoryHomePortsFor: (id) => this.memoryHomePortsFor(id),
       dreamingPolicyFor: (id) => dreamingPolicyOf(this.agents.get(id)),
       operationPolicy: this.dreamOperationsAllowed() ? (this.opts.hostFactory ? 'test-only' : 'enabled') : 'blocked',
       store: this.store,
@@ -5831,17 +6131,7 @@ export class Daemon {
       withSkillAcceptance: async (agentId, publish) => {
         return this.withWorkspaceFileWrite(agentId, publish)
       },
-      // A dream is authorized background work like a turn: under --k8s wake and bind the sandbox
-      // (the memory tree and the dream host both live there) and hold it against the idle sweep
-      // for the job's duration; a local agent's home is always up.
-      withMemoryHome: async (agentId, work) => {
-        const plane = this.k8sPlane
-        if (!plane) return work()
-        return plane.withSandbox(agentId, async () => {
-          await plane.ensureChannel(agentId)
-          return work()
-        })
-      },
+      withMemoryHome: (agentId, work) => this.withMemoryHome(agentId, work),
       onEvent: (event) => this.recordDreamLifecycle(event),
       log: this.log
     })
@@ -10721,15 +11011,7 @@ export class Daemon {
     // output mode — `conv` (built below, once the session key is known) only decides
     // what reaches Slack, never the transcript.
     const rec = new TranscriptRecorder()
-    // Daemon-side rendering only (not ACP); a fresh converger is built per turn, so a change
-    // applies from the next turn on, not mid-turn (see `mode`, resolved inside the plan).
-    const conv = plan.turnSurface.createConverger(plan.turnCtx)
     const replyConn = plan.suppressReplyConn ? undefined : this.replyConnFor(agentId, integrationId)
-    // slack-streaming-turn-output.md §3.1: the axis is decided here, from a synchronous
-    // capability read, because the converger is built before chat.startStream can be tried.
-    // The call itself is deferred to the turn's first task — a turn that runs no tools never
-    // opens a stream and is byte-identical to today.
-    if (conv instanceof OutputConverger && this.slackStreamingEligible(plan, replyConn)) conv.enableStreaming()
     // ONE lookup for the platform egress transport: the lease below and the port the output
     // surface emits through are the SAME object. Resolving it twice — once to lease, once at
     // turn-state seeding — leaves a window where reconciliation rebinds the integration
@@ -10741,7 +11023,14 @@ export class Daemon {
     // each copy once. Seeded HERE, before `openSession`, because the sandbox-bootstrap notice
     // below emits on this turn's `index` and must not collide with the reply's.
     const pendingWebchat = webchat
-      ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
+      ? Object.assign(webchat, {
+          index: 0,
+          replyText: '',
+          heldText: '',
+          heldTextOffset: 0,
+          messageId: undefined,
+          messageEmitted: false
+        })
       : undefined
     // Admission is the displacement point: a sibling session's turn is cancelled before this
     // turn opens its (possibly cold) session, not after buildPending.
@@ -10809,7 +11098,17 @@ export class Daemon {
       run.entry.agentId,
       this.clock.now()
     )
-    const p = this.buildPending(run, { conv, rec, sessionId, outwardSessionId, webchat: pendingWebchat })
+    const resolveFileLink = await this.turnWorkspaceFileLinkResolver(run, sessionId, outwardSessionId)
+    const conv = plan.turnSurface.createConverger({ ...plan.turnCtx, resolveFileLink })
+    if (conv instanceof OutputConverger && this.slackStreamingEligible(plan, replyConn)) conv.enableStreaming()
+    const p = this.buildPending(run, {
+      conv,
+      rec,
+      sessionId,
+      outwardSessionId,
+      resolveFileLink,
+      webchat: pendingWebchat
+    })
     // Every turn re-stashes the stored title (fallback or runtime): the connection dedupes
     // repeats, and re-pushing heals a rename lost to a restart or an unregistered thread.
     // Substituted at push time — a first-message fallback carries raw `<@U…>` mentions, and
@@ -11191,6 +11490,54 @@ export class Daemon {
     }
   }
 
+  /** Resolve only viewer-addressable roots after this turn's runtime session and workspace have opened. */
+  private async turnWorkspaceFileLinkResolver(
+    run: TurnRun,
+    sessionId: string,
+    outwardSessionId: string
+  ): Promise<WorkspaceFileLinkResolver | undefined> {
+    const agent = this.agents.get(run.entry.agentId)
+    const host = run.entry.selectedHost?.host ?? this.hostForOwner(this.sessionOwnerKey(run.entry.agentId, run.key))
+    const cwd = host?.sessionCwd?.(sessionId)
+    if (!agent || !cwd) return undefined
+    try {
+      const session = await this.store.getSession(run.key)
+      if (!session) return undefined
+      const scopeSessionId = session.workspaceIsolation === 'session' ? outwardSessionId : undefined
+      const scope = createWorkspaceScope({
+        workspaces: this.workspaces,
+        agentOf: (id) => this.agents.get(id),
+        sessionOf: (id, outwardId) => this.store.getSessionByOutwardId(outwardId, id),
+        runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
+      })
+      const roots: Array<{ path: string; repo?: string }> = []
+      for (const repo of [undefined, ...this.workspaces.secondaryRoots(agent).map((root) => root.repoFullName)]) {
+        const location = await scope.location(agent.id, scopeSessionId, repo)
+        if (!location) continue
+        try {
+          const path = this.workspaces.sandboxMode
+            ? location.root
+            : this.workspaces.canonicalWorkspacePath(agent.id, location.root)
+          roots.push({ path, ...(repo === undefined ? {} : { repo }) })
+        } catch {
+          // An absent or retired checkout cannot supply a working file link.
+        }
+      }
+      if (!roots.length) return undefined
+      return createWorkspaceFileLinkResolver({
+        sessionUrl: this.sessionLink(
+          outwardSessionId,
+          this.sessionLinkSource(run.plan.platform, run.plan.integrationId)
+        ),
+        agentId: agent.id,
+        cwd,
+        roots
+      })
+    } catch {
+      return undefined
+    }
+  }
+
   /** Build this turn's live record from its plan and register it as the session's Pending turn. */
   private buildPending(
     run: TurnRun,
@@ -11199,6 +11546,7 @@ export class Daemon {
       rec: TranscriptRecorder
       sessionId: string
       outwardSessionId: string
+      resolveFileLink?: WorkspaceFileLinkResolver
       webchat: Pending['webchat']
     }
   ): Pending {
@@ -11239,9 +11587,11 @@ export class Daemon {
       builtinSystemToolCallIds: new Set(),
       acpSessionId: sessionId,
       outwardSessionId,
+      ...(turn.resolveFileLink ? { resolveFileLink: turn.resolveFileLink } : {}),
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
       turnState: plan.turnSurface.initialTurnState({
         ...plan.turnCtx,
+        ...(turn.resolveFileLink ? { resolveFileLink: turn.resolveFileLink } : {}),
         ...(run.egressConn ? { egress: run.egressConn } : {})
       }),
       conn: run.replyConn,
@@ -11833,6 +12183,8 @@ export class Daemon {
         // reset the sentinel hold so the replacement gets its own check.
         p.webchat.replyText = ''
         p.webchat.heldText = ''
+        p.webchat.heldTextOffset = 0
+        delete p.webchat.messageId
         p.webchat.messageEmitted = false
         p.reply.text = ''
       }
@@ -11871,6 +12223,8 @@ export class Daemon {
           // would leave the stream open and the composer stuck busy.
           p.webchat.replyText = ''
           p.webchat.heldText = ''
+          p.webchat.heldTextOffset = 0
+          delete p.webchat.messageId
           if (!p.webchat.doneSent) {
             p.webchat.doneSent = true
             p.webchat.sink.output({
@@ -11991,14 +12345,16 @@ export class Daemon {
       // agent): drop the held stream text — nothing was ever streamed — and
       // commit no canonical post or transcript reply row.
       p.webchat.heldText = ''
+      p.webchat.heldTextOffset = 0
+      delete p.webchat.messageId
       p.reply.text = ''
     } else if (trimmedWebchatReply) {
       // A real reply that never diverged from the sentinel prefix mid-stream
       // (shorter than the sentinel) is still held — release it before commit.
-      webchatTurnOutput.flushHeldWebchatText(p.webchat)
+      webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
       // A continuation turn records its reply at the platform post boundary instead
       // (appending here would duplicate the row), and its roster is fixed at one.
-      if (!p.webchat.continuation) {
+      if (!p.webchat.continuation && p.webchat.replyText.trim()) {
         // Shares the strictly-monotonic clock with the inbound user message so a fast
         // turn can't stamp both with the same ms and lose the reply to the unique index.
         // The ts the row actually lands on (post-collision-bump) doubles as the reply
@@ -12223,12 +12579,13 @@ export class Daemon {
       // Continuation: release any held stream text; the platform branch below owns the
       // visible notice + transcript, and the terminal-error `done` waits behind its
       // apply-chain drain so the console cannot admit a next turn mid-flush.
-      webchatTurnOutput.flushHeldWebchatText(p.webchat)
+      webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
     } else if (p.webchat) {
-      // Reply text (including a runtime's mirrored error text) already streamed to
-      // the client via onAcpUpdate; the terminal done frame carries the reason.
-      // Record what streamed so the session reads back with it, like the success
-      // path does — the sink is a live transport with no post boundary of its own.
+      // Release a held partial reply before surfaceTurnFailure closes the browser stream.
+      const trimmedPartialReply = p.webchat.replyText.trim()
+      if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
+        webchatTurnOutput.flushHeldWebchatText(p.webchat, p.resolveFileLink)
+      }
       await this.surfaceTurnFailure(err, {
         agentId,
         agentName: plan.agentName,
@@ -12244,9 +12601,7 @@ export class Daemon {
         thread: msg.thread,
         statusThread: plan.statusThread
       })
-      const trimmedPartialReply = p.webchat.replyText.trim()
-      if (trimmedPartialReply && !isNoResponseBody(trimmedPartialReply)) {
-        webchatTurnOutput.flushHeldWebchatText(p.webchat)
+      if (p.webchat.replyText.trim() && !isNoResponseBody(p.webchat.replyText.trim())) {
         const partialPostId = randomUUID()
         const replyTs = await webchatTurnOutput.appendWebchatTextRow(
           this.store,
@@ -13959,7 +14314,7 @@ export class Daemon {
     // per mapped chunk, instead of driving the Slack renderer — but still records the
     // full activity log below, so a webchat session reads back like any other.
     // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
-    if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update)
+    if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update, p.resolveFileLink)
     if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.plan.stageAnswer && isAnswerChunk)) {
       // Segment commit: a boundary the live renderer flushes on delivers the staged text
       // ahead of it, so "say → work → say more" reaches the channel as it happens (the
@@ -14145,7 +14500,7 @@ export class Daemon {
         bound && bound.cwd === undefined ? bound.workspace : undefined,
         allowAgentDrain
       )
-      await this.ensureRuntimeInstalled(agent.runtime)
+      if (!this.usesMicrosandbox(agent)) await this.ensureRuntimeInstalled(agent.runtime, true)
       if (this.hostStartGeneration.get(key) !== generation) {
         throw new Error(`host start superseded for ${label}`)
       }
@@ -15139,8 +15494,12 @@ export class Daemon {
     // reconcile must not release admission while clone/pull/install still runs.
     const hostStop = host ? Promise.resolve().then(() => host.stop(deadlineMs)) : Promise.resolve()
     const stop = Promise.allSettled([hostStop, ...supersededStarts])
-      .then(([hostResult]) => {
+      .then(async ([hostResult]) => {
         if (hostResult?.status === 'rejected') throw hostResult.reason
+        if (launch && this.microsandbox) {
+          const agent = this.agents.get(agentId)
+          if (agent) await this.microsandbox.suspend(this.microsandboxPlacement(agent, launch.cwd, key).id)
+        }
       })
       .finally(() => {
         if (this.hostStopping.get(key) === stop) this.hostStopping.delete(key)
@@ -15956,26 +16315,39 @@ export class Daemon {
         this.log.warn(`retention: keeping session ${rec.key} — worktree cleanup failed (${res.error})`)
         continue
       }
-      // Re-check synchronously after the git awaits: a message admitted mid-cleanup
-      // owns the serial gate now, and deleting the row underneath its turn would
-      // orphan the state the turn is about to write. The worktree (if any) is
-      // already gone, but prepareSessionWorkspace recreates it on that same turn.
-      if (await this.sessionRetentionActive(rec)) {
-        active += 1
-        continue
+      const purge = async () => {
+        // Recheck inside the admission fence before destroying a VM or deleting its last session record.
+        if (await this.sessionRetentionActive(rec)) {
+          active += 1
+          return
+        }
+        const sessionHost = this.sessionHostFence(rec.agentId, rec.key)
+        if (this.microsandbox) {
+          try {
+            await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
+            await this.discardSessionSandbox(rec.agentId, rec.key)
+          } catch (err) {
+            failed += 1
+            this.log.warn(`retention: keeping session ${rec.key} — VM cleanup failed (${(err as Error).message})`)
+            return
+          }
+        }
+        // Deleting the row also writes the durable purge receipt for the Control Plane.
+        if (
+          await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })
+        ) {
+          removed += 1
+          if (rec.acpSessionId)
+            this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
+          await this.modelSessions.release(rec.key)
+          if (!this.microsandbox) {
+            await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
+            await this.discardSessionSandbox(rec.agentId, rec.key)
+          }
+        }
       }
-      const sessionHost = this.sessionHostFence(rec.agentId, rec.key)
-      // The purge receipt is written in deleteSession's transaction: the CP holds
-      // the only surviving record of this session, and it must be told that the
-      // content behind it is gone (drained below, durably, on ACK).
-      if (await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })) {
-        removed += 1
-        if (rec.acpSessionId)
-          this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
-        await this.modelSessions.release(rec.key)
-        await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
-        await this.discardSessionSandbox(rec.agentId, rec.key)
-      }
+      if (this.microsandbox) await this.withWorkspaceAdmissionFence(rec.agentId, purge)
+      else await purge()
     }
     this.log.info(
       `retention: session GC removed ${removed}/${expired.length} expired session(s)` +
@@ -16364,6 +16736,7 @@ export class Daemon {
    * failed. The cost is at most one sweep interval of delay after the host goes.
    */
   private async sweepIdleSandboxes(now: number, ttl: number): Promise<void> {
+    await this.microsandbox?.suspendIdle(now - ttl)
     const plane = this.k8sPlane
     if (!plane) return
     for (const { subject, agentId, since } of plane.launched()) {
@@ -16449,6 +16822,11 @@ export class Daemon {
    * the agent exists. One delete, logged on failure; the orphan reconciler collects what is left.
    */
   private async discardClusterSandbox(agentId: string): Promise<void> {
+    if (this.microsandbox) {
+      for (const id of await this.microsandbox.environmentIds()) {
+        if (id.startsWith(`${agentId}/`)) await this.microsandbox.discard(id)
+      }
+    }
     const plane = this.k8sPlane
     if (!plane) return
     try {
@@ -16463,6 +16841,7 @@ export class Daemon {
 
   /** Cluster only: a retired session's pod goes with its row — the claim, and the clones and HOME on its volume (§11). Best effort like the agent's; the orphan reconciler collects a leftover. */
   private async discardSessionSandbox(agentId: string, sessionKey: string): Promise<void> {
+    await this.microsandbox?.discard(`${agentId}/${hostKeyDirName(sessionHostKey(agentId, sessionKey))}`)
     const plane = this.k8sPlane
     if (!plane) return
     const leaf = hostKeyDirName(sessionHostKey(agentId, sessionKey))
@@ -16478,6 +16857,13 @@ export class Daemon {
 
   /** Cluster only: retire every session pod of the agent but the leaf named — a replaced workspace leaves them holding the old repository (§11). */
   private async discardSessionSandboxes(agentId: string, exceptLeaf?: string): Promise<void> {
+    if (this.microsandbox) {
+      for (const id of await this.microsandbox.environmentIds()) {
+        if (id.startsWith(`${agentId}/session-`) && id !== `${agentId}/${exceptLeaf}`) {
+          await this.microsandbox.discard(id)
+        }
+      }
+    }
     const plane = this.k8sPlane
     if (!plane) return
     for (const subject of await plane.driver.sessionClaimSubjects(agentId)) {
@@ -17421,7 +17807,9 @@ export class Daemon {
       memory: () => this.memory,
       dreamRunner: () => this.dreamRunner(),
       runtimeCommands: () => this.runtimeCommands,
-      memoryFsFor: (agentId) => this.memoryFsFor(agentId),
+      memoryHomePortsFor: (agentId) => this.memoryHomePortsFor(agentId),
+      wakeMemoryOutbox: () => this.memoryOutbox?.wake(),
+      wakeMemoryHomeMigrations: () => this.memoryHomeMigrations.wake(),
       gitCommitIdentity: () => this.gitCommitIdentity,
       sessionThreadUrl: (session) => this.sessionThreadUrl(session),
       childSessionStatusProbe: (probe) => this.collab.childSessionStatusProbe(probe),
@@ -17858,6 +18246,9 @@ export class Daemon {
       store: () => this.store,
       draining: () => this.draining,
       catalog: () => this.runtimeCatalog,
+      localProbeCatalog: () => this.localRuntimeCatalog ?? this.runtimeCatalog,
+      executionLocation: (runtimeId) =>
+        this.k8s || this.microsandboxCatalog?.entries[runtimeId] !== undefined ? 'sandbox' : 'host',
       admittedRuntimes: () => this.runtimes,
       refreshAdmitted: () => this.refreshAdmittedRuntimes(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),
@@ -17866,7 +18257,20 @@ export class Daemon {
       updateCapabilities: () => this.cpClient?.updateCapabilities?.(),
       mcpServerFacts: () => this.mcpServerFactsFromDefs(),
       noteCatalogProbe: (input) => void this.modelCatalogSvc?.noteProbe(input),
-      localizeRuntime: (runtimeId) => this.ensureRuntimeInstalled(runtimeId),
+      localizeRuntime: async (runtimeId) => {
+        await this.ensureRuntimeInstalled(runtimeId)
+        // Host-only installs must stay current in the separate local launch catalog.
+        if (this.localRuntimeCatalog && !this.microsandboxCatalog?.entries[runtimeId]) {
+          const entry = this.runtimeCatalog.entries[runtimeId]
+          if (entry) {
+            this.localRuntimeCatalog.entries[runtimeId] = entry
+            this.localRuntimeCatalog.runtimes[runtimeId] = entry.runtime
+          } else {
+            delete this.localRuntimeCatalog.entries[runtimeId]
+            delete this.localRuntimeCatalog.runtimes[runtimeId]
+          }
+        }
+      },
       launch: () => ({
         k8s: this.k8s,
         fakeHosts: this.opts.hostFactory !== undefined,
@@ -18388,6 +18792,8 @@ export class Daemon {
     while (this.agentLifecycleTails.size > 0) {
       await Promise.all([...this.agentLifecycleTails.values()])
     }
+    // A memory home copy stops between files and reports nothing; the CP's marker keeps it pending for the next start.
+    await this.memoryHomeMigrations.stop().catch((e) => errors.push(e))
     // Stop the body-bearing capture pump before closing its verified clients or
     // SQLite store. Unfinished operations remain durable for restart recovery.
     await Promise.resolve(this.memoryOutbox?.stop()).catch((e) => errors.push(e))
@@ -18406,6 +18812,8 @@ export class Daemon {
     // Only now: the shim channel IS the runtimes' transport, so closing it before the drain
     // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
+    await this.microsandbox?.stopAll().catch((error: unknown) => errors.push(error))
+    this.microsandbox = undefined
     await this.k8sPlane?.stop().catch(() => undefined)
     await this.readiness?.stop().catch(() => undefined)
     this.readiness = undefined

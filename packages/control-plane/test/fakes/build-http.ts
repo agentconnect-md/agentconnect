@@ -74,6 +74,7 @@ import {
   PgDutyGroupRepo
 } from '../../src/persistence/index.js'
 import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
+import { PgAgentMemoryHistoryRepo } from '../../src/persistence/repositories/agent-memory.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { runWithSharedTx, withSharedTxRouting } from '../../src/persistence/ambient-tx.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
@@ -507,6 +508,7 @@ export function buildHttpApp(
       externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
       externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
       memoryConnectionWriter: new PgMemoryConnectionWriter(prisma, cipher),
+      agentMemoryHistory: new PgAgentMemoryHistoryRepo(prisma),
       slackInstall: new PgSlackInstallStore(prisma, cipher),
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
       feishuAppRegistration: feishuAppRegistrationStore,

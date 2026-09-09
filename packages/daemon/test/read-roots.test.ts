@@ -128,6 +128,57 @@ describe('trusted runtime read roots', () => {
     expect(() => normalizeSandboxMounts([{ ...mount, target: root }])).toThrow(/same|equal|remap/i)
   })
 
+  it('maps canonical microsandbox sources to guest paths without resolving those paths on the host', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-vm-mounts-'))
+    temporaryRoots.push(root)
+    const store = join(root, 'store')
+    const nested = join(store, 'nested')
+    const alias = join(root, 'store-link')
+    mkdirSync(nested, { recursive: true })
+    symlinkSync(store, alias, 'junction')
+    const mounts = [
+      { source: '~/store-link', target: '/cache/../cache/store/', readOnly: true },
+      { source: store, target: '/cache/store', readOnly: false },
+      { source: nested, target: '/cache/store/nested', readOnly: true },
+      { source: store, target: '/other-cache', readOnly: true }
+    ]
+    const expected = [
+      { source: realpathSync(store), target: '/cache/store', readOnly: false },
+      { source: realpathSync(nested), target: '/cache/store/nested', readOnly: true },
+      { source: realpathSync(store), target: '/other-cache', readOnly: true }
+    ]
+    for (const entries of [mounts, [...mounts].reverse()]) {
+      const normalized = normalizeSandboxMounts(entries, { HOME: root }, 'microsandbox')
+      expect(normalized).toHaveLength(expected.length)
+      expect(normalized).toEqual(expect.arrayContaining(expected))
+    }
+    expect(() =>
+      normalizeSandboxMounts(
+        [...mounts, { source: nested, target: '/cache/store/', readOnly: false }],
+        { HOME: root },
+        'microsandbox'
+      )
+    ).toThrow(/different sources to the same target/)
+  })
+
+  it('accepts microsandbox file mounts and rejects invalid source or guest paths', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-vm-mount-paths-'))
+    temporaryRoots.push(root)
+    const file = join(root, 'config')
+    writeFileSync(file, 'configuration')
+    const normalize = (source: string, target = '/cache') =>
+      normalizeSandboxMounts([{ source, target, readOnly: true }], {}, 'microsandbox')
+    expect(() => normalize(join(root, 'missing'))).toThrow(/source does not exist/)
+    expect(() => normalize('relative/source')).toThrow(/source must be absolute/)
+    expect(normalize(file)).toEqual([{ source: realpathSync(file), target: '/cache', readOnly: true }])
+    for (const target of ['relative/target', '~/cache', 'C:\\cache', '/cache\0invalid']) {
+      expect(() => normalize(root, target)).toThrow(/absolute POSIX guest path/)
+    }
+    for (const target of ['/', '//', '/cache/..']) {
+      expect(() => normalize(root, target)).toThrow(/must not be the guest root/)
+    }
+  })
+
   it('rejects relative operator read roots', () => {
     expect(() =>
       trustedRuntimeReadRoots({
