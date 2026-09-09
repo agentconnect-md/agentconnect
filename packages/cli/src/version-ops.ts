@@ -4,6 +4,7 @@
  */
 import { existsSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs'
 import { basename } from 'node:path'
+import { liveDaemonPid } from './daemon-live.js'
 import { currentLink, versionDir } from './paths.js'
 import { commandSelector } from './service/instance.js'
 import { currentVersion, isInstalled, listInstalled, readMeta, writeMeta } from './version-store.js'
@@ -63,13 +64,13 @@ const collate = (a: string, b: string): number => a.localeCompare(b, 'en', { num
 /** Default retention for automatic and manual pruning: how many installed versions to keep in total. */
 export const DEFAULT_KEEP_VERSIONS = 3
 
-/** Keep the newest `keep` installed versions by mtime; `current`/`previous` are never removed and count against `keep`. §5.4 */
-export function pruneVersions(root: string, keep = DEFAULT_KEEP_VERSIONS): string[] {
+/** Keep the newest `keep` installed versions by mtime; `current`/`previous` plus `protect` are never removed and count against `keep`. §5.4 */
+export function pruneVersions(root: string, keep = DEFAULT_KEEP_VERSIONS, protect: string[] = []): string[] {
   const meta = readMeta(root)
   const cur = currentVersion(root)
   const installed = listInstalled(root)
   const protectedSet = new Set(
-    [cur, meta.previous].filter((v): v is string => Boolean(v) && installed.includes(v as string))
+    [cur, meta.previous, ...protect].filter((v): v is string => Boolean(v) && installed.includes(v as string))
   )
 
   const prunable = installed
@@ -86,10 +87,27 @@ export function pruneVersions(root: string, keep = DEFAULT_KEEP_VERSIONS): strin
   return toRemove
 }
 
+export interface AutoPruneOpts {
+  /** Versions to keep in total (default DEFAULT_KEEP_VERSIONS); 0 disables the prune. */
+  keep?: number
+  /** Extra versions this operation must not lose — e.g. the one it just installed. */
+  protect?: string[]
+  /** The caller knows no daemon is executing an older bundle (it just restarted the live one onto `current`). */
+  assumeIdle?: boolean
+}
+
 /** Best-effort prune for the automatic call sites: cleanup failure must never fail the install/upgrade. Lock held by caller. */
-export function autoPrune(root: string, log: (m: string) => void, keep = DEFAULT_KEEP_VERSIONS): string[] {
+export function autoPrune(root: string, log: (m: string) => void, opts: AutoPruneOpts = {}): string[] {
+  const keep = opts.keep ?? DEFAULT_KEEP_VERSIONS
+  if (keep <= 0) return []
+  // A daemon we did not just restart is still running the bundle it was launched under, which may be any installed version.
+  const livePid = opts.assumeIdle ? null : liveDaemonPid(root)
+  if (livePid !== null) {
+    log(`kept old versions: daemon pid ${livePid} is still running — prune after restarting it`)
+    return []
+  }
   try {
-    const removed = pruneVersions(root, keep)
+    const removed = pruneVersions(root, keep, opts.protect ?? [])
     if (removed.length) log(`pruned ${removed.length} old version(s): ${removed.join(', ')}`)
     return removed
   } catch (err) {

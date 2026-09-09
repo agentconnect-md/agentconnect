@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -24,7 +24,8 @@ vi.mock('../src/install.js', () => ({
     installTarget(r, t, log, opts)
 }))
 
-const { versionInstall, versionReinstallLatest, versionRollback } = await import('../src/version-commands.js')
+const { versionInstall, versionReinstallLatest, versionRollback, versionUse } =
+  await import('../src/version-commands.js')
 const { currentVersion, listInstalled, readMeta, writeMeta } = await import('../src/version-store.js')
 
 const root = () => mkdtempSync(join(tmpdir(), 'ac-vinstall-'))
@@ -46,6 +47,33 @@ describe('versionInstall', () => {
     await versionInstall(r, {})
     // 1.0.0 stays current (installs do not switch) so the oldest prunable one goes.
     expect(listInstalled(r)).toEqual(['1.0.0', '1.2.0', '1.3.0'])
+  })
+
+  it('never prunes the version it just installed', async () => {
+    const r = root()
+    // current + previous fill a `--keep 2` budget, and an install does not switch current.
+    for (const v of ['1.0.0', '1.1.0']) {
+      resolveTarget.mockResolvedValueOnce({ version: v, channel: 'stable' })
+      await versionInstall(r, {})
+    }
+    const { useVersion } = await import('../src/version-ops.js')
+    useVersion(r, '1.1.0') // current=1.1.0, previous=1.0.0
+    resolveTarget.mockResolvedValueOnce({ version: '3.0.0', channel: 'stable' })
+    await versionInstall(r, { keep: 2 })
+    expect(listInstalled(r)).toContain('3.0.0')
+    await expect(versionUse(r, '3.0.0')).resolves.toBeUndefined()
+  })
+
+  it('defers cleanup while a daemon is running', async () => {
+    const r = root()
+    for (const v of ['1.0.0', '1.1.0', '1.2.0']) {
+      resolveTarget.mockResolvedValueOnce({ version: v, channel: 'stable' })
+      await versionInstall(r, {})
+    }
+    writeFileSync(join(r, 'daemon.lock'), `${process.pid}\n`)
+    resolveTarget.mockResolvedValueOnce({ version: '1.3.0', channel: 'stable' })
+    await versionInstall(r, {})
+    expect(listInstalled(r)).toEqual(['1.0.0', '1.1.0', '1.2.0', '1.3.0'])
   })
 
   it('keeps every version with --keep 0', async () => {

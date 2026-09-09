@@ -47,9 +47,9 @@ export async function versionInstall(
       useVersion(root, target.version)
       note(`current → ${target.version}`)
     }
-    // Bound the store on the install path too — `run`'s auto-install grows it without an upgrade.
-    const keep = opts.keep ?? DEFAULT_KEEP_VERSIONS
-    if (keep > 0) autoPrune(root, note, keep)
+    // Bound the store on the install path too — `run`'s auto-install grows it without an upgrade. The version
+    // just installed is protected: an install does not switch `current`, so retention alone would drop it.
+    autoPrune(root, note, { keep: opts.keep ?? DEFAULT_KEEP_VERSIONS, protect: [target.version] })
   })
 }
 
@@ -103,7 +103,7 @@ export async function versionReinstallLatest(root: string): Promise<string> {
       await installTarget(root, target, note, { force: true })
       useVersion(root, target.version)
       note(`current → ${target.version}`)
-      autoPrune(root, note)
+      autoPrune(root, note, { protect: [target.version] })
       return target.version
     },
     { wait: true }

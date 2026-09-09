@@ -136,6 +136,14 @@ version is in place, so routine upgrades do not accumulate old bundles. Pass
 Cleanup is best effort: a failed removal is reported and does not fail the
 install or upgrade.
 
+Automatic cleanup additionally protects the version the operation just installed,
+which an install does not activate, and defers entirely while `<root>/daemon.lock`
+names a live process. A running daemon keeps loading files from the bundle it was
+launched under, which is not necessarily `current`, so the only automatic prune
+that treats the store as idle is the one after an upgrade whose restart passed its
+health check. Otherwise the versions are reported as kept and a later prune
+reclaims them.
+
 Mutating version commands hold a root-scoped inter-process lock. Install and
 use fail fast when another live writer owns the lock; prune and upgrade wait.
 A lock is reclaimable only when its recorded process is gone or the PID has
