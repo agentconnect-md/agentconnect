@@ -1,3 +1,5 @@
+import { PgAgentMemoryTransactionRepo } from './persistence/repositories/agent-memory-transaction.repo.js'
+import { AgentMemoryTransactionService } from './agent-memory/transaction.service.js'
 /**
  * `container.ts` — the composition root (design §2.4).
  *
@@ -1603,6 +1605,7 @@ export function buildContainer(
 
   // The `control-plane` memory home's op set, and the sweep behind the staged rows an abandoned append
   // sequence leaves (memory-evolution.md §3.2.1); the sweep is armed only by `startBackground()`.
+  const agentMemoryTransaction = new AgentMemoryTransactionService(new PgAgentMemoryTransactionRepo(prisma), clock)
   const agentMemoryStore = new AgentMemoryStoreService(repos.agentMemoryFile, clock)
   const agentMemoryStagingSweeper = new AgentMemoryStagingSweeper(repos.agentMemoryFile, clock, http.log)
 
@@ -1957,6 +1960,7 @@ export function buildContainer(
     organizationKnowledge: repos.organizationKnowledge,
     externalMemoryConnection: repos.externalMemoryConnection,
     agentMemoryStore,
+    agentMemoryTransaction,
     agentMemoryHistory: repos.agentMemoryHistory,
     ...(github ? { github } : {}),
     // gitcred v2 (§13.1): the gitlab arm serves the agent's own account PATs; absent ⇒ disabled.

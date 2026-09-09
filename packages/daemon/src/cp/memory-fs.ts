@@ -1,14 +1,26 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { z } from 'zod'
+import { MAX_MEMORY_FILE_BYTES } from '../memory/store.js'
+import {
+  MemoryFsAppendReplySchema,
+  AGENT_MEMORY_STORE_V1_FEATURE,
+  type MemoryFsReply,
+  type MemoryStoreReq,
+  MEMORY_TRANSACTION_V1_FEATURE,
+  type MemoryTransactionReq,
+  type MemoryTransactionResult
+} from '@agentconnect.md/protocol'
 // The `control-plane` memory home: the shim client over the daemon's CP connection (memory-evolution.md §3.2.1), which
 // `resolveMemoryHomePorts` selects as `live` for a managed binding whose `home` is `control-plane`, gated at activation.
-import { AGENT_MEMORY_STORE_V1_FEATURE, type MemoryFsReply, type MemoryStoreReq } from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
-import { MemoryHomeUnavailableError, memoryRelSegments, type MemoryFs } from '../memory/fs.js'
-import { MemoryFsClient, type MemoryFsRequester } from '../shim/memory-fs-channel.js'
+import { MemoryTooLargeError, MemoryHomeUnavailableError, memoryRelSegments, type MemoryFs } from '../memory/fs.js'
+import { MemoryFsClient, settleMemoryFs, type MemoryFsRequester } from '../shim/memory-fs-channel.js'
 
 /** The slice of the CP connection this home rides: the legal-state gate, feature negotiation, the one request pair. */
 export interface CpMemoryStoreLink {
   connected(): boolean
   supportsServerFeature(feature: string): boolean
+  memoryTransaction?(req: MemoryTransactionReq): Promise<MemoryTransactionResult>
   memoryStore(req: MemoryStoreReq): Promise<MemoryFsReply>
 }
 
@@ -53,6 +65,59 @@ export class CpMemoryFs extends MemoryFsClient {
   ) {
     const tree = joinTreeRoot(CP_MEMORY_TREE_ROOT, root)
     super(cpMemoryFsRequester(link, agentId), tree, `control-plane:${agentId}:${tree}`)
+  }
+
+  get stageTransactionFile(): MemoryFs['stageTransactionFile'] {
+    if (!this.atomicTransaction) return undefined
+    return async (root, content) => {
+      if (!this.atomicTransaction)
+        throw new MemoryHomeUnavailableError('feature', 'the memory home no longer supports transactions')
+      const bytes = Buffer.from(content)
+      if (bytes.length > MAX_MEMORY_FILE_BYTES)
+        throw new MemoryTooLargeError('memory transaction file exceeds its byte limit')
+      const requester = cpMemoryFsRequester(this.link, this.agentId)
+      const tree = joinTreeRoot(this.root, root)
+      const temp = `.agentconnect-memory-${randomUUID()}.tmp`
+      try {
+        let offset = 0
+        do {
+          const chunk = bytes.subarray(offset, offset + 32768)
+          await settleMemoryFs(
+            requester,
+            {
+              op: 'memory-append',
+              root: tree,
+              rel: temp,
+              content: chunk.toString('base64'),
+              encoding: 'base64',
+              create: offset === 0
+            },
+            MemoryFsAppendReplySchema
+          )
+          offset += chunk.length
+        } while (offset < bytes.length)
+        return { temp, revision: createHash('sha256').update(bytes).digest('hex') }
+      } catch (error) {
+        await settleMemoryFs(requester, { op: 'memory-rm', root: tree, rel: temp }, z.null()).catch(() => {})
+        throw error
+      }
+    }
+  }
+
+  get atomicTransaction(): MemoryFs['atomicTransaction'] {
+    if (!this.link.memoryTransaction || !this.link.supportsServerFeature(MEMORY_TRANSACTION_V1_FEATURE))
+      return undefined
+    return async (request) => {
+      if (!this.link.connected())
+        throw new MemoryHomeUnavailableError('connection', 'the memory transaction home is unreachable')
+      if (!this.link.memoryTransaction || !this.link.supportsServerFeature(MEMORY_TRANSACTION_V1_FEATURE))
+        throw new MemoryHomeUnavailableError('feature', 'the memory home no longer supports transactions')
+      return this.link.memoryTransaction({
+        ...request,
+        agentId: this.agentId,
+        root: joinTreeRoot(this.root, request.root)
+      })
+    }
   }
 
   subdir(rel: string): MemoryFs {

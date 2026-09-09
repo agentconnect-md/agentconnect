@@ -1,3 +1,4 @@
+import type { AgentMemoryTransactionService } from '../agent-memory/transaction.service.js'
 /**
  * `DaemonWsDeps` — the dependency bundle every connection actor and frame
  * handler receives (design §2.4 `createDaemonWsServer(app, deps)`).
@@ -150,6 +151,7 @@ export interface DaemonWsDeps {
   /** Revision-fenced sink for daemon external-memory conformance facts. */
   externalMemoryConnection?: ExternalMemoryConnectionRepo
   /** The `control-plane` memory home's op set (memory-evolution.md §3.2.1); absent ⇒ `memory/store` answers INTERNAL. */
+  agentMemoryTransaction?: Pick<AgentMemoryTransactionService, 'apply'>
   agentMemoryStore?: Pick<AgentMemoryStoreService, 'apply'>
   /** The change-log table behind `memory/history/append`; absent ⇒ INTERNAL. */
   agentMemoryHistory?: Pick<AgentMemoryHistoryRepo, 'append'>

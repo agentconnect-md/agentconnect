@@ -1,3 +1,8 @@
+import {
+  MEMORY_TRANSACTION_V1_FEATURE,
+  type MemoryTransactionReq,
+  type MemoryTransactionResult
+} from '@agentconnect.md/protocol'
 /**
  * `CpClient` — the daemon-side CP WebSocket client FSM (protocol §2.1). Dials
  * out, runs the auth → register handshake, then (Tasks 5–7) emits heartbeats,
@@ -1133,6 +1138,20 @@ export class CpClient {
 
   // `memory/store` (D→C REQ): one op against the named agent's CP-homed tree (memory-evolution.md §3.2.1), gated like
   // `knowledgeSearch`. The typed refusals ride inside the reply; an error REP (`SCOPE_DENIED`, ...) rejects by its code.
+  async memoryTransaction(payload: MemoryTransactionReq): Promise<MemoryTransactionResult> {
+    this.requireReady('memory/transaction/v1')
+    if (!this.supportsServerFeature(MEMORY_TRANSACTION_V1_FEATURE))
+      throw new WireError('INTERNAL', 'control plane does not support memory transactions', false)
+    const frame = this.scopedFrame('memory/transaction/v1', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: MEMORY_STORE_TIMEOUT_MS
+    })
+    if (rep.type !== 'memory/transaction/v1/result')
+      throw new WireError('INTERNAL', 'unexpected memory transaction reply', false)
+    return rep.payload as MemoryTransactionResult
+  }
+
   async memoryStore(payload: MemoryStoreReq): Promise<MemoryFsReply> {
     this.requireReady('memory/store')
     if (!this.supportsServerFeature(AGENT_MEMORY_STORE_V1_FEATURE)) {

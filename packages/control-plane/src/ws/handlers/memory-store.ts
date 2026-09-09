@@ -110,3 +110,26 @@ export const handleMemoryHomeMigrated: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'INTERNAL', 'memory home migration could not be recorded', true)
   }
 }
+
+export const handleMemoryTransaction: Handler = async (frame, conn, deps) => {
+  if (!isFrame('memory/transaction/v1')(frame)) return
+  const verdict = await homedAgent(frame, frame.payload.agentId, conn, deps)
+  if ('denied' in verdict) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', verdict.denied, false)
+    return
+  }
+  if (!deps.agentMemoryTransaction) {
+    conn.sendError(frame.id, 'INTERNAL', 'memory transactions are unavailable', true)
+    return
+  }
+  try {
+    conn.replyTo(
+      frame,
+      'memory/transaction/v1/result',
+      await deps.agentMemoryTransaction.apply(verdict.agent, frame.payload)
+    )
+  } catch {
+    // A missing reply is ambiguous for a commit; callers may retry only the identical operation id and payload.
+    conn.sendError(frame.id, 'INTERNAL', 'memory transaction could not be confirmed; retry the same operation', true)
+  }
+}

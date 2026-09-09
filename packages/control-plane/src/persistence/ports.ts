@@ -1,3 +1,4 @@
+import type { MemoryTransactionReq, MemoryTransactionResult } from '@agentconnect.md/protocol'
 /**
  * Repository ports — the Red-Green seam (design §3.14 / §2.3).
  *
@@ -6631,4 +6632,9 @@ export interface DutyGroupRepo {
   /** Every agent covered by the unexpired leases `holder` holds — the duty half
    *  of the `register/ok` reconcile roster, which is `pinned-to-me ∪ held-by-me`. */
   heldAgentIds(holder: DaemonId, now: Date): Promise<AgentId[]>
+}
+
+// Atomic publication of a prepared topic/index batch in the existing CP memory home.
+export interface AgentMemoryTransactionRepo {
+  apply(agentId: AgentId, orgId: OrgId, request: MemoryTransactionReq, now: Date): Promise<MemoryTransactionResult>
 }

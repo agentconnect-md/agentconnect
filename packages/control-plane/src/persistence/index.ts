@@ -95,3 +95,5 @@ export { PgOrgRepo } from './repositories/org.repo.js'
 export { PgOrgInviteLinkRepo } from './repositories/org-invite-link.repo.js'
 export { PgWaitlistRepo } from './repositories/waitlist.repo.js'
 export { PgDeploymentConfigRepository, PgDeploymentConfigStore } from './repositories/deployment-config.repo.js'
+
+export { PgAgentMemoryTransactionRepo } from './repositories/agent-memory-transaction.repo.js'
