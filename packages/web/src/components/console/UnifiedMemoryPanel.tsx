@@ -19,6 +19,7 @@ interface Props {
   channelKey?: string
   canEdit: boolean
   children: ReactNode
+  onOpenLegacy?: () => Promise<void>
 }
 export function UnifiedMemoryPanel(props: Props) {
   return <Entries key={`${props.agentId}:${props.channelKey ?? ''}`} {...props} />
@@ -36,7 +37,7 @@ function errorMessage(error: unknown) {
   }
   return error instanceof Error ? error.message : 'Memory is unavailable.'
 }
-function Entries({ agentId, channelKey, canEdit, children }: Props) {
+function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props) {
   const generation = useRef(0)
   const detailRequest = useRef(0)
   const [capabilities, setCapabilities] = useState<MemoryEntryCapabilities | null>(null)
@@ -54,33 +55,42 @@ function Entries({ agentId, channelKey, canEdit, children }: Props) {
   const [blocked, setBlocked] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [notice, setNotice] = useState<string>()
-  const reload = useCallback(async () => {
-    const id = ++generation.current
-    ++detailRequest.current
-    setReading(false)
-    setBusy(true)
-    setError(undefined)
-    try {
-      const caps = await describeAgentMemoryEntries(agentId, channelKey)
-      if (id !== generation.current) return
-      if (!caps.operations.includes('list') || !caps.operations.includes('get')) {
-        setLegacy(true)
-        return
+  const reload = useCallback(
+    async (reconcileEmpty = false) => {
+      const id = ++generation.current
+      ++detailRequest.current
+      setReading(false)
+      setBusy(true)
+      setError(undefined)
+      try {
+        const caps = await describeAgentMemoryEntries(agentId, channelKey)
+        if (id !== generation.current) return
+        if (!caps.operations.includes('list') || !caps.operations.includes('get')) {
+          setLegacy(true)
+          return
+        }
+        setCapabilities(caps)
+        const page = await listAgentMemoryEntries(agentId, channelKey)
+        if (id !== generation.current) return
+        setEntries(page.entries)
+        setCursor(page.nextCursor)
+        if (reconcileEmpty && page.entries.length === 0 && !page.nextCursor) {
+          setBlocked(false)
+          setNotice(
+            'No saved memory found. An earlier request may still complete; review your draft before saving again.'
+          )
+        }
+      } catch (err) {
+        if (id !== generation.current) return
+        if (err instanceof ApiError && (err.status === 404 || err.status === 501 || err.code === 'UNSUPPORTED'))
+          setLegacy(true)
+        else setError(errorMessage(err))
+      } finally {
+        if (id === generation.current) setBusy(false)
       }
-      setCapabilities(caps)
-      const page = await listAgentMemoryEntries(agentId, channelKey)
-      if (id !== generation.current) return
-      setEntries(page.entries)
-      setCursor(page.nextCursor)
-    } catch (err) {
-      if (id !== generation.current) return
-      if (err instanceof ApiError && (err.status === 404 || err.status === 501 || err.code === 'UNSUPPORTED'))
-        setLegacy(true)
-      else setError(errorMessage(err))
-    } finally {
-      if (id === generation.current) setBusy(false)
-    }
-  }, [agentId, channelKey])
+    },
+    [agentId, channelKey]
+  )
   useEffect(() => {
     void reload()
     return () => {
@@ -175,6 +185,18 @@ function Entries({ agentId, channelKey, canEdit, children }: Props) {
       setSaving(false)
     }
   }
+  async function openLegacy() {
+    const id = generation.current
+    setBusy(true)
+    try {
+      await onOpenLegacy?.()
+      if (id === generation.current) setLegacy(true)
+    } catch (err) {
+      if (id === generation.current) setError(errorMessage(err))
+    } finally {
+      if (id === generation.current) setBusy(false)
+    }
+  }
   if (legacy)
     return (
       <>
@@ -205,7 +227,7 @@ function Entries({ agentId, channelKey, canEdit, children }: Props) {
             variant="secondary"
             size="sm"
             disabled={busy || saving || (!!mode && !blocked)}
-            onClick={() => void reload()}
+            onClick={() => void reload(blocked)}
           >
             Refresh
           </Button>
@@ -224,7 +246,7 @@ function Entries({ agentId, channelKey, canEdit, children }: Props) {
               New memory
             </Button>
           )}
-          <Button variant="secondary" size="sm" disabled={saving || !!mode} onClick={() => setLegacy(true)}>
+          <Button variant="secondary" size="sm" disabled={busy || saving || !!mode} onClick={() => void openLegacy()}>
             More memory tools
           </Button>
         </div>

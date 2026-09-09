@@ -63,10 +63,10 @@ afterEach(async () => {
   host.remove()
   vi.unstubAllGlobals()
 })
-async function render(channelKey = 'one', canEdit = true) {
+async function render(channelKey = 'one', canEdit = true, onOpenLegacy?: () => Promise<void>) {
   await act(async () =>
     root.render(
-      <UnifiedMemoryPanel agentId="agent" channelKey={channelKey} canEdit={canEdit}>
+      <UnifiedMemoryPanel agentId="agent" channelKey={channelKey} canEdit={canEdit} {...{ onOpenLegacy }}>
         <div>Legacy memory tools</div>
       </UnifiedMemoryPanel>
     )
@@ -167,4 +167,38 @@ it('prevents a mutation exceeding the advertised request budget', async () => {
   expect(host.textContent).toContain('too large')
   await click('Save memory')
   expect(api.createAgentMemoryEntry).not.toHaveBeenCalled()
+})
+
+it('recovers an unconfirmed first create only after an explicit complete empty refresh', async () => {
+  vi.mocked(api.listAgentMemoryEntries).mockResolvedValue({ entries: [], consistency: 'live', order: 'topic' })
+  vi.mocked(api.createAgentMemoryEntry).mockRejectedValueOnce(new api.ApiError('lost', 503, 'AMBIGUOUS_WRITE'))
+  await render()
+  await click('New memory')
+  await click('Save memory')
+  const save = () => [...host.querySelectorAll('button')].find((b) => b.textContent === 'Save memory')!
+  expect(save().disabled).toBe(true)
+  vi.mocked(api.listAgentMemoryEntries).mockResolvedValueOnce({
+    entries: [],
+    consistency: 'live',
+    order: 'topic',
+    nextCursor: 'more'
+  })
+  await click('Refresh')
+  expect(save().disabled).toBe(true)
+  vi.mocked(api.listAgentMemoryEntries).mockRejectedValueOnce(new Error('offline'))
+  await click('Refresh')
+  expect(save().disabled).toBe(true)
+  await click('Refresh')
+  expect(save().disabled).toBe(false)
+  expect(api.createAgentMemoryEntry).toHaveBeenCalledTimes(1)
+})
+it('refreshes retained tools when switching from a successful entry create', async () => {
+  const refresh = vi.fn(async () => {})
+  vi.mocked(api.createAgentMemoryEntry).mockResolvedValue({ state: 'completed', operationId: 'op' })
+  await render('one', true, refresh)
+  await click('New memory')
+  await click('Save memory')
+  await click('More memory tools')
+  expect(refresh).toHaveBeenCalledTimes(1)
+  expect(host.textContent).toContain('Legacy memory tools')
 })

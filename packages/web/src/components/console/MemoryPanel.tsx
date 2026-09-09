@@ -1245,6 +1245,9 @@ export function MemoryPanel({
             agentId={agentId}
             channelKey={selectedChannel}
             canEdit={canEdit}
+            onOpenLegacy={async () => {
+              await Promise.all([loadList(), loadFile(selected)])
+            }}
           >
             <FileBrowserShell
               title={
