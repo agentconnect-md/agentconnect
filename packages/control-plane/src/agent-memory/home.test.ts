@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  managedBindingHomedInControlPlane,
   managedMemoryHomeOf,
   memoryHomedInControlPlane,
   resolveMemoryBindingOnCreate,
@@ -117,5 +118,19 @@ describe('resolveMemoryBindingOnUpdate', () => {
       memory: daemon,
       dropHome: false
     })
+  })
+})
+
+describe('managedBindingHomedInControlPlane', () => {
+  it('keeps the policy fields, sets the home, and drops the CP-owned flag; no binding is the managed default', () => {
+    expect(managedBindingHomedInControlPlane(null)).toEqual(cp)
+    expect(managedBindingHomedInControlPlane({ provider: 'managed' } as never)).toEqual(cp)
+    expect(managedBindingHomedInControlPlane({ ...daemon, autoDistill: false, scope: 'channel' })).toEqual({
+      provider: 'managed',
+      autoDistill: false,
+      scope: 'channel',
+      home: 'control-plane'
+    })
+    expect(managedBindingHomedInControlPlane(pendingCp)).toEqual(cp)
   })
 })

@@ -55,6 +55,7 @@ import {
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import {
+  type AgentMoveOpts,
   type AgentRecord,
   type AgentSkillSourceFence,
   type AgentWorkspace,
@@ -2558,7 +2559,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Move an agent to another daemon',
           description:
-            'Hard-cut an agent over to another READY daemon. Active source turns are cancelled without a final reply, and subsequent messages start fresh on the target; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated or replayed; managed memory follows the agent only when its home is the Control Plane, and an agent whose memory home is the daemon is refused a move onto the managed pool (409) until the home is switched.',
+            'Hard-cut an agent over to another READY daemon. Active source turns are cancelled without a final reply, and subsequent messages start fresh on the target; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated or replayed; managed memory follows the agent only when its home is the Control Plane, and an agent whose memory home is the daemon is refused a move onto the managed pool (409) until the home is switched — except an unplaced agent, which has no tree to lose and is switched to the Control Plane home in the move itself.',
           operationId: 'moveAgentDaemon',
           params: IdParam,
           body: SetAgentDaemonBody,
@@ -2624,17 +2625,17 @@ export function agentRoutes(deps: HttpDeps) {
           : placement.kind === 'daemon' && placement.daemonId === req.body.daemonId
 
         // A daemon-home tree stays in the source archive; the pool has nowhere to keep one (memory-evolution.md §3.2.1).
-        // A same-target repair is not a move onto the pool, so an agent already there is not refused its retry.
-        if (
+        // A same-target repair is not a move onto the pool, so an agent already there is not refused its retry. An
+        // unplaced agent has no tree anywhere, so its home is switched to the Control Plane in the move's own write.
+        const daemonHomeOntoPool =
           !samePlacementTarget &&
           managedMemoryHomeOf(existing.memory) === 'daemon' &&
           (await placedOnInstallPool(deps, {
             setId: targetSetId,
             daemonId: targetSetId ? undefined : req.body.daemonId
           }))
-        ) {
-          return conflict(POOL_MOVE_NEEDS_CP_HOME)
-        }
+        if (daemonHomeOntoPool && placement.kind !== 'unplaced') return conflict(POOL_MOVE_NEEDS_CP_HOME)
+        const moveOpts: AgentMoveOpts | undefined = daemonHomeOntoPool ? { memoryHome: 'control-plane' } : undefined
 
         // The org registry rows the agent enables — read once for every candidate's facts check
         // below, then staged on the target.
@@ -2819,7 +2820,7 @@ export function agentRoutes(deps: HttpDeps) {
           }
           const moved = force
             ? await agentMoves.forceReassign(existing, moveTarget, req.principal?.userId)
-            : await agentMoves.move(existing, moveTarget, req.principal?.userId)
+            : await agentMoves.move(existing, moveTarget, req.principal?.userId, moveOpts)
           // The pre-activation probe fact can arrive before the placement CAS and
           // is correctly rejected by the daemon-ownership check. Re-send the
           // idempotent definition after commit so the daemon re-emits its current

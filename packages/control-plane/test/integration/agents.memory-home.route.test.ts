@@ -30,12 +30,12 @@ import {
   PgAgentMemoryFileRepo,
   PgAgentMemoryHistoryRepo
 } from '../../src/persistence/repositories/agent-memory.repo.js'
-import { AgentId } from '../../src/domain/ids.js'
+import { AgentId, OrgId } from '../../src/domain/ids.js'
 import type { AgentMemoryHistoryInput } from '../../src/persistence/ports.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgAgentConfigWriter } from '../../src/persistence/repositories/agent-config.writer.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
-import { MemoryHomeRefusedError } from '../../src/agent-memory/home.js'
+import { MemoryHomeRefusedError, POOL_MOVE_NEEDS_CP_HOME } from '../../src/agent-memory/home.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -108,6 +108,13 @@ const storedMemory = async (agentId: string) =>
 const create = (payload: Record<string, unknown>) => app().app.inject({ method: 'POST', url: `${ORG}/agents`, payload })
 const patch = (agentId: string, payload: Record<string, unknown>) =>
   app().app.inject({ method: 'PATCH', url: `${ORG}/agents/${agentId}`, payload })
+
+/** Never placed: `placementKind: daemon` naming no machine, the shape "Runs on → Add → Cloud" starts from. */
+async function seedUnplaced(memory: Record<string, unknown> | null): Promise<string> {
+  const agentId = randomUUID()
+  await seedAgent(prisma, agentId, { runtime: 'Claude Code', ...(memory ? { runtimeOverrides: { memory } } : {}) })
+  return agentId
+}
 
 async function seedHomed(memory: Record<string, unknown> | null, opts: { pool?: boolean } = {}): Promise<string> {
   const agentId = randomUUID()
@@ -317,29 +324,99 @@ describe('the home is resolved against the locked binding, not the caller’s ea
   })
 })
 
-describe('PUT /agents/:id/daemon — a daemon-home agent may not move onto the pool', () => {
-  it('refuses the move until the home is switched, for the set and for a member alike', async () => {
+describe('PUT /agents/:id/daemon — a daemon-home agent moves onto the pool only when it has no tree to lose', () => {
+  const ontoPool = (agentId: string, payload: Record<string, unknown> = { placementKind: 'pool' }) =>
+    app().app.inject({ method: 'PUT', url: `${ORG}/agents/${agentId}/daemon`, payload })
+
+  it('refuses a placed agent until the home is switched, for the set and for a member alike', async () => {
     await seedDaemon(prisma, SOURCE, { capabilities: CAPS })
     await seedPoolMember()
     const agentId = await seedHomed(null)
-    const onto = await app().app.inject({
-      method: 'PUT',
-      url: `${ORG}/agents/${agentId}/daemon`,
-      payload: { placementKind: 'pool' }
-    })
+    const onto = await ontoPool(agentId)
     expect(onto.statusCode).toBe(409)
-    expect(onto.json().message).toContain('control-plane')
+    expect(onto.json().message).toBe(POOL_MOVE_NEEDS_CP_HOME)
+    expect(onto.json().message).toContain('Memory tab')
     const pinned = await running!.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/daemon`,
       payload: { daemonId: MEMBER }
     })
     expect(pinned.statusCode).toBe(409)
-    expect(pinned.json().message).toContain('control-plane')
+    expect(pinned.json().message).toBe(POOL_MOVE_NEEDS_CP_HOME)
     expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
       placementKind: 'daemon',
       daemonId: SOURCE
     })
+    expect(await storedMemory(agentId)).toBeNull()
+  })
+
+  it('an unplaced agent with an explicit daemon home lands with the home switched, its policy kept, nothing migrating', async () => {
+    await seedPoolMember()
+    const agentId = await seedUnplaced({ ...DAEMON_HOME, autoDistill: false, scope: 'channel' })
+    const res = await ontoPool(agentId)
+    expect(res.statusCode).toBe(200)
+    const expected = { provider: 'managed', autoDistill: false, scope: 'channel', home: 'control-plane' }
+    expect(res.json()).toMatchObject({ placementKind: 'set', setId: await poolSetId(prisma), memory: expected })
+    expect(await storedMemory(agentId)).toEqual(expected)
+  })
+
+  it('an unplaced agent with no binding lands with the managed default homed in the Control Plane', async () => {
+    await seedPoolMember()
+    const agentId = await seedUnplaced(null)
+    const res = await ontoPool(agentId)
+    expect(res.statusCode).toBe(200)
+    expect(res.json().memory).toEqual(CP)
+    expect(await storedMemory(agentId)).toEqual(CP)
+    expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
+      placementKind: 'set',
+      daemonId: null,
+      status: 'active'
+    })
+  })
+
+  it('an unplaced agent with external memory moves with its binding untouched', async () => {
+    await seedPoolMember()
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, live, new ControlSpy() as unknown as ControlSender)
+    const { repos } = running.deps
+    await repos.relay.upsertByName('pool-relay', 'wss://relay.example/rd', new Date())
+    const installation = await repos.memoryPluginInstallation.create({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      pluginId: 'ai.example.pool-memory',
+      transport: 'streamable-http',
+      endpoint: 'https://plugin.example/mcp',
+      pinnedProfileMajor: 1,
+      secretHeaders: [{ name: 'apiKey', header: 'Authorization', required: true }]
+    })
+    const connection = await repos.externalMemoryConnection.create({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      installationId: installation.id,
+      config: { projectId: 'pool' }
+    })
+    await repos.externalMemoryConnectionSecret.put(OrgId(DEFAULT_ORG_ID), connection.id, { apiKey: 'secret' })
+    await repos.externalMemoryGrant.mintFor(OrgId(DEFAULT_ORG_ID), connection.id)
+    const external = {
+      provider: 'external',
+      connectionId: connection.id,
+      recall: { mode: 'auto', topK: 5, maxBytes: 8 * 1024, timeoutMs: 1_000 },
+      capture: { mode: 'manual' }
+    }
+    const agentId = await seedUnplaced(external)
+    const res = await running!.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { placementKind: 'pool' }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    expect(res.json().memory).toEqual(external)
+    expect(await storedMemory(agentId)).toEqual(external)
+  })
+
+  it('a same-target repair of a pool agent that still reads daemon is not refused and not rewritten', async () => {
+    await seedPoolMember()
+    const agentId = await seedHomed(DAEMON_HOME, { pool: true })
+    const res = await ontoPool(agentId)
+    expect(res.statusCode).toBe(200)
+    expect(await storedMemory(agentId)).toEqual(DAEMON_HOME)
   })
 })
 

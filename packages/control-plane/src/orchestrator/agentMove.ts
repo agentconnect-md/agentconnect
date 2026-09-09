@@ -37,6 +37,7 @@ import type {
   BotSecretStore,
   CronRepo,
   MemberSetRepo,
+  AgentMoveOpts,
   AgentWorkspace,
   AgentWorkspaceCredential,
   IntegrationChannelRepo,
@@ -257,9 +258,9 @@ export class AgentMoveService {
     }
   }
 
-  async move(agent: AgentRecord, target: PlacementTarget, editor?: string): Promise<AgentRecord> {
+  async move(agent: AgentRecord, target: PlacementTarget, editor?: string, opts?: AgentMoveOpts): Promise<AgentRecord> {
     return this.withMoveGate(agent.id, async () =>
-      this.moveLocked(await this.reloadAfterGate(agent), target, editor, 'required')
+      this.moveLocked(await this.reloadAfterGate(agent), target, editor, 'required', opts)
     )
   }
 
@@ -550,7 +551,8 @@ export class AgentMoveService {
     agent: AgentRecord,
     target: PlacementTarget,
     editor: string | undefined,
-    sourceDetachMode: SourceDetachMode
+    sourceDetachMode: SourceDetachMode,
+    opts?: AgentMoveOpts
   ): Promise<AgentRecord> {
     const source = placementTargetOf(agent)
     // Every member serving the agent today, not only the one placement names: a `pool` agent is
@@ -597,7 +599,7 @@ export class AgentMoveService {
 
     let moved: AgentRecord | null
     try {
-      moved = await this.deps.agents.movePlacement(agent.id, source, target, editor)
+      moved = await this.deps.agents.movePlacement(agent.id, source, target, editor, opts)
       if (moved) this.deps.recomputeDuties?.(moved.orgId)
     } catch (err) {
       await this.restoreSourceIfStillOwner(agent, source, sourceBundle)
