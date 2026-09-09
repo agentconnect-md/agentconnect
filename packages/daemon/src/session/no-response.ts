@@ -81,8 +81,5 @@ export function isNoResponseBody(trimmedBody: string): boolean {
   const terminalLine = trimmedBody.split(/\r?\n/).at(-1)?.trim()
   if (terminalLine === NO_RESPONSE_SENTINEL) return true
   // Only-sentinel bodies (repeated or whitespace-separated) are unambiguous.
-  return (
-    trimmedBody.length > 0 &&
-    trimmedBody.split(NO_RESPONSE_SENTINEL).every((part) => part.trim() === '')
-  )
+  return trimmedBody.length > 0 && trimmedBody.split(NO_RESPONSE_SENTINEL).every((part) => part.trim() === '')
 }
