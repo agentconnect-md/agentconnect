@@ -117,6 +117,27 @@ describe('private runtime HOME', () => {
       provider: 'openai'
     },
     {
+      runtime: 'qwen-code',
+      path: join('.qwen', 'settings.json'),
+      credential: {
+        modelProviders: { openai: [{ id: 'example-model', envKey: 'EXAMPLE_MODEL_KEY' }] },
+        env: { EXAMPLE_MODEL_KEY: 'synthetic-key' }
+      },
+      provider: 'openai'
+    },
+    {
+      runtime: 'antigravity-acp',
+      path: join('.gemini', 'antigravity-acp', 'acp_token.json'),
+      credential: { refresh_token: 'synthetic-refresh', client_id: 'synthetic-client', client_secret: 'synthetic' },
+      provider: 'google'
+    },
+    {
+      runtime: 'antigravity-acp',
+      path: join('.gemini', 'antigravity-acp', 'acp_business_token.json'),
+      credential: { refresh_token: 'synthetic-refresh', client_id: 'synthetic-client', client_secret: 'synthetic' },
+      provider: 'google'
+    },
+    {
       runtime: 'auggie',
       path: join('.augment', 'session.json'),
       credential: { accessToken: 'synthetic', tenantURL: 'https://tenant.example.test', scopes: [] },
@@ -180,6 +201,100 @@ describe('private runtime HOME', () => {
     }
   )
 
+  it('requires a stored Qwen key for the corresponding model provider or selected auth type', () => {
+    const { hostHome, scopeDir } = fixture()
+    const source = join(hostHome, '.qwen', 'settings.json')
+    mkdirSync(join(hostHome, '.qwen'))
+    const settings = {
+      modelProviders: {
+        openai: [{ id: 'example-model', envKey: 'EXAMPLE_MODEL_KEY' }],
+        anthropic: [{ id: 'example-model', envKey: 'MISSING_MODEL_KEY', apiKey: 'unsupported-field' }]
+      },
+      env: { UNRELATED_SERVICE_KEY: 'synthetic-service-key' } as Record<string, string>,
+      security: { auth: { selectedType: 'openai', apiKey: '' } }
+    }
+    writeFileSync(source, JSON.stringify(settings))
+    expect(discoverSeededRuntimeCredentials('qwen-code', { HOME: hostHome })).toEqual({ paths: [], providers: [] })
+    settings.env.EXAMPLE_MODEL_KEY = 'synthetic-model-key'
+    writeFileSync(source, JSON.stringify(settings))
+    expect(discoverSeededRuntimeCredentials('qwen-code', { HOME: hostHome })).toEqual({
+      paths: [source],
+      providers: ['openai']
+    })
+    settings.security.auth = { selectedType: 'gemini', apiKey: 'synthetic-saved-key' }
+    const text = '// Qwen settings\n' + JSON.stringify(settings)
+    writeFileSync(source, text)
+    expect(discoverSeededRuntimeCredentials('qwen-code', { HOME: hostHome })).toEqual({
+      paths: [source],
+      providers: ['openai', 'gemini']
+    })
+    const home = prepareRuntimeHome('qwen-code', scopeDir, { HOME: hostHome })
+    expect(readFileSync(join(home, '.qwen', 'settings.json'), 'utf8')).toBe(text)
+  })
+
+  it('discovers Copilot JSONC token records without treating account identities as logins', () => {
+    const { hostHome, scopeDir } = fixture()
+    const source = join(hostHome, '.copilot', 'config.json')
+    mkdirSync(join(hostHome, '.copilot'))
+    const settings = {
+      loggedInUsers: [{ host: 'https://github.example.test', login: 'example-user' }],
+      copilotTokens: { empty: '', whitespace: '  ', invalid: { token: 'unsupported-field' } } as Record<string, unknown>
+    }
+    const text = () => '// Managed Copilot configuration\n' + JSON.stringify(settings)
+    writeFileSync(source, text())
+    expect(discoverSeededRuntimeCredentials('github-copilot-cli', { HOME: hostHome }).paths).toEqual([])
+    settings.copilotTokens['example-user'] = 'synthetic-token'
+    writeFileSync(source, text())
+    expect(discoverSeededRuntimeCredentials('github-copilot-cli', { HOME: hostHome })).toEqual({
+      paths: [source],
+      providers: ['github-copilot']
+    })
+    const home = prepareRuntimeHome('github-copilot-cli', scopeDir, { HOME: hostHome })
+    expect(readFileSync(join(home, '.copilot', 'config.json'), 'utf8')).toBe(text())
+    writeFileSync(source, text() + ' invalid-json')
+    expect(discoverSeededRuntimeCredentials('github-copilot-cli', { HOME: hostHome }).paths).toEqual([])
+  })
+
+  it('finds the Devin TOML API key in the active data directory without counting endpoint configuration', () => {
+    const { root, hostHome, scopeDir } = fixture()
+    const data = join(root, 'data')
+    const source = join(data, 'devin', 'credentials.toml')
+    mkdirSync(join(data, 'devin'), { recursive: true })
+    const env = { HOME: hostHome, XDG_DATA_HOME: data }
+    for (const text of [
+      'api_server_url = "https://api.example.test"\n',
+      'windsurf_api_key = ""\n',
+      '[unrelated]\nwindsurf_api_key = "synthetic-key"\n',
+      'windsurf_api_key = "unterminated\n'
+    ]) {
+      writeFileSync(source, text)
+      expect(discoverSeededRuntimeCredentials('devin', env).paths).toEqual([])
+    }
+    const text = "# Stored login\nwindsurf_api_key = 'synthetic-key'\n"
+    writeFileSync(source, text)
+    expect(discoverSeededRuntimeCredentials('devin', { HOME: hostHome }).paths).toEqual([])
+    expect(discoverSeededRuntimeCredentials('devin', env)).toEqual({ paths: [source], providers: ['devin'] })
+    const home = prepareRuntimeHome('devin', scopeDir, env)
+    expect(readFileSync(join(home, '.local', 'share', 'devin', 'credentials.toml'), 'utf8')).toBe(text)
+  })
+
+  it('uses Antigravity ACP file login under GEMINI_HOME instead of counting the separate CLI token', () => {
+    const { hostHome, scopeDir } = fixture()
+    const gemini = join(hostHome, 'custom-gemini')
+    mkdirSync(join(gemini, 'antigravity-cli'), { recursive: true })
+    mkdirSync(join(gemini, 'antigravity-acp'))
+    writeFileSync(join(gemini, 'antigravity-cli', 'antigravity-oauth-token'), 'synthetic-cli-token')
+    const env = { HOME: hostHome, GEMINI_HOME: '~/custom-gemini' }
+    expect(discoverSeededRuntimeCredentials('antigravity-acp', env).paths).toEqual([])
+    const source = join(gemini, 'antigravity-acp', 'acp_token.json')
+    const text = '{"refresh_token":"synthetic-refresh"}'
+    writeFileSync(source, text)
+    expect(discoverSeededRuntimeCredentials('antigravity-acp', env)).toEqual({ paths: [source], providers: ['google'] })
+    const home = prepareRuntimeHome('antigravity-acp', scopeDir, env)
+    expect(readFileSync(join(home, '.gemini', 'antigravity-acp', 'acp_token.json'), 'utf8')).toBe(text)
+    expect(runtimeHomeEnvironment('antigravity-acp', home, {}, env).GEMINI_HOME).toBe(join(home, '.gemini'))
+  })
+
   it('uses Grok file and home overrides for both discovery and the private runtime', () => {
     const { root, hostHome, scopeDir } = fixture()
     const grokHome = join(root, 'grok-state')
@@ -218,6 +333,18 @@ describe('private runtime HOME', () => {
       path: join('.grok', 'auth.json'),
       override: 'GROK_AUTH_PATH',
       credential: { 'xai::api_key': { key: 'ignored-key', auth_mode: 'api_key' } }
+    },
+    {
+      runtime: 'github-copilot-cli',
+      path: join('.copilot', 'config.json'),
+      override: 'COPILOT_HOME',
+      credential: { copilotTokens: { 'example-user': 'ignored-key' } }
+    },
+    {
+      runtime: 'antigravity-acp',
+      path: join('.gemini', 'antigravity-acp', 'acp_token.json'),
+      override: 'GEMINI_HOME',
+      credential: { refresh_token: 'ignored-key' }
     }
   ])(
     'keeps $runtime auth absent when its effective override has no login',

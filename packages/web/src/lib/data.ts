@@ -886,6 +886,14 @@ export function loginRequiredRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'>
 
 export const IMAGE_BINARY_MISSING_LABEL = 'Binary not installed in image'
 
+// Show the installation issue before a login warning without discarding either observed fact.
+export function runtimeWarning(
+  profile: Pick<DaemonRow['runtimeModels'][number], 'authRequired' | 'unavailableReason'>
+) {
+  if (profile.unavailableReason === 'image-binary-missing') return 'image-binary-missing'
+  return profile.authRequired === true ? 'auth-required' : null
+}
+
 export function imageBinaryMissingRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'> | undefined): string[] {
   return (daemon?.runtimeModels ?? [])
     .filter((r) => r.unavailableReason === 'image-binary-missing')

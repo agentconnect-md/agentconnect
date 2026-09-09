@@ -16,6 +16,7 @@ import {
   platName,
   presentedDaemonStatus,
   runtimeLabel,
+  runtimeWarning,
   IMAGE_BINARY_MISSING_LABEL,
   status
 } from '@/lib/data'
@@ -277,6 +278,7 @@ export default function DaemonDetailView() {
               // Expand only runtimes that reported models.
               const hasDetail = rt.models.length > 0
               const open = hasDetail && expandedRuntimes.has(rt.runtime)
+              const warning = runtimeWarning(rt)
               const rowCls = `box-border flex w-full items-center gap-[10px] border-0 bg-(--surface-card) px-4 py-[11px] text-left ${
                 hasDetail ? 'cursor-pointer' : 'cursor-default'
               }`
@@ -317,13 +319,13 @@ export default function DaemonDetailView() {
                   ) : (
                     <div className={rowCls}>{rowInner}</div>
                   )}
-                  {rt.unavailableReason === 'image-binary-missing' && (
+                  {warning === 'image-binary-missing' && (
                     <div className="flex items-center gap-[6px] bg-(--status-paused-soft) px-4 py-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
                       <Icon name="triangle-alert" size={12} className="flex-none" />
                       {IMAGE_BINARY_MISSING_LABEL}
                     </div>
                   )}
-                  {rt.authRequired && (
+                  {warning === 'auth-required' && (
                     <button
                       type="button"
                       title="The runtime rejected the daemon's probe with 'authentication required' — show the command that logs it in on the daemon host."

@@ -1,6 +1,8 @@
 import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
+import { parse as parseToml } from 'smol-toml'
+import stripJsonComments from 'strip-json-comments'
 import { parse as parseYaml } from 'yaml'
 import { runtimeStateLocations } from './probe.js'
 
@@ -10,7 +12,20 @@ export interface SeededCredentialFile {
   /** Relative to the state source; an empty path denotes an exact-file source. */
   path: string
   format:
-    'grok' | 'pi' | 'opencode' | 'oauth' | 'claude-oauth' | 'hermes' | 'dsh' | 'dsh-env' | 'auggie' | 'cline' | 'amp'
+    | 'grok'
+    | 'pi'
+    | 'opencode'
+    | 'oauth'
+    | 'claude-oauth'
+    | 'hermes'
+    | 'dsh'
+    | 'dsh-env'
+    | 'auggie'
+    | 'cline'
+    | 'amp'
+    | 'qwen-settings'
+    | 'devin'
+    | 'copilot'
   provider?: string
 }
 
@@ -94,6 +109,10 @@ function hermesCredentialProviders(data: unknown): string[] {
 }
 
 function credentialsInFile(text: string, file: SeededCredentialFile): { present: boolean; providers: string[] } {
+  if (file.format === 'devin') {
+    const present = nonempty(parseToml(text).windsurf_api_key)
+    return { present, providers: present ? ['devin'] : [] }
+  }
   if (file.format === 'dsh' || file.format === 'dsh-env') {
     const data = record(file.format === 'dsh' ? parseYaml(text) : parseEnv(text))
     if (!data) return { present: false, providers: [] }
@@ -116,7 +135,33 @@ function credentialsInFile(text: string, file: SeededCredentialFile): { present:
     }
     return { present: providers.length > 0, providers }
   }
-  const data: unknown = JSON.parse(text.replace(/^\uFEFF/, ''))
+  const json = text.replace(/^\uFEFF/, '')
+  const data: unknown = JSON.parse(
+    file.format === 'copilot' || file.format === 'qwen-settings' ? stripJsonComments(json) : json
+  )
+  if (file.format === 'copilot') {
+    const present = Object.entries(record(record(data)?.copilotTokens) ?? {}).some(
+      ([account, token]) => nonempty(account) && nonempty(token)
+    )
+    return { present, providers: present ? ['github-copilot'] : [] }
+  }
+  if (file.format === 'qwen-settings') {
+    const stored = record(data) ?? {}
+    const env = record(stored.env) ?? {}
+    const providers = Object.entries(record(stored.modelProviders) ?? {}).flatMap(([provider, models]) =>
+      provider &&
+      Array.isArray(models) &&
+      models.some((entry) => {
+        const model = record(entry) ?? {}
+        return nonempty(model.id) && nonempty(model.envKey) && nonempty(env[model.envKey])
+      })
+        ? [provider]
+        : []
+    )
+    const auth = record(record(stored.security)?.auth) ?? {}
+    if (nonempty(auth.selectedType) && nonempty(auth.apiKey)) providers.push(auth.selectedType)
+    return { present: providers.length > 0, providers: [...new Set(providers)] }
+  }
   if (file.format === 'auggie') {
     const value = record(data) ?? {}
     const present = nonempty(value.accessToken) && nonempty(value.tenantURL) && Array.isArray(value.scopes)

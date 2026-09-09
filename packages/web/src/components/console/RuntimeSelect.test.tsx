@@ -75,22 +75,30 @@ describe('RuntimeSelect', () => {
     expect(options()).toHaveLength(0)
   })
 
-  it('keeps a missing image binary visible alongside its independent login warning', async () => {
+  it('prioritizes a missing image binary until it is available for execution', async () => {
     const onChange = vi.fn()
-    await mount(
+    const select = (imageBinaryMissing?: string[]) => (
       <RuntimeSelect
-        value="claude"
+        value="codex"
         options={['claude', 'codex']}
         needsLogin={['codex']}
-        imageBinaryMissing={['codex']}
+        imageBinaryMissing={imageBinaryMissing}
         onChange={onChange}
       />
     )
+    await mount(select(['codex']))
     const codex = options()[CODEX]!
     expect(codex.textContent).toContain('Binary not installed in image')
-    expect(codex.textContent).toContain('Login required')
+    expect(codex.textContent).not.toContain('Login required')
     await act(async () => codex.click())
     expect(onChange).toHaveBeenCalledWith('codex')
+    expect(trigger().querySelector('[title]')?.getAttribute('title')).toBe('Binary not installed in image')
+
+    await act(async () => root?.render(select()))
+    expect(trigger().querySelector('[title]')?.getAttribute('title')).toContain('Not signed in on this daemon')
+    await act(async () => trigger().click())
+    expect(options()[CODEX]!.textContent).toContain('Login required')
+    expect(options()[CODEX]!.textContent).not.toContain('Binary not installed in image')
   })
 
   it('leaves a signed-in runtime unmarked', async () => {

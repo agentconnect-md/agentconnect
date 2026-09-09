@@ -193,7 +193,7 @@ const DSH_CREDENTIALS = [
   { path: '.credentials.yaml', format: 'dsh' },
   { path: '.env', format: 'dsh-env' }
 ] as const
-/** Antigravity login inputs: the ACP server's auth.type selection, the CLI's OAuth token, and the install identity. */
+/** Antigravity settings and CLI state; ACP login files are declared separately. */
 const ANTIGRAVITY_SEED = ['settings.json', 'antigravity-oauth-token', 'installation_id'] as const
 /** OpenClaw acp bridge inputs: gateway address + token config and its .env fallback. */
 const OPENCLAW_SEED = ['openclaw.json', '.env'] as const
@@ -238,14 +238,15 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // Qwen Code (Gemini-CLI fork) — ~/.qwen.
   'qwen-code': (env) =>
     state(join(home(env), '.qwen'), '.qwen', undefined, undefined, [
-      { path: 'oauth_creds.json', format: 'oauth', provider: 'qwen' }
+      { path: 'oauth_creds.json', format: 'oauth', provider: 'qwen' },
+      { path: 'settings.json', format: 'qwen-settings' }
     ]),
 
   // GitHub Copilot CLI — ~/.copilot (honors $COPILOT_HOME).
-  'github-copilot-cli': (env) => [
-    ...state(env.COPILOT_HOME, '.copilot'),
-    ...state(join(home(env), '.copilot'), '.copilot')
-  ],
+  'github-copilot-cli': (env) =>
+    state(env.COPILOT_HOME || join(home(env), '.copilot'), '.copilot', undefined, undefined, [
+      { path: 'config.json', format: 'copilot' }
+    ]),
 
   // Cursor CLI — ~/.cursor is shared with the editor, so probe the CLI-specific
   // config file (honors $CURSOR_CONFIG_DIR).
@@ -449,18 +450,24 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
     ...state(join(home(env), '.openclaw'), '.openclaw', OPENCLAW_SEED)
   ],
 
-  // Google Antigravity — the ACP server is a separate vendor archive the runtime store installs, so
-  // presence is the product's own state under ~/.gemini: the agy CLI's dir, and the ACP server's own
-  // dir beside it (where it reads auth.type). Conversations, caches, and logs stay agent-private.
-  'antigravity-acp': (env) => [
-    ...state(join(home(env), '.gemini', 'antigravity-acp'), join('.gemini', 'antigravity-acp'), ANTIGRAVITY_SEED),
-    ...state(join(home(env), '.gemini', 'antigravity-cli'), join('.gemini', 'antigravity-cli'), ANTIGRAVITY_SEED)
-  ],
+  // Antigravity ACP uses its own consumer/business login files, separate from the CLI token.
+  'antigravity-acp': (env) => {
+    const root = (env.GEMINI_HOME || join(home(env), '.gemini')).replace(/^~(?=$|\/)/, home(env))
+    return [
+      ...state(join(root, 'antigravity-acp'), join('.gemini', 'antigravity-acp'), ANTIGRAVITY_SEED, undefined, [
+        { path: 'acp_token.json', format: 'oauth', provider: 'google' },
+        { path: 'acp_business_token.json', format: 'oauth', provider: 'google' }
+      ]),
+      ...state(join(root, 'antigravity-cli'), join('.gemini', 'antigravity-cli'), ANTIGRAVITY_SEED)
+    ]
+  },
 
   // Cognition Devin (for Terminal) — XDG config + data dirs.
   devin: (env) => [
     ...state(join(xdgConfigHome(env), 'devin'), join('.config', 'devin')),
-    ...state(join(xdgDataHome(env), 'devin'), join('.local', 'share', 'devin'))
+    ...state(join(xdgDataHome(env), 'devin'), join('.local', 'share', 'devin'), undefined, undefined, [
+      { path: 'credentials.toml', format: 'devin' }
+    ])
   ]
 }
 

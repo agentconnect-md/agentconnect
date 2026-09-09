@@ -19,6 +19,7 @@ import {
   agentModelDisplay,
   effectiveAgentStatus,
   runtimeLabel,
+  runtimeWarning,
   IMAGE_BINARY_MISSING_LABEL,
   status,
   type Agent,
@@ -433,6 +434,7 @@ export function FleetRuntimesCard({
             const version = rt.versionsDiffer ? 'mixed' : rt.version ? `v${rt.version.replace(/^v/, '')}` : null
             const hasModels = rt.models.length > 0
             const shown = open.has(rt.runtime) && hasModels
+            const warning = runtimeWarning(rt)
             return (
               <div key={rt.runtime} className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
                 <button
@@ -461,13 +463,13 @@ export function FleetRuntimesCard({
                     className={hasModels ? 'flex-none' : 'invisible flex-none'}
                   />
                 </button>
-                {rt.unavailableReason === 'image-binary-missing' && (
+                {warning === 'image-binary-missing' && (
                   <div className="flex items-center gap-[6px] bg-(--status-paused-soft) px-[13px] py-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
                     <Icon name="triangle-alert" size={12} className="flex-none" />
                     {IMAGE_BINARY_MISSING_LABEL}
                   </div>
                 )}
-                {rt.authRequired && (
+                {warning === 'auth-required' && (
                   <button
                     type="button"
                     title="The runtime rejected a probe with 'authentication required' — show the command that logs it in on the daemon host."

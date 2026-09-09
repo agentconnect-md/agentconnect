@@ -188,12 +188,16 @@ runtime without a discovered host login does not appear in the candidate list.
 
 Stored credentials indicate configuration, not current validity. Expired logins
 remain visible; an authentication failure from the host probe or a real turn
-produces the existing **Login required** status independently of image availability.
+records the existing login requirement. For sandbox execution, the console shows
+**Binary not installed in image** first and **Login required** only after the
+image contains that runtime. The underlying authentication status is retained.
 
 File and database discovery currently covers Claude, Codex, Qoder, OMP, Grok, pi,
-OpenCode, DSH, Hermes, Auggie, Cline, Amp, and Gemini/Qwen/Kimi OAuth. Keyring-only
-logins and credential formats without a shared discovery descriptor are not
-detected; those runtimes stay out of the microsandbox candidate list.
+OpenCode, DSH, Hermes, Auggie, Cline, Amp, Gemini/Qwen/Kimi OAuth, Qwen saved API
+keys, Antigravity ACP file logins, Devin, and Copilot's stored token map. These
+descriptors also prepare the corresponding files in the private runtime HOME.
+Keyring-only logins and credential formats without a shared discovery descriptor
+are not detected; those runtimes stay out of the microsandbox candidate list.
 
 ## 2. Selecting the backend
 
@@ -312,8 +316,9 @@ The release build bundles `dist/release.json` with a `runtimeSandboxImage` OCI
 reference. It names the current release's `runtime-sandbox-full:v<version>` alias.
 The image workflow creates this alias even when it reuses an older component
 image. The pool continues to use the separate `runtime-sandbox` image. Both targets
-share a base stage with the toolchain, browser, ACP runtimes, and shim; the full
-target adds daemon-specific tools and can add more runtimes later.
+share a base stage with the toolchain, browser, ACP runtimes, and shim. Additional
+self-hosted runtimes and development toolchains belong in the full target, which
+already adds the daemon-specific tools.
 The daemon package is published before image finalization; the matching
 image workflow must complete before this default can be pulled. A missing image
 fails preflight rather than selecting another version.

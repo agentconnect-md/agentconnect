@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { intersectRuntimes, unionRuntimes } from './FleetDetail'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it, vi } from 'vitest'
+import { FleetRuntimesCard, intersectRuntimes, unionRuntimes } from './FleetDetail'
 import type { DaemonRow } from '@/lib/data'
+
+vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
+vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
 
 /** The set-level runtime views a detail page renders. Their model lists are ids — and for a
  *  claude runtime those are ALIASES — so what a member's catalog says about each id has to
@@ -71,12 +76,22 @@ describe('runtime aggregation carries model display metadata', () => {
   it('preserves a member image restriction without dropping host model knowledge', () => {
     const members = [member(), member({ unavailableReason: 'image-binary-missing', authRequired: true })]
     for (const aggregate of [unionRuntimes, intersectRuntimes]) {
-      expect(aggregate(members)[0]).toMatchObject({
+      const runtimes = aggregate(members)
+      const render = () =>
+        renderToStaticMarkup(
+          createElement(FleetRuntimesCard, { title: 'Runtimes', runtimes, agents: [], empty: 'None' })
+        )
+      expect(runtimes[0]).toMatchObject({
         runtime: 'claude',
         models: ['opus[1m]', 'haiku'],
         unavailableReason: 'image-binary-missing',
         authRequired: true
       })
+      expect(render()).toContain('Binary not installed in image')
+      expect(render()).not.toContain('Login required')
+      runtimes[0]!.unavailableReason = null
+      expect(render()).toContain('Login required')
+      expect(render()).toContain('Show command')
     }
   })
 
