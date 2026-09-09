@@ -24,9 +24,6 @@ updates:
       prefix: chore
       include: scope
     groups:
-      actions-minor-and-patch:
+      github-actions:
         patterns:
           - '*'
-        update-types:
-          - minor
-          - patch
