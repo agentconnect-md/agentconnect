@@ -8,6 +8,11 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    ignore:
+      # Upgrade Node types across majors together with the manually managed Node runtime.
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
     groups:
       npm-minor-and-patch:
         patterns:
