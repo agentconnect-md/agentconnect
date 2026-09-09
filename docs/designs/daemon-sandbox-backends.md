@@ -172,22 +172,32 @@ microsandbox inside every pool pod.
 
 ### Runtime discovery
 
-A microsandbox daemon derives its runtime candidates from the stored credential
-sources used to prepare runtime authentication. Discovery checks the specific
-authentication file and, for a shared provider store, the corresponding provider
-record. Configuration directories, empty stores, and an executable in the image
-do not establish that the operator configured a login.
+A self-hosted daemon combines host installations, image installations, and the
+stored credential sources used to prepare runtime authentication. Discovery checks
+the specific authentication file and, for a shared provider store, the corresponding
+provider record. Configuration directories and empty stores do not establish a login.
 
-The daemon probes each candidate on the host to learn its models and capabilities.
+Host and Sandbox apply the same display rule using their own binary availability:
+
+| Binary available | Stored login | Display                                                            |
+| ---------------- | ------------ | ------------------------------------------------------------------ |
+| Yes              | Yes          | Runtime models and capabilities; retain any observed login failure |
+| Yes              | No           | Login required                                                     |
+| No               | Yes          | Binary not installed on host / Binary not installed in image       |
+| No               | No           | Hidden                                                             |
+
+The daemon probes host installations to learn their models and capabilities.
 These metadata probes use host SRT when available and otherwise run on the host;
 they do not submit a model turn. With microsandbox selected, `requireSandbox`
 continues to require VM isolation for agent sessions, without requiring host SRT.
 The image table supplies the guest command and binary version. A candidate missing
-from that table remains visible with **Binary not installed in image**. An image
-runtime without a discovered host login does not appear in the candidate list.
+from that table remains visible with **Binary not installed in image** when it has
+a stored login. An installed image runtime without a stored login remains visible
+in the Sandbox view with **Login required**.
 
-Stored credentials indicate configuration, not current validity. Expired logins
-remain visible; an authentication failure from the host probe or a real turn
+Stored credentials indicate configuration, not current validity. Successful model
+enumeration does not establish a login or clear the absence of stored credentials.
+Expired logins remain visible; an authentication failure from the host probe or a real turn
 records the existing login requirement. For sandbox execution, the console shows
 **Binary not installed in image** first and **Login required** only after the
 image contains that runtime. The underlying authentication status is retained.
@@ -196,8 +206,8 @@ File and database discovery currently covers Claude, Codex, Qoder, OMP, Grok, pi
 OpenCode, DSH, Hermes, Auggie, Cline, Amp, Gemini/Qwen/Kimi OAuth, Qwen saved API
 keys, Antigravity ACP file logins, Devin, and Copilot's stored token map. These
 descriptors also prepare the corresponding files in the private runtime HOME.
-Keyring-only logins and credential formats without a shared discovery descriptor
-are not detected; those runtimes stay out of the microsandbox candidate list.
+Keyring-only logins are not detected by file discovery. Credential formats without
+a shared discovery descriptor retain the runtime probe's authentication result.
 
 ## 2. Selecting the backend
 

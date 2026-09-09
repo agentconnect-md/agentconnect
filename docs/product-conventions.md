@@ -1224,6 +1224,14 @@ host's runtime version and login result. A missing image binary must not mark th
 host runtime unavailable. Self-hosted models and capabilities continue to use the
 existing host probe; this switch does not add another probe sweep.
 
+Installation and login are independent. Each view shows an installed runtime even
+without a stored login, with **Login required** in that case. A stored login keeps
+a missing runtime visible with **Binary not installed on host** or **Binary not
+installed in image**, according to the selected view. Only a runtime with neither
+an installation in that environment nor a stored login is hidden. Missing binaries
+take precedence over login warnings. Enumerating models does not prove that the
+runtime is signed in; expired credentials remain visible and may require login.
+
 Every feature is supported in environments both **with and without** an OS sandbox,
 and a trusted agent may deliberately run unsandboxed. A sandbox is a best-effort
 isolation layer, never a precondition: no feature may fail closed just because the

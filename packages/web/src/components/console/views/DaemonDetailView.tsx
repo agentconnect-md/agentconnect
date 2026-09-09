@@ -18,6 +18,7 @@ import {
   runtimeLabel,
   runtimeWarning,
   IMAGE_BINARY_MISSING_LABEL,
+  HOST_BINARY_MISSING_LABEL,
   status
 } from '@/lib/data'
 import { creatorLabel } from '@/lib/api'
@@ -127,11 +128,21 @@ export default function DaemonDetailView() {
   const runtimeAgents = hosted.filter(
     (a) => (sandboxRequired || (sandboxSupported && a.runInSandbox)) === (runtimeEnvironment === 'sandbox')
   )
-  const runtimeModels = daemon.runtimeModels.map((rt) =>
-    runtimeEnvironment === 'host'
-      ? { ...rt, version: rt.hostVersion ?? rt.version, unavailableReason: null }
-      : { ...rt, version: rt.unavailableReason === 'image-binary-missing' ? '' : rt.version }
-  )
+  const runtimeModels = daemon.runtimeModels.flatMap((rt) => {
+    const binaryMissing = runtimeEnvironment === 'host' ? rt.hostAvailable === false : !!rt.unavailableReason
+    if (binaryMissing && rt.credentialsConfigured === false) return []
+    return [
+      {
+        ...rt,
+        version: binaryMissing ? '' : runtimeEnvironment === 'host' ? (rt.hostVersion ?? rt.version) : rt.version,
+        unavailableReason: binaryMissing
+          ? runtimeEnvironment === 'host'
+            ? ('host-binary-missing' as const)
+            : rt.unavailableReason
+          : null
+      }
+    ]
+  })
   const sandboxUnavailable = runtimeEnvironment === 'sandbox' && !sandboxSupported
   const runtimes: FleetRuntime[] = sandboxUnavailable ? [] : unionRuntimes([{ ...daemon, runtimeModels }])
   const runtimeEmpty = sandboxUnavailable
@@ -355,16 +366,16 @@ export default function DaemonDetailView() {
                   ) : (
                     <div className={rowCls}>{rowInner}</div>
                   )}
-                  {warning === 'image-binary-missing' && (
+                  {(warning === 'image-binary-missing' || warning === 'host-binary-missing') && (
                     <div className="flex items-center gap-[6px] bg-(--status-paused-soft) px-4 py-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
                       <Icon name="triangle-alert" size={12} className="flex-none" />
-                      {IMAGE_BINARY_MISSING_LABEL}
+                      {warning === 'host-binary-missing' ? HOST_BINARY_MISSING_LABEL : IMAGE_BINARY_MISSING_LABEL}
                     </div>
                   )}
                   {warning === 'auth-required' && (
                     <button
                       type="button"
-                      title="The runtime rejected the daemon's probe with 'authentication required' — show the command that logs it in on the daemon host."
+                      title="Show the command to sign in on the daemon host."
                       onClick={() =>
                         openModal('runtimeLogin', {
                           runtimeId: rt.runtime,

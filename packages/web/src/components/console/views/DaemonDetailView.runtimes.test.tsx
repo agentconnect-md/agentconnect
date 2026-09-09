@@ -10,7 +10,10 @@ vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) 
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => mocks.mobile }))
 vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: () => false }))
-vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
+vi.mock('@/lib/acp-registry', () => ({
+  useAcpRegistry: () => ({}),
+  acpRuntime: (_registry: unknown, id: string) => (id === 'opencode' ? { name: 'OpenCode' } : undefined)
+}))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({ daemons: [mocks.daemon], agents: [], memberSets: [], members: [] })
 }))
@@ -122,5 +125,78 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
     expect(host.textContent).not.toContain('v9.0.0')
     await choose('Host')
     expect(host.textContent).toContain('v2.0.0')
+  })
+
+  it.each(['Host', 'Sandbox'])('applies all four installation/login states in %s', async (environment) => {
+    mocks.daemon!.runtimeModels = [
+      { runtime: 'opencode', version: '1', models: [], hostAvailable: true, credentialsConfigured: true },
+      {
+        runtime: 'codex',
+        version: '1',
+        models: [],
+        hostAvailable: true,
+        credentialsConfigured: false,
+        authRequired: true
+      },
+      {
+        runtime: 'claude',
+        version: '1',
+        models: [],
+        hostAvailable: false,
+        credentialsConfigured: true,
+        authRequired: true,
+        unavailableReason: 'image-binary-missing'
+      },
+      {
+        runtime: 'grok-build',
+        version: '1',
+        models: [],
+        hostAvailable: false,
+        credentialsConfigured: false,
+        authRequired: true,
+        unavailableReason: 'image-binary-missing'
+      }
+    ]
+    await render()
+    if (environment === 'Sandbox') await choose(environment)
+    expect(host.textContent).toContain('OpenCode')
+    expect(host.textContent).toContain('Codex')
+    expect(host.textContent).toContain('Claude')
+    expect(host.textContent?.toLowerCase()).not.toContain('grok')
+    expect(host.textContent?.match(/Login required/g)).toHaveLength(1)
+    expect(host.textContent?.match(/Binary not installed/g)).toHaveLength(1)
+    expect(host.textContent).toContain(
+      environment === 'Host' ? 'Binary not installed on host' : 'Binary not installed in image'
+    )
+  })
+
+  it('shows an unconfigured runtime only in the environment with its binary', async () => {
+    mocks.daemon!.runtimeModels = [
+      {
+        runtime: 'opencode',
+        version: '1',
+        models: [],
+        hostAvailable: false,
+        credentialsConfigured: false,
+        authRequired: true
+      },
+      {
+        runtime: 'codex',
+        version: '1',
+        models: [],
+        hostAvailable: true,
+        credentialsConfigured: false,
+        authRequired: true,
+        unavailableReason: 'image-binary-missing'
+      }
+    ]
+    await render()
+    expect(host.textContent).not.toContain('OpenCode')
+    expect(host.textContent).toContain('Codex')
+    await choose('Sandbox')
+    expect(host.textContent).toContain('OpenCode')
+    expect(host.textContent).not.toContain('Codex')
+    expect(host.textContent?.match(/Login required/g)).toHaveLength(1)
+    expect(host.textContent).not.toContain('Binary not installed')
   })
 })

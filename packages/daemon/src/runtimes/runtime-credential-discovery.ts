@@ -7,6 +7,22 @@ import {
 } from './runtime-credential-sources.js'
 import { discoverSeededRuntimeCredentials } from './runtime-seeded-credentials.js'
 import { discoverOmpCredentialProviders } from './omp-credentials.js'
+import { runtimeStateLocations } from './probe.js'
+
+/** Unknown credential formats defer to the runtime's own authentication result. */
+export function runtimeCredentialsConfigured(
+  runtimeId: string,
+  runtime?: RuntimeDef,
+  hostEnv: NodeJS.ProcessEnv = process.env
+): boolean | undefined {
+  if (
+    !sharedCredentialProfile(runtimeId, runtime) &&
+    runtimeId !== 'omp' &&
+    !runtimeStateLocations(runtimeId, hostEnv).some((location) => location.credentialFiles?.length)
+  )
+    return undefined
+  return discoverRuntimeCredentials(runtimeId, runtime, hostEnv).paths.length > 0
+}
 
 export function discoverRuntimeCredentials(
   runtimeId: string,

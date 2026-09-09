@@ -45,6 +45,8 @@ const capability: DaemonCapabilityDto = {
       runtime: 'claude-acp',
       version: '0.70.0',
       hostVersion: '0.75.0',
+      hostAvailable: true,
+      credentialsConfigured: false,
       models: ['opus', 'sonnet'],
       contextWindow: null,
       acpSupport: 'full',
@@ -90,6 +92,8 @@ describe('daemon read split', () => {
     expect(row.runtimeModels[0]!.authRequired).toBe(true)
     expect(row.runtimeModels[0]!.unavailableReason).toBe('image-binary-missing')
     expect(row.runtimeModels[0]!.hostVersion).toBe('0.75.0')
+    expect(row.runtimeModels[0]!.hostAvailable).toBe(true)
+    expect(row.runtimeModels[0]!.credentialsConfigured).toBe(false)
     // The runtime-level answers survive, so the read-only model/permission labels resolve
     // for every agent; the per-model matrix is empty until `useDaemonDetail` reads one daemon.
     expect(row.runtimeModels[0]!.modelCatalog!.defaultModel).toBe('sonnet')
@@ -110,6 +114,8 @@ describe('mergeDaemonCatalogs — the detail read owns catalogs, the fleet row o
       version: '0.70.0',
       models: ['opus'],
       hostVersion: '0.75.0',
+      hostAvailable: true,
+      credentialsConfigured: false,
       authRequired: true,
       unavailableReason: 'image-binary-missing',
       modelCatalog: null
@@ -134,6 +140,8 @@ describe('mergeDaemonCatalogs — the detail read owns catalogs, the fleet row o
     expect(merged!.authRequired).toBe(true)
     expect(merged!.unavailableReason).toBe('image-binary-missing')
     expect(merged!.hostVersion).toBe('0.75.0')
+    expect(merged!.hostAvailable).toBe(true)
+    expect(merged!.credentialsConfigured).toBe(false)
   })
 
   it('never adds a runtime the fleet row no longer reports', () => {

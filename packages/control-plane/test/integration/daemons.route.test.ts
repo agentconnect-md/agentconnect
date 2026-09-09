@@ -271,6 +271,8 @@ describe('GET /daemons — live-status overlay', () => {
         runtime: 'claude',
         version: '1.4.0',
         hostVersion: '2.0.0',
+        hostAvailable: true,
+        credentialsConfigured: false,
         models: [],
         acpSupport: 'full',
         toolCalling: true,
@@ -283,6 +285,8 @@ describe('GET /daemons — live-status overlay', () => {
     expect((await listCapabilities()).find((r) => r.daemonId === DAEMON)!.runtimeProfiles[0]).toMatchObject({
       runtime: 'claude',
       hostVersion: '2.0.0',
+      hostAvailable: true,
+      credentialsConfigured: false,
       authRequired: true,
       unavailableReason: 'image-binary-missing'
     })
@@ -291,6 +295,8 @@ describe('GET /daemons — live-status overlay', () => {
     expect((response.json() as DaemonDto).runtimeProfiles[0]).toMatchObject({
       runtime: 'claude',
       hostVersion: '2.0.0',
+      hostAvailable: true,
+      credentialsConfigured: false,
       authRequired: true,
       unavailableReason: 'image-binary-missing'
     })

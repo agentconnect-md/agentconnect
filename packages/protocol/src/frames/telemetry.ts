@@ -308,6 +308,9 @@ export const FactsRuntimeProfile = z.object({
   version: z.string(),
   // The host probe's version, kept separate from a sandbox image's runtime version.
   hostVersion: z.string().optional(),
+  // Installation and stored login configuration are independent of a successful metadata probe.
+  hostAvailable: z.boolean().optional(),
+  credentialsConfigured: z.boolean().optional(),
   models: z.array(z.string()),
   contextWindow: z.number().int().optional(),
   acpSupport: z.enum(['full', 'partial', 'none']), // gates the dual-mode decision (#1)
@@ -324,13 +327,10 @@ export const FactsRuntimeProfile = z.object({
   // permissive, exactly like an empty list; 'probed' = confirmed by a live
   // probe. Absent ⇒ 'probed' semantics.
   modelsSource: z.enum(['cached', 'probed']).optional(),
-  // The last probe was rejected with the ACP auth-required error (-32000): the
-  // runtime is installed but needs an interactive login on the daemon host
-  // before sessions can start. Cleared (absent) once a probe succeeds; absent
-  // also for older daemons that don't report it.
+  // No stored login was found, or a probe/live turn reported that authentication is required.
   authRequired: z.boolean().optional(),
-  // The host runtime remains discoverable when its binary is absent from the selected sandbox image.
-  unavailableReason: z.literal('image-binary-missing').optional(),
+  // A saved login remains discoverable when the selected execution environment lacks its binary.
+  unavailableReason: z.enum(['image-binary-missing', 'host-binary-missing']).optional(),
   // Discovered model × config capability matrix (last-good; survives probe
   // failures — advertisement (`models`) empties on failure, capability
   // knowledge does not). Absent = this daemon has no catalog for the runtime.
