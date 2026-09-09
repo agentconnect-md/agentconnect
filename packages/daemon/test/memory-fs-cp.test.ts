@@ -326,3 +326,27 @@ it('negotiates capture status separately and fences a captured getter after feat
   await expect(status('memory', AGENT)).rejects.toThrow('no longer supports')
   expect(calls).toHaveLength(1)
 })
+
+it('classifies capture query transport failures without hiding non-retryable protocol errors', async () => {
+  for (const [failure, reason] of [
+    [new WireError('INTERNAL', 'no ack', true), 'connection'],
+    [new WireError('SCOPE_DENIED', 'ownership changed', false), 'scope-denied'],
+    [new WireError('BAD_PAYLOAD', 'invalid query', false), undefined]
+  ] as const) {
+    const fs = new CpMemoryFs(
+      fakeLink({
+        supportsServerFeature: () => true,
+        memoryTransaction: async () => {
+          throw failure
+        }
+      }),
+      AGENT
+    )
+    if (reason)
+      await expect(fs.captureStatus!('memory', AGENT)).rejects.toMatchObject({
+        name: 'MemoryHomeUnavailableError',
+        reason
+      })
+    else await expect(fs.captureStatus!('memory', AGENT)).rejects.toBe(failure)
+  }
+})

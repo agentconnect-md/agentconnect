@@ -111,7 +111,18 @@ export class CpMemoryFs extends MemoryFsClient {
       const transact = this.atomicTransaction
       if (!transact || !this.link.supportsServerFeature(MEMORY_CAPTURE_FENCE_V1_FEATURE))
         throw new MemoryHomeUnavailableError('feature', 'the memory home no longer supports capture fences')
-      const result = await transact({ operation: 'capture-status', root, sourceTurnId })
+      let result: MemoryTransactionResult
+      try {
+        result = await transact({ operation: 'capture-status', root, sourceTurnId })
+      } catch (error) {
+        // This read has no ambiguous write outcome; classify transport failures for the durable capture outbox.
+        if (error instanceof WireError && (error.retryable || error.code === 'SCOPE_DENIED'))
+          throw new MemoryHomeUnavailableError(
+            error.code === 'SCOPE_DENIED' ? 'scope-denied' : 'connection',
+            'memory capture status is unavailable'
+          )
+        throw error
+      }
       if (result.operation !== 'capture-status')
         throw new MemoryHomeUnavailableError('connection', 'memory capture status could not be established')
       return { suppressed: result.suppressed }

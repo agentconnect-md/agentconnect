@@ -1,3 +1,7 @@
+import { WireError } from '@agentconnect.md/connection'
+import { CpMemoryFs } from '../src/cp/memory-fs.js'
+import { ManagedMemoryProvider } from '../src/memory/provider.js'
+import { localMemoryHome } from '../src/memory/home.js'
 import { memorySourceTurnId } from '../src/memory/source-turn.js'
 import { memoryScopeFor } from '../src/mcp/ops/memory.js'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -89,6 +93,46 @@ function scriptedHost() {
 }
 
 describe('Daemon evaluation surface', () => {
+  it('defers capture to the durable outbox when the capture-status wire request times out', async () => {
+    const { factory } = scriptedHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const fs = new CpMemoryFs(
+      {
+        connected: () => true,
+        supportsServerFeature: () => true,
+        memoryStore: async () => {
+          throw new Error('unexpected file request')
+        },
+        memoryTransaction: async () => {
+          throw new WireError('INTERNAL', 'no ack', true)
+        }
+      },
+      AGENT_ID
+    )
+    const extract = vi.fn(async () => '')
+    const provider = new ManagedMemoryProvider(
+      () => localMemoryHome(fs),
+      () => true,
+      extract
+    )
+    vi.spyOn((daemon as any).memory, 'recordTurnForBinding').mockImplementation((...args: any[]) =>
+      provider.recordTurn(args[0], args[1])
+    )
+    vi.spyOn((daemon as any).store, 'isCaptureExcluded').mockResolvedValue(false)
+    const enqueue = vi.spyOn((daemon as any).memoryOutbox, 'enqueue').mockResolvedValue({ status: 'inserted' })
+    await (daemon as any).queueMemoryPostTurn(AGENT_ID, 'source-session', 'source-turn', 'input', 'output', {
+      provider: 'managed',
+      home: 'control-plane'
+    })
+    await Promise.all((daemon as any).memoryPostTurnChains.values())
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: AGENT_ID, turnId: 'source-turn', input: 'input', output: 'output' })
+    )
+    expect(extract).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
   it('uses the same trusted turn identity during tools and post-turn capture, then clears it', async () => {
     const { factory, host } = scriptedHost()
     const daemon = new Daemon({
