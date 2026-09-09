@@ -169,6 +169,7 @@ describe('store retention rule table', () => {
     // filter are valid SQL here, and that nothing fresh is collected.
     const s = await solo()
     await seedEveryTable(s, LIVE, 'fresh', AT, 'member-a')
+    await s.putMemoryEntryContinuation(LIVE, '{}', AT + 30 * 60 * 1000)
 
     const { instance } = sweeper(s, AT + 1_000)
     const summary = await instance.sweep()
@@ -475,4 +476,16 @@ describe('store retention rule table', () => {
       STORE_RETENTION_SCALE_ENV
     )
   })
+})
+
+it('collects expired memory continuations and fences replacement tokens in reused slots', async () => {
+  const s = await solo()
+  await s.putMemoryEntryContinuation(LIVE, '{}', AT)
+  const entryRule = rule('memory-entry-continuation')
+  const [candidate] = await s.listRetentionCandidates(entryRule)
+  expect((await sweeper(s, AT + 1, { rules: [entryRule] }).instance.sweep())!.deleted).toBe(1)
+  const replacement = await s.putMemoryEntryContinuation(LIVE, '{"new":true}', AT)
+  expect(await s.deleteRetentionRow(entryRule, candidate!)).toBe(false)
+  expect(await s.getMemoryEntryContinuation(LIVE, replacement, AT - 1)).toBe('{"new":true}')
+  await s.close()
 })

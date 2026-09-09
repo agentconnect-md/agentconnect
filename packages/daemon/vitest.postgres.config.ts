@@ -17,6 +17,7 @@ export default defineConfig({
     environment: 'node',
     include: [
       'test/local-store.test.ts',
+      'test/memory-entries.test.ts',
       'test/store-concurrency.test.ts',
       'test/memory-capture-outbox.test.ts',
       'test/store-retention.test.ts',

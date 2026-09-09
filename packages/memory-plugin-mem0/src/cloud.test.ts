@@ -1,3 +1,7 @@
+import { randomBytes, randomUUID } from 'node:crypto'
+import { ExternalMemoryProvider } from '../../daemon/src/memory/providers/external.js'
+import { MemoryEntries } from '../../daemon/src/memory/entries/service.js'
+import { MemoryEntryTokens } from '../../daemon/src/memory/entries/tokens.js'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -320,6 +324,80 @@ describe('Mem0 Cloud V3 plugin contract', () => {
     expect(upstream.requests).toEqual([])
     await client.close()
   })
+})
+
+it('serves unified entries through the admitted Mem0 HTTP plugin without changing the v1 ABI', async () => {
+  const upstream = await startUpstream()
+  const plugin = await startMem0CloudServer({ host: '127.0.0.1', port: 0, baseUrl: upstream.url })
+  closers.push(() => plugin.close())
+  const client = await MemoryPluginClient.connect({
+    url: plugin.url,
+    headers: [{ name: 'X-Mem0-Api-Key', value: 'test-key' }],
+    expectedPluginId: MEM0_CLOUD_MANIFEST.plugin.id,
+    expectedManifestDigest: memoryPluginManifestDigest(MEM0_CLOUD_MANIFEST)
+  })
+  closers.push(() => client.close())
+  const connectionId = '11111111-1111-4111-8111-111111111111'
+  const provider = new ExternalMemoryProvider(
+    {
+      provider: 'external',
+      connectionId,
+      recall: { mode: 'tool-only', topK: 5, maxBytes: 8192, timeoutMs: 1000 },
+      capture: { mode: 'manual' }
+    },
+    {
+      registry: {
+        connectionIds: () => [connectionId],
+        clientFor: () => client,
+        specFor: () => ({
+          connectionId,
+          revision: 1,
+          transport: 'streamable-http',
+          relayUrl: plugin.url,
+          grantKey: 'test',
+          config: {},
+          secretKeys: [],
+          pin: { pluginId: MEM0_CLOUD_MANIFEST.plugin.id, profileMajor: 1, secretHeaders: [] }
+        }),
+        markDegraded() {},
+        markRecovered() {}
+      },
+      outbox: {
+        enqueue() {
+          throw new Error('reads must not enqueue capture')
+        }
+      }
+    }
+  )
+  const continuations = new Map<string, string>()
+  const entries = new MemoryEntries(
+    () => provider.entryView({ agentId: 'bot-a' }),
+    new MemoryEntryTokens(randomBytes(32)),
+    {
+      async put(value) {
+        const id = randomUUID()
+        continuations.set(id, value)
+        return id
+      },
+      async get(id) {
+        return continuations.get(id)
+      }
+    }
+  )
+  expect(await entries.describe()).toMatchObject({
+    operations: ['list', 'get'],
+    enumeration: 'live',
+    exactCreate: false
+  })
+  const page = await entries.list({ limit: 100 })
+  expect(page.entries).toHaveLength(1)
+  expect(JSON.stringify(page)).not.toContain('memory-1')
+  expect(await entries.get({ ref: page.entries[0]!.ref })).toMatchObject({
+    text: 'Deploy in sea.',
+    complete: true,
+    entry: { revision: 'hash-1' }
+  })
+  expect(upstream.requests.map((request) => request.method)).toEqual(['POST', 'GET'])
 })
 
 describe('Mem0 Cloud enumeration budgets', () => {

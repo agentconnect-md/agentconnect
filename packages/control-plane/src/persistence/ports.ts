@@ -5876,7 +5876,8 @@ export interface AgentMemoryFileRepo {
     path: string,
     temp: string,
     ifMatchMtime: string | undefined,
-    now: Date
+    now: Date,
+    ifAbsent?: boolean
   ): Promise<AgentMemoryCommitOutcome>
   stat(agentId: AgentId, path: string): Promise<'file' | 'dir' | 'missing'>
   /** Every row at or beneath `path` (`''` ⇒ the whole tree), for the listing to fold into entries. */

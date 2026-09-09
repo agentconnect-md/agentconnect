@@ -76,6 +76,14 @@ const catalogClock = (table: string): string =>
     ) seen WHERE seen.ownerId = ${table}.ownerId AND seen.runtimeId = ${table}.runtimeId)`
 
 export const STORE_RETENTION_RULES: readonly StoreRetentionRule[] = [
+  {
+    id: 'memory-entry-continuation',
+    table: 'memory_entry_continuation',
+    key: ['agentId', 'slot', 'token'],
+    clock: 'expiresAt',
+    agentColumn: 'agentId',
+    horizonMs: 0
+  },
   // ── per-member outboxes: an ownerId/claimedAt lease, drained by whoever holds it ──
   {
     id: 'hook-report',

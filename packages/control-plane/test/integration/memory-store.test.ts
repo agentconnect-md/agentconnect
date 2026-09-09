@@ -135,6 +135,40 @@ async function seedHomedAgent(opts: { daemonId?: string; setId?: string; orgId?:
 }
 
 describe('memory/store — the op set over the table', () => {
+  it('publishes exactly one competing create-only lineage and preserves its bytes', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await seedHomedAgent({ daemonId: DAEMON })
+    const contents = ['lineage-a', 'lineage-b']
+    for (const [i, content] of contents.entries()) {
+      await ok(DAEMON, agentId, { op: 'memory-append', root: 'memory', rel: `.tmp-${i}`, content, create: true })
+    }
+    const results = await Promise.all(
+      contents.map((_, i) =>
+        store(DAEMON, agentId, {
+          op: 'memory-create-commit',
+          root: 'memory',
+          rel: '.entry-lineage',
+          temp: `.tmp-${i}`
+        })
+      )
+    )
+    expect(results.filter((result) => 'reply' in result && result.reply.ok)).toHaveLength(1)
+    expect(
+      results.filter((result) => 'reply' in result && !result.reply.ok && result.reply.refusal.kind === 'conflict')
+    ).toHaveLength(1)
+    const winner = results.findIndex((result) => 'reply' in result && result.reply.ok)
+    const read = await ok<{ content: string }>(DAEMON, agentId, {
+      op: 'memory-read',
+      root: 'memory',
+      rel: '.entry-lineage',
+      offset: 0,
+      limit: REPLY_BUDGET
+    })
+    expect(read.content).toBe(contents[winner])
+    const rows = await prisma.agentMemoryFile.findMany({ where: { agentId } })
+    expect(rows.map((row) => row.path)).toEqual(['memory/.entry-lineage'])
+  })
+
   it('appends into a staged row, commits it into place, and reads it back whole', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await seedHomedAgent({ daemonId: DAEMON })

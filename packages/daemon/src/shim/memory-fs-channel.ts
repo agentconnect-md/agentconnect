@@ -39,7 +39,7 @@ export function isMemoryFsPayload(payload: unknown): boolean {
 export interface MemoryFsExecutor {
   read(root: string, rel: string, offset: number, limit: number, encoding: MemoryFsEncoding): Promise<MemoryFsReadReply>
   append(root: string, rel: string, content: Buffer, create: boolean, mode?: number): Promise<{ size: number }>
-  commit(root: string, rel: string, temp: string, ifMatchMtime?: string): Promise<MemoryFsFileStat>
+  commit(root: string, rel: string, temp: string, ifMatchMtime?: string, ifAbsent?: boolean): Promise<MemoryFsFileStat>
   /** What one path IS, never following a symlink; `other` covers a link and every non-regular entry. */
   stat(root: string, rel: string): Promise<WorkspaceFsKind>
   readdir(root: string, rel: string): Promise<MemoryFsEntry[]>
@@ -73,7 +73,7 @@ export async function applyMemoryFsPayload(
 function run(parsed: MemoryFsPayload, executor: MemoryFsExecutor): Promise<unknown> {
   // Lexical containment ahead of the executor: the same refusal whatever walks the tree.
   for (const rel of 'rel' in parsed ? [parsed.rel] : [parsed.from, parsed.to]) memoryRelSegments(rel)
-  if (parsed.op === 'memory-commit') memoryRelSegments(parsed.temp)
+  if (parsed.op === 'memory-commit' || parsed.op === 'memory-create-commit') memoryRelSegments(parsed.temp)
   switch (parsed.op) {
     case 'memory-read':
       return executor.read(parsed.root, parsed.rel, parsed.offset, parsed.limit, parsed.encoding ?? 'utf8')
@@ -87,6 +87,8 @@ function run(parsed: MemoryFsPayload, executor: MemoryFsExecutor): Promise<unkno
       )
     case 'memory-commit':
       return executor.commit(parsed.root, parsed.rel, parsed.temp, parsed.ifMatchMtime)
+    case 'memory-create-commit':
+      return executor.commit(parsed.root, parsed.rel, parsed.temp, undefined, true)
     case 'memory-stat':
       return executor.stat(parsed.root, parsed.rel)
     case 'memory-readdir':
@@ -240,6 +242,8 @@ export abstract class MemoryFsClient implements MemoryFs {
     content: string | Uint8Array,
     options: MemoryFsWriteOptions = {}
   ): Promise<MemoryFsFileStat> {
+    if (options.ifAbsent && options.ifMatchMtime)
+      throw new MemoryPathError('choose exclusive create or conditional replacement')
     const name = rel.split('/').filter(Boolean).pop()
     if (!name) throw new MemoryPathError('a file name is required')
     const temp = `${rel.slice(0, rel.length - name.length)}.agentconnect-memory-${randomUUID()}.tmp`
@@ -271,7 +275,7 @@ export abstract class MemoryFsClient implements MemoryFs {
       } while (offset < buf.length)
       return await this.run(
         {
-          op: 'memory-commit',
+          op: options.ifAbsent ? 'memory-create-commit' : 'memory-commit',
           root: this.root,
           rel,
           temp,

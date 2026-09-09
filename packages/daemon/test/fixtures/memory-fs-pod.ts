@@ -48,7 +48,7 @@ export function pathExecutor(): MemoryFsExecutor {
       await fsp.appendFile(target, content, { flag: create ? 'ax' : 'a', mode: mode ?? 0o644 })
       return { size: (await fsp.stat(target)).size }
     },
-    async commit(root, rel, temp, ifMatchMtime) {
+    async commit(root, rel, temp, ifMatchMtime, ifAbsent) {
       const target = abs(root, rel)
       if (ifMatchMtime) {
         let current
@@ -62,7 +62,16 @@ export function pathExecutor(): MemoryFsExecutor {
           throw new MemoryConflictError('the memory file changed since it was read; reload and retry')
         }
       }
-      await fsp.rename(abs(root, temp), target)
+      if (ifAbsent) {
+        try {
+          await fsp.link(abs(root, temp), target)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST')
+            throw new MemoryConflictError('the memory file already exists')
+          throw error
+        }
+        await fsp.rm(abs(root, temp), { force: true })
+      } else await fsp.rename(abs(root, temp), target)
       const st = await fsp.stat(target)
       return { size: st.size, mtime: st.mtime.toISOString() }
     },

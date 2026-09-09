@@ -35,6 +35,7 @@ export const MemoryFsPayloadSchema = z.discriminatedUnion('op', [
     temp: MemoryFsRel,
     ifMatchMtime: z.string().optional()
   }),
+  z.object({ op: z.literal('memory-create-commit'), root: MemoryFsRoot, rel: MemoryFsRel, temp: MemoryFsRel }),
   z.object({ op: z.literal('memory-stat'), root: MemoryFsRoot, rel: MemoryFsRel }),
   z.object({ op: z.literal('memory-readdir'), root: MemoryFsRoot, rel: MemoryFsRel }),
   z.object({ op: z.literal('memory-mkdir'), root: MemoryFsRoot, rel: MemoryFsRel }),

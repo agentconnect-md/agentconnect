@@ -59,6 +59,14 @@ export class AgentMemoryStoreService {
           memoryStoreLeafPath(op.root, op.temp),
           op.ifMatchMtime
         )
+      case 'memory-create-commit':
+        return this.commit(
+          agent,
+          memoryStoreLeafPath(op.root, op.rel),
+          memoryStoreLeafPath(op.root, op.temp),
+          undefined,
+          true
+        )
       case 'memory-stat':
         return this.files.stat(agent.id, memoryStorePath(op.root, op.rel))
       case 'memory-readdir':
@@ -116,13 +124,14 @@ export class AgentMemoryStoreService {
     agent: MemoryStoreAgent,
     path: string,
     temp: string,
-    ifMatchMtime: string | undefined
+    ifMatchMtime: string | undefined,
+    ifAbsent = false
   ): Promise<{ size: number; mtime: string }> {
     // The temp is staged beside its target, the way the pod executor holds one parent handle for both.
     if (memoryStoreParent(temp) !== memoryStoreParent(path)) {
       throw new MemoryStorePathError('memory staging file must sit beside its target')
     }
-    const outcome = await this.files.commit(agent.id, path, temp, ifMatchMtime, new Date(this.clock.now()))
+    const outcome = await this.files.commit(agent.id, path, temp, ifMatchMtime, new Date(this.clock.now()), ifAbsent)
     if (outcome.ok) return { size: outcome.size, mtime: outcome.mtime.toISOString() }
     if (outcome.reason === 'conflict') {
       throw new MemoryStoreConflictError('the memory file changed since it was read; reload and retry')

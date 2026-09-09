@@ -1,3 +1,5 @@
+import { ExternalMemoryEntries } from '../entries/external.js'
+import { memoryDigest } from '../entries/service.js'
 import type {
   ExternalMemoryBinding,
   MemoryEntry,
@@ -81,6 +83,19 @@ export class ExternalMemoryProvider implements MemoryProvider {
 
   runtimeEnv(): Record<string, string> {
     throw new Error('ExternalMemoryProvider.runtimeEnv must not be called — use memoryProviderFor at spawn')
+  }
+
+  async entryView(scope: MemoryScope) {
+    const { client, spec } = this.connection()
+    return new ExternalMemoryEntries(
+      this.adminSurface(),
+      scope,
+      memoryDigest([spec.connectionId, spec.revision, client.manifestDigest]),
+      {
+        maxItemBytes: Math.min(128 * 1024, client.manifest.limits.maxRecordBytes),
+        maxPageItems: client.manifest.limits.maxBatchItems
+      }
+    )
   }
 
   async ensure(): Promise<void> {}

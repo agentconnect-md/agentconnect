@@ -132,7 +132,7 @@ export function createFdMemoryFsExecutor(anchor: string): MemoryFsExecutor {
       })
     },
 
-    async commit(root, rel, temp, ifMatchMtime) {
+    async commit(root, rel, temp, ifMatchMtime, ifAbsent) {
       return await withParent(root, rel, false, async (parent, leaf) => {
         const tempLeaf = memoryRelSegments(temp).pop()
         // The temp is staged beside its target, so one parent handle covers both names.
@@ -161,7 +161,16 @@ export function createFdMemoryFsExecutor(anchor: string): MemoryFsExecutor {
             }
             if (current && !current.isFile()) throw new MemoryPathError('memory target is not a regular file')
           }
-          await fs.rename(parent.childPath(tempLeaf), parent.childPath(leaf))
+          if (ifAbsent) {
+            try {
+              await fs.link(parent.childPath(tempLeaf), parent.childPath(leaf))
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === 'EEXIST')
+                throw new MemoryConflictError('the memory file already exists')
+              throw error
+            }
+            await fs.rm(parent.childPath(tempLeaf), { force: true })
+          } else await fs.rename(parent.childPath(tempLeaf), parent.childPath(leaf))
         } catch (err) {
           await fs.rm(parent.childPath(tempLeaf), { force: true }).catch(() => undefined)
           throw err

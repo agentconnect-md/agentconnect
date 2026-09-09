@@ -97,7 +97,8 @@ export class PgAgentMemoryFileRepo implements AgentMemoryFileRepo {
     path: string,
     temp: string,
     ifMatchMtime: string | undefined,
-    now: Date
+    now: Date,
+    ifAbsent?: boolean
   ): Promise<AgentMemoryCommitOutcome> {
     return withAmbientTx(this.db, async (tx) => {
       await lockTree(tx, `agent-memory:${agentId}`)
@@ -118,7 +119,7 @@ export class PgAgentMemoryFileRepo implements AgentMemoryFileRepo {
       `)
       const previous = target[0]?.mtime ?? null
       // A brand-new target never matches a non-empty precondition; the disk ports drop the temp on a miss too.
-      if (ifMatchMtime && (!previous || previous.toISOString() !== ifMatchMtime)) {
+      if ((ifAbsent && previous) || (ifMatchMtime && (!previous || previous.toISOString() !== ifMatchMtime))) {
         await dropTemp()
         return { ok: false, reason: 'conflict' }
       }

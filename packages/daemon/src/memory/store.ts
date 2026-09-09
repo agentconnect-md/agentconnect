@@ -259,6 +259,7 @@ export function memoryTopicName(relPath: string): string {
   if (rel.includes(sep)) throw new MemoryPathError('memory is a flat directory (no subdirectories)')
   if (rel.length === 0) throw new MemoryPathError('a file name is required')
   if (rel === MEMORY_HISTORY_FILENAME) throw new MemoryPathError('memory history is a reserved internal file')
+  if (rel === '.entry-lineage') throw new MemoryPathError('memory lineage is a reserved internal file')
   return rel
 }
 
