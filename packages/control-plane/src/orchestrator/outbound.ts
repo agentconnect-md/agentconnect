@@ -718,7 +718,13 @@ export class ControlSender {
     if (!memoryEntryMutationFits(req))
       return { operation: 'error', code: 'TOO_LARGE', message: 'memory mutation exceeds the JSON request byte limit' }
     try {
-      return await c.conn.request<MemoryEntriesWriteResult>('memory/entries/write/v1', req, { epoch: c.sessionEpoch })
+      // Each delivery allocates a fresh mutation operation; retransmission is not idempotent.
+      return await c.conn.request<MemoryEntriesWriteResult>(
+        'memory/entries/write/v1',
+        req,
+        { epoch: c.sessionEpoch },
+        { maxTries: 1 }
+      )
     } catch {
       return {
         operation: 'error',

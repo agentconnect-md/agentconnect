@@ -1,4 +1,11 @@
-import { MEMORY_ENTRIES_V1_FEATURE, MEMORY_ENTRIES_WRITE_V1_FEATURE } from '@agentconnect.md/protocol'
+import { ReqRep } from '../ws/correlator.js'
+import { FakeClock } from '../../test/fakes/fake-clock.js'
+import {
+  buildEnvelope,
+  type MemoryEntriesWriteReq,
+  MEMORY_ENTRIES_V1_FEATURE,
+  MEMORY_ENTRIES_WRITE_V1_FEATURE
+} from '@agentconnect.md/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import type { LaunchRepo } from '../persistence/ports.js'
 import { ConnectionRegistry, type ConnChannel, type DaemonConnState } from '../ws/registry.js'
@@ -8,7 +15,10 @@ const DAEMON = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const OFFLINE = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
 /** A sender over one READY connection at epoch 7, recording every issued REQ. */
-function senderWith(features: string[] = []): {
+function senderWith(
+  features: string[] = [],
+  requestOverride?: ConnChannel['request']
+): {
   sender: ControlSender
   sent: Array<{ type: string; payload: unknown; ext: unknown; budget: unknown }>
   fail: () => void
@@ -20,7 +30,12 @@ function senderWith(features: string[] = []): {
     if (fail) throw new Error('connection closed')
     return {}
   })
-  const conn = { daemonId: DAEMON, request, send: vi.fn(), close: vi.fn() } as unknown as ConnChannel
+  const conn = {
+    daemonId: DAEMON,
+    request: requestOverride ?? request,
+    send: vi.fn(),
+    close: vi.fn()
+  } as unknown as ConnChannel
   const registry = new ConnectionRegistry()
   const state: DaemonConnState = {
     daemonId: DAEMON,
@@ -80,3 +95,32 @@ it('gates mutations, bounds escaped JSON before sending, and never replays uncer
   expect(await live.sender.memoryEntriesWrite(DAEMON, req)).toMatchObject({ code: 'AMBIGUOUS_WRITE' })
   expect(live.sent).toHaveLength(2)
 })
+
+it.each(['create', 'update', 'delete'] as const)(
+  'never retransmits a %s mutation through the real correlator',
+  async (operation) => {
+    const clock = new FakeClock()
+    const correlator = new ReqRep(clock, 10)
+    const frames: string[] = []
+    const { sender } = senderWith([MEMORY_ENTRIES_WRITE_V1_FEATURE], async (type, payload, ext, budget) => {
+      expect(type).toBe('memory/entries/write/v1')
+      await correlator.request(
+        buildEnvelope('memory/entries/write/v1', payload as MemoryEntriesWriteReq, { ext }),
+        (encoded) => frames.push(encoded),
+        budget
+      )
+      throw new Error('test expected no reply')
+    })
+    const request: MemoryEntriesWriteReq =
+      operation === 'create'
+        ? { agentId: DAEMON, operation, request: { text: 'hello' } }
+        : operation === 'update'
+          ? { agentId: DAEMON, operation, request: { ref: 'opaque-ref', revision: 'old', text: 'changed' } }
+          : { agentId: DAEMON, operation, request: { ref: 'opaque-ref', revision: 'old' } }
+    const pending = sender.memoryEntriesWrite(DAEMON, request)
+    clock.advance(100000)
+    expect(await pending).toMatchObject({ code: 'AMBIGUOUS_WRITE' })
+    expect(frames).toHaveLength(1)
+    expect(correlator.inflight()).toBe(0)
+  }
+)
