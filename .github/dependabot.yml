@@ -13,6 +13,10 @@ updates:
       - dependency-name: '@types/node'
         update-types:
           - version-update:semver-major
+      # Preset v10 requires writer v9; upgrade it together with semantic-release tooling.
+      - dependency-name: conventional-changelog-conventionalcommits
+        update-types:
+          - version-update:semver-major
     groups:
       npm-minor-and-patch:
         patterns:
