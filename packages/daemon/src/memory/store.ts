@@ -19,9 +19,11 @@
  * is a file directly under `memory/`, no nested dirs.
  */
 import { createHash, randomUUID } from 'node:crypto'
+import { atomicWriteMemoryFileHoldingLock, MemoryAmbiguousWriteError } from './atomic-write.js'
 import { isAbsolute, join, resolve, sep } from 'node:path'
 import {
   MEMORY_INDEX,
+  MemoryTransactionPath,
   MemoryFileHistoryEvent as MemoryFileHistoryEventSchema,
   type MemoryFileHistoryEvent
 } from '@agentconnect.md/protocol'
@@ -636,6 +638,17 @@ export async function writeMemoryFileHoldingLock(
   if (Buffer.byteLength(content) > MAX_MEMORY_FILE_BYTES) {
     throw new MemoryTooLargeError(`memory file exceeds the ${MAX_MEMORY_FILE_BYTES}-byte limit`)
   }
+  if (MemoryTransactionPath.safeParse(topic).success && fs.atomicTransaction && fs.stageTransactionFile) {
+    try {
+      const result = await atomicWriteMemoryFileHoldingLock(fs, topic, content, ifMatchMtime, source)
+      bumpWriteMarks(fs, source)
+      return result
+    } catch (error) {
+      // An unconfirmed publication must block Dream rebasing even when the original source was distillation.
+      if (error instanceof MemoryAmbiguousWriteError) bumpWriteMarks(fs, 'console')
+      throw error
+    }
+  }
   const path = topicPath(relPath)
   const current = await fs.readFile(path)
   const st: MemoryFsFileStat = await fs.writeFile(path, content, ifMatchMtime ? { ifMatchMtime } : {})
@@ -704,6 +717,19 @@ export function renderMemoryIndex(entries: MemoryIndexEntry[], heading = '# Memo
   return `${prefix}${lines.join('\n')}\n${dropped > 0 ? INDEX_OVERFLOW_NOTICE : ''}`
 }
 
+// Shared by sequential compatibility writes and atomic CP batches; preserve a hand-written index until adoption.
+export function deriveMemoryIndex(
+  entries: MemoryIndexEntry[],
+  current: string | undefined,
+  force = false
+): string | undefined {
+  const owned = current?.includes(GENERATED_INDEX_MARKER) === true
+  if (!owned && !force && !entries.some((entry) => entry.description)) return undefined
+  const heading = /^#[ \t]+.*$/m.exec(current ?? '')?.[0] ?? '# Memory'
+  const next = renderMemoryIndex(entries, heading)
+  return current === next ? undefined : next
+}
+
 export async function regenerateMemoryIndexHoldingLock(
   fs: MemoryFs,
   source: MemoryWriteSource,
@@ -722,17 +748,8 @@ export async function regenerateMemoryIndexHoldingLock(
     })
   }
   const current = await fs.readFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`)
-  // Take ownership on the first described topic; once the index is ours, keep it in
-  // step forever — including when the last description is removed, which must clear
-  // the stale line rather than freeze it in the injected index.
-  const owned = current?.content.includes(GENERATED_INDEX_MARKER) === true
-  // `force` is for a caller that just added topics and would otherwise hand-maintain
-  // the index itself (distillation): adopt it now so there is exactly one writer.
-  if (!owned && !opts.force && !entries.some((entry) => entry.description)) return
-
-  const heading = /^#[ \t]+.*$/m.exec(current?.content ?? '')?.[0] ?? '# Memory'
-  const next = renderMemoryIndex(entries, heading)
-  if (current?.content === next) return
+  const next = deriveMemoryIndex(entries, current?.content, opts.force)
+  if (next === undefined) return
 
   const st = await fs.writeFile(`${MEMORY_DIRNAME}/${MEMORY_INDEX}`, next, {})
   try {
