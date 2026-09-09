@@ -1065,6 +1065,7 @@ export interface RuntimeProfileDto {
   // CP) ⇒ no warning.
   authRequired?: boolean
   unavailableReason?: 'image-binary-missing' | null
+  hostVersion?: string | null
 }
 
 // One daemon-configured MCP server (name + transport), reported in the
@@ -2174,6 +2175,7 @@ export function withDaemonCapability(row: DaemonRow, cap: DaemonCapabilityDto | 
     runtimeModels: cap.runtimeProfiles.map((p) => ({
       runtime: p.runtime,
       version: p.version,
+      hostVersion: p.hostVersion ?? null,
       models: p.models,
       acpProtocolVersion: p.acpProtocolVersion,
       mcpCapabilities: p.mcpCapabilities ?? null,
@@ -2222,6 +2224,7 @@ export function daemonFromDto(
     runtimeModels: (d.runtimeProfiles ?? []).map((p) => ({
       runtime: p.runtime,
       version: p.version,
+      hostVersion: p.hostVersion ?? null,
       models: p.models,
       acpProtocolVersion: p.acpProtocolVersion,
       mcpCapabilities: p.mcpCapabilities ?? null,

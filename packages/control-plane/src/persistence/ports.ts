@@ -4955,6 +4955,7 @@ export interface RuntimeProfileRecord {
    *  (-32000): installed but needing a login on the daemon host. */
   authRequired: boolean
   unavailableReason?: 'image-binary-missing' | null
+  hostVersion?: string | null
   /** When the daemon last reported this profile. */
   observedAt: Date
 }

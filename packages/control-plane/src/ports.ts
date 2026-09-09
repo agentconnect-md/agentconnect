@@ -215,6 +215,7 @@ export interface DaemonRuntimeProfile {
    *  Drives the console's per-runtime login warning. */
   authRequired: boolean
   unavailableReason?: 'image-binary-missing' | null
+  hostVersion?: string | null
   /** When the daemon last reported this profile. */
   observedAt: Date
 }

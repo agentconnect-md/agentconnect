@@ -2361,7 +2361,6 @@ export class Daemon {
     } else this.runtimeCatalog = localCatalog
     this.refreshAdmittedRuntimes()
     this.runtimeFacts.setInstalled(installedEntries)
-    if (this.microsandboxCatalog) this.runtimeFacts.noteImageCatalog(this.microsandboxCatalog.entries)
     this.log.info(`runtimes ready: ${Object.keys(this.runtimes).join(', ') || '(none)'}`)
     const pendingCurated = Object.keys(installed).filter((id) => installedEntries[id]?.source === 'curated')
     if (pendingCurated.length) this.log.info(`runtimes pending ACP admission: ${pendingCurated.join(', ')}`)

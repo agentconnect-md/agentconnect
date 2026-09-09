@@ -156,14 +156,13 @@ export class RuntimeFactsRegistry {
     return this.catalogs.get(runtimeId)
   }
 
-  /** Build the current profile entry for a runtime (one element of the
-   *  `facts/daemon-runtimes` snapshot), folding in any models learned by the
-   *  probe sweep. */
+  /** Report the current runtime profile, preserving both host and image versions. */
   profileFor(id: string): FactsRuntimeProfile {
+    const hostVersion = this.probedVersions.get(id) || this.versions[id] || ''
     return {
       runtime: id,
-      // VM versions come from the image; a host probe supplies models and capabilities only.
-      version: this.host.imageVersion(id) || this.probedVersions.get(id) || this.versions[id] || '',
+      version: this.host.imageVersion(id) || hostVersion,
+      ...(!this.host.launch().k8s ? { hostVersion } : {}),
       models: this.models.get(id) ?? [],
       acpSupport: 'full',
       acpProtocolVersion: this.acpVersions.get(id),

@@ -270,6 +270,7 @@ describe('GET /daemons — live-status overlay', () => {
       {
         runtime: 'claude',
         version: '1.4.0',
+        hostVersion: '2.0.0',
         models: [],
         acpSupport: 'full',
         toolCalling: true,
@@ -281,6 +282,7 @@ describe('GET /daemons — live-status overlay', () => {
     running = buildHttpApp(prisma)
     expect((await listCapabilities()).find((r) => r.daemonId === DAEMON)!.runtimeProfiles[0]).toMatchObject({
       runtime: 'claude',
+      hostVersion: '2.0.0',
       authRequired: true,
       unavailableReason: 'image-binary-missing'
     })
@@ -288,6 +290,7 @@ describe('GET /daemons — live-status overlay', () => {
     expect(response.statusCode).toBe(200)
     expect((response.json() as DaemonDto).runtimeProfiles[0]).toMatchObject({
       runtime: 'claude',
+      hostVersion: '2.0.0',
       authRequired: true,
       unavailableReason: 'image-binary-missing'
     })

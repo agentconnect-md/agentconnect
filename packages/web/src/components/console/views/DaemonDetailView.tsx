@@ -66,6 +66,7 @@ export default function DaemonDetailView() {
   // Mobile: tap a runtime row to expand its model list (design: `rtOpen` map —
   // independent toggles, so more than one can be open at once).
   const [expandedRuntimes, setExpandedRuntimes] = useState<Set<string>>(new Set())
+  const [runtimeMode, setRuntimeMode] = useState<'host' | 'sandbox'>('host')
   const toggleRuntime = (rid: string) =>
     setExpandedRuntimes((prev) => {
       const next = new Set(prev)
@@ -120,7 +121,41 @@ export default function DaemonDetailView() {
   const canUpgrade = canRestart && daemon.availableVersions.some((v) => v !== daemon.version)
 
   const hosted = agents.filter((a) => a.daemon === daemon.daemonId)
-  const runtimes: FleetRuntime[] = unionRuntimes([daemon])
+  const sandboxRequired = daemon.pool || daemon.caps.features.includes('sandbox-required')
+  const sandboxSupported = daemon.pool || daemon.caps.features.includes('sandbox')
+  const runtimeEnvironment = sandboxRequired ? 'sandbox' : runtimeMode
+  const runtimeAgents = hosted.filter(
+    (a) => (sandboxRequired || (sandboxSupported && a.runInSandbox)) === (runtimeEnvironment === 'sandbox')
+  )
+  const runtimeModels = daemon.runtimeModels.map((rt) =>
+    runtimeEnvironment === 'host'
+      ? { ...rt, version: rt.hostVersion ?? rt.version, unavailableReason: null }
+      : { ...rt, version: rt.unavailableReason === 'image-binary-missing' ? '' : rt.version }
+  )
+  const sandboxUnavailable = runtimeEnvironment === 'sandbox' && !sandboxSupported
+  const runtimes: FleetRuntime[] = sandboxUnavailable ? [] : unionRuntimes([{ ...daemon, runtimeModels }])
+  const runtimeEmpty = sandboxUnavailable
+    ? 'Sandbox is unavailable on this daemon.'
+    : 'No runtimes reported by this daemon.'
+  const runtimeModeControl = sandboxRequired ? (
+    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">Sandbox</span>
+  ) : (
+    <div className="pillbar" role="group" aria-label="Runtime environment">
+      {(['host', 'sandbox'] as const).map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          className={
+            runtimeEnvironment === mode ? 'pill on px-[10px] py-1 text-[12px]' : 'pill px-[10px] py-1 text-[12px]'
+          }
+          aria-pressed={runtimeEnvironment === mode}
+          onClick={() => setRuntimeMode(mode)}
+        >
+          {mode === 'host' ? 'Host' : 'Sandbox'}
+        </button>
+      ))}
+    </div>
+  )
   const seen = daemon.uptime === '—' ? 'never connected' : `last seen ${daemon.uptime} ago`
   // `conns` is the daemon's agent ceiling; <= 0 is its UNBOUNDED sentinel, not a ceiling of zero.
   // Its numerator is the daemon's OWN heartbeat count, never `hosted`: a group duty this member
@@ -264,13 +299,14 @@ export default function DaemonDetailView() {
 
         {/* runtimes — full-width stacked rows */}
         <div className="mx-4 mt-1 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
-          <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
-            Runtimes
+          <div className="flex items-center justify-between gap-3 border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
+            <span>Runtimes</span>
+            {runtimeModeControl}
           </div>
           {runtimes.length > 0 ? (
             runtimes.map((rt, i) => {
               const meta = acpRuntime(acpRegistry, rt.runtime)
-              const users = hosted.filter(
+              const users = runtimeAgents.filter(
                 (a) => a.runtime === rt.runtime || runtimeLabel(a.runtime) === runtimeLabel(rt.runtime, meta?.name)
               )
               const usage = users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'
@@ -385,7 +421,7 @@ export default function DaemonDetailView() {
             })
           ) : (
             <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              No runtimes reported by this daemon.
+              {runtimeEmpty}
             </div>
           )}
         </div>
@@ -730,8 +766,9 @@ export default function DaemonDetailView() {
       <FleetRuntimesCard
         title="Runtimes"
         runtimes={runtimes}
-        agents={hosted}
-        empty="No runtimes reported by this daemon."
+        agents={runtimeAgents}
+        empty={runtimeEmpty}
+        headerActions={runtimeModeControl}
         daemonName={daemon.name}
       />
 

@@ -44,6 +44,7 @@ const capability: DaemonCapabilityDto = {
     {
       runtime: 'claude-acp',
       version: '0.70.0',
+      hostVersion: '0.75.0',
       models: ['opus', 'sonnet'],
       contextWindow: null,
       acpSupport: 'full',
@@ -88,6 +89,7 @@ describe('daemon read split', () => {
     // The login warning is fleet-wide information, so it survives the split.
     expect(row.runtimeModels[0]!.authRequired).toBe(true)
     expect(row.runtimeModels[0]!.unavailableReason).toBe('image-binary-missing')
+    expect(row.runtimeModels[0]!.hostVersion).toBe('0.75.0')
     // The runtime-level answers survive, so the read-only model/permission labels resolve
     // for every agent; the per-model matrix is empty until `useDaemonDetail` reads one daemon.
     expect(row.runtimeModels[0]!.modelCatalog!.defaultModel).toBe('sonnet')
@@ -107,6 +109,7 @@ describe('mergeDaemonCatalogs — the detail read owns catalogs, the fleet row o
       runtime: 'claude-acp',
       version: '0.70.0',
       models: ['opus'],
+      hostVersion: '0.75.0',
       authRequired: true,
       unavailableReason: 'image-binary-missing',
       modelCatalog: null
@@ -130,6 +133,7 @@ describe('mergeDaemonCatalogs — the detail read owns catalogs, the fleet row o
     expect(merged!.models).toEqual(['opus'])
     expect(merged!.authRequired).toBe(true)
     expect(merged!.unavailableReason).toBe('image-binary-missing')
+    expect(merged!.hostVersion).toBe('0.75.0')
   })
 
   it('never adds a runtime the fleet row no longer reports', () => {

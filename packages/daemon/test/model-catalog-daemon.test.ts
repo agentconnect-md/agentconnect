@@ -309,6 +309,7 @@ describe('microsandbox runtime facts', () => {
         expect(d.microsandboxCatalog.entries.opencode).toBeUndefined()
         await d.hydrateRuntimeCaches()
         expect(d.runtimeFacts.profileFor('codex-acp').models).toEqual([])
+        expect(d.runtimeFacts.profileFor('codex-acp').hostVersion).toBe('')
         const onCatalogUpdated = d.modelCatalogSvc.deps.onUpdated
         const noteProbe = stubCatalogSvc(daemon)
         const emitted = captureEmits(daemon)
@@ -323,12 +324,14 @@ describe('microsandbox runtime facts', () => {
         expect(d.runtimeFacts.profileFor('codex-acp')).toMatchObject({
           runtime: 'codex-acp',
           version: 'image-version',
+          hostVersion: 'host-version',
           models: ['host-model'],
           modelsSource: 'probed',
           acpProtocolVersion: 1
         })
         expect(d.runtimeFacts.profileFor('codex-acp').unavailableReason).toBeUndefined()
         expect(d.runtimeFacts.profileFor('grok-build')).toMatchObject({
+          hostVersion: 'host-version',
           models: ['host-model'],
           unavailableReason: 'image-binary-missing'
         })

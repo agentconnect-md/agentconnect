@@ -2248,6 +2248,7 @@ export interface DaemonRow {
      *  on the daemon detail page). Absent ⇒ no warning. */
     authRequired?: boolean
     unavailableReason?: 'image-binary-missing' | null
+    hostVersion?: string | null
   }[]
   /** Daemon-configured MCP servers (name + transport, facts/daemon-runtimes). */
   mcpServers: McpServerInfo[]
