@@ -8,7 +8,7 @@ import { installTarget, resolveTarget } from './install.js'
 import { commandSelector } from './service/instance.js'
 import { realUpgradeDeps, upgrade } from './upgrade.js'
 import { withVersionLock } from './version-lock.js'
-import { pruneVersions, useVersion } from './version-ops.js'
+import { autoPrune, DEFAULT_KEEP_VERSIONS, pruneVersions, useVersion } from './version-ops.js'
 import { currentVersion, listInstalled, readMeta, writeMeta, type Channel } from './version-store.js'
 
 const note = (m: string): void => console.log(m)
@@ -30,7 +30,10 @@ export function versionList(root: string): void {
   }
 }
 
-export async function versionInstall(root: string, opts: { to?: string; channel?: Channel }): Promise<void> {
+export async function versionInstall(
+  root: string,
+  opts: { to?: string; channel?: Channel; keep?: number }
+): Promise<void> {
   await withVersionLock(root, 'install', async () => {
     const channel = opts.channel ?? readMeta(root).channel
     const target = await resolveTarget({ to: opts.to, channel })
@@ -44,6 +47,9 @@ export async function versionInstall(root: string, opts: { to?: string; channel?
       useVersion(root, target.version)
       note(`current → ${target.version}`)
     }
+    // Bound the store on the install path too — `run`'s auto-install grows it without an upgrade.
+    const keep = opts.keep ?? DEFAULT_KEEP_VERSIONS
+    if (keep > 0) autoPrune(root, note, keep)
   })
 }
 
@@ -97,6 +103,7 @@ export async function versionReinstallLatest(root: string): Promise<string> {
       await installTarget(root, target, note, { force: true })
       useVersion(root, target.version)
       note(`current → ${target.version}`)
+      autoPrune(root, note)
       return target.version
     },
     { wait: true }
@@ -105,7 +112,7 @@ export async function versionReinstallLatest(root: string): Promise<string> {
 
 export async function runUpgrade(
   root: string,
-  opts: { to?: string; channel?: Channel; restart?: boolean }
+  opts: { to?: string; channel?: Channel; restart?: boolean; keep?: number }
 ): Promise<void> {
   await withVersionLock(root, 'upgrade', () => upgrade(root, opts, realUpgradeDeps(root, note)), { wait: true })
 }

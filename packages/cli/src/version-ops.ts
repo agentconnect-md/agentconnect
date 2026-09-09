@@ -58,25 +58,44 @@ function replaceWindowsCurrentJunction(root: string, version: string, link: stri
   }
 }
 
-/**
- * Remove old installed versions, keeping the newest `keep` prunable ones. `current`
- * and `previous` (the rollback target) are NEVER removed. §5.4.
- */
-export function pruneVersions(root: string, keep = 2): string[] {
+const collate = (a: string, b: string): number => a.localeCompare(b, 'en', { numeric: true })
+
+/** Default retention for automatic and manual pruning: how many installed versions to keep in total. */
+export const DEFAULT_KEEP_VERSIONS = 3
+
+/** Keep the newest `keep` installed versions by mtime; `current`/`previous` are never removed and count against `keep`. §5.4 */
+export function pruneVersions(root: string, keep = DEFAULT_KEEP_VERSIONS): string[] {
   const meta = readMeta(root)
   const cur = currentVersion(root)
-  const protectedSet = new Set([cur, meta.previous].filter((v): v is string => Boolean(v)))
+  const installed = listInstalled(root)
+  const protectedSet = new Set(
+    [cur, meta.previous].filter((v): v is string => Boolean(v) && installed.includes(v as string))
+  )
 
-  const prunable = listInstalled(root)
+  const prunable = installed
     .filter((v) => !protectedSet.has(v))
     .map((v) => ({ v, mtime: statSync(versionDir(root, v)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime) // newest first
+    // Newest install first; equal mtimes (same-second installs) fall back to version order.
+    .sort((a, b) => b.mtime - a.mtime || collate(b.v, a.v))
 
-  const toRemove = prunable.slice(keep).map((x) => x.v)
+  const slots = Math.max(0, keep - protectedSet.size)
+  const toRemove = prunable.slice(slots).map((x) => x.v)
   for (const v of toRemove) {
     rmSync(versionDir(root, v), { recursive: true, force: true })
   }
   return toRemove
+}
+
+/** Best-effort prune for the automatic call sites: cleanup failure must never fail the install/upgrade. Lock held by caller. */
+export function autoPrune(root: string, log: (m: string) => void, keep = DEFAULT_KEEP_VERSIONS): string[] {
+  try {
+    const removed = pruneVersions(root, keep)
+    if (removed.length) log(`pruned ${removed.length} old version(s): ${removed.join(', ')}`)
+    return removed
+  } catch (err) {
+    log(`could not prune old versions: ${err instanceof Error ? err.message : String(err)}`)
+    return []
+  }
 }
 
 /** Basename of an installed version dir (helper for callers that resolve paths). */

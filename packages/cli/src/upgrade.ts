@@ -10,12 +10,14 @@ import { checkServiceHealthy, type HealthResult } from './health.js'
 import { installTarget, resolveTarget } from './install.js'
 import type { ResolvedTarget } from './registry.js'
 import { currentVersion, readMeta, writeMeta, type Channel } from './version-store.js'
-import { useVersion } from './version-ops.js'
+import { autoPrune, DEFAULT_KEEP_VERSIONS, useVersion } from './version-ops.js'
 
 export interface UpgradeOpts {
   to?: string
   channel?: Channel
   restart?: boolean
+  /** Retention for the post-upgrade prune (default DEFAULT_KEEP_VERSIONS); 0 disables it. */
+  keep?: number
 }
 
 export interface UpgradeDeps {
@@ -24,6 +26,8 @@ export interface UpgradeDeps {
   serviceInstalled: () => boolean
   restartService: () => Promise<void>
   health: () => Promise<HealthResult>
+  /** Drop old versions once the new one is in place; returns what was removed. */
+  prune: (keep: number) => string[]
   log: (m: string) => void
 }
 
@@ -38,6 +42,7 @@ export function realUpgradeDeps(root: string, log: (m: string) => void): Upgrade
       await c.up()
     },
     health: () => checkServiceHealthy(() => resolveController({ root }).status()),
+    prune: (keep) => autoPrune(root, log, keep),
     log
   }
 }
@@ -49,9 +54,11 @@ export async function upgrade(root: string, opts: UpgradeOpts, deps: UpgradeDeps
   const target = await deps.resolve({ to: opts.to, channel })
   await deps.install(root, target, deps.log)
 
+  const keep = opts.keep ?? DEFAULT_KEEP_VERSIONS
   const before = currentVersion(root)
   if (before === target.version && !opts.restart) {
     deps.log(`already on ${target.version}`)
+    if (keep > 0) deps.prune(keep)
     return
   }
 
@@ -60,6 +67,8 @@ export async function upgrade(root: string, opts: UpgradeOpts, deps: UpgradeDeps
     writeMeta(root, { ...readMeta(root), channel: opts.channel })
   }
   deps.log(`current → ${target.version}`)
+  // Prune after the flip so current + the rollback target are protected by useVersion's bookkeeping.
+  if (keep > 0) deps.prune(keep)
 
   if (!opts.restart) {
     deps.log('not restarting (pass --restart to apply now); the new version takes effect on the next daemon restart')

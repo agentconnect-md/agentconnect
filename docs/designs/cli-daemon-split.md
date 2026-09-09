@@ -127,7 +127,14 @@ rollback target in `versions.json`.
 
 `agentconnect version prune --keep <n>` removes older inactive versions by
 installation modification time. The active and previous versions are always
-protected. The default keeps two additional prunable versions.
+protected and count against the retention count. The default keeps three
+versions in total.
+
+Every install and upgrade prunes the store with the same default once the new
+version is in place, so routine upgrades do not accumulate old bundles. Pass
+`--keep <n>` to change the retention, or `--keep 0` to keep every version.
+Cleanup is best effort: a failed removal is reported and does not fail the
+install or upgrade.
 
 Mutating version commands hold a root-scoped inter-process lock. Install and
 use fail fast when another live writer owns the lock; prune and upgrade wait.
@@ -142,6 +149,10 @@ channel.
 
 Without `--restart`, the running daemon is unchanged. The selected version takes
 effect on its next launch.
+
+After `current` is switched, the store is pruned to the retention count (§2.2).
+The prune runs after the switch, so both the new active version and the rollback
+target are protected.
 
 With `--restart`, the CLI:
 

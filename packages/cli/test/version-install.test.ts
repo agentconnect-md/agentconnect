@@ -25,7 +25,7 @@ vi.mock('../src/install.js', () => ({
 }))
 
 const { versionInstall, versionReinstallLatest, versionRollback } = await import('../src/version-commands.js')
-const { currentVersion, readMeta, writeMeta } = await import('../src/version-store.js')
+const { currentVersion, listInstalled, readMeta, writeMeta } = await import('../src/version-store.js')
 
 const root = () => mkdtempSync(join(tmpdir(), 'ac-vinstall-'))
 
@@ -35,6 +35,27 @@ beforeEach(() => {
 })
 
 describe('versionInstall', () => {
+  it('prunes the store down to the retention count', async () => {
+    const r = root()
+    for (const v of ['1.0.0', '1.1.0', '1.2.0']) {
+      resolveTarget.mockResolvedValueOnce({ version: v, channel: 'stable' })
+      await versionInstall(r, {})
+    }
+    expect(listInstalled(r)).toEqual(['1.0.0', '1.1.0', '1.2.0'])
+    resolveTarget.mockResolvedValueOnce({ version: '1.3.0', channel: 'stable' })
+    await versionInstall(r, {})
+    // 1.0.0 stays current (installs do not switch) so the oldest prunable one goes.
+    expect(listInstalled(r)).toEqual(['1.0.0', '1.2.0', '1.3.0'])
+  })
+
+  it('keeps every version with --keep 0', async () => {
+    const r = root()
+    for (const v of ['1.0.0', '1.1.0', '1.2.0', '1.3.0']) {
+      resolveTarget.mockResolvedValueOnce({ version: v, channel: 'stable' })
+      await versionInstall(r, { keep: 0 })
+    }
+    expect(listInstalled(r)).toEqual(['1.0.0', '1.1.0', '1.2.0', '1.3.0'])
+  })
   it('activates the first installed version (fresh root has no current)', async () => {
     const r = root()
     resolveTarget.mockResolvedValue({ version: '1.0.0', channel: 'stable' })
