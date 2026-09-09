@@ -19,6 +19,7 @@ import {
   telegramElicitButtons,
   telegramElicitCheckboxes,
   telegramElicitData,
+  telegramElicitFormText,
   telegramElicitDataFits,
   telegramElicitCards
 } from '../src/platforms/telegram/elicit-card.js'
@@ -390,6 +391,48 @@ describe('a Telegram multi-select is assembled on the keyboard and submitted by 
     await tap(h, requestId, 'x')
     await expect(result).resolves.toEqual({ action: 'decline' })
     expect(h.edits.at(-1)!.text).toContain('🚫 Dismissed')
+  })
+
+  it("redraws a card tapped before its own post reported an id, from the tap's own message", async () => {
+    // A reader can tap the instant Telegram shows the keyboard, which can beat the send that
+    // records the card's id — the tick must still reach the boxes the reader is looking at.
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form(CHECKS, ['checks']))
+    const rec = h.daemon.permissions.pendingElicits.get(requestId)
+    rec.ts = undefined
+    // The adoption is synchronous, so the state under test survives to the fold.
+    await h.daemon.permissions.handleElicitCardTap({ requestId, token: elicitOptionToken(0), ts: '4242' })
+
+    expect(rec.ts).toBe('4242')
+    expect(h.edits.at(-1)!.buttons.map((r) => r[0]!.text)).toEqual(['☑️ lint', '⬜️ test', '⬜️ build', 'Confirm'])
+    await tap(h, requestId, 'ok')
+    await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint'] } })
+  })
+
+  it('refuses a tick it cannot show at all, rather than remembering one the boxes deny', () => {
+    const params = form(CHECKS, ['checks'])
+    const fields = elicitForm(params, TELEGRAM_ELICIT_SURFACE)!
+    const handle: any = { conn: {}, channel: '-100' }
+    expect(
+      telegramElicitCards.tap!(handle, { requestId: REQUEST_ID, params, form: fields }, elicitOptionToken(0))
+    ).toBe(null)
+    expect([...(handle.cardState?.chosen ?? [])]).toEqual([])
+  })
+
+  it('keeps a long question and its whole hint inside one Telegram message', () => {
+    // A hint runs to 2000 characters and the limit is 4096, so appending one to an already-clamped
+    // question would refuse the post outright — and a refused post is no card at all.
+    const target = {
+      propName: 'checks',
+      kind: 'multi-enum' as const,
+      options: [{ value: 'lint', label: 'lint' }],
+      description: 'd'.repeat(300),
+      minItems: 1
+    }
+    const text = telegramElicitFormText('q'.repeat(4000), target)
+    expect([...text].length).toBeLessThanOrEqual(4096)
+    // The question yields, never the hint: the bounds are what the keyboard cannot say itself.
+    expect(text).toContain('Select at least 1.')
   })
 
   it('refuses a position no checkbox on the card held, and leaves the card live', async () => {

@@ -13916,6 +13916,9 @@ export class Daemon {
     await this.permissions.handleElicitCardTap({
       requestId: tap.requestId,
       token: tap.token,
+      // The card the button was on, so a fold can redraw it even when the post that carried it
+      // has not returned its own id yet — a reader can tap the moment Telegram shows the keyboard.
+      ts: String(cb.messageId),
       actor: { userId: cb.userId }
     })
   }

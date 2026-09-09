@@ -189,10 +189,16 @@ export function telegramElicitCheckboxes(
 
 /** An assembled card's own text: the question, then what the reader has to know to answer it that
  *  no checkbox can say — the field's description and a multi-select's bounds, which Telegram
- *  cannot enforce on the keyboard the way Slack's `max_selected_items` does. Pure. */
+ *  cannot enforce on the keyboard the way Slack's `max_selected_items` does.
+ *
+ *  The hint is inside the same budget the question is, and it is the QUESTION that yields: a hint
+ *  runs to 2000 characters where the message limit is 4096, so appending it to an already-clamped
+ *  question could push the whole card past what `sendMessage` takes — and a refused post is not a
+ *  shortened card, it is no card at all, cancelled without even the unrenderable notice. Pure. */
 export function telegramElicitFormText(message: string, target: ElicitTarget): string {
   const hint = elicitFormFieldHint(target)
-  return `${telegramElicitText(message)}${hint ? `\n${hint}` : ''}`
+  if (!hint) return telegramElicitText(message)
+  return `${telegramElicitText(clampTo(message, Math.max(0, TELEGRAM_ELICIT_MESSAGE_CAP - hint.length - 1)))}\n${hint}`
 }
 
 /** The one field an assembled Telegram card renders, or null when this form is not one — today
@@ -289,22 +295,25 @@ export const telegramElicitCards: ElicitCardFacet = {
     }
     const index = target.options.findIndex((_o, i) => elicitOptionToken(i) === token)
     if (index < 0) return null
+    // A tick nobody can be shown is not recorded. What the keyboard shows and what a Confirm would
+    // submit are ONE fact here — unlike Slack, where the message itself holds the reader's half-
+    // filled state — so a card with no addressable message refuses the tap instead of remembering
+    // a selection its own boxes still show unticked.
+    const messageId = handle.ts === undefined ? NaN : Number(handle.ts)
+    if (!Number.isInteger(messageId)) return null
     if (state.chosen.has(index)) state.chosen.delete(index)
     else state.chosen.add(index)
     // Best effort, like every other card rewrite: a redraw that fails leaves the reader looking at
     // the previous ticks, and the Confirm still submits what THIS daemon recorded.
-    const messageId = handle.ts === undefined ? NaN : Number(handle.ts)
-    if (Number.isInteger(messageId)) {
-      const message = (card.params as { message?: string }).message?.trim() || 'The agent needs your input'
-      void (handle.conn as TelegramConnection)
-        .editCard(
-          handle.channel,
-          messageId,
-          telegramElicitFormText(message, target),
-          telegramElicitCheckboxes(card.requestId, target.options, state.chosen)
-        )
-        .catch(() => {})
-    }
+    const message = (card.params as { message?: string }).message?.trim() || 'The agent needs your input'
+    void (handle.conn as TelegramConnection)
+      .editCard(
+        handle.channel,
+        messageId,
+        telegramElicitFormText(message, target),
+        telegramElicitCheckboxes(card.requestId, target.options, state.chosen)
+      )
+      .catch(() => {})
     return { kind: 'pending' }
   },
 

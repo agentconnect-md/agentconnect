@@ -1903,12 +1903,24 @@ export class PermissionCoordinator {
    * Dismiss (`token === null`) is not folded into anything — it is the reader's one explicit
    * refusal on every card, assembled or not, and settles through the choice path unchanged.
    */
-  async handleElicitCardTap(a: { requestId: string; token: string | null; actor?: InteractionActor }): Promise<void> {
+  async handleElicitCardTap(a: {
+    requestId: string
+    token: string | null
+    /** The card's own message id AS THE TAP REPORTS IT — the same one fact `ElicitCardHandle.ts`
+     *  holds, in whichever dialect the surface spells it. A tap can beat the post it came from:
+     *  the reader sees the keyboard the instant the platform has it, while `awaitChatElicitation`
+     *  is still awaiting the send that will record the id. Adopting it is what lets a fold redraw
+     *  a card whose own post has not landed yet; that send then records the very same value. */
+    ts?: string
+    actor?: InteractionActor
+  }): Promise<void> {
     const actor = a.actor ? { actor: a.actor } : {}
     const rec = this.pendingElicits.get(a.requestId)
     // A one-tap card, an unknown request, and Dismiss all answer with the token as it came.
     if (a.token === null || !rec || rec.surface !== 'chat' || !rec.facet.tap || !rec.form)
       return await this.handleElicitChoice({ requestId: a.requestId, value: a.token, ...actor })
+    // Only ever fills a gap: a recorded id is the send's own and is never overwritten by a tap.
+    if (rec.ts === undefined && a.ts !== undefined) rec.ts = a.ts
     const form = this.cardForm(rec)
     if (!form) return
     const folded = rec.facet.tap(rec, { requestId: a.requestId, params: rec.params, form }, a.token)
