@@ -201,3 +201,5 @@ export {
   unscaleAmount
 } from './decimal-amount.js'
 export * from './memory-entries.js'
+
+export * from './frames/memory-entries.js'

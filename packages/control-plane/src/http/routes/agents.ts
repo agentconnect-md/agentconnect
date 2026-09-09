@@ -1,13 +1,11 @@
-/**
- * `http/routes/agents.ts` (design §2.1) — CRUD for agent definitions through the
- * C6 `AgentRepo`. The CP mints the agent UUID (the wire id used across
- * `route/*`, `agent/*`, `event/session`). Scoped to the caller's org (the
- * devAuth/OIDC principal). Placement/launch happen over the WS edge — not here.
- */
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { randomUUID } from 'node:crypto'
-import { z } from 'zod'
-import type {
+import {
+  MemoryEntryCapabilities,
+  MemoryEntryListRequest,
+  MemoryEntryListResult,
+  MemoryEntryGetRequest,
+  MemoryEntryContent,
+  MemoryEntryErrorCode,
+  type MemoryEntriesReadReq,
   WorkspaceListPage,
   WorkspaceReadContent,
   WorkspaceGitStatus,
@@ -34,6 +32,15 @@ import type {
   DreamFilesPage,
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
+/**
+ * `http/routes/agents.ts` (design §2.1) — CRUD for agent definitions through the
+ * C6 `AgentRepo`. The CP mints the agent UUID (the wire id used across
+ * `route/*`, `agent/*`, `event/session`). Scoped to the caller's org (the
+ * devAuth/OIDC principal). Placement/launch happen over the WS edge — not here.
+ */
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
 import type { GitlabLiveProject } from '../../gitlab/provisioner.js'
 import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import {
@@ -923,6 +930,137 @@ export function agentRoutes(deps: HttpDeps) {
       const daemonId = await deps.placementResolver.servingDaemon(agent)
       return { ...agent, daemonId }
     }
+
+    type MemoryEntryReadOperation = MemoryEntriesReadReq extends infer R
+      ? R extends MemoryEntriesReadReq
+        ? Omit<R, 'agentId'>
+        : never
+      : never
+    const entryError = z.object({
+      error: z.string(),
+      statusCode: z.number(),
+      message: z.string(),
+      code: MemoryEntryErrorCode.optional()
+    })
+    const entryRead = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      id: string,
+      operation: MemoryEntryReadOperation
+    ) => {
+      const agent = await getServingAgent(req, id)
+      if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+      if (!agent.daemonId)
+        return reply.code(503).send({
+          error: 'Service Unavailable',
+          statusCode: 503,
+          message: 'agent has no live daemon',
+          code: 'UNAVAILABLE'
+        })
+      try {
+        const answer = await deps.control.memoryEntriesRead(agent.daemonId, {
+          ...operation,
+          agentId: agent.id
+        } as MemoryEntriesReadReq)
+        if (answer.operation === 'error') {
+          const statuses = {
+            UNSUPPORTED: 501,
+            FORBIDDEN: 403,
+            NOT_FOUND: 404,
+            INVALID_ARGUMENT: 400,
+            CONFLICT: 409,
+            STALE_BINDING: 409,
+            CURSOR_EXPIRED: 410,
+            TOO_LARGE: 413,
+            UNAVAILABLE: 503,
+            AMBIGUOUS_WRITE: 503
+          } as const
+          const status = statuses[answer.code]
+          return reply
+            .code(status)
+            .send({ error: answer.code, statusCode: status, message: answer.message, code: answer.code })
+        }
+        if (answer.operation !== operation.operation) throw new Error('unexpected memory entry reply')
+        return reply.send(answer.result)
+      } catch (err) {
+        const failure = memoryAdminFailure(err)
+        if (failure)
+          return reply
+            .code(failure.status)
+            .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+        throw err
+      }
+    }
+    const entryErrors = Object.fromEntries(
+      [400, 403, 404, 409, 410, 413, 501, 503].map((status) => [status, entryError])
+    )
+    const entryScopeQuery = z.object({ channelKey: z.string().min(1).max(256).optional() }).strict()
+    r.get(
+      '/agents/:id/memory/capabilities',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Describe unified memory entry capabilities',
+          description: 'Reads current authorized provider capabilities through a daemon supporting memory-entries-v1.',
+          operationId: 'getAgentMemoryEntryCapabilities',
+          params: IdParam,
+          querystring: entryScopeQuery,
+          response: { 200: MemoryEntryCapabilities, ...entryErrors }
+        }
+      },
+      (req, reply) => entryRead(req, reply, req.params.id, { operation: 'describe', ...req.query })
+    )
+    r.get(
+      '/agents/:id/memory/entries',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List unified memory entries',
+          description: 'Returns bounded summaries and an opaque continuation. Partial pages do not imply absence.',
+          operationId: 'listAgentMemoryEntries',
+          params: IdParam,
+          querystring: entryScopeQuery.extend({
+            ...MemoryEntryListRequest.shape,
+            limit: z.coerce.number().int().min(1).max(100).default(20)
+          }),
+          response: { 200: MemoryEntryListResult, ...entryErrors }
+        }
+      },
+      (req, reply) => {
+        const { channelKey, ...request } = req.query
+        return entryRead(req, reply, req.params.id, {
+          operation: 'list',
+          ...(channelKey ? { channelKey } : {}),
+          request
+        })
+      }
+    )
+    r.get(
+      '/agents/:id/memory/entries/:ref',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Read unified memory entry content',
+          description:
+            'Reads one bounded content slice by an opaque entry ref. Missing content returns null; changes between slices conflict.',
+          operationId: 'getAgentMemoryEntry',
+          params: IdParam.extend({ ref: MemoryEntryGetRequest.shape.ref }),
+          querystring: entryScopeQuery.extend({
+            ...MemoryEntryGetRequest.omit({ ref: true }).shape,
+            maxBytes: z.coerce.number().int().min(4).max(32768).default(32768)
+          }),
+          response: { 200: MemoryEntryContent.nullable(), ...entryErrors }
+        }
+      },
+      (req, reply) => {
+        const { channelKey, ...request } = req.query
+        return entryRead(req, reply, req.params.id, {
+          operation: 'get',
+          ...(channelKey ? { channelKey } : {}),
+          request: { ...request, ref: req.params.ref }
+        })
+      }
+    )
 
     // A session worktree is part of that session's protected body surface. The
     // caller must pass both the owning-agent gate above and the session's own

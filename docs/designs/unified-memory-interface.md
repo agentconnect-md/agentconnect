@@ -1,6 +1,6 @@
 # Design: Unified Memory Operations and Context
 
-**Status:** Implementation in progress. The common read foundation is implemented; model/admin projections, activation-time catalog delivery, and common mutations remain pending. This design does not change the plugin ABI by itself.
+**Status:** Implementation in progress. The common read foundation is implemented; additive model/admin read projections are implemented; the common console, activation-time catalog delivery, and common mutations remain pending. This design does not change the plugin ABI by itself.
 
 **Related:** [Memory evolution](memory-evolution.md), [managed memory](memory-system-plan.md), [Dream](memory-dreaming.md), [product conventions](../product-conventions.md).
 
@@ -291,11 +291,18 @@ Uniform interface means the same operation means the same thing; it does not mea
 
 Read-foundation implementation notes:
 
-- `protocol/memory-entries.ts` defines strict v1 requests/results. `daemon/memory/entries/` owns authorization rechecks, current-view resolution, opaque references, bounded list/get/context results, and the two adapters. Existing tools, routes and capture policies still use their compatibility paths.
+- `protocol/memory-entries.ts` defines strict v1 requests/results. `daemon/memory/entries/` owns authorization rechecks, current-view resolution, opaque references, bounded list/get/context results, and the two adapters. Legacy tools, routes and capture policies retain their compatibility paths.
 - References use a restart-stable daemon key and a managed tree lineage marker. Initial marker publication is exclusive on local, shim, and CP homes; an older peer that cannot perform that operation fails closed. Clearing/replacing a tree changes its lineage. This primitive provides create-if-absent, not atomic conditional replacement or deletion.
 - Content pages default to 32 KiB and complete encoded results stay within 64 KiB. Durable continuation slots retain unreturned summaries and full v1 backend cursors: 16 slots per agent, at most 2 MiB each, expiring after 30 minutes or earlier eviction. The existing store retention sweep removes expired rows. An expired/evicted cursor never restarts enumeration silently.
 - Managed catalog capture is bounded to 2,048 entries and 16 MiB of topic reads. Captured summaries stay fixed across continuation pages, with deterministic topic order and an inventory digest. The current native-writable filesystem home does **not** certify an atomic store snapshot, so capabilities and results report `live` enumeration. The CP home now supplies transactional file operations, but the common adapter still needs explicit snapshot and strong update/delete integration before advertising those guarantees.
 - Managed context reads index bytes and topic metadata rather than scanning bodies on each request; it reports partial catalog coverage and detects changes across fresh provider instances. External v1 reports unknown freshness/unavailable catalog coverage without automatic enumeration. Delivery of these updates into an already-open runtime session belongs to the projection rollout.
+
+Read-projection implementation notes:
+
+- Additive `describeMemoryEntries`, `listMemoryEntries`, and `getMemoryEntry` tools derive argument descriptors from the strict v1 schemas. They use trusted session/channel or synthetic staging bindings and recheck read authority. Legacy `readMemory`/`writeMemory` and external `getMemory({id})` retain their contracts for warm sessions; no old tool name changes shape.
+- Managed sessions receive all three reads; external sessions receive declared list/get operations and capability discovery. Native/none keep their existing tool sets. Normal, distillation and Dream sessions share the descriptors and scope resolver; refs never substitute for legacy paths or record ids.
+- Additive capabilities/list/get HTTP routes proxy `memory/entries/read/v1` under the current serving daemon epoch and the negotiated `memory-entries-v1` feature. The org/agent read gate runs before dispatch; the daemon rechecks agent ownership. Typed failures retain their codes, including stale binding, cursor expiry and unavailable versus empty/missing results. Older daemons return an explicit unsupported response without receiving an unknown frame.
+- The console still uses its existing file/record browsers; catalog refresh delivery and mutations are not implicitly enabled by read projection.
 
 **Slice B — common mutations and model tools.** Add atomic managed create/update/delete guarantees, honest external capabilities, shared error/receipt mapping, explicit-mutation/capture coordination and schema-derived descriptors. Migrate managed tool prompts and normal/distillation/Dream registration together. New sessions negotiate the new tool contract; already-running sessions retain legacy shapes and dispatch aliases. Aliases invoke the common service where semantics match; legacy file/index behavior remains an explicit managed compatibility adapter. No raw-disk bypass or duplicate writer.
 

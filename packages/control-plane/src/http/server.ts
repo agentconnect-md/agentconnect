@@ -1,3 +1,4 @@
+import { MEMORY_ENTRY_REF_MAX_LENGTH } from '@agentconnect.md/protocol'
 /**
  * `http/server.ts` (design §2.1) — `buildHttpServer(deps)`: the C2 BFF Fastify
  * instance. Installs the zod type provider (validator + bigint-safe serializer),
@@ -69,7 +70,15 @@ import type { CpRouteScope } from '../platforms/provider.js'
 import { controlPlaneOtelFastifyPlugin } from '../observability.js'
 
 export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {}): FastifyInstance {
-  const app = Fastify({ logger: false, ...opts })
+  // Opaque entry refs must reach schema validation instead of failing the router's shorter default limit.
+  const app = Fastify({
+    logger: false,
+    ...opts,
+    routerOptions: {
+      ...opts.routerOptions,
+      maxParamLength: Math.max(opts.routerOptions?.maxParamLength ?? 100, MEMORY_ENTRY_REF_MAX_LENGTH)
+    }
+  })
 
   /**
    * Every registered platform's route plugins for one mount scope

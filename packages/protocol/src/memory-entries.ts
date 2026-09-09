@@ -2,7 +2,8 @@ import { z } from 'zod'
 
 export const MEMORY_ENTRIES_VERSION = 1 as const
 export const MEMORY_ENTRY_FRAME_BYTES = 64 * 1024
-export const MemoryEntryRef = z.string().min(1).max(4096)
+export const MEMORY_ENTRY_REF_MAX_LENGTH = 4096
+export const MemoryEntryRef = z.string().min(1).max(MEMORY_ENTRY_REF_MAX_LENGTH)
 export const MemoryEntryCursor = z.string().min(1).max(2048)
 export const MemoryEntryOperation = z.enum(['list', 'get', 'search', 'create', 'update', 'delete', 'history'])
 export const MemoryEntryCapabilities = z

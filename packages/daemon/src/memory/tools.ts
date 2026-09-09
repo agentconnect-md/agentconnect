@@ -1,3 +1,4 @@
+import { MEMORY_ENTRY_TOOLS, memoryEntryTools } from './entries/tools.js'
 import type { MemoryPluginOperation } from '@agentconnect.md/protocol'
 import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
 
@@ -11,6 +12,7 @@ export const MEMORY_WRITE_NO_APPROVER = `${MEMORY_READ_ONLY_HERE} No one could b
 
 /** The agent's long-term memory tools, for EVERY agent: `<agent-root>/memory/` with a `MEMORY.md` index plus topic files. */
 export const MEMORY_TOOLS: ToolDescriptor[] = [
+  ...MEMORY_ENTRY_TOOLS,
   {
     name: 'readMemory',
     description:
@@ -157,9 +159,12 @@ const EXTERNAL_MEMORY_TOOLS: Readonly<Record<'recall' | 'create' | 'get' | 'upda
 const EXTERNAL_MEMORY_TOOL_OPERATIONS = ['recall', 'create', 'get', 'update', 'delete'] as const
 
 export function externalMemoryTools(capabilities: ReadonlySet<MemoryPluginOperation>): ToolDescriptor[] {
-  return EXTERNAL_MEMORY_TOOL_OPERATIONS.filter((operation) => capabilities.has(operation)).map(
-    (operation) => EXTERNAL_MEMORY_TOOLS[operation]
-  )
+  return [
+    ...memoryEntryTools(capabilities),
+    ...EXTERNAL_MEMORY_TOOL_OPERATIONS.filter((operation) => capabilities.has(operation)).map(
+      (operation) => EXTERNAL_MEMORY_TOOLS[operation]
+    )
+  ]
 }
 
 export const EXTERNAL_MEMORY_TOOL_NAMES = new Set(

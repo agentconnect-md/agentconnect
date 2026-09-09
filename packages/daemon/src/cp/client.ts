@@ -310,6 +310,7 @@ export class CpClient {
       sandboxKeepAlive: deps.sandboxKeepAlive,
       agentWake: deps.agentWake,
       memoryReader: deps.memoryReader,
+      memoryEntriesRead: deps.memoryEntriesRead,
       dreamReader: deps.dreamReader,
       localSkillsReader: deps.localSkillsReader,
       runtimeCommandsReader: deps.runtimeCommandsReader,

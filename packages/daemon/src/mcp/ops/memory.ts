@@ -1,3 +1,4 @@
+import type { LocalStore } from '../../store/local-store.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { SessionContext } from './context.js'
@@ -17,6 +18,7 @@ import { MemoryPathError, MemoryTooLargeError } from '../../memory/store.js'
 export interface MemoryOpsDeps {
   /** The agent memory provider — backs the `readMemory`/`writeMemory` tools.
    *  Universal (every agent has memory), independent of the platform. */
+  memoryEntryStore?: LocalStore
   memory: MemoryProvider
   /** Session-isolation gate for the explicit memory-tool path, by operation (#653): agent memory is
    *  shared across users, so every session may READ it but a private session's WRITE is `ask` — the
@@ -125,6 +127,9 @@ export const DELETE_MEMORY_ARGS = z.object({ id: requiredString('id'), version: 
 /** Every memory tool's access mode, checked before dispatch: reads are universal, writes
  *  are refused for an isolated session (#653). */
 export const MEMORY_TOOL_ACCESS_MODES: Record<string, 'read' | 'write'> = {
+  describeMemoryEntries: 'read',
+  listMemoryEntries: 'read',
+  getMemoryEntry: 'read',
   readMemory: 'read',
   writeMemory: 'write',
   searchMemory: 'read',
@@ -134,7 +139,7 @@ export const MEMORY_TOOL_ACCESS_MODES: Record<string, 'read' | 'write'> = {
   deleteMemory: 'write'
 }
 
-function memoryScopeFor(ctx: SessionContext, deps: MemoryOpsDeps): MemoryScope {
+export function memoryScopeFor(ctx: SessionContext, deps: MemoryOpsDeps): MemoryScope {
   // A pinned binding wins: a synthetic session's own coordinates would resolve to the
   // wrong store for a channel-scoped agent.
   return ctx.memoryBinding?.scope ?? deps.memoryScope?.(ctx) ?? { agentId: ctx.agentId }

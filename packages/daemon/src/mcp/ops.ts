@@ -1,3 +1,9 @@
+import { describeMemoryEntries, listMemoryEntries, getMemoryEntry } from './ops/memory-entries.js'
+import {
+  DESCRIBE_MEMORY_ENTRIES_ARGS,
+  LIST_MEMORY_ENTRIES_ARGS,
+  GET_MEMORY_ENTRY_ARGS
+} from '../memory/entries/tools.js'
 import { z, type ZodType } from 'zod'
 import { MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../memory/tools.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
@@ -186,6 +192,9 @@ export interface OpsDeps
 const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<OpsDeps>>([
   ['shareFile', shareFile],
   ['viewSessionStatus', viewSessionStatus],
+  ['describeMemoryEntries', describeMemoryEntries],
+  ['listMemoryEntries', listMemoryEntries],
+  ['getMemoryEntry', getMemoryEntry],
   ['readMemory', readMemory],
   ['writeMemory', writeMemory],
   ['searchMemory', searchMemory],
@@ -246,6 +255,9 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
  */
 export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['viewSessionStatus', VIEW_SESSION_STATUS_ARGS],
+  ['describeMemoryEntries', DESCRIBE_MEMORY_ENTRIES_ARGS],
+  ['listMemoryEntries', LIST_MEMORY_ENTRIES_ARGS],
+  ['getMemoryEntry', GET_MEMORY_ENTRY_ARGS],
   ['readMemory', READ_MEMORY_ARGS],
   ['writeMemory', WRITE_MEMORY_ARGS],
   ['searchMemory', SEARCH_MEMORY_ARGS],
