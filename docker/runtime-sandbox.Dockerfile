@@ -107,6 +107,40 @@ RUN set -eu; \
   test -x /out/chrome; \
   chmod -R a-w /out
 
+# Standalone runtimes for the full image; their downloads never enter the pool image.
+FROM node:24-bookworm-slim AS full-native-runtimes
+ARG OMP_VERSION=17.0.5
+ARG OMP_SHA256_AMD64=319d08ab8e5fb80c73f734907d5f47aa8bbd4ea31f7a19bacf8611c5aba26c31
+ARG ANTIGRAVITY_VERSION=1.1.1
+ARG ANTIGRAVITY_SHA256_AMD64=38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df
+ARG DEVIN_VERSION=3000.6.14
+ARG DEVIN_SHA256_AMD64=28cf64c1df9f58ccd063fb7e6fd6e9391073c585b733449371485e1ef8a3e6db
+ARG TARGETARCH
+RUN test "${TARGETARCH:-amd64}" = amd64 \
+  && apt-get update \
+  && apt-get install --no-install-recommends -y ca-certificates curl unzip \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /out/bin /out/antigravity
+RUN curl --retry 5 -fsSL -o /tmp/omp \
+  "https://github.com/can1357/oh-my-pi/releases/download/v${OMP_VERSION}/omp-linux-x64" \
+  && printf '%s  /tmp/omp\n' "$OMP_SHA256_AMD64" | sha256sum -c - \
+  && install -m 0555 /tmp/omp /out/bin/omp \
+  && rm /tmp/omp
+RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
+  "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_${ANTIGRAVITY_VERSION}-linux-x86_64.zip" \
+  && printf '%s  /tmp/antigravity.zip\n' "$ANTIGRAVITY_SHA256_AMD64" | sha256sum -c - \
+  && unzip -q /tmp/antigravity.zip -d /out/antigravity \
+  && test -x /out/antigravity/agy_acp_server.par \
+  && test -x /out/antigravity/localharness_external \
+  && chmod -R a-w /out/antigravity \
+  && rm /tmp/antigravity.zip
+RUN curl --retry 5 -fsSL -o /tmp/devin.tar.gz \
+  "https://static.devin.ai/cli/${DEVIN_VERSION}/devin-${DEVIN_VERSION}-x86_64-unknown-linux.tar.gz" \
+  && printf '%s  /tmp/devin.tar.gz\n' "$DEVIN_SHA256_AMD64" | sha256sum -c - \
+  && tar -xzf /tmp/devin.tar.gz -C /tmp bin/devin \
+  && install -m 0555 /tmp/bin/devin /out/bin/devin \
+  && rm -rf /tmp/devin.tar.gz /tmp/bin
+
 # ─────────────────────────────── runtime ────────────────────────────────────
 FROM node:24-bookworm-slim AS runtime-base
 
@@ -271,6 +305,7 @@ RUN mkdir -p /run/agentconnect \
 # it by PROBING a sandbox for it (the shim's probe channel), and compiling it in would tie
 # the image pin to the daemon version, which is the coupling this seam exists to avoid.
 COPY docker/runtime-sandbox/generate-runtime-table.mjs /opt/agentconnect/bin/generate-runtime-table.mjs
+COPY docker/runtime-sandbox/installed-runtimes.json /opt/agentconnect/runtime/installed-runtimes.json
 # Probed AS THE RUNTIME USER, in a throwaway HOME and cwd that are deleted afterwards. Two reasons,
 # both learned from getting it wrong: a table probed as root describes an identity production never
 # uses, and the probe leaves state behind — a root-run probe left root-owned .claude/.codex in
@@ -308,16 +343,43 @@ USER 10001:10001
 # the runtime only after the channel is bound.
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentconnect/shim/index.js"]
 
-# Self-hosted daemon VMs extend the shared runtime layer with native shields and Docker.
+# Self-hosted daemon VMs add the broader runtime catalog, native shields and Docker.
 FROM runtime-base AS runtime-sandbox-full
 USER root
+ARG CLINE_VERSION=3.0.61
+ARG PI_ACP_VERSION=0.0.33
+ARG PI_VERSION=0.80.6
+ARG OPENCODE_VERSION=1.17.18
+ARG QWEN_CODE_VERSION=0.23.1
+ARG COPILOT_VERSION=1.0.83
+ARG GROK_VERSION=1.0.24
+ARG QODER_VERSION=1.1.14
+ARG QODER_CN_VERSION=1.1.2
 ARG DOCKER_VERSION=5:29.8.0-1~debian.12~bookworm
 ARG CONTAINERD_VERSION=2.3.5-1~debian.12~bookworm
 ARG DOCKER_BUILDX_VERSION=0.37.0-1~debian.12~bookworm
 ARG DOCKER_COMPOSE_VERSION=5.5.1-1~debian.12~bookworm
 RUN apt-get update \
-  && apt-get install --no-install-recommends -y bubblewrap socat \
+  && apt-get install --no-install-recommends -y bubblewrap socat ripgrep \
   && rm -rf /var/lib/apt/lists/*
+
+# pi-acp delegates to the separately installed pi CLI; all launches use local executables.
+RUN export HOME=/root \
+  && npm install --global --no-fund --no-audit \
+    "cline@${CLINE_VERSION}" \
+    "pi-acp@${PI_ACP_VERSION}" "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    "opencode-ai@${OPENCODE_VERSION}" \
+    "@qwen-code/qwen-code@${QWEN_CODE_VERSION}" \
+    "@github/copilot@${COPILOT_VERSION}" \
+    "@xai-official/grok@${GROK_VERSION}" \
+    "@qoder-ai/qodercli@${QODER_VERSION}" "@qodercn-ai/qoderclicn@${QODER_CN_VERSION}" \
+  && npm cache clean --force
+COPY --from=full-native-runtimes --chown=0:0 /out/bin/ /usr/local/bin/
+# Antigravity resolves its local harness relative to the ACP executable.
+COPY --from=full-native-runtimes --chown=0:0 /out/antigravity/ /opt/agentconnect/runtimes/antigravity/
+RUN printf '%s\n' '#!/bin/sh' \
+  'exec /opt/agentconnect/runtimes/antigravity/agy_acp_server.par "$@"' > /usr/local/bin/antigravity-acp \
+  && chmod 0555 /usr/local/bin/antigravity-acp
 
 # Docker's signed Debian repository supplies exact versions; the image never starts dockerd automatically.
 RUN install -m 0755 -d /etc/apt/keyrings \
@@ -338,6 +400,18 @@ RUN usermod --append --groups docker agent \
   && printf 'agent ALL=(root) NOPASSWD: /usr/bin/dockerd\n' > /etc/sudoers.d/agent-dockerd \
   && chmod 0440 /etc/sudoers.d/agent-dockerd \
   && visudo --check --file /etc/sudoers.d/agent-dockerd
+
+# Rebuild the declared table from the full image's explicitly installed runtime catalog.
+COPY docker/runtime-sandbox/installed-runtimes-full.json /opt/agentconnect/runtime/installed-runtimes.json
+USER 10001:10001
+RUN mkdir -p /tmp/ac-probe/home /tmp/ac-probe/cwd \
+  && HOME=/tmp/ac-probe/home AC_PROBE_CWD=/tmp/ac-probe/cwd \
+    node /opt/agentconnect/bin/generate-runtime-table.mjs /tmp/ac-probe/k8s-runtimes.json
+USER root
+RUN mv /tmp/ac-probe/k8s-runtimes.json /opt/agentconnect/runtime/k8s-runtimes.json \
+  && rm -rf /tmp/ac-probe \
+  && chown -R root:root /opt/agentconnect/runtime \
+  && chmod -R a-w /opt/agentconnect/runtime
 USER 10001:10001
 
 # Keep the pool image as the default build target.

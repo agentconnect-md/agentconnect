@@ -12,18 +12,11 @@
 //
 // Run twice: at build time to produce the artifact, and in CI against the built image to compare.
 import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-/** Runtime ids this image provides and the executable (plus args) each is launched as. */
-const PROVIDED = [
-  { id: 'claude-acp', bin: 'claude-agent-acp' },
-  { id: 'codex-acp', bin: 'codex-acp' },
-  // The curated catalog launches this one through npx; here it is the image's own executable,
-  // which is what makes it admissible at all under --k8s (runtimes/k8s-runtimes.ts).
-  { id: 'dsh-acp', bin: 'dsh-acp' }
-]
+const INSTALLED_RUNTIMES_PATH = '/opt/agentconnect/runtime/installed-runtimes.json'
 
 const PROBE_TIMEOUT_MS = 60_000
 
@@ -46,6 +39,16 @@ async function probe(bin, args = []) {
   // root-owned .claude/.codex state in /agent that the runtime user could not then write.
   const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'ignore'], env: process.env, cwd: PROBE_CWD })
   const replies = new Map()
+  let failure
+  child.on('error', (error) => {
+    failure = error
+  })
+  child.stdin.on('error', (error) => {
+    failure ??= error
+  })
+  child.on('close', (code, signal) => {
+    failure ??= new Error(`${bin} exited before answering ACP (code ${code}, signal ${signal})`)
+  })
   let buffered = ''
   child.stdout.on('data', (chunk) => {
     buffered += chunk.toString('utf8')
@@ -74,6 +77,7 @@ async function probe(bin, args = []) {
         throw failure
       }
       if (reply) return reply.result
+      if (failure) throw failure
       if (Date.now() > deadline) throw new Error(`${bin} did not answer ${method} within ${PROBE_TIMEOUT_MS}ms`)
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
@@ -118,29 +122,51 @@ function stable(value) {
   return value
 }
 
-export async function buildTable() {
+export async function buildTable(provided = JSON.parse(readFileSync(INSTALLED_RUNTIMES_PATH, 'utf8'))) {
+  if (!Array.isArray(provided) || provided.length === 0) throw new Error('the image declares no installed runtimes')
+  const ids = new Set()
+  for (const entry of provided) {
+    if (
+      !entry ||
+      typeof entry.id !== 'string' ||
+      !entry.id ||
+      typeof entry.command !== 'string' ||
+      !entry.command ||
+      !Array.isArray(entry.args ?? []) ||
+      !(entry.args ?? []).every((arg) => typeof arg === 'string')
+    ) {
+      throw new Error('invalid installed runtime entry')
+    }
+    if (ids.has(entry.id)) throw new Error(`duplicate installed runtime id: ${entry.id}`)
+    ids.add(entry.id)
+  }
   const runtimes = []
-  for (const entry of PROVIDED) {
-    const { initialized, session, sessionProbe } = await probe(entry.bin, entry.args ?? [])
+  for (const entry of provided) {
+    const { initialized, session, sessionProbe } = await probe(entry.command, entry.args ?? [])
     const version = initialized?.agentInfo?.version
-    if (typeof version !== 'string' || version.length === 0) {
-      throw new Error(`${entry.bin} reported no agentInfo.version at initialize`)
+    const protocolVersion = initialized?.protocolVersion
+    if (!Number.isInteger(protocolVersion) || protocolVersion < 0) {
+      throw new Error(`${entry.command} reported no valid ACP protocol version at initialize`)
+    }
+    const capabilities = initialized.agentCapabilities
+    if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) {
+      throw new Error(`${entry.command} reported no ACP capabilities object at initialize`)
     }
     runtimes.push({
       id: entry.id,
-      version,
+      ...(typeof version === 'string' && version.length > 0 ? { version } : {}),
       // The executable, published rather than merely used: the daemon cannot see this filesystem,
       // and without it operators had to restate the mapping in daemon config — a claim about an
       // image made somewhere the image is not.
-      command: entry.bin,
+      command: entry.command,
       args: [...(entry.args ?? [])],
       // The ACP snapshot: what the daemon can state about this runtime without probing it, and
       // what CI compares a fresh probe against.
       acp: stable({
-        protocolVersion: initialized.protocolVersion ?? null,
-        agentName: initialized.agentInfo?.name ?? null,
+        protocolVersion,
+        ...(typeof initialized.agentInfo?.name === 'string' ? { agentName: initialized.agentInfo.name } : {}),
         authMethods: (initialized.authMethods ?? []).map((method) => method?.id ?? method?.name ?? String(method)),
-        capabilities: initialized.agentCapabilities ?? {},
+        capabilities,
         modes: (session?.modes?.availableModes ?? []).map((mode) => mode.id).sort(),
         // The model/permission/effort surface the console renders. Ids, categories and option
         // values only — the prose descriptions would make the table churn on every wording change.

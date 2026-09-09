@@ -14,6 +14,7 @@
  * its own manifests, but wrong about what runs, still fails.
  */
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { builtinModules } from 'node:module'
 
 import { diffRuntimeTables } from './runtime-table-diff.mjs'
@@ -263,12 +264,37 @@ check('the published runtime table matches a fresh ACP probe of this image', () 
   if (!Array.isArray(table.runtimes) || table.runtimes.length === 0) {
     throw new Error('the table declares no runtimes, so the daemon would advertise none')
   }
+  const expected = JSON.parse(
+    readFileSync(
+      new URL(
+        `../docker/runtime-sandbox/installed-runtimes${variant === 'runtime-sandbox-full' ? '-full' : ''}.json`,
+        import.meta.url
+      ),
+      'utf8'
+    )
+  )
+  const declaredIds = table.runtimes.map((entry) => entry.id).sort()
+  const expectedIds = expected.map((entry) => entry.id).sort()
+  if (JSON.stringify(declaredIds) !== JSON.stringify(expectedIds)) {
+    throw new Error(`${variant} runtime ids: expected ${expectedIds.join(', ')}, got ${declaredIds.join(', ')}`)
+  }
   for (const entry of table.runtimes) {
+    const installed = expected.find((runtime) => runtime.id === entry.id)
+    if (
+      entry.command !== installed.command ||
+      JSON.stringify(entry.args ?? []) !== JSON.stringify(installed.args ?? [])
+    ) {
+      throw new Error(`${entry.id} does not use the executable and arguments declared for ${variant}`)
+    }
     if (typeof entry.acp?.protocolVersion !== 'number') {
       throw new Error(`${entry.id} has no ACP protocol version, so the snapshot is not from initialize`)
     }
-    if (!entry.acp.capabilities || Object.keys(entry.acp.capabilities).length === 0) {
-      throw new Error(`${entry.id} publishes no ACP capabilities`)
+    if (
+      !entry.acp.capabilities ||
+      typeof entry.acp.capabilities !== 'object' ||
+      Array.isArray(entry.acp.capabilities)
+    ) {
+      throw new Error(`${entry.id} publishes no ACP capabilities object`)
     }
   }
   const { failures: drift, warnings: rosters } = diffRuntimeTables(table, JSON.parse(fresh))
@@ -278,7 +304,9 @@ check('the published runtime table matches a fresh ACP probe of this image', () 
     // Field by field, because the previous id@version list printed two identical strings for the drift it caught.
     throw new Error(`the shipped table differs from a fresh probe — ${drift.join('; ')}`)
   }
-  return table.runtimes.map((entry) => `${entry.id}@${entry.version} acp/${entry.acp.protocolVersion}`).join(' ')
+  return table.runtimes
+    .map((entry) => `${entry.id}${entry.version ? `@${entry.version}` : ''} acp/${entry.acp.protocolVersion}`)
+    .join(' ')
 })
 
 // Asserted against the BUILT image because the preset is generated from whatever adapter the build

@@ -322,15 +322,27 @@ reference. It names the current release's `runtime-sandbox-full:v<version>` alia
 The image workflow creates this alias even when it reuses an older component
 image. The pool continues to use the separate `runtime-sandbox` image. Both targets
 share a base stage with the toolchain, browser, ACP runtimes, and shim. Additional
-self-hosted runtimes and development toolchains belong in the full target, which
-already adds the daemon-specific tools.
+self-hosted runtimes belong in the full target. The pool provides Claude Code,
+Codex, and DeepSeek Harness. The full image additionally installs Antigravity,
+Cline, Devin, GitHub Copilot, Grok Build, Oh My Pi, OpenCode, pi, Qwen Code,
+Qoder CLI, and Qoder CN CLI. The legacy `qoder` catalog ID uses the same Qoder
+CLI executable as `qoder-cli`. pi includes both its ACP adapter and the underlying
+CLI. Packages are version-pinned; standalone downloads also pin their SHA-256.
+
+Each image bakes an explicit runtime roster and generates its own runtime table
+by probing the installed executables as the ordinary runtime user, without
+provider credentials. Missing executables fail the build instead of silently
+reducing the roster. Installing a runtime does not establish a host login or
+make it a discovery candidate; credential discovery still governs that list.
+General development toolchain expansion can follow independently.
 The daemon package is published before image finalization; the matching
 image workflow must complete before this default can be pulled. A missing image
 fails preflight rather than selecting another version.
 Runtime-image input changes also trigger daemon package publication so its
 bundled default follows the updated image.
 The release images are currently Linux amd64; an arm64 daemon must configure
-a compatible image explicitly.
+a compatible image explicitly. The full image's Antigravity binary requires
+AVX in the guest CPU; amd64 emulation without AVX cannot run that runtime.
 
 An explicit daemon image overrides this metadata. Development builds remove
 release metadata and require an explicit image; they do not derive a default
