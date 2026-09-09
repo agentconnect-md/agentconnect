@@ -6685,6 +6685,27 @@ export class Daemon {
     this.seenMsgIds.add(seenMsgId)
     if (this.seenMsgIds.size > 2000) this.seenMsgIds.clear()
 
+    // A typed elicitation answer is an ANSWER, never a prompt: a reply to the box one of this
+    // conversation's live cards opened settles that card and stops here, before thread
+    // canonicalization would read it as continuing the session and before command parsing would
+    // read `!stop` typed into the box as a control. No-op on every surface that asks for no typing.
+    // Human traffic only: an agent bot replying in the same chat takes its own ladder below, and
+    // an agent answering another agent's question is not what "anyone who can see it" meant.
+    if (
+      !agentAuthored &&
+      (await this.permissions.claimElicitReply({
+        // Qualified by the receiving bot, or a reply in one person's DM with bot B could settle a
+        // card bot A is holding — those two DMs share a chat id and its message numbers.
+        conversation: transcriptChannelKey(msg.channel, msg.transportScope),
+        ...(msg.replyTo !== undefined ? { replyTo: msg.replyTo } : {}),
+        text: msg.text,
+        actor: { userId: msg.sender.id }
+      }))
+    ) {
+      this.log.debug(`routing: ${msg.msgId} answered an elicitation card`)
+      return { kind: 'rejected', reason: 'suppressed' }
+    }
+
     // Telegram reply-based session threading: derive the session thread from the reply
     // chain BEFORE command parsing / routing, so both see the canonical thread (an
     // @mention opens a fresh session; a reply to any message already in a session

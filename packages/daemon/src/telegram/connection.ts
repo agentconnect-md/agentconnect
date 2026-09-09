@@ -123,6 +123,12 @@ export interface TelegramDeps {
 /** grammY's `InlineKeyboardMarkup` slice we build. */
 type InlineKeyboardMarkup = { inline_keyboard: { text: string; callback_data: string }[][] }
 
+/** grammY's `ForceReply`: the client opens its compose box already aimed at this message, so the
+ *  reader types straight into it and the reply carries `reply_to_message` back. It is the closest
+ *  thing a Bot API chat has to an input box, and it is a `reply_markup` of its own — a message
+ *  carries a keyboard OR a force-reply, never both. */
+type ForceReply = { force_reply: true; input_field_placeholder?: string }
+
 /** The raw grammY `callback_query` slice the connection reads. */
 export interface TelegramCallbackQuery {
   id: string
@@ -153,7 +159,7 @@ export interface TelegramApi {
       message_thread_id?: number
       parse_mode?: string
       reply_parameters?: { message_id: number; allow_sending_without_reply?: boolean }
-      reply_markup?: InlineKeyboardMarkup
+      reply_markup?: InlineKeyboardMarkup | ForceReply
     }
   ): Promise<{ message_id: number }>
   editMessageText(
@@ -162,6 +168,7 @@ export interface TelegramApi {
     text: string,
     opts?: { parse_mode?: string; reply_markup?: InlineKeyboardMarkup }
   ): Promise<unknown>
+  deleteMessage(chatId: number | string, messageId: number): Promise<unknown>
   /** The two outbound file forms. An image previews inline through sendPhoto; sendDocument
    *  takes everything else and is the only form that preserves the bytes exactly. */
   sendPhoto(
@@ -514,6 +521,59 @@ export class TelegramConnection implements PlatformConnection {
         this.deps.log?.debug(
           `telegram: editMessageText (card) failed (ch=${channel} id=${messageId}): ${(err as Error).message}`
         )
+      }
+    })
+  }
+
+  /**
+   * Post a message the reader answers by TYPING: a `force_reply`, which opens their compose box
+   * aimed at it, so the reply comes back carrying this message's id. The nearest thing a Telegram
+   * chat has to an input box. Best-effort; returns the new message id so the prompt can be closed
+   * once it has been answered.
+   */
+  async postPrompt(
+    channel: string,
+    text: string,
+    opts: { threadTs?: string; replyTo?: number; placeholder?: string } = {}
+  ): Promise<string | undefined> {
+    const thread = opts.threadTs != null && /^\d+$/.test(opts.threadTs) ? Number(opts.threadTs) : undefined
+    return this.queue.enqueue(async () => {
+      try {
+        const res = await this.bot.api.sendMessage(channel, text, {
+          ...(thread !== undefined ? { message_thread_id: thread } : {}),
+          ...(opts.replyTo !== undefined
+            ? { reply_parameters: { message_id: opts.replyTo, allow_sending_without_reply: true } }
+            : {}),
+          reply_markup: {
+            force_reply: true,
+            ...(opts.placeholder ? { input_field_placeholder: opts.placeholder } : {})
+          }
+        })
+        return res?.message_id != null ? String(res.message_id) : undefined
+      } catch (err) {
+        this.deps.log?.debug(`telegram: sendMessage (prompt) failed (ch=${channel}): ${(err as Error).message}`)
+        return undefined
+      }
+    })
+  }
+
+  /**
+   * Retire one of the bot's own messages ({@link PlatformConnection.deleteMessage}). The only
+   * supported way to take back a `force_reply`: Telegram edits only messages carrying no markup or
+   * an inline keyboard, so an edit aimed at a prompt is refused — and a refused edit leaves a
+   * reader typing into a question that is over. Best-effort: false when the API refused it, which
+   * a message past its own delete window will.
+   */
+  async deleteMessage(channel: string, ts: string): Promise<boolean> {
+    const messageId = Number(ts)
+    if (!Number.isInteger(messageId)) return false
+    return await this.queue.enqueue(async () => {
+      try {
+        await this.bot.api.deleteMessage(channel, messageId)
+        return true
+      } catch (err) {
+        this.deps.log?.debug(`telegram: deleteMessage failed (ch=${channel} id=${ts}): ${(err as Error).message}`)
+        return false
       }
     })
   }

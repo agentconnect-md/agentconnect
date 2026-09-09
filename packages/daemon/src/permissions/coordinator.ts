@@ -32,6 +32,7 @@ import type {
   ElicitCardHandle,
   ElicitCardHost,
   ElicitCardMark,
+  ElicitCardReply,
   ElicitCardSettlement
 } from '../platforms/elicit-card.js'
 import {
@@ -127,7 +128,14 @@ interface ClosedGate {
  *  appends a second stream event. The chat arm names no platform — the facet does, and the
  *  handle's three fields are the coordinates BOTH chat surfaces identify a posted card by. */
 type PendingElicitSurface =
-  | ({ surface: 'chat'; facet: ElicitCardFacet } & ElicitCardHandle)
+  | ({
+      surface: 'chat'
+      facet: ElicitCardFacet
+      /** The conversation a typed answer must have been written in, qualified by the bot that owns
+       *  the card (`plan.transcriptChannel`). `channel` is the bare platform channel a rewrite is
+       *  addressed to, which cannot tell two bots apart in one person's DMs. */
+      answerConv: string
+    } & ElicitCardHandle)
   | { surface: 'webchat'; wc: NonNullable<Pending['webchat']> }
 
 /** What the surface a card was posted to renders — re-deriving its target has to ask the same
@@ -1544,6 +1552,7 @@ export class PermissionCoordinator {
       facet,
       conn: p.conn,
       channel: p.plan.channel,
+      answerConv: p.plan.transcriptChannel,
       // An MCP approval keeps its durable record in `permission_requests` and its own console
       // surface, so it is not also a transcript card.
       ...(isApproval
@@ -1980,6 +1989,40 @@ export class PermissionCoordinator {
     }
     if (folded.kind === 'pending') return
     await this.submitElicitForm({ requestId: a.requestId, fields: folded.fields, ...actor })
+  }
+
+  /**
+   * Offer one typed message to the live cards of its own conversation, answering the first that
+   * claims it. True ⇒ it WAS an answer and must never also reach the agent as a prompt.
+   *
+   * A surface with no typed control claims nothing, so this is a no-op on every chat but the one
+   * that asked someone to type. Where it does claim, the reply is validated by the same
+   * {@link submitElicitForm} a Confirm goes through — a number that is not a number, a string
+   * breaking its own `pattern`, are refused with the field's own words and the card left live.
+   *
+   * The claim is per CARD, never per person: anyone who can see a card may answer it, which is the
+   * same rule its buttons follow. What keeps one answer to one card is the message it replies TO.
+   */
+  async claimElicitReply(reply: ElicitCardReply & { actor?: InteractionActor }): Promise<boolean> {
+    if (reply.replyTo === undefined) return false
+    for (const [requestId, rec] of this.pendingElicits) {
+      if (rec.surface !== 'chat' || !rec.facet.claimReply || !rec.form) continue
+      // Matched on the BOT-QUALIFIED conversation, never the bare channel: a person's DMs with two
+      // Telegram bots share one chat id and one message-number sequence, so a bare channel would
+      // let a reply to bot B's prompt settle bot A's card — and suppress B's own delivery with it.
+      if (rec.answerConv !== reply.conversation) continue
+      const form = this.cardForm(rec)
+      if (!form) continue
+      const claimed = rec.facet.claimReply(rec, { requestId, params: rec.params, form }, reply)
+      if (!claimed || claimed.kind !== 'submit') continue
+      await this.submitElicitForm({
+        requestId,
+        fields: claimed.fields,
+        ...(reply.actor ? { actor: reply.actor } : {})
+      })
+      return true
+    }
+    return false
   }
 
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
