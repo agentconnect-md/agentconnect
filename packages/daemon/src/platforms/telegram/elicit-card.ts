@@ -360,14 +360,20 @@ export function telegramElicitPromptButtons(requestId: string): InlineButton[][]
 }
 
 /** What a form card says while ONE of its fields is open: the question it belongs to, then that
- *  field's own label and whatever the field has to say for itself. Pure. */
+ *  field's own label and whatever the field has to say for itself.
+ *
+ *  The tail is inside the same budget the question is, and the QUESTION yields — a field's label
+ *  plus its hint runs past 2000 characters where the limit is 4096, so appending them to an
+ *  already-clamped question would make the EDIT too long, and a refused edit leaves the reader
+ *  looking at the overview with no way into the field they just opened. Pure. */
 export function telegramElicitFieldText(
   message: string,
   target: ElicitTarget,
   params: CreateElicitationRequest
 ): string {
   const hint = elicitFormFieldHint(target)
-  return `${telegramElicitText(message)}\n${elicitFormFieldLabel(params, target)}${hint ? ` — ${hint}` : ''}`
+  const tail = `${elicitFormFieldLabel(params, target)}${hint ? ` — ${hint}` : ''}`
+  return `${telegramElicitText(clampTo(message, Math.max(0, TELEGRAM_ELICIT_MESSAGE_CAP - tail.length - 1)))}\n${tail}`
 }
 
 /** What the prompt message says above the reader's own compose box: the question again, because a
@@ -433,7 +439,15 @@ function telegramFoldForm(
       telegramElicitFormButtons(card.requestId, card.params, card.form, state.values)
     )
   }
-  if (token === TELEGRAM_ELICIT_BACK) return overview()
+  if (token === TELEGRAM_ELICIT_BACK) {
+    // Done on a multi-select the reader opened and ticked nothing in is an EXPLICIT empty
+    // selection, which a field with no `minItems` accepts — so it is recorded as one. Without
+    // this the reader is told the field is required and has to discover that ticking an option
+    // and unticking it produces the very same answer. A field never OPENED stays omitted.
+    const open = state.open === undefined ? undefined : card.form[state.open]
+    if (open?.kind === 'multi-enum' && state.values[state.open!] === undefined) state.values[state.open!] = []
+    return overview()
+  }
   if (token === TELEGRAM_ELICIT_CONFIRM) {
     const fields: Record<string, string | string[]> = {}
     for (const [i, value] of state.values.entries()) {

@@ -20,6 +20,7 @@ import {
   telegramCardShape,
   telegramElicitCheckboxes,
   telegramElicitData,
+  telegramElicitFieldText,
   telegramElicitFieldToken,
   telegramElicitFormText,
   telegramElicitDataFits,
@@ -706,6 +707,46 @@ describe('a Telegram form of several questions is filled in over one keyboard', 
 
     await tap(h, requestId, 'ok')
     await expect(result).resolves.toEqual({ action: 'accept', content: { other: 'release/2.4' } })
+  })
+
+  it('keeps a long question and its whole field heading inside one Telegram message', () => {
+    // The EDIT is what would be refused, and a refused edit leaves the reader looking at the
+    // overview with no way into the field they just opened.
+    const target = {
+      propName: 'checks',
+      kind: 'multi-enum' as const,
+      options: [{ value: 'lint', label: 'lint' }],
+      description: 'd'.repeat(300),
+      minItems: 1
+    }
+    const text = telegramElicitFieldText('q'.repeat(4000), target, form(CHECKS))
+    expect([...text].length).toBeLessThanOrEqual(4096)
+    // The question yields, never the heading: it is what says which field is open.
+    expect(text).toContain('Select at least 1.')
+  })
+
+  it('records Done on an untouched multi-select as the empty selection it is', async () => {
+    const h = telegramTurn()
+    const optional = { checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test'] } } }
+    const { requestId, result } = await raise(h, form({ ...BRANCH, ...optional }, ['branch', 'checks']))
+    await tap(h, requestId, telegramElicitFieldToken(0))
+    await tap(h, requestId, telegramElicitFieldToken(0, 0))
+    // Opened, nothing ticked, Done — a field with no `minItems` accepts that, and the reader
+    // should not have to tick an option and untick it to say so.
+    await tap(h, requestId, telegramElicitFieldToken(1))
+    await tap(h, requestId, 'bk')
+    expect(rows(h)).toEqual(['Base branch: main', 'checks: none', 'Confirm'])
+    await tap(h, requestId, 'ok')
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main', checks: [] } })
+  })
+
+  it('leaves a field the reader never OPENED omitted, not emptied', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form(TWO, ['branch']))
+    await tap(h, requestId, telegramElicitFieldToken(0))
+    await tap(h, requestId, telegramElicitFieldToken(0, 0))
+    await tap(h, requestId, 'ok')
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
   })
 
   it('refuses a field or an option the card never offered', async () => {
