@@ -42,6 +42,8 @@ import {
 import type { HostKey } from './host-key.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
+import { STEERING_METHOD, parseSteeringOutcome, steeringRequestParams, steeringSupported } from './steering.js'
+import type { SteeringIdleBehavior, SteeringOutcome } from './steering.js'
 
 // The raw session config-option shapes (from the ACP SDK), re-exported so
 // sessionConfigOptions() consumers can type the option tree without importing
@@ -158,6 +160,7 @@ export interface SessionConfigPrefs {
 // The launch shape lives with the driver that consumes it; re-exported here because
 // this module is where callers have always imported it from.
 export type { AcpSandboxLaunch, SpawnDriver, SpawnedRuntime } from './spawn-driver.js'
+export type { SteeringIdleBehavior, SteeringOutcome } from './steering.js'
 
 /** The `session/set_config_option` call that applies a desired value, or the reason none is needed. */
 export type ConfigSelectionPlan = { configId: string; value: string } | { skip: string }
@@ -509,6 +512,8 @@ export class AcpHost {
   // This is capability-gated because older ACP adapters reject the field.
   private canUseAdditionalDirectories = false
   private canDelete = false
+  // whether the agent advertised mid-turn steering (`_meta.steering.supported`) at initialize.
+  private canSteer = false
   // prompt content-block variants the agent opted into at initialize. text +
   // resource_link are always baseline; image/audio/embeddedContext are gated.
   private promptCaps: { image?: boolean; audio?: boolean; embeddedContext?: boolean } = {}
@@ -824,6 +829,7 @@ export class AcpHost {
     this.canUseAdditionalDirectories = init.agentCapabilities?.sessionCapabilities?.additionalDirectories != null
     this.canDelete = init.agentCapabilities?.sessionCapabilities?.delete != null
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
+    this.canSteer = steeringSupported(init._meta)
     const mcp = init.agentCapabilities?.mcpCapabilities
     this.mcpCaps = {
       http: mcp?.http ?? false,
@@ -838,7 +844,7 @@ export class AcpHost {
         }
       : undefined
     this.opts.log?.debug(
-      `acp: agent initialized (${this.agentInfo?.name ?? 'agent'}${this.agentInfo?.version ? ` v${this.agentInfo.version}` : ''}, loadSession=${this.canLoad}, additionalDirectories=${this.canUseAdditionalDirectories}, prompt caps: image=${!!this.promptCaps.image} audio=${!!this.promptCaps.audio} embeddedContext=${!!this.promptCaps.embeddedContext}, mcp: http=${this.mcpCaps.http} sse=${this.mcpCaps.sse})`
+      `acp: agent initialized (${this.agentInfo?.name ?? 'agent'}${this.agentInfo?.version ? ` v${this.agentInfo.version}` : ''}, loadSession=${this.canLoad}, additionalDirectories=${this.canUseAdditionalDirectories}, steering=${this.canSteer}, prompt caps: image=${!!this.promptCaps.image} audio=${!!this.promptCaps.audio} embeddedContext=${!!this.promptCaps.embeddedContext}, mcp: http=${this.mcpCaps.http} sse=${this.mcpCaps.sse})`
     )
   }
 
@@ -1192,6 +1198,29 @@ export class AcpHost {
 
   async cancel(sessionId: string): Promise<void> {
     await this.conn!.agent.notify(methods.agent.session.cancel, { sessionId })
+  }
+
+  /** Whether the runtime accepts `_session/steering` — read once from `initialize`. */
+  steeringSupported(): boolean {
+    return this.canSteer
+  }
+
+  /** Inject `blocks` into a session's RUNNING turn over `_session/steering`. `failed` when the
+   *  runtime never advertised steering or the session is not live here, otherwise the runtime's
+   *  own outcome; a transport error propagates so the caller can fall back to queueing. */
+  async steer(
+    sessionId: string,
+    blocks: ContentBlock[],
+    opts: { idleBehavior?: SteeringIdleBehavior } = {}
+  ): Promise<SteeringOutcome> {
+    if (!this.canSteer || !this.live.has(sessionId)) return 'failed'
+    const res = await this.conn!.agent.request<unknown>(
+      STEERING_METHOD,
+      steeringRequestParams(sessionId, blocks, opts.idleBehavior)
+    )
+    const outcome = parseSteeringOutcome(res)
+    this.opts.log?.debug(`acp: steer into ${sessionId} → ${outcome}`)
+    return outcome
   }
 
   /** Delete persisted adapter state when supported, then release local ownership. */

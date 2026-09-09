@@ -790,3 +790,47 @@ describe('AcpHost elicitation capabilities', () => {
     await host.stop()
   })
 })
+
+describe('AcpHost steering (`_session/steering` against the fake agent)', () => {
+  it('reads the capability from initialize `_meta` and never calls a runtime that lacks it', async () => {
+    const host = new AcpHost({ command: process.execPath, args: [fakeAgent], env: [] }, { onUpdate: () => {} })
+    await host.start()
+    expect(host.steeringSupported()).toBe(false)
+    const sessionId = await host.newSession('/tmp')
+    // The fixture answers the method with "not found" when steering is off; the host must not send it.
+    await expect(host.steer(sessionId, [{ type: 'text', text: 'x' }])).resolves.toBe('failed')
+    await host.stop()
+  })
+
+  it('reports the runtime outcome: declined on an idle session under promptRequired, injected into a running turn', async () => {
+    const chunks: string[] = []
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: (_sid, update) => {
+          if (update.sessionUpdate === 'agent_message_chunk' && (update as any).content?.type === 'text')
+            chunks.push((update as any).content.text)
+        },
+        env: { AC_STEERING: '1', AC_STEER_HOLD_PROMPT: '1' }
+      }
+    )
+    await host.start()
+    expect(host.steeringSupported()).toBe(true)
+    const sessionId = await host.newSession('/tmp')
+    // Idle session: `promptRequired` makes the runtime decline instead of opening a turn.
+    await expect(
+      host.steer(sessionId, [{ type: 'text', text: 'early' }], { idleBehavior: 'promptRequired' })
+    ).resolves.toBe('failed')
+    // A session this host does not own is declined locally.
+    await expect(host.steer('not-mine', [{ type: 'text', text: 'x' }])).resolves.toBe('failed')
+
+    // Running turn: the fixture holds the prompt open until a steer lands in it.
+    const turn = host.prompt(sessionId, [{ type: 'text', text: 'start' }])
+    await expect(
+      host.steer(sessionId, [{ type: 'text', text: 'and also this' }], { idleBehavior: 'promptRequired' })
+    ).resolves.toBe('injected')
+    await expect(turn).resolves.toMatchObject({ stopReason: 'end_turn' })
+    expect(chunks).toContain('steer:and also this')
+    await host.stop()
+  })
+})

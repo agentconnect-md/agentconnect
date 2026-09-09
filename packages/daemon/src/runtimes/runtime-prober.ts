@@ -130,6 +130,9 @@ export interface RuntimeProbeResult {
   /** Optional MCP transports advertised at `initialize` (stdio is baseline).
    *  Undefined if the probe failed — callers then assume stdio-only. */
   mcpCapabilities?: McpTransportCapabilities
+  /** Whether the agent advertised mid-turn steering (`_meta.steering.supported`) at
+   *  `initialize`. Undefined if the probe failed or the host predates the accessor. */
+  steering?: boolean
   /** RAW session config options of the probe session (unaugmented, as the agent
    *  advertised them at `session/new`) — seeds the model-catalog cache with the
    *  default model's effort/fast caps and the runtime-level permission modes.
@@ -603,10 +606,11 @@ export async function probeRuntime(
     const mcpCapabilities = activeHost.mcpCapabilities?.() ?? undefined
     const info = activeHost.acpAgentInfo?.()
     const probedVersion = info?.version
+    const steering = activeHost.steeringSupported?.()
     const configOptions =
       probeSessionId !== undefined ? (activeHost.sessionConfigOptions?.(probeSessionId) ?? undefined) : undefined
     opts.log?.info(
-      `probe: ${id} ok (${info?.name ?? 'agent'}${info?.version ? ` v${info.version}` : ''}, models: ${models.length ? models.join(', ') : 'none advertised'})`
+      `probe: ${id} ok (${info?.name ?? 'agent'}${info?.version ? ` v${info.version}` : ''}, models: ${models.length ? models.join(', ') : 'none advertised'}, steering: ${steering === undefined ? 'unknown' : steering ? 'yes' : 'no'})`
     )
     return {
       runtime: id,
@@ -616,6 +620,7 @@ export async function probeRuntime(
       acpProtocolVersion,
       mcpCapabilities,
       probedVersion,
+      ...(steering !== undefined ? { steering } : {}),
       configOptions
     }
   } catch (err) {

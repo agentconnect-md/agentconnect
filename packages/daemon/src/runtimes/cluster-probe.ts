@@ -212,6 +212,7 @@ const ProbeResultSchema = z.object({
   acpProtocolVersion: z.number().int().optional(),
   probedVersion: z.string().optional(),
   mcpCapabilities: z.object({ http: z.boolean(), sse: z.boolean() }).optional(),
+  steering: z.boolean().optional(),
   configOptions: z.array(z.unknown()).optional(),
   error: z.string().optional(),
   authRequired: z.boolean().optional(),

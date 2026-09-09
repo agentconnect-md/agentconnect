@@ -575,6 +575,11 @@ export interface Pending {
   acpSessionId: string
   /** The host that minted `acpSessionId` — the other half of the `this.pending` key. */
   hostKey: HostKey
+  /** True only while a `session/prompt` for this turn is awaiting the runtime — the window a
+   *  same-session arrival can be steered into instead of queued. */
+  promptInFlight?: boolean
+  /** `_session/steering` calls this turn has absorbed, bounded by MAX_STEERS_PER_TURN. */
+  steerCount?: number
   /** The same session's OUTWARD id (session-concept.md §1.1) — what the console knows it by, so
    *  every deep link and status payload this turn produces addresses a row the CP actually has.
    *  Stamped once here because most of those producers are synchronous. */

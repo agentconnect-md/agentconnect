@@ -318,9 +318,14 @@ export function buildLinearPromptText(
  * It opens with the acting agent's name because every agent posts through the one deployment
  * app, so content is the only place identity can appear (§5).
  */
-export function linearAckBody(agentName: string, ext: LinearAdapterExt, opts: { queued?: boolean } = {}): string {
+export function linearAckBody(
+  agentName: string,
+  ext: LinearAdapterExt,
+  opts: { queued?: boolean; steered?: boolean } = {}
+): string {
   const subject = ext.issueIdentifier?.trim() ?? ext.agentSessionId
   const name = sanitizeTitle(agentName) || 'agent'
+  if (opts.steered) return `**${name}** · added to the running task`
   return opts.queued ? `**${name}** · queued behind the current task` : `**${name}** · reading ${subject} …`
 }
 

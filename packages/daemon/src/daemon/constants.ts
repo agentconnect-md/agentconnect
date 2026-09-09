@@ -3,6 +3,8 @@ import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 // Cap per-session `!queue` depth so a hung turn or a user spamming `!queue` can't
 // grow `queued` without bound. Past the cap we reject with a clear message.
 export const MAX_QUEUED_PER_SESSION = 10
+// Cap on `_session/steering` calls one running turn may absorb; past it, arrivals queue as before.
+export const MAX_STEERS_PER_TURN = 10
 export const MAX_TURN_CONTEXT_REGENERATIONS = 3
 /** Updates the live renderer flushes buffered text on. A staged turn commits its current
  *  segment ahead of one of these, so interleaved "say → work → say more" posts as it

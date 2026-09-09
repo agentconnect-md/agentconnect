@@ -204,6 +204,30 @@ nothing and the turn is unaffected, and origins with no inbound message to point
 at — a schedule, another agent's wake, a session opened in the console — do not
 acknowledge anything.
 
+## A message sent during a running turn steers that turn
+
+Someone who writes to an agent while it is still working is usually correcting or
+adding to the work in progress, not opening a second request. When the agent's
+runtime supports mid-turn steering (both managed runtimes, Claude and Codex, do),
+the message is delivered into the running turn: the agent reads it as it works,
+and the answer it is already streaming continues in place. There is no second turn,
+no second answer, and the message is never re-asked once the turn ends.
+
+The visible acknowledgement follows the delivery, not the queue. A surface that
+would have said "queued behind the current task" says the message was added to the
+running task instead; a console conversation sees the follow-up settle into the
+turn that is already streaming. The running turn's own status and reactions are
+unchanged.
+
+Steering is for ordinary human messages on chat platforms and the console. The
+explicit `!queue` command still parks its text until the agent is idle; scheduled
+wakes, code-host events, and agent-to-agent calls always run as their own turns.
+When the runtime cannot steer — it lacks the capability, it declined because the
+turn was ending as the message arrived, the per-turn steering budget is spent, or
+the operator turned the `sessionSteering` feature off — the message waits behind
+the turn exactly as before. `!cancel` remains the way to abandon the work in
+progress rather than redirect it.
+
 ## Slack message attribution footer
 
 The attribution footer for an agent response must be attached to the final Slack

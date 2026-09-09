@@ -20,6 +20,7 @@ export interface AcpProbeClient {
   acpProtocolVersion(): number | undefined
   acpAgentInfo?(): { name: string; title?: string; version?: string } | undefined
   mcpCapabilities?(): McpTransportCapabilities | null
+  steeringSupported?(): boolean
   stop(deadlineMs?: number): Promise<void>
 }
 
