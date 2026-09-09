@@ -378,6 +378,89 @@ describe('runAuth: method selection', () => {
     expect(out.text()).toContain('✓ claude-acp is logged in on this host.')
   })
 
+  /** grok-build as the registry launches it: the ACP mode is a subcommand, not a flag. */
+  function grokCatalog(args: string[]): ResolvedRuntimeCatalog {
+    const runtime: RuntimeDef = { command: 'npx', args, env: [] }
+    return {
+      entries: {
+        'grok-build': { runtime, source: 'registry', name: 'Grok Build', version: '', skillsAgentId: null }
+      },
+      runtimes: { 'grok-build': runtime }
+    }
+  }
+
+  it('logs grok-build in through its own device flow, and never through authenticate', async () => {
+    const { root, configPath } = scaffold()
+    const out = capture()
+    const calls: string[] = []
+    const ran: RuntimeDef[] = []
+    await runAuth({
+      root,
+      configPath,
+      out: out.stream,
+      runtimeId: 'grok-build',
+      resolveCatalog: async () => grokCatalog(['-y', '@xai-official/grok@1.0.24', 'agent', 'stdio']),
+      installed: (c) => c,
+      hostFactory: () => fakeHost([{ id: 'grok.com', name: 'Grok' }], calls),
+      runTerminalAuth: async (runtime) => {
+        ran.push(runtime)
+        return 0
+      }
+    })
+    // `authenticate` answers this one with silence — no elicitation, no stderr, no loopback listener.
+    expect(calls).toEqual([])
+    expect(ran).toEqual([
+      { command: 'npx', args: ['-y', '@xai-official/grok@1.0.24', 'login', '--device-auth'], env: [] }
+    ])
+    expect(out.text()).toContain('grok login --device-auth')
+    expect(out.text()).toContain('✓ grok-build is logged in on this host.')
+  })
+
+  it('leaves a grok-build launch it does not recognise to ACP', async () => {
+    const { root, configPath } = scaffold()
+    const calls: string[] = []
+    let ran = 0
+    await runAuth({
+      root,
+      configPath,
+      out: capture().stream,
+      runtimeId: 'grok-build',
+      resolveCatalog: async () => grokCatalog(['--acp']),
+      installed: (c) => c,
+      hostFactory: () => fakeHost([{ id: 'grok.com', name: 'Grok' }], calls),
+      runTerminalAuth: async () => {
+        ran += 1
+        return 0
+      },
+      pasteAfterMs: 5_000
+    })
+    expect(ran).toBe(0)
+    expect(calls).toEqual(['grok.com'])
+  })
+
+  it('leaves another grok-build method to ACP', async () => {
+    const { root, configPath } = scaffold()
+    const calls: string[] = []
+    let ran = 0
+    await runAuth({
+      root,
+      configPath,
+      out: capture().stream,
+      runtimeId: 'grok-build',
+      methodId: 'api-key',
+      resolveCatalog: async () => grokCatalog(['-y', '@xai-official/grok@1.0.24', 'agent', 'stdio']),
+      installed: (c) => c,
+      hostFactory: () => fakeHost([{ id: 'api-key', name: 'Use XAI_API_KEY' }], calls),
+      runTerminalAuth: async () => {
+        ran += 1
+        return 0
+      },
+      pasteAfterMs: 5_000
+    })
+    expect(ran).toBe(0)
+    expect(calls).toEqual(['api-key'])
+  })
+
   it('fails when the interactive login exits non-zero', async () => {
     const { root, configPath } = scaffold()
     await expect(
