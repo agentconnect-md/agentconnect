@@ -1,13 +1,42 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ignoreAgentWatchPath } from '../src/daemon/helpers.js'
 
-const agentsDir = join('/home/agent/workspace', 'agents')
-const agent = join(agentsDir, 'bot-a')
+// A real tree: the exclusion applies only beneath a directory that actually holds an `agent.json`.
+let agentsDir = ''
+let agent = ''
 const dir = { isDirectory: () => true } as never
 const file = { isDirectory: () => false } as never
 
+beforeAll(() => {
+  agentsDir = mkdtempSync(join(tmpdir(), 'ac-watch-'))
+  agent = join(agentsDir, 'bot-a')
+  mkdirSync(agent)
+  writeFileSync(join(agent, 'agent.json'), '{}')
+})
+afterAll(() => rmSync(agentsDir, { recursive: true, force: true }))
+
 describe('ignoreAgentWatchPath', () => {
+  it('treats a Control-Plane-managed root (`.cp-agent-id`, no agent.json) as an agent root too', () => {
+    const managed = join(agentsDir, 'cp-bot')
+    mkdirSync(join(managed, 'memory'), { recursive: true })
+    writeFileSync(join(managed, '.cp-agent-id'), 'cp-bot')
+    expect(ignoreAgentWatchPath(agentsDir, join(managed, 'memory'), dir)).toBe(true)
+    expect(ignoreAgentWatchPath(agentsDir, join(managed, 'channels', 'c1'), dir)).toBe(true)
+  })
+
+  it('keeps watching a grouping directory whose agent happens to be named like a daemon-owned dir', () => {
+    // Recursive discovery: `agents/team/memory/agent.json` is an agent, not bot-a's memory tree — no agent.json above it.
+    const team = join(agentsDir, 'team')
+    mkdirSync(join(team, 'memory'), { recursive: true })
+    writeFileSync(join(team, 'memory', 'agent.json'), '{}')
+    expect(ignoreAgentWatchPath(agentsDir, join(team, 'memory'), dir)).toBe(false)
+    expect(ignoreAgentWatchPath(agentsDir, join(team, 'memory', 'agent.json'), file)).toBe(false)
+    expect(ignoreAgentWatchPath(agentsDir, join(team, 'channels'), dir)).toBe(false)
+  })
+
   it.each(['memory', 'channels', 'memory-backups', 'memory-dreams', 'memory-archive-2026-09-09T10-00-00-000Z'])(
     'ignores the daemon-owned %s dir and everything beneath it',
     (name) => {

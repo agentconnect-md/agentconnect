@@ -6,7 +6,8 @@ import { protectAgentJson } from './agent-json-file.js'
 const IGNORED_DIRS = new Set(['node_modules', '.git'])
 const MAX_DEPTH = 4
 const DETACHED_DIR = '.detached'
-const CP_AGENT_ROOT_MARKER = '.cp-agent-id'
+/** A Control-Plane-managed agent root carries this marker instead of `agent.json`. */
+export const CP_AGENT_ROOT_MARKER = '.cp-agent-id'
 
 // Agent plus loader-derived data: the directory containing agent.json.
 export type LoadedAgent = Agent & { dir: string }

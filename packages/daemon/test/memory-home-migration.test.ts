@@ -605,8 +605,8 @@ describe('the daemon remembers the last home it applied', () => {
     expect(existsSync(join(agentDir, 'memory-dreams', 'drm-1', 'memory', 'MEMORY.md'))).toBe(true)
   }
 
-  // Not on Windows for the same reason as above: the agent-config watcher holds `channels/` open while it is moved.
-  const onPosix = it.skipIf(process.platform === 'win32')
+  // The watcher leaves the memory tree alone now (#1893), so the archive runs on Windows as well.
+  const onPosix = it
 
   onPosix('online, the return is still detected against the binding this process holds', async () => {
     const root = bootRoot()
