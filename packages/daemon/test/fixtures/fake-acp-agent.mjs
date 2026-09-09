@@ -57,6 +57,13 @@ const acceptsMcpServers = (id, params) => {
   return false
 }
 
+const acceptsSessionMeta = (id, params) => {
+  const expected = process.env.AC_EXPECT_SESSION_META
+  if (expected === undefined || JSON.stringify(params._meta) === expected) return true
+  send({ jsonrpc: '2.0', id, error: { code: -32602, message: 'unexpected session metadata' } })
+  return false
+}
+
 // Optional MCP transport capabilities advertised at initialize. `AC_MCP_CAPS`
 // (comma list) turns them on; unset ⇒ no mcpCapabilities key at all.
 const mcpCaps = (process.env.AC_MCP_CAPS ?? '')
@@ -135,6 +142,7 @@ rl.on('line', async (line) => {
     clientCapabilities = params?.clientCapabilities
     send({ jsonrpc: '2.0', id, result: { protocolVersion: 1, agentCapabilities: agentCapabilities() } })
   } else if (method === 'session/new') {
+    if (!acceptsSessionMeta(id, params)) return
     if (!acceptsAdditionalDirectories(id, params)) return
     if (!acceptsMcpServers(id, params)) return
     const sessionId = `s${++sessionCounter}`
@@ -148,6 +156,7 @@ rl.on('line', async (line) => {
       sessionPermissionModes.set(params.sessionId, params.value)
     send({ jsonrpc: '2.0', id, result: { configOptions: configOptions(params.sessionId) } })
   } else if (method === 'session/load') {
+    if (!acceptsSessionMeta(id, params)) return
     if (!acceptsAdditionalDirectories(id, params)) return
     if (!acceptsMcpServers(id, params)) return
     if (process.env.AC_LOAD_PERMISSION_MODE)

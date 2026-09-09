@@ -58,7 +58,7 @@ The resource values shown are the defaults, not measured minimums or capacity
 recommendations. All three are positive integers bounded by the SDK's supported
 numeric ranges. Source/development builds have no release image default and
 require an explicit `sandbox.microsandbox.image`, such
-as `registry.example.com/agentconnect/runtime-sandbox:build-tag`. An explicit image
+as `registry.example.com/agentconnect/runtime-sandbox-full:build-tag`. An explicit image
 also overrides the release default. Networking is fixed backend behavior; the
 strict VM configuration has no network modes, port mappings, or outbound-proxy
 settings.
@@ -238,8 +238,9 @@ paths. This change does not redesign Git storage.
 
 The resolved OCI image must contain Node at
 `/usr/local/bin/node`, Python 3 for the guest helper, the declared runtime tools,
-and `/opt/agentconnect/runtime/k8s-runtimes.json`. The existing pool image contains
-these components. Startup reads and validates that table in a real VM; individual
+and `/opt/agentconnect/runtime/k8s-runtimes.json`. The daemon's full image also
+includes `bubblewrap` and `socat` for the native Claude sandbox.
+Startup reads and validates that table in a real VM; individual
 runtime execution and full-session compatibility still need workload checks.
 
 The SDK's `create()` does not execute OCI ENTRYPOINT/CMD automatically. The manager
@@ -283,15 +284,17 @@ preparation includes the extra materialization cost.
 ### Release image selection and Docker
 
 The release build bundles `dist/release.json` with a `runtimeSandboxImage` OCI
-reference. It names the current release's `runtime-sandbox:v<version>` alias.
+reference. It names the current release's `runtime-sandbox-full:v<version>` alias.
 The image workflow creates this alias even when it reuses an older component
-image, so it identifies the same shared artifact as the pool without querying a
-cluster. The daemon package is published before image finalization; the matching
+image. The pool continues to use the separate `runtime-sandbox` image. Both targets
+share a base stage with the toolchain, browser, ACP runtimes, and shim; the full
+target adds daemon-specific tools and can add more runtimes later.
+The daemon package is published before image finalization; the matching
 image workflow must complete before this default can be pulled. A missing image
 fails preflight rather than selecting another version.
 Runtime-image input changes also trigger daemon package publication so its
 bundled default follows the updated image.
-The shared release image is currently Linux amd64; an arm64 daemon must configure
+The release images are currently Linux amd64; an arm64 daemon must configure
 a compatible image explicitly.
 
 An explicit daemon image overrides this metadata. Development builds remove
@@ -300,10 +303,12 @@ from the development package version. Upgrading to a different default image
 reference remains a configuration change under the persisted-VM checks above.
 Pin an explicit image to retain the same reference across daemon upgrades.
 
-The shared image contains pinned Docker Engine, CLI, containerd, Buildx, and
-Compose packages. Its ordinary container user and shim entrypoint remain in
+The full image contains `bubblewrap` and `socat` for native Claude credential
+shields, plus pinned Docker Engine, CLI, containerd, Buildx, and Compose packages.
+The pool image does not include those tools or the Docker sudo grant.
+The full image's ordinary container user and shim entrypoint remain in
 place. Image construction installs and verifies the tools; it does not start
-Docker. Inside a microsandbox VM, the agent can start Docker when a task needs it:
+Docker. The image provides this command for manual startup inside the VM:
 
 ```sh
 sudo -n dockerd > /tmp/dockerd.log 2>&1 &
@@ -311,6 +316,8 @@ docker info
 ```
 
 Wait for that command's Docker server to become ready before using containers.
+Agent-tool startup remains pending acceptance: the current native Codex sandbox
+sets `no_new_privs`, which prevents this sudo command from elevating.
 The image grants the `agent` user permission to run `dockerd` through sudo and
 access the Docker group's Unix socket. It does not grant unrestricted sudo.
 A custom image owns its corresponding tools and startup permissions.

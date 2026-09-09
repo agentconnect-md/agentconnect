@@ -50,7 +50,7 @@ it('emits a release alias beside the packaged module, honors overrides, and clea
 
   for (const version of ['1.2.3', '1.2.4-rc.7']) {
     emit(version)
-    expect(run()).toBe(`ghcr.io/agentconnect-md/runtime-sandbox:v${version}`)
+    expect(run()).toBe(`ghcr.io/agentconnect-md/runtime-sandbox-full:v${version}`)
   }
   writeFileSync(metadata, '{broken')
   expect(run('registry.example.test/custom:stable')).toBe('registry.example.test/custom:stable')

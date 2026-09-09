@@ -153,6 +153,19 @@ export function codexPermissionProfileConfig(
   }
 }
 
+export function applyCodexPermissionProfile(
+  env: Record<string, string>,
+  opts: CodexPermissionProfileOptions,
+  inheritedCodexConfig?: string
+): void {
+  const profileConfig = codexPermissionProfileConfig(opts)
+  if (!profileConfig) return
+
+  const codexConfig = codexConfigWithoutPermissionOverrides(env.CODEX_CONFIG ?? inheritedCodexConfig)
+  if (codexConfig !== undefined) env.CODEX_CONFIG = codexConfig
+  env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV] = JSON.stringify(profileConfig)
+}
+
 function tomlInlineTable(entries: Array<[string, string]>): string {
   return `{ ${[...new Map(entries)].map(([key, value]) => `${JSON.stringify(key)} = ${JSON.stringify(value)}`).join(', ')} }`
 }

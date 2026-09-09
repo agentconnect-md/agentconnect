@@ -1,8 +1,7 @@
 name: Build & Push Images
 
-# Builds the control-plane / relay / web / external-memory / runtime-sandbox / daemon images for a RELEASE
-# and pushes them to GHCR tagged with the semantic-release version (the git tag:
-# `v1.2.3` stable, `v1.2.3-rc.4` prerelease). Stable releases also move `:latest`.
+# Publishes service, pool-runtime, and full daemon-runtime images to GHCR at each release tag.
+# Stable releases also move `:latest`.
 #
 # Called by release.yaml after semantic-release publishes a version, so image
 # publication appears in the same Release run. Plain pushes that don't produce
@@ -24,16 +23,14 @@ name: Build & Push Images
 # effective image (same manifest digest), so `<comp>:<version>` exists for every
 # component at every release regardless.
 #
-# The daemon and the runtime sandbox are confinement boundaries whose failure modes are silent —
-# agent code running somewhere it should not, with every health check still green. Those two are
-# built here, verified against the loaded image, and pushed only once their checks pass. The image
+# Daemon and runtime images are verified against the loaded build before publication. The image
 # a release publishes is therefore the image that was verified. A component skipped as unchanged
 # is not re-verified: it was verified at the release that built it.
 #
 # After pushing, mints a short-lived GitHub App token for the configured
 # workflow repository and fires an `images-pushed` repository_dispatch
 # (payload `{version, sha, components: {controlPlane, web, relay, mem0, runtimeSandbox,
-# mem0Backend}}` — the per-component tags the downstream workflow should
+# runtimeSandboxFull, mem0Backend, daemon}}` — the per-component tags the downstream workflow should
 # consume; `== version` for components built by this release, whether changed or
 # recovered from a missing source image). It reports artifact facts, not an
 # instruction — what happens next is the workflow repository's concern and is
@@ -73,6 +70,7 @@ jobs:
       mem0: ${{ steps.build-matrix.outputs.mem0 }}
       mem0Backend: ${{ steps.build-matrix.outputs.mem0Backend }}
       runtimeSandbox: ${{ steps.build-matrix.outputs.runtimeSandbox }}
+      runtimeSandboxFull: ${{ steps.build-matrix.outputs.runtimeSandboxFull }}
       daemon: ${{ steps.build-matrix.outputs.daemon }}
     steps:
       # Reusable calls receive the tag semantic-release just published. Manual
@@ -155,6 +153,7 @@ jobs:
           MEM0_EFFECTIVE: ${{ steps.components.outputs.mem0 }}
           MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
           RUNTIME_SANDBOX_EFFECTIVE: ${{ steps.components.outputs.runtimeSandbox }}
+          RUNTIME_SANDBOX_FULL_EFFECTIVE: ${{ steps.components.outputs.runtimeSandboxFull }}
           DAEMON_EFFECTIVE: ${{ steps.components.outputs.daemon }}
           SETUP_VERSION: ${{ steps.components.outputs.setup }}
         run: |
@@ -192,6 +191,7 @@ jobs:
           # The runtime sandbox is what agent runtimes execute inside, not a service — but it is
           # pinned by the cluster manifests the same way, so it needs a tag at every release.
           resolve_effective runtimeSandbox runtime-sandbox runtime-sandbox "$RUNTIME_SANDBOX_EFFECTIVE"
+          resolve_effective runtimeSandboxFull runtime-sandbox-full runtime-sandbox-full "$RUNTIME_SANDBOX_FULL_EFFECTIVE"
           # The daemon pod image. Separate from the runtime sandbox: this runs the daemon, that
           # one is what an agent runtime executes inside.
           resolve_effective daemon daemon daemon "$DAEMON_EFFECTIVE"
@@ -233,9 +233,8 @@ jobs:
                     $config.tags[0]
                     | sub(":[^/]+$"; ":buildcache")
                   ),
-                  # The two confinement boundaries carry an image-verification suite; the service
-                  # images have none and push straight from the build.
-                  verify: ({"daemon": "daemon", "runtime-sandbox": "runtime-sandbox"}[$name] // "")
+                  # Daemon and runtime targets require image verification before publication.
+                  verify: ({"daemon": "daemon", "runtime-sandbox": "runtime-sandbox", "runtime-sandbox-full": "runtime-sandbox-full"}[$name] // "")
                 }
             ]
           ' "$bake_config")"
@@ -327,49 +326,48 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: node scripts/verify-daemon-image.mjs "$IMAGE" "$VERSION"
 
-      # Only the runtime sandbox needs a toolchain here: its smoke test's daemon side runs from
-      # source. The other targets skip these steps.
+      # Both runtime images run their daemon-side smoke test from source.
       - uses: pnpm/action-setup@v6
-        if: matrix.verify == 'runtime-sandbox'
+        if: startsWith(matrix.verify, 'runtime-sandbox')
         with:
           # Pinned so the action installs this once; unpinned it fetches npm's latest first.
           # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
           version: 11.19.0
           cache: true
       - uses: actions/setup-node@v6
-        if: matrix.verify == 'runtime-sandbox'
+        if: startsWith(matrix.verify, 'runtime-sandbox')
         with:
           node-version-file: .nvmrc
       - name: Install
-        if: matrix.verify == 'runtime-sandbox'
+        if: startsWith(matrix.verify, 'runtime-sandbox')
         run: pnpm install --frozen-lockfile
 
       # Against the BUILT image, not the Dockerfile: non-root, tini as PID 1, a root-owned shim the
       # runtime cannot rewrite, a self-contained shim bundle, no smuggled service-account token,
       # and the published runtime table agreeing with what the runtimes report.
       - name: Verify the runtime sandbox image and its runtime table
-        if: matrix.verify == 'runtime-sandbox'
+        if: startsWith(matrix.verify, 'runtime-sandbox')
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
-        run: node scripts/verify-runtime-image.mjs "$IMAGE"
+        run: node scripts/verify-runtime-image.mjs "$IMAGE" "${{ matrix.target }}"
 
       # The smoke test's DAEMON side imports the listener from source, which imports the workspace
       # packages by their built entry points.
       - name: Build the workspace packages the daemon side imports
-        if: matrix.verify == 'runtime-sandbox'
+        if: startsWith(matrix.verify, 'runtime-sandbox')
         run: pnpm --filter "@agentconnect.md/daemon^..." build
 
       # The acceptance criterion: a real container, the real shim dialling back, the real ACP
       # runtime starting inside it, initialize and one session/new.
       - name: Smoke test through the shim
-        if: matrix.verify == 'runtime-sandbox'
+        if: startsWith(matrix.verify, 'runtime-sandbox')
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts "$IMAGE"
 
       # Publish a verified target once its checks have passed. Same inputs against the same builder,
       # so this re-exports from cache rather than rebuilding. It goes out through the action's own
-      # push path deliberately: a plain `docker push` of the loaded image would publish these two
+      # push path deliberately: a plain `docker push` of the loaded image would publish these
       # without the provenance attestation every directly-pushed target carries.
       - name: Push
         if: matrix.verify != ''
@@ -409,6 +407,7 @@ jobs:
       mem0: ${{ needs.prepare.outputs.mem0 }}
       mem0Backend: ${{ needs.prepare.outputs.mem0Backend }}
       runtimeSandbox: ${{ needs.prepare.outputs.runtimeSandbox }}
+      runtimeSandboxFull: ${{ needs.prepare.outputs.runtimeSandboxFull }}
       daemon: ${{ needs.prepare.outputs.daemon }}
     steps:
       - name: Log in to GHCR
@@ -453,6 +452,7 @@ jobs:
           MEM0_EFFECTIVE: ${{ needs.prepare.outputs.mem0 }}
           MEM0_BACKEND_EFFECTIVE: ${{ needs.prepare.outputs.mem0Backend }}
           RUNTIME_SANDBOX_EFFECTIVE: ${{ needs.prepare.outputs.runtimeSandbox }}
+          RUNTIME_SANDBOX_FULL_EFFECTIVE: ${{ needs.prepare.outputs.runtimeSandboxFull }}
           DAEMON_EFFECTIVE: ${{ needs.prepare.outputs.daemon }}
           OWNER: ${{ github.repository_owner }}
         run: |
@@ -475,6 +475,7 @@ jobs:
           alias_unchanged memory-plugin-mem0 "$MEM0_EFFECTIVE"
           alias_unchanged mem0-server "$MEM0_BACKEND_EFFECTIVE"
           alias_unchanged runtime-sandbox "$RUNTIME_SANDBOX_EFFECTIVE"
+          alias_unchanged runtime-sandbox-full "$RUNTIME_SANDBOX_FULL_EFFECTIVE"
           alias_unchanged daemon "$DAEMON_EFFECTIVE"
 
   # The Helm chart rides the same release train as the images: chart version = the release
@@ -566,6 +567,7 @@ jobs:
           MEM0: ${{ needs.finalize.outputs.mem0 }}
           MEM0_BACKEND: ${{ needs.finalize.outputs.mem0Backend }}
           RUNTIME_SANDBOX: ${{ needs.finalize.outputs.runtimeSandbox }}
+          RUNTIME_SANDBOX_FULL: ${{ needs.finalize.outputs.runtimeSandboxFull }}
           DAEMON: ${{ needs.finalize.outputs.daemon }}
         run: |
           curl --fail-with-body -sS -X POST \
@@ -573,4 +575,4 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${WORKFLOW_REPOSITORY}/dispatches" \
-            -d "{\"event_type\":\"images-pushed\",\"client_payload\":{\"version\":\"${VERSION}\",\"sha\":\"${SHA}\",\"components\":{\"controlPlane\":\"${CP}\",\"web\":\"${WEB}\",\"relay\":\"${RELAY}\",\"mem0\":\"${MEM0}\",\"mem0Backend\":\"${MEM0_BACKEND}\",\"runtimeSandbox\":\"${RUNTIME_SANDBOX}\",\"daemon\":\"${DAEMON}\"}}}"
+            -d "{\"event_type\":\"images-pushed\",\"client_payload\":{\"version\":\"${VERSION}\",\"sha\":\"${SHA}\",\"components\":{\"controlPlane\":\"${CP}\",\"web\":\"${WEB}\",\"relay\":\"${RELAY}\",\"mem0\":\"${MEM0}\",\"mem0Backend\":\"${MEM0_BACKEND}\",\"runtimeSandbox\":\"${RUNTIME_SANDBOX}\",\"runtimeSandboxFull\":\"${RUNTIME_SANDBOX_FULL}\",\"daemon\":\"${DAEMON}\"}}}"

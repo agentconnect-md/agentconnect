@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '../acp/sandbox.js'
@@ -18,18 +18,12 @@ import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/prob
 import { primaryCheckoutIn, secondaryCheckoutsIn } from '../workspace/secondary-layout.js'
 import { confinedSessionDirIn, sessionGitDirsIn, sessionHomeIn } from '../workspace/session-layout.js'
 import {
-  CLAUDE_PROFILE_ENV,
-  claudeProtectedSettings,
+  prepareClaudeProtectedSettings,
   claudeProviderCredentialFiles,
-  isClaudeRuntimeDef,
-  type ClaudeProtectedSettings
+  isClaudeRuntimeDef
 } from '../runtime-defs/claude-runtime.js'
-import {
-  CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
-  codexConfigWithoutPermissionOverrides,
-  codexPermissionProfileConfig,
-  type CodexPermissionProfileOptions
-} from '../acp/codex-permission-profiles.js'
+import { applyCodexPermissionProfile } from '../acp/codex-permission-profiles.js'
+import type { AcpToolSandbox } from '../acp/acp-host.js'
 
 /** Canonicalize the deepest existing prefix, so a path below a symlink still reads as the kernel sees it. */
 function existingRealpath(path: string): string {
@@ -71,8 +65,12 @@ export function privateRuntimeHomeFor(scopeDir: string, hostKey: HostKey | undef
   return sessionDir === undefined ? runtimeHomePath(scopeDir) : sessionHomeIn(sessionDir)
 }
 
-/** The same roots with NO outer boundary: a confined session's clones own theirs (§11) and the agent's checkouts are not its, while one escaping the agent tree is left protected, not refused. */
-function unsandboxedGitMetadataRoots(scopeDir: string, trustedPrimaryCheckout?: string, sessionDir?: string): string[] {
+/** Discover canonical Git roots owned by this workspace; callers grant only those their outer boundary exposes. */
+export function runtimeGitMetadataRoots(
+  scopeDir: string,
+  trustedPrimaryCheckout?: string,
+  sessionDir?: string
+): string[] {
   const agentRoot = existingRealpath(scopeDir)
   const primaryCheckout = existingRealpath(trustedPrimaryCheckout ?? primaryCheckoutIn(agentRoot))
   const gitDirs =
@@ -80,41 +78,6 @@ function unsandboxedGitMetadataRoots(scopeDir: string, trustedPrimaryCheckout?: 
   return compactReadRoots(
     gitDirs.map((gitDir) => realpathSync(gitDir)).filter((gitDir) => gitDir !== agentRoot && inside(agentRoot, gitDir))
   )
-}
-
-function applyCodexPermissionProfile(
-  env: Record<string, string>,
-  opts: CodexPermissionProfileOptions,
-  inheritedCodexConfig?: string
-): void {
-  const profileConfig = codexPermissionProfileConfig(opts)
-  if (!profileConfig) return
-
-  const codexConfig = codexConfigWithoutPermissionOverrides(env.CODEX_CONFIG ?? inheritedCodexConfig)
-  if (codexConfig !== undefined) env.CODEX_CONFIG = codexConfig
-  env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV] = JSON.stringify(profileConfig)
-}
-
-function disabledClaudeProfileRoot(scopeDir: string): string {
-  const root = realpathSync(resolve(scopeDir))
-  const target = join(root, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
-  let current = root
-  for (const part of relative(root, target).split(sep).filter(Boolean)) {
-    current = join(current, part)
-    if (existsSync(current)) {
-      const stat = lstatSync(current)
-      if (stat.isSymbolicLink() || !stat.isDirectory()) {
-        throw new Error(`disabled Claude profile path is not a real directory: ${current}`)
-      }
-      continue
-    }
-    mkdirSync(current, { mode: 0o700 })
-  }
-  if (readdirSync(target).length > 0) {
-    throw new Error(`disabled Claude profile directory is not empty: ${target}`)
-  }
-  chmodSync(target, 0o500)
-  return realpathSync(target)
 }
 
 /** Ambient desktop/session IPC must not reconnect a sandboxed runtime to host
@@ -181,6 +144,7 @@ export interface PreparedRuntimeLaunch {
   gitMetadataWriteRoots: string[]
   runtimeHome?: string
   microsandbox?: { mounts: SandboxMount[]; workspaceRoot: string }
+  toolSandbox?: AcpToolSandbox
   sandbox?: {
     mechanism: SandboxMechanism
     writable: string[]
@@ -188,17 +152,6 @@ export interface PreparedRuntimeLaunch {
     cwd: string
     denyReadRoots: string[]
     allowReadRoots: string[]
-    /** Credential paths deliberately exposed to the trusted runtime parent but
-     * denied again inside a runtime-native tool sandbox. */
-    protectedCredentialRoots: string[]
-    /** A daemon-owned model-side Unix channel deliberately exposed to the
-     * runtime, currently the agent-scoped GitHub credential socket. */
-    allowModelToolUnixSockets?: boolean
-    /** Highest-precedence Claude settings that keep project/local settings from
-     * redirecting the trusted parent to an attacker-selected credential profile. */
-    claudeProtectedSettings?: ClaudeProtectedSettings
-    /** Operator-declared writable `sandbox.mounts`, canonical: the runtime-native tool sandboxes reopen them too. */
-    sharedWriteRoots?: string[]
   }
 }
 
@@ -280,7 +233,7 @@ export function prepareRuntimeLaunch(opts: {
     // No outer boundary here: the Codex profile must both reopen the Git metadata and close hooks/config.
     const gitMetadataWriteRoots =
       credentialProfile === 'codex'
-        ? unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout, sessionDir)
+        ? runtimeGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout, sessionDir)
         : []
     if (credentialProfile === 'codex') {
       applyCodexPermissionProfile(
@@ -410,7 +363,7 @@ export function prepareRuntimeLaunch(opts: {
   if (!opts.runInSandbox) {
     const gitMetadataWriteRoots =
       credentialProfile === 'codex'
-        ? unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout, sessionDir)
+        ? runtimeGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout, sessionDir)
         : []
     if (credentialProfile === 'codex') {
       const privateCodex = join(runtimeHome, '.codex')
@@ -500,16 +453,7 @@ export function prepareRuntimeLaunch(opts: {
     )
   )
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
-  if (claudeRuntime) {
-    // Anthropic profile JSON may live in the agent-writable private HOME and may
-    // reference arbitrary host paths. Fail closed instead of letting that mutable
-    // input influence the trusted parent or outer sandbox. The fixed empty root is
-    // daemon-owned and only read-exposed by sandboxBoundary; shared Claude /login
-    // uses the separate daemon-managed secure-storage directory prepared above.
-    for (const name of CLAUDE_PROFILE_ENV) delete env[name]
-    env.ANTHROPIC_CONFIG_DIR = disabledClaudeProfileRoot(opts.scopeDir)
-  }
-  const protectedClaudeSettings = claudeRuntime ? claudeProtectedSettings(env) : undefined
+  const protectedClaudeSettings = claudeRuntime ? prepareClaudeProtectedSettings(opts.scopeDir, env) : undefined
   const providerCredentialFiles = claudeRuntime ? claudeProviderCredentialFiles(env, opts.cwd) : []
   const providerCredentialReadRoots = compactReadRoots(
     providerCredentialFiles.map(({ envName, path }) => {
@@ -598,7 +542,9 @@ export function prepareRuntimeLaunch(opts: {
       settingsPath,
       cwd: boundary.gitSafeDirectories[0]!,
       denyReadRoots,
-      allowReadRoots: boundary.allowRead,
+      allowReadRoots: boundary.allowRead
+    },
+    toolSandbox: {
       protectedCredentialRoots,
       ...(opts.allowModelToolUnixSockets ? { allowModelToolUnixSockets: true } : {}),
       ...(protectedClaudeSettings ? { claudeProtectedSettings: protectedClaudeSettings } : {}),

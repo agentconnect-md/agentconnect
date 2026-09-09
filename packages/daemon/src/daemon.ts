@@ -4804,6 +4804,7 @@ export class Daemon {
       runtimeId: agent.runtime,
       isolateAccountApps: cfg.security.isolateAccountApps,
       sandbox: launch.sandbox,
+      toolSandbox: launch.toolSandbox,
       configPrefs: {
         model: agent.runtimeOverrides?.model,
         permissionMode: agent.permissionMode,

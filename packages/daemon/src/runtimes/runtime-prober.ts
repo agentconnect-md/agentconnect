@@ -85,7 +85,7 @@ export const probeCallbacks = {
 }
 
 export type ProbeHostPolicy = typeof probeCallbacks &
-  Partial<Pick<PreparedRuntimeLaunch, 'env' | 'inheritProcessEnv' | 'sandbox'>>
+  Partial<Pick<PreparedRuntimeLaunch, 'env' | 'inheritProcessEnv' | 'sandbox' | 'toolSandbox'>>
 
 /** Constructs the ACP client a probe drives — injected, so `runtimes/*` never names AcpHost. */
 export type ProbeHostFactory = (rt: RuntimeDef, id: string, cwd: string, policy: ProbeHostPolicy) => AcpProbeClient
@@ -580,7 +580,8 @@ export async function probeRuntime(
         ? {
             env: launch.env,
             inheritProcessEnv: launch.inheritProcessEnv,
-            ...(launch.sandbox ? { sandbox: launch.sandbox } : {})
+            ...(launch.sandbox ? { sandbox: launch.sandbox } : {}),
+            ...(launch.toolSandbox ? { toolSandbox: launch.toolSandbox } : {})
           }
         : {})
     }

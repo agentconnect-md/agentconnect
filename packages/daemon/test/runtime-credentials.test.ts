@@ -130,7 +130,7 @@ describe('Linux shared runtime login', () => {
     expect(readFileSync(join(sharedDir, '.credentials.json'), 'utf8')).toContain('agent-new')
     expect(existsSync(join(privateClaude, '.credentials.json'))).toBe(false)
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(sharedDir)
-    expect(launch.sandbox?.protectedCredentialRoots).toEqual([sharedDir])
+    expect(launch.toolSandbox?.protectedCredentialRoots).toEqual([sharedDir])
 
     writeFileSync(join(sharedDir, '.credentials.json'), '{"accessToken":"refreshed"}')
     const scopeB = join(daemonRoot, 'agents', 'agent-b')
@@ -186,7 +186,7 @@ describe('Linux shared runtime login', () => {
     expect(existsSync(join(scopeDir, 'home', '.claude', 'settings.json'))).toBe(false)
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(canonicalSecureDir)
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).not.toContain(realpathSync(hostClaude))
-    expect(launch.sandbox?.protectedCredentialRoots).toEqual([canonicalSecureDir])
+    expect(launch.toolSandbox?.protectedCredentialRoots).toEqual([canonicalSecureDir])
   })
 
   it('prefers the daemon environment secure-storage directory over Claude settings', () => {
@@ -281,13 +281,13 @@ describe('Linux shared runtime login', () => {
     expect(readFileSync(hostAuth, 'utf8')).toContain('"new"')
     expect(settings(launch.sandbox!.settingsPath).filesystem.allowWrite).toContain(realpathSync(hostAuth))
     const protectedRoots = [realpathSync(hostAuth), realpathSync(privateCodex)]
-    expect(launch.sandbox?.protectedCredentialRoots).toEqual(protectedRoots)
+    expect(launch.toolSandbox?.protectedCredentialRoots).toEqual(protectedRoots)
     const profileConfig = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as {
       configOverrides: string[]
       modeProfiles: Record<string, string>
     }
     expect(profileConfig.modeProfiles.agent).toBe('agentconnect-protected-workspace')
-    expect(launch.sandbox?.allowModelToolUnixSockets).toBe(true)
+    expect(launch.toolSandbox?.allowModelToolUnixSockets).toBe(true)
     expect(profileConfig.configOverrides).toContain('permissions.agentconnect-protected-workspace.network.enabled=true')
     expect(profileConfig.configOverrides).toContain('permissions.agentconnect-protected-read-only.network.enabled=true')
     expect(JSON.parse(launch.env.CODEX_CONFIG!)).toEqual({

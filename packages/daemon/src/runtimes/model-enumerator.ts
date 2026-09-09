@@ -86,7 +86,8 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
         ...probeCallbacks,
         env: launch.env,
         inheritProcessEnv: launch.inheritProcessEnv,
-        ...(launch.sandbox ? { sandbox: launch.sandbox } : {})
+        ...(launch.sandbox ? { sandbox: launch.sandbox } : {}),
+        ...(launch.toolSandbox ? { toolSandbox: launch.toolSandbox } : {})
       }
       const effectiveRuntime = launch.runtime ?? rt
       host = deps.hostFactory(effectiveRuntime, runtimeId, cwd, policy)

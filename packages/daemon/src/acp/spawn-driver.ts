@@ -5,7 +5,6 @@ import { Readable, Writable } from 'node:stream'
 import { LocalFileSink } from '../shim/file-sink.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
-import type { ClaudeProtectedSettings } from '../runtime-defs/claude-runtime.js'
 import type { HostKey } from './host-key.js'
 import type { Logger } from '../log.js'
 
@@ -19,17 +18,6 @@ export interface AcpSandboxLaunch {
   settingsPath?: string
   /** Trusted working directory used to anchor SRT's Linux mandatory-deny scan. */
   cwd?: string
-  /** Credential paths available to the trusted ACP runtime itself but denied to
-   * model-authored commands by a runtime-native nested sandbox. */
-  protectedCredentialRoots?: string[]
-  /** A deliberately exposed model-side Unix channel, currently gitcred.sock for
-   * GitHub App workspaces. Linux SRT cannot allow AF_UNIX by pathname. */
-  allowModelToolUnixSockets?: boolean
-  /** SDK flag settings that pin protected parent-only profile selection after
-   * Claude merges workspace-controlled settings. */
-  claudeProtectedSettings?: ClaudeProtectedSettings
-  /** Operator-declared writable `sandbox.mounts`, reopened in the runtime-native tool sandbox as well. */
-  sharedWriteRoots?: string[]
 }
 
 /**

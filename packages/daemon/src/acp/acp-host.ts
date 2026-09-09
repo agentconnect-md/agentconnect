@@ -371,6 +371,17 @@ export const SDK_LIFECYCLE_FILTERS = [
   { type: 'system', subtype: 'task_notification' }
 ] as const
 
+export interface AcpToolSandbox {
+  /** Credential paths available to the trusted runtime but denied to model-authored commands. */
+  protectedCredentialRoots: string[]
+  /** Permit model-authored tools to use the daemon-provided Unix socket channels. */
+  allowModelToolUnixSockets?: boolean
+  /** Pin parent-only profile selection after Claude merges workspace-controlled settings. */
+  claudeProtectedSettings?: ClaudeProtectedSettings
+  /** Writable mount targets reopened in the runtime-native tool sandbox. */
+  sharedWriteRoots?: string[]
+}
+
 interface ClaudeSessionSettings {
   env?: ClaudeProtectedSettings['env']
   modelOverrides?: unknown
@@ -609,12 +620,10 @@ export class AcpHost {
       /** Whether to suppress account-bound cloud apps/connectors at spawn. Defaults
        *  to true; daemon config may explicitly opt out for all runtimes on the host. */
       isolateAccountApps?: boolean
-      /** OS sandbox for the agent process (issue #312). Set by ensureHost when the
-       *  the agent's effective Run in sandbox policy is on. `writable` is
-       *  the workspace, private runtime HOME, and managed memory; SRT supplies
-       *  private temporary storage.
-       *  Absent ⇒ run unconfined (fail-open). */
+      /** Optional host SRT wrapper; external drivers provide their own process boundary. */
       sandbox?: AcpSandboxLaunch
+      /** Native tool policy applied inside either an SRT wrapper or a VM. */
+      toolSandbox?: AcpToolSandbox
       /** Called once when the owned adapter process reaches terminal exit. The
        *  delegated host manager uses this to tear down its fenced cell. */
       onTerminal?: () => void
@@ -893,11 +902,11 @@ export class AcpHost {
       this.isClaudeRuntime(),
       this.opts.configPrefs?.systemPrompt,
       systemAppend,
-      this.opts.sandbox ? (this.opts.sandbox.protectedCredentialRoots ?? []) : undefined,
-      this.opts.sandbox?.claudeProtectedSettings,
-      this.opts.sandbox?.allowModelToolUnixSockets,
+      this.opts.toolSandbox?.protectedCredentialRoots,
+      this.opts.toolSandbox?.claudeProtectedSettings,
+      this.opts.toolSandbox?.allowModelToolUnixSockets,
       extraDisallowedTools,
-      this.opts.sandbox?.sharedWriteRoots
+      this.opts.toolSandbox?.sharedWriteRoots
     )
     const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
     const res = await this.conn!.agent.request(methods.agent.session.new, {
@@ -1150,11 +1159,11 @@ export class AcpHost {
         this.isClaudeRuntime(),
         systemAppend ?? this.opts.configPrefs?.systemPrompt,
         undefined,
-        this.opts.sandbox ? (this.opts.sandbox.protectedCredentialRoots ?? []) : undefined,
-        this.opts.sandbox?.claudeProtectedSettings,
-        this.opts.sandbox?.allowModelToolUnixSockets,
+        this.opts.toolSandbox?.protectedCredentialRoots,
+        this.opts.toolSandbox?.claudeProtectedSettings,
+        this.opts.toolSandbox?.allowModelToolUnixSockets,
         [],
-        this.opts.sandbox?.sharedWriteRoots
+        this.opts.toolSandbox?.sharedWriteRoots
       )
       const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
       const res = await this.conn!.agent.request(methods.agent.session.load, {
