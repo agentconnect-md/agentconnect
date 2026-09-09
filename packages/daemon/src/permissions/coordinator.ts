@@ -80,6 +80,13 @@ import {
   type ApprovalRequestParts
 } from '../daemon/tool-classification.js'
 import { pendingTurnKey, turnState, type DaemonRenderAction, type Pending } from '../daemon/turn-types.js'
+import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
+import type { MemoryWriteAsk } from '../mcp/ops/memory.js'
+import {
+  memoryWriteApprovalElicitation,
+  memoryWriteApprovalFrom,
+  type MemoryWriteApprovalOutcome
+} from './memory-write-approval.js'
 
 /** The union of a turn's explicit human-approval waits, measured here and nowhere else.
  *  Regeneration budgets subtract it while retaining runtime/tool work time; `depth` counts
@@ -1439,6 +1446,44 @@ export class PermissionCoordinator {
     if (!form) return this.noticeUnrenderableElicit(p, params, isApproval)
     if (isApproval && elicitCardShape(form) === 'inputs') return this.noticeUnrenderableElicit(p, params, isApproval)
     return await this.awaitChatElicitation(agentId, sessionId, params, p, facet, { form }, isApproval)
+  }
+
+  /**
+   * The daemon's own ask: a capture-excluded session's memory write waits for the human in that
+   * session (session-visibility.md §5.1). One synthetic three-way form takes the SAME surfaces an
+   * agent's elicitation does — webchat's in-stream card, the platform's elicitation card where it
+   * has one, else the Agent-editor queue — and a turn with no human behind it (none live,
+   * suppressed, headless, an A2A child) answers `no_approver` at once rather than hanging the tool.
+   * Turn cancellation settles it through `releaseElicits`/`releaseEditorPermissions` as a decline.
+   */
+  async askMemoryWriteApproval(
+    owner: HostKey,
+    sessionId: string,
+    ask: MemoryWriteAsk
+  ): Promise<MemoryWriteApprovalOutcome> {
+    const agentId = hostKeyAgentId(owner)
+    const p = this.host.pending().get(pendingTurnKey(owner, sessionId))
+    if (!p || p.outputSuppressed) return 'no_approver'
+    if (p.entry.msg.headless === true || p.callMeta || isSyntheticA2aChannel(p.plan.channel)) return 'no_approver'
+    // The summary is model-authored text headed for a card: mask a secret it may have interpolated.
+    const params = this.host.maskAgentSecrets(agentId, memoryWriteApprovalElicitation(sessionId, ask))
+    try {
+      if (p.webchat && !p.webchat.continuation) {
+        const res = this.awaitWebchatElicitation(agentId, sessionId, params, p, p.webchat)
+        return memoryWriteApprovalFrom(await this.trackHumanApprovalWait(p, res))
+      }
+      const facet = p.conn && !p.plan.approvalSurfaceSuppressed ? this.host.elicitCardFacet(p.plan.platform) : undefined
+      const form = facet ? elicitForm(params, facet.reduction) : null
+      if (facet && form) {
+        const res = this.awaitChatElicitation(agentId, sessionId, params, p, facet, { form }, false)
+        return memoryWriteApprovalFrom(await this.trackHumanApprovalWait(p, res))
+      }
+      // No card in this chat: the editor queue (console Approval requests, approval DM) decides.
+      return memoryWriteApprovalFrom(await this.awaitEditorElicitation(agentId, sessionId, params, p))
+    } catch (err) {
+      this.host.log().warn(`memory write approval could not be asked for "${p.plan.sessionKey}": ${formatErr(err)}`)
+      return 'no_approver'
+    }
   }
 
   /**

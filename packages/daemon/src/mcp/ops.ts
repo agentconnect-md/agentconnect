@@ -1,5 +1,5 @@
 import { z, type ZodType } from 'zod'
-import { MEMORY_ACCESS_BLOCKED } from '../memory/tools.js'
+import { MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../memory/tools.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
@@ -19,6 +19,7 @@ import {
   getMemory,
   GET_MEMORY_ARGS,
   MEMORY_TOOL_ACCESS_MODES,
+  memoryWriteAsk,
   readMemory,
   READ_MEMORY_ARGS,
   saveMemory,
@@ -321,8 +322,15 @@ export async function executeTool(
   // Session-isolation gate for the memory tools (#653), checked at CALL time so a
   // mid-session policy change takes effect immediately.
   const memoryMode = MEMORY_TOOL_ACCESS_MODES[name]
-  if (memoryMode !== undefined && (await deps.memoryAccessAllowed?.(ctx, memoryMode)) === false) {
-    throw new Error(MEMORY_ACCESS_BLOCKED)
+  if (memoryMode !== undefined) {
+    const decision = (await deps.memoryAccessDecision?.(ctx, memoryMode)) ?? 'allow'
+    if (decision === 'deny') throw new Error(MEMORY_WRITE_NO_APPROVER)
+    if (decision === 'ask') {
+      // The approval covers THIS call's payload and nothing else: it is awaited inline, never cached.
+      const verdict = (await deps.requestMemoryWriteApproval?.(ctx, memoryWriteAsk(name, args))) ?? 'no_approver'
+      if (verdict === 'no_approver') throw new Error(MEMORY_WRITE_NO_APPROVER)
+      if (verdict !== 'allowed') throw new Error(MEMORY_WRITE_NOT_APPROVED)
+    }
   }
   const handler = HANDLERS.get(name)
   if (handler) return await handler(ctx, args, deps)
