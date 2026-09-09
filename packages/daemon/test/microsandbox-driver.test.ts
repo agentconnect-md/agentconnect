@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
+import { decode, encode } from 'cborg'
 import type { ExecEvent } from 'microsandbox'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MicrosandboxManager, type MicrosandboxManagerOptions } from '../src/microsandbox/driver.js'
@@ -11,23 +12,17 @@ import { SANDBOX_MCP_BRIDGE_ENTRY } from '../src/shim/sandbox-paths.js'
 class FakeExec {
   private readonly queue: Array<ExecEvent | undefined> = []
   private wake?: () => void
+  readonly id = 1
   readonly writes: Uint8Array[] = []
+  readonly stdin = vi.fn((_data: Uint8Array) => {})
   readonly signal = vi.fn(async (_signal: number) => this.push({ kind: 'exited', code: 0 }))
   readonly kill = vi.fn(async () => this.push({ kind: 'exited', code: 137 }))
+  readonly close = vi.fn(async () => {})
+  request?: { cmd: string; args: string[]; cwd: string; env: string[]; user: string; tty: boolean }
 
   push(event: ExecEvent | undefined): void {
     this.queue.push(event)
     this.wake?.()
-  }
-
-  async takeStdin() {
-    return {
-      write: async (data: Uint8Array) => {
-        this.writes.push(data)
-        this.push({ kind: 'stdout', data })
-      },
-      close: async () => {}
-    }
   }
 
   async *[Symbol.asyncIterator]() {
@@ -37,8 +32,13 @@ class FakeExec {
           this.wake = resolve
         })
       const event = this.queue.shift()
-      yield event
-      if (event?.kind === 'exited') return
+      const { kind, ...payload } = event ?? { kind: 'failed', message: 'guest execution failed' }
+      yield {
+        id: this.id,
+        flags: kind === 'exited' || kind === 'failed' ? 1 : 0,
+        body: Buffer.from(encode({ v: 7, t: `core.exec.${kind}`, p: encode(payload) }))
+      }
+      if (kind === 'exited' || kind === 'failed') return
     }
   }
 }
@@ -54,7 +54,11 @@ function fakeSdk() {
     readonly id = `vm-${created.length}`
     status = 'running'
     readonly processes: FakeExec[] = []
-    readonly spec = { image: 'test-image' }
+    readonly spec = {
+      image: 'test-image',
+      env: [{ key: 'PATH', value: '/image/bin' }],
+      runtime: { workdir: '/image', user: 'agent' }
+    }
     readonly stopWithTimeout = vi.fn(async () => {
       this.status = 'stopped'
       for (const process of this.processes) process.push({ kind: 'exited', code: 0 })
@@ -106,40 +110,51 @@ function fakeSdk() {
       )
       return { success: true, code: 0, stdout: () => stdout }
     })
-    async execStreamWith(_command: string, configure: (options: unknown) => unknown) {
-      let args: string[] = []
-      const options = {
-        args(value: string[]) {
-          args = value
-          return options
-        },
-        cwd() {
-          return options
-        },
-        envs() {
-          return options
-        },
-        stdinPipe() {
-          return options
-        },
-        tty() {
-          return options
-        }
-      }
-      configure(options)
-      const process = new FakeExec()
-      this.processes.push(process)
-      if (args[1] === 'sockets') process.push({ kind: 'stdout', data: Buffer.from('ready\n') })
-      else {
-        processes.push(process)
-        onRun?.(process)
-      }
-      return process
-    }
   }
 
   const sdk = {
     SandboxNotFoundError,
+    AgentClient: {
+      async connectSandbox(name: string) {
+        const sandbox = sandboxes.get(name)!
+        const process = new FakeExec()
+        return {
+          close: process.close,
+          async stream(flags: number, body: Uint8Array) {
+            const message = decode(body) as { v: number; t: string; p: Uint8Array }
+            expect(flags).toBe(2)
+            expect(message).toMatchObject({ v: 7, t: 'core.exec.request' })
+            process.request = decode(message.p) as NonNullable<FakeExec['request']>
+            sandbox.processes.push(process)
+            process.push({ kind: 'started', pid: 1 })
+            if (process.request.args[1] === 'sockets') process.push({ kind: 'stdout', data: Buffer.from('ready\n') })
+            else {
+              processes.push(process)
+              onRun?.(process)
+            }
+            return process
+          },
+          async send(id: number, flags: number, body: Uint8Array) {
+            expect(id).toBe(process.id)
+            expect(flags).toBe(0)
+            const message = decode(body) as { t: string; p: Uint8Array }
+            if (message.t === 'core.exec.stdin') {
+              const { data } = decode(message.p) as { data: Uint8Array }
+              process.stdin(data)
+              if (data.length) {
+                process.writes.push(data)
+                process.push({ kind: 'stdout', data })
+              }
+            } else {
+              expect(message.t).toBe('core.exec.signal')
+              const { signal } = decode(message.p) as { signal: number }
+              if (signal === 9) await process.kill()
+              else await process.signal(signal)
+            }
+          }
+        }
+      }
+    },
     Sandbox: {
       async get(name: string) {
         const sandbox = sandboxes.get(name)
@@ -225,23 +240,66 @@ describe('microsandbox process and VM ownership', () => {
   it('shares a VM, preserves binary ACP data, and refuses suspend while another execution is active', async () => {
     const { manager, environment, request, created, processes } = await fixture()
     const [first, second] = await Promise.all([
-      manager.driverFor(environment).launch(request),
+      manager.driverFor(environment).launch({ ...request, env: { PATH: '/session/bin' } }),
       manager.driverFor(environment).launch(request)
     ])
     expect(created).toHaveLength(1)
+    expect(created[0]!.processes[0]!.request).toMatchObject({
+      cwd: '/image',
+      env: ['PATH=/image/bin'],
+      user: 'agent'
+    })
+    expect(processes[0]!.request).toMatchObject({
+      cmd: request.command,
+      args: request.args,
+      cwd: '/workspace',
+      env: ['PATH=/session/bin'],
+      user: 'agent',
+      tty: false
+    })
+    expect(processes[1]!.request?.env).toEqual(['PATH=/image/bin'])
     const writer = first.toAgent.getWriter()
     const reader = first.fromAgent.getReader()
     const bytes = Uint8Array.of(0, 255, 10, 13, 128)
     await writer.write(bytes)
     expect((await reader.read()).value).toEqual(bytes)
     await expect(manager.suspend(environment.id)).rejects.toThrow('2 active executions')
-    await first.stop(0)
+    let releaseClose!: () => void
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve
+    })
+    processes[0]!.close.mockImplementationOnce(() => closeGate)
+    const terminal = vi.fn()
+    const exited = new Promise<void>((resolve) => first.onExit(resolve))
+    first.onExit(terminal)
+    processes[0]!.push({ kind: 'exited', code: 0 })
+    await vi.waitFor(() => expect(processes[0]!.close).toHaveBeenCalledOnce())
+    expect(terminal).not.toHaveBeenCalled()
+    const stopped = vi.fn()
+    const stdinClosed = vi.fn()
+    const stopping = first.stop(1).then(stopped)
+    const closingStdin = writer.close().then(stdinClosed)
+    await expect(manager.suspend(environment.id)).rejects.toThrow('2 active executions')
+    await second.toAgent.getWriter().write(bytes)
+    expect((await second.fromAgent.getReader().read()).value).toEqual(bytes)
+    expect(processes[1]!.close).not.toHaveBeenCalled()
+    expect(processes[0]!.signal).not.toHaveBeenCalled()
+    expect(processes[0]!.kill).not.toHaveBeenCalled()
+    expect(processes[0]!.stdin).toHaveBeenCalledExactlyOnceWith(bytes)
+    expect(stopped).not.toHaveBeenCalled()
+    expect(stdinClosed).not.toHaveBeenCalled()
+    releaseClose()
+    await Promise.all([exited, stopping, closingStdin])
+    expect(stopped).toHaveBeenCalledOnce()
+    expect(stdinClosed).toHaveBeenCalledOnce()
     await expect(manager.suspend(environment.id)).rejects.toThrow('1 active executions')
     processes[1]!.signal.mockImplementation(async () => {})
     await second.stop(1)
     expect(processes[1]!.kill).toHaveBeenCalledOnce()
+    expect(processes[1]!.close).toHaveBeenCalledOnce()
     await manager.suspendIdle(Date.now())
     expect(created[0]!.status).toBe('stopped')
+    expect(created[0]!.processes[0]!.close).toHaveBeenCalledOnce()
     expect(await manager.environmentIds()).toEqual([environment.id])
     await manager.discard(environment.id)
     expect(await manager.environmentIds()).toEqual([])
@@ -249,10 +307,24 @@ describe('microsandbox process and VM ownership', () => {
 
   it('kills an SDK failure event and releases the execution without hanging readers', async () => {
     const { manager, environment, request, processes, runWith } = await fixture()
-    runWith((process) => process.push(undefined))
+    let releaseClose!: () => void
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve
+    })
+    runWith((process) => {
+      process.close.mockImplementationOnce(() => closeGate)
+      process.push(undefined)
+    })
     const runtime = await manager.driverFor(environment).launch(request)
     const exited = new Promise<void>((resolve) => runtime.onExit(resolve))
-    await expect(runtime.fromAgent.getReader().read()).rejects.toThrow('unsupported process failure event')
+    const terminal = vi.fn()
+    runtime.onExit(terminal)
+    const read = expect(runtime.fromAgent.getReader().read()).rejects.toThrow('guest execution failed')
+    await vi.waitFor(() => expect(processes[0]!.close).toHaveBeenCalledOnce())
+    expect(terminal).not.toHaveBeenCalled()
+    await expect(manager.suspend(environment.id)).rejects.toThrow('1 active executions')
+    releaseClose()
+    await read
     await exited
     expect(processes[0]!.kill).toHaveBeenCalledOnce()
     await manager.suspend(environment.id)
@@ -320,7 +392,7 @@ describe('microsandbox process and VM ownership', () => {
     const recovered = await driver.launch(request)
     expect(created).toHaveLength(1)
     expect(vm.status).toBe('running')
-    const bytes = Buffer.from('recovered\n')
+    const bytes = new TextEncoder().encode('recovered\n')
     await recovered.toAgent.getWriter().write(bytes)
     expect((await recovered.fromAgent.getReader().read()).value).toEqual(bytes)
     await recovered.stop(0)
@@ -332,6 +404,21 @@ describe('microsandbox process and VM ownership', () => {
     runWith((process) => process.push({ kind: 'stderr', data: Buffer.from('oversized') }))
     await expect(manager.exec(environment, 'test', [], { maxBytes: 4 })).rejects.toThrow('output limit exceeded')
     expect(processes[0]!.kill).toHaveBeenCalledOnce()
+    expect(processes[0]!.close).toHaveBeenCalledOnce()
+    await manager.suspend(environment.id)
+  })
+
+  it('closes a timed-out command without closing another active stream', async () => {
+    const { manager, environment, request, processes } = await fixture()
+    const runtime = await manager.driverFor(environment).launch(request)
+    await expect(manager.exec(environment, 'test', [], { timeoutMs: 1 })).rejects.toThrow('timed out')
+    expect(processes[1]!.signal).toHaveBeenCalledWith(15)
+    expect(processes[1]!.close).toHaveBeenCalledOnce()
+    expect(processes[0]!.close).not.toHaveBeenCalled()
+    const bytes = new TextEncoder().encode('still running\n')
+    await runtime.toAgent.getWriter().write(bytes)
+    expect((await runtime.fromAgent.getReader().read()).value).toEqual(bytes)
+    await runtime.stop(0)
     await manager.suspend(environment.id)
   })
 })
