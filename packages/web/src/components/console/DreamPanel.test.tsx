@@ -21,7 +21,8 @@ const api = vi.hoisted(() => ({
   listAgentMemory: vi.fn(),
   acceptDreamSkill: vi.fn(),
   dismissDreamSkill: vi.fn(),
-  fetchDreamSkill: vi.fn()
+  fetchDreamSkill: vi.fn(),
+  wakeAgent: vi.fn()
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -65,6 +66,7 @@ const dream = (over: Partial<Record<string, unknown>> = {}) => ({
 beforeEach(() => {
   for (const [key, fn] of Object.entries(api)) if (key !== 'ApiError') (fn as ReturnType<typeof vi.fn>).mockReset()
   api.listDreams.mockResolvedValue([])
+  api.wakeAgent.mockResolvedValue({ state: 'resumed' })
   api.startDream.mockResolvedValue(dream({ status: 'pending' }))
   api.listDreamFiles.mockResolvedValue({
     exists: true,
@@ -255,6 +257,39 @@ describe('DreamPanel', () => {
     // The store review token from listDreamFiles is echoed on adopt (task #36 Phase B).
     expect(api.adoptDream).toHaveBeenCalledWith(AGENT, 'drm-1', false, 'sha256:store')
     expect(host.textContent).toContain('Outdated proposals were moved to History')
+  })
+
+  it('wakes the sandbox when the staged store refuses as asleep, then reads it once the pod answers', async () => {
+    // Dream staging stays on the pod whatever the memory home (#1078): a Control-Plane-home agent's Memory tab no
+    // longer wakes on open, so the review presses the wake itself and polls the listing until the pod answers.
+    vi.useFakeTimers()
+    try {
+      api.listDreams.mockResolvedValue([dream()])
+      api.listDreamFiles.mockRejectedValueOnce(
+        Object.assign(new FakeApiError(503), { code: 'WORKSPACE_SANDBOX_UNAVAILABLE' })
+      )
+      const host = await render()
+
+      await act(async () => button(host, 'Review')?.click())
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(api.wakeAgent).toHaveBeenCalledWith(AGENT)
+      expect(host.textContent).toContain('Starting the agent’s sandbox')
+      // The refusal is a state, not an error line.
+      expect(host.textContent).not.toContain('http 503')
+
+      // The wake answered; the first poll re-issues the listing, which the pod now serves.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_100)
+      })
+      const lineDiff = host.querySelector('table[aria-label="Line changes"]')
+      expect(lineDiff?.querySelector('[data-diff-kind="add"]')?.textContent).toContain('# Memory (rebuilt)')
+      expect(host.textContent).not.toContain('Starting the agent’s sandbox')
+      expect(api.wakeAgent).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('discards a ready dream from its row without making the user open review', async () => {

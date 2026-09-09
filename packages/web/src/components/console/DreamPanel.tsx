@@ -42,6 +42,13 @@ import { Icon, Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { LineDiff } from '@/components/console/LineDiff'
+import { SANDBOX_ASLEEP_CODE } from '@/components/console/workspace-tree'
+import { useSandboxWake, type SandboxReadState } from '@/components/console/sandbox-wake'
+import {
+  DREAM_SANDBOX_ASLEEP_NOTICE,
+  SandboxAsleepNotice,
+  SandboxStartingNotice
+} from '@/components/console/SandboxWakeNotice'
 
 /** While a dream is in flight the list changes fast. */
 const POLL_MS = 4000
@@ -572,6 +579,16 @@ function DreamReview({
   const [live, setLive] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Staging lives on the pod whatever the memory home (#1078): a read refused as asleep presses the wake here, since the Memory tab no longer does on open.
+  const [asleep, setAsleep] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const retry = useCallback(() => setAttempt((n) => n + 1), [])
+  const readState: SandboxReadState = asleep ? 'asleep' : error ? 'failed' : paths === null ? 'pending' : 'ready'
+  const wake = useSandboxWake(agentId, readState, retry)
+  const refused = (e: unknown, fallback: string) => {
+    if (e instanceof ApiError && e.code === SANDBOX_ASLEEP_CODE) setAsleep(true)
+    else setError(e instanceof Error ? e.message : fallback)
+  }
   // Same-bytes review fence token from the staged listing; echoed on Adopt so the
   // daemon binds adoption to exactly the bytes shown here (task #36 Phase B).
   const [reviewToken, setReviewToken] = useState<string | undefined>(undefined)
@@ -582,6 +599,7 @@ function DreamReview({
     setPaths(null)
     setSelected(null)
     setError(null)
+    setAsleep(false)
     setReviewToken(undefined)
     void (async () => {
       try {
@@ -596,14 +614,19 @@ function DreamReview({
           .sort((a, b) => Number(a.staged) - Number(b.staged) || a.name.localeCompare(b.name))
         setPaths(merged)
         setSelected(merged[0]?.name ?? null)
+        // Nothing to read for a file, so the file read's own spinner never starts.
+        if (merged.length === 0) setLoading(false)
       } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : 'Could not load the staged store.')
+        if (!alive) return
+        setLoading(false)
+        refused(e, 'Could not load the staged store.')
       }
     })()
     return () => {
       alive = false
     }
-  }, [agentId, dreamId])
+    // `attempt` is the wake's re-issue of this read.
+  }, [agentId, dreamId, attempt])
 
   useEffect(() => {
     if (!selected) return
@@ -621,7 +644,7 @@ function DreamReview({
         setStaged(stagedFile.exists ? stagedFile.content : '')
         setLive(liveFile.exists ? liveFile.content : '')
       } catch (e) {
-        if (id === request.current) setError(e instanceof Error ? e.message : 'Could not load that file.')
+        if (id === request.current) refused(e, 'Could not load that file.')
       } finally {
         if (id === request.current) setLoading(false)
       }
@@ -632,7 +655,24 @@ function DreamReview({
 
   return (
     <div className="flex flex-col gap-3 rounded-(--radius-md) border border-(--border-subtle) bg-(--surface-sunken) p-3">
-      {error ? <div className="font-sans text-[12px] leading-normal text-(--status-error)">{error}</div> : null}
+      {asleep ? (
+        wake.phase === 'starting' ? (
+          <SandboxStartingNotice compact />
+        ) : (
+          <SandboxAsleepNotice
+            wake={wake}
+            startable
+            compact
+            notice={
+              <div className="px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
+                {DREAM_SANDBOX_ASLEEP_NOTICE}
+              </div>
+            }
+          />
+        )
+      ) : error ? (
+        <div className="font-sans text-[12px] leading-normal text-(--status-error)">{error}</div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex flex-wrap items-center gap-1">
