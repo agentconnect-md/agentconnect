@@ -478,3 +478,49 @@ continuously live host without a supported update mechanism still uses explicit
 entry tools for fresh reads. Its automatic refresh requires a separately verified
 runtime capability; silently inserting a leading user-message catalog is not an
 acceptable fallback.
+
+### Live refresh capability audit (2026-09-10)
+
+A repeated `session/load` in an already-live Claude ACP process is not a
+system-context refresh. This was checked against the installed published
+`@agentclientprotocol/claude-agent-acp` packages **0.59.0 and 0.70.0**, not inferred
+from the daemon's `loadSession` method signature:
+
+- `ClaudeAcpAgent.getOrCreateSession` compares a fingerprint containing only
+  `cwd` and sorted `mcpServers`. An unchanged fingerprint returns the existing
+  query; `_meta.systemPrompt` does not participate in that comparison.
+- `createSession` consumes `_meta.systemPrompt` when constructing the SDK query.
+  `prompt` instead converts ACP content to a user message and pushes it into the
+  existing query. Neither path implements a live system-context replacement.
+- A no-model probe called the actual exported agent class with an existing
+  session and instrumented creation/teardown methods. Changing only the system
+  append produced zero creations and zero teardowns in both versions. Changing
+  `cwd` as a positive control produced one of each. This verifies adapter
+  dispatch behavior; it is not a model-level end-to-end refresh test.
+
+Consequently the supported native-resume delivery above means loading a session
+that is **not already live in that adapter process**. The daemon's warm-session
+fast path remains unchanged. Do not force a different cwd or MCP configuration
+just to invalidate the adapter fingerprint: those are session execution and
+permission inputs, not cache-busting fields. Do not silently restart unrelated
+sessions in a shared host process.
+
+Before enabling automatic live delivery, provide and verify an explicit adapter
+capability (or a separately tested, session-scoped close/resume lifecycle) with:
+
+1. A turn-boundary update receipt identifying the accepted catalog revision;
+   failed or unsupported updates must not mark that revision delivered.
+2. Preservation of conversation identity/history, cwd, MCP authorization,
+   protected settings, model configuration, and capture provenance. Loading must
+   not replay history into ordinary live delivery or duplicate a user turn.
+3. Coalesced invalidation after committed writes/adoption, including both base
+   and overlay revisions; unchanged catalogs should not recreate the query.
+4. A runtime integration test showing that a subsequent real turn receives the
+   changed reference context without adding a user message or changing its title.
+   Cover interrupted updates and retry without duplicating content.
+
+These package observations do not establish support for other versions or
+runtimes. Until a supported mechanism passes those checks, new/native-resumed
+sessions receive the bounded observation and live sessions retrieve current
+entries through the common tools. Compatibility retirement is also still pending;
+this audit does not close the overall unified-memory implementation task.
