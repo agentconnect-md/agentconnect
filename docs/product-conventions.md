@@ -94,7 +94,9 @@ copies daemon-local workspace, transcripts, or attachments. Managed memory follo
 agent only when its home is the Control Plane (`memory.home: control-plane`); a
 daemon-home tree stays in the source archive, and a move onto the managed pool is
 refused until the home is switched to the Control Plane (the only direction that
-carries memory; forcing it back starts the agent empty). A source that later
+carries memory; forcing it back starts the agent empty). An unplaced agent has no
+tree to lose, so placing it on the pool switches its home to the Control Plane in the
+same write, without a migration. A source that later
 reconnects after a force reassign is told to detach the stale local copy during
 placement reconciliation.
 

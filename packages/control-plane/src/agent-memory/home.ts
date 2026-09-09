@@ -30,7 +30,7 @@ export const POOL_REFUSES_DAEMON_HOME =
 export const REVERSE_NEEDS_FORCE =
   'moving memory back from the Control Plane to the daemon keeps nothing; send force: true to confirm'
 export const POOL_MOVE_NEEDS_CP_HOME =
-  'this agent keeps its memory on the daemon; switch memory.home to control-plane before placing it on the managed pool'
+  'this agent keeps its memory on the daemon it runs on; switch its memory home to Control Plane in the agent’s Memory tab, wait for the migration to finish, then move it onto the managed pool'
 
 export type MemoryBindingRefusal = { refused: 'pool-daemon-home' | 'reverse-needs-force'; message: string }
 
@@ -67,6 +67,15 @@ export function resolveMemoryBindingOnCreate(
     return { memory: { ...input, home: 'control-plane' } }
   }
   return { memory: { ...input, home: input.home ?? 'daemon' } }
+}
+
+/** The managed binding homed in the Control Plane: the current policy fields kept, `home` set, the CP-owned flag dropped.
+ *  The boot-time pool flip patches with it (and the update rule flags the migration); an unplaced agent placed on the
+ *  pool stores it as is — resolved as on create, since there is no tree to migrate. */
+export function managedBindingHomedInControlPlane(current: AgentMemoryBinding | null): ManagedMemoryBinding {
+  if (current?.provider !== 'managed') return { provider: 'managed', home: 'control-plane' }
+  const { home: _home, homeMigration: _flag, ...policy } = current
+  return { ...policy, home: 'control-plane' }
 }
 
 export type MemoryBindingUpdate =

@@ -1025,7 +1025,10 @@ read and written by whichever member holds the duty over the daemon's CP connect
 org-fenced and write-fenced by placement, reachable while the connection is READY
 regardless of any pod, and carried through a move because nothing is daemon-local.
 The pool mandates that home — the CP rejects `home: daemon` for an agent placed on
-the install-wide pool and a `--k8s` member fails such an activation closed. Local
+the install-wide pool and a `--k8s` member fails such an activation closed. A placed
+daemon-home agent is refused a move onto the pool until its home is switched; an
+unplaced one has no tree to lose, so placing it on the pool switches its home to the
+Control Plane in the same write, without a migration. Local
 daemons keep the tree under the agent dir by default and may opt into the same
 home; the two are one code path over a file-system port.
 

@@ -823,6 +823,11 @@ export interface AgentUpdateOpts {
   memoryHome?: MemoryHomeUpdate
 }
 
+export interface AgentMoveOpts {
+  /** Switch a `daemon` managed home to the Control Plane with the placement — an unplaced agent landing on the pool. */
+  memoryHome?: 'control-plane'
+}
+
 export interface AgentCreateOpts {
   skillSources?: AgentSkillSourceFence
 }
@@ -931,13 +936,15 @@ export interface AgentRepo {
    * target, so moving between a set and a machine is fenced exactly like moving between two
    * machines. Returns the updated row, or null when another move won the compare-and-set race. A
    * real move revokes active webchat MCP authority in the same transaction. This is the
-   * persistence fence for the explicit cold placement-switch action.
+   * persistence fence for the explicit cold placement-switch action. `memoryHome` rewrites the
+   * managed binding's home in the same write, resolved from the binding under the row lock.
    */
   movePlacement(
     agentId: AgentId,
     expected: PlacementTarget,
     target: PlacementTarget,
-    byUserId?: string
+    byUserId?: string,
+    opts?: AgentMoveOpts
   ): Promise<AgentRecord | null>
   /** Atomically enumerate the agent's HookDefs, tombstone their durable review
    *  projections, and delete the Agent (cascading the HookDefs). The returned

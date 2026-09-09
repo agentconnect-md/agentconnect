@@ -11,6 +11,7 @@ import type {
   AgentRepo,
   AgentRecord,
   AgentSkillSourceFence,
+  AgentMoveOpts,
   AgentUpdateOpts,
   AgentWorkspace,
   AgentWorkspaceCredential,
@@ -39,7 +40,12 @@ import {
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
-import { MemoryHomeRefusedError, resolveMemoryBindingOnUpdate } from '../../agent-memory/home.js'
+import {
+  MemoryHomeRefusedError,
+  managedBindingHomedInControlPlane,
+  managedMemoryHomeOf,
+  resolveMemoryBindingOnUpdate
+} from '../../agent-memory/home.js'
 import { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './agent-memory.repo.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockAgentPlacement, settlePlacementChange } from './agent-placement.js'
@@ -980,7 +986,8 @@ export class PgAgentRepo implements AgentRepo {
     agentId: AgentId,
     expected: PlacementTarget,
     target: PlacementTarget,
-    byUserId?: string
+    byUserId?: string,
+    opts?: AgentMoveOpts
   ): Promise<AgentRecord | null> {
     // The explicit Agent lock serializes the compare-and-set read with all
     // placement writers. Keep the expected columns on the update as a defensive guard; a
@@ -993,6 +1000,8 @@ export class PgAgentRepo implements AgentRepo {
         if (!current || !samePlacement(placementTargetOf(current), expected)) return null
         if (target.kind === 'set') await assertAgentMayUseSet(tx, { id: agentId, orgId: current.orgId }, target.setId)
         if (target.kind === 'daemon') await assertDaemonNotInSet(tx, agentId, target.daemonId)
+        // The home is resolved from the bag under the lock the read above took, never from the caller's snapshot.
+        const overrides = opts?.memoryHome ? await this.poolHomedOverrides(tx, agentId) : undefined
         const a = await tx.agent.update({
           where: {
             id: agentId,
@@ -1002,6 +1011,7 @@ export class PgAgentRepo implements AgentRepo {
           },
           data: {
             ...columns,
+            ...(overrides !== undefined ? { runtimeOverrides: overrides } : {}),
             status: target.kind === 'unplaced' ? 'inactive' : 'active',
             lastModifiedAt: new Date(),
             ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
@@ -1021,6 +1031,18 @@ export class PgAgentRepo implements AgentRepo {
       if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2025') return null
       throw err
     }
+  }
+
+  /** The locked row's overrides with a daemon memory home switched to the Control Plane, no migration flagged — an
+   *  unplaced agent has no tree to copy. Any other binding is left exactly as stored (undefined ⇒ no write). */
+  private async poolHomedOverrides(
+    tx: Prisma.TransactionClient,
+    agentId: string
+  ): Promise<RuntimeOverrides | undefined> {
+    const row = await tx.agent.findUniqueOrThrow({ where: { id: agentId }, select: { runtimeOverrides: true } })
+    const current = (row.runtimeOverrides as RuntimeOverrides | null) ?? {}
+    if (managedMemoryHomeOf(current.memory) !== 'daemon') return undefined
+    return { ...current, memory: managedBindingHomedInControlPlane(current.memory ?? null) }
   }
 
   async delete(orgId: OrgId, agentId: AgentId): Promise<HookRecord[]> {

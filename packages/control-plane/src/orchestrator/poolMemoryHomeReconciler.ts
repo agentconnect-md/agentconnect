@@ -1,6 +1,6 @@
 // The rollout flip (memory-evolution.md §3.2.1): a pool-placed agent with a `daemon` home is moved to `control-plane`.
 import type { AgentMemoryBinding } from '@agentconnect.md/protocol'
-import { managedMemoryHomeOf, type ManagedMemoryBindingInput } from '../agent-memory/home.js'
+import { managedBindingHomedInControlPlane, managedMemoryHomeOf } from '../agent-memory/home.js'
 import { DaemonId } from '../domain/ids.js'
 import type { AgentRepo, MemberSetRepo } from '../persistence/ports.js'
 import type { AgentDelivery } from './agentDelivery.js'
@@ -30,13 +30,6 @@ class NothingToFlip extends Error {
   constructor(readonly verdict: 'already' | 'skipped') {
     super('nothing to flip')
   }
-}
-
-/** The patch that moves a managed binding home: its policy fields kept, `home` set, the CP-owned flag left to the rule. */
-function flipInput(current: AgentMemoryBinding | null): ManagedMemoryBindingInput {
-  if (current?.provider !== 'managed') return { provider: 'managed', home: 'control-plane' }
-  const { home: _home, homeMigration: _flag, ...policy } = current
-  return { ...policy, home: 'control-plane' }
 }
 
 export class PoolMemoryHomeReconciler {
@@ -76,7 +69,7 @@ export class PoolMemoryHomeReconciler {
               input: (locked) => {
                 const now = verdict(locked)
                 if (now !== 'flip') throw new NothingToFlip(now)
-                return flipInput(locked)
+                return managedBindingHomedInControlPlane(locked)
               },
               onPool: true,
               force: false
