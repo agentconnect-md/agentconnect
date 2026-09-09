@@ -170,17 +170,36 @@ export type ConfigSelectionPlan = { configId: string; value: string } | { skip: 
  * try again at 7:01 PM.") under `error.data.message` — so prefer that detail
  * over a bare title, and append it when a specific message carries extra data.
  * Non-RequestError failures fall back to the plain Error message.
+ *
+ * Both texts are first stripped of the decoration Codex puts around a provider's own error
+ * (`undecorateRuntimeError`): what reaches the person is the sentence the provider wrote.
  */
 export function turnFailureReason(err: unknown): string {
   const e = err as { message?: unknown; data?: { message?: unknown } } | null | undefined
-  const msg = typeof e?.message === 'string' && e.message.trim() ? e.message.trim() : String(err)
-  const detail = typeof e?.data?.message === 'string' ? e.data.message.trim() : ''
+  const raw = typeof e?.message === 'string' && e.message.trim() ? e.message.trim() : String(err)
+  const msg = undecorateRuntimeError(raw)
+  const detail = typeof e?.data?.message === 'string' ? undecorateRuntimeError(e.data.message.trim()) : ''
   if (!detail || msg.includes(detail)) return msg
   // The SDK's generic titles (RequestError statics) add nothing over the
   // runtime's own text; any more specific message keeps both.
   const generic =
     /^(parse error|invalid request|invalid params|internal error|request cancelled|authentication required|resource not found)$/i
   return generic.test(msg) ? detail : `${msg}: ${detail}`
+}
+
+/**
+ * Codex reports a non-2xx model response as `unexpected status <code> <reason>: <provider message>`,
+ * newer versions with `, url: <request url>` appended. Neither wrapper is for the person reading the
+ * turn: the status is implied by the provider's sentence, and the URL is the gateway or proxy the
+ * runtime was pointed at — an internal address that means nothing to them and should not be shown.
+ * Only that exact shape is unwrapped; the provider's own text passes through untouched, and any other
+ * message is returned as is. A message that is nothing but the wrapper keeps its status line.
+ */
+export function undecorateRuntimeError(text: string): string {
+  const m = /^unexpected status (\d{3})(?: [A-Za-z][A-Za-z '-]*)?: ([\s\S]*?)(?:, url: \S+)?$/.exec(text.trim())
+  if (!m) return text
+  const inner = m[2]!.trim()
+  return inner || `unexpected status ${m[1]}`
 }
 
 /** Machine-stable classification for a failed ACP turn. Keep the default conservative:
