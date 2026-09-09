@@ -994,12 +994,14 @@ export class PermissionCoordinator {
         })
         // Only a chat card is rewritten here: an editor decision settles approvals, and an
         // approval elicitation never lands on the webchat surface.
-        if (elicitation.surface === 'chat' && elicitation.ts) {
+        if (elicitation.surface === 'chat') {
           const label: ElicitCardLabel =
             req.decision === 'allow'
               ? { mark: 'answered', text: 'Allowed by Agent editor', fallback: 'Permission resolved' }
               : { mark: 'dismissed', text: 'Denied by Agent editor', fallback: 'Permission resolved' }
-          elicitation.facet.settle(elicitation, elicitSettlement(elicitation.params, false, label))
+          // Through settleChatCard, so a decision that beats the post leaves its label for the
+          // posting path instead of leaving a card standing with buttons nobody awaits.
+          this.settleChatCard(elicitation, req.requestId, false, label)
         }
         elicitation.resolve(req.decision === 'allow' ? { action: 'accept' } : { action: 'cancel' })
         return { ok: true }
@@ -1539,7 +1541,8 @@ export class PermissionCoordinator {
     // settlement left its own label here (#1794).
     if (!live) {
       const settled = this.takeSettledBeforePost(requestId)
-      if (ts) facet.settle({ conn: p.conn, channel: p.plan.channel, ts }, elicitSettlement(params, !!url, settled))
+      if (ts && settled)
+        facet.settle({ conn: p.conn, channel: p.plan.channel, ts }, elicitSettlement(params, !!url, settled))
       return await result
     }
     if (!ts) {
@@ -1890,6 +1893,50 @@ export class PermissionCoordinator {
     }
   }
 
+  /**
+   * Route one tap on a chat elicitation card, for a surface whose card ASSEMBLES its answer.
+   *
+   * Slack needs none of this: its message carries the reader's half-filled state itself, and every
+   * value arrives on the Confirm. A Telegram keyboard has no state at all — a tap carries 64 bytes
+   * and nothing else — so the card is assembled here instead, tap by tap, and the Confirm submits
+   * through the very same {@link submitElicitForm} a Slack Confirm does. That is the point of
+   * routing it through core rather than letting the surface answer on its own: ONE re-derivation
+   * of the rendered form (#1815), one per-field validation, one refusal wording.
+   *
+   * Dismiss (`token === null`) is not folded into anything — it is the reader's one explicit
+   * refusal on every card, assembled or not, and settles through the choice path unchanged.
+   */
+  async handleElicitCardTap(a: {
+    requestId: string
+    token: string | null
+    /** The card's own message id AS THE TAP REPORTS IT — the same one fact `ElicitCardHandle.ts`
+     *  holds, in whichever dialect the surface spells it. A tap can beat the post it came from:
+     *  the reader sees the keyboard the instant the platform has it, while `awaitChatElicitation`
+     *  is still awaiting the send that will record the id. Adopting it is what lets a fold redraw
+     *  a card whose own post has not landed yet; that send then records the very same value. */
+    ts?: string
+    actor?: InteractionActor
+  }): Promise<void> {
+    const actor = a.actor ? { actor: a.actor } : {}
+    const rec = this.pendingElicits.get(a.requestId)
+    // A one-tap card, an unknown request, and Dismiss all answer with the token as it came.
+    if (a.token === null || !rec || rec.surface !== 'chat' || !rec.facet.tap || !rec.form)
+      return await this.handleElicitChoice({ requestId: a.requestId, value: a.token, ...actor })
+    // Only ever fills a gap: a recorded id is the send's own and is never overwritten by a tap.
+    if (rec.ts === undefined && a.ts !== undefined) rec.ts = a.ts
+    const form = this.cardForm(rec)
+    if (!form) return
+    const folded = rec.facet.tap(rec, { requestId: a.requestId, params: rec.params, form }, a.token)
+    // A token naming nothing this card offers is refused aloud and leaves the card live, exactly
+    // as an unoffered option value is: the reader just acted, so silence would read as a dead card.
+    if (!folded) {
+      this.noticeInTurn(rec, ELICIT_ANSWER_REFUSED)
+      return
+    }
+    if (folded.kind === 'pending') return
+    await this.submitElicitForm({ requestId: a.requestId, fields: folded.fields, ...actor })
+  }
+
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
    *  request — `accept` with the chosen value (a LIST of them for a multi-select, a real number
    *  for a numeric field, a RECORD of value-per-field for a form, under the field name(s)), or
@@ -2131,12 +2178,16 @@ export class PermissionCoordinator {
     this.settledBeforePost.set(requestId, label)
   }
 
-  /** How a card the posting path found already settled must read. A settlement that beat the post
-   *  left its own label here; anything else really was the turn ending, which is Cancelled. */
-  private takeSettledBeforePost(requestId: string): ElicitCardLabel {
+  /** How a card the posting path found already settled must read, or undefined when it has already
+   *  been rewritten and must be left alone. Every chat-card settlement goes through
+   *  {@link settleChatCard}, which leaves its label here exactly when it had no message to rewrite
+   *  — so nothing left means the settlement DID rewrite the card, from a message id of its own
+   *  (a tap carries the card's, adopted before the send could record it), and re-settling would
+   *  call an answered card Cancelled. */
+  private takeSettledBeforePost(requestId: string): ElicitCardLabel | undefined {
     const settled = this.settledBeforePost.get(requestId)
     this.settledBeforePost.delete(requestId)
-    return settled ?? ELICIT_CANCELLED
+    return settled
   }
 
   /** Post one daemon-authored line on the card's OWN surface — a notice, so it lands where every

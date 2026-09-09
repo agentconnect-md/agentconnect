@@ -3,11 +3,13 @@
  * {@link ElicitCardFacet}, and the reason the member exists rather than being guessed from Slack.
  *
  * WHAT TELEGRAM ACTUALLY HAS is one control: an inline keyboard of tappable buttons, each echoing
- * a ≤64-BYTE `callback_data` back as a `callback_query`. It has no multi-select, no text box and
- * no number box in a message — a Bot API keyboard is buttons and nothing else — so `reduction`
- * below claims exactly the two kinds one TAP can answer, and every other kind is declined with
- * the notice #1819/#1839 already post rather than half-rendered into a control that cannot
- * submit. That is the same line {@link SLACK_DM_ELICIT_SURFACE} draws, for the same reason.
+ * a ≤64-BYTE `callback_data` back as a `callback_query`. There is no multi-select widget and no
+ * typed box — a Bot API keyboard is buttons and nothing else — so a MULTI-SELECT is assembled out
+ * of the one control there is: one button per option, its label carrying the checkbox, a tap
+ * toggling it and redrawing the keyboard, and a Confirm submitting the set. The state that lives
+ * in a Slack message's own `state.values` lives here in the card's `cardState` slot instead,
+ * because 64 bytes of `callback_data` cannot carry a selection. Everything else — a typed box, a
+ * multi-question form, URL mode — is still declined with the notice #1819/#1839 already post.
  *
  * URL MODE IS DECLINED TOO, and not for want of a link button. An inline `url` button opens the
  * page but fires no `callback_query`, so the daemon would never learn the reader consented — and
@@ -26,6 +28,7 @@
  * 2026-09-08 against the Bot API: an edit omitting `reply_markup`, and one sending an empty
  * `inline_keyboard`, both return a message with no markup).
  */
+import { elicitFormBlockId } from '@agentconnect.md/protocol'
 import type {
   ElicitCardAsk,
   ElicitCardDraft,
@@ -34,12 +37,22 @@ import type {
   ElicitCardHost,
   ElicitCardMark,
   ElicitCardSettlement,
+  ElicitCardTap,
+  ElicitCardTapTarget,
   ElicitCardTurn
 } from '../elicit-card.js'
 import type { InlineButton, TelegramConnection } from '../../telegram/connection.js'
 import { TELEGRAM_MESSAGE_LIMIT } from '../../telegram/render.js'
 import type { TelegramTurnState } from './turn-output.js'
-import { clampTo, elicitCardShape, elicitOptionToken, type ElicitKind, type ElicitSurface } from '../../slack/render.js'
+import {
+  clampTo,
+  elicitCardShape,
+  elicitFormFieldHint,
+  elicitOptionToken,
+  type ElicitKind,
+  type ElicitSurface,
+  type ElicitTarget
+} from '../../slack/render.js'
 
 /**
  * The most options one Telegram elicitation keyboard offers.
@@ -51,7 +64,8 @@ import { clampTo, elicitCardShape, elicitOptionToken, type ElicitKind, type Elic
  * reach; 24 such buttons plus Dismiss serialized to 5.7 KB and was accepted, as were 40 buttons
  * of 75 four-byte characters each (9.1 KB). 24 is therefore Slack's own button cap re-derived
  * from Telegram's own refusals, with better than 2x headroom on the worst list this reduction can
- * produce — and a longer list is declined whole, never trimmed to fit.
+ * produce — and a longer list is declined whole, never trimmed to fit. A checkbox card adds one
+ * more button and a two-character tick per label, which the same headroom covers.
  */
 const TELEGRAM_ELICIT_MAX_BUTTONS = 24
 
@@ -64,6 +78,14 @@ const TELEGRAM_ELICIT_PREFIX = 'ac_el'
 
 /** The token a Dismiss button carries. Not a position, because Dismiss answers no option. */
 const TELEGRAM_ELICIT_DISMISS = 'x'
+
+/** The token a Confirm button carries — the tap that SUBMITS an assembled card. Not a position
+ *  for the same reason Dismiss is not: it names no option, it names the set of them. */
+const TELEGRAM_ELICIT_CONFIRM = 'ok'
+
+/** How an assembled card draws one option's checkbox. Literal emoji, as the marks are. */
+const TELEGRAM_ELICIT_CHECKED = '\u2611\ufe0f'
+const TELEGRAM_ELICIT_UNCHECKED = '\u2b1c\ufe0f'
 
 /**
  * How much of the ANSWER a settled card echoes back. The decision core supplies is not bounded —
@@ -90,14 +112,19 @@ const TELEGRAM_ELICIT_MARK: Record<ElicitCardMark, string> = {
 }
 
 /**
- * What a Telegram elicitation card can render AND collect: the two kinds one TAP answers, and no
- * more. A keyboard button submits the instant it is tapped, so a kind needing something filled in
- * first could be shown but never confirmed — the same verdict, and the same reasoning, as the
- * approval DM's surface.
+ * What a Telegram elicitation card can render AND collect: the two kinds one TAP answers, plus the
+ * multi-select a keyboard of checkboxes assembles over several taps. A typed box is still absent —
+ * nothing in a keyboard accepts characters — so `text` and `number`, and therefore every form
+ * carrying one, stay declined rather than posted as a control that cannot take an answer.
  */
 export const TELEGRAM_ELICIT_SURFACE: ElicitSurface = {
-  kinds: new Set<ElicitKind>(['enum', 'boolean']),
-  optionLimits: { enum: { maxOptions: TELEGRAM_ELICIT_MAX_BUTTONS } }
+  kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum']),
+  optionLimits: {
+    enum: { maxOptions: TELEGRAM_ELICIT_MAX_BUTTONS },
+    // A checkbox keyboard is the SAME keyboard, one row longer for its Confirm — so it is bounded
+    // by the same measured refusal, not by a second number that could drift away from it.
+    'multi-enum': { maxOptions: TELEGRAM_ELICIT_MAX_BUTTONS }
+  }
 }
 
 /** One button's `callback_data`: the request and the option's position. Pure. */
@@ -140,10 +167,67 @@ export function telegramElicitButtons(requestId: string, options: readonly { lab
   return rows
 }
 
+/** One tappable button per option, each carrying its own checkbox, plus a Confirm/Dismiss row.
+ *  `chosen` holds POSITIONS, which is what the buttons carry and what the Confirm submits. Pure. */
+export function telegramElicitCheckboxes(
+  requestId: string,
+  options: readonly { label: string }[],
+  chosen: ReadonlySet<number>
+): InlineButton[][] {
+  const rows = options.map((o, i) => [
+    {
+      text: `${chosen.has(i) ? TELEGRAM_ELICIT_CHECKED : TELEGRAM_ELICIT_UNCHECKED} ${o.label}`,
+      callbackData: telegramElicitData(requestId, elicitOptionToken(i))
+    }
+  ])
+  rows.push([
+    { text: 'Confirm', callbackData: telegramElicitData(requestId, TELEGRAM_ELICIT_CONFIRM) },
+    { text: 'Dismiss', callbackData: telegramElicitData(requestId, TELEGRAM_ELICIT_DISMISS) }
+  ])
+  return rows
+}
+
+/** An assembled card's own text: the question, then what the reader has to know to answer it that
+ *  no checkbox can say — the field's description and a multi-select's bounds, which Telegram
+ *  cannot enforce on the keyboard the way Slack's `max_selected_items` does.
+ *
+ *  The hint is inside the same budget the question is, and it is the QUESTION that yields: a hint
+ *  runs to 2000 characters where the message limit is 4096, so appending it to an already-clamped
+ *  question could push the whole card past what `sendMessage` takes — and a refused post is not a
+ *  shortened card, it is no card at all, cancelled without even the unrenderable notice. Pure. */
+export function telegramElicitFormText(message: string, target: ElicitTarget): string {
+  const hint = elicitFormFieldHint(target)
+  if (!hint) return telegramElicitText(message)
+  return `${telegramElicitText(clampTo(message, Math.max(0, TELEGRAM_ELICIT_MESSAGE_CAP - hint.length - 1)))}\n${hint}`
+}
+
+/** The one field an assembled Telegram card renders, or null when this form is not one — today
+ *  exactly a lone multi-select, the only kind a keyboard can assemble without a typed box. Pure. */
+export function telegramAssembledField(form: readonly ElicitTarget[]): ElicitTarget | null {
+  const only = form.length === 1 ? form[0]! : null
+  return only && only.kind === 'multi-enum' ? only : null
+}
+
 /** Telegram's per-turn elicitation draft: the message and the keyboard under it. */
 interface TelegramElicitDraft {
   text: string
   buttons: InlineButton[][]
+}
+
+/** What a checkbox card has collected so far — the POSITIONS ticked, kept in the card's own state
+ *  slot because a 64-byte `callback_data` cannot carry a selection back the way a Slack message's
+ *  `state.values` does. It never leaves this module: core stores it opaquely and drops it with the
+ *  record, so a card that ends without a Confirm leaves nothing behind. */
+interface TelegramElicitCardState {
+  chosen: Set<number>
+}
+
+function cardStateOf(handle: ElicitCardHandle): TelegramElicitCardState {
+  const existing = handle.cardState as TelegramElicitCardState | undefined
+  if (existing) return existing
+  const fresh: TelegramElicitCardState = { chosen: new Set<number>() }
+  handle.cardState = fresh
+  return fresh
 }
 
 export const telegramElicitCards: ElicitCardFacet = {
@@ -151,15 +235,22 @@ export const telegramElicitCards: ElicitCardFacet = {
   reduction: TELEGRAM_ELICIT_SURFACE,
 
   build(_host: ElicitCardHost, _turn: ElicitCardTurn, ask: ElicitCardAsk): ElicitCardDraft | null {
-    // No consent control, and no control for anything that has to be filled in first.
+    // No consent control, and no control for a typed box or a form carrying one.
     if (ask.url || !ask.form?.length) return null
-    if (elicitCardShape(ask.form) !== 'buttons') return null
-    const target = ask.form[0]!
+    const oneTap = elicitCardShape(ask.form) === 'buttons'
+    const assembled = oneTap ? null : telegramAssembledField(ask.form)
+    if (!oneTap && !assembled) return null
+    const target = assembled ?? ask.form[0]!
     if (!target.options.length || !telegramElicitDataFits(ask.requestId, target.options.length)) return null
-    const draft: TelegramElicitDraft = {
-      text: telegramElicitText(ask.message),
-      buttons: telegramElicitButtons(ask.requestId, target.options)
-    }
+    const draft: TelegramElicitDraft = assembled
+      ? {
+          text: telegramElicitFormText(ask.message, assembled),
+          buttons: telegramElicitCheckboxes(ask.requestId, assembled.options, new Set())
+        }
+      : {
+          text: telegramElicitText(ask.message),
+          buttons: telegramElicitButtons(ask.requestId, target.options)
+        }
     return draft
   },
 
@@ -182,6 +273,48 @@ export const telegramElicitCards: ElicitCardFacet = {
         ...(replyTo !== undefined ? { replyTo } : {})
       })
     )
+  },
+
+  /**
+   * Fold one tap into a checkbox card: an option position TOGGLES and the keyboard is redrawn in
+   * place, and the Confirm submits every ticked position as the field's carried value — the same
+   * `ac_o<n>` list a Slack multi-select's Confirm carries, under the same block id, so core's one
+   * re-derivation (#1815) validates both without knowing which surface sent it.
+   *
+   * Nothing is enforced here that core enforces on the answer: a selection breaking the field's
+   * own `minItems`/`maxItems` is refused by the submission with the field's own words, exactly as
+   * a Slack Confirm's is. Toggling is free; the Confirm is where a card is judged.
+   */
+  tap(handle: ElicitCardHandle, card: ElicitCardTapTarget, token: string): ElicitCardTap | null {
+    const target = telegramAssembledField(card.form)
+    if (!target) return null
+    const state = cardStateOf(handle)
+    if (token === TELEGRAM_ELICIT_CONFIRM) {
+      const picked = [...state.chosen].sort((a, b) => a - b).map(elicitOptionToken)
+      return { kind: 'submit', fields: { [elicitFormBlockId(0)]: picked } }
+    }
+    const index = target.options.findIndex((_o, i) => elicitOptionToken(i) === token)
+    if (index < 0) return null
+    // A tick nobody can be shown is not recorded. What the keyboard shows and what a Confirm would
+    // submit are ONE fact here — unlike Slack, where the message itself holds the reader's half-
+    // filled state — so a card with no addressable message refuses the tap instead of remembering
+    // a selection its own boxes still show unticked.
+    const messageId = handle.ts === undefined ? NaN : Number(handle.ts)
+    if (!Number.isInteger(messageId)) return null
+    if (state.chosen.has(index)) state.chosen.delete(index)
+    else state.chosen.add(index)
+    // Best effort, like every other card rewrite: a redraw that fails leaves the reader looking at
+    // the previous ticks, and the Confirm still submits what THIS daemon recorded.
+    const message = (card.params as { message?: string }).message?.trim() || 'The agent needs your input'
+    void (handle.conn as TelegramConnection)
+      .editCard(
+        handle.channel,
+        messageId,
+        telegramElicitFormText(message, target),
+        telegramElicitCheckboxes(card.requestId, target.options, state.chosen)
+      )
+      .catch(() => {})
+    return { kind: 'pending' }
   },
 
   settle(handle: ElicitCardHandle, card: ElicitCardSettlement): void {

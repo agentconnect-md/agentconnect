@@ -1550,7 +1550,7 @@ function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> |
 
 /** What one field's block says under its label: the question's own words, plus a multi-select's
  *  bounds, since a checkbox list cannot enforce them itself. Empty when there is nothing to add. */
-function elicitFormFieldHint(target: ElicitTarget): string {
+export function elicitFormFieldHint(target: ElicitTarget): string {
   const parts = [target.description ?? '', target.kind === 'multi-enum' ? selectionHint(target) : '']
   return clampTo(parts.filter(Boolean).join(' '), SLACK_HINT_TEXT_CAP)
 }

@@ -1,7 +1,10 @@
 /**
  * Telegram's elicitation card — the second implementer of the Layer-2 elicitation-card facet
- * (issue #1794, gap 6). An inline keyboard is the only control Telegram has, so the two kinds one
- * TAP answers are offered and every other kind is declined with the notice #1819/#1839 post.
+ * (issue #1794, gap 6). An inline keyboard is the only control Telegram has, so a multi-select is
+ * ASSEMBLED out of it: checkbox buttons that toggle and redraw, and a Confirm that submits the set
+ * through the same re-derivation a Slack Confirm goes through. A typed box has no keyboard
+ * equivalent at all, so `text`/`number` — and any form carrying one — are still declined with the
+ * notice #1819/#1839 post.
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { CreateElicitationRequest } from '@agentclientprotocol/sdk'
@@ -14,7 +17,9 @@ import {
   TELEGRAM_ELICIT_SURFACE,
   parseTelegramElicit,
   telegramElicitButtons,
+  telegramElicitCheckboxes,
   telegramElicitData,
+  telegramElicitFormText,
   telegramElicitDataFits,
   telegramElicitCards
 } from '../src/platforms/telegram/elicit-card.js'
@@ -31,6 +36,8 @@ function form(properties: Record<string, unknown>, required: string[] = []): Cre
 }
 
 const BRANCH = { branch: { type: 'string', enum: ['main', 'develop'], title: 'Base branch' } }
+
+const CHECKS = { checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test', 'build'] } } }
 
 describe("the wire a Telegram tap comes back on — 64 bytes, so it carries the option's position", () => {
   it("fits Telegram's own callback_data cap for the widest card this scheme can mint", () => {
@@ -66,18 +73,15 @@ describe("the wire a Telegram tap comes back on — 64 bytes, so it carries the 
 })
 
 describe('what Telegram declares it can collect, and what it declines', () => {
-  it('claims exactly the two kinds one tap answers', () => {
-    expect([...TELEGRAM_ELICIT_SURFACE.kinds].sort()).toEqual(['boolean', 'enum'])
+  it('claims the two kinds one tap answers, plus the multi-select a keyboard assembles', () => {
+    expect([...TELEGRAM_ELICIT_SURFACE.kinds].sort()).toEqual(['boolean', 'enum', 'multi-enum'])
   })
 
-  it('reduces an enum and a boolean, and nothing that has to be filled in first', () => {
+  it('reduces an enum, a boolean and a multi-select, but nothing that has to be TYPED', () => {
     expect(elicitTarget(form(BRANCH), TELEGRAM_ELICIT_SURFACE)?.kind).toBe('enum')
     expect(elicitTarget(form({ ok: { type: 'boolean' } }), TELEGRAM_ELICIT_SURFACE)?.kind).toBe('boolean')
-    for (const prop of [
-      { checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test'] } } },
-      { note: { type: 'string' } },
-      { count: { type: 'integer' } }
-    ])
+    expect(elicitTarget(form(CHECKS), TELEGRAM_ELICIT_SURFACE)?.kind).toBe('multi-enum')
+    for (const prop of [{ note: { type: 'string' } }, { count: { type: 'integer' } }])
       expect(elicitForm(form(prop, Object.keys(prop)), TELEGRAM_ELICIT_SURFACE)).toBeNull()
   })
 
@@ -107,6 +111,23 @@ describe('what Telegram declares it can collect, and what it declines', () => {
   })
 })
 
+describe('the checkbox keyboard a multi-select is assembled on', () => {
+  it('carries one ticked-or-blank button per option, then Confirm and Dismiss', () => {
+    const rows = telegramElicitCheckboxes(REQUEST_ID, [{ label: 'lint' }, { label: 'test' }], new Set([1]))
+    expect(rows.slice(0, 2).map((r) => (r[0] as InlineButton).text)).toEqual(['⬜️ lint', '☑️ test'])
+    expect(rows[2]!.map((b) => b.text)).toEqual(['Confirm', 'Dismiss'])
+    // Every option button still carries its POSITION, never its value — the 64-byte cap is why.
+    expect(rows.slice(0, 2).map((r) => (r[0] as InlineButton).callbackData)).toEqual([
+      telegramElicitData(REQUEST_ID, elicitOptionToken(0)),
+      telegramElicitData(REQUEST_ID, elicitOptionToken(1))
+    ])
+    expect(rows[2]!.map((b) => b.callbackData)).toEqual([
+      telegramElicitData(REQUEST_ID, 'ok'),
+      telegramElicitData(REQUEST_ID, 'x')
+    ])
+  })
+})
+
 // ── the coordinator, on a Telegram turn ──────────────────────────────────────────────────────
 
 interface Harness {
@@ -116,6 +137,8 @@ interface Harness {
   edits: { text: string; buttons: InlineButton[][] }[]
   acked: string[]
   notices: () => string[]
+  /** Hold the next card post's response, so a tap can be made to beat its own send. */
+  holdPost: (release: Promise<void>) => void
 }
 
 /** @param turn the turn's THREAD coordinate and its Telegram reply anchor — a plain supergroup
@@ -131,6 +154,7 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
   const edits: { text: string; buttons: InlineButton[][] }[] = []
   const acked: string[] = []
   const conn = Object.create(TelegramConnection.prototype)
+  let held: Promise<void> | undefined
   conn.postCard = async (
     _c: string,
     text: string,
@@ -138,6 +162,7 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
     opts: { threadTs?: string; replyTo?: number } = {}
   ) => {
     cards.push({ text, buttons, opts })
+    if (held) await held
     return '4242'
   }
   conn.editCard = async (_c: string, _id: number, text: string, buttons: InlineButton[][]) => {
@@ -180,7 +205,8 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
     cards,
     edits,
     acked,
-    notices: () => applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
+    notices: () => applied.filter((a) => a.kind === 'notice').map((a) => a.text as string),
+    holdPost: (release: Promise<void>) => void (held = release)
   }
 }
 
@@ -246,7 +272,7 @@ describe('a Telegram turn posts an elicitation card and settles it in place', ()
 
   it('declines a kind Telegram has no control for, and says so in the chat', async () => {
     const h = telegramTurn()
-    const req = form({ checks: { type: 'array', items: { type: 'string', enum: ['lint', 'test'] } } }, ['checks'])
+    const req = form({ note: { type: 'string' } }, ['note'])
     await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
     expect(h.cards).toEqual([])
     expect(h.notices()[0]).toContain("this chat can't collect an answer for")
@@ -310,5 +336,137 @@ describe('a Telegram turn posts an elicitation card and settles it in place', ()
     await expect(result).resolves.toEqual({ action: 'cancel' })
     expect(h.edits[0]!.text).toContain('⏳ Cancelled')
     expect(h.daemon.permissions.pendingElicits.has(requestId)).toBe(false)
+  })
+})
+
+describe('a Telegram multi-select is assembled on the keyboard and submitted by Confirm', () => {
+  async function tap(h: Harness, requestId: string, token: string): Promise<void> {
+    await h.daemon.handleTelegramCallback(
+      { id: `cb-${token}`, data: telegramElicitData(requestId, token), channel: '-100', messageId: 4242, userId: '77' },
+      h.conn
+    )
+  }
+
+  it('posts checkboxes, toggles one on and off in place, and accepts the Confirmed set', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form(CHECKS, ['checks']))
+    expect(h.notices()).toEqual([])
+    expect(h.cards[0]!.buttons.map((r) => r[0]!.text)).toEqual(['⬜️ lint', '⬜️ test', '⬜️ build', 'Confirm'])
+
+    await tap(h, requestId, elicitOptionToken(0))
+    await tap(h, requestId, elicitOptionToken(2))
+    await tap(h, requestId, elicitOptionToken(0))
+    await tap(h, requestId, elicitOptionToken(1))
+    // Each tap redraws the same message; the card is still open, nothing has been answered yet.
+    expect(h.edits).toHaveLength(4)
+    expect(h.edits[3]!.buttons.map((r) => r[0]!.text)).toEqual(['⬜️ lint', '☑️ test', '☑️ build', 'Confirm'])
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+
+    await tap(h, requestId, 'ok')
+    // The ticks come back as the LIST the schema asked for, in the card's own option order.
+    await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['test', 'build'] } })
+    expect(h.edits.at(-1)!.text).toBe('💬 Which branch should I cut from?\n✅ checks: test, build')
+    expect(h.edits.at(-1)!.buttons).toEqual([])
+  })
+
+  it('says on the card what the keyboard cannot enforce — the selection bounds', async () => {
+    const h = telegramTurn()
+    const bounded = { checks: { ...CHECKS.checks, minItems: 2 } }
+    const { requestId } = await raise(h, form(bounded, ['checks']))
+    expect(h.cards[0]!.text).toBe('💬 Which branch should I cut from?\nSelect at least 2.')
+
+    // And a Confirm that breaks them is refused with the field's own words, card still live.
+    await tap(h, requestId, elicitOptionToken(0))
+    await tap(h, requestId, 'ok')
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
+    expect(h.notices().at(-1)).toContain('Select at least 2.')
+  })
+
+  it('Confirms an untouched optional multi-select as an omission, not as an empty answer', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form(CHECKS))
+    await tap(h, requestId, 'ok')
+    await expect(result).resolves.toEqual({ action: 'accept', content: {} })
+  })
+
+  it('reads Dismiss on an assembled card as the decline it is on every other card', async () => {
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form(CHECKS, ['checks']))
+    await tap(h, requestId, elicitOptionToken(1))
+    await tap(h, requestId, 'x')
+    await expect(result).resolves.toEqual({ action: 'decline' })
+    expect(h.edits.at(-1)!.text).toContain('🚫 Dismissed')
+  })
+
+  it("redraws a card tapped before its own post reported an id, from the tap's own message", async () => {
+    // A reader can tap the instant Telegram shows the keyboard, which can beat the send that
+    // records the card's id — the tick must still reach the boxes the reader is looking at.
+    const h = telegramTurn()
+    const { requestId, result } = await raise(h, form(CHECKS, ['checks']))
+    const rec = h.daemon.permissions.pendingElicits.get(requestId)
+    rec.ts = undefined
+    // The adoption is synchronous, so the state under test survives to the fold.
+    await h.daemon.permissions.handleElicitCardTap({ requestId, token: elicitOptionToken(0), ts: '4242' })
+
+    expect(rec.ts).toBe('4242')
+    expect(h.edits.at(-1)!.buttons.map((r) => r[0]!.text)).toEqual(['☑️ lint', '⬜️ test', '⬜️ build', 'Confirm'])
+    await tap(h, requestId, 'ok')
+    await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint'] } })
+  })
+
+  it('keeps the answer on a card Confirmed before its own post returned', async () => {
+    // The tap carries the card's id, so the settlement rewrites it AS ANSWERED while the send is
+    // still in flight; the posting path must not then call that same card Cancelled.
+    const h = telegramTurn()
+    let release!: () => void
+    h.holdPost(new Promise<void>((r) => (release = r)))
+    const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', form(CHECKS, ['checks']))
+    await vi.waitFor(() => expect(h.cards).toHaveLength(1))
+    const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
+
+    await tap(h, requestId, elicitOptionToken(0))
+    await tap(h, requestId, 'ok')
+    expect(h.daemon.permissions.pendingElicits.size).toBe(0)
+    // Only now does the post report its id, and the posting path finds the card already settled.
+    release()
+    await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint'] } })
+
+    expect(h.edits.at(-1)!.text).toContain('✅ checks: lint')
+    expect(h.edits.map((e) => e.text).some((t) => t.includes('Cancelled'))).toBe(false)
+  })
+
+  it('refuses a tick it cannot show at all, rather than remembering one the boxes deny', () => {
+    const params = form(CHECKS, ['checks'])
+    const fields = elicitForm(params, TELEGRAM_ELICIT_SURFACE)!
+    const handle: any = { conn: {}, channel: '-100' }
+    expect(
+      telegramElicitCards.tap!(handle, { requestId: REQUEST_ID, params, form: fields }, elicitOptionToken(0))
+    ).toBe(null)
+    expect([...(handle.cardState?.chosen ?? [])]).toEqual([])
+  })
+
+  it('keeps a long question and its whole hint inside one Telegram message', () => {
+    // A hint runs to 2000 characters and the limit is 4096, so appending one to an already-clamped
+    // question would refuse the post outright — and a refused post is no card at all.
+    const target = {
+      propName: 'checks',
+      kind: 'multi-enum' as const,
+      options: [{ value: 'lint', label: 'lint' }],
+      description: 'd'.repeat(300),
+      minItems: 1
+    }
+    const text = telegramElicitFormText('q'.repeat(4000), target)
+    expect([...text].length).toBeLessThanOrEqual(4096)
+    // The question yields, never the hint: the bounds are what the keyboard cannot say itself.
+    expect(text).toContain('Select at least 1.')
+  })
+
+  it('refuses a position no checkbox on the card held, and leaves the card live', async () => {
+    const h = telegramTurn()
+    const { requestId } = await raise(h, form(CHECKS, ['checks']))
+    await tap(h, requestId, elicitOptionToken(9))
+    expect(h.edits).toEqual([])
+    expect(h.notices()).toEqual(["That answer wasn't accepted — the question is still open."])
+    expect(h.daemon.permissions.pendingElicits.size).toBe(1)
   })
 })

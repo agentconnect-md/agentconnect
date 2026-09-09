@@ -13913,9 +13913,12 @@ export class Daemon {
     const tap = parseTelegramElicit(cb.data)
     if (!tap) return await this.commands.handleTelegramCallback(cb, conn)
     void conn.answerCallback(cb.id)
-    await this.permissions.handleElicitChoice({
+    await this.permissions.handleElicitCardTap({
       requestId: tap.requestId,
-      value: tap.token,
+      token: tap.token,
+      // The card the button was on, so a fold can redraw it even when the post that carried it
+      // has not returned its own id yet — a reader can tap the moment Telegram shows the keyboard.
+      ts: String(cb.messageId),
       actor: { userId: cb.userId }
     })
   }
