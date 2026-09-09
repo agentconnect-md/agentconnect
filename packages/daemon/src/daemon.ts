@@ -2444,7 +2444,9 @@ export class Daemon {
    *  after boot. The store memoizes, so this resolves once for the runtime and never once per spawn. */
   private async ensureRuntimeInstalled(runtimeId: string, local = false): Promise<void> {
     if (local && this.localRuntimeCatalog) {
-      this.localRuntimeCatalog = await this.installManagedRuntimePackages(this.localRuntimeCatalog, [runtimeId])
+      const installed = await this.installManagedRuntimePackages(this.localRuntimeCatalog, [runtimeId])
+      if (!installed.entries[runtimeId]) throw new Error(this.runtimeUnavailableMessage(runtimeId))
+      this.localRuntimeCatalog = installed
       return
     }
     const entry = this.runtimeCatalog.entries[runtimeId]
