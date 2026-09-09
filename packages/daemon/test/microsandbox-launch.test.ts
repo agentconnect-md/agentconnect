@@ -240,6 +240,8 @@ describe('prepareMicrosandboxLaunch', () => {
       '/run',
       '/var/run',
       '/run/docker',
+      '/var/lib/docker',
+      '/var/lib/docker/containerd',
       '/tmp/agentconnect',
       '/tmp'
     ]) {

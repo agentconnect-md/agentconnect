@@ -69,7 +69,7 @@ settings.
 | `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent, using the selected backend.                                                                                                                                                                                          |
 | Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents.                                                                                                                                     |
 | `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                     |
-| `cpus`, `memoryMiB`, `diskGiB` | Implemented: per-VM CPU allocation, memory limit, and disk capacity; defaults are `2`, `2048`, and `10`. Host capacity planning remains the operator's responsibility.                                                                                                               |
+| `cpus`, `memoryMiB`, `diskGiB` | Per-VM CPU allocation, memory limit, and capacity of each writable disk; defaults are `2`, `2048`, and `10`. New VMs have a root upper disk and a Docker data disk, each capped by `diskGiB`. Both are sparse; host capacity planning remains the operator's responsibility.         |
 | `sandbox.mounts`               | Implemented: operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `readOnly` (default `true`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets. Workspace, HOME, and runtime state remain automatically provisioned. |
 
 ### Shared mounts and manual conversion
@@ -268,7 +268,7 @@ separate VMs do not make a deliberately shared host mount private. Linked-worktr
 Git metadata, secondary repositories, and file attachments keep consistent guest
 paths. This change does not redesign Git storage.
 
-### Current image contract and flat disks
+### Current image contract and VM storage
 
 The resolved OCI image must contain Node at
 `/usr/local/bin/node`, `/usr/bin/git`, Python 3.11+ for filesystem operations and socket bridges, the declared runtime tools,
@@ -295,23 +295,33 @@ terminal event before closing: the pinned relay can otherwise reuse the client
 ID while old output is still arriving. Losing transport before that terminal
 event fences and stops the VM before another execution can reuse it.
 
-The first implementation uses private flat ext4 root disks and explicit
-host-bound workspace/cache mounts. The clone strategy is `auto`: preparation can
-reuse a base image, while each private disk clone can fall back from reflink to
-sparse copying on the host filesystem. Measure both image preparation and cloning.
-Flat disks do not provide native snapshots or rootfs patches; generated launch
-files are written after boot through the guest file API.
+New VMs share the image's read-only layers and keep root filesystem changes in a
+private writable upper disk. Each VM also owns an ext4 disk mounted at
+`/var/lib/docker`, so Docker's OverlayFS snapshots do not nest on the root
+OverlayFS mount. Both sparse disks use `diskGiB` as their individual capacity.
+Workspace, HOME, and cache mounts retain their existing ownership and isolation.
+Creating a VM does not copy the full base image, including on hosts without
+reflink support. Generated launch files are written after boot through the guest
+file API.
+
+Existing flat-root VMs keep their saved layout and data when resumed. A new
+binding records ownership of its Docker disk; older bindings do not acquire or
+delete separate disks. Suspend retains both writable disks. Discard deletes the
+VM and then its owned Docker disk, retaining the binding if disk cleanup fails
+so the operation can be retried. SDK connections are explicitly detached after
+the VM stops. Resume and disk deletion retry the pinned SDK's transient disk-lock
+contention for up to one second after shutdown.
 
 Each VM mounts `/run` as tmpfs so process IDs and service sockets cannot survive
-a stop/start while application data remains on the persistent disk. Operator
-mounts cannot replace `/run`. The Python bridge creates its private socket
+a stop/start while application data remains on the persistent disks. Operator
+mounts cannot replace `/run` or `/var/lib/docker`. The Python bridge creates its private socket
 directory at `/tmp/agentconnect` as the image's ordinary user; the pool keeps its
 existing `/run/agentconnect` paths.
 
 In pinned version `0.6.17`, starting a retained flat-disk VM still validates the
 OCI image's VMDK cache. The manager therefore runs the official
 `msb pull <image> --materialize all --quiet` before its VM probe, preparing both
-image forms, and tests stop/start. The VM continues to use its flat disk. This
+image forms, and tests stop/start. Retained flat VMs continue to use their original disk. This
 uses the upstream CLI and package without an upstream source patch; cold image
 preparation includes the extra materialization cost.
 
@@ -375,9 +385,14 @@ stop an otherwise healthy agent VM. The host Docker socket is not mounted by the
 backend; ambient host Docker contexts and connection paths are removed from guest
 launches. Managed-pool pod privileges are unchanged by the image's installed tools.
 
-Docker image layers, named volumes, and build caches live on the retained flat
-disk. Stopping retains them; after a VM restart the agent starts dockerd again
-when needed. VM retirement deletes them. Docker-published ports belong to the
+Docker image layers, named volumes, and build caches live on the VM's retained
+ext4 Docker disk. The image's manual `dockerd` command starts its own containerd,
+whose data root is `/var/lib/docker/containerd/daemon`, on the same disk. A custom
+image that starts a separate system containerd must also place that service's
+data root on ext4; Docker's `data-root` setting does not relocate a separate
+containerd's storage. Stopping retains the data; after a VM restart the agent
+starts dockerd again when needed. VM retirement deletes the owned disk.
+Docker-published ports belong to the
 VM's network namespace, so two sessions can use the same internal port. This does not publish the port on the
 daemon host or provide a remote browser preview.
 

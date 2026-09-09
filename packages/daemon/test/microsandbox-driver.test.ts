@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
@@ -46,6 +46,15 @@ class FakeExec {
 
 function fakeSdk() {
   class SandboxNotFoundError extends Error {}
+  class VolumeNotFoundError extends Error {}
+  class InvalidConfigError extends Error {}
+  const volumes = new Map<string, { attached: boolean }>()
+  const removeVolume = vi.fn(async (name: string) => {
+    const volume = volumes.get(name)
+    if (!volume) throw new VolumeNotFoundError()
+    if (volume.attached) throw new Error('disk is still attached')
+    volumes.delete(name)
+  })
   const sandboxes = new Map<string, FakeSandbox>()
   const created: FakeSandbox[] = []
   const processes: FakeExec[] = []
@@ -68,12 +77,23 @@ function fakeSdk() {
       await this.stopWithTimeout()
       sandboxes.delete(this.name)
     })
+    readonly detach = vi.fn(async () => {
+      if (this.dockerVolume && volumes.has(this.dockerVolume)) volumes.get(this.dockerVolume)!.attached = false
+    })
 
-    constructor(readonly name: string) {}
+    constructor(
+      readonly name: string,
+      readonly dockerVolume?: string
+    ) {}
     config() {
       return this.spec
     }
     async startDetached() {
+      if (this.dockerVolume) {
+        const volume = volumes.get(this.dockerVolume)!
+        if (volume.attached) throw new Error('disk is still attached')
+        volume.attached = true
+      }
       this.status = 'running'
       return this
     }
@@ -115,6 +135,9 @@ function fakeSdk() {
 
   const sdk = {
     SandboxNotFoundError,
+    VolumeNotFoundError,
+    InvalidConfigError,
+    Volume: { remove: removeVolume },
     AgentClient: {
       async connectSandbox(name: string) {
         const sandbox = sandboxes.get(name)!
@@ -164,6 +187,7 @@ function fakeSdk() {
         return sandbox
       },
       builder(name: string) {
+        let dockerVolume: string | undefined
         const builder = {
           image() {
             return builder
@@ -189,14 +213,25 @@ function fakeSdk() {
           quietLogs() {
             return builder
           },
-          volume() {
+          volume(target: string, configure: (volume: { namedWith: (name: string) => unknown }) => unknown) {
+            if (target === '/var/lib/docker')
+              configure({
+                namedWith(name) {
+                  dockerVolume = name
+                  return this
+                }
+              })
             return builder
           },
           vsock() {
             return builder
           },
           async create() {
-            const sandbox = new FakeSandbox(name)
+            if (dockerVolume) {
+              if (volumes.has(dockerVolume)) throw new Error('volume already exists')
+              volumes.set(dockerVolume, { attached: true })
+            }
+            const sandbox = new FakeSandbox(name, dockerVolume)
             created.push(sandbox)
             sandboxes.set(name, sandbox)
             return sandbox
@@ -210,6 +245,8 @@ function fakeSdk() {
     sdk,
     created,
     processes,
+    volumes,
+    removeVolume,
     runWith: (callback: (process: FakeExec) => void | Promise<void>) => {
       onRun = callback
     }
@@ -239,6 +276,53 @@ async function fixture() {
 }
 
 describe('microsandbox process and VM ownership', () => {
+  it('retains Docker data across manager restarts and retries failed volume cleanup without losing ownership', async () => {
+    const { manager, options, environment, request, created, volumes, removeVolume } = await fixture()
+    const runtime = await manager.driverFor(environment).launch(request)
+    const volume = created[0]!.dockerVolume!
+    await runtime.stop(0)
+    await manager.stopAll()
+    expect(volumes.has(volume)).toBe(true)
+    expect(removeVolume).not.toHaveBeenCalled()
+
+    const resumed = new MicrosandboxManager(options)
+    vi.spyOn(created[0]!, 'connectOrStart').mockRejectedValueOnce(
+      new options.sdk.InvalidConfigError(`volume "${volume}" is already attached with an incompatible disk mode`)
+    )
+    const restored = await resumed.driverFor(environment).launch(request)
+    expect(created).toHaveLength(1)
+    await restored.stop(0)
+    removeVolume.mockRejectedValueOnce(new Error('temporary volume removal failure'))
+    await expect(resumed.discard(environment.id)).rejects.toThrow('temporary volume removal failure')
+    expect(await resumed.environmentIds()).toEqual([environment.id])
+    expect(volumes.has(volume)).toBe(true)
+    removeVolume.mockRejectedValueOnce(
+      new options.sdk.InvalidConfigError(`volume "${volume}" is currently attached by a running sandbox`)
+    )
+    await resumed.discard(environment.id)
+    expect(volumes.size).toBe(0)
+    expect(await resumed.environmentIds()).toEqual([])
+  })
+
+  it('resumes bindings from before Docker volumes without claiming or removing a separate disk', async () => {
+    const { manager, options, environment, request, created, removeVolume } = await fixture()
+    const runtime = await manager.driverFor(environment).launch(request)
+    await runtime.stop(0)
+    await manager.stopAll()
+    const directory = join(options.root, 'microsandbox', 'bindings')
+    const path = join(directory, (await readdir(directory))[0]!)
+    const binding = JSON.parse(await readFile(path, 'utf8')) as { dockerVolume?: string }
+    delete binding.dockerVolume
+    await writeFile(path, JSON.stringify(binding))
+
+    const resumed = new MicrosandboxManager(options)
+    const restored = await resumed.driverFor(environment).launch(request)
+    expect(created).toHaveLength(1)
+    await restored.stop(0)
+    await resumed.discard(environment.id)
+    expect(removeVolume).not.toHaveBeenCalled()
+  })
+
   it('shares a VM, preserves binary ACP data, and refuses suspend while another execution is active', async () => {
     const { manager, environment, request, created, processes } = await fixture()
     const [first, second] = await Promise.all([

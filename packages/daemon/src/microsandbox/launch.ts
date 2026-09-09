@@ -130,6 +130,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   const ownedTargets = [
     '/run',
     '/var/run',
+    '/var/lib/docker',
     ...automatic.map((mount) => mount.target),
     ...MICROSANDBOX_SOCKET_BRIDGES.map((bridge) => bridge.path)
   ]
