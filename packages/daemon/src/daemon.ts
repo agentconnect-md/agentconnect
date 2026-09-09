@@ -3777,6 +3777,7 @@ export class Daemon {
     const launch = prepareMicrosandboxLaunch({
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       runtime,
+      nativeMemory: memoryKindOf(agent) === 'native',
       scopeDir: agent.dir,
       cwd: placement.trustedSessionDir ?? (key && hostKeySessionKey(key) ? cwd : agent.workspace.path),
       hostKey: key,

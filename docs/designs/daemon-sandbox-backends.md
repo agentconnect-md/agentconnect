@@ -162,10 +162,13 @@ missing or changed bindings and configuration rather than silently recreating th
 VM. Each new session owns a VM using the image configured at creation, including
 sessions that share workspace files. Its private HOME lives under
 `runtime-homes/<session-leaf>/home` unless it already owns a confined session
-directory. Image changes apply to new sessions; resume keeps the original image,
-runtime versions, HOME and disks until session retention removes them. Sessions
-created in a legacy shared agent VM continue using that VM until its last session
-retires. Resource and mount changes still require environment recreation. Image
+directory. For shared workspaces, native-memory directories mount the agent's
+existing memory store so Console reads and edits reach every session; runtime
+credentials stay in the session's HOME. Image changes apply to new sessions;
+resume keeps the original image, runtime versions, HOME and disks until session
+retention removes them. Sessions created in a legacy shared agent VM continue
+using that VM until its last session retires. Resource and mount changes still
+require environment recreation. Image
 digest resolution and in-place disk migration remain proposed.
 
 Kubernetes mode retains `K8sDriver`, its resource configuration, and image rollout.

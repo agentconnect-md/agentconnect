@@ -194,7 +194,7 @@ export function composeRuntimeLaunch(opts: {
       ? runtimeSandboxReadRoots(opts.runtime, stateSourceEnv)
       : undefined
   const launch = prepareRuntimeLaunch({
-    ...(opts.microsandbox ? { microsandbox: opts.microsandbox } : {}),
+    ...(opts.microsandbox ? { microsandbox: { ...opts.microsandbox, nativeMemory: opts.provider === 'native' } } : {}),
     ...(opts.k8s === true ? { k8s: true } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
