@@ -1111,6 +1111,9 @@ describe('mid-turn steering', () => {
     const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
     act(() => {
       socket.onmessage?.({
+        data: JSON.stringify({ type: 'ack', ack: { accepted: true, turnId: turn.turnId, agentId: 'agent-1' } })
+      })
+      socket.onmessage?.({
         data: JSON.stringify({
           type: 'output',
           output: { turnId: turn.turnId, agentId: 'agent-1', index: 0, status: { steerable: true } }
@@ -1121,6 +1124,109 @@ describe('mid-turn steering', () => {
   }
   const frames = (socket: SteerSocket) =>
     socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+  const feed = (socket: SteerSocket, message: unknown) => socket.onmessage?.({ data: JSON.stringify(message) })
+
+  it('restores two refused steers in their send order, ahead of a later queued message', async () => {
+    const { socket } = await openSteerableStream()
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'first steer', 'c1')).toBe(true)
+      expect(pgSend('s1', 'agent-1', 'second steer', 'c1')).toBe(true)
+    })
+    const [a, b] = frames(socket).filter((f) => f.steer === true)
+    expect([a!.text, b!.text]).toEqual(['first steer', 'second steer'])
+    act(() => {
+      feed(socket, { type: 'ack', ack: { accepted: false, turnId: a!.turnId, agentId: 'agent-1', reason: 'busy' } })
+    })
+    // A later send lands behind the first refusal while the second is still on the wire …
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'typed after', 'c1')).toBe(true)
+    })
+    act(() => {
+      feed(socket, { type: 'ack', ack: { accepted: false, turnId: b!.turnId, agentId: 'agent-1', reason: 'busy' } })
+    })
+    // … and the second refusal slots back into ITS place, so the instructions run in the order typed.
+    expect(getPgQueue('s1').map((q) => q.text)).toEqual(['first steer', 'second steer', 'typed after'])
+  })
+
+  it('lets a tool call that started before a steer complete in the live view', async () => {
+    const { socket, turnId } = await openSteerableStream()
+    act(() => {
+      feed(socket, {
+        type: 'output',
+        output: {
+          turnId,
+          agentId: 'agent-1',
+          index: 1,
+          event: { kind: 'tool_call', toolCallId: 'tc-1', title: 'Run tests', status: 'in_progress' }
+        }
+      })
+    })
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'also lint', 'c1')).toBe(true)
+    })
+    act(() => {
+      feed(socket, {
+        type: 'output',
+        output: {
+          turnId,
+          agentId: 'agent-1',
+          index: 2,
+          event: { kind: 'tool_update', toolCallId: 'tc-1', status: 'completed' }
+        }
+      })
+    })
+    const tool = getLiveSteps('s1').find((s) => s.kind === 'tool' && s.toolCallId === 'tc-1')
+    expect(tool).toMatchObject({ toolStatus: 'completed' })
+    // The steer still sits between the call and whatever the agent says next.
+    const kinds = getLiveSteps('s1').map((s) => (s.steer ? 'steer' : s.kind))
+    expect(kinds.indexOf('tool')).toBeLessThan(kinds.indexOf('steer'))
+  })
+
+  it('re-sends a steer nobody acked when the socket drops and reconnects', async () => {
+    vi.useFakeTimers()
+    try {
+      const { socket } = await openSteerableStream()
+      await act(async () => {
+        expect(pgSend('s1', 'agent-1', 'lost on the wire', 'c1')).toBe(true)
+      })
+      const steer = frames(socket).find((f) => f.steer === true)!
+      // The socket dies before the daemon's verdict arrives; the turn is still busy, so the
+      // provider reconnects and must put the steer back on the wire under the SAME turnId.
+      act(() => socket.onclose?.())
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000)
+      })
+      const reconnected = SteerSocket.instances[1]!
+      expect(reconnected).toBeDefined()
+      await act(async () => {
+        reconnected.readyState = 1
+        reconnected.onopen?.()
+      })
+      act(() => feed(reconnected, { type: 'ready', conversationId: 'c1' }))
+      const resent = frames(reconnected).find((f) => f.steer === true)
+      expect(resent).toEqual(steer)
+      expect(getLiveSteps('s1').find((s) => s.text === 'lost on the wire')).toMatchObject({ steer: true })
+      expect(getPgQueue('s1')).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns an unacked steer to the queue when the socket closes on an idle turn', async () => {
+    const { socket, turnId } = await openSteerableStream()
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'still unanswered', 'c1')).toBe(true)
+    })
+    // The running turn ends (busy clears) and then the socket closes with the steer unacked:
+    // nothing will reconnect, so the message must not vanish behind its steer label.
+    act(() => feed(socket, { type: 'done', done: { turnId, agentId: 'agent-1', stopReason: 'end_turn' } }))
+    act(() => socket.onclose?.())
+    // Back in the queue, and — the turn being idle — straight out again as an ordinary turn.
+    const resent = getLiveSteps('s1').filter((s) => s.kind === 'msg' && s.text === 'still unanswered')
+    expect(resent).toHaveLength(1)
+    expect(resent[0]!.steer).toBeFalsy()
+    expect(getPgQueue('s1')).toEqual([])
+  })
 
   it('steers a follow-up into the running turn instead of queueing it', async () => {
     const { socket, turnId } = await openSteerableStream()

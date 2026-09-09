@@ -265,7 +265,11 @@ export class WebchatTransport {
       return { accepted: false, turnId, reason: 'busy' }
     }
     this.pruneWebchatStreams()
-    if (this.webchatStreams.has(this.webchatStreamKey(turnId, result.agentId))) {
+    const existingStream = this.webchatStreams.get(this.webchatStreamKey(turnId, result.agentId))
+    if (existingStream) {
+      // A browser that lost the ack re-sends its steer on reconnect (same turnId): a copy of one
+      // this daemon already steered is confirmed again, never queued or refused as a duplicate.
+      if (steer && this.streamEndedSteered(existingStream)) return { accepted: true, turnId, steered: true }
       return { accepted: false, turnId, reason: 'busy' }
     }
     const initialRuntime =
@@ -328,6 +332,15 @@ export class WebchatTransport {
         this.host.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
     })
     return { accepted: true, turnId }
+  }
+
+  private streamEndedSteered(stream: WebchatTurnStream): boolean {
+    return stream.replay.some(
+      (buffered) =>
+        buffered.event.kind === 'done' &&
+        (buffered.event.done.stopReason === 'steered_into_turn' ||
+          buffered.event.done.stopReason === 'coalesced_into_turn')
+    )
   }
 
   /** A browser that queues locally sent this while a turn ran (#1847): the ACK waits for the

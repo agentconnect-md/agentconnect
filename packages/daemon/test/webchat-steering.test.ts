@@ -119,6 +119,10 @@ describe('webchat steer-only turns', () => {
     expect((h.host.steer as any).mock.calls[0][1]).toEqual([{ type: 'text', text: '[owner] use the staging database' }])
     const done = steerEvents.find((e) => e.kind === 'done')
     expect(done).toMatchObject({ kind: 'done', done: { turnId: STEER_TURN, stopReason: 'steered_into_turn' } })
+    // A browser that lost the ack re-sends the same steer on reconnect: confirmed again, not steered twice.
+    const again = await (daemon as any).handleRelayMsg(steerOp('use the staging database'), () => {})
+    expect(again).toEqual({ msgId: 'm-2', accepted: true, turnId: STEER_TURN, steered: true })
+    expect(h.host.steer).toHaveBeenCalledOnce()
     // Nothing waits behind the turn, and the first prompt is the only one.
     expect([...(daemon as any).serialQueue.values()].flat()).toHaveLength(0)
     h.releaseOne()
