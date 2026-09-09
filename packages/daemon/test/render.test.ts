@@ -2391,6 +2391,23 @@ describe('elicitation card', () => {
     expect(elicitForm(typedOwner, WEBCHAT_ELICIT_SURFACE)?.every((t) => t.customAnswerFor === undefined)).toBe(true)
   })
 
+  it("never reads a REQUIRED text property as another question's box", () => {
+    // A companion is an ALTERNATIVE to a pick, so it is optional by construction. A required
+    // property named like one is a question of its own: folded, it would sit behind its
+    // question's disclosure chip while the schema still refuses any answer that omits it.
+    const req0 = req(
+      { question_0: { type: 'string', enum: ['a'] }, question_0_custom: { type: 'string', title: 'Other' } },
+      ['question_0_custom']
+    )
+    expect(elicitForm(req0, WEBCHAT_ELICIT_SURFACE)?.every((t) => t.customAnswerFor === undefined)).toBe(true)
+    // The question's OWN requiredness says nothing about the box, which still folds.
+    const reqOwner = req(
+      { question_0: { type: 'string', enum: ['a'] }, question_0_custom: { type: 'string', title: 'Other' } },
+      ['question_0']
+    )
+    expect(elicitForm(reqOwner, WEBCHAT_ELICIT_SURFACE)?.[1]?.customAnswerFor).toBe('question_0')
+  })
+
   it('keeps an option that is a real answer, and never empties a question', () => {
     // "Other" here is one of the agent's OWN choices, and the only one: dropping it would leave
     // a question with nothing to pick, so the list stands as offered.

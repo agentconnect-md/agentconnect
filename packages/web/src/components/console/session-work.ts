@@ -118,13 +118,18 @@ function withoutStaleDefault(field: ElicitFieldSpec): ElicitFieldSpec {
  * itself that choice goes. Matched on the companion's own label rather than any word, and never
  * down to an empty option list.
  *
- * Only fields the daemon left unbound are read this way, so a newer daemon that already folded
- * them passes through untouched. Pure.
+ * Only OPTIONAL fields the daemon left unbound are read this way, so a newer daemon that already
+ * folded them passes through untouched, and a field the daemon deliberately kept standalone and
+ * REQUIRED is never folded out of sight. Pure.
  */
 export function foldCustomAnswers(fields: ElicitFieldSpec[]): ElicitFieldSpec[] {
   const selects = new Set(fields.filter((f) => f.kind === 'enum' || f.kind === 'multi-enum').map((f) => f.propName))
   const bound = fields.map((f) => {
-    if (f.customAnswerFor || f.kind !== 'text') return f
+    // A REQUIRED field is never a box read this way: a companion is an optional alternative to
+    // a pick, so a required one is a question in its own right whatever it is named. Folding it
+    // would hide it behind its question's chip, where nothing can report that the answer the
+    // card is about to send leaves a required field out.
+    if (f.customAnswerFor || f.kind !== 'text' || f.required) return f
     const owner = suffixedCustomAnswerOwner(f.propName, selects)
     return owner ? { ...f, customAnswerFor: owner } : f
   })

@@ -1106,10 +1106,15 @@ function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurfa
   // The unmarked pair, read by name off the questions that OFFER options — the shape only says
   // "box for that question" where the question has choices this box is an alternative to.
   const selects = new Set(found.filter((t) => t.kind === 'enum' || t.kind === 'multi-enum').map((t) => t.propName))
+  const required = new Set(elicitRequiredProps(params))
   const bound = found.map((t) => {
     if (t.customAnswerFor) return questions.has(t.customAnswerFor) ? t : dropCustomAnswerFor(t)
-    // Only where the property claimed no marker namespace of its own.
-    if (t.kind !== 'text' || speaksCustomAnswerMarker(p.requestedSchema?.properties?.[t.propName] ?? {})) return t
+    // Only where the property claimed no marker namespace of its own, and only where it is
+    // OPTIONAL: a companion is an alternative to a pick, so a REQUIRED text property is a
+    // question in its own right whatever it is named, and folding it would place a field the
+    // answer cannot omit behind a chip that discloses it.
+    if (t.kind !== 'text' || required.has(t.propName)) return t
+    if (speaksCustomAnswerMarker(p.requestedSchema?.properties?.[t.propName] ?? {})) return t
     const owner = suffixedCustomAnswerOwner(t.propName, selects)
     return owner ? { ...t, customAnswerFor: owner } : t
   })

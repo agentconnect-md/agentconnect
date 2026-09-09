@@ -232,6 +232,19 @@ describe('foldCustomAnswers', () => {
     expect(foldCustomAnswers(bound)[1]?.customAnswerFor).toBe('a')
   })
 
+  it('never folds a REQUIRED field, which the daemon may have kept standalone on purpose', () => {
+    // An absent `customAnswerFor` can also be the daemon's deliberate refusal — a property with
+    // a known `_meta` namespace whose binding flag is off. Folded, a REQUIRED one hides behind
+    // its question's chip and the card enables Submit for an answer the daemon then rejects,
+    // because nothing on this side reports the omission. A companion is optional by
+    // construction, so requiredness is the signal that this is a question of its own.
+    const standalone = [q('a', 'enum', ['x']), { ...box('a__other'), required: true }]
+    expect(foldCustomAnswers(standalone).every((f) => f.customAnswerFor === undefined)).toBe(true)
+    // The QUESTION being required says nothing about the box, which still folds.
+    const requiredOwner = [{ ...q('a', 'enum', ['x']), required: true }, box('a_custom')]
+    expect(foldCustomAnswers(requiredOwner)[1]?.customAnswerFor).toBe('a')
+  })
+
   it('never empties a question, and drops a default its options no longer offer', () => {
     // "Other" as the ONLY choice is a real answer: dropping it would leave nothing to pick.
     const only = foldCustomAnswers([q('q', 'enum', ['Other']), box('q_custom')])
