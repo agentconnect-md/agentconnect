@@ -57,6 +57,12 @@ export interface ElicitCardHandle {
   readonly conn: unknown
   readonly channel: string
   ts?: string
+  /** The card's OWN opaque state slot, written by the surface that assembles an answer over
+   *  several taps (§7.3, the same shape `turnState` takes). Core never reads it; it exists so a
+   *  surface with no message state of its own — Telegram's keyboard, where a tap carries only 64
+   *  bytes — has somewhere to keep what has been picked so far, with core's own record lifetime.
+   *  Absent on a surface whose every tap is a whole answer. */
+  cardState?: unknown
 }
 
 /** How a settled card is MARKED, named by what happened rather than by any surface's glyph — a
@@ -110,6 +116,27 @@ export interface ElicitCardHost {
   turnState(turn: ElicitCardTurn): unknown
 }
 
+/**
+ * What one tap on an ASSEMBLED card meant, once the surface folded it into the card's state.
+ *
+ * A surface whose card submits on the tap itself never returns this — its taps are whole answers
+ * and take {@link ElicitCardFacet.tap}'s absence. A surface that assembles one (Telegram toggling
+ * a checkbox on a keyboard) reports which of three things just happened, and core does the rest:
+ * `pending` is a state change the surface has already redrawn, `submit` is a Confirm carrying the
+ * card's assembled fields — keyed exactly as a Slack Confirm's are, so both go through the SAME
+ * re-derivation (#1815) — and null is a tap this card does not offer.
+ */
+export type ElicitCardTap = { kind: 'pending' } | { kind: 'submit'; fields: Record<string, string | string[]> }
+
+/** The live card a tap is folded into: the id its buttons carry back, the ask they were built
+ *  from, and the field list core RE-DERIVED from that ask (#1815) — so a redraw offers the very
+ *  options the card was posted with. */
+export interface ElicitCardTapTarget {
+  readonly requestId: string
+  readonly params: CreateElicitationRequest
+  readonly form: readonly ElicitTarget[]
+}
+
 /** One chat surface's elicitation-card facet. Registered on that platform's
  *  {@link TurnOutputSurface}; absent ⇒ the surface cannot collect an answer and core declines the
  *  ask with the in-channel notice. */
@@ -135,6 +162,11 @@ export interface ElicitCardFacet {
   /** Rewrite a posted card as settled — Slack's `chat.update`, Telegram's `editMessageText` with
    *  the keyboard dropped. Best effort by construction: no ACP outcome depends on it. */
   settle(handle: ElicitCardHandle, card: ElicitCardSettlement): void
+  /** Fold one tap into a card that ASSEMBLES its answer, redrawing the card as the fold requires.
+   *  Absent ⇒ every tap on this surface is already a whole answer and core resolves it directly.
+   *  `form` is re-derived by core from the card's own params, so it is the very field list the
+   *  card rendered. Null ⇒ the tap named nothing this card offers, and core refuses it aloud. */
+  tap?(handle: ElicitCardHandle, card: ElicitCardTapTarget, token: string): ElicitCardTap | null
   /** The namespace a tapping actor's id is scoped to on this surface, recorded beside an approval
    *  resolver so it is globally unique. Absent where the surface's user ids already are — a
    *  Telegram user id names one account across every chat, a Slack one only within its workspace. */

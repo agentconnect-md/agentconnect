@@ -1890,6 +1890,38 @@ export class PermissionCoordinator {
     }
   }
 
+  /**
+   * Route one tap on a chat elicitation card, for a surface whose card ASSEMBLES its answer.
+   *
+   * Slack needs none of this: its message carries the reader's half-filled state itself, and every
+   * value arrives on the Confirm. A Telegram keyboard has no state at all — a tap carries 64 bytes
+   * and nothing else — so the card is assembled here instead, tap by tap, and the Confirm submits
+   * through the very same {@link submitElicitForm} a Slack Confirm does. That is the point of
+   * routing it through core rather than letting the surface answer on its own: ONE re-derivation
+   * of the rendered form (#1815), one per-field validation, one refusal wording.
+   *
+   * Dismiss (`token === null`) is not folded into anything — it is the reader's one explicit
+   * refusal on every card, assembled or not, and settles through the choice path unchanged.
+   */
+  async handleElicitCardTap(a: { requestId: string; token: string | null; actor?: InteractionActor }): Promise<void> {
+    const actor = a.actor ? { actor: a.actor } : {}
+    const rec = this.pendingElicits.get(a.requestId)
+    // A one-tap card, an unknown request, and Dismiss all answer with the token as it came.
+    if (a.token === null || !rec || rec.surface !== 'chat' || !rec.facet.tap || !rec.form)
+      return await this.handleElicitChoice({ requestId: a.requestId, value: a.token, ...actor })
+    const form = this.cardForm(rec)
+    if (!form) return
+    const folded = rec.facet.tap(rec, { requestId: a.requestId, params: rec.params, form }, a.token)
+    // A token naming nothing this card offers is refused aloud and leaves the card live, exactly
+    // as an unoffered option value is: the reader just acted, so silence would read as a dead card.
+    if (!folded) {
+      this.noticeInTurn(rec, ELICIT_ANSWER_REFUSED)
+      return
+    }
+    if (folded.kind === 'pending') return
+    await this.submitElicitForm({ requestId: a.requestId, fields: folded.fields, ...actor })
+  }
+
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
    *  request — `accept` with the chosen value (a LIST of them for a multi-select, a real number
    *  for a numeric field, a RECORD of value-per-field for a form, under the field name(s)), or
