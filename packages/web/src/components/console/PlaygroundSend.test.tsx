@@ -1249,6 +1249,44 @@ describe('mid-turn steering', () => {
     }
   })
 
+  it('opens and resumes a late steer whose accepted ack outran the older turn’s replayed done', async () => {
+    vi.useFakeTimers()
+    try {
+      const { socket, turnId } = await openSteerableStream()
+      await act(async () => {
+        expect(pgSend('s1', 'agent-1', 'late steer', 'c1')).toBe(true)
+      })
+      const steer = frames(socket).find((f) => f.steer === true)!
+      // The socket drops while the first turn still streams here; daemon-side that turn ends and
+      // the steer is admitted as its own turn before the browser reconnects.
+      act(() => socket.onclose?.())
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000)
+      })
+      const reconnected = SteerSocket.instances[1]!
+      await act(async () => {
+        reconnected.readyState = 1
+        reconnected.onopen?.()
+      })
+      act(() => feed(reconnected, { type: 'ready', conversationId: 'c1' }))
+      expect(frames(reconnected).find((f) => f.steer === true)).toEqual(steer)
+      // The copy's plain accepted ack arrives BEFORE the older turn's replayed done.
+      act(() => feed(reconnected, { type: 'ack', ack: { accepted: true, turnId: steer.turnId, agentId: 'agent-1' } }))
+      expect(frames(reconnected).filter((f) => f.type === 'resume' && f.turnId === steer.turnId)).toEqual([])
+      act(() => feed(reconnected, { type: 'done', done: { turnId, agentId: 'agent-1', stopReason: 'end_turn' } }))
+      // Retiring the older lane hands over to the late turn: its lane opens and is resumed, and the
+      // message reads as an ordinary turn — the reply will stream into this connection.
+      expect(frames(reconnected).find((f) => f.type === 'resume' && f.turnId === steer.turnId)).toMatchObject({
+        turnId: steer.turnId,
+        agentId: 'agent-1'
+      })
+      expect(getLiveSteps('s1').filter((s) => s.text === 'late steer')).toMatchObject([{ steer: undefined }])
+      expect(getPgQueue('s1')).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not requeue an unacked steer when reconnecting gives up — the delivery is marked uncertain', async () => {
     vi.useFakeTimers()
     try {
