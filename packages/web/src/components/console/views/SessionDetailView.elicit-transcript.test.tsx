@@ -240,6 +240,26 @@ describe('a recorded elicitation card on the session page', () => {
     for (const label of ['main', 'develop', 'Dismiss']) expect(buttonNamed(label)?.disabled).toBe(true)
   })
 
+  it('keeps the card where it was asked, not above the turn that asked it', async () => {
+    // The agent explains itself and THEN asks. Both rows belong to one turn, and the card used
+    // to be hoisted to the head of it — so a reader met the form before the sentence that set
+    // it up, and the acknowledgement of an earlier round read as an answer to this one.
+    wire.messages = [
+      row({ seq: 1, sender: 'agent-1', kind: 'text', text: 'Before I cut it, one question.' }),
+      elicitRow(CARD),
+      row({ seq: 3, sender: 'agent-1', kind: 'text', text: 'Standing by for your pick.' })
+    ]
+    await render()
+
+    const shown = text()
+    const preamble = shown.indexOf('Before I cut it')
+    const question = shown.indexOf('Which branch should I cut from?')
+    const after = shown.indexOf('Standing by for your pick.')
+    expect(preamble).toBeGreaterThanOrEqual(0)
+    expect(question).toBeGreaterThan(preamble)
+    expect(after).toBeGreaterThan(question)
+  })
+
   it('says an ask nothing could show was not answerable here', async () => {
     wire.messages = [elicitRow({ ...CARD, options: [], outcome: 'unrenderable' })]
     await render()
