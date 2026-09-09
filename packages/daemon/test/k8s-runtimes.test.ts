@@ -86,6 +86,37 @@ describe('k8s runtime table', () => {
 })
 
 describe('declaredRuntimeCatalog', () => {
+  it.each([{ ids: ['native'] }, { ids: ['legacy'] }, { ids: ['legacy', 'native'] }])(
+    'shares image facts when it declares $ids',
+    ({ ids }) => {
+      const native = {
+        runtime: { command: 'native', args: [], env: [] },
+        source: 'curated' as const,
+        name: 'Native',
+        version: '',
+        skillsAgentId: null
+      }
+      const resolved = {
+        entries: { native, legacy: { ...native, aliasOf: 'native' } },
+        runtimes: { native: native.runtime, legacy: native.runtime }
+      }
+      const result = declaredRuntimeCatalog(resolved, {
+        runtimes: ids.map((id) => ({
+          id,
+          command: '/opt/runtime/bin/native',
+          version: '1.0',
+          models: ['m1'],
+          acp: { protocolVersion: 1 }
+        }))
+      })
+
+      expect(result.catalog.entries.legacy).toEqual({ ...result.catalog.entries.native, aliasOf: 'native' })
+      expect(result.catalog.runtimes.legacy).toBe(result.catalog.runtimes.native)
+      expect(result.models).toEqual({ native: ['m1'] })
+      expect(result.unresolved).toEqual([])
+    }
+  )
+
   it('keeps only declared runtimes and reports the image pin as their version', () => {
     const result = declaredRuntimeCatalog(catalog(), {
       runtimes: [{ id: 'claude', version: '9.9.9', models: ['sonnet', 'opus'] }]

@@ -141,25 +141,31 @@ export class RuntimeFactsRegistry {
     return this.names
   }
 
+  private canonicalId(id: string): string {
+    return this.host.catalog().entries[id]?.aliasOf ?? id
+  }
+
   offeredModels(runtimeId: string): string[] | undefined {
-    return this.models.get(runtimeId)
+    return this.models.get(this.canonicalId(runtimeId))
   }
 
   /** Whether the offered list for a runtime is live probe knowledge (cache-hydrated is not). */
   offeredModelsAreLive(runtimeId: string): boolean {
-    return this.modelsSource.get(runtimeId) !== 'cached'
+    return this.modelsSource.get(this.canonicalId(runtimeId)) !== 'cached'
   }
 
   mcpCapabilities(runtimeId: string): McpTransportCapabilities | undefined {
-    return this.mcpCaps.get(runtimeId)
+    return this.mcpCaps.get(this.canonicalId(runtimeId))
   }
 
   modelCatalog(runtimeId: string): RuntimeModelCatalog | undefined {
-    return this.catalogs.get(runtimeId)
+    return this.catalogs.get(this.canonicalId(runtimeId))
   }
 
   /** Report the current runtime profile, preserving both host and image versions. */
   profileFor(id: string): FactsRuntimeProfile {
+    const canonicalId = this.canonicalId(id)
+    if (canonicalId !== id) return { ...this.profileFor(canonicalId), runtime: id, aliasOf: canonicalId }
     const hostAvailable = this.host.hostAvailable(id)
     const credentialsConfigured = this.host.credentialsConfigured(id)
     const hostVersion = hostAvailable === false ? '' : this.probedVersions.get(id) || this.versions[id] || ''
@@ -201,6 +207,7 @@ export class RuntimeFactsRegistry {
    *  the telemetry emit is best-effort like emitStoredUsageReport — it must
    *  never affect message delivery. */
   noteAuthFromTurn(runtimeId: string, authRequired: boolean): void {
+    runtimeId = this.canonicalId(runtimeId)
     let changed: boolean
     if (authRequired) {
       changed = !this.authRequiredLive.has(runtimeId) && !this.authRequired.has(runtimeId)
@@ -241,6 +248,7 @@ export class RuntimeFactsRegistry {
    *  reports, which the declared table never does. */
   noteImageCatalog(entries: ResolvedRuntimeCatalog['entries']): void {
     for (const [id, entry] of Object.entries(entries)) {
+      if (entry.aliasOf) continue
       this.names[id] = entry.name
       if (entry.version) this.versions[id] = entry.version
       this.probedVersions.set(id, entry.version || (this.probedVersions.get(id) ?? ''))
@@ -258,7 +266,8 @@ export class RuntimeFactsRegistry {
   async hydrateFromCache(): Promise<void> {
     try {
       for (const meta of await this.host.store().listRuntimeCatalogMetas()) {
-        if (!this.host.catalog().entries[meta.runtimeId]) continue
+        const entry = this.host.catalog().entries[meta.runtimeId]
+        if (!entry || entry.aliasOf) continue
         await this.rebuildCatalog(meta.runtimeId)
         const cachedModels = (await this.host.store().listRuntimeModelCaps(meta.runtimeId)).map((r) => r.modelId)
         if (cachedModels.length > 0 && (this.models.get(meta.runtimeId) ?? []).length === 0) {
@@ -275,6 +284,7 @@ export class RuntimeFactsRegistry {
    *  plus daemon-side synthetic effort levels (Claude max/ultracode) so the
    *  console vocabulary always matches the live-session pickers. */
   async rebuildCatalog(id: string): Promise<void> {
+    id = this.canonicalId(id)
     const meta = await this.host.store().getRuntimeCatalogMeta(id)
     if (!meta) {
       this.catalogs.delete(id)
@@ -374,7 +384,7 @@ export class RuntimeFactsRegistry {
         ? {}
         : Object.fromEntries(
             Object.entries(catalog.entries)
-              .filter(([, entry]) => entry.source !== 'curated')
+              .filter(([, entry]) => !entry.aliasOf && entry.source !== 'curated')
               .map(([id, entry]) => [id, entry.runtime])
           )
     const probeCount = Object.keys(ordinaryRuntimes).length + Object.keys(curatedCandidates).length
@@ -539,6 +549,7 @@ export class RuntimeFactsRegistry {
   /** Fold one probe result into admission, advertised models/caps and the model
    *  catalog. Called per result so a slow runtime delays only itself. */
   private async applyProbeResult(r: RuntimeProbeResult): Promise<void> {
+    r = { ...r, runtime: this.canonicalId(r.runtime) }
     if (this.host.localProbeCatalog().entries[r.runtime]?.source === 'curated') this.host.curatedAdmission().record(r)
     this.host.refreshAdmitted()
     // Successful probes (including empty selectors) and auth failures are

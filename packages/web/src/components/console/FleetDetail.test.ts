@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { FleetRuntimesCard, intersectRuntimes, unionRuntimes } from './FleetDetail'
-import type { DaemonRow } from '@/lib/data'
+import { selectableRuntimeIds, type DaemonRow, type Agent } from '@/lib/data'
 
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
@@ -32,6 +32,30 @@ const member = (over: Partial<DaemonRow['runtimeModels'][number]> = {}): DaemonR
   }) as unknown as DaemonRow
 
 describe('runtime aggregation carries model display metadata', () => {
+  it('shows a reported alias once, counts its agents, and preserves a configured alias in the picker', () => {
+    const daemon = member({ runtime: 'native', models: [], modelCatalog: null })
+    daemon.runtimeModels.push({ ...daemon.runtimeModels[0]!, runtime: 'legacy', aliasOf: 'native' })
+    expect(selectableRuntimeIds(daemon)).toEqual(['native'])
+    expect(selectableRuntimeIds(daemon, 'legacy')).toEqual(['legacy'])
+    for (const aggregate of [unionRuntimes, intersectRuntimes]) {
+      const runtimes = aggregate([daemon])
+      expect(runtimes).toHaveLength(1)
+      expect(runtimes[0]).toMatchObject({ runtime: 'native', aliases: ['legacy'] })
+      const html = renderToStaticMarkup(
+        createElement(FleetRuntimesCard, {
+          title: 'Runtimes',
+          runtimes,
+          agents: [{ runtime: 'legacy' } as Agent],
+          empty: 'None'
+        })
+      )
+      expect(html).toContain('1 agent')
+    }
+    delete daemon.runtimeModels[1]!.aliasOf
+    expect(unionRuntimes([daemon])).toHaveLength(2)
+    expect(selectableRuntimeIds(daemon)).toEqual(['native', 'legacy'])
+  })
+
   it('unions the catalog names and blurbs alongside the ids', () => {
     const [rt] = unionRuntimes([member()])
     expect(rt!.models).toEqual(['opus[1m]', 'haiku'])

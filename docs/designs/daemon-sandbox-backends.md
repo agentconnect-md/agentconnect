@@ -345,15 +345,18 @@ share a base stage with the toolchain, browser, ACP runtimes, and shim. Addition
 self-hosted runtimes belong in the full target. The pool provides Claude Code,
 Codex, and DeepSeek Harness. The full image additionally installs Antigravity,
 Cline, Devin, GitHub Copilot, Grok Build, Oh My Pi, OpenCode, pi, Qwen Code,
-Qoder CLI, and Qoder CN CLI. The legacy `qoder` catalog ID uses the same Qoder
-CLI executable as `qoder-cli`. pi includes both its ACP adapter and the underlying
+Qoder CLI, and Qoder CN CLI. The `qoder` compatibility ID resolves to `qoder-cli`
+before host discovery and image projection. Both IDs share one native launch
+definition and one probe state; reported `aliasOf` metadata lets the Console show
+one entry while existing agent configurations retain either ID. Explicit runtime
+overrides remain independent. pi includes both its ACP adapter and the underlying
 CLI. Packages are version-pinned; standalone downloads also pin their SHA-256.
 
 Each image bakes an explicit runtime roster and generates its own runtime table
 by probing the installed executables as the ordinary runtime user, without
 provider credentials. Missing executables fail the build instead of silently
-reducing the roster. Installing a runtime does not establish a host login or
-make it a discovery candidate; credential discovery still governs that list.
+reducing the roster. Installed runtimes remain discoverable without a saved login;
+saved logins also keep runtimes visible when their executable is missing.
 General development toolchain expansion can follow independently.
 The daemon package is published before image finalization; the matching
 image workflow must complete before this default can be pulled. A missing image

@@ -869,17 +869,16 @@ export function preferredModelFor(daemon: Pick<DaemonRow, 'runtimeModels'> | und
   return dflt && models.includes(dflt) ? dflt : models[0]!
 }
 
-/** Runtime ids the daemon reports as needing a login on its host — its probe (or a
- *  live turn) was rejected with the ACP auth-required error.
- *
- *  This is NOT a launchability signal, and must not be used to gate a choice. The flag
- *  covers two states the facts snapshot cannot tell apart: a curated candidate whose
- *  probe never succeeded (unadmitted), and an admitted, perfectly launchable runtime
- *  whose last live turn happened to be rejected for login. Placement is deliberately
- *  independent of readiness either way — `docs/designs/preset-agents.md` §3.2 makes an
- *  agent on a logged-out runtime an ordinary supported state, and creation/placement
- *  never gate on it. So the pickers MARK these and prefer a signed-in default; they do
- *  not disable them. */
+/** Show each runtime once, preserving an existing agent's selected compatibility id. */
+export function selectableRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'>, selected?: string): string[] {
+  const profiles = daemon.runtimeModels
+  const canonicalSelected = profiles.find((profile) => profile.runtime === selected)?.aliasOf
+  return profiles
+    .filter((profile) => profile.runtime === selected || (!profile.aliasOf && profile.runtime !== canonicalSelected))
+    .map((profile) => profile.runtime)
+}
+
+/** Login warnings mark choices without preventing creation or placement on a logged-out runtime. */
 export function loginRequiredRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'> | undefined): string[] {
   return (daemon?.runtimeModels ?? []).filter((r) => r.authRequired).map((r) => r.runtime)
 }
@@ -2237,6 +2236,7 @@ export interface DaemonRow {
    *  null ⇒ not probed (older daemon) ⇒ assume stdio-only. */
   runtimeModels: {
     runtime: string
+    aliasOf?: string | null
     version: string
     models: string[]
     acpProtocolVersion?: number | null

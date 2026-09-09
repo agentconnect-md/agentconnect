@@ -247,9 +247,13 @@ describe('runChat', () => {
     ).rejects.toThrow(/multiple agents found.*--agent/s)
   })
 
-  it('synchronously admits a curated runtime before creating the real host', async () => {
-    const files = curatedScaffold('omp')
-    const probeRuntimes = vi.fn(async (_runtimes, options) => {
+  it.each(['omp', 'legacy'])('admits and launches %s through its canonical runtime', async (runtimeId) => {
+    const files = curatedScaffold(runtimeId)
+    const resolved = catalog('omp')
+    resolved.entries.legacy = { ...resolved.entries.omp!, aliasOf: 'omp' }
+    resolved.runtimes.legacy = resolved.runtimes.omp!
+    const probeRuntimes = vi.fn(async (runtimes, options) => {
+      expect(Object.keys(runtimes)).toEqual(['omp'])
       expect(options.curated).toBe(true)
       return [{ runtime: 'omp', ok: true, models: [] }]
     })
@@ -263,7 +267,7 @@ describe('runChat', () => {
       ...files,
       message: 'hi',
       out: capture().stream,
-      resolveCatalog: async () => catalog('omp'),
+      resolveCatalog: async () => resolved,
       installed: (runtimes) => runtimes,
       probeRuntimes,
       hostFactory

@@ -195,6 +195,7 @@ export interface DaemonLoad {
  */
 export interface DaemonRuntimeProfile {
   runtime: string
+  aliasOf?: string | null
   version: string
   models: string[]
   contextWindow: number | null

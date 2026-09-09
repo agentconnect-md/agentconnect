@@ -138,6 +138,7 @@ export const RuntimeModelCatalogDto = z.object({
 /** Observed runtime capability (from `facts/runtime-profile`); `models` drives the console picker. */
 export const RuntimeProfileDto = z.object({
   runtime: z.string(),
+  aliasOf: z.string().nullable().optional(),
   version: z.string(),
   hostVersion: z.string().nullable().optional(),
   hostAvailable: z.boolean().nullable().optional(),

@@ -497,6 +497,78 @@ describe('daemon last-good advertisement fallback', () => {
 })
 
 describe('daemon auth-required probe fold', () => {
+  it.each(['srt', 'microsandbox'])(
+    'shares one probe and live login state across compatibility ids under %s',
+    async (backend) => {
+      const dir = root()
+      const clock = new FakeClock()
+      clock.advance(10_000)
+      let catalog = catalogOf({})
+      const probe = vi.fn(async (runtimes: Record<string, RuntimeDef>): Promise<RuntimeProbeResult[]> =>
+        Object.keys(runtimes).map((runtime) => ({
+          runtime,
+          ok: true,
+          models: ['m1'],
+          probedVersion: 'host-v1',
+          acpProtocolVersion: 1,
+          mcpCapabilities: { http: true, sse: false }
+        }))
+      )
+      const daemon = new Daemon({
+        root: dir,
+        clock,
+        resolveCatalog: async () => catalog,
+        installed: (r) => r,
+        probeRuntimes: probe,
+        hostFactory: () => ({}) as never,
+        sandboxMechanism: null
+      })
+      try {
+        await daemon.start()
+        catalog = catalogOf({ native: FAKE_RT, legacy: FAKE_RT })
+        catalog.entries.native!.source = 'curated'
+        catalog.entries.legacy = { ...catalog.entries.native!, aliasOf: 'native' }
+        const d = daemon as any
+        d.cfg.sandbox.backend = backend
+        if (backend === 'microsandbox')
+          d.microsandboxTable = {
+            runtimes: [{ id: 'legacy', command: '/image/bin/native', version: 'image-v2', acp: { protocolVersion: 1 } }]
+          }
+        await d.discoverRuntimes(dir, d.cfg, [])
+        stubCatalogSvc(daemon)
+        captureEmits(daemon)
+        await d.runtimeFacts.probeAndEmit(true)
+
+        expect(probe).toHaveBeenCalledTimes(1)
+        expect(Object.keys(probe.mock.calls[0]![0])).toEqual(['native'])
+        expect(d.admittedRuntimeIds()).toEqual(expect.arrayContaining(['native', 'legacy']))
+        expect(d.runtimeFacts.profileFor('legacy')).toEqual({
+          ...d.runtimeFacts.profileFor('native'),
+          runtime: 'legacy',
+          aliasOf: 'native'
+        })
+        expect(d.runtimeFacts.profileFor('native')).toMatchObject({
+          hostAvailable: true,
+          hostVersion: 'host-v1',
+          version: backend === 'microsandbox' ? 'image-v2' : 'host-v1',
+          models: ['m1']
+        })
+        expect(d.runtimeFacts.offeredModels('legacy')).toEqual(['m1'])
+        expect(d.runtimeFacts.mcpCapabilities('legacy')).toEqual({ http: true, sse: false })
+        d.runtimeFacts.noteAuthFromTurn('legacy', true)
+        expect(d.runtimeFacts.profileFor('native').authRequired).toBe(true)
+        expect(d.runtimeFacts.profileFor('legacy').authRequired).toBe(true)
+        d.runtimeFacts.noteAuthFromTurn('native', false)
+        expect(d.runtimeFacts.profileFor('legacy').authRequired).toBeUndefined()
+        await d.runtimeFacts.applySandboxProbe({ runtime: 'legacy', ok: true, models: ['m2'] })
+        expect(d.runtimeFacts.offeredModels('native')).toEqual(['m2'])
+        expect(d.runtimeFacts.offeredModels('legacy')).toEqual(['m2'])
+      } finally {
+        await daemon.stop()
+      }
+    }
+  )
+
   it('flags authRequired in the snapshot on an auth-rejected probe and clears it once a probe succeeds', async () => {
     const dir = root()
     await seedCache(dir, [{ runtimeId: 'fake', models: [{ id: 'm-cached', caps: {} }] }])

@@ -305,6 +305,8 @@ export type RuntimeModelCatalog = z.infer<typeof RuntimeModelCatalog>
 
 export const FactsRuntimeProfile = z.object({
   runtime: z.string(), // "claude" / "codex" / ...
+  // A compatibility id shares its canonical runtime's installation, probes, and login state.
+  aliasOf: z.string().optional(),
   version: z.string(),
   // The host probe's version, kept separate from a sandbox image's runtime version.
   hostVersion: z.string().optional(),

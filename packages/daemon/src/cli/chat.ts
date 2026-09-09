@@ -77,6 +77,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     : await resolveRuntimeCatalog(cfg, root, { neededRuntimes: [agent.runtime], mode: 'cache-first' })
   const runtimes = opts.installed ? opts.installed(catalog.runtimes) : installedRuntimeCatalog(catalog).runtimes
   const entry = catalog.entries[agent.runtime]
+  const runtimeId = entry?.aliasOf ?? agent.runtime
   const selected = runtimes[agent.runtime]
   if (!selected) {
     if (entry?.source === 'curated') {
@@ -110,7 +111,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     const admission = new CuratedRuntimeAdmission()
     const probe = opts.probeRuntimes ?? probeAllRuntimes
     const results = await probe(
-      { [agent.runtime]: runtime },
+      { [runtimeId]: runtime },
       {
         curated: true,
         hostFactory: defaultProbeHostFactory({ isolateAccountApps: cfg.security.isolateAccountApps }),
@@ -123,14 +124,14 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
       }
     )
     admission.record(
-      results.find((result) => result.runtime === agent.runtime) ?? {
-        runtime: agent.runtime,
+      results.find((result) => result.runtime === runtimeId) ?? {
+        runtime: runtimeId,
         ok: false,
         models: [],
         error: 'ACP probe returned no result'
       }
     )
-    admission.assertLaunch(agent.runtime, entry.source)
+    admission.assertLaunch(runtimeId, entry.source)
   }
 
   const agentEnv = agentChildEnv(agent)
@@ -151,7 +152,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     skillsAgentId: entry?.skillsAgentId ?? null
   })
   const assembled = assembleRuntimeLaunch({
-    runtimeId: agent.runtime,
+    runtimeId,
     runtime,
     provider: memoryKindOf(agent),
     hostKey: agentHostKey(agent.id),
@@ -177,7 +178,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   for (const notice of assembled.configFiles?.notices ?? []) out.write(`⚠️ ${notice}\n`)
   const hostOptions: ConstructorParameters<typeof AcpHost>[1] = {
     onUpdate: renderUpdate(out),
-    runtimeId: agent.runtime,
+    runtimeId,
     isolateAccountApps: cfg.security.isolateAccountApps,
     env: assembled.launch.env,
     inheritProcessEnv: assembled.launch.inheritProcessEnv,

@@ -140,11 +140,13 @@ export function declaredRuntimeCatalog(catalog: ResolvedRuntimeCatalog, table: K
   const acp: Record<string, K8sRuntimeAcpSnapshot> = {}
 
   for (const declared of table.runtimes) {
-    const entry = catalog.entries[declared.id]
+    const id = catalog.entries[declared.id]?.aliasOf ?? declared.id
+    const entry = catalog.entries[id]
     if (!entry) {
       unresolved.push(declared.id)
       continue
     }
+    if (id !== declared.id && table.runtimes.some((runtime) => runtime.id === id)) continue
     const imageProbed = Boolean(declared.command && declared.acp)
     if (entry.source === 'curated' && !imageProbed) {
       rejectedCurated.push(declared.id)
@@ -161,15 +163,21 @@ export function declaredRuntimeCatalog(catalog: ResolvedRuntimeCatalog, table: K
       rejectedPackageLaunchers.push(declared.id)
       continue
     }
-    entries[declared.id] = {
+    entries[id] = {
       ...entry,
       runtime,
       ...(entry.source === 'curated' ? { source: 'image' as const } : {}),
       ...(declared.version ? { version: declared.version } : {})
     }
-    runtimes[declared.id] = runtime
-    if (declared.models?.length) models[declared.id] = [...declared.models]
-    if (declared.acp) acp[declared.id] = declared.acp
+    runtimes[id] = runtime
+    if (declared.models?.length) models[id] = [...declared.models]
+    if (declared.acp) acp[id] = declared.acp
+  }
+  for (const [id, entry] of Object.entries(catalog.entries)) {
+    const canonical = entry.aliasOf && entries[entry.aliasOf]
+    if (!canonical) continue
+    entries[id] = { ...canonical, aliasOf: entry.aliasOf }
+    runtimes[id] = canonical.runtime
   }
 
   return { catalog: { entries, runtimes }, unresolved, rejectedCurated, rejectedPackageLaunchers, models, acp }

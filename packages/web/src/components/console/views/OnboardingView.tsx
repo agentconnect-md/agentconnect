@@ -20,7 +20,8 @@ import {
   poolLabel,
   preferredModelFor,
   imageBinaryMissingRuntimeIds,
-  loginRequiredRuntimeIds
+  loginRequiredRuntimeIds,
+  selectableRuntimeIds
 } from '@/lib/data'
 import type { DaemonRow } from '@/lib/data'
 import type { AgentPlacementTarget, DaemonConnectDto } from '@/lib/api'
@@ -487,7 +488,7 @@ function WhereStep({
 // daemon's reported profiles (else the static fallback), models from the chosen
 // runtime's profile.
 function useRuntimeModel(daemon?: DaemonRow, initial?: { runtime?: string; model?: string }) {
-  const runtimeIds = daemon ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
+  const runtimeIds = daemon ? selectableRuntimeIds(daemon) : FALLBACK_RUNTIME_IDS
   // Logged-out runtimes are marked, not blocked; the default just prefers a signed-in one.
   const runtimesNeedingLogin = daemon ? loginRequiredRuntimeIds(daemon) : []
   const runtimesMissingImageBinary = imageBinaryMissingRuntimeIds(daemon)

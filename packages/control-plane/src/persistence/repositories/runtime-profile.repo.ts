@@ -16,6 +16,7 @@ function toRecord(p: RuntimeProfile): RuntimeProfileRecord {
     id: p.id,
     daemonId: DaemonId(p.daemonId),
     runtime: p.runtime,
+    aliasOf: p.aliasOf,
     version: p.version,
     hostVersion: p.hostVersion,
     hostAvailable: p.hostAvailable,
@@ -52,6 +53,7 @@ export class PgRuntimeProfileRepo implements RuntimeProfileRepo {
       create: {
         daemonId,
         runtime: f.runtime,
+        aliasOf: f.aliasOf ?? null,
         version: f.version,
         hostVersion: f.hostVersion ?? null,
         hostAvailable: f.hostAvailable ?? null,
@@ -69,6 +71,7 @@ export class PgRuntimeProfileRepo implements RuntimeProfileRepo {
         observedAt: at
       },
       update: {
+        aliasOf: f.aliasOf ?? null,
         version: f.version,
         hostVersion: f.hostVersion ?? null,
         hostAvailable: f.hostAvailable ?? null,
