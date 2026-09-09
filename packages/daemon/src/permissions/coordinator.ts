@@ -994,12 +994,14 @@ export class PermissionCoordinator {
         })
         // Only a chat card is rewritten here: an editor decision settles approvals, and an
         // approval elicitation never lands on the webchat surface.
-        if (elicitation.surface === 'chat' && elicitation.ts) {
+        if (elicitation.surface === 'chat') {
           const label: ElicitCardLabel =
             req.decision === 'allow'
               ? { mark: 'answered', text: 'Allowed by Agent editor', fallback: 'Permission resolved' }
               : { mark: 'dismissed', text: 'Denied by Agent editor', fallback: 'Permission resolved' }
-          elicitation.facet.settle(elicitation, elicitSettlement(elicitation.params, false, label))
+          // Through settleChatCard, so a decision that beats the post leaves its label for the
+          // posting path instead of leaving a card standing with buttons nobody awaits.
+          this.settleChatCard(elicitation, req.requestId, false, label)
         }
         elicitation.resolve(req.decision === 'allow' ? { action: 'accept' } : { action: 'cancel' })
         return { ok: true }
@@ -1539,7 +1541,8 @@ export class PermissionCoordinator {
     // settlement left its own label here (#1794).
     if (!live) {
       const settled = this.takeSettledBeforePost(requestId)
-      if (ts) facet.settle({ conn: p.conn, channel: p.plan.channel, ts }, elicitSettlement(params, !!url, settled))
+      if (ts && settled)
+        facet.settle({ conn: p.conn, channel: p.plan.channel, ts }, elicitSettlement(params, !!url, settled))
       return await result
     }
     if (!ts) {
@@ -2175,12 +2178,16 @@ export class PermissionCoordinator {
     this.settledBeforePost.set(requestId, label)
   }
 
-  /** How a card the posting path found already settled must read. A settlement that beat the post
-   *  left its own label here; anything else really was the turn ending, which is Cancelled. */
-  private takeSettledBeforePost(requestId: string): ElicitCardLabel {
+  /** How a card the posting path found already settled must read, or undefined when it has already
+   *  been rewritten and must be left alone. Every chat-card settlement goes through
+   *  {@link settleChatCard}, which leaves its label here exactly when it had no message to rewrite
+   *  — so nothing left means the settlement DID rewrite the card, from a message id of its own
+   *  (a tap carries the card's, adopted before the send could record it), and re-settling would
+   *  call an answered card Cancelled. */
+  private takeSettledBeforePost(requestId: string): ElicitCardLabel | undefined {
     const settled = this.settledBeforePost.get(requestId)
     this.settledBeforePost.delete(requestId)
-    return settled ?? ELICIT_CANCELLED
+    return settled
   }
 
   /** Post one daemon-authored line on the card's OWN surface — a notice, so it lands where every

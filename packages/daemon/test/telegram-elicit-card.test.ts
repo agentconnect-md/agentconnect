@@ -137,6 +137,8 @@ interface Harness {
   edits: { text: string; buttons: InlineButton[][] }[]
   acked: string[]
   notices: () => string[]
+  /** Hold the next card post's response, so a tap can be made to beat its own send. */
+  holdPost: (release: Promise<void>) => void
 }
 
 /** @param turn the turn's THREAD coordinate and its Telegram reply anchor — a plain supergroup
@@ -152,6 +154,7 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
   const edits: { text: string; buttons: InlineButton[][] }[] = []
   const acked: string[] = []
   const conn = Object.create(TelegramConnection.prototype)
+  let held: Promise<void> | undefined
   conn.postCard = async (
     _c: string,
     text: string,
@@ -159,6 +162,7 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
     opts: { threadTs?: string; replyTo?: number } = {}
   ) => {
     cards.push({ text, buttons, opts })
+    if (held) await held
     return '4242'
   }
   conn.editCard = async (_c: string, _id: number, text: string, buttons: InlineButton[][]) => {
@@ -201,7 +205,8 @@ function telegramTurn(turn: { thread?: string; replyTo?: number } = {}): Harness
     cards,
     edits,
     acked,
-    notices: () => applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
+    notices: () => applied.filter((a) => a.kind === 'notice').map((a) => a.text as string),
+    holdPost: (release: Promise<void>) => void (held = release)
   }
 }
 
@@ -407,6 +412,27 @@ describe('a Telegram multi-select is assembled on the keyboard and submitted by 
     expect(h.edits.at(-1)!.buttons.map((r) => r[0]!.text)).toEqual(['☑️ lint', '⬜️ test', '⬜️ build', 'Confirm'])
     await tap(h, requestId, 'ok')
     await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint'] } })
+  })
+
+  it('keeps the answer on a card Confirmed before its own post returned', async () => {
+    // The tap carries the card's id, so the settlement rewrites it AS ANSWERED while the send is
+    // still in flight; the posting path must not then call that same card Cancelled.
+    const h = telegramTurn()
+    let release!: () => void
+    h.holdPost(new Promise<void>((r) => (release = r)))
+    const result = h.daemon.permissions.onAcpElicit('agent-1', 's1', form(CHECKS, ['checks']))
+    await vi.waitFor(() => expect(h.cards).toHaveLength(1))
+    const requestId = [...h.daemon.permissions.pendingElicits.keys()][0] as string
+
+    await tap(h, requestId, elicitOptionToken(0))
+    await tap(h, requestId, 'ok')
+    expect(h.daemon.permissions.pendingElicits.size).toBe(0)
+    // Only now does the post report its id, and the posting path finds the card already settled.
+    release()
+    await expect(result).resolves.toEqual({ action: 'accept', content: { checks: ['lint'] } })
+
+    expect(h.edits.at(-1)!.text).toContain('✅ checks: lint')
+    expect(h.edits.map((e) => e.text).some((t) => t.includes('Cancelled'))).toBe(false)
   })
 
   it('refuses a tick it cannot show at all, rather than remembering one the boxes deny', () => {
