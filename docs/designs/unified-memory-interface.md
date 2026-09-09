@@ -380,3 +380,27 @@ The common service now has schema-validated create/update/delete methods. Manage
 Managed create uses the optional label as a flat Markdown topic filename (adding `.md` when needed), or generates a UUID topic when omitted. It refuses existing files. Update and delete require the revision from the common get result; update never creates missing entries. Exact edits require one non-empty match and treat replacement strings literally. Full text remains the stored Markdown, including unknown frontmatter. Separate metadata fields are explicitly unsupported for managed mutations rather than discarded. The generated overview is excluded from this entry API; the shared writer retains legacy index preservation/adoption rules.
 
 All three operations use the same atomic publication engine as legacy CP writes, including history, index, durable receipts, source-turn suppression and conservative ambiguous-outcome handling. Result refs are minted from the current authorized view. Known revision conflicts carry the current revision internally. New model descriptors and admin mutation routes have not been enabled yet, so running sessions retain their previous argument shapes.
+
+### Additive model mutation projection
+
+Managed sessions expose `createMemoryEntry`, `updateMemoryEntry`, and
+`deleteMemoryEntry` alongside the existing entry reads. Their input schemas derive
+from the canonical mutation DTOs; the update descriptor preserves the exclusive
+full-text/exact-edit modes. Existing file and external-record tool contracts keep
+their names and arguments for warm-session compatibility. This is an additive
+rollout, not the final retirement of legacy tools.
+
+The descriptor is stable across managed homes; callers use
+`describeMemoryEntries` for live operations and limits before choosing a write.
+Strong mutations still require the atomic home/capture ports, and external/native
+providers gain no new mutation capability. Ordinary model calls bind `tool` source
+and the trusted source turn internally. Every mutation goes through the existing
+write-access/approval gate, and the entry service rechecks access before resolving
+the live provider. A one-call approval permits that payload while a subsequent
+policy denial still wins. Synthetic extraction and Dream bindings retain their
+constrained legacy writer; entry mutations are forbidden there so topic limits,
+staged-root provenance, and adoption checks cannot be bypassed.
+
+Admin HTTP mutation transport and UI remain separate follow-up work. This MCP
+projection does not send large mutation bodies in the bounded daemon/CP read frame;
+the controlled writer continues using staged chunks and atomic home publication.

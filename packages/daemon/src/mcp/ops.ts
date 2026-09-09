@@ -1,8 +1,18 @@
-import { describeMemoryEntries, listMemoryEntries, getMemoryEntry } from './ops/memory-entries.js'
+import {
+  describeMemoryEntries,
+  listMemoryEntries,
+  getMemoryEntry,
+  createMemoryEntry,
+  updateMemoryEntry,
+  deleteMemoryEntry
+} from './ops/memory-entries.js'
 import {
   DESCRIBE_MEMORY_ENTRIES_ARGS,
   LIST_MEMORY_ENTRIES_ARGS,
-  GET_MEMORY_ENTRY_ARGS
+  GET_MEMORY_ENTRY_ARGS,
+  CREATE_MEMORY_ENTRY_ARGS,
+  UPDATE_MEMORY_ENTRY_ARGS,
+  DELETE_MEMORY_ENTRY_ARGS
 } from '../memory/entries/tools.js'
 import { z, type ZodType } from 'zod'
 import { MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../memory/tools.js'
@@ -195,6 +205,9 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['describeMemoryEntries', describeMemoryEntries],
   ['listMemoryEntries', listMemoryEntries],
   ['getMemoryEntry', getMemoryEntry],
+  ['createMemoryEntry', createMemoryEntry],
+  ['updateMemoryEntry', updateMemoryEntry],
+  ['deleteMemoryEntry', deleteMemoryEntry],
   ['readMemory', readMemory],
   ['writeMemory', writeMemory],
   ['searchMemory', searchMemory],
@@ -258,6 +271,9 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['describeMemoryEntries', DESCRIBE_MEMORY_ENTRIES_ARGS],
   ['listMemoryEntries', LIST_MEMORY_ENTRIES_ARGS],
   ['getMemoryEntry', GET_MEMORY_ENTRY_ARGS],
+  ['createMemoryEntry', CREATE_MEMORY_ENTRY_ARGS],
+  ['updateMemoryEntry', UPDATE_MEMORY_ENTRY_ARGS],
+  ['deleteMemoryEntry', DELETE_MEMORY_ENTRY_ARGS],
   ['readMemory', READ_MEMORY_ARGS],
   ['writeMemory', WRITE_MEMORY_ARGS],
   ['searchMemory', SEARCH_MEMORY_ARGS],
@@ -342,6 +358,15 @@ export async function executeTool(
       const verdict = (await deps.requestMemoryWriteApproval?.(ctx, memoryWriteAsk(name, args))) ?? 'no_approver'
       if (verdict === 'no_approver') throw new Error(MEMORY_WRITE_NO_APPROVER)
       if (verdict !== 'allowed') throw new Error(MEMORY_WRITE_NOT_APPROVED)
+      // This call's approval survives service rechecks; a subsequent deny still wins.
+      const access = deps.memoryAccessDecision
+      deps = {
+        ...deps,
+        memoryAccessDecision: async (session, mode) => {
+          const current = (await access?.(session, mode)) ?? 'allow'
+          return mode === 'write' && current === 'ask' ? 'allow' : current
+        }
+      }
     }
   }
   const handler = HANDLERS.get(name)

@@ -1,4 +1,4 @@
-import { MEMORY_ENTRY_TOOLS, memoryEntryTools } from './entries/tools.js'
+import { MEMORY_ENTRY_TOOLS, MEMORY_ENTRY_WRITE_TOOLS, memoryEntryTools } from './entries/tools.js'
 import type { MemoryPluginOperation } from '@agentconnect.md/protocol'
 import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
 
@@ -13,6 +13,7 @@ export const MEMORY_WRITE_NO_APPROVER = `${MEMORY_READ_ONLY_HERE} No one could b
 /** The agent's long-term memory tools, for EVERY agent: `<agent-root>/memory/` with a `MEMORY.md` index plus topic files. */
 export const MEMORY_TOOLS: ToolDescriptor[] = [
   ...MEMORY_ENTRY_TOOLS,
+  ...MEMORY_ENTRY_WRITE_TOOLS,
   {
     name: 'readMemory',
     description:

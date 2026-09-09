@@ -78,6 +78,24 @@ export function memoryWriteAsk(tool: string, args: Record<string, unknown>): Mem
       const content = str(args.content)
       return { tool, target, summary: content ? `Content: "${clip(content)}"` : `Clear ${target} (empty write)` }
     }
+    case 'createMemoryEntry':
+      return {
+        tool,
+        target: str(args.label) ?? 'a new memory entry',
+        summary: `Content: "${clip(str(args.text) ?? '')}"`
+      }
+    case 'updateMemoryEntry': {
+      const edit = args.edit && typeof args.edit === 'object' ? (args.edit as Record<string, unknown>) : undefined
+      return {
+        tool,
+        target: 'memory entry',
+        summary: edit
+          ? `Replace "${clip(str(edit.oldText) ?? '', 80)}" with "${clip(str(edit.newText) ?? '', 120)}"`
+          : `New content: "${clip(str(args.text) ?? '')}"`
+      }
+    }
+    case 'deleteMemoryEntry':
+      return { tool, target: 'memory entry', summary: 'Delete the selected memory entry' }
     case 'saveMemory':
       return { tool, target: 'a new memory record', summary: `Content: "${clip(str(args.text) ?? '')}"` }
     case 'updateMemory':
@@ -130,6 +148,9 @@ export const MEMORY_TOOL_ACCESS_MODES: Record<string, 'read' | 'write'> = {
   describeMemoryEntries: 'read',
   listMemoryEntries: 'read',
   getMemoryEntry: 'read',
+  createMemoryEntry: 'write',
+  updateMemoryEntry: 'write',
+  deleteMemoryEntry: 'write',
   readMemory: 'read',
   writeMemory: 'write',
   searchMemory: 'read',
