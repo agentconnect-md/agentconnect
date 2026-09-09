@@ -255,6 +255,10 @@ process completion or releasing the VM's active-execution count. Closing stdin
 sends EOF; it does not close a process that is still running. This avoids relying
 on garbage collection of the SDK's high-level exec handles, while retaining
 independent ACP streams, cancellation, backpressure, and live output limits.
+After an output-limit failure, the daemon kills the process and drains its
+terminal event before closing: the pinned relay can otherwise reuse the client
+ID while old output is still arriving. Losing transport before that terminal
+event fences and stops the VM before another execution can reuse it.
 
 The first implementation uses private flat ext4 root disks and explicit
 host-bound workspace/cache mounts. The clone strategy is `auto`: preparation can

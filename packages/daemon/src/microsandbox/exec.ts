@@ -39,7 +39,11 @@ export async function openExecStream(
     let closing: Promise<void> | undefined
     let stdinTaken = false
     let stdinClosed = false
+    let terminal = false
     return {
+      get terminal() {
+        return terminal
+      },
       close: () => (closing ??= client.close()),
       signal: (signal: number) => send('signal', { signal }),
       kill: () => send('signal', { signal: 9 }),
@@ -57,6 +61,7 @@ export async function openExecStream(
       },
       async *[Symbol.asyncIterator](): AsyncGenerator<ExecEvent> {
         for await (const frame of stream) {
+          terminal ||= (frame.flags & 1) !== 0
           const envelope = MessageSchema.parse(decode(frame.body))
           const payload: unknown = decode(envelope.p)
           switch (envelope.t) {

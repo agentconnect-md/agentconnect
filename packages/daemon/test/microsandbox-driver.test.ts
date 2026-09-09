@@ -10,7 +10,7 @@ import { MICROSANDBOX_NODE } from '../src/microsandbox/guest.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../src/shim/sandbox-paths.js'
 
 class FakeExec {
-  private readonly queue: Array<ExecEvent | undefined> = []
+  private readonly queue: Array<ExecEvent | Error | undefined> = []
   private wake?: () => void
   readonly id = 1
   readonly writes: Uint8Array[] = []
@@ -20,7 +20,7 @@ class FakeExec {
   readonly close = vi.fn(async () => {})
   request?: { cmd: string; args: string[]; cwd: string; env: string[]; user: string; tty: boolean }
 
-  push(event: ExecEvent | undefined): void {
+  push(event: ExecEvent | Error | undefined): void {
     this.queue.push(event)
     this.wake?.()
   }
@@ -32,6 +32,7 @@ class FakeExec {
           this.wake = resolve
         })
       const event = this.queue.shift()
+      if (event instanceof Error) throw event
       const { kind, ...payload } = event ?? { kind: 'failed', message: 'guest execution failed' }
       yield {
         id: this.id,
@@ -48,7 +49,7 @@ function fakeSdk() {
   const sandboxes = new Map<string, FakeSandbox>()
   const created: FakeSandbox[] = []
   const processes: FakeExec[] = []
-  let onRun: ((process: FakeExec) => void) | undefined
+  let onRun: ((process: FakeExec) => void | Promise<void>) | undefined
 
   class FakeSandbox {
     readonly id = `vm-${created.length}`
@@ -130,7 +131,7 @@ function fakeSdk() {
             if (process.request.args[1] === 'sockets') process.push({ kind: 'stdout', data: Buffer.from('ready\n') })
             else {
               processes.push(process)
-              onRun?.(process)
+              await onRun?.(process)
             }
             return process
           },
@@ -208,7 +209,7 @@ function fakeSdk() {
     sdk,
     created,
     processes,
-    runWith: (callback: (process: FakeExec) => void) => {
+    runWith: (callback: (process: FakeExec) => void | Promise<void>) => {
       onRun = callback
     }
   }
@@ -305,7 +306,7 @@ describe('microsandbox process and VM ownership', () => {
     expect(await manager.environmentIds()).toEqual([])
   })
 
-  it('kills an SDK failure event and releases the execution without hanging readers', async () => {
+  it('closes a terminal failure before releasing the execution without hanging readers', async () => {
     const { manager, environment, request, processes, runWith } = await fixture()
     let releaseClose!: () => void
     const closeGate = new Promise<void>((resolve) => {
@@ -326,7 +327,7 @@ describe('microsandbox process and VM ownership', () => {
     releaseClose()
     await read
     await exited
-    expect(processes[0]!.kill).toHaveBeenCalledOnce()
+    expect(processes[0]!.kill).not.toHaveBeenCalled()
     await manager.suspend(environment.id)
   })
 
@@ -386,7 +387,7 @@ describe('microsandbox process and VM ownership', () => {
     expect(terminal).toHaveBeenCalledOnce()
     expect(await manager.environmentIds()).toEqual([environment.id])
 
-    await expect(driver.launch(request)).rejects.toThrow('socket bridge failed')
+    await expect(driver.launch(request)).rejects.toThrow('transport failed')
     await manager.suspend(environment.id)
     expect(vm.status).toBe('stopped')
     const recovered = await driver.launch(request)
@@ -399,13 +400,64 @@ describe('microsandbox process and VM ownership', () => {
     await manager.discard(environment.id)
   })
 
-  it('enforces output bounds by killing the guest command', async () => {
+  it('drains the killed command before releasing its connection after exceeding output bounds', async () => {
     const { manager, environment, processes, runWith } = await fixture()
-    runWith((process) => process.push({ kind: 'stderr', data: Buffer.from('oversized') }))
-    await expect(manager.exec(environment, 'test', [], { maxBytes: 4 })).rejects.toThrow('output limit exceeded')
-    expect(processes[0]!.kill).toHaveBeenCalledOnce()
+    runWith((process) => {
+      process.kill.mockImplementationOnce(async () => {})
+      process.push({ kind: 'stderr', data: Buffer.from('oversized') })
+    })
+    const execution = expect(manager.exec(environment, 'test', [], { maxBytes: 4 })).rejects.toThrow(
+      'output limit exceeded'
+    )
+    await vi.waitFor(() => expect(processes[0]!.kill).toHaveBeenCalledOnce())
+    expect(processes[0]!.close).not.toHaveBeenCalled()
+    await expect(manager.suspend(environment.id)).rejects.toThrow('1 active executions')
+    processes[0]!.push({ kind: 'stdout', data: Buffer.from('late output') })
+    processes[0]!.push({ kind: 'exited', code: 137 })
+    await execution
     expect(processes[0]!.close).toHaveBeenCalledOnce()
     await manager.suspend(environment.id)
+  })
+
+  it('stops a VM after transport failure before allowing another execution', async () => {
+    const { manager, environment, request, created, processes, runWith } = await fixture()
+    const driver = manager.driverFor(environment)
+    const runtime = await driver.launch(request)
+    const vm = created[0]!
+    let releaseOpening!: () => void
+    const openingGate = new Promise<void>((resolve) => {
+      releaseOpening = resolve
+    })
+    runWith(() => openingGate)
+    const opening = expect(driver.launch(request)).rejects.toThrow('is stopping')
+    await vi.waitFor(() => expect(processes).toHaveLength(2))
+    let releaseStop!: () => void
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve
+    })
+    vm.stopWithTimeout.mockImplementationOnce(async () => {
+      await stopGate
+      vm.status = 'stopped'
+    })
+    const read = expect(runtime.fromAgent.getReader().read()).rejects.toThrow('transport disconnected')
+    processes[0]!.push(new Error('transport disconnected'))
+    await read
+    expect(processes[0]!.close).toHaveBeenCalledOnce()
+    await expect(driver.launch(request)).rejects.toThrow('is stopping')
+    expect(vm.stopWithTimeout).not.toHaveBeenCalled()
+    releaseOpening()
+    await opening
+    expect(processes[1]!.close).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(vm.stopWithTimeout).toHaveBeenCalledOnce())
+    expect(processes).toHaveLength(2)
+    releaseStop()
+    await manager.suspend(environment.id)
+    expect(vm.status).toBe('stopped')
+    const recovered = await driver.launch(request)
+    expect(vm.status).toBe('running')
+    expect(created).toHaveLength(1)
+    await recovered.stop(0)
+    await manager.discard(environment.id)
   })
 
   it('closes a timed-out command without closing another active stream', async () => {

@@ -61,7 +61,7 @@ interface EnvironmentState {
   sandbox: Promise<Sandbox>
   active: number
   closing?: Promise<void>
-  bridgeFailed?: boolean
+  failed?: boolean
   processes: Set<MicrosandboxProcess>
   pending: Set<Promise<void>>
   lastUsed: number
@@ -384,7 +384,8 @@ export class MicrosandboxManager {
       handle,
       stdin,
       (data) => process.stderr.write(data),
-      () => {}
+      () => {},
+      () => this.stopFailedEnvironment(id)
     )
     try {
       const reader = bridge.fromAgent.getReader()
@@ -409,11 +410,7 @@ export class MicrosandboxManager {
         if (this.bridges.get(id) === bridge) {
           this.bridges.delete(id)
           this.options.log?.error(`microsandbox: socket bridge exited for ${id}`)
-          const state = this.environments.get(id)
-          if (state) {
-            state.bridgeFailed = true
-            this.stopFailedEnvironment(id)
-          }
+          this.stopFailedEnvironment(id)
         }
       })
     } catch (error) {
@@ -423,6 +420,8 @@ export class MicrosandboxManager {
   }
 
   private stopFailedEnvironment(id: string): void {
+    const state = this.environments.get(id)
+    if (state) state.failed = true
     void this.closeEnvironment(id, false, true).catch((error: unknown) => {
       this.options.log?.error(`microsandbox: failed to stop environment ${id}: ${String(error)}`)
     })
@@ -432,9 +431,9 @@ export class MicrosandboxManager {
     if (this.closed) throw new Error('microsandbox manager is shutting down')
     let state = this.environments.get(environment.id)
     if (state?.closing) throw new Error(`microsandbox environment ${environment.id} is stopping`)
-    if (state?.bridgeFailed) {
+    if (state?.failed) {
       this.stopFailedEnvironment(environment.id)
-      throw new Error(`microsandbox environment ${environment.id} socket bridge failed; stopping before retry`)
+      throw new Error(`microsandbox environment ${environment.id} transport failed; stopping before retry`)
     }
     const spec = this.spec(environment)
     if (state && state.spec !== spec)
@@ -519,10 +518,20 @@ export class MicrosandboxManager {
         await handle.close()
         throw new Error('microsandbox did not provide process stdin')
       }
-      const runtime = new MicrosandboxProcess(handle, stdin, stderr, () => {
-        state.processes.delete(runtime)
-        release()
-      })
+      if (state.failed || state.closing) {
+        await handle.close()
+        throw new Error(`microsandbox environment ${environment.id} is stopping`)
+      }
+      const runtime = new MicrosandboxProcess(
+        handle,
+        stdin,
+        stderr,
+        () => {
+          state.processes.delete(runtime)
+          release()
+        },
+        () => this.stopFailedEnvironment(environment.id)
+      )
       state.processes.add(runtime)
       return runtime
     } catch (error) {
@@ -607,7 +616,8 @@ class MicrosandboxProcess implements SpawnedRuntime {
     private readonly handle: MicrosandboxExecStream,
     private readonly stdin: MicrosandboxExecStdin,
     private readonly stderr: (data: Uint8Array) => void,
-    private readonly release: () => void
+    private readonly release: () => void,
+    private readonly transportFailure: () => void
   ) {
     this.exited = new Promise((resolve, reject) => {
       this.finishExit = resolve
@@ -635,7 +645,10 @@ class MicrosandboxProcess implements SpawnedRuntime {
       },
       { highWaterMark: 64 * 1024, size: (chunk) => chunk.byteLength }
     )
-    void this.pump().catch((error: unknown) => this.fail(error))
+    void this.pump().catch((error: unknown) => {
+      this.failure ??= error
+      return this.finish()
+    })
   }
 
   onExit(listener: () => void): void {
@@ -677,17 +690,17 @@ class MicrosandboxProcess implements SpawnedRuntime {
     this.failure = error
     this.discardOutput = true
     this.wakeOutput?.()
-    try {
-      await this.handle.kill()
-    } catch (killError) {
-      error = new AggregateError([error, killError], 'microsandbox process failure and cleanup failure')
-      this.failure = error
-    }
-    await this.finish()
+    void this.handle.kill().catch((killError: unknown) => {
+      if (this.finishing) return this.finishing
+      this.failure = new AggregateError([error, killError], 'microsandbox process failure and cleanup failure')
+      return this.finish()
+    })
+    if (!(await this.waitExit(STOP_TIMEOUT_MS))) await this.finish()
   }
 
   private finish(code?: number): Promise<void> {
     return (this.finishing ??= (async () => {
+      if (!this.handle.terminal) this.transportFailure()
       try {
         await this.handle.close()
       } catch (error) {
@@ -717,8 +730,12 @@ class MicrosandboxProcess implements SpawnedRuntime {
           })
         }
         if (!this.discardOutput && !this.finished) this.output.enqueue(event.data)
-      } else if (event.kind === 'stderr') {
-        this.stderr(event.data)
+      } else if (event.kind === 'stderr' && !this.discardOutput) {
+        try {
+          this.stderr(event.data)
+        } catch (error) {
+          void this.fail(error)
+        }
       } else if (event.kind === 'exited') {
         if (this.finished) return
         await this.finish(event.code)
