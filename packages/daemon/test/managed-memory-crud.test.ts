@@ -109,6 +109,7 @@ async function fixture() {
     })
   return {
     fs,
+    provider,
     db,
     commits,
     sourceTurnId,
@@ -260,4 +261,85 @@ describe('common managed entry mutations', () => {
     await expect(api.create({ label: 'topic', text: 'new' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
     expect(await local.readFile('memory/topic.md')).toBeNull()
   })
+})
+
+it('executes conditional MCP writes with trusted scope, approvals and synthetic-session fences', async () => {
+  const f = await fixture()
+  const { executeTool } = await import('../src/mcp/ops.js')
+  const { MEMORY_TOOLS } = await import('../src/memory/tools.js')
+  const ctx = { agentId: 'agent', platform: 'slack', isDm: false, channel: 'C', thread: 'T', tools: MEMORY_TOOLS }
+  let decision: 'allow' | 'ask' | 'deny' = 'allow'
+  let approve = true
+  let approvals = 0
+  const deps = {
+    memory: f.provider,
+    memoryEntryStore: f.db,
+    memoryScope: () => ({ agentId: 'agent', sourceTurnId: f.sourceTurnId }),
+    memoryAccessDecision: (_ctx: unknown, mode: string) => (mode === 'write' ? decision : 'allow'),
+    requestMemoryWriteApproval: () => {
+      approvals++
+      return approve ? 'allowed' : 'denied'
+    }
+  } as unknown as import('../src/mcp/ops.js').OpsDeps
+  const invoke = (name: string, args: Record<string, unknown>) => executeTool(ctx, name, args, deps)
+  expect(await invoke('describeMemoryEntries', {})).toMatchObject({
+    operations: ['list', 'get', 'create', 'update', 'delete']
+  })
+  const created = (await invoke('createMemoryEntry', {
+    label: 'model',
+    text: 'before'
+  })) as import('@agentconnect.md/protocol').MemoryEntryMutationReceipt
+  expect(f.commits[0]).toMatchObject({ source: 'tool', sourceTurnId: f.sourceTurnId })
+  await expect(invoke('createMemoryEntry', { label: 'forged', text: 'x', source: 'distill' })).rejects.toThrow()
+  decision = 'ask'
+  const updated = (await invoke('updateMemoryEntry', {
+    ref: created.entry!.ref,
+    revision: created.entry!.revision,
+    edit: { oldText: 'before', newText: '$& after' }
+  })) as import('@agentconnect.md/protocol').MemoryEntryMutationReceipt
+  expect(approvals).toBe(1)
+  expect(await invoke('getMemoryEntry', { ref: updated.entry!.ref })).toMatchObject({
+    text: expect.stringContaining('$& after')
+  })
+  approve = false
+  await expect(
+    invoke('deleteMemoryEntry', { ref: updated.entry!.ref, revision: updated.entry!.revision })
+  ).rejects.toThrow('did not approve')
+  expect(f.commits).toHaveLength(2)
+  decision = 'deny'
+  await expect(
+    invoke('deleteMemoryEntry', { ref: updated.entry!.ref, revision: updated.entry!.revision })
+  ).rejects.toThrow()
+  decision = 'ask'
+  await expect(
+    executeTool(
+      ctx,
+      'deleteMemoryEntry',
+      { ref: updated.entry!.ref, revision: updated.entry!.revision },
+      {
+        ...deps,
+        requestMemoryWriteApproval: async () => {
+          decision = 'deny'
+          return 'allowed'
+        }
+      }
+    )
+  ).rejects.toMatchObject({ code: 'FORBIDDEN' })
+  expect(f.commits).toHaveLength(2)
+  decision = 'allow'
+  await expect(
+    executeTool(
+      { ...ctx, memoryBinding: { source: 'distill', scope: { agentId: 'agent' }, maxTopics: 0 } },
+      'createMemoryEntry',
+      { text: 'bypass' },
+      deps
+    )
+  ).rejects.toMatchObject({ code: 'FORBIDDEN' })
+  await expect(
+    invoke('updateMemoryEntry', { ref: created.entry!.ref, revision: created.entry!.revision, text: 'stale' })
+  ).rejects.toMatchObject({ code: 'CONFLICT', currentRevision: updated.entry!.revision })
+  expect(
+    await invoke('deleteMemoryEntry', { ref: updated.entry!.ref, revision: updated.entry!.revision })
+  ).toMatchObject({ state: 'completed' })
+  expect(f.commits).toHaveLength(3)
 })
