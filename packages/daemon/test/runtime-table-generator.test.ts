@@ -1,5 +1,12 @@
+import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ACP_AUTH_REQUIRED_CODE, isAuthRequired } from '../../../docker/runtime-sandbox/generate-runtime-table.mjs'
+import {
+  ACP_AUTH_REQUIRED_CODE,
+  buildTable,
+  isAuthRequired
+} from '../../../docker/runtime-sandbox/generate-runtime-table.mjs'
 
 // The runtime image's table generator tolerates exactly one session/new failure: a runtime that is
 // unauthenticated. Everything else must fail the build, because the smoke test exercises only
@@ -22,5 +29,50 @@ describe('runtime table probe classification', () => {
     // And an error carrying no code at all — a spawn failure or a timeout — is never auth.
     expect(isAuthRequired(new Error('codex-acp did not answer session/new within 60000ms'))).toBe(false)
     expect(isAuthRequired(undefined)).toBe(false)
+  })
+
+  it.each([
+    {
+      label: 'reported version',
+      agentInfo: { name: 'fixture', version: '1.2.3' },
+      metadata: { version: '1.2.3' },
+      identity: { agentName: 'fixture' }
+    },
+    { label: 'no version', agentInfo: { name: 'fixture' }, metadata: {}, identity: { agentName: 'fixture' } },
+    { label: 'no agentInfo', agentInfo: undefined, metadata: {}, identity: {} }
+  ])('records real initialize metadata with $label and an unauthenticated session', async (fixture) => {
+    const initialized = { protocolVersion: 1, agentInfo: fixture.agentInfo, agentCapabilities: {} }
+    const script = `
+      require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
+        const { id, method } = JSON.parse(line)
+        const response = method === 'initialize'
+          ? { result: ${JSON.stringify(initialized)} }
+          : { error: { code: -32000, message: 'Authentication required' } }
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, ...response }) + '\\n')
+      })
+    `
+    const entry = { id: 'fixture', command: process.execPath, args: ['--eval', script] }
+    const table = await buildTable([entry])
+    expect(table.runtimes).toEqual([
+      {
+        ...entry,
+        ...fixture.metadata,
+        acp: {
+          protocolVersion: 1,
+          ...fixture.identity,
+          authMethods: [],
+          capabilities: {},
+          modes: [],
+          configOptions: [],
+          sessionProbe: 'auth-required'
+        }
+      }
+    ])
+  })
+
+  it('reports a missing executable without waiting for the ACP timeout', async () => {
+    await expect(
+      buildTable([{ id: 'missing', command: join(tmpdir(), `missing-runtime-${randomUUID()}`) }])
+    ).rejects.toThrow(/ENOENT/)
   })
 })
