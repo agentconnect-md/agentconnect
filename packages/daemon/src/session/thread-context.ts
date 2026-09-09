@@ -82,7 +82,13 @@ export class ThreadContextCoordinator {
       if (snapshot) {
         // Provider history rows carry a platform author and no recipient: the refreshing
         // agent is what names the org that owns them on a shared store.
-        for (const event of snapshot.events) await this.store.appendTranscript({ ...event, orgAgentId: input.agentId })
+        for (const event of snapshot.events) {
+          // Skip this agent's OWN rows, as backfillThreadHistory does: replies are recorded at the send boundary, and a
+          // console-mirrored human turn wears this agent's authorship on Slack while its human row already exists under
+          // the dispatch ts — re-importing either under its Slack ts lands a duplicate the (channel,thread,ts) index misses.
+          if (event.sender === input.agentId) continue
+          await this.store.appendTranscript({ ...event, orgAgentId: input.agentId })
+        }
         completeness = snapshot.completeness
         providerCheckpoint = snapshot.checkpoint ?? providerCheckpoint
       } else {
