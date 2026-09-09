@@ -477,7 +477,7 @@ export default function EditAgentModal({
   // An agent may legitimately sit on one (docs/designs/preset-agents.md §3.2), so this
   // surfaces the state on the choice rather than taking the choice away.
   const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
-  const runtimesMissingImageBinary = imageBinaryMissingRuntimeIds(daemon)
+  const runtimesMissingImageBinary = effectiveRunInSandbox ? imageBinaryMissingRuntimeIds(daemon) : []
   const runtimeMeta = acpRuntime(acpRegistry, runtime)
   // Models are only what the daemon reports for this runtime — advertised ids
   // verbatim, never a synthesized "Default" entry: an agent without an explicit

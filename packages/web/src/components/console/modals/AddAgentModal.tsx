@@ -335,7 +335,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // Runtimes the daemon reports as logged out. Marked in the picker, never blocked —
   // creating on one is a supported state (docs/designs/preset-agents.md §3.2).
   const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
-  const runtimesMissingImageBinary = imageBinaryMissingRuntimeIds(daemon)
+  const runtimesMissingImageBinary = effectiveRunInSandbox ? imageBinaryMissingRuntimeIds(daemon) : []
   // …but the DEFAULT prefers a signed-in one, mirroring how auto-placement picks a
   // preset's runtime. Falls through to the first reported id when all are logged out.
   const defaultRuntime =

@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { AgentMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { IMAGE_BINARY_MISSING_LABEL, runtimeLabel } from '@/lib/data'
+import { IMAGE_BINARY_MISSING_LABEL, runtimeLabel, runtimeWarning } from '@/lib/data'
 
 const LOGIN_HINT = 'Not signed in on this daemon — you can still pick it, then sign in on the daemon host'
 
@@ -29,8 +29,10 @@ export function RuntimeSelect({
   const rows = options.map((id) => ({
     id,
     label: runtimeLabel(id, acpRuntime(registry, id)?.name),
-    needsLogin: !!needsLogin?.includes(id),
-    imageBinaryMissing: !!imageBinaryMissing?.includes(id)
+    warning: runtimeWarning({
+      authRequired: needsLogin?.includes(id),
+      unavailableReason: imageBinaryMissing?.includes(id) ? 'image-binary-missing' : undefined
+    })
   }))
   const selectedIndex = Math.max(
     0,
@@ -125,12 +127,11 @@ export function RuntimeSelect({
                 <AgentMark model={selected?.id ?? value} />
               </span>
               <span className="truncate">{selected?.label ?? value}</span>
-              {/* The field is a 1/3 column, too narrow for the menu's text tag — carry
-                  the same warning as a mark so the state survives the menu closing. */}
-              {(selected?.needsLogin || selected?.imageBinaryMissing) && (
+              {/* Keep the warning visible when the narrow field closes its menu. */}
+              {selected?.warning && (
                 <span
                   className="flex-none"
-                  title={selected.imageBinaryMissing ? IMAGE_BINARY_MISSING_LABEL : LOGIN_HINT}
+                  title={selected.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : LOGIN_HINT}
                 >
                   <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
                 </span>
@@ -174,7 +175,13 @@ export function RuntimeSelect({
                   role="option"
                   tabIndex={-1}
                   aria-selected={isSelected}
-                  title={row.imageBinaryMissing ? IMAGE_BINARY_MISSING_LABEL : row.needsLogin ? LOGIN_HINT : undefined}
+                  title={
+                    row.warning === 'image-binary-missing'
+                      ? IMAGE_BINARY_MISSING_LABEL
+                      : row.warning
+                        ? LOGIN_HINT
+                        : undefined
+                  }
                   className={`fopt min-h-10 gap-3 rounded-md px-2 py-[6px] text-[13px] ${
                     isSelected
                       ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
@@ -190,20 +197,12 @@ export function RuntimeSelect({
                   </span>
                   <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
                     <span>{row.label}</span>
-                    {(row.imageBinaryMissing || row.needsLogin) && (
-                      <span className="flex flex-wrap gap-x-3 gap-y-1 font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
-                        {row.imageBinaryMissing && (
-                          <span className="flex items-start gap-[4px]">
-                            <Icon name="triangle-alert" size={11} className="mt-[2px] flex-none" />
-                            <span>{IMAGE_BINARY_MISSING_LABEL}</span>
-                          </span>
-                        )}
-                        {row.needsLogin && (
-                          <span className="flex items-start gap-[4px]">
-                            <Icon name="triangle-alert" size={11} className="mt-[2px] flex-none" />
-                            <span>Login required</span>
-                          </span>
-                        )}
+                    {row.warning && (
+                      <span className="flex items-start gap-[4px] font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
+                        <Icon name="triangle-alert" size={11} className="mt-[2px] flex-none" />
+                        <span>
+                          {row.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : 'Login required'}
+                        </span>
                       </span>
                     )}
                   </span>
