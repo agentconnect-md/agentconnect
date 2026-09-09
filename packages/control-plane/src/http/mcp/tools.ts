@@ -240,7 +240,7 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'listDaemons',
     description:
-      'List the daemons (edge execution units) in the organization that are visible to you, with status and load. This is the liveness view — what each daemon can RUN is listDaemonCapabilities, and one runtime’s model catalog is getDaemon.',
+      'List the daemons (edge execution units) in the organization that are visible to you, with status and load. `pinnable: false` marks a member of the install-wide managed pool: it is a replaceable Pod, so never pass its id as createAgent’s daemonId — place the agent on the pool instead. This is the liveness view — what each daemon can RUN is listDaemonCapabilities, and one runtime’s model catalog is getDaemon.',
     schema: NoArgs,
     call: (ctx) => ctx.get(org(ctx, '/daemons'))
   },
@@ -379,7 +379,20 @@ export const MCP_TOOLS: McpToolDef[] = [
         outputMode: OutputMode.optional(),
         fastMode: z.boolean().optional(),
         permissionMode: z.string().min(1).optional(),
-        daemonId: z.string().min(1).optional().describe('Pin to a daemon (from listDaemons); omit to leave unplaced'),
+        placementKind: z
+          .enum(['daemon', 'pool', 'set'])
+          .optional()
+          .describe(
+            'Where the agent runs: "pool" for the install-wide managed pool (needs no daemonId — use this on a Cloud install), "set" with setId, or "daemon" (the default) with daemonId. Omit all three to leave the agent unplaced.'
+          ),
+        setId: z.string().uuid().optional().describe('The member set to place on, for placementKind "set"'),
+        daemonId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            'Pin to ONE daemon from listDaemons, for placementKind "daemon". Only a daemon whose `pinnable` is true may be named: a managed pool member is replaceable and is refused. Omit to leave unplaced.'
+          ),
         pause: z.boolean().optional()
       })
       .strict(),

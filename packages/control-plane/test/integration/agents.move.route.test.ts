@@ -959,3 +959,36 @@ describe('PUT /agents/:id/daemon — a two-hop move back onto the pool (#1093)',
     expect(control.activateCalls.slice(hop1Activates).filter((a) => a.daemonId === TARGET)).toEqual([])
   })
 })
+
+describe('a `daemon` placement naming a managed pool member', () => {
+  it('POST /agents refuses the pin as a 409 instead of letting the invariant escape as a 500', async () => {
+    // A pool member is a replaceable Pod, so `assertDaemonNotInSet` throws inside the create
+    // transaction. A route that does not map that throw answers a bare 500 — and the delegated
+    // admin MCP, whose only placement field is `daemonId`, walks straight into it.
+    await seedMoveDaemons()
+    await seedPoolMember()
+    running = buildHttpApp(prisma, undefined, poolLive, new MoveControlSpy() as unknown as ControlSender)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'pinned-to-member', runtime: 'Claude Code', daemonId: MEMBER }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toMatch(/managed pool member/)
+    expect(await prisma.agent.findFirst({ where: { name: 'pinned-to-member' } })).toBeNull()
+  })
+
+  it('GET /daemons marks the pool member unpinnable and an org-owned machine pinnable', async () => {
+    await seedMoveDaemons()
+    await seedPoolMember()
+    running = buildHttpApp(prisma, undefined, poolLive, new MoveControlSpy() as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })
+    expect(res.statusCode).toBe(200)
+    const byId = new Map((res.json() as { daemonId: string; pinnable: boolean }[]).map((d) => [d.daemonId, d]))
+    expect(byId.get(MEMBER)?.pinnable).toBe(false)
+    expect(byId.get(SOURCE)?.pinnable).toBe(true)
+  })
+})

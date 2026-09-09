@@ -121,7 +121,9 @@ function toDto(
   graceMs: number,
   nowMs: number,
   release: { channel: string; latestVersion: string | null; availableVersions: string[] },
-  latestOp: DaemonLifecycleOpRecord | null
+  latestOp: DaemonLifecycleOpRecord | null,
+  // The install-wide pool's set id, or null where this read does not project `pinnable`.
+  poolSetId: string | null
 ): DaemonViewDtoT {
   // Read-time expiry projection: a still-`pending` op past its deadline is reported as
   // `failed` (timed out) even before the sweep/next-command persists that — so the
@@ -171,6 +173,10 @@ function toDto(
     // failing the whole response's schema serialization.
     sessionRetention: SESSION_RETENTION_RE.test(view.sessionRetention) ? view.sessionRetention : '7d',
     memberSetId: view.memberSetId,
+    // Membership is the read, not "org-less daemon" — the same predicate `assertDaemonNotInSet`
+    // enforces inside the placement transaction, so what the fleet advertises is what a create
+    // or a move will actually accept.
+    pinnable: !(view.memberSetId !== null && poolSetId !== null && view.memberSetId === poolSetId),
     visibility: view.visibility,
     sharedWith: view.sharedWith,
     canEdit: orgOwned && canEdit(view, ctx),
@@ -225,10 +231,19 @@ export function daemonRoutes(deps: HttpDeps) {
   // single mutation response fetches its own daemon's latest op; the list route batches
   // (see below) to avoid an N+1. `latestForDaemon` (any status, not just pending) so a
   // terminal op stays observable — the console reads terminal state, not just in-flight.
-  const dtoWith = (view: DaemonView, ctx: ViewCtx, latestOp: DaemonLifecycleOpRecord | null): DaemonViewDtoT =>
-    toDto(view, deps.liveness, ctx, graceMs, Date.now(), release(), latestOp)
-  const dto = async (view: DaemonView, ctx: ViewCtx): Promise<DaemonViewDtoT> =>
-    dtoWith(view, ctx, await deps.repos.daemonLifecycleOp.latestForDaemon(DaemonId(view.daemonId)))
+  const dtoWith = (
+    view: DaemonView,
+    ctx: ViewCtx,
+    latestOp: DaemonLifecycleOpRecord | null,
+    poolSetId: string | null
+  ): DaemonViewDtoT => toDto(view, deps.liveness, ctx, graceMs, Date.now(), release(), latestOp, poolSetId)
+  const dto = async (view: DaemonView, ctx: ViewCtx): Promise<DaemonViewDtoT> => {
+    const [latestOp, poolSetId] = await Promise.all([
+      deps.repos.daemonLifecycleOp.latestForDaemon(DaemonId(view.daemonId)),
+      deps.repos.memberSet.crossOrgSetId()
+    ])
+    return dtoWith(view, ctx, latestOp, poolSetId)
+  }
 
   return async function daemonRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
@@ -249,9 +264,12 @@ export function daemonRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         const rows = await deps.registry.listAvailable(orgOf(req), ctx)
         // One batched latest-op query for the whole fleet (no N+1), grouped by daemon.
-        const ops = await deps.repos.daemonLifecycleOp.latestForDaemons(rows.map((d) => DaemonId(d.daemonId)))
+        const [ops, poolSetId] = await Promise.all([
+          deps.repos.daemonLifecycleOp.latestForDaemons(rows.map((d) => DaemonId(d.daemonId))),
+          deps.repos.memberSet.crossOrgSetId()
+        ])
         const byDaemon = new Map(ops.map((o) => [o.daemonId as string, o]))
-        return rows.map((d) => fleetOf(dtoWith(d, ctx, byDaemon.get(d.daemonId) ?? null)))
+        return rows.map((d) => fleetOf(dtoWith(d, ctx, byDaemon.get(d.daemonId) ?? null, poolSetId)))
       }
     )
 
@@ -272,7 +290,8 @@ export function daemonRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         const rows = await deps.registry.listAvailable(orgOf(req), ctx)
         // Capability needs no lifecycle op, so this read skips that query entirely.
-        return rows.map((d) => capabilityOf(toDto(d, deps.liveness, ctx, graceMs, Date.now(), release(), null)))
+        // `pinnable` is not part of the capability half, so this read skips the pool lookup too.
+        return rows.map((d) => capabilityOf(toDto(d, deps.liveness, ctx, graceMs, Date.now(), release(), null, null)))
       }
     )
 
