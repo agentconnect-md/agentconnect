@@ -4,7 +4,7 @@ import type { MemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { effectiveMemoryDreamingPolicy } from '@agentconnect.md/protocol'
 import { SandboxError, sandboxBoundary } from '../acp/sandbox.js'
 import type { Agent } from '../agents/agent-schema.js'
-import type { LoadedAgent } from '../agents/load-agents.js'
+import { CP_AGENT_ROOT_MARKER, type LoadedAgent } from '../agents/load-agents.js'
 import type { Config } from '../config/config-schema.js'
 import { DAEMON_OWNED_AGENT_DIRNAMES, MEMORY_ARCHIVE_DIRNAME_PREFIX } from '../memory/store.js'
 import { runtimeHomePath } from '../runtimes/runtime-home.js'
@@ -18,10 +18,15 @@ export function ignoreAgentWatchPath(agentsDir: string, path: string, stats?: St
   if (
     owned !== undefined &&
     (DAEMON_OWNED_AGENT_DIRNAMES.includes(owned) || owned.startsWith(MEMORY_ARCHIVE_DIRNAME_PREFIX)) &&
-    existsSync(join(agentsDir, segments[0]!, 'agent.json'))
+    isAgentRoot(join(agentsDir, segments[0]!))
   )
     return true
   return stats !== undefined && !stats.isDirectory() && basename(path) !== 'agent.json'
+}
+
+/** A local agent root holds `agent.json`; a Control-Plane-managed one holds the `.cp-agent-id` marker instead. */
+function isAgentRoot(dir: string): boolean {
+  return existsSync(join(dir, 'agent.json')) || existsSync(join(dir, CP_AGENT_ROOT_MARKER))
 }
 
 /** Validate the same trusted workspace boundary that every real ACP spawn will

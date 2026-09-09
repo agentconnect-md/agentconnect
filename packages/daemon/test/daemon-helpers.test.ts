@@ -19,6 +19,14 @@ beforeAll(() => {
 afterAll(() => rmSync(agentsDir, { recursive: true, force: true }))
 
 describe('ignoreAgentWatchPath', () => {
+  it('treats a Control-Plane-managed root (`.cp-agent-id`, no agent.json) as an agent root too', () => {
+    const managed = join(agentsDir, 'cp-bot')
+    mkdirSync(join(managed, 'memory'), { recursive: true })
+    writeFileSync(join(managed, '.cp-agent-id'), 'cp-bot')
+    expect(ignoreAgentWatchPath(agentsDir, join(managed, 'memory'), dir)).toBe(true)
+    expect(ignoreAgentWatchPath(agentsDir, join(managed, 'channels', 'c1'), dir)).toBe(true)
+  })
+
   it('keeps watching a grouping directory whose agent happens to be named like a daemon-owned dir', () => {
     // Recursive discovery: `agents/team/memory/agent.json` is an agent, not bot-a's memory tree — no agent.json above it.
     const team = join(agentsDir, 'team')
