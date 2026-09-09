@@ -520,3 +520,149 @@ describe('the daemon runs it', () => {
     await daemon.stop()
   })
 })
+
+describe('the daemon remembers the last home it applied', () => {
+  type Seam = {
+    cpConfigApply(): {
+      applyAgentUpsert(upsert: { agentId: string; spec: AgentSpec }): Promise<unknown>
+      applyAgentRemove(agentId: string): Promise<void>
+    }
+    store: { getMemoryHomeApplied(agentId: string): Promise<string | undefined> }
+  }
+
+  const bootRoot = (): string => {
+    const root = newDir('ac-migrate-durable-')
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({
+        version: 1,
+        controlPlane: { enabled: false },
+        runtimes: { claude: { command: 'node', args: [] } }
+      })
+    )
+    const agentDir = join(root, 'agents', AGENT)
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(
+      join(agentDir, 'agent.json'),
+      JSON.stringify({
+        id: AGENT,
+        name: 'bot-a',
+        status: 'active',
+        runtime: 'claude',
+        workspace: { mode: 'from-scratch', path: join(agentDir, 'ws') },
+        integrations: [],
+        output: { mode: 'medium' }
+      })
+    )
+    return root
+  }
+
+  const idleHost = (agent: { id: string }) =>
+    ({
+      id: agent.id,
+      start: vi.fn().mockResolvedValue(undefined),
+      newSession: vi.fn(),
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+      stop: vi.fn().mockResolvedValue(undefined)
+    }) as never
+
+  // A daemon over `root`, started, with the CP's push reduced to applying a binding for the one agent.
+  async function boot(
+    root: string
+  ): Promise<{ daemon: Daemon; seam: Seam; upsert(memory: AgentMemoryBinding): Promise<unknown> }> {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: idleHost })
+    await daemon.start()
+    const seam = daemon as unknown as Seam
+    const upsert = (memory: AgentMemoryBinding) =>
+      seam.cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec: { name: 'bot-a', memory } as AgentSpec })
+    return { daemon, seam, upsert }
+  }
+
+  const cpHome = (): AgentMemoryBinding => ({ provider: 'managed', home: 'control-plane' })
+  const daemonHome = (): AgentMemoryBinding => ({ provider: 'managed', home: 'daemon' })
+
+  function archives(agentDir: string): string[] {
+    return readdirSync(agentDir).filter((name) => name.startsWith('memory-archive-'))
+  }
+
+  /** The three trees the forced return would move, by relative path. */
+  function trees(agentDir: string): Record<string, string> {
+    return Object.fromEntries(
+      Object.entries(snapshot(agentDir)).filter(([path]) => /^(memory|channels|memory-backups)\//.test(path))
+    )
+  }
+
+  function expectArchived(agentDir: string): void {
+    expect(existsSync(join(agentDir, 'memory'))).toBe(false)
+    expect(existsSync(join(agentDir, 'channels'))).toBe(false)
+    expect(existsSync(join(agentDir, 'memory-backups'))).toBe(false)
+    const [archive, ...rest] = archives(agentDir)
+    expect(rest).toEqual([])
+    expect(existsSync(join(agentDir, archive!, 'memory', 'deploys.md'))).toBe(true)
+    expect(existsSync(join(agentDir, archive!, 'channels', CHANNEL, 'memory', 'notes.md'))).toBe(true)
+    expect(existsSync(join(agentDir, archive!, 'memory-backups', 'b1', 'memory', 'MEMORY.md'))).toBe(true)
+    expect(existsSync(join(agentDir, 'memory-dreams', 'drm-1', 'memory', 'MEMORY.md'))).toBe(true)
+  }
+
+  // Not on Windows for the same reason as above: the agent-config watcher holds `channels/` open while it is moved.
+  const onPosix = it.skipIf(process.platform === 'win32')
+
+  onPosix('online, the return is still detected against the binding this process holds', async () => {
+    const root = bootRoot()
+    const agentDir = join(root, 'agents', AGENT)
+    await seedSource(agentDir)
+    const { daemon, seam, upsert } = await boot(root)
+    await upsert(cpHome())
+    expect(await seam.store.getMemoryHomeApplied(AGENT)).toBe('control-plane')
+    await upsert(daemonHome())
+    expectArchived(agentDir)
+    expect(await seam.store.getMemoryHomeApplied(AGENT)).toBe('daemon')
+    await daemon.stop()
+  })
+
+  onPosix(
+    'offline, the return arrives on the first roster after a restart and the pre-switch tree is archived',
+    async () => {
+      const root = bootRoot()
+      const agentDir = join(root, 'agents', AGENT)
+      await seedSource(agentDir)
+      const first = await boot(root)
+      await first.upsert(cpHome())
+      await first.daemon.stop()
+
+      // The forced return happened while this daemon was down: the restarted process has never seen `control-plane`.
+      const second = await boot(root)
+      await second.upsert(daemonHome())
+      expectArchived(agentDir)
+      expect(await second.seam.store.getMemoryHomeApplied(AGENT)).toBe('daemon')
+      await second.daemon.stop()
+    }
+  )
+
+  it('daemon after daemon across a restart archives nothing', async () => {
+    const root = bootRoot()
+    const agentDir = join(root, 'agents', AGENT)
+    await seedSource(agentDir)
+    const before = trees(agentDir)
+    const first = await boot(root)
+    await first.upsert(daemonHome())
+    await first.daemon.stop()
+
+    const second = await boot(root)
+    await second.upsert(daemonHome())
+    expect(archives(agentDir)).toEqual([])
+    expect(trees(agentDir)).toEqual(before)
+    await second.daemon.stop()
+  })
+
+  it('drops the record when the agent is removed from this daemon', async () => {
+    const root = bootRoot()
+    const { daemon, seam, upsert } = await boot(root)
+    await upsert(cpHome())
+    expect(await seam.store.getMemoryHomeApplied(AGENT)).toBe('control-plane')
+    await seam.cpConfigApply().applyAgentRemove(AGENT)
+    expect(await seam.store.getMemoryHomeApplied(AGENT)).toBeUndefined()
+    await daemon.stop()
+  })
+})

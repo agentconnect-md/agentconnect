@@ -249,6 +249,13 @@ travel inside its OCI image. In particular, the pool's shim startup and UID/HOME
 configuration are not a substitute for the local VM's launch settings. See the
 upstream [execution semantics](https://docs.microsandbox.dev/sandboxes/commands).
 
+Each streaming execution owns an SDK `AgentClient` connection. The daemon uses
+the pinned SDK's exec protocol and explicitly closes that client before reporting
+process completion or releasing the VM's active-execution count. Closing stdin
+sends EOF; it does not close a process that is still running. This avoids relying
+on garbage collection of the SDK's high-level exec handles, while retaining
+independent ACP streams, cancellation, backpressure, and live output limits.
+
 The first implementation uses private flat ext4 root disks and explicit
 host-bound workspace/cache mounts. The clone strategy is `auto`: preparation can
 reuse a base image, while each private disk clone can fall back from reflink to
