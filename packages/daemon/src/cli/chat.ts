@@ -182,6 +182,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     env: assembled.launch.env,
     inheritProcessEnv: assembled.launch.inheritProcessEnv,
     sandbox: assembled.launch.sandbox,
+    toolSandbox: assembled.launch.toolSandbox,
     configPrefs: {
       model: agent.runtimeOverrides?.model,
       permissionMode: agent.permissionMode,

@@ -18,7 +18,12 @@ import { MICROSANDBOX_GUEST_ENTRY } from '../src/microsandbox/guest.js'
 import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
 import { gitcredShimPath } from '../src/cp/gitcred-server.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
+import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import * as credentials from '../src/runtimes/runtime-credentials.js'
+import {
+  CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
+  type CodexPermissionProfileConfig
+} from '../src/acp/codex-permission-profiles.js'
 
 const roots: string[] = []
 function fixture(): PrepareMicrosandboxLaunchOptions & { root: string; hostHome: string } {
@@ -49,6 +54,35 @@ afterEach(() => {
 })
 
 describe('prepareMicrosandboxLaunch', () => {
+  it.each([
+    ['claude-acp', false],
+    ['claude-acp', true],
+    ['codex-acp', false],
+    ['codex-acp', true]
+  ] as const)('matches SRT native policy for %s with session isolation=%s', (runtimeId, isolated) => {
+    const opts = fixture()
+    const hostKey = isolated ? sessionHostKey('test-agent', 'test-session') : undefined
+    const sessionDir = hostKey ? join(opts.scopeDir, 'sessions', hostKeyDirName(hostKey)) : undefined
+    const cwd = sessionDir ? join(sessionDir, 'workspace') : opts.cwd
+    mkdirSync(join(cwd, '.git'), { recursive: true })
+    const original = credentials.prepareSharedRuntimeCredentials
+    vi.spyOn(credentials, 'prepareSharedRuntimeCredentials').mockImplementation((options) =>
+      original({ ...options, platform: 'linux' })
+    )
+    const runtime = { command: runtimeId === 'claude-acp' ? 'claude-agent-acp' : 'codex-acp', args: [], env: [] }
+    const shared = { ...opts, cwd, hostKey, runtimeId, runtime, allowModelToolUnixSockets: true }
+    const srt = prepareRuntimeLaunch({
+      ...shared,
+      runInSandbox: true,
+      daemonRoot: opts.root,
+      hostEnv: opts.stateSourceEnv,
+      sandboxMechanism: 'bwrap'
+    })
+    const vm = prepareMicrosandboxLaunch({ ...shared, trustedSessionDir: sessionDir })
+    expect(vm.toolSandbox).toEqual(srt.toolSandbox)
+    expect(vm.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]).toEqual(srt.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV])
+  })
+
   it('exposes only launch surfaces and preserves configured guest targets and an explicit guest PATH', () => {
     const opts = fixture()
     const tool = join(opts.root, 'tool.js')
@@ -246,6 +280,99 @@ describe('prepareMicrosandboxLaunch', () => {
     expect(
       launch.microsandbox.mounts.some((mount) => mount.source === hostCodex || mount.source === opts.hostHome)
     ).toBe(false)
+    const policy: CodexPermissionProfileConfig = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!)
+    for (const profile of Object.values(policy.modeProfiles)) {
+      const filesystem = policy.configOverrides.find((line) => line.startsWith(`permissions.${profile}.filesystem=`))!
+      expect(filesystem).toContain(`${JSON.stringify(auth)} = "deny"`)
+      expect(filesystem).toContain(`${JSON.stringify(join(launch.runtimeHome!, '.codex'))} = "deny"`)
+    }
+  })
+
+  it('protects remapped credential aliases while keeping session HOME, clone Git, and guest caches writable', () => {
+    const opts = fixture()
+    const hostCodex = join(opts.hostHome, '.codex')
+    const auth = join(hostCodex, 'auth.json')
+    const sessionDir = join(opts.scopeDir, 'sessions', 'session-a')
+    const cwd = join(sessionDir, 'workspace')
+    const cache = join(opts.root, 'package-cache')
+    mkdirSync(hostCodex)
+    mkdirSync(join(cwd, '.git'), { recursive: true })
+    mkdirSync(cache)
+    writeFileSync(auth, '{}')
+    const original = credentials.prepareSharedRuntimeCredentials
+    vi.spyOn(credentials, 'prepareSharedRuntimeCredentials').mockImplementation((options) =>
+      original({ ...options, platform: 'linux' })
+    )
+    const launch = prepareMicrosandboxLaunch({
+      ...opts,
+      runtimeId: 'codex-acp',
+      cwd,
+      trustedSessionDir: sessionDir,
+      allowModelToolUnixSockets: true,
+      explicitEnv: { CODEX_CONFIG: JSON.stringify({ 'permissions.untrusted': {}, model: 'test-model' }) },
+      mounts: [
+        { source: cache, target: '/shared/cache', readOnly: false },
+        { source: opts.hostHome, target: '/credential-copy', readOnly: false },
+        { source: auth, target: '/credential-file', readOnly: true },
+        { source: hostCodex, target: '/credential-dir', readOnly: false },
+        { source: auth, target: '/credential-dir/auth.json', readOnly: false }
+      ]
+    })
+    expect(JSON.parse(launch.env.CODEX_CONFIG!)).toEqual({ model: 'test-model' })
+    const policy: CodexPermissionProfileConfig = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!)
+    for (const profile of Object.values(policy.modeProfiles)) {
+      const filesystem = policy.configOverrides.find((line) => line.startsWith(`permissions.${profile}.filesystem=`))!
+      for (const path of ['/credential-copy/.codex/auth.json', '/credential-file', '/credential-dir/auth.json']) {
+        expect(filesystem).toContain(`${JSON.stringify(path)} = "deny"`)
+      }
+    }
+    const workspace = policy.configOverrides.find((line) =>
+      line.startsWith(`permissions.${policy.modeProfiles.agent}.filesystem=`)
+    )!
+    for (const path of [launch.runtimeHome!, join(cwd, '.git'), '/shared/cache']) {
+      expect(workspace).toContain(`${JSON.stringify(path)} = "write"`)
+    }
+    for (const part of ['config', 'hooks'])
+      expect(workspace).toContain(`${JSON.stringify(join(cwd, '.git', part))} = "read"`)
+    expect(workspace).not.toContain(JSON.stringify(cache))
+    expect(policy.configOverrides).toContain(`permissions.${policy.modeProfiles.agent}.network.enabled=true`)
+  })
+
+  it('prepares Claude parent profile settings and native denies without an outer SRT wrapper', () => {
+    const opts = fixture()
+    const config = join(opts.hostHome, '.claude')
+    mkdirSync(config)
+    writeFileSync(join(config, '.credentials.json'), '{}')
+    writeFileSync(join(config, 'settings.json'), '{}')
+    const original = credentials.prepareSharedRuntimeCredentials
+    vi.spyOn(credentials, 'prepareSharedRuntimeCredentials').mockImplementation((options) =>
+      original({ ...options, platform: 'linux' })
+    )
+    const launch = prepareMicrosandboxLaunch({
+      ...opts,
+      runtimeId: 'claude-acp',
+      runtime: { command: 'claude-agent-acp', args: [], env: [] },
+      explicitEnv: { ANTHROPIC_CONFIG_DIR: '/untrusted-profile', ANTHROPIC_PROFILE: 'untrusted' },
+      mounts: [{ source: config, target: '/credential-copy', readOnly: false }]
+    })
+    expect(launch.sandbox).toBeUndefined()
+    const profileRoot = join(opts.scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
+    expect(launch.env.ANTHROPIC_CONFIG_DIR).toBe(profileRoot)
+    expect(launch.env.ANTHROPIC_PROFILE).toBeUndefined()
+    expect(launch.toolSandbox?.claudeProtectedSettings?.env).toEqual({
+      ANTHROPIC_CONFIG_DIR: profileRoot,
+      ANTHROPIC_PROFILE: 'agentconnect-disabled'
+    })
+    expect(launch.toolSandbox?.protectedCredentialRoots).toEqual(
+      expect.arrayContaining([config, join(launch.runtimeHome!, '.claude'), '/credential-copy'])
+    )
+    expect(launch.toolSandbox?.sharedWriteRoots).toBeUndefined()
+    expect(launch.microsandbox.mounts).toContainEqual({ source: config, target: config, readOnly: false })
+    expect(launch.microsandbox.mounts).toContainEqual({
+      source: join(opts.scopeDir, '.agentconnect', 'runtime-policy'),
+      target: join(opts.scopeDir, '.agentconnect', 'runtime-policy'),
+      readOnly: true
+    })
   })
 
   it.skipIf(process.platform === 'win32')('filters host Unix sockets from file mounts', async () => {

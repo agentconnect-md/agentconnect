@@ -196,7 +196,7 @@ describe('prepareRuntimeLaunch', () => {
         canonicalAwsWebIdentityToken
       ])
     )
-    expect(launch.sandbox?.protectedCredentialRoots).toEqual(
+    expect(launch.toolSandbox?.protectedCredentialRoots).toEqual(
       expect.arrayContaining([
         canonicalIdentityToken,
         canonicalAwsWebIdentityToken,
@@ -241,7 +241,7 @@ describe('prepareRuntimeLaunch', () => {
     )
     expect(launch.env.ANTHROPIC_CONFIG_DIR).toBe(disabledProfileRoot)
     expect(launch.env.ANTHROPIC_PROFILE).toBeUndefined()
-    expect(launch.sandbox?.claudeProtectedSettings).toEqual({
+    expect(launch.toolSandbox?.claudeProtectedSettings).toEqual({
       modelOverrides: { sonnet: 'bedrock/sonnet' },
       availableModels: ['sonnet'],
       env: {
@@ -254,7 +254,7 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.sandbox?.writable).not.toContain(disabledProfileRoot)
     expect(launch.sandbox?.allowReadRoots).not.toContain(realpathSync(profileRoot))
     expect(launch.sandbox?.writable).not.toContain('/etc')
-    expect(launch.sandbox?.protectedCredentialRoots).not.toContain('/etc')
+    expect(launch.toolSandbox?.protectedCredentialRoots).not.toContain('/etc')
   })
 
   it('never trusts an Anthropic profile planted in the private runtime HOME', () => {
@@ -282,7 +282,7 @@ describe('prepareRuntimeLaunch', () => {
     expect(discoveredProfileRoot).toBe(
       realpathSync(join(scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled'))
     )
-    expect(launch.sandbox?.claudeProtectedSettings?.env).toEqual({
+    expect(launch.toolSandbox?.claudeProtectedSettings?.env).toEqual({
       ANTHROPIC_CONFIG_DIR: discoveredProfileRoot,
       ANTHROPIC_PROFILE: 'agentconnect-disabled'
     })
@@ -290,7 +290,7 @@ describe('prepareRuntimeLaunch', () => {
     expect(discoveredProfileRoot).not.toBe(join(scopeDir, 'home', '.config', 'anthropic'))
     expect(launch.sandbox?.writable).not.toContain('/etc')
     expect(launch.sandbox?.allowReadRoots).not.toContain('/etc/agentconnect-oauth.json')
-    expect(launch.sandbox?.protectedCredentialRoots).not.toContain('/etc')
+    expect(launch.toolSandbox?.protectedCredentialRoots).not.toContain('/etc')
   })
 
   it('resolves version-manager PATH links before hiding the host HOME', () => {
@@ -381,8 +381,8 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.sandbox!.writable).toContain(realpathSync(store))
     expect(launch.sandbox!.allowReadRoots).toContain(realpathSync(store))
     // The runtime-native tool sandboxes must reopen it too, or the install this exists for still fails inside them.
-    expect(launch.sandbox!.sharedWriteRoots).toEqual([realpathSync(store)])
-    expect(prepareRuntimeLaunch(base).sandbox!.sharedWriteRoots).toBeUndefined()
+    expect(launch.toolSandbox!.sharedWriteRoots).toEqual([realpathSync(store)])
+    expect(prepareRuntimeLaunch(base).toolSandbox!.sharedWriteRoots).toBeUndefined()
     // The host HOME stays hidden around it: only the store is reopened.
     expect(coveredBy(launch.sandbox!.denyReadRoots, realpathSync(hostHome))).toBe(true)
 
@@ -592,7 +592,7 @@ describe('prepareRuntimeLaunch', () => {
     expect(policy.filesystem.allowWrite).toContain(home)
     expect(policy.filesystem.allowWrite).toContain(realpathSync(join(hostCodex, 'auth.json')))
     // Runtime-native protected roots follow: the session .codex is what the inner tool sandbox is denied.
-    expect(launch.sandbox!.protectedCredentialRoots).toContain(join(home, '.codex'))
+    expect(launch.toolSandbox!.protectedCredentialRoots).toContain(join(home, '.codex'))
     const profile = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
     const tables = profile.configOverrides.filter((value) => value.includes('.filesystem='))
     expect(tables).toHaveLength(3)
@@ -634,7 +634,7 @@ describe('prepareRuntimeLaunch', () => {
     expect(table).toContain(`"${join(home, '.codex')}" = "deny"`)
     // The link target is the ACP parent's own write capability; the model's tools are denied it directly too.
     expect(table).toContain(`"${realpathSync(join(hostCodex, 'auth.json'))}" = "deny"`)
-    expect(launch.sandbox!.protectedCredentialRoots).toContain(realpathSync(join(hostCodex, 'auth.json')))
+    expect(launch.toolSandbox!.protectedCredentialRoots).toContain(realpathSync(join(hostCodex, 'auth.json')))
   })
 
   // The worktree tier's HOME belongs to the AGENT, not one session: opening it would be a cross-session channel, which is what §11 removes.
@@ -700,10 +700,12 @@ describe('prepareRuntimeLaunch', () => {
     expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))).toEqual({
       additionalModelOptionsCache: [{ value: 'root-fable', label: 'Root Fable', description: 'test' }]
     })
-    expect(launch.sandbox!.protectedCredentialRoots).toEqual(
+    expect(launch.toolSandbox!.protectedCredentialRoots).toEqual(
       expect.arrayContaining([join(home, '.claude'), join(home, '.claude.json')])
     )
-    expect(launch.sandbox!.protectedCredentialRoots.some((root) => root.startsWith(join(scopeDir, 'home')))).toBe(false)
+    expect(launch.toolSandbox!.protectedCredentialRoots.some((root) => root.startsWith(join(scopeDir, 'home')))).toBe(
+      false
+    )
     expect(existsSync(join(scopeDir, 'home'))).toBe(false)
   })
 
@@ -1171,7 +1173,7 @@ describe('composeRuntimeLaunch', () => {
     )
     expect(childEnv.ANTHROPIC_CONFIG_DIR).toBe(disabledProfileRoot)
     expect(childEnv.ANTHROPIC_PROFILE).toBeUndefined()
-    expect(composed.launch.sandbox?.claudeProtectedSettings?.env).toEqual({
+    expect(composed.launch.toolSandbox?.claudeProtectedSettings?.env).toEqual({
       ANTHROPIC_CONFIG_DIR: disabledProfileRoot,
       ANTHROPIC_PROFILE: 'agentconnect-disabled'
     })

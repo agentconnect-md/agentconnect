@@ -12,6 +12,6 @@ if (version !== undefined) {
   // build.yaml publishes this alias even when the runtime image retains an older effective tag.
   writeFileSync(
     metadata,
-    JSON.stringify({ runtimeSandboxImage: `ghcr.io/agentconnect-md/runtime-sandbox:v${version}` }) + '\n'
+    JSON.stringify({ runtimeSandboxImage: `ghcr.io/agentconnect-md/runtime-sandbox-full:v${version}` }) + '\n'
   )
 }

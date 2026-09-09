@@ -87,7 +87,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect(sandbox.allowReadRoots).toContain(realpathSync(toolchain))
       expect(sandbox.writable).toContain(realpathSync(cache))
       expect(sandbox.writable).not.toContain(realpathSync(toolchain))
-      expect(sandbox.sharedWriteRoots).toEqual([realpathSync(cache)])
+      expect((sandboxed as any).opts.toolSandbox.sharedWriteRoots).toEqual([realpathSync(cache)])
     } finally {
       await daemon.stop().catch(() => undefined)
       const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))

@@ -863,6 +863,7 @@ export class RawAcpEvaluationRunner {
         runtimeId: agent.runtime,
         isolateAccountApps: cfg.security.isolateAccountApps,
         sandbox: composed.launch.sandbox,
+        toolSandbox: composed.launch.toolSandbox,
         configPrefs: {
           model: agent.runtimeOverrides?.model,
           permissionMode: agent.permissionMode,

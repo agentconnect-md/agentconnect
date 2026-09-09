@@ -1,4 +1,5 @@
-import { resolve } from 'node:path'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
+import { join, relative, resolve, sep } from 'node:path'
 import type { RuntimeDef } from '../config/config-schema.js'
 
 /** Effort sentinel `'ultracode'` (matching Claude Code's own `ultracode` settings
@@ -24,6 +25,34 @@ const CLAUDE_PROVIDER_CREDENTIAL_FILE_ENV = [
  * then reassert that root and a fixed profile after user/project settings merge. */
 export const CLAUDE_PROFILE_ENV = ['ANTHROPIC_CONFIG_DIR', 'ANTHROPIC_PROFILE'] as const
 export const CLAUDE_DISABLED_PROFILE = 'agentconnect-disabled'
+
+function disabledClaudeProfileRoot(scopeDir: string): string {
+  const root = realpathSync(resolve(scopeDir))
+  const target = join(root, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
+  let current = root
+  for (const part of relative(root, target).split(sep).filter(Boolean)) {
+    current = join(current, part)
+    if (existsSync(current)) {
+      const stat = lstatSync(current)
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new Error(`disabled Claude profile path is not a real directory: ${current}`)
+      }
+      continue
+    }
+    mkdirSync(current, { mode: 0o700 })
+  }
+  if (readdirSync(target).length > 0) {
+    throw new Error(`disabled Claude profile directory is not empty: ${target}`)
+  }
+  chmodSync(target, 0o500)
+  return realpathSync(target)
+}
+
+export function prepareClaudeProtectedSettings(scopeDir: string, env: Record<string, string>): ClaudeProtectedSettings {
+  for (const name of CLAUDE_PROFILE_ENV) delete env[name]
+  env.ANTHROPIC_CONFIG_DIR = disabledClaudeProfileRoot(scopeDir)
+  return claudeProtectedSettings(env)
+}
 
 export interface ClaudeProtectedSettings {
   env: Record<(typeof CLAUDE_PROFILE_ENV)[number], string>
@@ -125,10 +154,7 @@ export interface ClaudeInnerSandboxSettings {
   }
 }
 
-/** Build the SDK-native policy passed through claude-agent-acp's
- * `_meta.claudeCode.options.sandbox`. The outer AgentConnect SRT remains the host
- * boundary; this nested sandbox confines model-authored Bash and its descendants,
- * while the parent Claude process retains shared-login access. */
+/** Confine model-authored Bash inside the outer SRT or VM boundary while the trusted Claude parent retains login access. */
 export function claudeInnerSandboxSettings(
   protectedCredentialRoots: readonly string[],
   allowAllUnixSockets = false,

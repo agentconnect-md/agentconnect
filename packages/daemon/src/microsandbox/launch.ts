@@ -2,12 +2,18 @@ import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from 'node:f
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
 import { sandboxBoundary } from '../acp/sandbox.js'
+import { applyCodexPermissionProfile } from '../acp/codex-permission-profiles.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
 import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
-import { privateRuntimeHomeFor, type PreparedRuntimeLaunch } from '../launch/prepare.js'
+import { privateRuntimeHomeFor, runtimeGitMetadataRoots, type PreparedRuntimeLaunch } from '../launch/prepare.js'
+import {
+  claudeProviderCredentialFiles,
+  isClaudeRuntimeDef,
+  prepareClaudeProtectedSettings
+} from '../runtime-defs/claude-runtime.js'
 import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
 import { compactReadRoots, normalizeSandboxMounts } from '../runtimes/read-roots.js'
-import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
+import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
 import { MICROSANDBOX_GUEST_ENTRY, MICROSANDBOX_SOCKET_BRIDGES, MICROSANDBOX_TUNNEL_PATHS } from './guest.js'
@@ -46,6 +52,8 @@ export interface PrepareMicrosandboxLaunchOptions {
   trustedSessionDir?: string
   trustedWorkspaceWriteRoots?: string[]
   trustedRuntimeReadRoots?: string[]
+  trustedPrimaryCheckout?: string
+  allowModelToolUnixSockets?: boolean
   trustedMounts?: SandboxMount[]
   mounts: SandboxMount[]
   guestEntry: string
@@ -160,11 +168,67 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   }
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 })
   env[GITCRED_SOCKET_ENV] = MICROSANDBOX_TUNNEL_PATHS.gitcred
+  const mounts = [...automatic, ...configured]
+  const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
+  const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
+  const claudeSettings = claudeRuntime ? prepareClaudeProtectedSettings(scopeDir, env) : undefined
+  const privateState = (
+    credentialProfile === 'codex'
+      ? [join(runtimeHome, '.codex')]
+      : claudeRuntime
+        ? [join(runtimeHome, '.claude'), join(runtimeHome, '.claude.json')]
+        : []
+  )
+    .filter(existsSync)
+    .map((path) => realpathSync(path))
+  const credentialSources = [...(credentials?.writablePaths ?? []), ...privateState].map((path) =>
+    existsSync(path) ? realpathSync(path) : path
+  )
+  const providerFiles = claudeSettings ? claudeProviderCredentialFiles(env, opts.cwd).map(({ path }) => path) : []
+  for (const path of providerFiles) {
+    const mount = mounts
+      .filter(({ target }) => contains(target, path))
+      .sort((a, b) => b.target.length - a.target.length)[0]
+    if (mount) credentialSources.push(join(mount.source, relative(mount.target, path)))
+  }
+  const protectedCredentialRoots = compactReadRoots([
+    ...privateState,
+    ...providerFiles,
+    ...mounts.flatMap(({ source, target }) =>
+      credentialSources.flatMap((path) =>
+        contains(source, path) ? [join(target, relative(source, path))] : contains(path, source) ? [target] : []
+      )
+    )
+  ])
+  const sharedWriteRoots = configured
+    .filter(({ readOnly, target }) => !readOnly && !protectedCredentialRoots.some((root) => contains(root, target)))
+    .map(({ target }) => target)
+  const gitMetadataWriteRoots = runtimeGitMetadataRoots(scopeDir, opts.trustedPrimaryCheckout, sessionDir).filter(
+    (path) => mounts.some(({ target, readOnly }) => !readOnly && contains(target, path))
+  )
+  if (credentialProfile === 'codex') {
+    applyCodexPermissionProfile(env, {
+      protectedRoots: protectedCredentialRoots,
+      ...(sessionDir
+        ? { sessionGitMetadataRoots: gitMetadataWriteRoots }
+        : { writableGitMetadataRoots: gitMetadataWriteRoots }),
+      ...(sessionDir ? { sessionHomeRoot: runtimeHome } : {}),
+      sharedWriteRoots,
+      allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true,
+      disableUnifiedExec: true
+    })
+  }
   return {
     env,
     inheritProcessEnv: false,
-    gitMetadataWriteRoots: [],
+    gitMetadataWriteRoots,
     runtimeHome,
-    microsandbox: { mounts: [...automatic, ...configured], workspaceRoot: scopeDir }
+    toolSandbox: {
+      protectedCredentialRoots,
+      ...(opts.allowModelToolUnixSockets ? { allowModelToolUnixSockets: true } : {}),
+      ...(claudeSettings ? { claudeProtectedSettings: claudeSettings } : {}),
+      ...(sharedWriteRoots.length > 0 ? { sharedWriteRoots } : {})
+    },
+    microsandbox: { mounts, workspaceRoot: scopeDir }
   }
 }

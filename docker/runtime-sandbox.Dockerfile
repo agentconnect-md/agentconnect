@@ -8,7 +8,8 @@
 # carries the opposite bias: the shim, plus the baseline build toolchain a coding agent needs, and
 # nothing else.
 #
-#   docker build -f docker/runtime-sandbox.Dockerfile -t runtime-sandbox .
+#   docker build -f docker/runtime-sandbox.Dockerfile --target runtime-sandbox -t runtime-sandbox .
+#   docker build -f docker/runtime-sandbox.Dockerfile --target runtime-sandbox-full -t runtime-sandbox-full .
 #
 # Build context is the repo root, because the shim is built from packages/daemon and versioned
 # with the daemon half of the channel it speaks.
@@ -107,17 +108,13 @@ RUN set -eu; \
   chmod -R a-w /out
 
 # ─────────────────────────────── runtime ────────────────────────────────────
-FROM node:24-bookworm-slim AS runtime-sandbox
+FROM node:24-bookworm-slim AS runtime-base
 
 # Exact pins keep the published runtime table truthful.
 ARG CLAUDE_ACP_VERSION=0.75.1
 ARG CODEX_ACP_VERSION=1.10.0-agentconnect.2
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.30
 ARG AGENT_BROWSER_VERSION=0.37.0
-ARG DOCKER_VERSION=5:29.8.0-1~debian.12~bookworm
-ARG CONTAINERD_VERSION=2.3.5-1~debian.12~bookworm
-ARG DOCKER_BUILDX_VERSION=0.37.0-1~debian.12~bookworm
-ARG DOCKER_COMPOSE_VERSION=5.5.1-1~debian.12~bookworm
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
 # shim's exec channel. openssh-client is for ssh remotes; tini is PID 1.
@@ -130,20 +127,6 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 # `python` as well as `python3` — plenty of tooling still spawns the unsuffixed name.
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
-
-# Docker's signed Debian repository supplies exact versions; the image never starts dockerd automatically.
-RUN install -m 0755 -d /etc/apt/keyrings \
-  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
-  && chmod 0644 /etc/apt/keyrings/docker.asc \
-  && printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable\n' \
-    "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.list \
-  && apt-get update \
-  && apt-get install --no-install-recommends -y \
-    "docker-ce=${DOCKER_VERSION}" "docker-ce-cli=${DOCKER_VERSION}" \
-    "containerd.io=${CONTAINERD_VERSION}" "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
-    "docker-compose-plugin=${DOCKER_COMPOSE_VERSION}" sudo \
-  && rm -rf /var/lib/apt/lists/* \
-  && dockerd --version && docker --version && docker buildx version && docker compose version
 
 # Chrome's shared libraries: `agent-browser install` installs these with `sudo apt-get`, which uid 10001 cannot.
 # The 25-soname `ldd chrome` closure only — headless CDP was verified without libgtk-3-0 (+116 MB) and xvfb (+167 MB).
@@ -271,12 +254,6 @@ RUN groupadd --gid 10001 agent \
   && useradd --uid 10001 --gid 10001 --home-dir /agent --shell /usr/sbin/nologin --create-home agent \
   && chown 10001:10001 /agent
 
-# VM users can start Docker on demand; pool no-new-privileges still prevents sudo elevation.
-RUN usermod --append --groups docker agent \
-  && printf 'agent ALL=(root) NOPASSWD: /usr/bin/dockerd\n' > /etc/sudoers.d/agent-dockerd \
-  && chmod 0440 /etc/sudoers.d/agent-dockerd \
-  && visudo --check --file /etc/sudoers.d/agent-dockerd
-
 # Where the shim serves the daemon's unix sockets (src/shim/tunnel.ts SANDBOX_TUNNEL_PATHS).
 # Created HERE because /run is root-owned and the shim runs as 10001: without an owned directory
 # it cannot bind, and the failure would look like a credential problem rather than a permission
@@ -330,3 +307,38 @@ USER 10001:10001
 # possible. The shim is the only process this image starts: it listens for its daemon, then spawns
 # the runtime only after the channel is bound.
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentconnect/shim/index.js"]
+
+# Self-hosted daemon VMs extend the shared runtime layer with native shields and Docker.
+FROM runtime-base AS runtime-sandbox-full
+USER root
+ARG DOCKER_VERSION=5:29.8.0-1~debian.12~bookworm
+ARG CONTAINERD_VERSION=2.3.5-1~debian.12~bookworm
+ARG DOCKER_BUILDX_VERSION=0.37.0-1~debian.12~bookworm
+ARG DOCKER_COMPOSE_VERSION=5.5.1-1~debian.12~bookworm
+RUN apt-get update \
+  && apt-get install --no-install-recommends -y bubblewrap socat \
+  && rm -rf /var/lib/apt/lists/*
+
+# Docker's signed Debian repository supplies exact versions; the image never starts dockerd automatically.
+RUN install -m 0755 -d /etc/apt/keyrings \
+  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+  && chmod 0644 /etc/apt/keyrings/docker.asc \
+  && printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable\n' \
+    "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.list \
+  && apt-get update \
+  && apt-get install --no-install-recommends -y \
+    "docker-ce=${DOCKER_VERSION}" "docker-ce-cli=${DOCKER_VERSION}" \
+    "containerd.io=${CONTAINERD_VERSION}" "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
+    "docker-compose-plugin=${DOCKER_COMPOSE_VERSION}" sudo \
+  && rm -rf /var/lib/apt/lists/* \
+  && dockerd --version && docker --version && docker buildx version && docker compose version
+
+# VM users can start Docker on demand without unrestricted sudo.
+RUN usermod --append --groups docker agent \
+  && printf 'agent ALL=(root) NOPASSWD: /usr/bin/dockerd\n' > /etc/sudoers.d/agent-dockerd \
+  && chmod 0440 /etc/sudoers.d/agent-dockerd \
+  && visudo --check --file /etc/sudoers.d/agent-dockerd
+USER 10001:10001
+
+# Keep the pool image as the default build target.
+FROM runtime-base AS runtime-sandbox

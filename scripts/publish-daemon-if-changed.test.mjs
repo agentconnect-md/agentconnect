@@ -78,6 +78,7 @@ test(
     write('docker/runtime-sandbox.Dockerfile', 'FROM scratch\nLABEL revision="new"\n')
     commit('v1.0.1')
     assert.equal(components('v1.0.1').runtimeSandbox, 'v1.0.1')
+    assert.equal(components('v1.0.1').runtimeSandboxFull, 'v1.0.1')
     assert.equal(components('v1.0.1').daemon, 'v1.0.0')
     const imageRelease = publish('v1.0.0', '1.0.1')
     assert.match(imageRelease, /^1\.0\.1\|run build$/m)
@@ -86,11 +87,13 @@ test(
     write('packages/web/src/page.ts', 'export const page = "new"\n')
     commit('v1.0.2')
     assert.equal(components('v1.0.2').runtimeSandbox, 'v1.0.1')
+    assert.equal(components('v1.0.2').runtimeSandboxFull, 'v1.0.1')
     assert.equal(publish('v1.0.1', '1.0.2'), '')
 
     write('pnpm-lock.yaml', 'lockfileVersion: 9.0\n# a dependency changed\n')
     commit('v1.0.3')
     assert.equal(components('v1.0.3').runtimeSandbox, 'v1.0.3')
+    assert.equal(components('v1.0.3').runtimeSandboxFull, 'v1.0.3')
     assert.match(publish('v1.0.2', '1.0.3'), /^1\.0\.3\|run build$/m)
   }
 )

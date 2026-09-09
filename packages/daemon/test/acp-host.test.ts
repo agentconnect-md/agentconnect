@@ -14,6 +14,43 @@ import {
 const here = dirname(fileURLToPath(import.meta.url))
 const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
 describe('AcpHost (against a fake ACP agent)', () => {
+  it('sends the native Claude tool policy on new/load without an outer SRT wrapper', async () => {
+    const toolSandbox = {
+      protectedCredentialRoots: ['/credentials'],
+      allowModelToolUnixSockets: true,
+      sharedWriteRoots: ['/cache'],
+      claudeProtectedSettings: {
+        env: { ANTHROPIC_CONFIG_DIR: '/policy/disabled', ANTHROPIC_PROFILE: 'agentconnect-disabled' }
+      }
+    }
+    const expected = claudeSessionMeta(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      toolSandbox.protectedCredentialRoots,
+      toolSandbox.claudeProtectedSettings,
+      true,
+      [],
+      toolSandbox.sharedWriteRoots
+    )
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent, 'claude-acp'], env: [] },
+      {
+        onUpdate: () => {},
+        toolSandbox,
+        env: { AC_EXPECT_SESSION_META: JSON.stringify(expected), AC_LOAD_UPDATES: '1' }
+      }
+    )
+    await host.start()
+    try {
+      await host.newSession('/tmp')
+      await host.loadSession('persisted-session', '/tmp')
+    } finally {
+      await host.stop()
+    }
+  })
+
   it('initializes, creates a session, and streams an echoed reply', async () => {
     const updates: Array<{ sessionId: string; text: string }> = []
     const host = new AcpHost(
