@@ -606,6 +606,52 @@ describe('AcpHost — auto-inject CLAUDE_CODE_EXECUTABLE for a Claude runtime', 
 describe('turnFailureReason (actionable message from a failed ACP request)', () => {
   const LIMIT =
     "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 7:01 PM."
+  const GATEWAY_STOP =
+    'Out of AgentConnect credits — this message was not processed. Add credits (https://console.example.test/example-org/billing) or run this agent on a self-hosted Daemon (https://docs.example.test/install). Then resend.'
+
+  it('strips Codex’s status prefix and request-url suffix from a gateway refusal, keeping the provider’s sentence', () => {
+    // Exactly what Codex surfaces when the AI gateway refuses a stopped org's credential: its own
+    // wrapper around the gateway's sentence, plus the internal URL it was dialling.
+    const err = Object.assign(new Error('Internal error'), {
+      code: -32603,
+      data: {
+        message: `unexpected status 401 Unauthorized: ${GATEWAY_STOP}, url: http://example-aigw-drain.example.svc.cluster.local:8082/v1/responses`
+      }
+    })
+    expect(turnFailureReason(err)).toBe(GATEWAY_STOP)
+    // The older shape, with no url, and a reason phrase with spaces.
+    expect(turnFailureReason(new Error(`unexpected status 402 Payment Required: ${GATEWAY_STOP}`))).toBe(GATEWAY_STOP)
+    // A wrapper around nothing keeps a status line rather than answering with an empty string.
+    expect(turnFailureReason(new Error('unexpected status 502 Bad Gateway: , url: http://x/y'))).toBe(
+      'unexpected status 502'
+    )
+    // Anything not in that exact shape passes through untouched.
+    expect(turnFailureReason(new Error('status 401: nope, url: http://x'))).toBe('status 401: nope, url: http://x')
+  })
+
+  it('strips Claude Code’s "API Error" wrapper as claude-agent-acp relays it, including the authenticate guess on a 401', () => {
+    // claude-agent-acp rejects the prompt with the CLI's own result text (RequestError.internalError with
+    // the text as data.message). For a gateway 401 that text is the CLI's non-interactive rendering.
+    const err = Object.assign(new Error('Internal error'), {
+      code: -32603,
+      data: { message: `Failed to authenticate. API Error: 401 ${GATEWAY_STOP}` }
+    })
+    expect(turnFailureReason(err)).toBe(GATEWAY_STOP)
+    // Interactive rendering, a plain status, and no status at all.
+    expect(turnFailureReason(new Error(`Please run /login · API Error: 403 ${GATEWAY_STOP}`))).toBe(GATEWAY_STOP)
+    expect(turnFailureReason(new Error('API Error: 402 Payment is required.'))).toBe('Payment is required.')
+    expect(turnFailureReason(new Error('API Error: Request was aborted.'))).toBe('Request was aborted.')
+    // A wrapper around nothing keeps a status line; a bare label is not a wrapper.
+    expect(turnFailureReason(new Error('API Error: 500 '))).toBe('API error 500')
+    expect(turnFailureReason(new Error('API Error'))).toBe('API Error')
+  })
+
+  it('strips the DeepSeek Harness adapter’s "turn failed:" prefix, then whatever the harness wrapped', () => {
+    expect(turnFailureReason(new Error(`turn failed: ${GATEWAY_STOP}`))).toBe(GATEWAY_STOP)
+    expect(turnFailureReason(new Error(`turn failed: unexpected status 401 Unauthorized: ${GATEWAY_STOP}`))).toBe(
+      GATEWAY_STOP
+    )
+  })
 
   it('prefers data.message over a generic JSON-RPC title (codex-acp quota exhaustion)', () => {
     // Exactly what codex-acp rejects session/prompt with when Codex is out of usage.

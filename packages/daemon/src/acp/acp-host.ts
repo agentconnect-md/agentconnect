@@ -170,17 +170,57 @@ export type ConfigSelectionPlan = { configId: string; value: string } | { skip: 
  * try again at 7:01 PM.") under `error.data.message` — so prefer that detail
  * over a bare title, and append it when a specific message carries extra data.
  * Non-RequestError failures fall back to the plain Error message.
+ *
+ * Both texts are first stripped of the decoration Codex puts around a provider's own error
+ * (`undecorateRuntimeError`): what reaches the person is the sentence the provider wrote.
  */
 export function turnFailureReason(err: unknown): string {
   const e = err as { message?: unknown; data?: { message?: unknown } } | null | undefined
-  const msg = typeof e?.message === 'string' && e.message.trim() ? e.message.trim() : String(err)
-  const detail = typeof e?.data?.message === 'string' ? e.data.message.trim() : ''
+  const raw = typeof e?.message === 'string' && e.message.trim() ? e.message.trim() : String(err)
+  const msg = undecorateRuntimeError(raw)
+  const detail = typeof e?.data?.message === 'string' ? undecorateRuntimeError(e.data.message.trim()) : ''
   if (!detail || msg.includes(detail)) return msg
   // The SDK's generic titles (RequestError statics) add nothing over the
   // runtime's own text; any more specific message keeps both.
   const generic =
     /^(parse error|invalid request|invalid params|internal error|request cancelled|authentication required|resource not found)$/i
   return generic.test(msg) ? detail : `${msg}: ${detail}`
+}
+
+/**
+ * The wrappers runtimes put around a provider's own error sentence, unwrapped so what reaches the person
+ * is the sentence the provider wrote — nothing else in it is for them:
+ *
+ * - **Codex**: `unexpected status <code> <reason>: <sentence>`, newer versions with `, url: <request
+ *   url>` appended. The status is implied by the sentence; the url is the gateway or proxy the runtime
+ *   was pointed at, an internal address.
+ * - **Claude Code** (through claude-agent-acp, which rejects the prompt with the CLI's result text): a
+ *   401/403 renders as `Failed to authenticate. API Error: <code> <sentence>` in non-interactive mode
+ *   (`Please run /login · API Error: …` interactively); other statuses as `API Error: <code> <sentence>`
+ *   or `API Error: <sentence>`. "Failed to authenticate" is the CLI's guess at what a 401 means, wrong
+ *   for a gateway that refuses a stopped org with its own sentence.
+ * - **DeepSeek Harness** (deepseek-harness-acp): `turn failed: <reason>`.
+ *
+ * Only those exact shapes are unwrapped; the sentence inside passes through untouched, and any other
+ * message is returned as is. A wrapper around nothing keeps a status line rather than answering with an
+ * empty string.
+ */
+export function undecorateRuntimeError(text: string): string {
+  const t = text.trim()
+  const codex = /^unexpected status (\d{3})(?: [A-Za-z][A-Za-z '-]*)?: ([\s\S]*?)(?:, url: \S+)?$/.exec(t)
+  if (codex) {
+    const inner = codex[2]!.trim()
+    return inner || `unexpected status ${codex[1]}`
+  }
+  const claude =
+    /^(?:Failed to authenticate\. |Please run \/login (?:·|\u00b7) )?API Error: (?:(\d{3})(?: |$))?([\s\S]*)$/.exec(t)
+  if (claude) {
+    const inner = claude[2]!.trim()
+    return inner || (claude[1] ? `API error ${claude[1]}` : text)
+  }
+  const harness = /^turn failed: ([\s\S]+)$/.exec(t)
+  if (harness) return undecorateRuntimeError(harness[1]!)
+  return text
 }
 
 /** Machine-stable classification for a failed ACP turn. Keep the default conservative:

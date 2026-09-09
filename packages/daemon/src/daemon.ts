@@ -93,7 +93,7 @@ import {
   type TranscriptRow,
   type StoredUsage
 } from './store/local-store.js'
-import { AcpHost, turnFailureCode, turnFailureReason } from './acp/acp-host.js'
+import { AcpHost, turnFailureCode, turnFailureReason, undecorateRuntimeError } from './acp/acp-host.js'
 import {
   probeSandboxHost,
   removeHostSandboxState,
@@ -12709,7 +12709,14 @@ export class Daemon {
       } else {
         let covered = false
         for (const action of p.conv.flushTerminal()) {
-          covered ||= action.kind === 'post' && action.text.includes(reason)
+          if (action.kind === 'post') {
+            // A runtime that narrated its terminal error narrated it WRAPPED — Claude Code's "Failed
+            // to authenticate. API Error: 401 …" — while `reason` is the unwrapped sentence. When the
+            // narration is exactly that wrapper, post the sentence instead: it is the same message,
+            // minus the runtime's guess at what it means.
+            if (undecorateRuntimeError(action.text) === reason) action.text = reason
+            covered ||= action.text.includes(reason)
+          }
           this.enqueueApply(p, action)
         }
         if (!covered)
