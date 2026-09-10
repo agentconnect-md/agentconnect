@@ -488,10 +488,18 @@ for variant in runtime-sandbox runtime-sandbox-full; do
     --build-arg "RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-$BASE_VERSION" \
     --build-arg "RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-$BASE_VERSION" \
     -t "$variant:base-check" --load .
-  node scripts/verify-runtime-image.mjs "$variant:base-check" "$variant"
+  docker buildx build --builder "$(docker context show)" --platform linux/amd64 \
+    -f docker/runtime-sandbox.Dockerfile --target "$variant-verify" \
+    --build-arg "RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-$BASE_VERSION" \
+    --build-arg "RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-$BASE_VERSION" \
+    --output type=cacheonly .
+  node scripts/verify-runtime-image.mjs "$variant:base-check"
   pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts "$variant:base-check"
 done
 ```
+
+The `-verify` target runs the runtime-table probe and the static in-image checks as
+build stages; the host script then checks only what the image configuration says.
 
 After both final images pass, push the two base tags and inspect their registry
 digests with `docker buildx imagetools inspect`. Verify anonymous pulls, then update

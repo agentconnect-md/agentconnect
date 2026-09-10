@@ -25,7 +25,9 @@ name: Build & Push Images
 #
 # Daemon and runtime images are verified against the loaded build before publication. The image
 # a release publishes is therefore the image that was verified. A component skipped as unchanged
-# is not re-verified: it was verified at the release that built it.
+# is not re-verified: it was verified at the release that built it. The runtime images also carry
+# verify stages in their Dockerfile (the runtime-table probe and the static in-image assertions),
+# which BuildKit caches by their inputs, so a release that changed only the shim does not re-probe.
 #
 # After pushing, mints a short-lived GitHub App token for the configured
 # workflow repository and fires an `images-pushed` repository_dispatch
@@ -342,14 +344,33 @@ jobs:
         if: startsWith(matrix.verify, 'runtime-sandbox')
         run: pnpm install --frozen-lockfile
 
-      # Against the BUILT image, not the Dockerfile: non-root, tini as PID 1, a root-owned shim the
-      # runtime cannot rewrite, a self-contained shim bundle, no smuggled service-account token,
-      # and the published runtime table agreeing with what the runtimes report.
-      - name: Verify the runtime sandbox image and its runtime table
+      # The Dockerfile's verify target: the runtime-table probe stage, cached by the base pin and the declared
+      # roster, plus the static assertions run inside the built image as its user. Nothing is loaded or pushed.
+      # The probe stages are not in the image's graph, and a `mode=max` export replaces the whole cache manifest,
+      # so the Build step above would drop them from the shared ref; they live under their own `-verify` ref.
+      - name: Verify the runtime sandbox image inside the build
+        if: startsWith(matrix.verify, 'runtime-sandbox')
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.build_target }}-verify
+          platforms: ${{ matrix.platforms }}
+          outputs: type=cacheonly
+          build-args: ${{ matrix.build_args }}
+          build-contexts: ${{ matrix.build_contexts }}
+          cache-from: |
+            type=registry,ref=${{ matrix.cache_ref }}
+            type=registry,ref=${{ matrix.cache_ref }}-verify
+          cache-to: type=registry,ref=${{ matrix.cache_ref }}-verify,mode=max
+
+      # What only the image CONFIG can answer, against the LOADED image: a non-root USER, tini as the
+      # ENTRYPOINT, and the browser path ENV pointing at the baked Chrome.
+      - name: Verify the runtime sandbox image configuration
         if: startsWith(matrix.verify, 'runtime-sandbox')
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
-        run: node scripts/verify-runtime-image.mjs "$IMAGE" "${{ matrix.target }}"
+        run: node scripts/verify-runtime-image.mjs "$IMAGE"
 
       # The smoke test's DAEMON side imports the listener from source, which imports the workspace
       # packages by their built entry points.

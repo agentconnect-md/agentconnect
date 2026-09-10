@@ -44,10 +44,46 @@ RUN mkdir -p /out/shim /out/pathbin \
     /out/shim/skills/workspace-mutation.js /out/shim/skills/package.json \
   && chmod 0555 /out/shim /out/pathbin /out/pathbin/gh
 
+# ────────────────────────── runtime table check ─────────────────────────────
+# Re-probes every installed runtime and compares with the table the base ships. Its inputs are the base pin, the
+# declared roster and the two scripts — never the shim — so a cached build re-runs it only when one of those moves.
+FROM ${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full-table-check
+COPY scripts/runtime-table-diff.mjs scripts/verify-runtime-table.mjs /tmp/ac-check/
+COPY docker/runtime-sandbox/installed-runtimes-full.json /tmp/ac-check/installed-runtimes.json
+# As the runtime user in a disposable HOME and cwd, the way the base built the table it ships.
+RUN mkdir -p /tmp/ac-probe/home /tmp/ac-probe/cwd \
+  && HOME=/tmp/ac-probe/home AC_PROBE_CWD=/tmp/ac-probe/cwd \
+    node /tmp/ac-check/verify-runtime-table.mjs runtime-sandbox-full /tmp/ac-check/installed-runtimes.json \
+  && touch /tmp/ac-table-check.ok
+
+FROM ${RUNTIME_SANDBOX_BASE} AS runtime-sandbox-table-check
+COPY scripts/runtime-table-diff.mjs scripts/verify-runtime-table.mjs /tmp/ac-check/
+COPY docker/runtime-sandbox/installed-runtimes.json /tmp/ac-check/installed-runtimes.json
+RUN mkdir -p /tmp/ac-probe/home /tmp/ac-probe/cwd \
+  && HOME=/tmp/ac-probe/home AC_PROBE_CWD=/tmp/ac-probe/cwd \
+    node /tmp/ac-check/verify-runtime-table.mjs runtime-sandbox /tmp/ac-check/installed-runtimes.json \
+  && touch /tmp/ac-table-check.ok
+
+# ───────────────────────────── release images ───────────────────────────────
 # The bases carry the installed catalog, runtime table, system tools and non-root entrypoint.
 FROM ${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full
 COPY --link --from=runtime-helpers --chown=0:0 /out/ /opt/agentconnect/
 
-# Keep the pool image as the default build target.
 FROM ${RUNTIME_SANDBOX_BASE} AS runtime-sandbox
 COPY --link --from=runtime-helpers --chown=0:0 /out/ /opt/agentconnect/
+
+# ─────────────────────────── in-image verification ──────────────────────────
+# Static assertions against the built image as its own user; the marker COPY makes one target cover both checks.
+# Built with `--output type=cacheonly`: nothing here is published, and what the image CONFIG says is checked on the host.
+FROM runtime-sandbox-full AS runtime-sandbox-full-verify
+COPY --from=runtime-sandbox-full-table-check /tmp/ac-table-check.ok /tmp/ac-check/table.ok
+COPY docker/runtime-sandbox/verify-image.mjs /tmp/ac-check/verify-image.mjs
+RUN node /tmp/ac-check/verify-image.mjs runtime-sandbox-full
+
+FROM runtime-sandbox AS runtime-sandbox-verify
+COPY --from=runtime-sandbox-table-check /tmp/ac-table-check.ok /tmp/ac-check/table.ok
+COPY docker/runtime-sandbox/verify-image.mjs /tmp/ac-check/verify-image.mjs
+RUN node /tmp/ac-check/verify-image.mjs runtime-sandbox
+
+# Keep the pool image as the default build target.
+FROM runtime-sandbox
