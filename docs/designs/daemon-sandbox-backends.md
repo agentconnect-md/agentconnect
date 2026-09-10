@@ -345,15 +345,19 @@ boot and stop/start, reusing the prepared image cache.
 
 ### Release image selection and Docker
 
-All runtime image build stages pin the Node base image by version and digest;
-updating the base is an explicit source change rather than an incidental tag refresh.
+Runtime dependencies live in manually published `base-<version>` tags of the two
+runtime image packages, built from `docker/runtime-sandbox-base.Dockerfile`.
+The release Dockerfile pins their digests and adds only the daemon-versioned helper
+payload. Release builds never rebuild the dependency images, even with an empty
+build cache. Updating Node, the toolchain, Chrome, Docker, or an installed runtime
+requires a manual base build and an explicit digest update.
 
 The release build bundles `dist/release.json` with a `runtimeSandboxImage` OCI
 reference. It names the current release's `runtime-sandbox-full:v<version>` alias.
 The image workflow creates this alias even when it reuses an older component
 image. The pool continues to use the separate `runtime-sandbox` image. Both targets
-share a base stage with the toolchain, browser, ACP runtimes, and shim. Additional
-self-hosted runtimes belong in the full target. The pool provides Claude Code,
+share the same helper payload over their respective dependency bases. Additional
+self-hosted runtimes belong in the full base. The pool provides Claude Code,
 Codex, and DeepSeek Harness. The full image additionally installs Antigravity,
 Cline, Devin, GitHub Copilot, Grok Build, Oh My Pi, OpenCode, pi, Qwen Code,
 Qoder CLI, and Qoder CN CLI. The `qoder` compatibility ID resolves to `qoder-cli`
@@ -363,7 +367,7 @@ one entry while existing agent configurations retain either ID. Explicit runtime
 overrides remain independent. pi includes both its ACP adapter and the underlying
 CLI. Packages are version-pinned; standalone downloads also pin their SHA-256.
 
-Each image bakes an explicit runtime roster and generates its own runtime table
+Each dependency base bakes an explicit runtime roster and generates its own runtime table
 by probing the installed executables as the ordinary runtime user, without
 provider credentials. Missing executables fail the build instead of silently
 reducing the roster. Installed runtimes remain discoverable without a saved login;
@@ -377,6 +381,40 @@ bundled default follows the updated image.
 The release images are currently Linux amd64; an arm64 daemon must configure
 a compatible image explicitly. The full image's Antigravity binary requires
 AVX in the guest CPU; amd64 emulation without AVX cannot run that runtime.
+
+To update dependencies, edit the pins in `docker/runtime-sandbox-base.Dockerfile`
+and build both targets on an amd64 host with AVX, using a new tag for each manual
+publication. Run these commands from the repository root:
+
+```bash
+set -eu
+BASE_VERSION=20260910.1
+for variant in runtime-sandbox runtime-sandbox-full; do
+  docker buildx build --builder "$(docker context show)" --platform linux/amd64 \
+    -f docker/runtime-sandbox-base.Dockerfile --target "$variant-base" \
+    -t "ghcr.io/agentconnect-md/$variant:base-$BASE_VERSION" --load .
+done
+
+pnpm install --frozen-lockfile
+pnpm --filter '@agentconnect.md/daemon^...' build
+for variant in runtime-sandbox runtime-sandbox-full; do
+  docker buildx build --builder "$(docker context show)" --platform linux/amd64 \
+    -f docker/runtime-sandbox.Dockerfile --target "$variant" \
+    --build-arg "RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-$BASE_VERSION" \
+    --build-arg "RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-$BASE_VERSION" \
+    -t "$variant:base-check" --load .
+  node scripts/verify-runtime-image.mjs "$variant:base-check" "$variant"
+  pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts "$variant:base-check"
+done
+```
+
+After both final images pass, push the two base tags and inspect their registry
+digests with `docker buildx imagetools inspect`. Verify anonymous pulls, then update
+both `ARG` defaults in `docker/runtime-sandbox.Dockerfile` to `tag@sha256:digest`
+references in the dependency update PR. Do not overwrite an existing base tag.
+Changing only the manual base Dockerfile does not publish a daemon or release image;
+changing a base digest in the release Dockerfile does. Normal release CI continues
+to verify the final images and exercise a real ACP session through the shim.
 
 An explicit daemon image overrides this metadata. Development builds remove
 release metadata and require an explicit image; they do not derive a default
