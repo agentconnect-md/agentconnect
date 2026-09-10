@@ -20,6 +20,7 @@ import {
   ELICIT_DISMISS_ACTION,
   SLACK_DM_ELICIT_SURFACE,
   SLACK_ELICIT_SURFACE,
+  WEBCHAT_ELICIT_SURFACE,
   buildElicitationCard,
   buildElicitationFormCard,
   elicitCardShape,
@@ -132,10 +133,29 @@ describe('the in-message card a filled-in answer is given on', () => {
     expect(card[0].text.text).not.toContain('<https://evil.example/y|here>')
   })
 
-  it('is withheld when a field cannot BE an input block, so no card is ever posted dead', () => {
-    // A minimum length no input can hold. (An option value past Slack's 75 no longer withholds
-    // anything: the option carries its position instead — #1794.)
-    expect(cardFor(form({ a: { type: 'string', minLength: 3500 }, b: { type: 'boolean' } }))).toBeNull()
+  it("drops a field this surface's box could never hold, and keeps the rest of the card", () => {
+    // A minimum length past Slack's `plain_text_input` (3000). It is the REDUCTION that decides
+    // this now, so an unanswerable OPTIONAL field is simply not a field — where it used to cost
+    // the whole card, taking the answerable questions down with it.
+    const card = cardFor(form({ a: { type: 'string', minLength: 3500 }, b: { type: 'boolean' } }))
+    expect(card).not.toBeNull()
+    expect(card!.filter((b: any) => b.type === 'input')).toHaveLength(1)
+
+    // Required, though, and there is no honest card at all: `elicitForm` refuses the ask and the
+    // caller declines it with the notice.
+    expect(elicitForm(form({ a: { type: 'string', minLength: 3500 } }, ['a']), SLACK_ELICIT_SURFACE)).toBeNull()
+  })
+
+  it("bounds a typed field by the SURFACE's own box, so each surface offers what it can take", () => {
+    // The same ask, reduced twice: Slack's `plain_text_input` holds 3000, webchat's box holds the
+    // 4096 a card accepts. The daemon still validates each answer against the bound it offered.
+    const ask = form({ note: { type: 'string', maxLength: 4096 } })
+    expect(elicitTarget(ask, SLACK_ELICIT_SURFACE)?.maxLength).toBe(3000)
+    expect(elicitTarget(ask, WEBCHAT_ELICIT_SURFACE)?.maxLength).toBe(4096)
+    // And a field declaring less than either keeps its own bound on both.
+    const short = form({ note: { type: 'string', maxLength: 120 } })
+    expect(elicitTarget(short, SLACK_ELICIT_SURFACE)?.maxLength).toBe(120)
+    expect(elicitTarget(short, WEBCHAT_ELICIT_SURFACE)?.maxLength).toBe(120)
   })
 })
 
