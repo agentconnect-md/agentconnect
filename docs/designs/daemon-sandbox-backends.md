@@ -316,7 +316,10 @@ diagnostic. Custom credential-reference names are outside this first implementat
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
 existing private logins are preserved. Without a DeepSeek key, normal seeding is
-unchanged. The daemon rejects mounts exposing protected host paths, sharing SRT's
+unchanged. On the currently supported Linux backend, projection holds directory
+and file descriptors without following symlinks and publishes by atomic rename,
+so a guest swapping a file or parent cannot redirect a daemon write. The daemon
+rejects mounts exposing protected host paths, sharing SRT's
 boundary and runtime-state inventory, and supplies the guest CA environment even
 when process-environment inheritance is disabled. Keys stay out
 of serialized launch metadata and environment bindings. The SDK persists its own

@@ -1,10 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
-import { hostPackageCacheEnv, prepareRuntimeHome, runtimeHomeEnvironment } from '../src/runtimes/runtime-home.js'
+import {
+  hostPackageCacheEnv,
+  prepareRuntimeHome,
+  projectRuntimeHomeSeedFile,
+  runtimeHomeEnvironment
+} from '../src/runtimes/runtime-home.js'
 import { extractOmpCredentials } from '../src/runtimes/omp-credentials.js'
 import { discoverSeededRuntimeCredentials } from '../src/runtimes/runtime-seeded-credentials.js'
 
@@ -18,6 +34,38 @@ function fixture(): { root: string; hostHome: string; scopeDir: string } {
 }
 
 describe('private runtime HOME', () => {
+  it.skipIf(process.platform !== 'linux').each(['leaf', 'parent'])(
+    'does not follow a guest-swapped %s while projecting credentials',
+    (swap) => {
+      const { root, hostHome, scopeDir } = fixture()
+      const home = join(scopeDir, 'home')
+      const directory = join(home, '.dsh')
+      const destination = join(directory, '.env')
+      const outside = join(hostHome, '.env')
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(destination, 'fixture-guest-content')
+      writeFileSync(outside, 'host-only-content')
+      try {
+        projectRuntimeHomeSeedFile(home, '.dsh/.env', outside, () => {
+          if (swap === 'leaf') {
+            unlinkSync(destination)
+            symlinkSync(outside, destination)
+          } else {
+            renameSync(directory, join(home, 'moved'))
+            symlinkSync(hostHome, directory)
+          }
+          return 'projected-content'
+        })
+        expect(readFileSync(outside, 'utf8')).toBe('host-only-content')
+        expect(readFileSync(swap === 'leaf' ? destination : join(home, 'moved', '.env'), 'utf8')).toBe(
+          'projected-content'
+        )
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
+
   it('seeds only Claude model rollout cache and keeps other host state out', () => {
     const { hostHome, scopeDir } = fixture()
     writeFileSync(join(hostHome, '.claude', '.credentials.json'), '{"token":"host"}')

@@ -54,7 +54,7 @@ afterEach(() => {
 })
 
 describe('prepareMicrosandboxLaunch', () => {
-  it.each(['legacy', 'versioned', 'dotenv'])(
+  it.skipIf(process.platform !== 'linux').each(['legacy', 'versioned', 'dotenv'])(
     'protects %s DeepSeek keys while preserving other private provider credentials',
     (format) => {
       const opts = fixture()
@@ -88,7 +88,7 @@ describe('prepareMicrosandboxLaunch', () => {
     }
   )
 
-  it.skipIf(process.platform === 'win32')(
+  it.skipIf(process.platform !== 'linux')(
     'rejects host credential mounts and symlinked private copies instead of modifying the host',
     () => {
       const opts = fixture()
@@ -127,18 +127,21 @@ describe('prepareMicrosandboxLaunch', () => {
     expect(readFileSync(path, 'utf8')).toContain('fixture-guest-login')
   })
 
-  it('uses an explicit key despite malformed host YAML and rejects an unsupported dotenv endpoint', () => {
-    const opts = fixture()
-    const hostDsh = join(opts.hostHome, '.dsh')
-    mkdirSync(hostDsh)
-    writeFileSync(join(hostDsh, '.credentials.yaml'), 'DEEPSEEK_API_KEY: first\nDEEPSEEK_API_KEY: second\n')
-    const options = { ...opts, runtimeId: 'dsh-acp', explicitEnv: { DEEPSEEK_API_KEY: 'fixture-explicit-key' } }
-    const launch = prepareMicrosandboxLaunch(options)
-    expect(launch.microsandbox.secrets![0]!.readValue()).toBe('fixture-explicit-key')
-    expect(existsSync(join(launch.runtimeHome!, '.dsh', '.credentials.yaml'))).toBe(false)
-    writeFileSync(join(hostDsh, '.env'), 'DEEPSEEK_BASE_URL=https://gateway.example.test\n')
-    expect(() => prepareMicrosandboxLaunch(options)).toThrow('launch refused')
-  })
+  it.skipIf(process.platform !== 'linux')(
+    'uses an explicit key despite malformed host YAML and rejects an unsupported dotenv endpoint',
+    () => {
+      const opts = fixture()
+      const hostDsh = join(opts.hostHome, '.dsh')
+      mkdirSync(hostDsh)
+      writeFileSync(join(hostDsh, '.credentials.yaml'), 'DEEPSEEK_API_KEY: first\nDEEPSEEK_API_KEY: second\n')
+      const options = { ...opts, runtimeId: 'dsh-acp', explicitEnv: { DEEPSEEK_API_KEY: 'fixture-explicit-key' } }
+      const launch = prepareMicrosandboxLaunch(options)
+      expect(launch.microsandbox.secrets![0]!.readValue()).toBe('fixture-explicit-key')
+      expect(existsSync(join(launch.runtimeHome!, '.dsh', '.credentials.yaml'))).toBe(false)
+      writeFileSync(join(hostDsh, '.env'), 'DEEPSEEK_BASE_URL=https://gateway.example.test\n')
+      expect(() => prepareMicrosandboxLaunch(options)).toThrow('launch refused')
+    }
+  )
 
   it('refuses custom TLS trust instead of silently dropping the operator bundle', () => {
     const opts = fixture()
@@ -174,34 +177,37 @@ describe('prepareMicrosandboxLaunch', () => {
     }
   })
 
-  it('keeps SRT credential seeding and masks explicit DeepSeek keys only for microsandbox', () => {
-    const opts = fixture()
-    mkdirSync(join(opts.hostHome, '.dsh'))
-    const key = 'fixture-file-key'
-    writeFileSync(join(opts.hostHome, '.dsh', '.credentials.yaml'), `DEEPSEEK_API_KEY: ${key}\n`)
-    const srt = prepareRuntimeLaunch({
-      ...opts,
-      runtimeId: 'dsh-acp',
-      runInSandbox: true,
-      daemonRoot: opts.root,
-      sandboxMechanism: 'bwrap'
-    })
-    expect(readFileSync(join(srt.runtimeHome!, '.dsh', '.credentials.yaml'), 'utf8')).toContain(key)
-    const launch = prepareMicrosandboxLaunch({
-      ...opts,
-      runtimeId: 'dsh-acp',
-      explicitEnv: { DEEPSEEK_API_KEY: 'fixture-explicit-key' }
-    })
-    expect(launch.microsandbox.secrets![0]!.readValue()).toBe('fixture-explicit-key')
-    expect(JSON.stringify(launch)).not.toContain('fixture-explicit-key')
-    expect(() =>
-      prepareMicrosandboxLaunch({
+  it.skipIf(process.platform !== 'linux')(
+    'keeps SRT credential seeding and masks explicit DeepSeek keys only for microsandbox',
+    () => {
+      const opts = fixture()
+      mkdirSync(join(opts.hostHome, '.dsh'))
+      const key = 'fixture-file-key'
+      writeFileSync(join(opts.hostHome, '.dsh', '.credentials.yaml'), `DEEPSEEK_API_KEY: ${key}\n`)
+      const srt = prepareRuntimeLaunch({
         ...opts,
         runtimeId: 'dsh-acp',
-        explicitEnv: { DEEPSEEK_BASE_URL: 'https://proxy.example.test' }
+        runInSandbox: true,
+        daemonRoot: opts.root,
+        sandboxMechanism: 'bwrap'
       })
-    ).toThrow('requires https://api.deepseek.com')
-  })
+      expect(readFileSync(join(srt.runtimeHome!, '.dsh', '.credentials.yaml'), 'utf8')).toContain(key)
+      const launch = prepareMicrosandboxLaunch({
+        ...opts,
+        runtimeId: 'dsh-acp',
+        explicitEnv: { DEEPSEEK_API_KEY: 'fixture-explicit-key' }
+      })
+      expect(launch.microsandbox.secrets![0]!.readValue()).toBe('fixture-explicit-key')
+      expect(JSON.stringify(launch)).not.toContain('fixture-explicit-key')
+      expect(() =>
+        prepareMicrosandboxLaunch({
+          ...opts,
+          runtimeId: 'dsh-acp',
+          explicitEnv: { DEEPSEEK_BASE_URL: 'https://proxy.example.test' }
+        })
+      ).toThrow('requires https://api.deepseek.com')
+    }
+  )
 
   it.each([
     ['claude-acp', false],
