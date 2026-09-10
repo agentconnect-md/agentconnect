@@ -23,7 +23,7 @@ import type {
   HookRunRecord,
   OrgRepo
 } from '../persistence/ports.js'
-import { githubRequest, GithubApiError, type FetchLike } from './api.js'
+import { githubRequest, githubRetryAfterMs, GithubApiError, type FetchLike } from './api.js'
 import {
   authoritativeHookProjectionState,
   hookRuntimeProjectionState,
@@ -43,6 +43,8 @@ const MAX_ASSOCIATION_PAGES = 10
 const ASSOCIATION_PAGE_SIZE = 100
 const RETRY_BASE_MS = 2_000
 const RETRY_MAX_MS = 5 * 60_000
+// A primary rate-limit window is at most an hour; no GitHub wait is honoured past that.
+const RETRY_HINT_MAX_MS = 60 * 60_000
 // How long a marker-bearing write may stay unobserved before its absence counts as proof it never landed.
 const AMBIGUOUS_WRITE_GRACE_MS = 10 * 60_000
 
@@ -981,7 +983,12 @@ export class GithubRunReporter {
       return
     }
     if (isRetryable(err)) {
-      await this.retry(projection, errorLabel(err, 'github_unavailable'), false)
+      await this.retry(
+        projection,
+        errorLabel(err, 'github_unavailable'),
+        false,
+        githubRetryAfterMs(err, this.deps.clock.now())
+      )
       return
     }
     await this.deps.hooks.blockProjection(projection.id, projection.generation, errorLabel(err, 'repo_authorization'))
@@ -993,9 +1000,8 @@ export class GithubRunReporter {
     installationId: bigint
   ): Promise<void> {
     if (err instanceof GithubApiError && err.code === 'RATE_LIMITED') {
-      // A received rate-limit response is a definite non-effect: clear the
-      // marker and retry the mutation after backoff.
-      await this.retry(projection, 'rate_limited', false)
+      // A received rate-limit response is a definite non-effect: clear the marker and retry once GitHub's wait is over.
+      await this.retry(projection, 'rate_limited', false, githubRetryAfterMs(err, this.deps.clock.now()))
       return
     }
     if (err instanceof GithubApiError && (err.status === 401 || err.status === 403 || err.status === 422)) {
@@ -1035,9 +1041,18 @@ export class GithubRunReporter {
     await this.deps.hooks.blockProjection(projection.id, projection.generation, code)
   }
 
-  private async retry(projection: HookReviewProjectionRecord, code: string, keepWriteMutex: boolean): Promise<void> {
+  private async retry(
+    projection: HookReviewProjectionRecord,
+    code: string,
+    keepWriteMutex: boolean,
+    waitAtLeastMs = 0
+  ): Promise<void> {
     const attempt = Math.max(0, projection.attempts)
-    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(attempt, 8))
+    // GitHub's own wait wins over the backoff: retrying inside it only buys another refusal and a longer penalty.
+    const delay = Math.max(
+      Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(attempt, 8)),
+      Math.min(RETRY_HINT_MAX_MS, waitAtLeastMs)
+    )
     await this.deps.hooks.retryProjectionWrite(
       projection.id,
       projection.generation,

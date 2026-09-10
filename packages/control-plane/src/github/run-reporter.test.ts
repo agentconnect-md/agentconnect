@@ -1775,7 +1775,7 @@ describe('GithubRunReporter', () => {
     )
   })
 
-  it('clears a definite 429 marker and retries with exponential backoff', async () => {
+  it("clears a definite 429 marker and waits GitHub's minimum minute when the answer names no wait", async () => {
     const p = projection({ attempts: 2 })
     const { reporter, hooks } = worker(
       p,
@@ -1784,11 +1784,102 @@ describe('GithubRunReporter', () => {
 
     await reporter.tick()
 
+    // The 8s backoff for attempt 2 would only buy another refusal and a longer penalty.
     expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
       p.id,
       p.generation,
       'worker-1',
-      new Date(NOW + 8_000),
+      new Date(NOW + 60_000),
+      'rate_limited',
+      false
+    )
+  })
+
+  it("keeps the exponential backoff once it already exceeds GitHub's wait", async () => {
+    const p = projection({ attempts: 6 })
+    const { reporter, hooks } = worker(
+      p,
+      vi.fn(async () => Response.json({ message: 'slow down' }, { status: 429, headers: { 'retry-after': '10' } }))
+    )
+
+    await reporter.tick()
+
+    expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      'worker-1',
+      new Date(NOW + 128_000),
+      'rate_limited',
+      false
+    )
+  })
+
+  it('waits out the retry-after GitHub sent instead of its own shorter backoff', async () => {
+    const p = projection({ attempts: 2 })
+    const { reporter, hooks } = worker(
+      p,
+      vi.fn(async () => Response.json({ message: 'slow down' }, { status: 429, headers: { 'retry-after': '120' } }))
+    )
+
+    await reporter.tick()
+
+    expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      'worker-1',
+      new Date(NOW + 120_000),
+      'rate_limited',
+      false
+    )
+  })
+
+  it('does not wait for the primary reset on a secondary 429 that still has primary quota', async () => {
+    const p = projection({ attempts: 0 })
+    const { reporter, hooks } = worker(
+      p,
+      vi.fn(async () =>
+        Response.json(
+          { message: 'You have exceeded a secondary rate limit.' },
+          // Primary quota remains and its window resets 50 minutes out; only the secondary minute applies.
+          { status: 429, headers: { 'x-ratelimit-remaining': '4990', 'x-ratelimit-reset': String(NOW / 1000 + 3_000) } }
+        )
+      )
+    )
+
+    await reporter.tick()
+
+    expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      'worker-1',
+      new Date(NOW + 60_000),
+      'rate_limited',
+      false
+    )
+  })
+
+  it('treats a secondary rate limit 403 as a definite non-effect, not a permanent denial', async () => {
+    const p = projection({ checkRunId: '90071992547409931' })
+    const { reporter, hooks, github } = worker(
+      p,
+      vi.fn(async () =>
+        // Secondary limits leave the primary budget untouched, so remaining stays positive.
+        Response.json(
+          { message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' },
+          { status: 403, headers: { 'retry-after': '60', 'x-ratelimit-remaining': '4990' } }
+        )
+      )
+    )
+
+    await reporter.tick()
+
+    expect(hooks.blockProjection).not.toHaveBeenCalled()
+    expect(github.refreshInstallationFacts).not.toHaveBeenCalled()
+    expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      'worker-1',
+      new Date(NOW + 60_000),
       'rate_limited',
       false
     )

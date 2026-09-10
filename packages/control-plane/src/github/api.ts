@@ -14,16 +14,52 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
 
 export type GithubErrorCode = 'LEASE_DENIED' | 'RATE_LIMITED' | 'INTERNAL'
 
+/** When GitHub said to come back: `retry-after` as a delay, `x-ratelimit-reset` as an instant (epoch ms). */
+export interface GithubRetryHint {
+  retryAfterMs?: number
+  rateLimitResetAt?: number
+}
+
 /** GitHub call failure, pre-mapped onto the wire ErrorCode vocabulary. */
 export class GithubApiError extends Error {
+  readonly retryAfterMs?: number
+  readonly rateLimitResetAt?: number
+
   constructor(
     message: string,
     readonly status: number,
     readonly code: GithubErrorCode,
-    readonly retryable: boolean
+    readonly retryable: boolean,
+    hint: GithubRetryHint = {}
   ) {
     super(message)
     this.name = 'GithubApiError'
+    if (hint.retryAfterMs !== undefined) this.retryAfterMs = hint.retryAfterMs
+    if (hint.rateLimitResetAt !== undefined) this.rateLimitResetAt = hint.rateLimitResetAt
+  }
+}
+
+/** A secondary limit that names no wait asks for "at least one minute" (GitHub's own guidance). */
+const RATE_LIMIT_DEFAULT_WAIT_MS = 60_000
+
+/** How long GitHub asked the caller to wait before retrying `err`, measured from the caller's clock. */
+export function githubRetryAfterMs(err: unknown, nowMs: number): number | undefined {
+  if (!(err instanceof GithubApiError)) return undefined
+  if (err.retryAfterMs !== undefined) return err.retryAfterMs
+  if (err.rateLimitResetAt !== undefined) return Math.max(0, err.rateLimitResetAt - nowMs)
+  return err.code === 'RATE_LIMITED' ? RATE_LIMIT_DEFAULT_WAIT_MS : undefined
+}
+
+/** `retry-after` is delta-seconds and `x-ratelimit-reset` epoch-seconds; anything unparseable is no hint. */
+function retryHintFrom(headers: Headers): GithubRetryHint {
+  const retryAfter = headers.get('retry-after')
+  // The reset names the primary window; while that budget still has requests it is not a wait at all.
+  const reset = headers.get('x-ratelimit-remaining') === '0' ? headers.get('x-ratelimit-reset') : null
+  const retryAfterSec = retryAfter === null ? NaN : Number(retryAfter)
+  const resetSec = reset === null ? NaN : Number(reset)
+  return {
+    ...(Number.isFinite(retryAfterSec) && retryAfterSec >= 0 ? { retryAfterMs: retryAfterSec * 1000 } : {}),
+    ...(Number.isFinite(resetSec) && resetSec > 0 ? { rateLimitResetAt: resetSec * 1000 } : {})
   }
 }
 
@@ -156,8 +192,16 @@ async function githubRequestOnce<T>(path: string, opts: GithubRequestOpts): Prom
     // non-JSON error body — status alone will do
   }
 
-  if (res.status === 429 || (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0')) {
-    throw new GithubApiError(`github rate limited: ${detail}`, res.status, 'RATE_LIMITED', true)
+  // A primary limit is 403/429 with remaining 0; a secondary limit is 403/429 with `retry-after` and remaining still positive.
+  const hint = retryHintFrom(res.headers)
+  const rateLimited =
+    res.status === 429 ||
+    (res.status === 403 &&
+      (hint.retryAfterMs !== undefined ||
+        res.headers.get('x-ratelimit-remaining') === '0' ||
+        /rate limit/i.test(detail)))
+  if (rateLimited) {
+    throw new GithubApiError(`github rate limited: ${detail}`, res.status, 'RATE_LIMITED', true, hint)
   }
   // 404 (installation gone / repo out of the grant set) and 422 (narrowing to a
   // repo the installation can't reach) are operator-recoverable denials.
@@ -165,7 +209,7 @@ async function githubRequestOnce<T>(path: string, opts: GithubRequestOpts): Prom
     throw new GithubApiError(`github denied (${res.status}): ${detail}`, res.status, 'LEASE_DENIED', false)
   }
   // 401 = our own JWT/key is wrong (misconfig) — internal, not retryable-by-daemon.
-  throw new GithubApiError(`github error (${res.status}): ${detail}`, res.status, 'INTERNAL', res.status >= 500)
+  throw new GithubApiError(`github error (${res.status}): ${detail}`, res.status, 'INTERNAL', res.status >= 500, hint)
 }
 
 // One GraphQL query/mutation → its `data` — for facts with no REST equivalent (thread resolution
