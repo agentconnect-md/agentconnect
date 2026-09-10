@@ -478,11 +478,19 @@ async function reconcileSkillBundlesLocked(
     const conflicts: string[] = []
     const candidates: CandidateSkillBundle[] = []
     const adopted: OwnedSkillBundle[] = []
+    const kept = new Map<string, OwnedSkillBundle>()
     for (const candidate of deduped) {
-      if (
-        priorByPath.has(candidate.relativeRoot) ||
-        !(await destinationOccupied(options.cwd, candidate.relativeRoot))
-      ) {
+      const priorEntry = priorByPath.get(candidate.relativeRoot)
+      if (priorEntry?.treeDigest === candidate.treeDigest) {
+        // Reuse requires both the live receipt and the recorded identity, under a contained path.
+        await canonicalSkillMutationRoot(options.cwd, candidate.relativeRoot)
+        const found = await bundleIdentity(join(options.cwd, ...candidate.relativeRoot.split('/')), candidate)
+        if (found && sameIdentity(found, priorEntry.identity)) {
+          kept.set(candidate.relativeRoot, { ...stripCandidate(candidate), identity: found })
+          continue
+        }
+      }
+      if (priorEntry || !(await destinationOccupied(options.cwd, candidate.relativeRoot))) {
         candidates.push(candidate)
         continue
       }
@@ -501,19 +509,16 @@ async function reconcileSkillBundlesLocked(
       options.warn?.(`skills: skipped unowned skill ${candidate.relativeRoot}: ${detail}`)
     }
 
-    // A preserved bundle is untouched: it is not a candidate to publish and not a
-    // removal to plan, so it never enters the journal. A candidate claiming the
-    // same root wins — rebuilding beats keeping.
+    // Desired candidates take precedence over retaining a source that could not be rebuilt.
     const candidateRoots = new Set(candidates.map((entry) => entry.relativeRoot))
-    const preserved = new Set<string>()
     for (const root of options.preserveOwned ?? []) {
       const canonical = await canonicalizeRelativeRoot(options.cwd, root)
-      if (!candidateRoots.has(canonical)) preserved.add(canonical)
+      const priorEntry = priorByPath.get(canonical)
+      if (priorEntry && !candidateRoots.has(canonical) && !kept.has(canonical)) kept.set(canonical, priorEntry)
     }
-    const kept = prior.filter((entry) => preserved.has(entry.relativeRoot))
     const paths = [
       ...new Set([
-        ...prior.filter((entry) => !preserved.has(entry.relativeRoot)).map((entry) => entry.relativeRoot),
+        ...prior.filter((entry) => !kept.has(entry.relativeRoot)).map((entry) => entry.relativeRoot),
         ...candidates.map((entry) => entry.relativeRoot)
       ])
     ].sort()
@@ -536,22 +541,18 @@ async function reconcileSkillBundlesLocked(
       // A pruned set is no longer what that fingerprint described, and recovery cannot see the prune: leaving it would let the next plan skip the reinstall.
       ...(ledger?.fingerprint && prior.length === recorded.length ? { priorFingerprint: ledger.fingerprint } : {}),
       priorGitResolutions: ledger?.gitResolutions ?? [],
-      // Preserved receipts stay in the durable recovery state — recovery rebuilds
-      // `owned` from here, and a crash mid-publication must not orphan the files
-      // this run deliberately left alone. Their paths carry no operation, which is
-      // what keeps them untouched.
+      // Recovery retains every prior receipt, including untouched bundles whose source records may change.
       prior,
       pending: candidates.map(stripCandidate),
       operations
     }
+    options.assertMutationAuthority?.()
     await writeSkillLedger(location.file, nextApplying, options.publicationKey)
-    // Recovery authority begins only after the journal is durable. If writing
-    // the applying ledger failed, no live mutation has occurred and pretending
-    // otherwise could operate from state that never became authoritative.
+    // Recovery gains mutation authority only after the applying journal is durable.
     recoveryLedger = nextApplying
 
     const candidatesByPath = new Map(candidates.map((entry) => [entry.relativeRoot, entry]))
-    const owned: OwnedSkillBundle[] = [...adopted, ...kept]
+    const owned: OwnedSkillBundle[] = [...adopted, ...kept.values()]
     for (const operation of operations) {
       const priorEntry = priorByPath.get(operation.relativeRoot)
       const candidate = candidatesByPath.get(operation.relativeRoot)
@@ -633,6 +634,7 @@ async function reconcileSkillBundlesLocked(
       gitResolutions,
       cleanup: { operations, prior }
     }
+    options.assertMutationAuthority?.()
     await writeSkillLedger(location.file, readyWithCleanup, options.publicationKey)
     recoveryLedger = readyWithCleanup
     await finishReadyCleanup(
@@ -651,9 +653,8 @@ async function reconcileSkillBundlesLocked(
     }
     return {
       installed: candidates.map((entry) => entry.relativeRoot),
-      // Everything previously owned that this run did not keep, the paths that had
-      // already vanished included: none of THAT is owned once this returns.
-      removed: recorded.filter((entry) => !preserved.has(entry.relativeRoot)).map((entry) => entry.relativeRoot),
+      // Replaced and vanished prior bundles count as removed; untouched bundles do not.
+      removed: recorded.filter((entry) => !kept.has(entry.relativeRoot)).map((entry) => entry.relativeRoot),
       skipped: null,
       conflicts,
       owned

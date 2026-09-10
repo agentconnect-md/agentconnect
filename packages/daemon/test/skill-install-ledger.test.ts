@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -356,6 +356,118 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     location: Awaited<ReturnType<typeof skillLedgerLocation>>,
     ledger: NonNullable<Awaited<ReturnType<typeof readSkillLedger>>>
   ) => withSkillWorkspaceLock(cwd, () => recoverSkillLedger(cwd, location, ledger), stateDir)
+
+  it('keeps identical bundles in place while advancing source and Git metadata', async () => {
+    await reconcile('v1')
+    const target = join(cwd, BUNDLE)
+    const directoryIdentity = await pathIdentity(target)
+    const fileIdentity = await pathIdentity(join(target, 'SKILL.md'))
+    const resolution = { definitionDigest: 'a'.repeat(64), resolvedCommit: 'b'.repeat(40) }
+    const options = {
+      cwd,
+      stateDir,
+      agentId: 'a1',
+      runtime: 'claude',
+      cliVersion: '1.5.21',
+      fingerprint: 'v2',
+      candidates: [{ ...oneFileReceipt(BUNDLE, 'fixture:v2'), sourceDir }],
+      gitResolutions: [resolution],
+      preserveOwned: [BUNDLE]
+    }
+
+    const updated = await reconcileSkillBundles(options)
+
+    expect(updated.installed).toEqual([])
+    expect(updated.removed).toEqual([])
+    expect(await pathIdentity(target)).toEqual(directoryIdentity)
+    expect(await pathIdentity(join(target, 'SKILL.md'))).toEqual(fileIdentity)
+    const ledger = await readSkillLedger(await skillLedgerLocation(cwd, stateDir))
+    expect(ledger).toMatchObject({
+      phase: 'ready',
+      fingerprint: 'v2',
+      gitResolutions: [resolution],
+      owned: [{ relativeRoot: BUNDLE, sourceKey: 'fixture:v2', identity: directoryIdentity }]
+    })
+    expect((await reconcileSkillBundles(options)).skipped).toBe('unchanged')
+  })
+
+  it('retains an unchanged sibling through interrupted replacement and retry', async () => {
+    const changingRoot = '.claude/skills/changing'
+    const target = join(cwd, changingRoot, 'SKILL.md')
+    const options = { cwd, stateDir, agentId: 'a1', runtime: 'claude', cliVersion: '1.5.21' }
+    await reconcileSkillBundles({
+      ...options,
+      fingerprint: 'v1',
+      candidates: [
+        { ...oneFileReceipt(BUNDLE, 'fixture:v1'), sourceDir },
+        { ...oneFileReceipt(changingRoot, 'changing:v1'), sourceDir }
+      ]
+    })
+    const location = await skillLedgerLocation(cwd, stateDir)
+    const prior = await readSkillLedger(location)
+    const unchangedIdentity = await pathIdentity(join(cwd, BUNDLE))
+    const nextSource = join(root, 'next-source')
+    const nextBody = `${BODY}Updated content\n`
+    await mkdir(nextSource)
+    await writeFile(join(nextSource, 'SKILL.md'), nextBody)
+    const files = [{ path: 'SKILL.md', mode: 0o600, size: Buffer.byteLength(nextBody), sha256: sha256(nextBody) }]
+    const next = {
+      ...options,
+      fingerprint: 'v2',
+      candidates: [
+        { ...oneFileReceipt(BUNDLE, 'fixture:v2'), sourceDir },
+        {
+          relativeRoot: changingRoot,
+          sourceKey: 'changing:v2',
+          sourceDir: nextSource,
+          files,
+          treeDigest: treeDigest(files)
+        }
+      ]
+    }
+
+    await expect(
+      reconcileSkillBundles({
+        ...next,
+        assertMutationAuthority: () => {
+          if (!existsSync(target) || readFileSync(target, 'utf8') !== nextBody) return
+          const journal = JSON.parse(readFileSync(location.file, 'utf8'))
+          expect(journal.phase).toBe('applying')
+          expect(journal.operations.map((entry: { relativeRoot: string }) => entry.relativeRoot)).toEqual([
+            changingRoot
+          ])
+          expect(journal.prior).toContainEqual(
+            expect.objectContaining({ relativeRoot: BUNDLE, sourceKey: 'fixture:v1' })
+          )
+          throw new Error('publication authority lost after replacement')
+        }
+      })
+    ).rejects.toMatchObject({
+      cause: expect.objectContaining({ message: 'publication authority lost after replacement' })
+    })
+
+    expect(await readSkillLedger(location)).toEqual(prior)
+    expect(await readFile(target, 'utf8')).toBe(BODY)
+    expect(await pathIdentity(join(cwd, BUNDLE))).toEqual(unchangedIdentity)
+    const retried = await reconcileSkillBundles(next)
+    expect(retried.installed).toEqual([changingRoot])
+    expect(retried.removed).toEqual([changingRoot])
+    expect(await readFile(target, 'utf8')).toBe(nextBody)
+    expect(await pathIdentity(join(cwd, BUNDLE))).toEqual(unchangedIdentity)
+    expect(retried.owned.map((entry) => entry.sourceKey).sort()).toEqual(['changing:v2', 'fixture:v2'])
+  })
+
+  it('refuses to reuse a recorded bundle moved outside the workspace through a parent alias', async () => {
+    await reconcile('v1')
+    const outside = join(root, 'outside')
+    await rename(join(cwd, '.claude'), outside)
+    await symlink(outside, join(cwd, '.claude'))
+
+    await expect(reconcile('v2')).rejects.toMatchObject({
+      cause: expect.objectContaining({ message: expect.stringMatching(/outside workspace/) })
+    })
+    expect(await readFile(join(outside, 'skills/fixture/SKILL.md'), 'utf8')).toBe(BODY)
+  })
 
   it('reinstalls a recorded bundle the checkout no longer holds', async () => {
     const first = await reconcile('v1')
