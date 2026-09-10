@@ -170,6 +170,30 @@ function pendingFor(daemon: Daemon, acpSessionId: string): any {
 }
 
 describe('Daemon session lifecycle (#118)', () => {
+  it.each(['from-scratch', 'git-repo'])('reopens a suspended primary %s workspace through its VM', async (mode) => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      const agent = d.agents.get('bot-a')
+      agent.workspace.mode = mode
+      mkdirSync(agent.workspace.path, { recursive: true })
+      const environment = {
+        id: 'bot-a/primary',
+        workspaceRoot: agent.dir,
+        mounts: [{ source: agent.workspace.path, target: agent.workspace.path, mode: 'writable' }]
+      }
+      d.microsandbox = { environment: () => undefined, stopAll: async () => {} }
+      const context = vi.spyOn(d, 'microsandboxContext').mockReturnValue({ environment })
+      expect(d.workspaces.trustedWorkspaceWriteRoots(agent)).not.toContain(agent.workspace.path)
+      expect(d.microsandboxWorkspaceEnvironment(agent, agent.workspace.path)).toBe(environment)
+      expect(context).toHaveBeenCalledExactlyOnceWith(agent, agent.workspace.path)
+      expect(d.microsandboxWorkspaceEnvironment(agent, join(agent.dir, 'unmounted'))).toBeUndefined()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it.each([true, false])('installs a host runtime only for local execution (runInSandbox=%s)', async (runInSandbox) => {
     const root = scaffold()
     const host = quietHost()

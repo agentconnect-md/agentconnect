@@ -73,6 +73,7 @@ describe('cluster skill coordinator', () => {
         const sourceDir = join(root, kind)
         await mkdir(sourceDir)
         await writeFile(join(sourceDir, 'SKILL.md'), `---\nname: ${kind}\ndescription: fixture\n---\n# ${kind}\n`)
+        await writeFile(join(sourceDir, 'run.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
         return {
           sourceId: `${kind === 'agent' ? 'z' : kind === 'managed' ? 'm' : 'a'}:${kind}`,
           sourceKind: kind as 'agent' | 'managed' | 'dream',
@@ -109,7 +110,14 @@ describe('cluster skill coordinator', () => {
       async request(_capability: unknown, payload: unknown) {
         const request = payload as Record<string, unknown>
         events.push(String(request.op))
-        if (request.op === 'begin') return { handle: 'opaque-handle-1234' }
+        if (request.op === 'begin') {
+          const files = request.files as Array<{ path: string; executable?: boolean }>
+          if (process.platform !== 'win32') {
+            expect(files.filter((file) => file.path === 'run.sh').every((file) => file.executable)).toBe(true)
+            expect(files.filter((file) => file.path === 'SKILL.md').every((file) => !file.executable)).toBe(true)
+          }
+          return { handle: 'opaque-handle-1234' }
+        }
         if (request.op === 'upload') {
           const data = Buffer.from(String(request.data), 'base64')
           return { received: Number(request.offset) + data.length, complete: request.final }
@@ -133,7 +141,7 @@ describe('cluster skill coordinator', () => {
       skillsAgentId: 'codex',
       shimGeneration: 7,
       sources,
-      client: new ClusterSkillClient(requester)
+      client: new ClusterSkillClient(requester, true, true)
     })
     expect(ledger.roots).toHaveLength(3)
     expect(events[0]).toBe('begin-journal')

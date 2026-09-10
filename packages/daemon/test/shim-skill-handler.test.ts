@@ -240,6 +240,7 @@ describe('cluster skill shim staging', () => {
 
   it('runs the pinned CLI and publishes a verified receipt', async () => {
     const content = Buffer.from('---\nname: cluster-golden\ndescription: cluster fixture\n---\n# Cluster\n')
+    const script = Buffer.from('#!/bin/sh\nprintf executable\n')
     const root = await mkdtemp(join(tmpdir(), 'ac-shim-skills-reconcile-'))
     const workspace = join(root, 'workspace')
     await mkdir(workspace)
@@ -250,6 +251,7 @@ describe('cluster skill shim staging', () => {
       stateRoot: join(root, 'state')
     })
     const file = { sourceId: 'managed:a', path: 'SKILL.md', size: content.length, sha256: sha256(content) }
+    const scriptFile = { ...file, path: 'run.sh', size: script.length, sha256: sha256(script), executable: true }
     const authority = {
       groupId: 'g',
       term: '1',
@@ -263,7 +265,7 @@ describe('cluster skill shim staging', () => {
       operationId,
       authority,
       skillsAgentId: 'codex',
-      files: [file]
+      files: [file, scriptFile]
     })) as { handle: string }
     await handler.handle({
       op: 'upload',
@@ -273,6 +275,16 @@ describe('cluster skill shim staging', () => {
       path: file.path,
       offset: 0,
       data: content.toString('base64'),
+      final: true
+    })
+    await handler.handle({
+      op: 'upload',
+      operationId,
+      handle: begin.handle,
+      sourceId: scriptFile.sourceId,
+      path: scriptFile.path,
+      offset: 0,
+      data: script.toString('base64'),
       final: true
     })
     const reply = await handler.handle({
@@ -289,6 +301,10 @@ describe('cluster skill shim staging', () => {
       roots: [{ path: '.agents/skills/cluster-golden', sourceKind: 'managed' }],
       conflicts: []
     })
+    if (process.platform !== 'win32') {
+      expect((await lstat(join(workspace, '.agents/skills/cluster-golden/run.sh'))).mode & 0o777).toBe(0o700)
+      expect((await lstat(join(workspace, '.agents/skills/cluster-golden/SKILL.md'))).mode & 0o777).toBe(0o600)
+    }
     const replay = new ClusterSkillHandler({
       stagingRoot: join(root, 'staging-replay'),
       workspaceRoot: workspace,
@@ -299,7 +315,7 @@ describe('cluster skill shim staging', () => {
       operationId,
       authority,
       skillsAgentId: 'codex',
-      files: [file]
+      files: [file, scriptFile]
     })) as { handle: string }
     await replay.handle({
       op: 'upload',
@@ -309,6 +325,16 @@ describe('cluster skill shim staging', () => {
       path: file.path,
       offset: 0,
       data: content.toString('base64'),
+      final: true
+    })
+    await replay.handle({
+      op: 'upload',
+      operationId,
+      handle: replayBegin.handle,
+      sourceId: scriptFile.sourceId,
+      path: scriptFile.path,
+      offset: 0,
+      data: script.toString('base64'),
       final: true
     })
     await expect(

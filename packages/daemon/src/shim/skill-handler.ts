@@ -336,6 +336,7 @@ export class ClusterSkillHandler {
       try {
         if (abort?.aborted) throw new Error('cluster skill operation aborted')
         await file.write(data, 0, data.length, null)
+        if (input.final && declared.executable !== undefined) await file.chmod(declared.executable ? 0o700 : 0o600)
         await file.sync()
       } finally {
         await file.close()

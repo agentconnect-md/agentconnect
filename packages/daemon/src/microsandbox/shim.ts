@@ -78,7 +78,8 @@ export function microsandboxSkillTarget(shim: MicrosandboxShim, cwd: string) {
       {
         request: (capability, request, options) => shim.session.request(capability, { cwd, request }, options)
       },
-      shim.session.hasCapability('skills-wide')
+      shim.session.hasCapability('skills-wide'),
+      true
     )
   }
 }

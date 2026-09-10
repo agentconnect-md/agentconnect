@@ -1968,6 +1968,7 @@ export class Daemon {
                     (mount) => mount.mode === 'writable' && mount.source === path && mount.target === path
                   )
                 : placement.trustedSessionDir === path ||
+                  agent.workspace.path === path ||
                   this.workspaces.trustedWorkspaceWriteRoots(agent).includes(path)
               if (!manager || !mountRoot) return false
               await manager.suspend(placement.id)
@@ -3875,7 +3876,7 @@ export class Daemon {
     if (existing) return mounted(existing) ? existing : undefined
     const roots = placement.trustedSessionDir
       ? [placement.trustedSessionDir]
-      : this.workspaces.trustedWorkspaceWriteRoots(agent)
+      : [agent.workspace.path, ...this.workspaces.trustedWorkspaceWriteRoots(agent)]
     if (!roots.some((root) => contains(root, path) && existsSync(root))) return undefined
     const { environment } = this.microsandboxContext(agent, placement.trustedSessionDir ?? agent.workspace.path)
     return mounted(environment) ? environment : undefined

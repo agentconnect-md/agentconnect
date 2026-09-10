@@ -79,7 +79,8 @@ export class ClusterSkillCoordinator {
           sourceId: source.sourceId,
           path: file.path.replaceAll('\\', '/'),
           size: file.size,
-          sha256: file.sha256.replace(/^sha256:/, '')
+          sha256: file.sha256.replace(/^sha256:/, ''),
+          ...(input.client.fileModes ? { executable: (file.mode & 0o111) !== 0 } : {})
         })
       }
     }

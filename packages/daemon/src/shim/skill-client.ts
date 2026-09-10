@@ -31,7 +31,9 @@ export class ClusterSkillClient {
   /** `wide` mirrors the peer's `cluster-skills-v2` grant. */
   constructor(
     private readonly requester: ShimRequester,
-    private readonly wide = false
+    private readonly wide = false,
+    // Enabled when the caller supplies a matching shim bundle; retained images may predate this field.
+    readonly fileModes = false
   ) {}
 
   /** What the BOUND image admits, so a caller can drop one oversized source instead of failing a launch. */
