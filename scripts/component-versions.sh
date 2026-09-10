@@ -13,13 +13,10 @@
 # release with the previous release seen by that channel.
 #
 # Usage: component-versions.sh <release-tag vX.Y.Z | vX.Y.Z-rc.N>
-# Stdout (GITHUB_OUTPUT-ready):
-#   controlPlane=vA
-#   web=vB
-#   relay=vC
-#   mem0=vD
-#   mem0Backend=vE
-#   setup=vF
+# Stdout (GITHUB_OUTPUT-ready): `<component>=<effective tag>` for controlPlane, web,
+# relay, mem0, mem0Backend, setup and daemon, plus `previousTag=<tag>` — the channel's
+# previous release ('' on its first) that build.yaml's runtime-image legs compare their
+# content fingerprints against; the runtime images have no path closure here.
 # Requires the full tag list and history (CI: actions/checkout fetch-depth: 0);
 # an unknown tag fails loudly rather than guessing.
 set -euo pipefail
@@ -58,8 +55,6 @@ DAEMON_PATHS="packages/daemon packages/activation-policy packages/message packag
 # docker-bake.hcl. Changes to that pin, its owned Dockerfile, or this resolver
 # rebuild the image; unrelated app/package changes leave it on its effective tag.
 MEM0_BACKEND_PATHS="docker/mem0-backend.Dockerfile docker-bake.hcl scripts/component-versions.sh"
-# Keep runtime-image selection and the daemon's bundled default on the same input closure.
-. "$(dirname "$0")/runtime-sandbox-inputs.sh"
 
 # The channel's tags (prerelease tags carry a `-`), oldest → newest. Within one
 # channel `sort -V` compares version fields numerically (rc.9 < rc.10), so the
@@ -106,6 +101,11 @@ printf 'relay=%s\n' "$(effective "$RELAY_PATHS")"
 printf 'mem0=%s\n' "$(effective "$MEM0_PATHS")"
 printf 'mem0Backend=%s\n' "$(effective "$MEM0_BACKEND_PATHS")"
 printf 'setup=%s\n' "$(effective "$SETUP_PATHS")"
-printf 'runtimeSandbox=%s\n' "$(effective "$RUNTIME_SANDBOX_PATHS")"
-printf 'runtimeSandboxFull=%s\n' "$(effective "$RUNTIME_SANDBOX_PATHS")"
 printf 'daemon=%s\n' "$(effective "$DAEMON_PATHS")"
+
+# The runtime images are decided by content in their build legs, which need only the channel's previous release.
+PREVIOUS=""
+if [ "$IDX" -gt 0 ]; then
+  PREVIOUS="${TAGS[$((IDX - 1))]}"
+fi
+printf 'previousTag=%s\n' "$PREVIOUS"

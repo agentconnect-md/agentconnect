@@ -11,10 +11,11 @@ name: Build & Push Images
 # Per-component effective versions: most releases don't touch every component,
 # and a component whose build inputs are unchanged since the previous release
 # on its channel would ship a behaviorally identical image under a new tag —
-# creating redundant downstream workflow work. scripts/component-versions.sh
-# computes, per component, the most recent same-channel tag (rc walks rc tags,
-# stable walks stable tags) that actually changed it. The prepare job verifies
-# that each unchanged component's effective image exists; a missing source is
+# creating redundant downstream workflow work. For the service and daemon
+# images, scripts/component-versions.sh computes, per component, the most
+# recent same-channel tag (rc walks rc tags, stable walks stable tags) whose
+# release changed the component's path closure. The prepare job verifies that
+# each unchanged component's effective image exists; a missing source is
 # rebuilt at the current release instead of poisoning later aliases. Required
 # components build concurrently on separate GitHub-hosted runners.
 # `docker-bake.hcl` remains the source of truth for each target's Dockerfile,
@@ -23,10 +24,27 @@ name: Build & Push Images
 # effective image (same manifest digest), so `<comp>:<version>` exists for every
 # component at every release regardless.
 #
+# The two runtime images are decided by CONTENT, not paths: their path closure
+# was both too coarse (a protocol change rebuilt a byte-identical shim) and
+# impossible to keep complete (the shim bundle inlines daemon modules from
+# outside src/shim, and a change there once shipped pods a shim older than
+# their daemon). Their legs always run. Each builds only the cached shim stages,
+# exports the payload digest computed inside them (scripts/tree-digest.mjs),
+# hashes the recipe — the Dockerfile plus the build inputs it is given
+# (scripts/runtime-image-fingerprint.sh) — and compares both with the labels of
+# the previous same-channel image (scripts/runtime-image-effective.sh). A match
+# skips build, verification and push, and the effective version is the build
+# the previous tag points at (its `io.agentconnect.image.version` label, which
+# an alias shares). A mismatch, a missing previous image or missing labels build
+# as before; a built image carries `io.agentconnect.shim.digest` and
+# `io.agentconnect.recipe.digest` for the next release to compare against. Each
+# leg hands its decision to `finalize` through a per-target artifact, because
+# matrix job outputs merge across legs and an empty one can clobber another's.
+#
 # Daemon and runtime images are verified against the loaded build before publication. The image
 # a release publishes is therefore the image that was verified. A component skipped as unchanged
-# is not re-verified: it was verified at the release that built it. The runtime images also carry
-# verify stages in their Dockerfile (the runtime-table probe and the static in-image assertions),
+# is not re-verified: it was verified at the release that built it. A runtime leg that builds also
+# runs the verify stages of its Dockerfile (the runtime-table probe and the static in-image assertions),
 # which BuildKit caches by their inputs, so a release that changed only the shim does not re-probe.
 #
 # After pushing, mints a short-lived GitHub App token for the configured
@@ -65,14 +83,12 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       latest: ${{ steps.meta.outputs.latest }}
       matrix: ${{ steps.build-matrix.outputs.matrix }}
-      has_builds: ${{ steps.build-matrix.outputs.has_builds }}
+      previousTag: ${{ steps.components.outputs.previousTag }}
       controlPlane: ${{ steps.build-matrix.outputs.controlPlane }}
       web: ${{ steps.build-matrix.outputs.web }}
       relay: ${{ steps.build-matrix.outputs.relay }}
       mem0: ${{ steps.build-matrix.outputs.mem0 }}
       mem0Backend: ${{ steps.build-matrix.outputs.mem0Backend }}
-      runtimeSandbox: ${{ steps.build-matrix.outputs.runtimeSandbox }}
-      runtimeSandboxFull: ${{ steps.build-matrix.outputs.runtimeSandboxFull }}
       daemon: ${{ steps.build-matrix.outputs.daemon }}
     steps:
       # Reusable calls receive the tag semantic-release just published. Manual
@@ -114,6 +130,8 @@ jobs:
       # Per-component effective versions on this tag's channel (see the
       # header): a component whose inputs didn't change since the channel's
       # previous release keeps that older tag; only changed components build.
+      # The runtime images get no version here — their legs decide by content
+      # against the channel's previous tag, which this step also emits.
       - name: Resolve per-component effective versions
         id: components
         env:
@@ -139,8 +157,7 @@ jobs:
       # Effective versions derived from Git are candidates until their manifests
       # resolve in GHCR. If a prior release failed before pushing one, rebuild the
       # unchanged inputs at this release and report the current version downstream.
-      # The non-empty fallback keeps strategy.matrix valid when no builds are
-      # required; has_builds prevents that sentinel from allocating a runner.
+      # The matrix is never empty: the runtime legs run at every release.
       - name: Select required image builds
         id: build-matrix
         shell: bash
@@ -154,8 +171,6 @@ jobs:
           RELAY_EFFECTIVE: ${{ steps.components.outputs.relay }}
           MEM0_EFFECTIVE: ${{ steps.components.outputs.mem0 }}
           MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
-          RUNTIME_SANDBOX_EFFECTIVE: ${{ steps.components.outputs.runtimeSandbox }}
-          RUNTIME_SANDBOX_FULL_EFFECTIVE: ${{ steps.components.outputs.runtimeSandboxFull }}
           DAEMON_EFFECTIVE: ${{ steps.components.outputs.daemon }}
           SETUP_VERSION: ${{ steps.components.outputs.setup }}
         run: |
@@ -190,10 +205,10 @@ jobs:
           resolve_effective relay relay relay "$RELAY_EFFECTIVE"
           resolve_effective mem0 memory-plugin-mem0 mem0 "$MEM0_EFFECTIVE"
           resolve_effective mem0Backend mem0-server mem0-backend "$MEM0_BACKEND_EFFECTIVE"
-          # The runtime sandbox is what agent runtimes execute inside, not a service — but it is
-          # pinned by the cluster manifests the same way, so it needs a tag at every release.
-          resolve_effective runtimeSandbox runtime-sandbox runtime-sandbox "$RUNTIME_SANDBOX_EFFECTIVE"
-          resolve_effective runtimeSandboxFull runtime-sandbox-full runtime-sandbox-full "$RUNTIME_SANDBOX_FULL_EFFECTIVE"
+          # The runtime sandbox is what agent runtimes execute inside, not a service, and its legs always run:
+          # each decides by the shim payload's content whether to build or alias (see the header).
+          add_changed runtime-sandbox
+          add_changed runtime-sandbox-full
           # The daemon pod image. Separate from the runtime sandbox: this runs the daemon, that
           # one is what an agent runtime executes inside.
           resolve_effective daemon daemon daemon "$DAEMON_EFFECTIVE"
@@ -235,25 +250,20 @@ jobs:
                     $config.tags[0]
                     | sub(":[^/]+$"; ":buildcache")
                   ),
+                  image: ($config.tags[0] | sub(":[^/]+$"; "")),
+                  # Runtime legs fingerprint their payload and record the decision under this payload key.
+                  component: ({"runtime-sandbox": "runtimeSandbox", "runtime-sandbox-full": "runtimeSandboxFull"}[$name] // ""),
                   # Daemon and runtime targets require image verification before publication.
                   verify: ({"daemon": "daemon", "runtime-sandbox": "runtime-sandbox", "runtime-sandbox-full": "runtime-sandbox-full"}[$name] // "")
                 }
             ]
           ' "$bake_config")"
 
-          if [ "$matrix" = '[]' ]; then
-            echo "has_builds=false" >> "$GITHUB_OUTPUT"
-            matrix='[{"target":"none","context":".","dockerfile":"docker/Dockerfile","build_target":"","platforms":"linux/amd64","tags":"","build_args":"","build_contexts":"","labels":"","cache_ref":"","verify":""}]'
-          else
-            echo "has_builds=true" >> "$GITHUB_OUTPUT"
-          fi
-
           echo "matrix=$(jq -cn --argjson include "$matrix" '{include: $include}')" >> "$GITHUB_OUTPUT"
 
   build-images:
     name: Build & push ${{ matrix.target }}
     needs: prepare
-    if: ${{ needs.prepare.outputs.has_builds == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -289,6 +299,49 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
+      # Runtime legs first build only the shim stages — from the same registry cache the full build uses, so an
+      # unchanged shim costs about a minute and never pulls the base — and export the payload digest computed inside.
+      - name: Digest the runtime payload
+        if: matrix.component != ''
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: runtime-payload-digest-export
+          platforms: ${{ matrix.platforms }}
+          build-args: ${{ matrix.build_args }}
+          build-contexts: ${{ matrix.build_contexts }}
+          outputs: type=local,dest=${{ runner.temp }}/payload-digest
+          cache-from: type=registry,ref=${{ matrix.cache_ref }}
+          cache-to: type=registry,ref=${{ matrix.cache_ref }},mode=max
+
+      - name: Fingerprint the runtime image inputs
+        if: matrix.component != ''
+        id: fingerprint
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          BUILD_TARGET: ${{ matrix.build_target }}
+          PLATFORMS: ${{ matrix.platforms }}
+          BUILD_ARGS: ${{ matrix.build_args }}
+          BUILD_CONTEXTS: ${{ matrix.build_contexts }}
+        run: >-
+          bash scripts/runtime-image-fingerprint.sh "${RUNNER_TEMP}/payload-digest/payload-digest"
+          "$DOCKERFILE" "$BUILD_TARGET" "$PLATFORMS" "$BUILD_ARGS" "$BUILD_CONTEXTS" | tee -a "$GITHUB_OUTPUT"
+
+      # Service legs never run this, so their empty `unchanged` output leaves every step below unconditional there.
+      - name: Decide whether the runtime image changed
+        if: matrix.component != ''
+        id: decision
+        env:
+          IMAGE: ${{ matrix.image }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.prepare.outputs.previousTag }}
+          SHIM: ${{ steps.fingerprint.outputs.shim }}
+          RECIPE: ${{ steps.fingerprint.outputs.recipe }}
+        run: >-
+          bash scripts/runtime-image-effective.sh "$IMAGE" "$VERSION" "$PREVIOUS_TAG" "$SHIM" "$RECIPE"
+          | tee -a "$GITHUB_OUTPUT"
+
       # A target-specific registry cache keeps all intermediate builder layers
       # (`mode=max`) without consuming the GitHub Actions cache quota.
       #
@@ -296,6 +349,7 @@ jobs:
       # checks below run against the exact image this release publishes and a failure never
       # reaches the registry. The Push step at the end then publishes it from cache.
       - name: Build
+        if: steps.decision.outputs.unchanged != 'true'
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -307,12 +361,14 @@ jobs:
           tags: ${{ matrix.tags }}
           build-args: ${{ matrix.build_args }}
           build-contexts: ${{ matrix.build_contexts }}
-          labels: ${{ matrix.labels }}
+          labels: |
+            ${{ matrix.labels }}
+            ${{ steps.fingerprint.outputs.labels }}
           cache-from: type=registry,ref=${{ matrix.cache_ref }}
           cache-to: type=registry,ref=${{ matrix.cache_ref }},mode=max
 
       - name: Resolve the built image reference
-        if: matrix.verify != ''
+        if: matrix.verify != '' && steps.decision.outputs.unchanged != 'true'
         id: image
         env:
           TAGS: ${{ matrix.tags }}
@@ -330,18 +386,18 @@ jobs:
 
       # Both runtime images run their daemon-side smoke test from source.
       - uses: pnpm/action-setup@v6
-        if: startsWith(matrix.verify, 'runtime-sandbox')
+        if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         with:
           # Pinned so the action installs this once; unpinned it fetches npm's latest first.
           # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
           version: 11.19.0
           cache: true
       - uses: actions/setup-node@v7
-        if: startsWith(matrix.verify, 'runtime-sandbox')
+        if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         with:
           node-version-file: .nvmrc
       - name: Install
-        if: startsWith(matrix.verify, 'runtime-sandbox')
+        if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         run: pnpm install --frozen-lockfile
 
       # The Dockerfile's verify target: the runtime-table probe stage, cached by the base pin and the declared
@@ -349,7 +405,7 @@ jobs:
       # The probe stages are not in the image's graph, and a `mode=max` export replaces the whole cache manifest,
       # so the Build step above would drop them from the shared ref; they live under their own `-verify` ref.
       - name: Verify the runtime sandbox image inside the build
-        if: startsWith(matrix.verify, 'runtime-sandbox')
+        if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -367,7 +423,7 @@ jobs:
       # What only the image CONFIG can answer, against the LOADED image: a non-root USER, tini as the
       # ENTRYPOINT, and the browser path ENV pointing at the baked Chrome.
       - name: Verify the runtime sandbox image configuration
-        if: startsWith(matrix.verify, 'runtime-sandbox')
+        if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: node scripts/verify-runtime-image.mjs "$IMAGE"
@@ -375,13 +431,13 @@ jobs:
       # The smoke test's DAEMON side imports the listener from source, which imports the workspace
       # packages by their built entry points.
       - name: Build the workspace packages the daemon side imports
-        if: startsWith(matrix.verify, 'runtime-sandbox')
+        if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         run: pnpm --filter "@agentconnect.md/daemon^..." build
 
       # The acceptance criterion: a real container, the real shim dialling back, the real ACP
       # runtime starting inside it, initialize and one session/new.
       - name: Smoke test through the shim
-        if: startsWith(matrix.verify, 'runtime-sandbox')
+        if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts "$IMAGE"
@@ -391,7 +447,7 @@ jobs:
       # push path deliberately: a plain `docker push` of the loaded image would publish these
       # without the provenance attestation every directly-pushed target carries.
       - name: Push
-        if: matrix.verify != ''
+        if: matrix.verify != '' && steps.decision.outputs.unchanged != 'true'
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -402,20 +458,35 @@ jobs:
           tags: ${{ matrix.tags }}
           build-args: ${{ matrix.build_args }}
           build-contexts: ${{ matrix.build_contexts }}
-          labels: ${{ matrix.labels }}
+          labels: |
+            ${{ matrix.labels }}
+            ${{ steps.fingerprint.outputs.labels }}
           cache-from: type=registry,ref=${{ matrix.cache_ref }}
+
+      # finalize reads the decision from an artifact: a matrix job's outputs merge across legs, and a leg that leaves
+      # a key empty can clobber another leg's value.
+      - name: Record the runtime image decision
+        if: matrix.component != ''
+        env:
+          COMPONENT: ${{ matrix.component }}
+          EFFECTIVE: ${{ steps.decision.outputs.effective }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/image-decision"
+          echo "${COMPONENT}=${EFFECTIVE}" | tee "${RUNNER_TEMP}/image-decision/${COMPONENT}"
+      - uses: actions/upload-artifact@v7
+        if: matrix.component != ''
+        with:
+          name: image-decision-${{ matrix.component }}
+          path: ${{ runner.temp }}/image-decision/${{ matrix.component }}
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
   finalize:
     name: Finalize image tags
     needs:
       - prepare
       - build-images
-    if: >-
-      ${{
-        always() &&
-        needs.prepare.result == 'success' &&
-        (needs.build-images.result == 'success' || needs.build-images.result == 'skipped')
-      }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -427,10 +498,23 @@ jobs:
       relay: ${{ needs.prepare.outputs.relay }}
       mem0: ${{ needs.prepare.outputs.mem0 }}
       mem0Backend: ${{ needs.prepare.outputs.mem0Backend }}
-      runtimeSandbox: ${{ needs.prepare.outputs.runtimeSandbox }}
-      runtimeSandboxFull: ${{ needs.prepare.outputs.runtimeSandboxFull }}
+      runtimeSandbox: ${{ steps.runtime.outputs.runtimeSandbox }}
+      runtimeSandboxFull: ${{ steps.runtime.outputs.runtimeSandboxFull }}
       daemon: ${{ needs.prepare.outputs.daemon }}
     steps:
+      # The runtime legs' decisions (see the header). Naming both files makes a missing one fail here, loudly,
+      # instead of aliasing blind.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: image-decision-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/image-decision
+      - name: Read the runtime image decisions
+        id: runtime
+        run: >-
+          cat "${RUNNER_TEMP}/image-decision/runtimeSandbox" "${RUNNER_TEMP}/image-decision/runtimeSandboxFull"
+          | tee -a "$GITHUB_OUTPUT"
+
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -454,7 +538,8 @@ jobs:
       # tag, while the per-component tags in the dispatch payload remain the
       # restart-avoiding references. On stable releases the alias also moves
       # `:latest`, keeping parity with the built components. The prepare job has
-      # already promoted unavailable effective images to this release's build.
+      # already promoted unavailable effective images to this release's build,
+      # and a runtime leg only names a version whose image it resolved.
       #
       # Baked build fingerprints (web's VERSION/GIT_SHA/BUILD_TIME → the
       # profile-page fingerprint) are intrinsic to the image and therefore stay
@@ -472,14 +557,18 @@ jobs:
           RELAY_EFFECTIVE: ${{ needs.prepare.outputs.relay }}
           MEM0_EFFECTIVE: ${{ needs.prepare.outputs.mem0 }}
           MEM0_BACKEND_EFFECTIVE: ${{ needs.prepare.outputs.mem0Backend }}
-          RUNTIME_SANDBOX_EFFECTIVE: ${{ needs.prepare.outputs.runtimeSandbox }}
-          RUNTIME_SANDBOX_FULL_EFFECTIVE: ${{ needs.prepare.outputs.runtimeSandboxFull }}
+          RUNTIME_SANDBOX_EFFECTIVE: ${{ steps.runtime.outputs.runtimeSandbox }}
+          RUNTIME_SANDBOX_FULL_EFFECTIVE: ${{ steps.runtime.outputs.runtimeSandboxFull }}
           DAEMON_EFFECTIVE: ${{ needs.prepare.outputs.daemon }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
           alias_unchanged() {
             comp="$1"; effective="$2"
+            if [ -z "$effective" ]; then
+              echo "::error::${comp} has no effective version to alias"
+              exit 1
+            fi
             if [ "$effective" = "$VERSION" ]; then
               return 0
             fi

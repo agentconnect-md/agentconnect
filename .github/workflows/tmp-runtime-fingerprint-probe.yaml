@@ -1,0 +1,71 @@
+name: Temporary runtime fingerprint probe
+
+# TEMPORARY — removed before the PR is marked ready. Exercises the runtime-image fingerprint steps of build.yaml
+# against the public registry cache, read-only: no cache-to, no push, no labels written anywhere.
+on:
+  push:
+    branches: [ci/runtime-image-shim-fingerprint]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    name: Probe ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [runtime-sandbox, runtime-sandbox-full]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Digest the runtime payload
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/runtime-sandbox.Dockerfile
+          target: runtime-payload-digest-export
+          platforms: linux/amd64
+          outputs: type=local,dest=${{ runner.temp }}/payload-digest
+          cache-from: type=registry,ref=ghcr.io/agentconnect-md/${{ matrix.target }}:buildcache
+
+      - name: Fingerprint the runtime image inputs
+        id: fingerprint
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: >-
+          bash scripts/runtime-image-fingerprint.sh "${RUNNER_TEMP}/payload-digest/payload-digest"
+          docker/runtime-sandbox.Dockerfile "$BUILD_TARGET" linux/amd64 "" "" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Labels of the previous release's image
+        env:
+          IMAGE: ghcr.io/agentconnect-md/${{ matrix.target }}
+        run: docker buildx imagetools inspect "${IMAGE}:v1.56.0-rc.66" --format '{{json .Image.Config.Labels}}'
+
+      - name: Decide whether the runtime image changed
+        id: decision
+        env:
+          IMAGE: ghcr.io/agentconnect-md/${{ matrix.target }}
+          SHIM: ${{ steps.fingerprint.outputs.shim }}
+          RECIPE: ${{ steps.fingerprint.outputs.recipe }}
+        run: >-
+          bash scripts/runtime-image-effective.sh "$IMAGE" v0.0.0-probe v1.56.0-rc.66 "$SHIM" "$RECIPE"
+          | tee -a "$GITHUB_OUTPUT"
+
+      - name: Assert the rebuild branch was taken
+        env:
+          EFFECTIVE: ${{ steps.decision.outputs.effective }}
+          UNCHANGED: ${{ steps.decision.outputs.unchanged }}
+        run: test "$EFFECTIVE" = v0.0.0-probe && test "$UNCHANGED" = false
