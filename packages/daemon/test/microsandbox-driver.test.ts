@@ -5,9 +5,14 @@ import { runInNewContext } from 'node:vm'
 import { decode, encode } from 'cborg'
 import type { ExecEvent } from 'microsandbox'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MicrosandboxManager, type MicrosandboxManagerOptions } from '../src/microsandbox/driver.js'
+import {
+  MicrosandboxManager,
+  type MicrosandboxEnvironment,
+  type MicrosandboxManagerOptions
+} from '../src/microsandbox/driver.js'
 import { MICROSANDBOX_NODE } from '../src/microsandbox/exec.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../src/shim/sandbox-paths.js'
+import { OVERLAY_BASE_ROOT } from '../src/microsandbox/overlay.js'
 
 class FakeExec {
   private readonly queue: Array<ExecEvent | Error | undefined> = []
@@ -78,19 +83,25 @@ function fakeSdk() {
       sandboxes.delete(this.name)
     })
     readonly detach = vi.fn(async () => {
-      if (this.dockerVolume && volumes.has(this.dockerVolume)) volumes.get(this.dockerVolume)!.attached = false
+      for (const name of this.volumeNames) {
+        if (volumes.has(name)) volumes.get(name)!.attached = false
+      }
     })
 
     constructor(
       readonly name: string,
-      readonly dockerVolume?: string
+      readonly volumeNames: string[] = [],
+      readonly mounts: Array<{ source: string; target: string; readonly: boolean }> = []
     ) {}
+    get dockerVolume() {
+      return this.volumeNames.find((name) => name.endsWith('-docker'))
+    }
     config() {
       return this.spec
     }
     async startDetached() {
-      if (this.dockerVolume) {
-        const volume = volumes.get(this.dockerVolume)!
+      for (const name of this.volumeNames) {
+        const volume = volumes.get(name)!
         if (volume.attached) throw new Error('disk is still attached')
         volume.attached = true
       }
@@ -101,6 +112,12 @@ function fakeSdk() {
       return this.startDetached()
     }
     async ping() {}
+    readonly execWith = vi.fn(async (_command: string, configure: (exec: any) => unknown) => {
+      const exec = { user: vi.fn(() => exec), args: vi.fn(() => exec), timeout: vi.fn(() => exec) }
+      configure(exec)
+      expect(exec.user).toHaveBeenCalledWith('root')
+      return { success: true, code: 0, stderr: (): string => '' }
+    })
     readonly exec = vi.fn(async (command: string, args: string[]) => {
       expect(command).toBe(MICROSANDBOX_NODE)
       expect(args[0]).toBe('-e')
@@ -187,7 +204,8 @@ function fakeSdk() {
         return sandbox
       },
       builder(name: string) {
-        let dockerVolume: string | undefined
+        const volumeNames: string[] = []
+        const mounts: FakeSandbox['mounts'] = []
         let image = 'test-image'
         const builder = {
           image(value: string) {
@@ -215,25 +233,37 @@ function fakeSdk() {
           quietLogs() {
             return builder
           },
-          volume(target: string, configure: (volume: { namedWith: (name: string) => unknown }) => unknown) {
-            if (target === '/var/lib/docker')
-              configure({
-                namedWith(name) {
-                  dockerVolume = name
-                  return this
-                }
-              })
+          volume(target: string, configure: (volume: any) => unknown) {
+            let source: string | undefined
+            let readonly = false
+            const volume = {
+              namedWith(name: string) {
+                volumeNames.push(name)
+                return volume
+              },
+              tmpfs: () => volume,
+              bind(path: string) {
+                source = path
+                return volume
+              },
+              readonly() {
+                readonly = true
+                return volume
+              }
+            }
+            configure(volume)
+            if (source) mounts.push({ source, target, readonly })
             return builder
           },
           vsock() {
             return builder
           },
           async create() {
-            if (dockerVolume) {
-              if (volumes.has(dockerVolume)) throw new Error('volume already exists')
-              volumes.set(dockerVolume, { attached: true })
+            for (const name of volumeNames) {
+              if (volumes.has(name)) throw new Error('volume already exists')
+              volumes.set(name, { attached: true })
             }
-            const sandbox = new FakeSandbox(name, dockerVolume)
+            const sandbox = new FakeSandbox(name, volumeNames, mounts)
             sandbox.spec.image = image
             created.push(sandbox)
             sandboxes.set(name, sandbox)
@@ -279,6 +309,56 @@ async function fixture() {
 }
 
 describe('microsandbox process and VM ownership', () => {
+  it('shares read-only bases while retaining and cleaning up each session overlay disk', async () => {
+    const { manager, options, environment, request, created, volumes, removeVolume } = await fixture()
+    const first: MicrosandboxEnvironment = {
+      ...environment,
+      mounts: [{ source: '/shared/store', target: '/session/home/store', mode: 'overlay' }]
+    }
+    const second = { ...first, id: 'agent/second-session' }
+    for (const env of [first, second]) await (await manager.driverFor(env).launch(request)).stop(0)
+    expect(volumes.size).toBe(4)
+    for (const vm of created) {
+      expect(vm.mounts).toEqual([
+        { source: '/shared/store', target: expect.stringMatching(OVERLAY_BASE_ROOT), readonly: true }
+      ])
+      expect(vm.execWith).toHaveBeenCalledOnce()
+    }
+    await manager.stopAll()
+    const resumed = new MicrosandboxManager(options)
+    await (await resumed.driverFor(first).launch(request)).stop(0)
+    expect(created).toHaveLength(2)
+    expect(created[0]!.execWith).toHaveBeenCalledTimes(2)
+    const overlay = created[0]!.volumeNames.find((name) => name.endsWith('-overlays'))!
+    const originalRemove = removeVolume.getMockImplementation()!
+    removeVolume.mockImplementationOnce(originalRemove).mockRejectedValueOnce(new Error('volume busy'))
+    await expect(resumed.discard(first.id)).rejects.toThrow('volume busy')
+    expect(volumes.has(overlay)).toBe(true)
+    await resumed.discard(first.id)
+    await resumed.discard(second.id)
+    expect(volumes.size).toBe(0)
+    expect(await resumed.environmentIds()).toEqual([])
+  })
+
+  it('preserves a retained overlay disk when remounting fails and retries on the next resume', async () => {
+    const { manager, options, environment, request, created, volumes } = await fixture()
+    const env: MicrosandboxEnvironment = {
+      ...environment,
+      mounts: [{ source: '/shared/store', target: '/cache/store', mode: 'overlay' }]
+    }
+    await (await manager.driverFor(env).launch(request)).stop(0)
+    await manager.stopAll()
+    const vm = created[0]!
+    vm.execWith.mockResolvedValueOnce({ success: false, code: 1, stderr: () => 'mount failed' })
+    const resumed = new MicrosandboxManager(options)
+    await expect(resumed.driverFor(env).launch(request)).rejects.toThrow('overlay setup failed')
+    expect(vm.status).toBe('stopped')
+    expect(volumes.size).toBe(2)
+    await (await resumed.driverFor(env).launch(request)).stop(0)
+    await resumed.discard(env.id)
+    expect(volumes.size).toBe(0)
+  })
+
   it('prepares only layered image artifacts without stopping an existing VM', async () => {
     const { manager, options, environment, request, created } = await fixture()
     const runtime = await manager.driverFor(environment).launch(request)
@@ -498,7 +578,7 @@ describe('microsandbox process and VM ownership', () => {
     const resumed = new MicrosandboxManager(upgraded)
     await expect(
       resumed
-        .driverFor({ ...environment, mounts: [{ source: '/extra', target: '/extra', readOnly: true }] })
+        .driverFor({ ...environment, mounts: [{ source: '/extra', target: '/extra', mode: 'readonly' }] })
         .launch(request)
     ).rejects.toThrow('changed persisted configuration')
     await (await resumed.driverFor(environment).launch(request)).stop(0)
@@ -523,9 +603,9 @@ describe('microsandbox process and VM ownership', () => {
     await mkdir(helpers, { recursive: true })
     const helper = join(helpers, 'guest.js')
     await writeFile(helper, 'export {}')
-    const legacy = {
+    const legacy: MicrosandboxEnvironment = {
       ...environment,
-      mounts: [{ source: await realpath(helper), target: '/opt/agentconnect-local/guest.js', readOnly: true }]
+      mounts: [{ source: await realpath(helper), target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }]
     }
     const runtime = await manager.driverFor(legacy).launch(request)
     await runtime.stop(0)
@@ -538,7 +618,7 @@ describe('microsandbox process and VM ownership', () => {
       resumed
         .driverFor({
           ...environment,
-          mounts: [{ source: '/workspace-other', target: '/workspace-other', readOnly: false }]
+          mounts: [{ source: '/workspace-other', target: '/workspace-other', mode: 'writable' }]
         })
         .launch(request)
     ).rejects.toThrow('changed persisted configuration')

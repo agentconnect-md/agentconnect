@@ -496,8 +496,8 @@ describe('prepareRuntimeLaunch', () => {
     const store = join(hostHome, '.local', 'share', 'pnpm', 'store')
     mkdirSync(store, { recursive: true })
     const mounts = normalizeSandboxMounts([
-      { source: dirname(store), target: dirname(store), readOnly: true },
-      { source: store, target: store, readOnly: false }
+      { source: dirname(store), target: dirname(store), mode: 'readonly' },
+      { source: store, target: store, mode: 'writable' }
     ])
 
     const launch = prepareRuntimeLaunch({
@@ -513,7 +513,7 @@ describe('prepareRuntimeLaunch', () => {
       // What the daemon hands a session host: the session directory alone (workspace-manager.ts).
       trustedWorkspaceWriteRoots: [sessionDir],
       trustedRuntimeReadRoots: mounts.map((mount) => mount.source),
-      trustedOperatorWriteRoots: mounts.filter((mount) => !mount.readOnly).map((mount) => mount.source),
+      trustedOperatorWriteRoots: mounts.filter((mount) => mount.mode !== 'readonly').map((mount) => mount.source),
       trustedPrimaryCheckout: join(scopeDir, 'workspace'),
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })

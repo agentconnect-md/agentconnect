@@ -18,6 +18,7 @@ import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../run
 import { prepareRuntimeHome, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
 import { MICROSANDBOX_SOCKET_BRIDGES, MICROSANDBOX_TUNNEL_PATHS } from './socket-bridge.js'
+import { OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT } from './overlay.js'
 
 const IMAGE_PATH = '/opt/agentconnect/pathbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 const HOST_IPC_ENV = [
@@ -124,13 +125,13 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
     const source = scopePath(nativeMemory.readRoot(join(scopeDir, 'home')))
     const target = scopePath(nativeMemory.readRoot(runtimeHome))
     for (const path of [source, target]) mkdirSync(path, { recursive: true, mode: 0o700 })
-    memoryMounts.push({ source, target, readOnly: false })
+    memoryMounts.push({ source, target, mode: 'writable' })
   }
   const automatic: SandboxMount[] = [
     ...compactReadRoots([...configDirs, ...readRoots].map(automaticSource))
       .filter((path) => !writeRoots.some((write) => contains(write, path)))
-      .map((source) => ({ source, target: source, readOnly: true })),
-    ...writeRoots.map((source) => ({ source, target: source, readOnly: false })),
+      .map((source) => ({ source, target: source, mode: 'readonly' as const })),
+    ...writeRoots.map((source) => ({ source, target: source, mode: 'writable' as const })),
     ...normalizeSandboxMounts([...(opts.trustedMounts ?? []), ...memoryMounts], hostEnv, 'microsandbox').map(
       (mount) => ({
         ...mount,
@@ -138,16 +139,26 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
       })
     )
   ]
-  const configured = normalizeSandboxMounts(opts.mounts, hostEnv, 'microsandbox')
+  const configured = normalizeSandboxMounts(opts.mounts, hostEnv, 'microsandbox', runtimeHome)
   const ownedTargets = [
     '/run',
     '/var/run',
     '/var/lib/docker',
+    OVERLAY_BASE_ROOT,
+    OVERLAY_STATE_ROOT,
+    join(runtimeHome, '.run'),
     ...automatic.map((mount) => mount.target),
     ...MICROSANDBOX_SOCKET_BRIDGES.map((bridge) => bridge.path)
   ]
   for (const mount of configured) {
-    if (ownedTargets.some((target) => contains(mount.target, target) || contains(target, mount.target))) {
+    const withinHome = mount.target !== runtimeHome && contains(runtimeHome, mount.target)
+    if (
+      ownedTargets.some(
+        (target) =>
+          contains(mount.target, target) ||
+          (contains(target, mount.target) && !(withinHome && contains(target, runtimeHome)))
+      )
+    ) {
       throw new Error(`sandbox.mounts target overlaps an automatic microsandbox mount: ${mount.target}`)
     }
   }
@@ -181,19 +192,22 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
   const claudeSettings = claudeRuntime ? prepareClaudeProtectedSettings(scopeDir, env) : undefined
-  const privateState = (
+  const privateStateTargets =
     credentialProfile === 'codex'
       ? [join(runtimeHome, '.codex')]
       : claudeRuntime
         ? [join(runtimeHome, '.claude'), join(runtimeHome, '.claude.json')]
         : []
-  )
-    .filter(existsSync)
-    .map((path) => realpathSync(path))
+  const privateState = privateStateTargets.filter(existsSync).map((path) => realpathSync(path))
   const credentialSources = [...(credentials?.writablePaths ?? []), ...privateState].map((path) =>
     existsSync(path) ? realpathSync(path) : path
   )
   const providerFiles = claudeSettings ? claudeProviderCredentialFiles(env, opts.cwd).map(({ path }) => path) : []
+  for (const { target } of configured) {
+    if ([...privateStateTargets, ...providerFiles].some((path) => contains(path, target) || contains(target, path))) {
+      throw new Error(`sandbox.mounts target overlaps protected runtime state: ${target}`)
+    }
+  }
   for (const path of providerFiles) {
     const mount = mounts
       .filter(({ target }) => contains(target, path))
@@ -210,10 +224,12 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
     )
   ])
   const sharedWriteRoots = configured
-    .filter(({ readOnly, target }) => !readOnly && !protectedCredentialRoots.some((root) => contains(root, target)))
+    .filter(
+      ({ mode, target }) => mode !== 'readonly' && !protectedCredentialRoots.some((root) => contains(root, target))
+    )
     .map(({ target }) => target)
   const gitMetadataWriteRoots = runtimeGitMetadataRoots(scopeDir, opts.trustedPrimaryCheckout, sessionDir).filter(
-    (path) => mounts.some(({ target, readOnly }) => !readOnly && contains(target, path))
+    (path) => mounts.some(({ target, mode }) => mode !== 'readonly' && contains(target, path))
   )
   if (credentialProfile === 'codex') {
     applyCodexPermissionProfile(env, {

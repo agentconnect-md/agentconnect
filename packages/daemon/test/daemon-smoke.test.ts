@@ -59,7 +59,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     config.sandbox = {
       mounts: [
         { source: toolchain, target: toolchain },
-        { source: cache, target: cache, readOnly: false }
+        { source: cache, target: cache, mode: 'writable' }
       ]
     }
     writeFileSync(join(root, 'config.json'), JSON.stringify(config))
@@ -108,7 +108,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     ).rejects.toThrow(/daemon startup refused.*requireSandbox.*no supported Linux SRT\/bwrap/)
   })
 
-  it.each([true, false])('refuses daemon startup for a missing mount (readOnly=%s)', async (readOnly) => {
+  it.each(['readonly', 'writable'])('refuses daemon startup for a missing mount (mode=%s)', async (mode) => {
     const root = scaffold()
     const source = join(root, 'no-such-mount')
     writeFileSync(
@@ -116,7 +116,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       JSON.stringify({
         version: 1,
         controlPlane: { enabled: false },
-        sandbox: { mounts: [{ source, target: source, readOnly }] }
+        sandbox: { mounts: [{ source, target: source, mode }] }
       })
     )
 

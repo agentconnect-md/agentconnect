@@ -1939,7 +1939,7 @@ export class Daemon {
               const environment = manager?.environment(this.microsandboxPlacement(agent, path).id)
               const mounted = environment?.mounts.some(
                 (mount) =>
-                  !mount.readOnly &&
+                  mount.mode === 'writable' &&
                   mount.source === mount.target &&
                   (path === mount.target || path.startsWith(`${mount.target}${sep}`))
               )
@@ -1955,7 +1955,9 @@ export class Daemon {
               const environment = manager?.environment(this.microsandboxPlacement(agent, path).id)
               if (
                 !manager ||
-                !environment?.mounts.some((mount) => !mount.readOnly && mount.source === path && mount.target === path)
+                !environment?.mounts.some(
+                  (mount) => mount.mode === 'writable' && mount.source === path && mount.target === path
+                )
               ) {
                 return false
               }
@@ -4804,7 +4806,7 @@ export class Daemon {
                 )
             : undefined,
         runtimeWriteRoots: runInSandbox
-          ? this.cfg.sandbox.mounts.filter((mount) => !mount.readOnly).map((mount) => mount.source)
+          ? this.cfg.sandbox.mounts.filter((mount) => mount.mode === 'writable').map((mount) => mount.source)
           : undefined,
         // A session host with its own clones (§11) writes its session directory alone; the launch derives its Git grants from it.
         trustedWorkspaceWriteRoots: runInSandbox
