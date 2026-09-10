@@ -253,15 +253,6 @@ async function installSkillsLocked(
       })
     }
 
-    const trackedCommits = await resolveTrackedCommits(gitSources, opts.resolveGitRef)
-    const planFingerprint = fingerprint({
-      schema: INSTALLER_SCHEMA,
-      cli: SKILLS_CLI_SPEC,
-      runtime: agent.runtime,
-      agentId: agentId ?? '',
-      git: gitSources,
-      local: localPrepared.map(({ key, name, contentDigest }) => ({ key, name, contentDigest }))
-    })
     const legacyState = await readLegacyOwned(cwd)
     const location = await skillLedgerLocation(cwd, stateDir)
     let ledger = await readSkillLedger(location)
@@ -269,10 +260,25 @@ async function installSkillsLocked(
       assertSkillLedgerOwner(ledger, agent.id)
       ledger = await recoverSkillLedger(cwd, location, ledger)
     }
-    retainedGitResolutions = retainedAfterTracking(
-      currentGitResolutions(gitSources, ledger?.gitResolutions ?? []),
-      trackedCommits
-    )
+    const trackedCommits = await resolveTrackedCommits(gitSources, opts.resolveGitRef)
+    const installedResolutions = currentGitResolutions(gitSources, ledger?.gitResolutions ?? [])
+    retainedGitResolutions = retainedAfterTracking(installedResolutions, trackedCommits)
+    // The commit this run intends to install per acquisition identity: the tracked
+    // head where one is known, else the commit already installed. It rides the plan
+    // fingerprint because the publication layer decides on that fingerprint alone —
+    // a moved head that did not change it would be acquired and then discarded as
+    // unchanged. An unavailable answer keeps the installed commit and so keeps the
+    // fingerprint, which is what makes "unknown" a no-op rather than a rebuild.
+    const plannedCommits = plannedGitCommits(gitSources, installedResolutions, trackedCommits)
+    const planFingerprint = fingerprint({
+      schema: INSTALLER_SCHEMA,
+      cli: SKILLS_CLI_SPEC,
+      runtime: agent.runtime,
+      agentId: agentId ?? '',
+      git: gitSources,
+      plan: [...plannedCommits].sort(([a], [b]) => a.localeCompare(b)),
+      local: localPrepared.map(({ key, name, contentDigest }) => ({ key, name, contentDigest }))
+    })
     const desiredGitResolutionCount = new Set(gitSources.map(gitResolutionDigest)).size
     assertNoUnmigratedLegacyState(legacyState)
     // Claim every prepared workspace, even before it has executable skills.
@@ -318,9 +324,7 @@ async function installSkillsLocked(
       await fsp.mkdir(dirname(acquisitionDir), { recursive: true, mode: 0o700 })
       await fsp.mkdir(acquisitionDir, { mode: 0o700 })
       const definitionDigest = gitResolutionDigest(entry)
-      // The tracked head wins over the retained commit; step 3 already dropped a
-      // retention the two disagree on, so at most one of them is set.
-      const plannedCommit = trackedCommits.get(definitionDigest) ?? resolutionsByDefinition.get(definitionDigest)
+      const plannedCommit = plannedCommits.get(definitionDigest)
       const acquisitionEntry = plannedCommit ? { ...entry, ref: plannedCommit } : entry
       const acquired = await (opts.acquireGit ?? acquireGitSkillSource)(acquisitionEntry, {
         destination: acquisitionDir,
@@ -653,10 +657,28 @@ export async function resolveTrackedCommits(
   return tracked
 }
 
-/** Retention survives only where the tracked head still agrees with it. Dropping
- * one leaves fewer retentions than acquisition identities, which is exactly the
- * condition the unchanged fast path already refuses to run on — so a moved head
- * reinstalls and an unmoved (or unknown) one keeps skipping. */
+/** What to install per acquisition identity: a pinned ref names its own commit, a
+ * tracked one names the head just resolved, and anything else keeps the commit
+ * already installed. */
+export function plannedGitCommits(
+  entries: AgentSkillEntry[],
+  installed: SkillGitResolution[],
+  tracked: Map<string, string>
+): Map<string, string> {
+  const planned = new Map<string, string>()
+  // Stated first, so a pinned source's plan is known before it has ever been installed.
+  for (const entry of entries) {
+    const ref = resolveBoundedGitSkillSource(entry).ref
+    if (ref && isPinnedGitSkillRef(entry)) planned.set(gitResolutionDigest(entry), ref.toLowerCase())
+  }
+  for (const resolution of installed) planned.set(resolution.definitionDigest, resolution.resolvedCommit)
+  for (const [digest, commit] of tracked) planned.set(digest, commit)
+  return planned
+}
+
+/** Retention survives only where the tracked head still agrees with it, so a
+ * moved head cannot leave the previous commit's record standing behind the tree
+ * this run installs. */
 export function retainedAfterTracking(
   retained: SkillGitResolution[],
   tracked: Map<string, string>
