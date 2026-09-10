@@ -107,6 +107,7 @@ function makeRoutable(daemon: Daemon): void {
 
 function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
   const manager = {
+    driverFor: vi.fn(() => ({})),
     environmentIds: vi.fn(async () => environments),
     suspend: vi.fn(async () => {}),
     suspendIdle: vi.fn(async () => {}),
@@ -119,6 +120,59 @@ function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
   ;(daemon as any).microsandboxTable = { mcpBridge: { command: 'node', args: ['/image/mcp-bridge.js'] } }
   return manager
 }
+
+it.each(['srt', 'microsandbox'])('applies sandbox.env to %s sessions below runtime and agent env', async (backend) => {
+  const root = scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' } }, 'shared')
+  const path = join(root, 'config.json')
+  const config = JSON.parse(readFileSync(path, 'utf8'))
+  const defaults = {
+    PNPM_CONFIG_STORE_DIR: '${HOME}/.local/share/pnpm/store',
+    RUNTIME_VALUE: 'sandbox',
+    AGENT_VALUE: 'sandbox',
+    HOME: '/ignored-home',
+    XDG_DATA_HOME: '/ignored-data',
+    KUBECONFIG_DATA: 'apiVersion: v1\nclusters: []\n'
+  }
+  config.sandbox = { env: defaults }
+  config.runtimes.claude.env = [
+    { name: 'RUNTIME_VALUE', value: 'runtime' },
+    { name: 'AGENT_VALUE', value: 'runtime' }
+  ]
+  writeFileSync(path, JSON.stringify(config))
+  const daemon = new Daemon({
+    root,
+    slackAppFactory: fakeSlackAppFactory(),
+    sandboxMechanism: 'bwrap',
+    probeRuntimes: async () => []
+  })
+  try {
+    await daemon.start()
+    if (backend === 'microsandbox') useMicrosandbox(daemon)
+    const agent = (daemon as any).agents.get('bot-a')
+    agent.runtimeOverrides = { env: [{ name: 'AGENT_VALUE', value: 'agent' }] }
+    const build = (runInSandbox: boolean) =>
+      (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+        hostKey: sessionHostKey(agent.id, KEY('env')),
+        runInSandbox,
+        cwd: agent.workspace.path
+      }).host.opts
+    const launch = build(true)
+    expect(launch.env).toMatchObject({
+      PNPM_CONFIG_STORE_DIR: defaults.PNPM_CONFIG_STORE_DIR,
+      RUNTIME_VALUE: 'runtime',
+      AGENT_VALUE: 'agent'
+    })
+    expect(launch.env.HOME).not.toBe(defaults.HOME)
+    expect(launch.env.XDG_DATA_HOME).toBe(join(launch.env.HOME, '.local', 'share'))
+    expect(launch.env.KUBECONFIG_DATA).toBeUndefined()
+    expect(readFileSync(launch.env.KUBECONFIG, 'utf8')).toBe(defaults.KUBECONFIG_DATA)
+    expect((daemon as any).cfg.sandbox.env).toEqual(defaults)
+    expect(build(false).env.PNPM_CONFIG_STORE_DIR).toBeUndefined()
+  } finally {
+    await daemon.stop()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 const dm = (ts: string, text: string, thread: string) => ({
   msgId: `slack:C1:${ts}`,

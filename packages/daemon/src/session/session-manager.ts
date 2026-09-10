@@ -231,12 +231,8 @@ export class SessionManager {
        *  cannot tell that a multi-mention message addresses it — the
        *  response-choice rule then misfires into AC_NO_RESPONSE. */
       slackBotUserIdFor?: (integrationId: string) => string | undefined
-      /** The runtime-definition env (daemon config `runtimes[].env`) for an agent's
-       *  runtime. The spawn path detects config-file pointer-var conflicts over
-       *  `{...runtimeEnv, ...agentEnv}` — supply the same base here so the
-       *  standing-context description agrees with what actually materialized.
-       *  Omitted (e.g. tests) ⇒ agent-level env only. */
-      runtimeEnvFor?: (runtimeId: string) => Record<string, string>
+      /** Sandbox/runtime defaults used to detect config-file pointer conflicts, as at spawn. */
+      runtimeEnvFor?: (agent: Agent) => Record<string, string>
       /**
        * Build the default MCP servers to inject for a brand-new ACP session,
        * given its platform binding. Omitted (or returning []) means no tools —
@@ -568,11 +564,9 @@ export class SessionManager {
     // `@name` for a DM (same value the console labels with), surfaced as-is.
     const channelName = await (await this.deps.store.getDisplayNames([msg.channel])).get(msg.channel)
     const secretNames = (agent.runtimeOverrides?.secrets ?? []).map((s) => s.name)
-    // planConfigFiles over the same `{...runtimeEnv, ...agentEnv}` merge the spawn path uses
-    // keeps the two in agreement: a pointer var set explicitly ANYWHERE (agent env or the
-    // runtime definition) wins there too, leaving the secret a plain env var.
+    // Match the spawn merge so an explicit pointer in any layer suppresses file materialization here too.
     const fileSecrets = planConfigFiles({
-      ...this.deps.runtimeEnvFor?.(agent.runtime),
+      ...this.deps.runtimeEnvFor?.(agent),
       ...agentChildEnv(agent)
     }).materialize.filter((m) => secretNames.includes(m.sourceVar))
     const fileSecretNames = new Set(fileSecrets.map((m) => m.sourceVar))

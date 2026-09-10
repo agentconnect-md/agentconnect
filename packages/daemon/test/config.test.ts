@@ -77,7 +77,7 @@ describe('loadConfig', () => {
     expect(cfg.runtimes!.claude!.command).toBe('npx')
     expect(cfg.security.isolateAccountApps).toBe(true)
     expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['*'])
-    expect(cfg.sandbox).toEqual({ backend: 'srt', mounts: [] })
+    expect(cfg.sandbox).toEqual({ backend: 'srt', env: {}, mounts: [] })
     expect(cfg.features.turnFinalContextRefresh).toBe(true)
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')
@@ -91,6 +91,7 @@ describe('loadConfig', () => {
     })
     expect(cfg.sandbox).toEqual({
       backend: 'srt',
+      env: {},
       mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain', mode: 'readonly' }]
     })
     expect(() =>
@@ -105,9 +106,22 @@ describe('loadConfig', () => {
     expect(() => ConfigSchema.parse({ version: 1, sandbox: { backend: 'docker' } })).toThrow()
   })
 
+  it('loads sandbox environment values literally, including empty values', () => {
+    const env = { PNPM_CONFIG_STORE_DIR: '${HOME}/.local/share/pnpm/store', EMPTY: '' }
+    expect(loadConfig({ root: tmpRoot({ version: 1, sandbox: { env } }) }).sandbox.env).toEqual(env)
+  })
+
+  it.each([{ 'BAD=NAME': 'value' }, { TOKEN: 'value\0' }, { PORT: 8080 }])(
+    'rejects invalid sandbox environment entries: %j',
+    (env) => {
+      expect(() => ConfigSchema.parse({ version: 1, sandbox: { env } })).toThrow()
+    }
+  )
+
   it('allows the release image default without adding Docker lifecycle configuration', () => {
     expect(ConfigSchema.parse({ version: 1, sandbox: { backend: 'microsandbox' } }).sandbox).toEqual({
       backend: 'microsandbox',
+      env: {},
       mounts: []
     })
     expect(
@@ -125,6 +139,7 @@ describe('loadConfig', () => {
       }).sandbox
     ).toEqual({
       backend: 'microsandbox',
+      env: {},
       mounts: [],
       microsandbox: {
         image: 'registry.example.test/runtime:test',

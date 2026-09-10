@@ -610,6 +610,7 @@ Workspace preparation is implemented by `packages/daemon/src/workspace/workspace
 Ordinary environment variables and write-only secrets can be configured through Console / CP `AgentSpec.env` and `AgentSpec.secrets`. The daemon keeps CP values in memory and `agentChildEnv()` merges/injects them when starting an ACP child; it never writes those values to `agent.json`.
 
 - Secret wins over ordinary env with the same name; daemon security/runtime injection remains higher priority.
+- Sandboxed launches also inherit daemon-local [`sandbox.env`](daemon-sandbox-backends.md#sandbox-environment-defaults) defaults, below runtime-definition and agent env/secrets.
 - Env/secrets changes affect host spawn. Reconcile evicts the old host so the next start uses the new values.
 - Daemon **does not read** a sibling `.env` and does not interpolate `${VAR}` in `agent.json`; configuration, descriptions, and cron-trigger strings remain literal.
 - Secret values are never logged. The model receives only secret names and confidentiality constraints; values exist only in child environment, with unified secret masking as a leak backstop.
