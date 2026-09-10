@@ -329,6 +329,12 @@ export async function recoverSkillLedger(
         )
       }
     }
+    const operationRoots = new Set(ledger.operations.map((operation) => operation.relativeRoot))
+    for (const prior of ledger.prior) {
+      if (!operationRoots.has(prior.relativeRoot) && !(await destinationOccupied(cwd, prior.relativeRoot))) {
+        vanished.add(prior.relativeRoot)
+      }
+    }
     const ready: ReadyLedger = {
       version: 3,
       phase: 'ready',

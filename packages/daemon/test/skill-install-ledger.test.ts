@@ -626,6 +626,27 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     expect(installed.installed).toEqual([BUNDLE])
     expect(existsSync(join(cwd, ...BUNDLE.split('/'), 'SKILL.md'))).toBe(true)
   })
+
+  it('refuses modified retained bundles but recovers and reinstalls them after cleanup', async () => {
+    const installed = await reconcile('v1')
+    const location = await writeApplyingOver(installed.owned, [])
+    const applying = await readSkillLedger(location)
+    const target = join(cwd, BUNDLE, 'SKILL.md')
+    await writeFile(target, 'modified')
+
+    await expect(recover(location, applying!)).rejects.toThrow(/could not restore the prior receipt set/)
+    expect(await readFile(target, 'utf8')).toBe('modified')
+    expect(await readSkillLedger(location)).toEqual(applying)
+
+    await rm(join(cwd, '.claude'), { recursive: true, force: true })
+    const recovered = await recover(location, applying!)
+
+    expect(recovered.owned).toEqual([])
+    expect(recovered.fingerprint).toBeUndefined()
+    const retried = await reconcile('v1')
+    expect(retried.installed).toEqual([BUNDLE])
+    expect(await readFile(target, 'utf8')).toBe(BODY)
+  })
 })
 
 describe.skipIf(process.platform !== 'win32')('skill install ledger on Windows', () => {
