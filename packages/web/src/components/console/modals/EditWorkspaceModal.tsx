@@ -985,7 +985,7 @@ export default function EditWorkspaceModal({
                       disabled={removingAuthorization !== null}
                       onClick={() => void removeAuthorization(authorization)}
                     >
-                      <Icon name={removingAuthorization === authorization.id ? 'loader' : 'trash-2'} size={13} />
+                      <Icon name={removingAuthorization === authorization.id ? 'loader' : 'trash'} size={13} />
                     </button>
                   </div>
                 ))

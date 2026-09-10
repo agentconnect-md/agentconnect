@@ -88,7 +88,7 @@ export default function DaemonLifecycleModal({
 
   const isUpgrade = mode === 'upgrade'
   const title = isUpgrade ? 'Upgrade daemon' : 'Restart daemon'
-  const icon = isUpgrade ? 'arrow-up-circle' : 'refresh-cw'
+  const icon = isUpgrade ? 'circle-arrow-up' : 'refresh-cw'
   const noTargets = isUpgrade && options.length === 0
   const succeeded = !gone && tracked?.status === 'succeeded'
   const failed = gone || tracked?.status === 'failed'
@@ -108,7 +108,7 @@ export default function DaemonLifecycleModal({
         {!opId ? (
           <>
             <div className="mb-[14px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
-              <Icon name="alert-triangle" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
+              <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                 {isUpgrade ? (
                   <>
@@ -172,7 +172,7 @@ export default function DaemonLifecycleModal({
             ) : failed ? (
               <>
                 <span className="flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full bg-(--status-error-soft)">
-                  <Icon name="alert-triangle" size={13} color="var(--status-error)" />
+                  <Icon name="triangle-alert" size={13} color="var(--status-error)" />
                 </span>
                 <div className="flex-1">
                   <div className="font-sans text-[13px] font-semibold leading-normal">

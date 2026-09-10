@@ -369,7 +369,7 @@ function ConnectionCard({
                         onDelete()
                       }}
                     >
-                      <Icon name="trash-2" size={15} />
+                      <Icon name="trash" size={15} />
                       Delete connection
                     </button>
                   </div>
@@ -392,7 +392,7 @@ function ConnectionCard({
       <div className="grid grid-cols-1 gap-3 border-t border-(--border-subtle) bg-(--surface-sunken) p-[14px] desktop:grid-cols-[minmax(0,1.2fr)_minmax(210px,.8fr)]">
         <div className="min-w-0 rounded-md border border-(--border-subtle) bg-(--surface-card) p-3">
           <div className="flex items-center gap-[6px] font-sans text-[10.5px] font-semibold leading-normal tracking-[.04em] text-(--text-tertiary) uppercase">
-            <Icon name={isRemote ? 'globe-2' : 'terminal-square'} size={13} />
+            <Icon name={isRemote ? 'earth' : 'square-terminal'} size={13} />
             Connection
           </div>
           <div className="mt-2 font-sans text-[12px] font-medium leading-normal text-(--text-primary)">

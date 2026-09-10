@@ -110,7 +110,7 @@ export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | Hoo
           Cancel
         </Button>
         <Button variant="danger" onClick={onDelete} className={busy ? 'pointer-events-none opacity-50' : undefined}>
-          <Icon name={group ? 'unplug' : 'trash-2'} size={15} />
+          <Icon name={group ? 'unplug' : 'trash'} size={15} />
           {busy ? (group ? 'Disconnecting…' : 'Deleting…') : group ? 'Disconnect' : 'Delete'}
         </Button>
       </div>

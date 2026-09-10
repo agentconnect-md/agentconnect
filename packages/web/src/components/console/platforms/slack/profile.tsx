@@ -155,7 +155,7 @@ export function SlackConfigCard() {
                     {accessExpired ? 'Re-enter' : 'Replace'}
                   </Button>
                   <Button variant="ghost" onClick={() => void clear()}>
-                    <Icon name="trash-2" size={13} />
+                    <Icon name="trash" size={13} />
                     {busy ? 'Clearing…' : 'Clear'}
                   </Button>
                 </span>

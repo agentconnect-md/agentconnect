@@ -1050,7 +1050,7 @@ export default function EditAgentModal({
 
             {placementRequested && (
               <div className="mt-[18px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
-                <Icon name="alert-triangle" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
+                <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
                 {initialPlacement ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                     This places the unassigned agent on{' '}

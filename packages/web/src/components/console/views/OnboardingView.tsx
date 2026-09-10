@@ -549,7 +549,7 @@ function SaveError({ err }: { err: string | null }) {
   if (!err) return null
   return (
     <div className="mt-3 flex items-start gap-2 font-sans text-[12.5px] leading-[1.5] text-(--status-error)">
-      <Icon name="alert-triangle" size={15} className="mt-[1px] flex-none" />
+      <Icon name="triangle-alert" size={15} className="mt-[1px] flex-none" />
       <span>{err}</span>
     </div>
   )

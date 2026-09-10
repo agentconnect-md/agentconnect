@@ -108,7 +108,7 @@ export default function EditOrgModal({ onClose }: { onClose: () => void }) {
           <span>Only owners can edit these settings. Changing the name updates the organization URL for everyone.</span>
         </div>
         <div className="mt-[18px] flex items-center gap-[11px] rounded-[9px] border border-[rgba(220,75,75,.28)] bg-(--status-error-soft) px-[13px] py-3">
-          <Icon name="trash-2" size={16} color="var(--status-error)" className="flex-none" />
+          <Icon name="trash" size={16} color="var(--status-error)" className="flex-none" />
           <div className="flex-1">
             <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
               Delete organization

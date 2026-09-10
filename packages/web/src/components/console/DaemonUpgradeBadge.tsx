@@ -22,7 +22,7 @@ export function DaemonUpgradeBadge({
   }`
   // The compact chip names the target version: "Outdated" says which daemons are behind, never what by.
   const label = md ? `Update to ${latest}` : latest
-  const icon = <Icon name="arrow-up-circle" size={md ? 12 : 11} />
+  const icon = <Icon name="circle-arrow-up" size={md ? 12 : 11} />
   if (onClick) {
     return (
       <button

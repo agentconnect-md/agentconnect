@@ -243,7 +243,7 @@ function EntryRow({
             <Icon name="pencil" size={12} />
           </button>
           <button type="button" className="iconbtn h-[26px] w-[26px]" title="Delete" onClick={onDelete}>
-            <Icon name="trash-2" size={12} />
+            <Icon name="trash" size={12} />
           </button>
         </span>
       </span>

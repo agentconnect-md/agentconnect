@@ -37,7 +37,7 @@ export default function DeleteDaemonModal({ daemon, onClose }: { daemon: DaemonR
     <>
       <div className="modalhead">
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
-          <Icon name="trash-2" size={16} color="var(--status-error)" />
+          <Icon name="trash" size={16} color="var(--status-error)" />
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Delete daemon</span>
         <button className="iconbtn" onClick={onClose}>
@@ -52,7 +52,7 @@ export default function DeleteDaemonModal({ daemon, onClose }: { daemon: DaemonR
         </p>
         {hostedCount > 0 && (
           <div className="mt-[14px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
-            <Icon name="alert-triangle" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
+            <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
             <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
               {hostedCount} {hostedCount === 1 ? 'agent' : 'agents'} hosted here will be unplaced until reassigned to
               another daemon.
@@ -90,7 +90,7 @@ export default function DeleteDaemonModal({ daemon, onClose }: { daemon: DaemonR
           onClick={onDelete}
           className={matches && !busy ? undefined : 'pointer-events-none opacity-50'}
         >
-          <Icon name="trash-2" size={15} />
+          <Icon name="trash" size={15} />
           {busy ? 'Deleting…' : 'Delete'}
         </Button>
       </div>

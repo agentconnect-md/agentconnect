@@ -4874,7 +4874,7 @@ export default function SessionDetailView() {
               )}
               {transcriptPurged && (
                 <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-                  <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
+                  <Icon name="trash" size={15} color="var(--text-tertiary)" />
                   <span>
                     This transcript was deleted on {fmtDate(purgedAt)} by the session retention policy, together with
                     any workspace created just for it. The details on this page are all that remain.
@@ -4883,7 +4883,7 @@ export default function SessionDetailView() {
               )}
               {transcriptPartiallyPurged && (
                 <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-                  <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
+                  <Icon name="trash" size={15} color="var(--text-tertiary)" />
                   <span>
                     Part of this history is missing:{' '}
                     {memberCount > 1

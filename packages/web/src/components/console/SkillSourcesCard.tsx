@@ -253,7 +253,7 @@ function SourceTile({
               <Icon name="pencil" size={12} />
             </button>
             <button className="iconbtn h-6 w-6" onClick={onDelete} title="Delete">
-              <Icon name="trash-2" size={12} />
+              <Icon name="trash" size={12} />
             </button>
           </>
         ) : undefined

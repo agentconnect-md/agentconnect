@@ -155,7 +155,7 @@ function ProjectRow({
         )}
         {canWrite && onRemove && (
           <button className="iconbtn h-7 w-7 flex-none" title="Remove this project" onClick={onRemove}>
-            <Icon name="trash-2" size={14} />
+            <Icon name="trash" size={14} />
           </button>
         )}
       </span>
@@ -560,7 +560,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                       disabled={busyId === c.id}
                       onClick={() => setPending({ target: c, remove: true })}
                     >
-                      <Icon name="trash-2" size={13} />
+                      <Icon name="trash" size={13} />
                       Remove
                     </Button>
                   )}
@@ -779,7 +779,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 )
               }
               verb={pending.remove ? 'Remove' : 'Disconnect'}
-              icon={pending.remove ? 'trash-2' : 'unplug'}
+              icon={pending.remove ? 'trash' : 'unplug'}
               busy={busyId === pending.target.id}
               onClose={() => setPending(null)}
               onConfirm={() => release(pending.target)}
@@ -868,7 +868,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 </>
               }
               verb="Remove"
-              icon="trash-2"
+              icon="trash"
               busy={busyId === removing.id}
               onClose={() => setRemoving(null)}
               onConfirm={() => remove(removing)}

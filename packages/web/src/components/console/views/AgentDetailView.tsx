@@ -823,7 +823,7 @@ export default function AgentDetailView() {
                           openModal('deleteAgent', da)
                         }}
                       >
-                        <Icon name="trash-2" size={15} />
+                        <Icon name="trash" size={15} />
                         Delete
                       </button>
                     </>
@@ -1723,10 +1723,10 @@ export default function AgentDetailView() {
                           title="Recent deliveries"
                           onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
                         >
-                          <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'history'} size={15} />
+                          <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'rotate-ccw-clock'} size={15} />
                         </button>
                         <button className="iconbtn" title="Delete webhook" onClick={() => openModal('deleteHook', h)}>
-                          <Icon name="trash-2" size={15} />
+                          <Icon name="trash" size={15} />
                         </button>
                       </div>
                       {hookRunsFor === h.id && (
@@ -1830,7 +1830,7 @@ export default function AgentDetailView() {
                                         ]
                                       : []),
                                     {
-                                      icon: 'history' as const,
+                                      icon: 'rotate-ccw-clock' as const,
                                       label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
                                       onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
                                     }
@@ -1972,7 +1972,7 @@ export default function AgentDetailView() {
                                         ]
                                       : []),
                                     {
-                                      icon: 'history' as const,
+                                      icon: 'rotate-ccw-clock' as const,
                                       label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
                                       onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
                                     }
@@ -2390,7 +2390,7 @@ export default function AgentDetailView() {
                 }}
                 className="flex w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-3 py-[13px] text-left font-sans text-[15px] font-medium leading-normal text-(--red-600)"
               >
-                <Icon name="trash-2" size={18} />
+                <Icon name="trash" size={18} />
                 Delete
               </button>
             )}

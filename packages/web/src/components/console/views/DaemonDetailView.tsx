@@ -578,7 +578,7 @@ export default function DaemonDetailView() {
               onClick={() => openModal('deleteDaemon', daemon)}
               className="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--red-600)"
             >
-              <Icon name="trash-2" size={16} />
+              <Icon name="trash" size={16} />
               Delete daemon
             </button>
           </div>
@@ -734,7 +734,7 @@ export default function DaemonDetailView() {
                         openModal('deleteDaemon', daemon)
                       }}
                     >
-                      <Icon name="trash-2" size={15} />
+                      <Icon name="trash" size={15} />
                       Delete
                     </button>
                   </>
