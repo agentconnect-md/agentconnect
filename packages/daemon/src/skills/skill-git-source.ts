@@ -772,6 +772,8 @@ async function githubApiRequest(opts: {
   state: GitHubApiState
   accept: string
   redirect: 'error' | 'manual'
+  /** Conditional read: a 304 answer costs no primary rate-limit budget. */
+  ifNoneMatch?: string
 }): Promise<Response> {
   const request = async () =>
     await fetchWithRedirectPolicy(
@@ -785,6 +787,7 @@ async function githubApiRequest(opts: {
           'accept-encoding': 'identity',
           'user-agent': 'agentconnect-daemon',
           'x-github-api-version': GITHUB_API_VERSION,
+          ...(opts.ifNoneMatch ? { 'if-none-match': opts.ifNoneMatch } : {}),
           ...(opts.state.token ? { authorization: `Bearer ${opts.state.token}` } : {})
         }
       },
@@ -820,6 +823,131 @@ async function githubApiRequest(opts: {
     response = await request()
   }
   return response
+}
+
+/** The per-call shape `githubApiRequest` needs beyond the URL and accept header. */
+type GithubApiCallOptions = {
+  cloneUrl: string
+  repositoryPath: string
+  agentId: string
+  privateHome: string
+  useGitCredential: boolean
+  signal: AbortSignal
+  fetchImpl: typeof globalThis.fetch
+  credentialProvider: GitSkillCredentialProvider
+  state: GitHubApiState
+}
+
+/** Fence the name-based operations against a rename/delete + squatter at the old
+ *  owner/name: the numeric endpoint cannot be captured that way. */
+async function verifyGithubRepositoryIdentity(
+  api: GithubApiCallOptions,
+  githubRepoId: string,
+  repositoryPath: string
+): Promise<void> {
+  const identityResponse = await githubApiRequest({
+    ...api,
+    url: new URL(`https://api.github.com/repositories/${githubRepoId}`),
+    accept: 'application/vnd.github+json',
+    redirect: 'error'
+  })
+  if (identityResponse.status !== 200) {
+    const status = identityResponse.status
+    await discardResponse(identityResponse)
+    throw new Error(`skill GitHub repository identity lookup failed with status ${status}`)
+  }
+
+  const raw = (
+    await readBoundedBody(identityResponse, MAX_REPOSITORY_METADATA_BYTES, 'skill GitHub repository identity lookup')
+  ).toString('utf8')
+  let metadata: unknown
+  try {
+    // JSON.parse rounds sufficiently large numeric GitHub ids. Preserve
+    // every object `id` token as a decimal string before parsing so the
+    // comparison remains exact even beyond Number.MAX_SAFE_INTEGER.
+    metadata = JSON.parse(raw.replace(/("id"\s*:\s*)([1-9]\d*)/g, '$1"$2"'))
+  } catch {
+    throw new Error('skill GitHub repository identity lookup returned invalid metadata')
+  }
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    throw new Error('skill GitHub repository identity lookup returned invalid metadata')
+  }
+  const record = metadata as Record<string, unknown>
+  if (
+    record.id !== githubRepoId ||
+    typeof record.full_name !== 'string' ||
+    record.full_name.toLowerCase() !== repositoryPath.toLowerCase()
+  ) {
+    throw new Error('skill GitHub repository identity does not match the configured source')
+  }
+  if (record.private !== false) {
+    throw new Error('private skill sources are not supported')
+  }
+}
+
+export interface ResolveGitSkillCommitOptions {
+  agentId: string
+  useGitCredential: boolean
+  /** Private HOME the credential helper may write into; the caller owns it. */
+  privateHome: string
+  /** Last seen etag — a matching one answers `unchanged` and costs no budget. */
+  etag?: string
+  timeoutMs?: number
+  fetch?: typeof globalThis.fetch
+  credentialProvider?: GitSkillCredentialProvider
+}
+
+export type GitSkillCommitResolution = { status: 'resolved'; commit: string; etag?: string } | { status: 'unchanged' }
+
+/** What `entry.ref` points at right now — one bounded API read (a bare SHA),
+ * conditional when the caller carries an etag. This deliberately SKIPS the
+ * repository identity fence {@link acquireGitSkillSource} runs twice: the answer
+ * is only a SHA used to decide whether to acquire, and acquisition verifies
+ * identity before it reads a single byte, so a rename squatter can at worst
+ * provoke an acquisition that fails closed and leaves the installed tree alone. */
+export async function resolveGitSkillCommit(
+  entry: AgentSkillEntry,
+  opts: ResolveGitSkillCommitOptions
+): Promise<GitSkillCommitResolution> {
+  const source = resolveBoundedGitSkillSource(entry)
+  const github = githubRepository(source.cloneUrl)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 10_000)
+  try {
+    const requestedRef = source.ref ?? 'HEAD'
+    const response = await githubApiRequest({
+      url: new URL(
+        `https://api.github.com/repos/${github.owner}/${github.repo}/commits/${encodeURIComponent(requestedRef)}`
+      ),
+      cloneUrl: source.cloneUrl,
+      repositoryPath: github.path,
+      agentId: opts.agentId,
+      privateHome: opts.privateHome,
+      useGitCredential: opts.useGitCredential,
+      signal: controller.signal,
+      fetchImpl: opts.fetch ?? globalThis.fetch,
+      credentialProvider: opts.credentialProvider ?? loadScopedGitSkillCredential,
+      state: { credentialAttempted: false },
+      accept: 'application/vnd.github.sha',
+      redirect: 'error',
+      ...(opts.etag ? { ifNoneMatch: opts.etag } : {})
+    })
+    if (response.status === 304) {
+      await discardResponse(response)
+      return { status: 'unchanged' }
+    }
+    if (response.status !== 200) {
+      const status = response.status
+      await discardResponse(response)
+      throw new Error(`skill GitHub commit resolution failed with status ${status}`)
+    }
+    const etag = response.headers.get('etag') ?? undefined
+    const commit = (await readBoundedBody(response, 128, 'skill GitHub commit resolution')).toString('utf8').trim()
+    if (!COMMIT_SHA.test(commit)) throw new Error('skill GitHub commit resolution returned an invalid SHA')
+    return { status: 'resolved', commit: commit.toLowerCase(), ...(etag ? { etag } : {}) }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export interface AcquireGitSkillOptions {
@@ -871,50 +999,8 @@ export async function acquireGitSkillSource(
       state: apiState
     }
 
-    const verifyRepositoryIdentity = async (): Promise<void> => {
-      const identityResponse = await githubApiRequest({
-        ...commonApiOptions,
-        url: new URL(`https://api.github.com/repositories/${entry.githubRepoId}`),
-        accept: 'application/vnd.github+json',
-        redirect: 'error'
-      })
-      if (identityResponse.status !== 200) {
-        const status = identityResponse.status
-        await discardResponse(identityResponse)
-        throw new Error(`skill GitHub repository identity lookup failed with status ${status}`)
-      }
-
-      const raw = (
-        await readBoundedBody(
-          identityResponse,
-          MAX_REPOSITORY_METADATA_BYTES,
-          'skill GitHub repository identity lookup'
-        )
-      ).toString('utf8')
-      let metadata: unknown
-      try {
-        // JSON.parse rounds sufficiently large numeric GitHub ids. Preserve
-        // every object `id` token as a decimal string before parsing so the
-        // comparison remains exact even beyond Number.MAX_SAFE_INTEGER.
-        metadata = JSON.parse(raw.replace(/("id"\s*:\s*)([1-9]\d*)/g, '$1"$2"'))
-      } catch {
-        throw new Error('skill GitHub repository identity lookup returned invalid metadata')
-      }
-      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-        throw new Error('skill GitHub repository identity lookup returned invalid metadata')
-      }
-      const record = metadata as Record<string, unknown>
-      if (
-        record.id !== entry.githubRepoId ||
-        typeof record.full_name !== 'string' ||
-        record.full_name.toLowerCase() !== github.path.toLowerCase()
-      ) {
-        throw new Error('skill GitHub repository identity does not match the configured source')
-      }
-      if (record.private !== false) {
-        throw new Error('private skill sources are not supported')
-      }
-    }
+    const verifyRepositoryIdentity = () =>
+      verifyGithubRepositoryIdentity(commonApiOptions, entry.githubRepoId, github.path)
 
     // The numeric endpoint cannot be captured by a replacement at the old
     // owner/name. Fence both name-based operations: if the original repository

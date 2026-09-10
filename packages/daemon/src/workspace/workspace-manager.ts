@@ -14,6 +14,7 @@ import { rename } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import {
+  type AgentSkillEntry,
   gitRepoLabel,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
@@ -96,6 +97,9 @@ export interface PrepareWorkspaceOptions {
   skillsStateDir?: string
   /** Audited `skills` CLI identity for the selected runtime. */
   skillsAgentId?: string | null
+  /** Where a TRACKING Git skill ref points now, so a new session picks up a
+   * moved branch head (shared-skills.md §5). Absent ⇒ retained commits stand. */
+  resolveGitSkillRef?: (entry: AgentSkillEntry, agent: Agent) => Promise<string | null>
 }
 
 export interface GithubReviewWorkspaceRevision {
@@ -319,6 +323,9 @@ export class WorkspaceManager {
       ...(opts.skillsAgentId === undefined ? {} : { skillsAgentId: opts.skillsAgentId }),
       localSkills: [...managedSkills, ...acceptedSkills],
       useGitCredential: this.usesGithubApp(agent),
+      ...(opts.resolveGitSkillRef
+        ? { resolveGitRef: (entry: AgentSkillEntry) => opts.resolveGitSkillRef!(entry, agent) }
+        : {}),
       warn: (msg) => skillsLog.warn(msg)
     })
     await this.excludeInstalledSkills(agent, acpCwd, installed.owned)

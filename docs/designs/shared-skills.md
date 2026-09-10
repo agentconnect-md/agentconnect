@@ -371,20 +371,48 @@ Source versioning and installer versioning are separate:
   commit SHA, before removing repository metadata and creating the local
   snapshot. A branch, or no ref and therefore the default head, is mutable.
   The Console labels the source accordingly.
+- **Tracking versus pinned refs:** a ref written as a commit SHA is **pinned** —
+  it is never re-read, and the retention below is its whole story. Anything else
+  (a branch, or no ref at all) is a **tracking** ref: every workspace preparation
+  asks where that head is now, so a new session starts on the current content
+  without anyone editing the source. Preparation runs on each new session — a
+  cold host prepares before spawn, a warm host prepares inside
+  `openRuntimeSession` — so an already attached session keeps the skills it
+  loaded and the next session gets the new ones.
+- **Asking is cheap, moving is not:** the question is one bounded API read (a bare
+  SHA), answered from a daemon-wide per-(repository, ref) cache with a short TTL,
+  refreshed with a conditional request whose 304 costs no primary rate-limit
+  budget, and shared by concurrent askers. Only a moved head invalidates the plan
+  and pays for an acquisition; an unchanged head keeps the unchanged fast path.
+- **The swap happens under a live host:** a tracking head that moved is applied by
+  the preparation the new session runs, which is the one place the installer's
+  remove/publish transaction can reach a workspace whose host is already serving
+  other sessions. Preparations are serialized per agent, and an attached session
+  keeps the skills it loaded, but a turn that invokes a skill during the publish
+  itself can see that one bundle briefly absent. Deferring the swap until the
+  agent is idle would close that window at the cost of never updating a busy
+  agent; a deployment that wants neither pins the ref.
+- **Unknown keeps what is installed:** a failed or rate-limited resolution is not
+  a change and not a failure. The daemon answers with the last known commit — or
+  with nothing on a first install — so a GitHub outage never rebuilds, and never
+  costs an agent the skills it already has.
 - **Resolution retention:** the first successful acquisition records the exact
-  commit for the normalized repository/ref identity. An unchanged definition
-  retains that commit even when a local/runtime/display/selection change forces
-  the installer to rebuild its output; if reacquisition is needed, it requests
-  that exact commit instead of silently advancing a moving branch. Changing the
-  repository or ref creates a new acquisition identity and resolves it afresh.
+  commit for the normalized repository/ref identity. A definition whose head has
+  not moved retains that commit even when a local/runtime/display/selection
+  change forces the installer to rebuild its output; reacquisition then requests
+  that exact commit rather than whatever the branch points at mid-rebuild.
+  Changing the repository or ref creates a new acquisition identity and resolves
+  it afresh.
 - **Byte binding after acquisition:** every successful install is bound to an
   exact source snapshot, CLI-output manifest, and live installed-tree digest.
   Immutable managed/Dream sources also put their upstream content digest in the
   plan fingerprint.
 - **Cross-daemon consistency:** a commit SHA or immutable managed revision gives
-  deterministic source bytes. The first resolution of a moving branch can
-  differ across daemons; each daemon thereafter retains its resolved commit
-  until the repository/ref definition changes.
+  deterministic source bytes. Two daemons preparing a tracking ref at different
+  moments can sit on different commits, and each one's own sessions are
+  self-consistent because a resolved commit is what the acquisition and the
+  ledger record. A deployment that needs every daemon on identical bytes pins the
+  ref to a SHA, which is exactly what pinning is for.
 - **Installer pin:** the daemon package and lockfile pin `skills@1.5.21` exactly.
   Upgrading the installer is a reviewed dependency change with golden tests,
   never a floating runtime resolution.
@@ -518,11 +546,15 @@ node <bundled skills@1.5.21 bin> add <absoluteSnapshot> \
   the workspace: leaving that path untouched is what the refusal wanted, and one
   foreign directory must not cost the agent its other skills or its host startup.
 - A source/CLI failure clears previously owned content and starts without managed
-  skills. A refused stale removal, corrupt journal, or failed rollback blocks the
+  skills. A ref check that cannot be answered is NOT such a failure: it resolves to
+  the installed commit and nothing is rebuilt, so a moving ref cannot turn an
+  upstream outage into an agent losing its skills. A refused stale removal, corrupt journal, or failed rollback blocks the
   workspace so disabled executable instructions cannot remain silently active.
-- An unchanged Git definition retains the existing cache semantics: moving branch
-  heads are not fetched on every session. Local Dream content and managed revision
-  digests participate in the plan fingerprint.
+- A tracking Git ref is re-resolved per preparation but fetched only when its head
+  moved: the resolved commit participates in the plan fingerprint, so an unmoved
+  head still takes the unchanged fast path and a moved one cannot be served from
+  the previous commit's tree. A pinned ref is never re-read. Local Dream content
+  and managed revision digests participate in the plan fingerprint too.
 
 ### 6.4 Legacy ownership requires explicit cleanup
 

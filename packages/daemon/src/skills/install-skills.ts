@@ -135,6 +135,10 @@ export interface InstallSkillsOptions {
   useGitCredential?: boolean
   runCli?: SkillsCliInvoker
   acquireGit?: GitSkillAcquirer
+  /** What a TRACKING ref points at now (shared-skills.md §5). Absent ⇒ every
+   * source keeps its retained commit, which is what a caller with no network
+   * seam wants; null for one entry ⇒ unknown, so the retained commit stands. */
+  resolveGitRef?: (entry: AgentSkillEntry) => Promise<string | null>
   warn?: (message: string) => void
 }
 
@@ -249,12 +253,16 @@ async function installSkillsLocked(
       })
     }
 
+    // Ask before fingerprinting: a moved tracking head has to change the plan, or
+    // the unchanged fast path below would answer with the previous commit's tree.
+    const trackedCommits = await resolveTrackedCommits(gitSources, opts.resolveGitRef)
     const planFingerprint = fingerprint({
       schema: INSTALLER_SCHEMA,
       cli: SKILLS_CLI_SPEC,
       runtime: agent.runtime,
       agentId: agentId ?? '',
       git: gitSources,
+      tracked: [...trackedCommits].sort(([a], [b]) => a.localeCompare(b)),
       local: localPrepared.map(({ key, name, contentDigest }) => ({ key, name, contentDigest }))
     })
     const legacyState = await readLegacyOwned(cwd)
@@ -264,7 +272,10 @@ async function installSkillsLocked(
       assertSkillLedgerOwner(ledger, agent.id)
       ledger = await recoverSkillLedger(cwd, location, ledger)
     }
-    retainedGitResolutions = currentGitResolutions(gitSources, ledger?.gitResolutions ?? [])
+    retainedGitResolutions = retainedAfterTracking(
+      currentGitResolutions(gitSources, ledger?.gitResolutions ?? []),
+      trackedCommits
+    )
     const desiredGitResolutionCount = new Set(gitSources.map(gitResolutionDigest)).size
     assertNoUnmigratedLegacyState(legacyState)
     // Claim every prepared workspace, even before it has executable skills.
@@ -310,16 +321,18 @@ async function installSkillsLocked(
       await fsp.mkdir(dirname(acquisitionDir), { recursive: true, mode: 0o700 })
       await fsp.mkdir(acquisitionDir, { mode: 0o700 })
       const definitionDigest = gitResolutionDigest(entry)
-      const retainedCommit = resolutionsByDefinition.get(definitionDigest)
-      const acquisitionEntry = retainedCommit ? { ...entry, ref: retainedCommit } : entry
+      // The tracked head wins over the retained commit; step 3 already dropped a
+      // retention the two disagree on, so at most one of them is set.
+      const plannedCommit = trackedCommits.get(definitionDigest) ?? resolutionsByDefinition.get(definitionDigest)
+      const acquisitionEntry = plannedCommit ? { ...entry, ref: plannedCommit } : entry
       const acquired = await (opts.acquireGit ?? acquireGitSkillSource)(acquisitionEntry, {
         destination: acquisitionDir,
         agentId: agent.id,
         useGitCredential: opts.useGitCredential === true
       })
       const resolvedCommit = acquired.resolvedCommit.toLowerCase()
-      if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (retainedCommit && resolvedCommit !== retainedCommit)) {
-        throw new Error(`Git source "${entry.name}" did not resolve to its retained commit`)
+      if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
+        throw new Error(`Git source "${entry.name}" did not resolve to its planned commit`)
       }
       resolutionsByDefinition.set(definitionDigest, resolvedCommit)
       const destination = join(scratch, 'inputs', `git-${index}`)
@@ -621,6 +634,36 @@ async function prepareSnapshotDestination(destination: string): Promise<void> {
   const parent = dirname(destination)
   await fsp.mkdir(parent, { recursive: true, mode: 0o700 })
   await fsp.chmod(parent, 0o700)
+}
+
+/** Resolve every tracking ref once, keyed by acquisition identity. A resolver
+ * that answers null (offline, rate-limited, or a pinned ref) contributes
+ * nothing, so the retained commit keeps serving. */
+export async function resolveTrackedCommits(
+  entries: AgentSkillEntry[],
+  resolve: ((entry: AgentSkillEntry) => Promise<string | null>) | undefined
+): Promise<Map<string, string>> {
+  const tracked = new Map<string, string>()
+  if (!resolve) return tracked
+  for (const entry of entries) {
+    const digest = gitResolutionDigest(entry)
+    if (tracked.has(digest)) continue
+    const commit = await resolve(entry)
+    if (commit && /^[a-f0-9]{40}$/i.test(commit)) tracked.set(digest, commit.toLowerCase())
+  }
+  return tracked
+}
+
+/** Retention survives only where the tracked head still agrees with it: a moved
+ * head must invalidate the plan, an unmoved one must keep the fast path. */
+export function retainedAfterTracking(
+  retained: SkillGitResolution[],
+  tracked: Map<string, string>
+): SkillGitResolution[] {
+  return retained.filter((resolution) => {
+    const head = tracked.get(resolution.definitionDigest)
+    return head === undefined || head === resolution.resolvedCommit
+  })
 }
 
 export function currentGitResolutions(

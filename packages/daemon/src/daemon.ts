@@ -278,7 +278,13 @@ import { acceptedDreamSkillSources } from './skills/dream-skills.js'
 import { acquireGitSkillSource } from './skills/skill-git-source.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
 import { resolveSkillSelections } from './skills/skill-cli-selection.js'
-import { currentGitResolutions, gitResolutionDigest } from './skills/install-skills.js'
+import {
+  currentGitResolutions,
+  gitResolutionDigest,
+  resolveTrackedCommits,
+  retainedAfterTracking
+} from './skills/install-skills.js'
+import { GitSkillRefTracker } from './skills/git-skill-ref-tracker.js'
 import {
   ClusterSkillCoordinator,
   clusterSkillSupportRequired,
@@ -1216,6 +1222,7 @@ export class Daemon {
   private cpClient?: CpClient
   private remoteWebchatGrants?: RemoteWebchatGrantManager
   private managedSkillCache?: ManagedSkillCache
+  private gitSkillRefs?: GitSkillRefTracker
   private relays?: RelayManager
   private cpCrons?: CpCronRegistry
   // Latest channel report per integrationId plus whether it came from a complete
@@ -2316,6 +2323,12 @@ export class Daemon {
         if (!client) throw new Error('control plane is not connected')
         return client.readManagedSkill(request)
       },
+      warn: (message) => this.log.warn(message)
+    })
+    // A tracking Git skill ref is re-read per new session's preparation, so the
+    // tracker's TTL + conditional reads are what keep that affordable.
+    this.gitSkillRefs = new GitSkillRefTracker({
+      stateRoot: join(root, 'skill-installs'),
       warn: (message) => this.log.warn(message)
     })
   }
@@ -4158,7 +4171,8 @@ export class Daemon {
     const opts = {
       managedSkills: (value: Agent) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
       skillsStateDir: join(this.root, 'skill-installs'),
-      skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null
+      skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null,
+      resolveGitSkillRef: (entry: AgentSkillEntrySchema, value: Agent) => this.trackedGitSkillCommit(entry, value)
     }
     // §11: the session a per-session host serves gets its own clones, never a worktree of the primary.
     return request
@@ -4168,6 +4182,17 @@ export class Daemon {
           opts
         )
       : this.workspaces.prepareWorkspace(agent, opts)
+  }
+
+  /** The commit a tracking Git skill ref points at now, or null when unknown —
+   *  unknown keeps whatever commit the workspace already installed. */
+  private trackedGitSkillCommit(entry: AgentSkillEntrySchema, agent: Agent): Promise<string | null> {
+    return (
+      this.gitSkillRefs?.resolve(entry, {
+        agentId: agent.id,
+        useGitCredential: this.workspaces.usesGithubApp(agent)
+      }) ?? Promise.resolve(null)
+    )
   }
 
   private async reconcileClusterSkills(agent: Agent, pod: SandboxSubject): Promise<void> {
@@ -4236,18 +4261,25 @@ export class Daemon {
         this.log.warn(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
         return []
       })
+      const trackedCommits = await resolveTrackedCommits(
+        configuredGitSources.map(({ entry }) => entry),
+        (entry) => this.trackedGitSkillCommit(entry, agent)
+      )
       const resolutionsByDefinition = new Map(
-        currentGitResolutions(
-          configuredGitSources.map(({ entry }) => entry),
-          prior?.ledger.gitResolutions ?? []
+        retainedAfterTracking(
+          currentGitResolutions(
+            configuredGitSources.map(({ entry }) => entry),
+            prior?.ledger.gitResolutions ?? []
+          ),
+          trackedCommits
         ).map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
       )
       for (const { index, entry: currentEntry } of configuredGitSources) {
         try {
           const definitionDigest = gitResolutionDigest(currentEntry)
-          const retainedCommit = resolutionsByDefinition.get(definitionDigest)
+          const plannedCommit = trackedCommits.get(definitionDigest) ?? resolutionsByDefinition.get(definitionDigest)
           const acquired = await acquireGitSkillSource(
-            retainedCommit ? { ...currentEntry, ref: retainedCommit } : currentEntry,
+            plannedCommit ? { ...currentEntry, ref: plannedCommit } : currentEntry,
             {
               destination: join(scratch, `git-${index}`),
               agentId: agent.id,
@@ -4255,8 +4287,8 @@ export class Daemon {
             }
           )
           const resolvedCommit = acquired.resolvedCommit.toLowerCase()
-          if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (retainedCommit && resolvedCommit !== retainedCommit)) {
-            throw new Error(`Git source "${currentEntry.name}" did not resolve to its retained commit`)
+          if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
+            throw new Error(`Git source "${currentEntry.name}" did not resolve to its planned commit`)
           }
           resolutionsByDefinition.set(definitionDigest, resolvedCommit)
           const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
