@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WireError } from '@agentconnect.md/connection'
 import {
   CODEHOST_REVIEW_V1_FEATURE,
   type CodeHostReviewAuthorize,
@@ -244,6 +245,10 @@ interface CpOptions {
   /** Return an error to refuse a `return-unused` frame. */
   returnUnusedFails?: () => Error | undefined
   reportFails?: (result: CodeHostReviewResultReport) => Error | undefined
+  /** Return an error to fail that authorization round trip after it was recorded. */
+  authorizeFails?: (payload: CodeHostReviewAuthorize) => Error | undefined
+  /** Return an error to fail that permit request before any record exists for it. */
+  issueFails?: (payload: Extract<CodeHostReviewOpRequest, { op: 'issue' }>) => Error | undefined
 }
 
 function fakeCp(opts: CpOptions = {}) {
@@ -257,6 +262,8 @@ function fakeCp(opts: CpOptions = {}) {
     supportsReview: () => opts.supports !== false,
     authorize: async (payload): Promise<CodeHostReviewAuthorized> => {
       authorizations.push(payload)
+      const failure = opts.authorizeFails?.(payload)
+      if (failure) throw failure
       if (opts.refuse) {
         return { authorized: false, attemptId: payload.attemptId, reason: opts.refuse, retryable: false }
       }
@@ -291,7 +298,9 @@ function fakeCp(opts: CpOptions = {}) {
           ? opts.operateFails?.(payload)
           : payload.op === 'return-unused'
             ? opts.returnUnusedFails?.()
-            : undefined
+            : payload.op === 'issue'
+              ? opts.issueFails?.(payload)
+              : undefined
       if (failure) throw failure
       if (payload.op === 'issue') {
         const recordId = `rec-${payload.kind}-${payload.ordinal}`
@@ -545,6 +554,47 @@ describe('GitLab review adapter — pre-effect rejections (§15)', () => {
     await h.adapter.submit(KEY, request())
     await expect(h.adapter.submit(KEY, request())).rejects.toThrow(/already has a formal review attempt/)
     expect(published(h.calls)).toHaveLength(1)
+  })
+
+  it('keeps the review attempt when the control-plane socket drops before authorization', async () => {
+    // The correlator rejects every in-flight request this way when the daemon↔CP socket closes.
+    let drops = 1
+    const h = harness({
+      cp: { authorizeFails: () => (drops-- > 0 ? new WireError('INTERNAL', 'connection closed', true) : undefined) }
+    })
+    await expect(h.adapter.submit(KEY, request())).rejects.toThrow(
+      'formal review not submitted: control plane unreachable (connection closed)'
+    )
+    // Nothing reached GitLab, and the attempt stays reserved rather than spent.
+    expect(published(h.calls)).toHaveLength(0)
+    expect(h.adapter.owns(KEY, AGENT_ID)).toBe(true)
+
+    await expect(h.adapter.submit(KEY, request())).resolves.toMatchObject({ provider: 'gitlab', state: 'submitted' })
+    // The retry re-acquires the SAME attempt — the lease treats that as its own renewal, never a second fence.
+    expect(h.authorizations.map((authorization) => authorization.attemptId)).toEqual([ATTEMPT, ATTEMPT])
+    expect(published(h.calls)).toHaveLength(1)
+  })
+
+  it('keeps a socket drop after publication terminal — a replay would publish the review twice', async () => {
+    // The approval permit is requested only after the summary and inline comments are published and
+    // their publication record settled, so a replayed attempt would see nothing pending and publish again.
+    let dropped = false
+    const h = harness({
+      cp: {
+        issueFails: (payload) => {
+          if (payload.kind !== 'approval' || dropped) return undefined
+          dropped = true
+          return new WireError('INTERNAL', 'connection closed', true)
+        }
+      }
+    })
+    const approve = request({ event: 'APPROVE', verdict: 'pass' })
+    await expect(h.adapter.submit(KEY, approve)).rejects.toThrow('connection closed')
+    expect(published(h.calls)).toHaveLength(1)
+
+    await expect(h.adapter.submit(KEY, approve)).rejects.toThrow(/already has a formal review attempt/)
+    expect(published(h.calls)).toHaveLength(1)
+    expect(h.calls.filter((call) => call.path.endsWith('/approve'))).toHaveLength(0)
   })
 
   it('is unavailable outside an authorized active merge-request turn', async () => {
