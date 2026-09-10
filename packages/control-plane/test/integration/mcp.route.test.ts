@@ -711,7 +711,7 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
       deleteCron: { cronId: randomUUID(), confirm: 'x' },
       setChannelTrigger: { integrationId: randomUUID(), channelId: 'C1', trigger: 'any' },
       removeIntegration: { integrationId: randomUUID(), confirm: 'x' },
-      setAgentWorkspace: { agentId: randomUUID(), mode: 'scratch' },
+      setAgentWorkspace: { agentId: randomUUID(), confirm: 'x', mode: 'scratch' },
       listGithubRepositories: { installationId: randomUUID() },
       createGithubTrigger: {
         agentId: randomUUID(),

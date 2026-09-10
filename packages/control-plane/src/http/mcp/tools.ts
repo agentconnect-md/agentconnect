@@ -507,20 +507,32 @@ export const MCP_TOOLS: McpToolDef[] = [
     }
   },
   {
+    // §6.4 🔥 not because a row disappears but because the daemon-local checkout
+    // does: replacing the repository, the branch, or the mode discards whatever
+    // was only ever on that disk. A caller with a personal key executes straight
+    // through, so the confirmation has to live HERE, not in a delegated approval.
     name: 'setAgentWorkspace',
     description:
-      'Replace an agent’s workspace: point it at a Git repository (mode "git") or back to a scratch directory. Who vouches for the repository is derived from the address — a github.com repository inside one of the organization’s App installations or a managed GitLab project earns managed credentials, a public repository elsewhere is cloned anonymously and stays read-only. Changing the repository or branch DISCARDS the daemon-local checkout, and active work is drained before it succeeds. Use this for an existing agent; a new one can take its workspace in createAgent.',
+      'Replace an agent’s workspace: point it at a Git repository (mode "git") or back to a scratch directory. Who vouches for the repository is derived from the address — a github.com repository inside one of the organization’s App installations or a managed GitLab project earns managed credentials, a public repository elsewhere is cloned anonymously and stays read-only. Changing the repository, branch or mode PERMANENTLY DISCARDS the daemon-local checkout, including uncommitted work, and active work is drained first; `confirm` must exactly equal the agent’s `name` (slug), so restate what is being replaced and get the user’s explicit approval before calling. Use this for an existing agent; a new one takes its workspace in createAgent, where there is nothing to lose yet.',
     write: true,
+    destructive: true,
     schema: z
-      .object({ agentId: CanonicalUuid.describe('The agent id (from listAgents)'), ...workspaceShape })
+      .object({
+        agentId: CanonicalUuid.describe('The agent id (from listAgents)'),
+        confirm: z.string().min(1).describe('The agent’s exact `name` (slug) — a deliberate re-type, not a copy'),
+        ...workspaceShape
+      })
       .strict()
       .superRefine(checkWorkspaceMode),
     call: async (ctx, a) => {
       const agentId = canonicalUuid(a.agentId)
       if (!agentId) return invalidAgentId()
-      return sameUuid(ctx.delegatedAgentId, agentId)
-        ? delegatedSelfMutationDenied()
-        : ctx.send('PUT', org(ctx, `/agents/${seg(agentId)}/workspace`), bodyOf(a, 'agentId'))
+      if (sameUuid(ctx.delegatedAgentId, agentId)) return delegatedSelfMutationDenied()
+      const target = await ctx.get(org(ctx, `/agents/${seg(agentId)}`))
+      if (target.statusCode !== 200) return target
+      const name = (JSON.parse(target.body) as { name?: unknown }).name
+      if (typeof name !== 'string' || name !== a.confirm) return confirmMismatch('the agent’s `name` (slug)')
+      return ctx.send('PUT', org(ctx, `/agents/${seg(agentId)}/workspace`), bodyOf(a, 'agentId', 'confirm'))
     }
   },
   {

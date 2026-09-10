@@ -59,7 +59,7 @@ const ARGS: Record<string, Record<string, unknown>> = {
   listHookRuns: { hookId: 'hook-1' },
   createAgent: { name: 'my-agent', runtime: 'claude' },
   updateAgent: { agentId: AGENT_UUID, model: 'opus' },
-  setAgentWorkspace: { agentId: AGENT_UUID, mode: 'git', gitRepo: 'acme/api', access: 'write' },
+  setAgentWorkspace: { agentId: AGENT_UUID, confirm: 'my-agent', mode: 'git', gitRepo: 'acme/api', access: 'write' },
   listGithubRepositories: { installationId: 'ins-1' },
   createGithubTrigger: {
     agentId: AGENT_UUID,
@@ -161,8 +161,8 @@ describe('MCP tool registry — §6.2 invariants', () => {
     ['updateAgent', { agentId: `{${AGENT_UUID}}`, model: 'bypass' }],
     ['deleteAgent', { agentId: AGENT_UUID.replaceAll('-', ''), confirm: 'my-agent' }],
     ['deleteAgent', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent' }],
-    ['setAgentWorkspace', { agentId: AGENT_UUID.replaceAll('-', ''), mode: 'scratch' }],
-    ['setAgentWorkspace', { agentId: `{${AGENT_UUID}}`, mode: 'scratch' }]
+    ['setAgentWorkspace', { agentId: AGENT_UUID.replaceAll('-', ''), confirm: 'my-agent', mode: 'scratch' }],
+    ['setAgentWorkspace', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent', mode: 'scratch' }]
   ] as const)('%s rejects PostgreSQL-compatible noncanonical UUID text before dispatch', (toolName, args) => {
     expect(findTool(toolName)!.schema.safeParse(args).success).toBe(false)
   })
@@ -172,8 +172,8 @@ describe('MCP tool registry — §6.2 invariants', () => {
     ['updateAgent', { agentId: `{${AGENT_UUID}}`, model: 'bypass' }],
     ['deleteAgent', { agentId: AGENT_UUID.replaceAll('-', ''), confirm: 'my-agent' }],
     ['deleteAgent', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent' }],
-    ['setAgentWorkspace', { agentId: AGENT_UUID.replaceAll('-', ''), mode: 'scratch' }],
-    ['setAgentWorkspace', { agentId: `{${AGENT_UUID}}`, mode: 'scratch' }]
+    ['setAgentWorkspace', { agentId: AGENT_UUID.replaceAll('-', ''), confirm: 'my-agent', mode: 'scratch' }],
+    ['setAgentWorkspace', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent', mode: 'scratch' }]
   ] as const)('%s refuses a direct noncanonical UUID call without issuing REST requests', async (toolName, args) => {
     const { ctx, calls } = recordingCtx()
     const result = await findTool(toolName)!.call(ctx, args)
@@ -326,15 +326,17 @@ describe('MCP write tools — bodies and upsert semantics', () => {
 
   it('setAgentWorkspace PUTs the workspace body to the agent’s workspace edit path', async () => {
     const { calls } = await run('setAgentWorkspace')
+    // The confirm lookup reads the agent first; `agentId`/`confirm` are routing-only.
     expect(calls).toEqual([
+      { method: 'GET', path: `/orgs/${ORG_ID}/agents/${AGENT_UUID}` },
       {
         method: 'PUT',
         path: `/orgs/${ORG_ID}/agents/${AGENT_UUID}/workspace`,
-        body: { mode: 'git', gitRepo: 'acme/api', access: 'write' } // agentId is routing-only
+        body: { mode: 'git', gitRepo: 'acme/api', access: 'write' }
       }
     ])
-    const scratch = await run('setAgentWorkspace', { agentId: AGENT_UUID, mode: 'scratch' })
-    expect(scratch.calls[0]!.body).toEqual({ mode: 'scratch' })
+    const scratch = await run('setAgentWorkspace', { agentId: AGENT_UUID, confirm: 'my-agent', mode: 'scratch' })
+    expect(scratch.calls[1]!.body).toEqual({ mode: 'scratch' })
   })
 
   it('createGithubTrigger POSTs a github-kind hook, and the webhook kind stays out of the catalog', async () => {
@@ -379,7 +381,8 @@ describe('MCP destructive tools — the §6.4 confirm gate', () => {
     for (const [tool, args] of [
       ['deleteAgent', { agentId: AGENT_UUID, confirm: 'wrong' }],
       ['deleteCron', { cronId: 'c1', confirm: 'wrong' }],
-      ['removeIntegration', { integrationId: 'integ-1', confirm: 'wrong' }]
+      ['removeIntegration', { integrationId: 'integ-1', confirm: 'wrong' }],
+      ['setAgentWorkspace', { agentId: AGENT_UUID, confirm: 'wrong', mode: 'scratch' }]
     ] as const) {
       const { calls, result } = await run(tool, args)
       expect(result.statusCode, tool).toBe(412)
@@ -390,6 +393,16 @@ describe('MCP destructive tools — the §6.4 confirm gate', () => {
         `${tool}: must not mutate`
       ).toEqual([])
     }
+  })
+
+  // Discarding a daemon-local checkout is irreversible without a row disappearing,
+  // so this one is 🔥 with a PUT rather than a DELETE behind the same gate.
+  it('a matching confirm releases the workspace replacement', async () => {
+    const { calls, result } = await run('setAgentWorkspace')
+    expect(result.statusCode).toBe(200)
+    const mutations = calls.filter((c) => c.method !== 'GET')
+    expect(mutations).toHaveLength(1)
+    expect(mutations[0]!.method).toBe('PUT')
   })
 
   it('a matching confirm releases exactly one DELETE', async () => {
