@@ -48,16 +48,38 @@ function outcomeNote(entry: SettledOperation): string | null {
   }
 }
 
+/** What the conversation tells the agent about a settled operation. Deliberately
+ * short and machine-readable: the agent reads the result itself with
+ * `getOperation`, so a bounded tool payload never has to ride the transcript. */
+export function approvalNotice(
+  operation: WebchatMcpOperationDto,
+  decision: 'approve' | 'deny',
+  outcome: WebchatMcpOperationDto
+): string {
+  // A denial lands as `failed` (the operation never ran), so the DECISION is what
+  // separates the two — the same rule the card's own label uses.
+  const state = decision === 'deny' && outcome.status === 'failed' ? 'denied' : outcome.status
+  return (
+    `[approval] ${operation.toolName} (operation ${operation.operationId}) is now ${state}. ` +
+    'Read it with getOperation and continue from there.'
+  )
+}
+
 export function WebchatMcpApprovalCard({
   orgId,
   agentId,
   conversationId,
-  className = ''
+  className = '',
+  onDecided
 }: {
   orgId: string
   agentId: string
   conversationId: string
   className?: string
+  /** A decision the agent has to hear about: it received an operationId and
+   *  ended its turn, so nothing else would tell it the operation is settled.
+   *  Only ever called for a decision whose outcome is known. */
+  onDecided?: (operation: WebchatMcpOperationDto, decision: 'approve' | 'deny', outcome: WebchatMcpOperationDto) => void
 }) {
   const { data, mutate } = useSWR(
     ['webchat-mcp-operations', orgId, agentId, conversationId] as const,
@@ -83,6 +105,8 @@ export function WebchatMcpApprovalCard({
     try {
       const outcome = await decideWebchatMcpOperation(orgId, agentId, conversationId, operation.operationId, decision)
       upsertSettled({ operation, decision, outcome })
+      if (outcome.status !== 'awaiting_confirmation' && outcome.status !== 'executing')
+        onDecided?.(operation, decision, outcome)
     } catch {
       // The CP may have executed the decision even though the response was lost
       // (network drop) or rejected it (409 race). Refetch the exact operation so
@@ -93,6 +117,7 @@ export function WebchatMcpApprovalCard({
           setError('The decision was not applied. Try again.')
         } else {
           upsertSettled({ operation, decision, outcome })
+          if (outcome.status !== 'executing') onDecided?.(operation, decision, outcome)
         }
       } catch {
         upsertSettled({ operation, decision, outcome: null })
@@ -115,6 +140,7 @@ export function WebchatMcpApprovalCard({
         await mutate()
       } else {
         upsertSettled({ ...entry, outcome })
+        if (!entry.outcome && outcome.status !== 'executing') onDecided?.(entry.operation, entry.decision, outcome)
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not check the operation status.')

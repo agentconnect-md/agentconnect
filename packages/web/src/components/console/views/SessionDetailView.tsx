@@ -146,7 +146,7 @@ import {
 } from '@/lib/session-rail-filter'
 import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
-import { WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
+import { approvalNotice, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import {
   sessionEffortAfterModelChange,
@@ -2423,6 +2423,7 @@ export default function SessionDetailView() {
     isPgBusy,
     setPgImage,
     pgSend,
+    pgNotice,
     pgAttach,
     markSessionTarget,
     getPgQueue,
@@ -5281,6 +5282,22 @@ export default function SessionDetailView() {
                           agentId={session.agentId}
                           conversationId={webchatConversationId}
                           className="mb-2"
+                          // A delegated write never executes in the agent's own request: it
+                          // answered with an operationId and the turn ended, so the decision is
+                          // news the conversation has to deliver, or a flow that writes stops
+                          // dead at its first write. The CP stays off the message path.
+                          onDecided={(operation, decision, outcome) => {
+                            // pgNotice, not the composer's send: an unsent draft and a
+                            // staged image belong to the owner, and deciding is not a send.
+                            if (isContinuable) markSessionTarget(session.id)
+                            pgNotice(
+                              session.id,
+                              session.agentId ?? '',
+                              approvalNotice(operation, decision, outcome),
+                              isWebchat ? session.channelId : undefined,
+                              isWebchat ? liveRoster : undefined
+                            )
+                          }}
                         />
                       )}
                       {/* Queued messages (Claude Code-style): sends accepted while a turn was

@@ -566,6 +566,26 @@ result. Denial, confirmation expiry, failed live authorization, revoked grant, o
 generation mismatch transitions the row to a terminal non-executing state. Approval
 never revives a stale operation.
 
+The operation's state is readable through the catalog: two read entries scoped to
+the CALLER'S OWN conversation, one for a named operation and one for what it is
+still blocked on. Their conversation is server-supplied from the invocation
+context, so no argument can point them at another. Without them the only way to
+observe an operation would be re-sending the identical JSON-RPC request, and a
+fresh deliberate call enqueues a SECOND operation rather than answering about the
+first — a caller checking on its own write would create the very duplicate the
+receipt rules exist to prevent.
+
+A decision is also the end of the model's turn, not a step inside it: the request
+that submitted the write already answered `awaiting_confirmation`. So the decision
+is delivered back as a conversation input — the browser that decided posts a short
+notice naming the tool, the operation and its settled state into that same webchat
+conversation, and the agent reads the bounded result with the operation read above.
+The control plane stays off the message path: it neither originates the notice nor
+carries it. Nothing about this weakens the confirmation, which remains the sole
+execution claimant; it only stops a multi-step flow from ending, silently and
+permanently, at its first write. A conversation whose browser has gone away
+receives no notice, and recovers on its next turn through the same read.
+
 The first implementation may keep the existing catalog's stricter exclusions while
 browser confirmation is completed. It must not silently weaken confirmation to make
 remote MCP easier to ship.

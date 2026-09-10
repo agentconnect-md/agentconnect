@@ -28,6 +28,9 @@ export interface McpToolCtx {
   orgId: string
   /** Present only for a webchat assertion; its host agent may not mutate itself. */
   delegatedAgentId?: string
+  /** The webchat conversation a delegated assertion speaks for. Server-supplied:
+   *  the operation reads below are scoped to it, so no caller can name another. */
+  delegatedConversationId?: string
   get(path: string, query?: Record<string, string | number | undefined>): Promise<RestResult>
   /** Mutating request with an optional JSON body — only `write: true` tools may use it. */
   send(method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, body?: Record<string, unknown>): Promise<RestResult>
@@ -93,6 +96,19 @@ function confirmMismatch(expected: string): RestResult {
     })
   }
 }
+
+/** These two reads are about a delegated conversation's own operations, and an
+ *  external credential has none — a curated answer beats a confusing 404. */
+const notDelegated = (): Promise<RestResult> =>
+  Promise.resolve({
+    statusCode: 400,
+    body: JSON.stringify({
+      error: 'Bad Request',
+      statusCode: 400,
+      message:
+        'operations exist only for a webchat conversation whose writes need the owner’s approval; this connection has none'
+    })
+  })
 
 const notFound = (what: string): RestResult => ({
   statusCode: 404,
@@ -381,6 +397,38 @@ export const MCP_TOOLS: McpToolDef[] = [
     description: 'List platform integrations (bot ↔ agent bindings) with their conversation triggers.',
     schema: NoArgs,
     call: (ctx) => ctx.get(org(ctx, '/integrations'))
+  },
+  {
+    // A delegated write does not execute in its own request (webchat-preset-
+    // agentconnect-mcp.md §8): it returns an operationId, the conversation owner
+    // approves in the browser, and THIS is how the outcome is read back. Without
+    // it a caller could only re-send the identical JSON-RPC request, and a fresh
+    // call would enqueue a SECOND operation rather than answer about the first.
+    name: 'getOperation',
+    description:
+      'The state of one of your own side-effecting operations: `awaiting_confirmation` (the conversation owner has not decided yet), `executing`, or a terminal `completed` / `failed` / `denied` / `expired` / `ambiguous`, with the tool’s bounded result once it has one. Call this after a write tool answered with an operationId — never re-issue the write to find out, which would enqueue a second operation.',
+    schema: z.object({ operationId: CanonicalUuid.describe('From the write tool’s answer') }).strict(),
+    call: (ctx, a) =>
+      ctx.delegatedConversationId === undefined || ctx.delegatedAgentId === undefined
+        ? notDelegated()
+        : ctx.get(
+            org(
+              ctx,
+              `/agents/${seg(ctx.delegatedAgentId)}/webchat/${seg(ctx.delegatedConversationId)}/mcp-operations/${seg(a.operationId)}`
+            )
+          )
+  },
+  {
+    name: 'listOperations',
+    description:
+      'Your side-effecting operations in this conversation that are still waiting for the owner’s decision. Use it to see what you are blocked on — a decided one is read with getOperation.',
+    schema: NoArgs,
+    call: (ctx) =>
+      ctx.delegatedConversationId === undefined || ctx.delegatedAgentId === undefined
+        ? notDelegated()
+        : ctx.get(
+            org(ctx, `/agents/${seg(ctx.delegatedAgentId)}/webchat/${seg(ctx.delegatedConversationId)}/mcp-operations`)
+          )
   },
   {
     name: 'listGithubInstallations',

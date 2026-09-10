@@ -185,11 +185,18 @@ describe('delegated webchat MCP operations', () => {
     await seedDutyGroup(prisma, randomUUID(), daemonId, [agentId])
   }
 
-  async function delegatedFixture(opts: { registerSession?: boolean; pool?: boolean } = {}) {
-    const daemonId = randomUUID()
-    const hostAgentId = randomUUID()
+  /** `share` gives a SECOND conversation of the same user on an agent a prior
+   *  fixture already seeded — the org holds one preset agent, so re-seeding it
+   *  would collide, and "another conversation" is the interesting scope anyway. */
+  async function delegatedFixture(
+    opts: { registerSession?: boolean; pool?: boolean; share?: { hostAgentId: string; daemonId: string } } = {}
+  ) {
+    const daemonId = opts.share?.daemonId ?? randomUUID()
+    const hostAgentId = opts.share?.hostAgentId ?? randomUUID()
     const conversationId = randomUUID()
-    if (opts.pool) {
+    if (opts.share) {
+      // nothing to seed: the agent, its member and the preset entitlement exist
+    } else if (opts.pool) {
       await seedAgent(prisma, hostAgentId)
       await prisma.agent.update({
         where: { id: hostAgentId },
@@ -232,9 +239,11 @@ describe('delegated webchat MCP operations', () => {
         activatedAt: new Date()
       }
     })
-    await prisma.presetAgent.create({
-      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: hostAgentId, status: 'created' }
-    })
+    if (!opts.share) {
+      await prisma.presetAgent.create({
+        data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: hostAgentId, status: 'created' }
+      })
+    }
     // `registerSession: false` models the `session/new` window: the descriptor is
     // already installed and the adapter is connecting, but the daemon has not yet
     // reported the session, so no current-session pointer exists.
@@ -472,6 +481,35 @@ describe('delegated webchat MCP operations', () => {
     expect(approved.statusCode).toBe(200)
     expect(approved.json()).toMatchObject({ operationId: pending.operationId, status: 'completed' })
     expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'approved-agent' } })).not.toBeNull()
+
+    // The caller reads the decided outcome back through the catalog rather than
+    // re-issuing the write, which would enqueue a second operation.
+    const read2 = await remoteRpc(3, 'getOperation', { operationId: pending.operationId })
+    expect(read2.statusCode).toBe(200)
+    const settled = JSON.parse(toolText(mcpMessage(read2).result as unknown as ToolCallResult)) as {
+      operationId: string
+      toolName: string
+      status: string
+      result?: { statusCode?: number }
+    }
+    expect(settled).toMatchObject({ operationId: pending.operationId, toolName: 'createAgent', status: 'completed' })
+    expect(settled.result?.statusCode).toBe(201)
+  })
+
+  it('scopes the operation reads to the caller’s own conversation', async () => {
+    const mine = await delegatedFixture()
+    const operationId = await pendingWrite(mine, 4, 'renameDaemon', { daemonId: mine.daemonId, name: 'mine' })
+
+    const pendingList = await mine.remoteRpc(5, 'listOperations', {})
+    expect(pendingList.statusCode).toBe(200)
+    expect(toolText(mcpMessage(pendingList).result as unknown as ToolCallResult)).toContain(operationId)
+
+    // Another conversation's grant may not read it, even with the exact id.
+    const other = await delegatedFixture({ share: { hostAgentId: mine.hostAgentId, daemonId: mine.daemonId } })
+    const stolen = await other.remoteRpc(6, 'getOperation', { operationId })
+    expect(toolText(mcpMessage(stolen).result as unknown as ToolCallResult)).toContain('not found')
+    const otherPending = await other.remoteRpc(7, 'listOperations', {})
+    expect(toolText(mcpMessage(otherPending).result as unknown as ToolCallResult)).not.toContain(operationId)
   })
 
   it('commits a cp_db tool mutation atomically with its terminal transition', async () => {
@@ -712,6 +750,7 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
       setChannelTrigger: { integrationId: randomUUID(), channelId: 'C1', trigger: 'any' },
       removeIntegration: { integrationId: randomUUID(), confirm: 'x' },
       setAgentWorkspace: { agentId: randomUUID(), confirm: 'x', mode: 'scratch' },
+      getOperation: { operationId: randomUUID() },
       listGithubRepositories: { installationId: randomUUID() },
       createGithubTrigger: {
         agentId: randomUUID(),
