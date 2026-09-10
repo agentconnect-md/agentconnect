@@ -1,0 +1,119 @@
+/**
+ * `skills/git-skill-ref-tracker.ts` — what a TRACKING skill ref points at now
+ * (shared-skills.md §5).
+ *
+ * A ref written as a commit SHA is pinned and never asked about. Everything else
+ * — a branch, or no ref at all — is a moving head, and every new session's
+ * preparation asks this tracker whether it moved. Preparation runs on each new
+ * session, so the cost of asking is what makes the feature affordable: answers
+ * are cached per (repository, ref) across agents for `ttlMs`, refreshed with a
+ * conditional request whose 304 costs no primary rate-limit budget, and
+ * concurrent askers share one in-flight request.
+ *
+ * Unknown is a first-class answer: a failed resolution returns the last known
+ * commit (or null when there is none) instead of throwing, so a GitHub outage
+ * or a spent rate limit leaves the installed skills exactly where they are.
+ */
+import fsp from 'node:fs/promises'
+import { join } from 'node:path'
+import type { AgentSkillEntry } from '@agentconnect.md/protocol'
+import {
+  isPinnedGitSkillRef,
+  resolveBoundedGitSkillSource,
+  resolveGitSkillCommit,
+  type GitSkillCommitResolution,
+  type ResolveGitSkillCommitOptions
+} from './skill-git-source.js'
+
+const DEFAULT_TTL_MS = 60_000
+/** After a failure, wait at least this long before spending another call. */
+const FAILURE_BACKOFF_MS = 60_000
+
+interface TrackedRef {
+  commit?: string
+  etag?: string
+  checkedAt: number
+  failedAt?: number
+}
+
+export interface GitSkillRefTrackerOptions {
+  /** Daemon-private directory the credential helper may use as HOME. */
+  stateRoot: string
+  ttlMs?: number
+  now?: () => number
+  resolve?: (entry: AgentSkillEntry, opts: ResolveGitSkillCommitOptions) => Promise<GitSkillCommitResolution>
+  warn?: (message: string) => void
+}
+
+export class GitSkillRefTracker {
+  private readonly cache = new Map<string, TrackedRef>()
+  private readonly inFlight = new Map<string, Promise<string | null>>()
+  private readonly ttlMs: number
+  private readonly now: () => number
+  private readonly resolveCommit: NonNullable<GitSkillRefTrackerOptions['resolve']>
+  private homeReady?: Promise<string>
+
+  constructor(private readonly opts: GitSkillRefTrackerOptions) {
+    this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS
+    this.now = opts.now ?? Date.now
+    this.resolveCommit = opts.resolve ?? resolveGitSkillCommit
+  }
+
+  /** The commit a tracking ref points at, or null when nothing is known yet. */
+  async resolve(entry: AgentSkillEntry, opts: { agentId: string; useGitCredential: boolean }): Promise<string | null> {
+    if (isPinnedGitSkillRef(entry)) return null
+    const key = this.keyOf(entry)
+    const cached = this.cache.get(key)
+    if (cached && this.isFresh(cached)) return cached.commit ?? null
+    const existing = this.inFlight.get(key)
+    if (existing) return existing
+    const pending = this.refresh(key, entry, opts, cached).finally(() => this.inFlight.delete(key))
+    this.inFlight.set(key, pending)
+    return pending
+  }
+
+  private isFresh(entry: TrackedRef): boolean {
+    const age = this.now() - entry.checkedAt
+    return entry.failedAt !== undefined ? age < FAILURE_BACKOFF_MS : age < this.ttlMs
+  }
+
+  private keyOf(entry: AgentSkillEntry): string {
+    const source = resolveBoundedGitSkillSource(entry)
+    return `${entry.githubRepoId}\u0000${source.cloneUrl}\u0000${source.ref ?? 'HEAD'}`
+  }
+
+  private async refresh(
+    key: string,
+    entry: AgentSkillEntry,
+    opts: { agentId: string; useGitCredential: boolean },
+    cached: TrackedRef | undefined
+  ): Promise<string | null> {
+    try {
+      const answer = await this.resolveCommit(entry, {
+        agentId: opts.agentId,
+        useGitCredential: opts.useGitCredential,
+        privateHome: await this.privateHome(),
+        ...(cached?.etag ? { etag: cached.etag } : {})
+      })
+      const next: TrackedRef =
+        answer.status === 'unchanged'
+          ? { ...cached, checkedAt: this.now(), failedAt: undefined }
+          : { commit: answer.commit, ...(answer.etag ? { etag: answer.etag } : {}), checkedAt: this.now() }
+      this.cache.set(key, next)
+      return next.commit ?? null
+    } catch (error) {
+      // Unknown, not broken: the caller keeps whatever commit is installed.
+      this.cache.set(key, { ...cached, checkedAt: this.now(), failedAt: this.now() })
+      this.opts.warn?.(`skills: ${entry.name} ref check failed (${(error as Error).message})`)
+      return cached?.commit ?? null
+    }
+  }
+
+  private privateHome(): Promise<string> {
+    return (this.homeReady ??= (async () => {
+      const home = join(this.opts.stateRoot, 'ref-check-home')
+      await fsp.mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 })
+      return home
+    })())
+  }
+}
