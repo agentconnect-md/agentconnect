@@ -326,53 +326,83 @@ async function installSkillsLocked(
     const resolutionsByDefinition = new Map(
       retainedGitResolutions.map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
     )
+    const installedByDefinition = new Map(
+      installedResolutions.map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
+    )
+    // Acquisition identities this run wanted but could not build. Their installed
+    // bundles are kept: the source is still desired and the bytes on disk are its
+    // own older commit, so removing them would cost the agent a working skill for
+    // an upstream outage. See §6.3.
+    const unresolvedScopes = new Set<string>()
     for (const [index, entry] of gitSources.entries()) {
-      const acquisitionDir = join(scratch, 'acquired', `git-${index}`)
-      await fsp.mkdir(dirname(acquisitionDir), { recursive: true, mode: 0o700 })
-      await fsp.mkdir(acquisitionDir, { mode: 0o700 })
       const definitionDigest = gitResolutionDigest(entry)
-      // A sibling entry that shares this acquisition identity has already resolved
-      // it in THIS run, and both must land on identical bytes; otherwise take what
-      // the plan says (the tracked head, a pin, or the installed commit).
-      const plannedCommit = resolutionsByDefinition.get(definitionDigest) ?? plannedCommits.get(definitionDigest)
-      const acquisitionEntry = plannedCommit ? { ...entry, ref: plannedCommit } : entry
-      const acquired = await (opts.acquireGit ?? acquireGitSkillSource)(acquisitionEntry, {
-        destination: acquisitionDir,
-        agentId: agent.id,
-        useGitCredential: opts.useGitCredential === true
-      })
-      const resolvedCommit = acquired.resolvedCommit.toLowerCase()
-      if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
-        throw new Error(`Git source "${entry.name}" did not resolve to its planned commit`)
+      try {
+        const acquisitionDir = join(scratch, 'acquired', `git-${index}`)
+        await fsp.mkdir(dirname(acquisitionDir), { recursive: true, mode: 0o700 })
+        await fsp.mkdir(acquisitionDir, { mode: 0o700 })
+        // A sibling entry that shares this acquisition identity has already resolved
+        // it in THIS run, and both must land on identical bytes; otherwise take what
+        // the plan says (the tracked head, a pin, or the installed commit).
+        const plannedCommit = resolutionsByDefinition.get(definitionDigest) ?? plannedCommits.get(definitionDigest)
+        const acquisitionEntry = plannedCommit ? { ...entry, ref: plannedCommit } : entry
+        const acquired = await (opts.acquireGit ?? acquireGitSkillSource)(acquisitionEntry, {
+          destination: acquisitionDir,
+          agentId: agent.id,
+          useGitCredential: opts.useGitCredential === true
+        })
+        const resolvedCommit = acquired.resolvedCommit.toLowerCase()
+        if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (plannedCommit && resolvedCommit !== plannedCommit)) {
+          throw new Error(`Git source "${entry.name}" did not resolve to its planned commit`)
+        }
+        resolutionsByDefinition.set(definitionDigest, resolvedCommit)
+        const destination = join(scratch, 'inputs', `git-${index}`)
+        await prepareSnapshotDestination(destination)
+        const snapshot = await snapshotLocalSkillSource(acquired.sourceDir, destination, {
+          limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
+        })
+        accountInput(snapshot.fileCount, snapshot.totalBytes)
+        // The CLI matches `-s` values against SKILL.md frontmatter names but the
+        // wire carries canonical leaf names, so resolve each selection against
+        // the snapshot first (#371). One source invocation carries all selected
+        // skills; we independently require the exact resolved leaf-name set
+        // below, so a CLI that returns success after installing only a valid
+        // subset still fails the transaction.
+        const selection = await resolveSkillSelections(entry.name, destination, snapshot.files, entry.skills)
+        prepared.push({
+          key: `git:${index}:${definitionDigest}:${resolvedCommit}:${gitEntryScopeDigest(entry)}`,
+          name: entry.name,
+          sourceDir: destination,
+          skills: selection.cliSelections,
+          expectedLeaves: selection.expectedLeaves,
+          contentDigest: snapshot.sha256
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'unknown Git skill source error'
+        result.errors.push({ source: entry.name, error: message })
+        opts.warn?.(`skills: Git source ${entry.name} unavailable (${message}); keeping what is installed`)
+        unresolvedScopes.add(gitSourceScope(definitionDigest, entry))
+        // The ledger must keep naming the commit that is ON DISK — the tracking
+        // check may have dropped this retention to force the (now failed) rebuild.
+        const installed = installedByDefinition.get(definitionDigest)
+        if (installed !== undefined) resolutionsByDefinition.set(definitionDigest, installed)
       }
-      resolutionsByDefinition.set(definitionDigest, resolvedCommit)
-      const destination = join(scratch, 'inputs', `git-${index}`)
-      await prepareSnapshotDestination(destination)
-      const snapshot = await snapshotLocalSkillSource(acquired.sourceDir, destination, {
-        limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
-      })
-      accountInput(snapshot.fileCount, snapshot.totalBytes)
-      // The CLI matches `-s` values against SKILL.md frontmatter names but the
-      // wire carries canonical leaf names, so resolve each selection against
-      // the snapshot first (#371). One source invocation carries all selected
-      // skills; we independently require the exact resolved leaf-name set
-      // below, so a CLI that returns success after installing only a valid
-      // subset still fails the transaction.
-      const selection = await resolveSkillSelections(entry.name, destination, snapshot.files, entry.skills)
-      prepared.push({
-        key: `git:${index}:${definitionDigest}:${resolvedCommit}${entry.skills.length > 0 ? `:${fingerprint(entry.skills)}` : ''}`,
-        name: entry.name,
-        sourceDir: destination,
-        skills: selection.cliSelections,
-        expectedLeaves: selection.expectedLeaves,
-        contentDigest: snapshot.sha256
-      })
     }
     prepared.push(...localPrepared)
     const nextGitResolutions = currentGitResolutions(
       gitSources,
       [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
     )
+    // Owned bundles belonging to a source this run could not build: still desired,
+    // so the publication leaves them exactly as they are instead of removing them.
+    const preserveOwned =
+      unresolvedScopes.size > 0
+        ? (ledger?.owned ?? [])
+            .filter((bundle) => {
+              const scope = gitSourceKeyScope(bundle.sourceKey)
+              return scope !== undefined && unresolvedScopes.has(scope)
+            })
+            .map((bundle) => bundle.relativeRoot)
+        : []
     // What the publication layer stores and compares: the commits actually acquired.
     const installedFingerprint = fingerprintFor(plannedGitCommits(gitSources, nextGitResolutions, new Map()))
 
@@ -471,8 +501,11 @@ async function installSkillsLocked(
       agentId: agent.id,
       runtime: agent.runtime,
       cliVersion: PINNED_SKILLS_CLI_VERSION,
-      fingerprint: installedFingerprint,
+      // A run that could not build every desired source has not met its plan, so
+      // its fingerprint must not let the next preparation skip the retry.
+      fingerprint: unresolvedScopes.size > 0 ? `failed:${randomUUID()}` : installedFingerprint,
       candidates,
+      ...(preserveOwned.length > 0 ? { preserveOwned } : {}),
       gitResolutions: nextGitResolutions,
       legacyOwned: legacyState.owned,
       lockHeld: true,
@@ -501,6 +534,16 @@ async function installSkillsLocked(
       }
       retainedGitResolutions = currentGitResolutions(gitSources, cleanupLedger?.gitResolutions ?? [])
       assertNoUnmigratedLegacyState(legacyState)
+      // An install that threw says nothing about whether the operator still wants
+      // these skills — only that this run could not rebuild them — and a published
+      // bundle's source key names its acquisition identity, not its repository, so
+      // this pass cannot even tell a re-pinned source from a removed one. It
+      // therefore keeps what is published and leaves pruning to the next run that
+      // actually computes a desired set. An EMPTY desired set is the exception: that
+      // is a complete statement, and disabled executable content must not stay
+      // active on it (§6.3).
+      const nothingDesired = gitSources.length === 0 && (opts.localSkills ?? []).length === 0
+      const keep = nothingDesired ? [] : (cleanupLedger?.owned ?? []).map((bundle) => bundle.relativeRoot)
       const cleared = await reconcileSkillBundles({
         cwd,
         stateDir,
@@ -509,6 +552,7 @@ async function installSkillsLocked(
         cliVersion: PINNED_SKILLS_CLI_VERSION,
         fingerprint: `failed:${randomUUID()}`,
         candidates: [],
+        ...(keep.length > 0 ? { preserveOwned: keep } : {}),
         gitResolutions: retainedGitResolutions,
         legacyOwned: legacyState.owned,
         lockHeld: true,
@@ -709,6 +753,29 @@ export function currentGitResolutions(
   return resolutions
     .filter((resolution) => desired.has(resolution.definitionDigest))
     .sort((a, b) => a.definitionDigest.localeCompare(b.definitionDigest))
+}
+
+/** What separates one entry from a sibling that shares its acquisition identity:
+ * the subdirectory it publishes from and the skills it selects. The identity is
+ * repository + ref by design (one tarball serves every entry on it), so neither is
+ * in it, and both are needed to tell a still-desired entry from a disabled one. */
+export function gitEntryScopeDigest(entry: AgentSkillEntry): string {
+  const source = resolveBoundedGitSkillSource(entry)
+  return fingerprint({ subDir: source.subDir ?? '', skills: [...entry.skills] })
+}
+
+/** One ENTRY's publication scope: its acquisition identity plus that entry digest. */
+export function gitSourceScope(definitionDigest: string, entry: AgentSkillEntry): string {
+  return `${definitionDigest}|${gitEntryScopeDigest(entry)}`
+}
+
+/** The same scope read back out of a published bundle's source key
+ * (`git:<index>:<definitionDigest>:<commit>[:selections]`), or undefined for a
+ * bundle that did not come from a git source. */
+export function gitSourceKeyScope(sourceKey: string): string | undefined {
+  const parts = sourceKey.split(':')
+  if (parts[0] !== 'git' || parts.length < 4) return undefined
+  return `${parts[2]}|${parts[4] ?? ''}`
 }
 
 export function gitResolutionDigest(entry: AgentSkillEntry): string {
