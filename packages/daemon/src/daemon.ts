@@ -130,6 +130,12 @@ import {
   type ThreadContextSnapshot
 } from './session/thread-context.js'
 import { defaultTurnOutputMetrics } from './session/turn-output-metrics.js'
+import {
+  selectSteerTarget,
+  steerEligibleEntry,
+  steerPromptBlocks,
+  steeredTranscriptText
+} from './daemon/steering-admission.js'
 import { recallQueryFromBlocks } from './memory/recall.js'
 import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
@@ -7493,7 +7499,7 @@ export class Daemon {
       ...(ingress?.receiptId ? { receiptId: ingress.receiptId(normalized) } : {}),
       onAdmission: async (result) => {
         trace.stage = 'admitted'
-        if (result.accepted && !result.duplicate) await onAdmitted(msg, normalized, busy)
+        if (result.accepted && !result.duplicate) await onAdmitted(msg, normalized, busy, result.steered === true)
         // A durability refusal is the ONE outcome the provider must send again: nothing was
         // recorded, so nothing will replay it either. Every other non-acceptance is a
         // deliberate local gate — paused, draining, loop protection — whose delivery is
@@ -7537,7 +7543,7 @@ export class Daemon {
       ): Promise<'dispatch' | 'settled' | 'refused'>
       /** Run once, INSIDE dispatch's durable admission fence, the first time this delivery is
        *  admitted. Rejecting refuses the delivery — nothing runs that could not be recorded. */
-      onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): Promise<void>
+      onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean, steered: boolean): Promise<void>
       /** Refuse the delivery when the durable row cannot be written, rather than running it
        *  best-effort — for a platform whose admission hook USES that row as its dedup. */
       requireDurable?: boolean
@@ -7550,7 +7556,7 @@ export class Daemon {
       'linear',
       {
         prepare: async (msg, normalized, trace) => await this.prepareLinearDelivery(msg, normalized, trace),
-        onAdmitted: async (msg, normalized, busy) => this.onLinearAdmitted(msg, normalized, busy),
+        onAdmitted: async (msg, normalized, busy, steered) => this.onLinearAdmitted(msg, normalized, busy, steered),
         requireDurable: true,
         receiptId: (normalized) => linearDeliveryReceiptId(stableMessageId(normalized))
       }
@@ -7737,7 +7743,7 @@ export class Daemon {
    * before this can run, and a losing copy of the delivery never reaches it at all — which is
    * also what keeps a redelivered `created` from moving the issue twice.
    */
-  private onLinearAdmitted(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void {
+  private onLinearAdmitted(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean, steered = false): void {
     const conn = this.lnConnByIntegration.get(msg.integrationId)
     const ext = readLinearExt(normalized)
     if (!conn || !ext) return
@@ -7756,7 +7762,7 @@ export class Daemon {
       if (mode === 'none') return
       await conn.postActivity(ext.agentSessionId, {
         type: 'thought',
-        body: linearAckBody(agentName, ext, { queued: busy }),
+        body: linearAckBody(agentName, ext, steered ? { steered: true } : { queued: busy }),
         ephemeral: true
       })
       // The session opened on this delivery: the issue moves to "started" once the ack is OUT —
@@ -8560,14 +8566,16 @@ export class Daemon {
           msg.remoteMcp,
           op.mentions,
           op.post,
-          op.worktree
+          op.worktree,
+          op.steer
         )
         return {
           msgId: msg.msgId,
           accepted: ack.accepted,
           turnId: ack.turnId,
           ...(ack.reason ? { reason: ack.reason } : {}),
-          ...(ack.detail ? { detail: ack.detail } : {})
+          ...(ack.detail ? { detail: ack.detail } : {}),
+          ...(ack.steered ? { steered: true } : {})
         }
       }
       case 'context': {
@@ -8916,13 +8924,17 @@ export class Daemon {
   /** Settle one activation whose message a live turn's prompt already carries: the row is
    *  upgraded to a delivery for this agent, the durable row is released, and the turn is
    *  reported cancelled rather than run a second time. */
-  private async coalesceEntryIntoTurn(entry: QueueEntry, sessionId: string | null): Promise<void> {
+  private async coalesceEntryIntoTurn(
+    entry: QueueEntry,
+    sessionId: string | null,
+    reason: 'coalesced_into_turn' | 'steered_into_turn' = 'coalesced_into_turn'
+  ): Promise<void> {
     if (entry.webchat && !entry.webchat.doneSent) {
       entry.webchat.doneSent = true
       entry.webchat.sink.done({
         conversationId: entry.webchat.conversationId,
         turnId: entry.webchat.turnId,
-        stopReason: 'coalesced_into_turn'
+        stopReason: reason
       })
     }
     const { thread, ts } = transcriptCoords(entry.msg)
@@ -8949,8 +8961,46 @@ export class Daemon {
       turnId: this.evaluationTurnIdFor(entry.agentId, entry.msg),
       platform: entry.msg.platform,
       channel: entry.msg.channel,
-      data: { reason: 'coalesced_into_turn' }
+      data: { reason }
     })
+  }
+
+  /** Steer an arrival into the live turn for its session key over `_session/steering` (#1847)
+   *  instead of queueing it. True when the runtime took it: the entry is settled exactly like a
+   *  coalesced one and its row is marked absorbed so neither fence regenerates for it. False —
+   *  no eligible live prompt, no capability, budget spent, the runtime declined, or the RPC
+   *  failed — leaves the caller on today's queue path. */
+  private async steerIntoLiveTurn(key: string, entry: QueueEntry): Promise<boolean> {
+    if (!this.cfg.features.sessionSteering || !steerEligibleEntry(entry)) return false
+    const target = selectSteerTarget(this.pending.values(), key)
+    if (!target) return false
+    const host = target.selectedHost?.host ?? this.hostForOwner(target.hostKey)
+    if (!host?.steeringSupported?.()) return false
+    // Attempts, not successes: a runtime that keeps declining is not asked without bound.
+    target.steerCount = (target.steerCount ?? 0) + 1
+    let outcome: Awaited<ReturnType<AcpHost['steer']>>
+    try {
+      // `promptRequired`: a steer that races the turn end is declined, never a turn we did not admit.
+      outcome = await host.steer(target.acpSessionId, steerPromptBlocks(entry.msg), {
+        idleBehavior: 'promptRequired'
+      })
+    } catch (err) {
+      this.log.warn(`steer: ${key} failed, queueing instead — ${(err as Error).message}`)
+      return false
+    }
+    if (outcome === 'failed') return false
+    if (outcome === 'startedNewTurn') {
+      this.log.warn(`steer: runtime opened a new turn for ${key} despite promptRequired; treating as admitted`)
+    }
+    // The live prompt now carries this row: remember it as absorbed AND already settled, so the
+    // final fence does not regenerate for it and a late admission cannot coalesce it twice.
+    const { ts } = transcriptCoords(entry.msg)
+    this.noteAbsorbedContext(key, new Map([[ts, steeredTranscriptText(entry.msg)]]))
+    this.claimAbsorbedContext(key, ts)
+    await this.coalesceEntryIntoTurn(entry, target.acpSessionId, 'steered_into_turn')
+    defaultTurnOutputMetrics.queueSteered(entry.msg.platform, 1)
+    this.log.info(`steer: delivered 1 message into the live turn for ${key} (${outcome})`)
+    return true
   }
 
   /** Start/regeneration fence queue mutation. The caller has already decided that
@@ -10232,6 +10282,9 @@ export class Daemon {
     callMeta?: CallMeta,
     opts?: {
       isQueueCmd?: boolean
+      /** Steer into the live turn or refuse `busy` — never queue. For a caller that keeps its own
+       *  queue (the console composer) and must learn the verdict from the admission ACK. */
+      steerOnly?: boolean
       /** Recovery of a row whose loop-guard admission was already counted. */
       replay?: boolean
       /** A startup replay may wait for an interrupt safety drain instead of being dropped. */
@@ -10257,7 +10310,13 @@ export class Daemon {
        * any turn can start. AWAITED, and a rejection REFUSES the delivery — the caller's own
        * durable bookkeeping is part of the same fence `requireDurable` protects, so work it
        * could not record is never run. */
-      onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void | Promise<void>
+      onAdmission?: (result: {
+        accepted: boolean
+        reason?: string
+        duplicate?: boolean
+        /** The delivery rode the running turn over `_session/steering`; no queue entry exists. */
+        steered?: boolean
+      }) => void | Promise<void>
       /** Hold an admitted entry before execution; false drops only that entry. */
       admissionWait?: Promise<boolean>
       /** Delay observed-inbound persistence until admissionWait succeeds. */
@@ -10301,6 +10360,7 @@ export class Daemon {
           accepted: boolean
           reason?: string
           duplicate?: boolean
+          steered?: boolean
         }): Promise<void> => {
           if (admissionSettled) return
           admissionSettled = true
@@ -10536,6 +10596,20 @@ export class Daemon {
             // yet, so settle it as coalesced now instead of prompting the same message twice.
             if (await this.coalesceLateAdmission(key, entry)) {
               await settleAdmission({ accepted: true })
+              return
+            }
+            // A running prompt takes the message directly when the runtime can steer (#1847); the
+            // queue below is the fallback for everything the runtime or the policy declines.
+            if (await this.steerIntoLiveTurn(key, entry)) {
+              await settleAdmission({ accepted: true, steered: true })
+              return
+            }
+            // A steer-only delivery is refused rather than parked: its caller still holds the
+            // message and re-sends it when the turn ends. The durable row must not outlive it.
+            if (opts?.steerOnly) {
+              await this.removeInbox(entry).catch(() => undefined)
+              await settleAdmission({ accepted: false, reason: 'busy' })
+              resolve(null)
               return
             }
             // Place the entry BEFORE the revision plan's interrupts: those await, and a gate that
@@ -12175,8 +12249,13 @@ export class Daemon {
       )
       // Start-fence linearization: no await occurs between queue coalescing above
       // (or the prior regeneration decision) and initiating this ACP request.
-      const promptPromise = host.prompt(sessionId, promptBlocks)
-      const result = await promptPromise
+      p.promptInFlight = true
+      let result: PromptResult
+      try {
+        result = await host.prompt(sessionId, promptBlocks)
+      } finally {
+        p.promptInFlight = false
+      }
       // The runtime's notifications are handled off the prompt call, so drain this
       // session's update chain before the turn reads what they wrote.
       await this.acpUpdateChains.get(acpUpdateChainKey(p.hostKey, sessionId))
@@ -13692,6 +13771,10 @@ export class Daemon {
           }
         : {}),
       ...(allowRuntimeChangesInChat && fast ? { fastModeAvailable: true } : {}),
+      // Steerable while this host owns the live session and advertised `_session/steering`.
+      ...(this.cfg.features.sessionSteering && modelSessionIsLive && host?.steeringSupported?.() === true
+        ? { steerable: true }
+        : {}),
       // The console deep-links from this, so it is the session's outward id (§1.1), not the hop's.
       ...(outwardSessionId ? { sessionId: outwardSessionId } : {})
     }

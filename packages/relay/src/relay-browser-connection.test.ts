@@ -86,6 +86,18 @@ function build(
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 describe('parseBrowserFrame', () => {
+  it('carries the steer-or-refuse flag (#547) only when the browser set it to true', () => {
+    expect(parseBrowserFrame({ text: 'hi', steer: true }, USER)).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER, steer: true }
+    })
+    expect(parseBrowserFrame({ text: 'hi', steer: 'yes' }, USER)).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER }
+    })
+    expect(parseBrowserFrame({ text: 'hi', steer: false }, USER)).toEqual({
+      op: { op: 'turn', text: 'hi', user: USER }
+    })
+  })
+
   it('maps a bare {text} and {type:"message",text} to a turn op carrying the user', () => {
     expect(parseBrowserFrame({ text: 'hi' }, USER)).toEqual({ op: { op: 'turn', text: 'hi', user: USER } })
     expect(parseBrowserFrame({ type: 'message', text: 'hi', turnId: AGENT }, USER)).toEqual({
@@ -389,6 +401,18 @@ describe('RelayBrowserConnection', () => {
     transport.feed({ text: 'hi' })
     await tick()
     expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: false, agentId: AGENT, reason: 'paused' } })
+  })
+
+  it('surfaces a steered turn verdict to the browser (#547)', async () => {
+    const turnId = '22222222-2222-4222-8222-222222222222'
+    const { transport, sent } = build({ ack: { msgId: 'turn-1', accepted: true, turnId, steered: true } })
+    transport.feed({ text: 'use staging', turnId, steer: true })
+    await tick()
+    expect(sent[0]).toMatchObject({ payload: { op: 'turn', text: 'use staging', turnId, steer: true } })
+    expect(transport.last('ack')).toEqual({
+      type: 'ack',
+      ack: { accepted: true, turnId, agentId: AGENT, steered: true }
+    })
   })
 
   it('forwards a resume cursor and surfaces its replay verdict', async () => {

@@ -411,6 +411,8 @@ export interface StatusBarInfo {
   /** Selectable session presets; may include the synthetic Codex Auto value. */
   permissionModes?: string[]
   fastModeAvailable?: boolean
+  /** A message sent during this turn can be steered into it (webchat status only). */
+  steerable?: boolean
   // Current Slack output verbosity (daemon-side minimal/low/medium/high). Modal-only selector;
   // the level set is a fixed enum, so there's no "available" list. renderStatusBar ignores it.
   outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'

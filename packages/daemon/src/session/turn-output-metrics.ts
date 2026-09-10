@@ -17,6 +17,7 @@ export interface TurnOutputMetrics {
   generations(count: number): void
   candidateDiscarded(reason: 'context_changed' | 'context_churn' | 'interrupted' | 'failed'): void
   queueCoalesced(platform: Platform, count: number): void
+  queueSteered(platform: Platform, count: number): void
   contextChurnExhausted(platform: Platform): void
 }
 
@@ -28,6 +29,7 @@ const generations = meter.createHistogram('turn_regeneration_generations', { uni
 const candidateDiscarded = meter.createCounter('turn_candidate_discarded_total')
 const snapshotDuration = meter.createHistogram('turn_context_snapshot_duration_ms', { unit: 'ms' })
 const queueCoalesced = meter.createCounter('turn_queue_coalesced_total')
+const queueSteered = meter.createCounter('turn_queue_steered_total')
 const churnExhausted = meter.createCounter('turn_context_churn_exhausted_total')
 
 export const defaultTurnOutputMetrics: TurnOutputMetrics = {
@@ -55,6 +57,9 @@ export const defaultTurnOutputMetrics: TurnOutputMetrics = {
   },
   queueCoalesced(platform, count) {
     if (count > 0) queueCoalesced.add(count, { platform })
+  },
+  queueSteered(platform, count) {
+    if (count > 0) queueSteered.add(count, { platform })
   },
   contextChurnExhausted(platform) {
     churnExhausted.add(1, { platform })

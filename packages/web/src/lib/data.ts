@@ -1167,6 +1167,9 @@ export interface SessionStep {
    *  history view gets, via the existing `fetchToolBody` read. */
   toolCallId?: string
   toolStatus?: string
+  /** A `msg` step sent INTO a running turn (#1847): rendered as a steer, and a grouping fence
+   *  so the reply that continues after it starts a fresh block below it. */
+  steer?: boolean
   /** The daemon session that recorded this tool call — set on live multi-agent
    *  steps where the owning participant's session differs from the row's
    *  primary `realSessionId`; the on-demand tool-body read targets it. */
@@ -1285,6 +1288,9 @@ export interface Session {
    *  status frame). `fastModeAvailable` false/absent ⇒ no fast toggle shown. */
   fastMode?: boolean
   fastModeAvailable?: boolean
+  /** A message sent while the turn streams is steered into it (webchat status frame, #1847)
+   *  instead of waiting in the composer's queue. */
+  steerable?: boolean
   /** Daemon-side output verbosity the session ran with (low/medium/high) — the
    *  CP-stored execution-config snapshot; absent on legacy rows. */
   outputMode?: string

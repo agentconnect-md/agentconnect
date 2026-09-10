@@ -115,6 +115,12 @@ const configOptions = (sessionId) => {
 let clientCapabilities
 let requestCounter = 1000
 let pendingElicit
+// `AC_STEERING=1` advertises `_meta.steering.supported` and serves `_session/steering`.
+// `AC_STEER_HOLD_PROMPT=1` additionally keeps each session/prompt open until a steer arrives,
+// which is the only way a test observes an `injected` outcome from the agent's own side.
+const steeringEnabled = process.env.AC_STEERING === '1'
+const holdPromptForSteer = process.env.AC_STEER_HOLD_PROMPT === '1'
+const heldPrompts = new Map()
 rl.on('line', async (line) => {
   if (!line.trim()) return
   const msg = JSON.parse(line)
@@ -140,7 +146,38 @@ rl.on('line', async (line) => {
   }
   if (method === 'initialize') {
     clientCapabilities = params?.clientCapabilities
-    send({ jsonrpc: '2.0', id, result: { protocolVersion: 1, agentCapabilities: agentCapabilities() } })
+    send({
+      jsonrpc: '2.0',
+      id,
+      result: {
+        protocolVersion: 1,
+        agentCapabilities: agentCapabilities(),
+        ...(steeringEnabled ? { _meta: { steering: { supported: true } } } : {})
+      }
+    })
+  } else if (method === '_session/steering') {
+    if (!steeringEnabled) {
+      send({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } })
+      return
+    }
+    const text = (params.prompt ?? []).map((b) => b.text ?? '').join('')
+    const held = heldPrompts.get(params.sessionId)
+    if (held) {
+      heldPrompts.delete(params.sessionId)
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `steer:${text}` } }
+        }
+      })
+      send({ jsonrpc: '2.0', id, result: { outcome: 'injected' } })
+      send({ jsonrpc: '2.0', id: held, result: { stopReason: 'end_turn' } })
+      return
+    }
+    const idleBehavior = params._meta?.steering?.idleBehavior
+    send({ jsonrpc: '2.0', id, result: { outcome: idleBehavior === 'promptRequired' ? 'failed' : 'startedNewTurn' } })
   } else if (method === 'session/new') {
     if (!acceptsSessionMeta(id, params)) return
     if (!acceptsAdditionalDirectories(id, params)) return
@@ -186,6 +223,10 @@ rl.on('line', async (line) => {
     send({ jsonrpc: '2.0', id, result: {} })
   } else if (method === 'session/prompt') {
     const text = (params.prompt ?? []).map((b) => b.text ?? '').join('')
+    if (holdPromptForSteer) {
+      heldPrompts.set(params.sessionId, id)
+      return
+    }
     // `AC_ECHO_CLIENT_CAPS=1` replies with what the client advertised at initialize, which is
     // the only way a test sees the capability declaration from the agent's own side.
     if (process.env.AC_ECHO_CLIENT_CAPS === '1') {

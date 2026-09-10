@@ -227,9 +227,11 @@ export const ConfigSchema = z.object({
    * never negotiated through the control plane or placed on the message hot path. */
   features: z
     .object({
-      turnFinalContextRefresh: z.boolean().default(true)
+      turnFinalContextRefresh: z.boolean().default(true),
+      // Steer a message into the live turn over `_session/steering` instead of queueing it.
+      sessionSteering: z.boolean().default(true)
     })
-    .default({ turnFinalContextRefresh: true }),
+    .default({ turnFinalContextRefresh: true, sessionSteering: true }),
   sessions: z
     .object({
       // Local-DB retention for FINISHED sessions (issue #485): a session untouched

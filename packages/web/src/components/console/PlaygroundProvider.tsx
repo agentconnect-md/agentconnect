@@ -177,6 +177,8 @@ export interface QueuedTurn {
   participants?: Array<{ agentId: string; name: string; primary?: boolean }>
   /** A `/` pick's owner, revalidated at dispatch — see sendTurn. */
   commandPick?: { agentId: string; name: string }
+  /** Composer send order (per provider), so a steer put back in the queue keeps its place. */
+  seq?: number
 }
 
 // Synthetic playground session ids start with `pg_`; real CP session ids do not.
@@ -293,6 +295,7 @@ type WebchatStatus = {
   efforts?: string[]
   permissionModes?: string[]
   fastModeAvailable?: boolean
+  steerable?: boolean
   sessionId?: string
 }
 
@@ -310,6 +313,7 @@ type WebchatDone = {
   turnId: string
   agentId?: string
   lastIndex?: number
+  stopReason?: string
   error?: string
 }
 
@@ -330,6 +334,23 @@ type WebchatRuntimeConfig = {
   effort?: string
   permissionMode?: string
   fastMode?: boolean
+}
+
+/** A steer on the wire (see sendSteer): its send args for a requeue, its frame for a reconnect re-send. */
+type PendingSteer = {
+  agentId: string
+  text: string
+  conversationId?: string
+  seq: number
+  frame: string
+  /** The socket this frame last went out on — a reconnect re-sends it once per new socket. */
+  sentOn?: WebSocket
+  /** Went out more than once: a verdict may describe a delivery an earlier socket already made. */
+  resent?: boolean
+  /** The daemon admitted it as its own turn while an older lane was still open here: that lane's
+   *  retirement opens this turn's lane and resumes it (see openAcceptedSteerLane). */
+  acceptedAsTurn?: boolean
+  acceptedAgentId?: string
 }
 
 export function PlaygroundProvider({ children }: { children: ReactNode }) {
@@ -370,6 +391,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // where the relay applied the all-participants default) create its stream
   // lane lazily instead of dropping the reply.
   const pendingTurnIds = useRef<Map<string, string>>(new Map())
+  // Messages sent INTO a running turn (#1847), per session id → turnId. Their ack and terminal
+  // `done` settle here instead of opening a lane: the running turn's own lane carries the reply.
+  const steerTurns = useRef<Map<string, Map<string, PendingSteer>>>(new Map())
+  // Composer send order across steers and queued messages — a refused steer is restored where it was sent.
+  const sendSeq = useRef(0)
+  // Whether the session's live turn accepts steering — from the daemon's status frame.
+  const steerableRef = useRef<Record<string, boolean>>({})
   // The in-flight turn's wire frame per session id: a socket that drops between `send` and the ack leaves it in limbo (it may never have reached a daemon), so the reconnect re-sends it once — same turnId, an already-admitted copy is refused `busy` and we attach to its stream — instead of only resuming a stream that may not exist.
   const pendingTurnFrames = useRef<
     Map<string, { turnId: string; frame: string; resentOn?: WebSocket; attaching?: Set<string> }>
@@ -423,6 +451,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const setBusy = useCallback((id: string, v: boolean): void => {
     if (v) busyRef.current[id] = true
     else delete busyRef.current[id]
+    // Steerability belongs to the live turn: the next turn's status frame declares it afresh.
+    if (!v) delete steerableRef.current[id]
     setPgBusyBy((cur) => (!!cur[id] === v ? cur : { ...cur, [id]: v }))
   }, [])
   const setPgInput = useCallback((id: string, v: string): void => {
@@ -591,7 +621,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           const collapsed = [...steps]
           for (let i = collapsed.length - 1; i >= 0; i--) {
             const step = collapsed[i]!
-            if (step.kind === 'msg' && step.agentId === undefined) break
+            // A steer is part of THIS turn (#1847): the discarded candidate spans it.
+            if (step.kind === 'msg' && step.agentId === undefined && !step.steer) break
             if ((step.agentId ?? undefined) !== agentId) continue
             if (step.turnId !== turnId) break
             if (step.boundary) break
@@ -620,7 +651,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           // snapshot keyed to the turn, so it crosses.
           for (let i = steps.length - 1; i >= 0; i--) {
             const step = steps[i]!
-            if (step.kind === 'msg' && step.agentId === undefined) break
+            // A steer only fences TEXT grouping; the turn's one plan row is still upserted across it.
+            if (step.kind === 'msg' && step.agentId === undefined && !step.steer) break
             if ((step.agentId ?? undefined) !== agentId) continue
             if (step.turnId !== turnId) break
             if (step.kind === 'planblock') return replaceAt(i, { ...step, plan: ev.entries, observedAtMs })
@@ -722,10 +754,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           // Address the update to ITS call, not the lane tail: ACP allows parallel
           // tool calls, so the most recent tool step may belong to a different call.
           // Same fences as the lane scan above — never cross a user message, a
-          // foreign turn, or the supersession boundary.
+          // foreign turn, or the supersession boundary. A steer (#1847) is not a fence here: a
+          // call that started before it still completes in this turn and must find its row.
           for (let i = steps.length - 1; i >= 0; i--) {
             const step = steps[i]!
-            if (step.kind === 'msg' && step.agentId === undefined) break
+            if (step.kind === 'msg' && step.agentId === undefined && !step.steer) break
             if ((step.agentId ?? undefined) !== agentId) continue
             if (step.turnId !== turnId) break
             if (step.boundary) break
@@ -766,6 +799,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  model or the last token total. Playground sessions only (adopted webchat rows carry
    *  their own persisted headline). */
   const applyStatus = useCallback((id: string, st: WebchatStatus, agentId?: string): void => {
+    // Steerability is read even for an adopted session with no pgSessions row: pgSend's
+    // queue-or-steer decision needs it, and only the daemon knows the live runtime.
+    if (st.steerable !== undefined) {
+      if (st.steerable) steerableRef.current[id] = true
+      else delete steerableRef.current[id]
+    }
     // Record every participant's session id BEFORE the primary fence below —
     // member lanes never reach the session-row merge, but their tool steps need
     // the owning session for the live tool-body read (keyed '' for the sole/
@@ -803,6 +842,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           ...(st.permissionModes !== undefined ? { availablePermissionModes: st.permissionModes } : {}),
           ...(st.fastMode !== undefined ? { fastMode: st.fastMode } : {}),
           ...(st.fastModeAvailable !== undefined ? { fastModeAvailable: st.fastModeAvailable } : {}),
+          ...(st.steerable !== undefined ? { steerable: st.steerable } : {}),
           ...(st.sessionId !== undefined ? { realSessionId: st.sessionId } : {}),
           ...(st.totalTokens !== undefined ? { tokens: fmtCountCompact(st.totalTokens) } : {}),
           ...(st.costAmount !== undefined ? { cost: fmtCost(st.costAmount, st.costCurrency) } : {})
@@ -823,6 +863,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   }
   const cursorKeyFor = (id: string, agentId?: string): string | undefined =>
     cursorKeyForLanes(streamCursors.current, id, agentId)
+  // A steer the daemon could not steer runs as its own turn later: its frames admit a lane
+  // exactly like the in-flight send's would, so the reply is not dropped.
+  const pendingTurnIdFor = (id: string, turnId: string | undefined): string | undefined =>
+    turnId !== undefined && steerTurns.current.get(id)?.has(turnId) ? turnId : pendingTurnIds.current.get(id)
   // REACTIVE lane membership (review fix): the cursor map is a ref, and a
   // lane's removal (a peer's non-final done) may arrive with no other state
   // change — reading the ref at render time would keep showing a finished
@@ -853,10 +897,46 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     syncBusyLanes(id)
   }
 
+  /** Put a steer the daemon refused (or a lost socket dropped) back into the composer's queue
+   *  at its send position: the user still sees it, can cancel it, and it goes out in order once
+   *  the turn ends. Two refusals arriving A then B therefore restore [A, B], never [B, A]. */
+  const requeueSteer = useCallback(
+    (id: string, turnId: string, steer: PendingSteer): void => {
+      steerTurns.current.get(id)?.delete(turnId)
+      mutateSteps(id, (steps) => steps.filter((s) => s.turnId !== turnId))
+      const queued: QueuedTurn = {
+        queueId: randomUuid(),
+        text: steer.text,
+        agentId: steer.agentId,
+        seq: steer.seq,
+        ...(steer.conversationId ? { conversationId: steer.conversationId } : {})
+      }
+      const insert = (queue: QueuedTurn[]): QueuedTurn[] => {
+        const at = queue.findIndex((q) => (q.seq ?? Number.POSITIVE_INFINITY) > steer.seq)
+        return at < 0 ? [...queue, queued] : [...queue.slice(0, at), queued, ...queue.slice(at)]
+      }
+      pgQueueRef.current[id] = insert(pgQueueRef.current[id] ?? NO_QUEUE)
+      setPgQueueBy((cur) => ({ ...cur, [id]: insert(cur[id] ?? NO_QUEUE) }))
+    },
+    [mutateSteps]
+  )
+
+  /** Steers of a session still awaiting the daemon's verdict — they keep their turnId until it comes. */
+  const hasUnackedSteers = (id: string): boolean => (steerTurns.current.get(id)?.size ?? 0) > 0
+
   const failStream = useCallback(
     (id: string, message: string): void => {
       dropLanes(id)
       reconnectAttempts.current.delete(id)
+      // An unacked steer may already have reached the runtime, so it is NOT turned into a fresh
+      // turn here — that could run the instruction twice. It keeps its turnId and is re-sent on
+      // the next socket, where the daemon reconciles it; until then the delivery reads as uncertain.
+      if (hasUnackedSteers(id)) {
+        pushStep(id, {
+          kind: 'done',
+          text: '⚠️ Could not confirm that your last message reached the agent — it is re-sent once the connection returns.'
+        })
+      }
       pushStep(id, { kind: 'done', text: `⚠️ ${message}` })
       setBusy(id, false)
     },
@@ -882,6 +962,58 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       )
     },
     [mutateSteps]
+  )
+
+  /** Ask the daemon to replay one lane from where its cursor stands (also used inside connect()). */
+  const sendLaneResumeOn = (ws: WebSocket, key: string): void => {
+    const cursor = streamCursors.current.get(key)
+    const turnId = cursor?.turnId ?? cursor?.requestedTurnId
+    if (!cursor || !turnId || ws.readyState !== WebSocket.OPEN) return
+    cursor.resumeGeneration += 1
+    const agentId = laneAgentId(key)
+    ws.send(
+      JSON.stringify({
+        type: 'resume',
+        turnId,
+        ...(agentId ? { agentId } : {}),
+        generation: cursor.resumeGeneration,
+        afterIndex: cursor.nextIndex - 1
+      })
+    )
+  }
+
+  /** Open the lane of a steer the daemon admitted as its own turn (#547): the step becomes an
+   *  ordinary user turn, the lane binds to that turnId and — for a copy re-sent after a reconnect,
+   *  or one deferred behind an older lane — a resume pulls the reply already streamed elsewhere. */
+  const openSteerTurnLane = useCallback(
+    (id: string, turnId: string, steer: PendingSteer, agentId: string | undefined, resume: boolean): void => {
+      steerTurns.current.get(id)?.delete(turnId)
+      mutateSteps(id, (steps) => steps.map((s) => (s.turnId === turnId && s.steer ? { ...s, steer: undefined } : s)))
+      pendingTurnIds.current.set(id, turnId)
+      finishedTurnLanes.current.delete(id)
+      const cursor = createWebchatCursor<WebchatOutput, WebchatDone>(turnId)
+      bindWebchatTurn(cursor, turnId)
+      const key = laneKey(id, agentId ?? steer.agentId)
+      streamCursors.current.set(key, cursor)
+      syncBusyLanes(id)
+      setBusy(id, true)
+      const ws = conns.current.get(id)?.ws
+      if (resume && ws) sendLaneResumeOn(ws, key)
+    },
+    [mutateSteps, setBusy, syncBusyLanes]
+  )
+
+  /** When the last lane retires, a steer accepted as its own turn meanwhile takes over (true), so
+   *  the ack that arrived ahead of the older turn's replayed `done` is not lost with it. */
+  const openAcceptedSteerLane = useCallback(
+    (id: string): boolean => {
+      const entry = [...(steerTurns.current.get(id)?.entries() ?? [])].find(([, s]) => s.acceptedAsTurn)
+      if (!entry) return false
+      const [turnId, steer] = entry
+      openSteerTurnLane(id, turnId, steer, steer.acceptedAgentId, true)
+      return true
+    },
+    [openSteerTurnLane]
   )
 
   const applyStreamResult = useCallback(
@@ -944,12 +1076,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         // every chunk back — so a clean end is the last chance to retire the wait it announced.
         retireWaitNotice(id, agentId, result.done.turnId)
       }
-      // The turn stays busy until every targeted participant's lane finished.
-      if (lanesOf(id).length === 0) setBusy(id, false)
+      // The turn stays busy until every targeted participant's lane finished — unless a steer the
+      // daemon already admitted as its own turn was waiting for exactly this lane to retire.
+      if (lanesOf(id).length === 0 && !openAcceptedSteerLane(id)) setBusy(id, false)
     },
     [
       anchorColdTurn,
       applyEvent,
+      openAcceptedSteerLane,
       applyStatus,
       applyTitle,
       deltaBuffer,
@@ -972,7 +1106,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // frame while it waits for this one (webchat-multi-agents.md §5.3).
       if (
         !key &&
-        admitsLane(output.agentId, output.turnId, pendingTurnIds.current.get(id), finishedFor(id, output.turnId))
+        admitsLane(output.agentId, output.turnId, pendingTurnIdFor(id, output.turnId), finishedFor(id, output.turnId))
       ) {
         key = laneKey(id, output.agentId)
         streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(output.turnId))
@@ -988,10 +1122,21 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   const receiveDone = useCallback(
     (id: string, done: WebchatDone): void => {
+      // A steered message's own stream ends at once: the running turn's lane carries the reply,
+      // so this terminal frame settles the steer and must not touch busy state or lanes.
+      const steered = steerTurns.current.get(id)?.has(done.turnId) === true
+      if (steered && (done.stopReason === 'steered_into_turn' || done.stopReason === 'coalesced_into_turn')) {
+        steerTurns.current.get(id)?.delete(done.turnId)
+        return
+      }
+      if (steered) steerTurns.current.get(id)?.delete(done.turnId)
       let key = cursorKeyFor(id, done.agentId)
       // Same early-frame admission as receiveOutput: a participant's terminal
       // frame (e.g. a coalesced turn's immediate done) may also beat its ack.
-      if (!key && admitsLane(done.agentId, done.turnId, pendingTurnIds.current.get(id), finishedFor(id, done.turnId))) {
+      if (
+        !key &&
+        admitsLane(done.agentId, done.turnId, pendingTurnIdFor(id, done.turnId), finishedFor(id, done.turnId))
+      ) {
         key = laneKey(id, done.agentId)
         streamCursors.current.set(key, createWebchatCursor<WebchatOutput, WebchatDone>(done.turnId))
         syncBusyLanes(id)
@@ -1032,22 +1177,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         if (conns.current.get(id) === conn) conns.current.delete(id)
       }
 
-      const sendLaneResume = (ws: WebSocket, key: string): void => {
-        const cursor = streamCursors.current.get(key)
-        const turnId = cursor?.turnId ?? cursor?.requestedTurnId
-        if (!cursor || !turnId || ws.readyState !== WebSocket.OPEN) return
-        cursor.resumeGeneration += 1
-        const agentId = laneAgentId(key)
-        ws.send(
-          JSON.stringify({
-            type: 'resume',
-            turnId,
-            ...(agentId ? { agentId } : {}),
-            generation: cursor.resumeGeneration,
-            afterIndex: cursor.nextIndex - 1
-          })
-        )
-      }
+      const sendLaneResume = (ws: WebSocket, key: string): void => sendLaneResumeOn(ws, key)
 
       /** The turn nobody acked yet, if this reconnect should put it back on the wire (once per socket). */
       const unackedTurn = (
@@ -1075,6 +1205,19 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         for (const key of lanesOf(id)) sendLaneResume(ws, key)
       }
 
+      /** Steers nobody acked ride every new socket (same turnId): the daemon joins a copy to an
+       *  admission still pending, confirms one it already steered, reports one that became its own
+       *  turn as accepted, and only a steer it never saw is steered or refused afresh. */
+      const resendUnackedSteers = (ws: WebSocket): void => {
+        if (ws.readyState !== WebSocket.OPEN) return
+        for (const steer of steerTurns.current.get(id)?.values() ?? []) {
+          if (steer.sentOn === ws) continue
+          if (steer.sentOn) steer.resent = true
+          steer.sentOn = ws
+          ws.send(steer.frame)
+        }
+      }
+
       /** A reconnect can beat the original turn across different relay links.
        * Retry only inside the same bounded admission window; once the delayed
        * turn exists, daemon replay recovers everything emitted in the meantime. */
@@ -1095,7 +1238,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
       const scheduleReconnect = (): void => {
         const reconnectId = conn.conversationId ?? resumeId ?? conversationIds.current.get(id)
-        if (closingAll.current || conn.closing || !busyRef.current[id] || !reconnectId) {
+        // An unacked steer keeps reconnecting too: its verdict is the only way to learn whether the
+        // runtime took it, and its identity must survive until then.
+        if (closingAll.current || conn.closing || (!busyRef.current[id] && !hasUnackedSteers(id)) || !reconnectId) {
           setBusy(id, false)
           return
         }
@@ -1108,7 +1253,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         const delay = Math.min(WEBCHAT_RECONNECT_MAX_MS, WEBCHAT_RECONNECT_BASE_MS * 2 ** attempt)
         conn.reconnectTimer = window.setTimeout(() => {
           conn.reconnectTimer = undefined
-          if (!busyRef.current[id] || conns.current.has(id)) return
+          if ((!busyRef.current[id] && !hasUnackedSteers(id)) || conns.current.has(id)) return
           void connect(id, agentId, reconnectId, true).ready.catch(() => {})
         }, delay)
       }
@@ -1132,7 +1277,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               if (conn.reconnectTimer) window.clearTimeout(conn.reconnectTimer)
               conn.reconnectTimer = undefined
               dropSelf()
-              if (busyRef.current[id]) scheduleReconnect()
+              if (busyRef.current[id] || hasUnackedSteers(id)) scheduleReconnect()
               else setBusy(id, false)
             }
             /** A per-participant rejection: fail only that lane — the other targets of a multi-agent turn keep streaming. */
@@ -1169,7 +1314,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               })
               if (lanesOf(id).length === 0) {
                 reconnectAttempts.current.delete(id)
-                setBusy(id, false)
+                if (!openAcceptedSteerLane(id)) setBusy(id, false)
               }
             }
             ws.onmessage = (e) => {
@@ -1186,6 +1331,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   turnId?: string
                   agentId?: string
                   generation?: number
+                  steered?: boolean
                 }
                 post?: WebchatPost
                 initiator?: string
@@ -1225,6 +1371,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                     }
                   })
                 }
+                resendUnackedSteers(ws)
                 if (resumeStream && busyRef.current[id]) {
                   sendResume(ws)
                 } else if (probeOnReady && !busyRef.current[id] && lanesOf(id).length === 0) {
@@ -1276,6 +1423,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                           })
                         ]
                   )
+              } else if (m.type === 'ack' && m.ack?.turnId && steerTurns.current.get(id)?.has(m.ack.turnId)) {
+                settleSteerAck(id, m.ack.turnId, m.ack)
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
                 let key = cursorKeyFor(id, m.ack?.agentId)
                 // The relay may target participants the client did not lane (a
@@ -1627,6 +1776,91 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [pgSessions, connect, pushStep, setBusy, refreshSessions]
   )
 
+  /** Send a message INTO the running turn (#1847). The step lands at once as a steer; no lane
+   *  is opened — the ack says whether the daemon steered it, ran it as its own turn because the
+   *  turn had ended, or refused it (then it goes back to the queue). */
+  const sendSteer = useCallback(
+    (id: string, agentForId: string, text: string, seq: number, conversationId?: string): void => {
+      const turnId = randomUuid()
+      const steer: PendingSteer = {
+        agentId: agentForId,
+        text,
+        seq,
+        frame: JSON.stringify({ text, turnId, steer: true }),
+        ...(conversationId ? { conversationId } : {})
+      }
+      const bucket = steerTurns.current.get(id) ?? new Map<string, PendingSteer>()
+      bucket.set(turnId, steer)
+      steerTurns.current.set(id, bucket)
+      pushStep(id, { kind: 'msg', who: '@you', turnId, text, steer: true })
+      if (conversationId) conversationIds.current.set(id, conversationId)
+      const conn = connect(id, agentForId, conversationId)
+      conn.ready
+        .then((ws) => {
+          // A verdict or a socket close may already have settled it while the socket was opening.
+          if (steerTurns.current.get(id)?.get(turnId) !== steer || steer.sentOn) return
+          steer.sentOn = ws
+          ws.send(steer.frame)
+        })
+        .catch(() => {
+          if (steerTurns.current.get(id)?.get(turnId) === steer) requeueSteer(id, turnId, steer)
+        })
+    },
+    [connect, pushStep, requeueSteer]
+  )
+
+  /** The daemon's verdict on a steer (see sendSteer). */
+  const settleSteerAck = useCallback(
+    (
+      id: string,
+      turnId: string,
+      ack: { accepted?: boolean; reason?: string; detail?: string; agentId?: string; steered?: boolean }
+    ): void => {
+      const steer = steerTurns.current.get(id)?.get(turnId)
+      if (!steer) return
+      if (ack.accepted === false) {
+        // `busy` is the daemon's DEFINITE refusal of a steer (a copy of one it holds or already
+        // ran is answered differently), so only here does the text become a fresh queued turn.
+        if (ack.reason === 'busy') {
+          requeueSteer(id, turnId, steer)
+          return
+        }
+        steerTurns.current.get(id)?.delete(turnId)
+        mutateSteps(id, (steps) => steps.filter((s) => s.turnId !== turnId))
+        const name = participantName(id, ack.agentId)
+        pushStep(id, {
+          kind: 'done',
+          turnId,
+          text:
+            ack.reason === 'paused'
+              ? `⚠️ ${name ?? 'Agent'} is paused — it is not processing messages.`
+              : `⚠️ ${name ?? 'Agent'} could not take the message${ack.detail ? ` — ${ack.detail}` : '.'}`
+        })
+        return
+      }
+      // Steered: the step keeps its mark and the running lane keeps streaming; its own `done`
+      // may have landed already (the daemon emits it inside admission) or is harmless later.
+      if (ack.steered) {
+        steerTurns.current.get(id)?.delete(turnId)
+        return
+      }
+      // Not steered while an older lane is still open: the daemon ran this message as its own turn
+      // (or, behind an older relay, decided alone). Its lane opens once that lane retires — an ack
+      // that outran the older turn's replayed `done` must not be forgotten with it — and until
+      // then this turn's own frames still admit a lane lazily (pendingTurnIdFor).
+      if (lanesOf(id).length > 0) {
+        steer.acceptedAsTurn = true
+        steer.acceptedAgentId = ack.agentId
+        return
+      }
+      // The turn had already ended: this message runs as its own turn, so open its lane. A copy
+      // re-sent after a reconnect may find that turn already streaming or finished — the resume
+      // pulls its replay from the daemon instead of waiting on frames that went out before.
+      openSteerTurnLane(id, turnId, steer, ack.agentId, steer.resent === true)
+    },
+    [mutateSteps, openSteerTurnLane, participantName, pushStep, requeueSteer]
+  )
+
   const pgSend = useCallback(
     (
       id: string,
@@ -1646,8 +1880,23 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // queued messages are still waiting for the dispatcher, so a send landing
       // between a turn's end and the dispatch of the queue head stays FIFO.
       if (busyRef.current[id] || (pgQueueRef.current[id]?.length ?? 0) > 0) {
+        // Steer instead of queue (#1847): the live turn's runtime takes the text at once. Only
+        // with nothing already waiting (FIFO), text only (the steer carries no image bytes), and
+        // for a single-agent conversation — a roster would need one verdict per participant.
+        const roster = knownParticipants?.length ?? rosterAgentIds.current.get(id)?.length ?? 1
+        if (
+          steerableRef.current[id] &&
+          (pgQueueRef.current[id]?.length ?? 0) === 0 &&
+          !image &&
+          roster <= 1 &&
+          !commandPick
+        ) {
+          sendSteer(id, agentForId, text, ++sendSeq.current, conversationId)
+          return true
+        }
         const queued: QueuedTurn = {
           queueId: randomUuid(),
+          seq: ++sendSeq.current,
           text,
           ...(image ? { image } : {}),
           agentId: agentForId,
@@ -1662,7 +1911,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       sendTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick)
       return true
     },
-    [pgImageBy, sendTurn, setPgImage, setPgInput]
+    [pgImageBy, sendSteer, sendTurn, setPgImage, setPgInput]
   )
 
   // Dispatch the oldest queued message the moment its session's turn ends. The

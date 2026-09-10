@@ -336,6 +336,17 @@ A message addressed to another agent is not in this agent's queue. It remains a 
 activation for that other agent while also serving as thread context that can
 invalidate this agent's candidate.
 
+**Steering precedes queueing (#1847).** When the same-agent arrival reaches the gate while
+`session/prompt` is awaiting a runtime that advertised `_meta.steering.supported`, the
+daemon first offers it to the live turn over `_session/steering` with
+`idleBehavior: promptRequired`. An `injected` outcome settles the entry exactly like a
+coalesced one (`steered_into_turn`), and its transcript `ts` is recorded as absorbed and
+claimed at steer time, so neither the start fence nor the final refresh presents that row
+again and a late admission cannot coalesce it twice. `failed`, an RPC error, a spent
+per-turn budget (`MAX_STEERS_PER_TURN`), or a runtime without the capability falls through
+to the queue path described above; `!queue`, hook, scheduler, and agent-to-agent entries
+never steer.
+
 ## 6. Proposed Interfaces and State
 
 The names below are illustrative; the separation of responsibilities is normative.

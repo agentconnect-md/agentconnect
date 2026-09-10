@@ -71,8 +71,10 @@ export interface WebchatDispatchOptions {
   requireDurable?: boolean
   /** Stable target-scoped inbox id for one physical event delivered to several local agents. */
   deliveryId?: string
+  /** Steer into the live turn or refuse `busy`; never queue (#1847). */
+  steerOnly?: boolean
   /** Synchronous admission barrier, settled before any turn can start. */
-  onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
+  onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean; steered?: boolean }) => void
   /** Hold an admitted entry before execution; false drops only that entry. */
   admissionWait?: Promise<boolean>
   /** Delay observed-inbound persistence until admissionWait succeeds. */
@@ -132,6 +134,8 @@ export interface WebchatHost {
 export class WebchatTransport {
   /** Bounded, ephemeral reconnect state keyed by (turnId, agentId). */
   private readonly webchatStreams = new Map<string, WebchatTurnStream>()
+  /** Steer-only admissions still awaiting their verdict, by stream key — a reconnect copy joins them. */
+  private readonly pendingSteerAdmissions = new Map<string, Promise<WebchatAck>>()
 
   constructor(private readonly host: WebchatHost) {}
 
@@ -171,7 +175,8 @@ export class WebchatTransport {
     remoteMcp?: WebchatRemoteMcpEntitlement,
     mentions?: string[],
     post?: { postId: string; at: number },
-    requestedWorktree?: boolean
+    requestedWorktree?: boolean,
+    steer?: boolean
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
     // Route directly to the named agent (bypasses arbitration); null when it isn't a
@@ -262,7 +267,19 @@ export class WebchatTransport {
       return { accepted: false, turnId, reason: 'busy' }
     }
     this.pruneWebchatStreams()
-    if (this.webchatStreams.has(this.webchatStreamKey(turnId, result.agentId))) {
+    const streamKey = this.webchatStreamKey(turnId, result.agentId)
+    const existingStream = this.webchatStreams.get(streamKey)
+    if (existingStream) {
+      // A browser that lost the ack re-sends its steer on reconnect (same turnId). The copy is
+      // never a second delivery: it joins an admission still deciding, is confirmed for a stream
+      // that already ended steered, and is reported accepted for one that became its own turn —
+      // `busy` stays the DEFINITE refusal the browser may requeue on.
+      if (steer) {
+        const pending = this.pendingSteerAdmissions.get(streamKey)
+        if (pending) return await pending
+        if (this.streamEndedSteered(existingStream)) return { accepted: true, turnId, steered: true }
+        return { accepted: true, turnId }
+      }
       return { accepted: false, turnId, reason: 'busy' }
     }
     const initialRuntime =
@@ -283,7 +300,11 @@ export class WebchatTransport {
     // generation already in flight for this agent can see it at the final fence
     // and coalesce the queued activation. The identical later append from
     // SessionManager.handle dedups in place (same canonical ts, sender, text).
-    if (post && this.host.turnFinalContextRefresh()) {
+    // A steer-only turn writes no row of its own: steered, the live turn's settlement appends it
+    // as a delivery; refused, nothing must remain for the final fence to regenerate over — the
+    // browser re-sends the same text later as an ordinary turn. It still needs the canonical ts.
+    if (post && steer) msg.transcriptTs = String(post.at)
+    if (post && this.host.turnFinalContextRefresh() && !steer) {
       const observedMention = attachmentMention(msg.attachments)
       // The bounded inline image must ride the ADMISSION write: it wins the slot,
       // and SessionManager's later identical append dedups via INSERT OR IGNORE —
@@ -315,11 +336,57 @@ export class WebchatTransport {
       // separate turn after the regeneration already answered it.
       msg.transcriptTs = observedTs
     }
+    if (steer) {
+      const verdict = this.dispatchSteerOnly(result.agentId, msg, stream)
+      this.pendingSteerAdmissions.set(streamKey, verdict)
+      try {
+        return await verdict
+      } finally {
+        this.pendingSteerAdmissions.delete(streamKey)
+      }
+    }
     void this.host.dispatch(result.agentId, msg, undefined, stream).catch((err) => {
       if (!(err instanceof LifecycleCleanupBlockedError))
         this.host.error(`webchat dispatch failed for agent "${result.agentId}": ${formatErr(err)}`)
     })
     return { accepted: true, turnId }
+  }
+
+  private streamEndedSteered(stream: WebchatTurnStream): boolean {
+    return stream.replay.some(
+      (buffered) =>
+        buffered.event.kind === 'done' &&
+        (buffered.event.done.stopReason === 'steered_into_turn' ||
+          buffered.event.done.stopReason === 'coalesced_into_turn')
+    )
+  }
+
+  /** A browser that queues locally sent this while a turn ran (#1847): the ACK waits for the
+   *  admission verdict — `steered` into the live turn, admitted as its own turn because that turn
+   *  had ended, or refused `busy` so the browser keeps the message in its own queue. */
+  private async dispatchSteerOnly(
+    agentId: string,
+    msg: NormalizedMessage,
+    stream: WebchatTurnStream
+  ): Promise<WebchatAck> {
+    let settle!: (verdict: { accepted: boolean; reason?: string; steered?: boolean }) => void
+    const admission = new Promise<{ accepted: boolean; reason?: string; steered?: boolean }>((r) => (settle = r))
+    void this.host
+      .dispatch(agentId, msg, undefined, stream, undefined, { steerOnly: true, onAdmission: (r) => settle(r) })
+      .catch((err) => {
+        if (!(err instanceof LifecycleCleanupBlockedError))
+          this.host.error(`webchat steer dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+        settle({ accepted: false, reason: 'busy' })
+      })
+    const verdict = await admission
+    if (!verdict.accepted) {
+      this.removeWebchatStream(this.webchatStreamKey(stream.turnId, agentId), stream)
+      this.host.info(
+        `webchat: steer for ${stream.turnId} refused (${verdict.reason ?? 'busy'}) — browser keeps it queued`
+      )
+      return { accepted: false, turnId: stream.turnId, reason: verdict.reason === 'paused' ? 'paused' : 'busy' }
+    }
+    return { accepted: true, turnId: stream.turnId, ...(verdict.steered ? { steered: true } : {}) }
   }
 
   /** The live platform transport a chat-origin continuation mirrors through, plus the bot identity
