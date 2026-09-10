@@ -77,8 +77,9 @@ test(
 
     write('docker/runtime-sandbox.Dockerfile', 'FROM scratch\nLABEL revision="new"\n')
     commit('v1.0.1')
-    assert.equal(components('v1.0.1').runtimeSandbox, 'v1.0.1')
-    assert.equal(components('v1.0.1').runtimeSandboxFull, 'v1.0.1')
+    // The runtime images have no path closure: their legs get the channel's previous tag and decide by content.
+    assert.equal(components('v1.0.0').previousTag, '')
+    assert.equal(components('v1.0.1').previousTag, 'v1.0.0')
     assert.equal(components('v1.0.1').daemon, 'v1.0.0')
     const imageRelease = publish('v1.0.0', '1.0.1')
     assert.match(imageRelease, /^1\.0\.1\|run build$/m)
@@ -86,26 +87,22 @@ test(
 
     write('packages/web/src/page.ts', 'export const page = "new"\n')
     commit('v1.0.2')
-    assert.equal(components('v1.0.2').runtimeSandbox, 'v1.0.1')
-    assert.equal(components('v1.0.2').runtimeSandboxFull, 'v1.0.1')
+    assert.equal(components('v1.0.2').previousTag, 'v1.0.1')
     assert.equal(publish('v1.0.1', '1.0.2'), '')
 
     write('pnpm-lock.yaml', 'lockfileVersion: 9.0\n# a dependency changed\n')
     commit('v1.0.3')
-    assert.equal(components('v1.0.3').runtimeSandbox, 'v1.0.3')
-    assert.equal(components('v1.0.3').runtimeSandboxFull, 'v1.0.3')
+    assert.equal(components('v1.0.3').previousTag, 'v1.0.2')
     assert.match(publish('v1.0.2', '1.0.3'), /^1\.0\.3\|run build$/m)
 
     write('docker/runtime-sandbox-base.Dockerfile', 'FROM scratch\nLABEL dependency="updated"\n')
     commit('v1.0.4')
-    assert.equal(components('v1.0.4').runtimeSandbox, 'v1.0.3')
-    assert.equal(components('v1.0.4').runtimeSandboxFull, 'v1.0.3')
+    assert.equal(components('v1.0.4').previousTag, 'v1.0.3')
     assert.equal(publish('v1.0.3', '1.0.4'), '')
 
     write('docker/runtime-sandbox.Dockerfile', `FROM registry.example.test/runtime-base@sha256:${'a'.repeat(64)}\n`)
     commit('v1.0.5')
-    assert.equal(components('v1.0.5').runtimeSandbox, 'v1.0.5')
-    assert.equal(components('v1.0.5').runtimeSandboxFull, 'v1.0.5')
+    assert.equal(components('v1.0.5').previousTag, 'v1.0.4')
     assert.match(publish('v1.0.4', '1.0.5'), /^1\.0\.5\|run build$/m)
   }
 )

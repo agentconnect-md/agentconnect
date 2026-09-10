@@ -44,6 +44,15 @@ RUN mkdir -p /out/shim /out/pathbin \
     /out/shim/skills/workspace-mutation.js /out/shim/skills/package.json \
   && chmod 0555 /out/shim /out/pathbin /out/pathbin/gh
 
+# ────────────────────────────── payload digest ──────────────────────────────
+# The payload's content digest, taken from the stage the images copy; build.yaml aliases an image whose digest matches.
+FROM runtime-helpers AS runtime-payload-digest
+RUN node /build/scripts/tree-digest.mjs /out > /payload-digest
+
+# Exported alone as one small file: a non-root receiver cannot take a local export of the payload's 0555 directories.
+FROM scratch AS runtime-payload-digest-export
+COPY --from=runtime-payload-digest /payload-digest /
+
 # ────────────────────────── runtime table check ─────────────────────────────
 # Re-probes every installed runtime and compares with the table the base ships. Its inputs are the base pin, the
 # declared roster and the two scripts — never the shim — so a cached build re-runs it only when one of those moves.

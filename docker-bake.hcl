@@ -64,6 +64,10 @@ target "runtime-sandbox" {
   dockerfile = "docker/runtime-sandbox.Dockerfile"
   platforms  = ["linux/amd64"]
   target     = "runtime-sandbox"
+  labels = {
+    # Read back through an alias by build.yaml, so an aliased tag still names the build it points at.
+    "io.agentconnect.image.version" = VERSION
+  }
   tags = concat(
     ["${REGISTRY}/${OWNER}/runtime-sandbox:${VERSION}"],
     LATEST ? ["${REGISTRY}/${OWNER}/runtime-sandbox:latest"] : []
