@@ -1833,6 +1833,31 @@ describe('GithubRunReporter', () => {
     )
   })
 
+  it('does not wait for the primary reset on a secondary 429 that still has primary quota', async () => {
+    const p = projection({ attempts: 0 })
+    const { reporter, hooks } = worker(
+      p,
+      vi.fn(async () =>
+        Response.json(
+          { message: 'You have exceeded a secondary rate limit.' },
+          // Primary quota remains and its window resets 50 minutes out; only the secondary minute applies.
+          { status: 429, headers: { 'x-ratelimit-remaining': '4990', 'x-ratelimit-reset': String(NOW / 1000 + 3_000) } }
+        )
+      )
+    )
+
+    await reporter.tick()
+
+    expect(hooks.retryProjectionWrite).toHaveBeenCalledWith(
+      p.id,
+      p.generation,
+      'worker-1',
+      new Date(NOW + 60_000),
+      'rate_limited',
+      false
+    )
+  })
+
   it('treats a secondary rate limit 403 as a definite non-effect, not a permanent denial', async () => {
     const p = projection({ checkRunId: '90071992547409931' })
     const { reporter, hooks, github } = worker(

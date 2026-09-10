@@ -52,7 +52,8 @@ export function githubRetryAfterMs(err: unknown, nowMs: number): number | undefi
 /** `retry-after` is delta-seconds and `x-ratelimit-reset` epoch-seconds; anything unparseable is no hint. */
 function retryHintFrom(headers: Headers): GithubRetryHint {
   const retryAfter = headers.get('retry-after')
-  const reset = headers.get('x-ratelimit-reset')
+  // The reset names the primary window; while that budget still has requests it is not a wait at all.
+  const reset = headers.get('x-ratelimit-remaining') === '0' ? headers.get('x-ratelimit-reset') : null
   const retryAfterSec = retryAfter === null ? NaN : Number(retryAfter)
   const resetSec = reset === null ? NaN : Number(reset)
   return {

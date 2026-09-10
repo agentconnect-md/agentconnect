@@ -766,6 +766,23 @@ describe('InstallationTokenService', () => {
     expect(githubRetryAfterMs(err, clock.now())).toBe(900_000)
   })
 
+  it('ignores x-ratelimit-reset while primary quota remains — a secondary limit waits its own minute', async () => {
+    const clock = new FakeClock(1_700_000_000_000)
+    const { svc } = service(
+      clock,
+      () =>
+        new Response(JSON.stringify({ message: 'You have exceeded a secondary rate limit.' }), {
+          status: 429,
+          // The primary window resets 50 minutes out; that is not this limit's wait.
+          headers: { 'x-ratelimit-remaining': '4990', 'x-ratelimit-reset': String(1_700_000_000 + 3_000) }
+        })
+    )
+    const err = await svc.mint(IID, 'acme/infra', 'write').catch((e: unknown) => e)
+    expect(err).toMatchObject({ code: 'RATE_LIMITED', retryable: true })
+    expect((err as GithubApiError).rateLimitResetAt).toBeUndefined()
+    expect(githubRetryAfterMs(err, clock.now())).toBe(60_000)
+  })
+
   it('keeps a plain 403 without rate-limit signals as a non-retryable denial with no wait', async () => {
     const clock = new FakeClock(1_700_000_000_000)
     const { svc } = service(
