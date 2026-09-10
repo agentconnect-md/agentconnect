@@ -231,6 +231,47 @@ describe('a failed install keeps what is still desired', () => {
     expect(pruned.removed).toEqual(['.runtime/skills/two'])
   })
 
+  // Same shape with no explicit selections: only the subdirectory tells the two
+  // entries apart, so the scope has to carry it.
+  it('separates install-all siblings by the subdirectory they publish from', async () => {
+    const oneDir = await writeSkill(join(sources, 'catalog'), 'one', 'one')
+    const twoDir = await writeSkill(join(sources, 'catalog'), 'two', 'two')
+    const cli = fakeCli(() => '.runtime')
+    const one = { name: 'one', source: 'acme/skills', githubRepoId: '42', subDir: 'catalog/one', skills: [] }
+    const two = { name: 'two', source: 'acme/skills', githubRepoId: '42', subDir: 'catalog/two', skills: [] }
+    // An install-all entry names no selection, so the CLI's leaf comes from the
+    // source's own frontmatter — the fixture's shared fake keys off the selection.
+    const runCli = async (input: Parameters<typeof cli.run>[0]) => {
+      const body = await readFile(join(input.sourceDir, 'SKILL.md'), 'utf8')
+      const leaf = /name:\s*(\S+)/.exec(body)?.[1] ?? 'unknown'
+      return cli.run({ ...input, skills: [leaf] })
+    }
+    const acquireGit = async (candidate: { subDir?: string; ref?: string }) => ({
+      sourceDir: candidate.subDir === 'catalog/one' ? oneDir : twoDir,
+      resolvedCommit: candidate.ref ?? FIRST
+    })
+
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [one, two] } as never, cwd, {
+      stateDir,
+      acquireGit,
+      resolveGitRef: async () => FIRST,
+      runCli
+    })
+    expect(await installedRoots()).toEqual(['one', 'two'])
+
+    const pruned = await installSkills({ id: 'a1', runtime: 'claude', skills: [one] } as never, cwd, {
+      stateDir,
+      acquireGit: async () => {
+        throw new Error('unavailable')
+      },
+      resolveGitRef: async () => FIRST,
+      runCli
+    })
+    expect(pruned.errors.map((e) => e.source)).toEqual(['one'])
+    expect(await installedRoots()).toEqual(['one'])
+    expect(pruned.removed).toEqual(['.runtime/skills/two'])
+  })
+
   it('clears on failure only when nothing is desired at all — that is a complete statement', async () => {
     const gitDir = await writeSkill(sources, 'git-skill', 'git')
     const cli = fakeCli(() => '.runtime')

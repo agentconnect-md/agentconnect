@@ -369,7 +369,7 @@ async function installSkillsLocked(
         // subset still fails the transaction.
         const selection = await resolveSkillSelections(entry.name, destination, snapshot.files, entry.skills)
         prepared.push({
-          key: `git:${index}:${definitionDigest}:${resolvedCommit}${entry.skills.length > 0 ? `:${fingerprint(entry.skills)}` : ''}`,
+          key: `git:${index}:${definitionDigest}:${resolvedCommit}:${gitEntryScopeDigest(entry)}`,
           name: entry.name,
           sourceDir: destination,
           skills: selection.cliSelections,
@@ -380,7 +380,7 @@ async function installSkillsLocked(
         const message = error instanceof Error ? error.message : 'unknown Git skill source error'
         result.errors.push({ source: entry.name, error: message })
         opts.warn?.(`skills: Git source ${entry.name} unavailable (${message}); keeping what is installed`)
-        unresolvedScopes.add(gitSourceScope(definitionDigest, entry.skills))
+        unresolvedScopes.add(gitSourceScope(definitionDigest, entry))
         // The ledger must keep naming the commit that is ON DISK — the tracking
         // check may have dropped this retention to force the (now failed) rebuild.
         const installed = installedByDefinition.get(definitionDigest)
@@ -755,12 +755,18 @@ export function currentGitResolutions(
     .sort((a, b) => a.definitionDigest.localeCompare(b.definitionDigest))
 }
 
-/** One ENTRY's publication scope: its acquisition identity plus its selections.
- * Sibling entries share a repository and ref — the acquisition identity excludes
- * the subdirectory and the selection set — so identity alone would preserve a
- * sibling that was just disabled. */
-export function gitSourceScope(definitionDigest: string, skills: readonly string[]): string {
-  return `${definitionDigest}|${skills.length > 0 ? fingerprint([...skills]) : ''}`
+/** What separates one entry from a sibling that shares its acquisition identity:
+ * the subdirectory it publishes from and the skills it selects. The identity is
+ * repository + ref by design (one tarball serves every entry on it), so neither is
+ * in it, and both are needed to tell a still-desired entry from a disabled one. */
+export function gitEntryScopeDigest(entry: AgentSkillEntry): string {
+  const source = resolveBoundedGitSkillSource(entry)
+  return fingerprint({ subDir: source.subDir ?? '', skills: [...entry.skills] })
+}
+
+/** One ENTRY's publication scope: its acquisition identity plus that entry digest. */
+export function gitSourceScope(definitionDigest: string, entry: AgentSkillEntry): string {
+  return `${definitionDigest}|${gitEntryScopeDigest(entry)}`
 }
 
 /** The same scope read back out of a published bundle's source key
