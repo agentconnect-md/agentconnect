@@ -463,6 +463,7 @@ import {
   type TelegramTurnState
 } from './platforms/telegram/turn-output.js'
 import { parseTelegramElicit, telegramElicitCards } from './platforms/telegram/elicit-card.js'
+import { discordElicitCards } from './platforms/discord/elicit-card.js'
 import { applyDiscordAction as applyDiscordActionExternal } from './platforms/discord/turn-output.js'
 import { applyFeishuAction as applyFeishuActionExternal, type FeishuTurnState } from './platforms/feishu/turn-output.js'
 import { LinearConnection } from './platforms/linear/connection.js'
@@ -1013,6 +1014,7 @@ export class Daemon {
       })
       registry.register({
         platform: 'discord',
+        elicitCards: discordElicitCards,
         createConverger: (ctx) => new DiscordConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: () => ({}),
         apply: (p, action) => this.applyDiscordAction(p, action as DiscordAction)
@@ -1644,6 +1646,9 @@ export class Daemon {
       handleElicitChoice: (a) => this.permissions.handleElicitChoice(a),
       handleElicitFormSubmit: (a) => void this.permissions.submitElicitForm(a),
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
+      openElicitEditor: (a) => this.permissions.openElicitEditor(a.requestId),
+      handleElicitCardTap: async (a) => await this.permissions.handleElicitCardTap(a),
+      submitElicitEditor: async (a) => await this.permissions.submitElicitEditor(a),
       handleTelegramCallback: (cb, conn) => this.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
         this.commands.slackShortcutSession(shortcut, srcIntegrationIds),

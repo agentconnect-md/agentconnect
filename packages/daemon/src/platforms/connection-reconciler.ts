@@ -76,6 +76,9 @@ export interface PlatformActionSink {
   handleElicitChoice: NonNullable<SlackDeps['onElicitChoice']>
   handleElicitFormSubmit: NonNullable<SlackDeps['onElicitFormSubmit']>
   handleDiscordSelect: NonNullable<DiscordDeps['onSelectAction']>
+  openElicitEditor: NonNullable<DiscordDeps['onElicitOpen']>
+  handleElicitCardTap: NonNullable<DiscordDeps['onElicitChoice']>
+  submitElicitEditor: NonNullable<DiscordDeps['onElicitSubmit']>
   handleTelegramCallback(cb: TelegramCallback, conn: TelegramConnection): Promise<void>
   slackShortcutSession(
     shortcut: { channel: string; thread: string },
@@ -636,6 +639,9 @@ export class ConnectionReconciler {
         },
         onStatusAction: (a) => this.host.handleStatusAction(a),
         onSelectAction: (a) => this.host.handleDiscordSelect(a),
+        onElicitOpen: (a) => this.host.openElicitEditor(a),
+        onElicitChoice: (a) => this.host.handleElicitCardTap(a),
+        onElicitSubmit: (a) => this.host.submitElicitEditor(a),
         log: this.log
       })
       try {

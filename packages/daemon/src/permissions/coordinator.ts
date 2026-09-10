@@ -18,6 +18,7 @@ import type {
   ElicitCard,
   ElicitOutcome
 } from '@agentconnect.md/protocol'
+import { elicitFormBlockId } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
 import type { LocalStore } from '../store/local-store.js'
@@ -2027,6 +2028,59 @@ export class PermissionCoordinator {
       return true
     }
     return false
+  }
+
+  /**
+   * The dialog one live card opens, for a surface whose answer is collected somewhere other than
+   * the message — Discord's modal, the only place that platform takes a typed answer.
+   *
+   * Undefined for every other card: an unknown request, a settled one, a surface that answers in
+   * place, or a card of this surface that one tap already answers. The caller then simply does not
+   * open anything, which on Discord means acknowledging the tap and leaving the card standing.
+   *
+   * Its submission comes back through {@link submitElicitForm}, keyed exactly as a Slack Confirm
+   * is — so a dialog is a different PLACE to answer, never a different answer.
+   */
+  openElicitEditor(requestId: string): unknown | undefined {
+    const rec = this.pendingElicits.get(requestId)
+    if (!rec || rec.surface !== 'chat' || !rec.facet.editor) return undefined
+    const form = this.cardForm(rec) ?? elicitForm(rec.params, surfaceOf(rec))
+    if (!form) return undefined
+    return rec.facet.editor(rec, { requestId, params: rec.params, form }) ?? undefined
+  }
+
+  /**
+   * Answer a card from its DIALOG's submission — {@link openElicitEditor}'s other half.
+   *
+   * A dialog's controls report their arity by SHAPE: a list-taking control answers with a list
+   * even where it was configured to take one. The FIELD is what says which it was, so a
+   * single-valued control's list is read as the one value it holds and an empty one as nothing
+   * filled in — and everything after that is {@link submitElicitForm}, the same re-derivation,
+   * per-field validation and refusal wording a Confirm goes through.
+   */
+  async submitElicitEditor(a: {
+    requestId: string
+    values: Record<string, string | readonly string[]>
+    actor?: InteractionActor
+  }): Promise<void> {
+    const rec = this.pendingElicits.get(a.requestId)
+    if (!rec || rec.surface !== 'chat' || !rec.facet.editor) return
+    const form = this.cardForm(rec)
+    if (!form) return
+    const fields: Record<string, string | string[]> = {}
+    for (const [index, target] of form.entries()) {
+      const blockId = elicitFormBlockId(index)
+      const raw = a.values[blockId]
+      if (raw === undefined) continue
+      if (target.kind === 'multi-enum') fields[blockId] = Array.isArray(raw) ? [...raw] : [raw]
+      else {
+        const one = Array.isArray(raw) ? raw[0] : raw
+        // A blank text input and an untouched select are both "nothing filled in", which core
+        // reads as an omission — legal for an optional field, named as missing for a required one.
+        if (typeof one === 'string' && one !== '') fields[blockId] = one
+      }
+    }
+    await this.submitElicitForm({ requestId: a.requestId, fields, ...(a.actor ? { actor: a.actor } : {}) })
   }
 
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
