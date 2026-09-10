@@ -13,12 +13,13 @@ import {
   prepareClaudeProtectedSettings
 } from '../runtime-defs/claude-runtime.js'
 import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
-import { compactReadRoots, normalizeSandboxMounts } from '../runtimes/read-roots.js'
+import { canonicalPath, compactReadRoots, normalizeSandboxMounts } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
-import { prepareRuntimeHome, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
+import { prepareRuntimeHome, removeRuntimeHomeSeedFiles, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
 import { MICROSANDBOX_SOCKET_BRIDGES, MICROSANDBOX_TUNNEL_PATHS } from './socket-bridge.js'
 import { OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT } from './overlay.js'
+import { prepareDeepSeekSecret, type MicrosandboxSecret } from './secrets.js'
 
 const IMAGE_PATH = '/opt/agentconnect/pathbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 const HOST_IPC_ENV = [
@@ -67,7 +68,7 @@ function contains(root: string, path: string): boolean {
 }
 
 export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions): PreparedRuntimeLaunch & {
-  microsandbox: { mounts: SandboxMount[]; workspaceRoot: string }
+  microsandbox: { mounts: SandboxMount[]; workspaceRoot: string; secrets?: MicrosandboxSecret[] }
 } {
   if (opts.runtime?.externalExecution) {
     throw new Error(`runtime "${opts.runtimeId}" executes outside the microsandbox VM`)
@@ -103,7 +104,12 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   for (const path of [...writable, ...configDirs]) mkdirSync(path, { recursive: true, mode: 0o700 })
 
   const credentials = prepareSharedRuntimeCredentials({ runtimeId: opts.runtimeId, runtime: opts.runtime, hostEnv })
-  runtimeHome = prepareRuntimeHome(opts.runtimeId, scopeDir, hostEnv, runtimeHome, credentials?.seedExclusions)
+  const deepseek = prepareDeepSeekSecret(opts.runtimeId, opts.runtime, hostEnv, opts.explicitEnv)
+  runtimeHome = prepareRuntimeHome(opts.runtimeId, scopeDir, hostEnv, runtimeHome, [
+    ...(credentials?.seedExclusions ?? []),
+    ...(deepseek?.seedExclusions ?? [])
+  ])
+  if (deepseek) removeRuntimeHomeSeedFiles(runtimeHome, deepseek.seedExclusions)
   credentials?.preparePrivateHome(runtimeHome)
   writable.push(...(credentials?.writablePaths ?? []))
   const readRoots = (opts.trustedRuntimeReadRoots ?? []).filter((path) => {
@@ -164,6 +170,14 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   }
 
   const env = { ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, hostEnv), ...credentials?.env }
+  if (deepseek?.secret) {
+    const secret = deepseek.secret
+    for (const [name, value] of Object.entries(env))
+      env[name] = value.replaceAll(secret.readValue(), secret.placeholder)
+    env[secret.env] = secret.placeholder
+    env.NODE_EXTRA_CA_CERTS = '/.msb/tls/ca.pem'
+    env.SSL_CERT_FILE = env.REQUESTS_CA_BUNDLE = env.CURL_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt'
+  }
   for (const name of HOST_IPC_ENV) delete env[name]
   // Drop ambient Docker client settings, but keep explicit guest config, including materialized registry config.
   for (const name of [
@@ -189,11 +203,16 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 })
   env[GITCRED_SOCKET_ENV] = MICROSANDBOX_TUNNEL_PATHS.gitcred
   const mounts = [...automatic, ...configured]
+  const deepseekSources = deepseek?.sources.map((path) => canonicalPath(path, hostEnv)) ?? []
+  if (mounts.some(({ source }) => deepseekSources.some((path) => contains(source, path)))) {
+    throw new Error('sandbox.mounts would expose a host DeepSeek credential file')
+  }
   const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
   const claudeSettings = claudeRuntime ? prepareClaudeProtectedSettings(scopeDir, env) : undefined
-  const privateStateTargets =
-    credentialProfile === 'codex'
+  const privateStateTargets = deepseek
+    ? deepseek.seedExclusions.map((path) => join(runtimeHome, path))
+    : credentialProfile === 'codex'
       ? [join(runtimeHome, '.codex')]
       : claudeRuntime
         ? [join(runtimeHome, '.claude'), join(runtimeHome, '.claude.json')]
@@ -254,6 +273,10 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
       ...(claudeSettings ? { claudeProtectedSettings: claudeSettings } : {}),
       ...(sharedWriteRoots.length > 0 ? { sharedWriteRoots } : {})
     },
-    microsandbox: { mounts, workspaceRoot: scopeDir }
+    microsandbox: {
+      mounts,
+      workspaceRoot: scopeDir,
+      ...(deepseek?.secret ? { secrets: [deepseek.secret] } : {})
+    }
   }
 }

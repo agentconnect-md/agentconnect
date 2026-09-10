@@ -13,6 +13,7 @@ import { SinkRelPathSchema } from '../shim/file-sink.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
 import { MICROSANDBOX_SOCKET_BRIDGE_COMMAND, MICROSANDBOX_SOCKET_BRIDGE_ARGS } from './socket-bridge.js'
 import { overlayMounts, OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT, prepareOverlayMounts } from './overlay.js'
+import type { MicrosandboxSecret } from './secrets.js'
 import {
   MICROSANDBOX_NODE,
   openExecStream,
@@ -38,6 +39,7 @@ export interface MicrosandboxEnvironment {
   id: string
   mounts: SandboxMount[]
   workspaceRoot: string
+  secrets?: MicrosandboxSecret[]
 }
 
 export type MicrosandboxExecOptions = MicrosandboxExecuteOptions
@@ -229,6 +231,9 @@ export class MicrosandboxManager {
       config: { ...this.options.config, image },
       environment: {
         ...environment,
+        ...(environment.secrets
+          ? { secrets: environment.secrets.map(({ env, placeholder, host }) => ({ env, placeholder, host })) }
+          : {}),
         // Keep ordinary bind identities stable when the public configuration changes from readOnly to mode.
         mounts: environment.mounts
           .map(({ mode, ...mount }) =>
@@ -240,7 +245,7 @@ export class MicrosandboxManager {
     })
   }
 
-  private builder(name: string, mounts: SandboxMount[]) {
+  private builder(name: string, mounts: SandboxMount[], secrets: MicrosandboxSecret[] = []) {
     const builder = this.options.sdk.Sandbox.builder(name)
       .image(this.options.config.image)
       .rootDisk((disk) => disk.size(this.options.config.diskGiB * 1024))
@@ -254,6 +259,18 @@ export class MicrosandboxManager {
         volume.namedWith(`${name}-docker`, 'create', 'disk', this.options.config.diskGiB * 1024)
       )
       .quietLogs()
+    for (const secret of secrets) {
+      builder.secret((entry) =>
+        entry
+          .env(secret.env)
+          .value(secret.readValue())
+          .placeholder(secret.placeholder)
+          .allowHost(secret.host)
+          .injectBasicAuth(false)
+          .injectQuery(false)
+          .injectBody(false)
+      )
+    }
     const overlays = overlayMounts(mounts)
     if (overlays.length) {
       builder.volume(OVERLAY_STATE_ROOT, (volume) =>
@@ -439,6 +456,15 @@ export class MicrosandboxManager {
       if (existing.status === 'running' || existing.status === 'starting' || existing.status === 'draining') {
         await existing.stopWithTimeout(STOP_TIMEOUT_MS)
       }
+      if (environment.secrets?.length) {
+        const result = await existing.modify({
+          secrets: Object.fromEntries(environment.secrets.map((secret) => [secret.env, { value: secret.readValue() }])),
+          policy: 'next_start'
+        })
+        if (!result.applied) throw new Error('microsandbox could not update its host-side credentials')
+        binding.configHash = hash(stableJson((await this.options.sdk.Sandbox.get(name)).config()))
+        await this.writeBinding(binding)
+      }
       const sandbox = await this.retryDiskOperation(() => existing.connectOrStart({ detached: true }))
       try {
         await prepareOverlayMounts(sandbox, environment.mounts)
@@ -450,7 +476,7 @@ export class MicrosandboxManager {
         throw error
       }
     }
-    const sandbox = await this.builder(name, environment.mounts)
+    const sandbox = await this.builder(name, environment.mounts, environment.secrets)
       .vsock(this.options.sockets.mcp, 5000)
       .vsock(this.options.sockets.gitcred, 5001)
       .create()
@@ -465,15 +491,7 @@ export class MicrosandboxManager {
         dockerVolume: `${name}-docker`,
         ...(overlayMounts(environment.mounts).length ? { overlayVolume: `${name}-overlays` } : {})
       }
-      const path = this.bindingPath(environment.id)
-      await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-      const temporary = `${path}.${randomUUID()}.tmp`
-      try {
-        await writeFile(temporary, JSON.stringify(binding), { mode: 0o600, flag: 'wx' })
-        await rename(temporary, path)
-      } finally {
-        await rm(temporary, { force: true })
-      }
+      await this.writeBinding(binding)
       await prepareOverlayMounts(sandbox, environment.mounts)
       await this.startBridge(environment.id, sandbox)
       return sandbox
@@ -484,6 +502,18 @@ export class MicrosandboxManager {
       if (overlayMounts(environment.mounts).length) await this.removeVolume(`${name}-overlays`)
       await rm(this.bindingPath(environment.id), { force: true })
       throw error
+    }
+  }
+
+  private async writeBinding(binding: Binding): Promise<void> {
+    const path = this.bindingPath(binding.environmentId)
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    const temporary = `${path}.${randomUUID()}.tmp`
+    try {
+      await writeFile(temporary, JSON.stringify(binding), { mode: 0o600, flag: 'wx' })
+      await rename(temporary, path)
+    } finally {
+      await rm(temporary, { force: true })
     }
   }
 

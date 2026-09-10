@@ -8,6 +8,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { createServer } from 'node:net'
@@ -53,6 +54,89 @@ afterEach(() => {
 })
 
 describe('prepareMicrosandboxLaunch', () => {
+  it.each(['legacy', 'versioned', 'dotenv'])(
+    'keeps %s DeepSeek keys outside the VM and removes old seeded copies',
+    (format) => {
+      const opts = fixture()
+      const hostDsh = join(opts.hostHome, '.dsh')
+      const guestDsh = join(opts.scopeDir, 'home', '.dsh')
+      mkdirSync(hostDsh)
+      mkdirSync(guestDsh, { recursive: true })
+      const key = 'fixture-deepseek-host-key'
+      const file = format === 'dotenv' ? '.env' : '.credentials.yaml'
+      const content =
+        format === 'dotenv'
+          ? `DEEPSEEK_API_KEY=${key}\n`
+          : format === 'versioned'
+            ? `version: 1\nrefs:\n  DEEPSEEK_API_KEY: ${key}\n`
+            : `DEEPSEEK_API_KEY: ${key}\n`
+      writeFileSync(join(hostDsh, file), content)
+      for (const name of ['.credentials.yaml', '.env']) writeFileSync(join(guestDsh, name), key)
+      const launch = prepareMicrosandboxLaunch({ ...opts, runtimeId: 'dsh-acp' })
+      const secret = launch.microsandbox.secrets![0]!
+      expect(secret.readValue()).toBe(key)
+      expect(launch.env.DEEPSEEK_API_KEY).toBe(secret.placeholder)
+      expect(launch.env.NODE_EXTRA_CA_CERTS).toBe('/.msb/tls/ca.pem')
+      expect(JSON.stringify(launch)).not.toContain(key)
+      expect(secret.host).toBe('api.deepseek.com')
+      for (const name of ['.credentials.yaml', '.env']) expect(existsSync(join(guestDsh, name))).toBe(false)
+      expect(readFileSync(join(hostDsh, file), 'utf8')).toBe(content)
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects host credential mounts and symlinked private copies instead of modifying the host',
+    () => {
+      const opts = fixture()
+      const hostDsh = join(opts.hostHome, '.dsh')
+      mkdirSync(hostDsh)
+      const source = join(hostDsh, '.credentials.yaml')
+      const content = 'DEEPSEEK_API_KEY: fixture-host-key\n'
+      writeFileSync(source, content)
+      const deepseek = { ...opts, runtimeId: 'dsh-acp' }
+      expect(() =>
+        prepareMicrosandboxLaunch({ ...deepseek, mounts: [{ source: hostDsh, target: '/config', mode: 'readonly' }] })
+      ).toThrow('expose a host DeepSeek credential file')
+      rmSync(source)
+      expect(() =>
+        prepareMicrosandboxLaunch({ ...deepseek, mounts: [{ source: hostDsh, target: '/config', mode: 'readonly' }] })
+      ).toThrow('expose a host DeepSeek credential file')
+      writeFileSync(source, content)
+      symlinkSync(source, join(opts.scopeDir, 'home', '.dsh', '.credentials.yaml'))
+      expect(() => prepareMicrosandboxLaunch(deepseek)).toThrow('symlink')
+      expect(readFileSync(source, 'utf8')).toBe(content)
+    }
+  )
+
+  it('keeps SRT credential seeding and masks explicit DeepSeek keys only for microsandbox', () => {
+    const opts = fixture()
+    mkdirSync(join(opts.hostHome, '.dsh'))
+    const key = 'fixture-file-key'
+    writeFileSync(join(opts.hostHome, '.dsh', '.credentials.yaml'), `DEEPSEEK_API_KEY: ${key}\n`)
+    const srt = prepareRuntimeLaunch({
+      ...opts,
+      runtimeId: 'dsh-acp',
+      runInSandbox: true,
+      daemonRoot: opts.root,
+      sandboxMechanism: 'bwrap'
+    })
+    expect(readFileSync(join(srt.runtimeHome!, '.dsh', '.credentials.yaml'), 'utf8')).toContain(key)
+    const launch = prepareMicrosandboxLaunch({
+      ...opts,
+      runtimeId: 'dsh-acp',
+      explicitEnv: { DEEPSEEK_API_KEY: 'fixture-explicit-key' }
+    })
+    expect(launch.microsandbox.secrets![0]!.readValue()).toBe('fixture-explicit-key')
+    expect(JSON.stringify(launch)).not.toContain('fixture-explicit-key')
+    expect(() =>
+      prepareMicrosandboxLaunch({
+        ...opts,
+        runtimeId: 'dsh-acp',
+        explicitEnv: { DEEPSEEK_BASE_URL: 'https://proxy.example.test' }
+      })
+    ).toThrow('requires https://api.deepseek.com')
+  })
+
   it.each([
     ['claude-acp', false],
     ['claude-acp', true],

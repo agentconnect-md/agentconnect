@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -57,6 +58,19 @@ function assertNoDestinationSymlink(home: string, target: string): void {
     if (!existsSync(current)) return
     if (lstatSync(current).isSymbolicLink()) {
       throw new Error(`runtime HOME destination contains a symlink: ${current}`)
+    }
+  }
+}
+
+export function removeRuntimeHomeSeedFiles(home: string, destinations: readonly string[]): void {
+  for (const destination of destinations) {
+    const target = containedDestination(home, destination)
+    assertNoDestinationSymlink(home, target)
+    try {
+      if (!lstatSync(target).isFile()) throw new Error('runtime HOME credential destination is not a regular file')
+      unlinkSync(target)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
   }
 }

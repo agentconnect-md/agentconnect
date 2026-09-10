@@ -3810,6 +3810,13 @@ export class Daemon {
     const launch = prepareMicrosandboxLaunch({
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       runtime,
+      // Workspace preparation and ACP must select the same provider credentials.
+      explicitEnv: {
+        ...this.cfg.sandbox.env,
+        ...Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value])),
+        ...agentChildEnv(agent),
+        ...cpRuntimeEnv(agent)
+      },
       nativeMemory: memoryKindOf(agent) === 'native',
       scopeDir: agent.dir,
       cwd: placement.trustedSessionDir ?? (key && hostKeySessionKey(key) ? cwd : agent.workspace.path),

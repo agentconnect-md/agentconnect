@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { decode, encode } from 'cborg'
-import type { ExecEvent } from 'microsandbox'
+import type { ExecEvent, ModifyOptions } from 'microsandbox'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MicrosandboxManager,
@@ -72,6 +72,7 @@ function fakeSdk() {
     readonly spec = {
       image: 'test-image',
       env: [{ key: 'PATH', value: '/image/bin' }],
+      secrets: {} as Record<string, { value: string; placeholder: string; host: string }>,
       runtime: { workdir: '/image', user: 'agent' }
     }
     readonly stopWithTimeout = vi.fn(async () => {
@@ -99,6 +100,10 @@ function fakeSdk() {
     config() {
       return this.spec
     }
+    readonly modify = vi.fn(async (options: ModifyOptions) => {
+      for (const [name, spec] of Object.entries(options.secrets ?? {})) this.spec.secrets[name]!.value = spec.value!
+      return { applied: true }
+    })
     async startDetached() {
       for (const name of this.volumeNames) {
         const volume = volumes.get(name)!
@@ -206,6 +211,7 @@ function fakeSdk() {
       builder(name: string) {
         const volumeNames: string[] = []
         const mounts: FakeSandbox['mounts'] = []
+        const secrets: FakeSandbox['spec']['secrets'] = {}
         let image = 'test-image'
         const builder = {
           image(value: string) {
@@ -231,6 +237,43 @@ function fakeSdk() {
             return builder
           },
           quietLogs() {
+            return builder
+          },
+          secret(configure: (entry: any) => unknown) {
+            let name = ''
+            const data = { value: '', placeholder: '', host: '' }
+            const entry = {
+              env(value: string) {
+                name = value
+                return entry
+              },
+              value(value: string) {
+                data.value = value
+                return entry
+              },
+              placeholder(value: string) {
+                data.placeholder = value
+                return entry
+              },
+              allowHost(value: string) {
+                data.host = value
+                return entry
+              },
+              injectBasicAuth(value: boolean) {
+                expect(value).toBe(false)
+                return entry
+              },
+              injectQuery(value: boolean) {
+                expect(value).toBe(false)
+                return entry
+              },
+              injectBody(value: boolean) {
+                expect(value).toBe(false)
+                return entry
+              }
+            }
+            configure(entry)
+            secrets[name] = data
             return builder
           },
           volume(target: string, configure: (volume: any) => unknown) {
@@ -265,6 +308,7 @@ function fakeSdk() {
             }
             const sandbox = new FakeSandbox(name, volumeNames, mounts)
             sandbox.spec.image = image
+            sandbox.spec.secrets = secrets
             created.push(sandbox)
             sandboxes.set(name, sandbox)
             return sandbox
@@ -309,6 +353,63 @@ async function fixture() {
 }
 
 describe('microsandbox process and VM ownership', () => {
+  it('keeps secrets out of bindings and execs, and rotates them when the retained VM resumes', async () => {
+    const { manager, options, environment, request, created, processes } = await fixture()
+    let key = 'fixture-first-key'
+    const secret = {
+      env: 'DEEPSEEK_API_KEY',
+      placeholder: 'fixture-placeholder',
+      host: 'api.deepseek.com',
+      readValue: () => key
+    }
+    const env = { ...environment, secrets: [secret] }
+    const launch = {
+      ...request,
+      env: { DEEPSEEK_API_KEY: secret.placeholder, NODE_EXTRA_CA_CERTS: '/.msb/tls/ca.pem' },
+      inheritProcessEnv: false
+    }
+    await (await manager.driverFor(env).launch(launch)).stop(0)
+    expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
+    expect(JSON.stringify(processes[0]!.request)).not.toContain(key)
+    expect(JSON.stringify(processes[0]!.request)).toContain('NODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem')
+    const directory = join(options.root, 'microsandbox', 'bindings')
+    const path = join(directory, (await readdir(directory))[0]!)
+    expect(await readFile(path, 'utf8')).not.toContain(key)
+    await manager.stopAll()
+    key = 'fixture-rotated-key'
+    const resumed = new MicrosandboxManager(options)
+    await (await resumed.driverFor(env).launch(launch)).stop(0)
+    expect(created).toHaveLength(1)
+    expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
+    expect(await readFile(path, 'utf8')).not.toContain(key)
+    await resumed.stopAll()
+    const restarted = new MicrosandboxManager(options)
+    await (await restarted.driverFor(env).launch(launch)).stop(0)
+    await restarted.discard(env.id)
+  })
+
+  it('retains an old unshielded VM without resuming it as a shielded environment', async () => {
+    const { manager, options, environment, request, created, volumes } = await fixture()
+    await (await manager.driverFor(environment).launch(request)).stop(0)
+    await manager.stopAll()
+    const resumed = new MicrosandboxManager(options)
+    const env = {
+      ...environment,
+      secrets: [
+        {
+          env: 'DEEPSEEK_API_KEY',
+          placeholder: 'fixture-placeholder',
+          host: 'api.deepseek.com',
+          readValue: () => 'fixture-key'
+        }
+      ]
+    }
+    await expect(resumed.driverFor(env).launch(request)).rejects.toThrow('changed persisted configuration')
+    expect(created[0]!.status).toBe('stopped')
+    expect(volumes.size).toBe(1)
+    await resumed.discard(environment.id)
+  })
+
   it('shares read-only bases while retaining and cleaning up each session overlay disk', async () => {
     const { manager, options, environment, request, created, volumes, removeVolume } = await fixture()
     const first: MicrosandboxEnvironment = {

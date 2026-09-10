@@ -249,7 +249,7 @@ sessions that share workspace files. Its private HOME lives under
 `runtime-homes/<session-leaf>/home` unless it already owns a confined session
 directory. For shared workspaces, native-memory directories mount the agent's
 existing memory store so Console reads and edits reach every session; runtime
-credentials stay in the session's HOME. Image changes apply to new sessions;
+state stays in the session's HOME. Image changes apply to new sessions;
 resume keeps the original image, runtime versions, HOME and disks until session
 retention removes them. Sessions created in a legacy shared agent VM continue
 using that VM until its last session retires. Resource and mount changes still
@@ -300,6 +300,31 @@ keys, Antigravity ACP file logins, Devin, and Copilot's stored token map. These
 descriptors also prepare the corresponding files in the private runtime HOME.
 Keyring-only logins are not detected by file discovery. Credential formats without
 a shared discovery descriptor retain the runtime probe's authentication result.
+
+### DeepSeek credential protection
+
+For DeepSeek Harness in microsandbox, the daemon resolves the standard
+`DEEPSEEK_API_KEY` reference using the existing credential-file descriptors and
+DSH parser (`.credentials.yaml`, including the legacy layout and version-1 refs,
+then `.env`). An explicit launch or inherited host key takes precedence. The guest
+receives only a placeholder; microsandbox's built-in TLS proxy substitutes the key
+in request headers for `https://api.deepseek.com`. Custom provider endpoints and
+custom credential-reference names are outside this first implementation.
+
+The daemon skips both credential seed files, removes their previous private-HOME
+copies, rejects mounts exposing the host source files, and supplies the guest CA
+environment even when process-environment inheritance is disabled. Keys stay out
+of serialized launch metadata and environment bindings. The SDK persists its own
+secret configuration on the host; this protection is against guest access.
+The proxy does not redact provider responses, so the allowed provider remains a
+trusted recipient of the key.
+
+New VMs receive the proxy configuration at creation. Retained protected VMs reload
+the host key before starting again; already-running VMs keep their current key
+until stopped and resumed. Previously unprotected DeepSeek VMs fail configuration
+reuse and retain their data: start a new session instead of treating an old disk
+that may contain credentials as protected. SRT and Kubernetes authentication
+paths are unchanged. No separate daemon HTTP proxy or networking option is added.
 
 ## 2. Selecting the backend
 

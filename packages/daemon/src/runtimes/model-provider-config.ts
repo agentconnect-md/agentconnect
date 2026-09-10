@@ -31,9 +31,12 @@ function isOpenCodeRuntime(runtimeId: string, runtime: RuntimeDef): boolean {
 }
 
 // The bin, not the package: `dsh-acp` is the single bin of @openma/deepseek-harness-acp.
-function isDeepSeekRuntime(runtimeId: string, runtime: RuntimeDef): boolean {
+export function isDeepSeekRuntime(runtimeId: string, runtime?: RuntimeDef): boolean {
   if (runtimeId === 'dsh-acp') return true
-  return [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])dsh-acp(?:@[^\/]*)?$/.test(part.toLowerCase()))
+  return (
+    !!runtime &&
+    [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])dsh-acp(?:@[^\/]*)?$/.test(part.toLowerCase()))
+  )
 }
 
 function applyCodexBaseUrl(env: Record<string, string>, baseUrl: string): void {

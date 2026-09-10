@@ -115,9 +115,8 @@ export function normalizeSandboxMounts(
   return result
 }
 
-/** Resolve the existing prefix too, so a missing socket/file below a symlink is
- * still expressed against the path the kernel will see later. */
-function canonicalPath(path: string, env: NodeJS.ProcessEnv): string {
+// Resolve existing prefixes so missing files below symlinks use their eventual kernel path.
+export function canonicalPath(path: string, env: NodeJS.ProcessEnv): string {
   const expanded = expandedAbsolute(path, env, 'trusted runtime read path')
   let current = expanded
   const missing: string[] = []
