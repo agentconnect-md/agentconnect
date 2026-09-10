@@ -16,16 +16,6 @@ on:
         required: false
         type: boolean
         default: false
-      skip_sandbox:
-        description: 'Skip the Linux kernel sandbox suite (PR runs always keep it)'
-        required: false
-        type: boolean
-        default: false
-      skip_windows:
-        description: 'Skip the Windows unit suite (PR runs always keep it)'
-        required: false
-        type: boolean
-        default: false
     outputs:
       build_test_summary:
         description: 'Unit test summary markdown'
@@ -205,54 +195,22 @@ jobs:
             echo '__AGENTCONNECT_UNIT_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
 
-  # Whether this PR can change what the Windows job tests at all. It runs ~15-23 min against ~3 for
-  # the slowest Linux job, so it sets the whole workflow's wall clock — and most PRs here never touch
-  # the daemon/CLI closure. Costs one ~30 s Linux job to spare the other PRs that wait. Non-PR events
-  # and any diff this cannot read answer yes, so the gate fails open, never silently off.
-  windows-scope:
-    name: Windows Scope
-    runs-on: ubuntu-latest
-    if: ${{ !inputs.skip_windows }}
-    outputs:
-      changed: ${{ steps.filter.outputs.changed }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Does this diff reach the daemon/CLI closure?
-        id: filter
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          reaches() { echo 'changed=true' >> "$GITHUB_OUTPUT"; exit 0; }
-          [ "${{ github.event_name }}" = 'pull_request' ] || reaches
-          [ -n "$BASE" ] && [ -n "$HEAD" ] || reaches
-          files=$(git diff --name-only "$BASE...$HEAD") || reaches
-          # Listed by what CANNOT reach the job: the packages nothing in the daemon/CLI closure
-          # depends on, plus docs and the chart. Everything else runs it — a new root config, a new
-          # script, a new shared package are all in scope without anyone remembering to list them.
-          if grep -qvE '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/|docs/)' <<<"$files"; then
-            reaches
-          fi
-          echo 'changed=false' >> "$GITHUB_OUTPUT"
-
   # The two packages with real Windows surface — the daemon (runtimes, skills, spawn driver, IPC
   # paths) and the CLI (junction-based version pointers) — on a Windows runner. `windows-latest`
   # rather than a win32-simulating unit test: the failures this catches are the ones only a real
   # Win32 filesystem and process model produce.
   #
-  # Release callers pass `skip_windows` for the same reason they pass `skip_sandbox`: the PR already
-  # ran it, and a 15-23 min Windows leg that can lose its own runner would strand a merged commit
-  # unpublished. `inputs` is empty on `pull_request`, so the unset input reads falsy and PRs run it.
+  # Both shards always run; the scope filter below gates their steps. A job skipped by `if:`
+  # publishes one check named for the unexpanded `${{ matrix.shard }}`, so on the PRs that skip it
+  # neither shard's context exists and neither can be a required check — running them always keeps
+  # both names on every pull request. Out of scope a shard is ~20 s: this runner queues in 2 s like
+  # every other job and checks the tree out in 14 s, against 4-5 min for the suite itself.
+  #
+  # Releases run it too: a leg the release path drops is a leg whose failure reaches main unwatched.
   #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
     name: Unit Test (Windows) (${{ matrix.shard }})
-    needs: windows-scope
-    if: ${{ needs.windows-scope.outputs.changed == 'true' }}
     runs-on: windows-latest
     # The daemon balances its halves by file size (`scripts/vitest-shard-sequencer.ts`); the CLI is 6 s, so it keeps Vitest's own split.
     strategy:
@@ -275,7 +233,28 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # Whether this diff can change what the suite tests at all — most pull requests here never
+      # touch the daemon/CLI closure, and the suite is 4-5 min against ~3 for the slowest Linux job.
+      # Non-PR events and any diff this cannot read answer yes, so it fails open, never silently off.
+      - name: Does this diff reach the daemon/CLI closure?
+        id: filter
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          reaches() { echo 'changed=true' >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "${{ github.event_name }}" = 'pull_request' ] || reaches
+          [ -n "$BASE" ] && [ -n "$HEAD" ] || reaches
+          files=$(git diff --name-only "$BASE...$HEAD") || reaches
+          # Listed by what CANNOT reach the job: the packages nothing in the daemon/CLI closure
+          # depends on, plus docs and the chart. Everything else runs it — a new root config, a new
+          # script, a new shared package are all in scope without anyone remembering to list them.
+          if grep -qvE '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/|docs/)' <<<"$files"; then
+            reaches
+          fi
+          echo 'changed=false' >> "$GITHUB_OUTPUT"
       - uses: pnpm/action-setup@v6
+        if: ${{ steps.filter.outputs.changed == 'true' }}
         with:
           # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
           # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
@@ -287,6 +266,7 @@ jobs:
           # jobs keep theirs — there the trade runs the other way.
           cache: false
       - uses: actions/setup-node@v7
+        if: ${{ steps.filter.outputs.changed == 'true' }}
         with:
           node-version-file: .nvmrc
       # Only what this job runs, plus its workspace closure — 7 of the 14 projects. A full install
@@ -298,6 +278,7 @@ jobs:
       # The other jobs keep the full install: every Linux job shares one cache key, so a partial
       # store saved by one would cost the full-install jobs a re-download on every run.
       - name: Install
+        if: ${{ steps.filter.outputs.changed == 'true' }}
         run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..." --filter "@agentconnect.md/cli..."
       # `os.tmpdir()` resolves onto C:, this runner's network-attached OS disk, while the workspace,
       # the pnpm store and `RUNNER_TEMP` already sit on D:, which is storage local to the host. The
@@ -306,6 +287,7 @@ jobs:
       # arm in one run: 1399 s of test time on C against 857 s on D, ranges disjoint. Node reads
       # TEMP first on win32; TMP is set too because other tooling reads that one.
       - name: Put the suite's temp root on the host-local disk
+        if: ${{ steps.filter.outputs.changed == 'true' }}
         run: |
           echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
           echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
@@ -315,20 +297,21 @@ jobs:
       # One step per package, the second running even after the first fails: a recursive `pnpm run`
       # aborts its siblings on the first failure, which would hide one package behind the other.
       - name: Daemon unit tests
+        if: ${{ steps.filter.outputs.changed == 'true' }}
         env:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: pnpm --filter @agentconnect.md/daemon test:unit --shard=${{ matrix.shard }}
       - name: CLI unit tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.filter.outputs.changed == 'true' }}
         env:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: pnpm --filter @agentconnect.md/cli test:unit --shard=${{ matrix.shard }}
       - name: Merge Windows unit test summaries
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.filter.outputs.changed == 'true' }}
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
@@ -337,8 +320,10 @@ jobs:
             'Windows unit test report · shard ${{ matrix.shard }}' \
             'daemon=@agentconnect.md/daemon' \
             'cli=@agentconnect.md/cli'
+      # Published here whatever the caller asked: unlike the Unit and Integration jobs this one has
+      # no deferred output, so honouring `defer_summaries` would drop the report instead of moving it.
       - name: Publish Windows unit test summary
-        if: ${{ !cancelled() && !inputs.defer_summaries }}
+        if: ${{ !cancelled() && steps.filter.outputs.changed == 'true' }}
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
         run: cat "$CAPTURED_JOB_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
@@ -386,11 +371,9 @@ jobs:
   # Exercise the daemon's core sandbox boundaries and confined skills pipeline
   # under the real Linux kernel sandbox. These cases self-skip in the bwrap-free
   # Unit Test job above and run for real here on a bwrap-capable runner.
-  # PR-only gate: release callers pass `skip_sandbox` so it cannot block publication.
-  # `inputs` is empty on `pull_request`, so the unset input reads falsy and PRs run it.
+  # Releases run it too: publication is gated on the same legs review was.
   sandbox-linux:
     name: Sandbox (Linux)
-    if: ${{ !inputs.skip_sandbox }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
