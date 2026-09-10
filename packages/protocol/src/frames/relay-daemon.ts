@@ -419,7 +419,12 @@ export const WireFeishuCardActionEvent = z.object({
       value: z.unknown().optional(),
       tag: z.string().optional(),
       name: z.string().optional(),
-      option: z.string().optional()
+      option: z.string().optional(),
+      /** Every named control inside a submitted CardKit `form`, keyed by its own `name`. Present
+       *  only on a form submit; a plain button carries its payload in `value` as it always has.
+       *  Values are unknown by design — a text input answers with a string, a select with one or
+       *  a list — and the FIELD each belongs to is what says which. */
+      form_value: z.record(z.string(), z.unknown()).optional()
     })
     .optional()
 })
