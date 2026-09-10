@@ -643,7 +643,12 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(cli.calls).toHaveLength(0)
   })
 
-  it('clears a previously owned bundle when a changed source can no longer be staged', async () => {
+  // A source that can no longer be staged is refused, and that refusal protects
+  // the workspace from the NEW content — it says nothing about the bundle already
+  // published from the same source's earlier, validated bytes. That bundle stays
+  // (§6.3): the skill is still desired, and losing it would punish the agent for
+  // an upstream change it did not make.
+  it('refuses unstageable new content without taking down the bundle already published', async () => {
     const sourceDir = await writeSkill(sources, 'revoked', 'safe')
     const cli = fakeCli(() => '.runtime')
     const localSkills: LocalSkillSource[] = [{ kind: 'dream', key: 'dream:revoked', name: 'revoked', sourceDir }]
@@ -659,8 +664,12 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     })
 
     expect(failed.errors[0]?.error).toMatch(/link/i)
-    expect(failed.removed).toContain('.runtime/skills/revoked')
-    expect(existsSync(join(cwd, '.runtime/skills/revoked'))).toBe(false)
+    expect(failed.removed).not.toContain('.runtime/skills/revoked')
+    // The published bundle is the earlier, validated content — unchanged, and the
+    // symlink the refusal was about was never published.
+    expect(await readFile(join(cwd, '.runtime/skills/revoked/SKILL.md'), 'utf8')).toContain('safe')
+    expect(existsSync(join(cwd, '.runtime/skills/revoked/new-link'))).toBe(false)
+    expect(failed.owned).toContain('.runtime/skills/revoked')
   })
 
   it('blocks startup on unmigrated legacy executable state instead of silently preserving stale skills', async () => {

@@ -545,11 +545,28 @@ node <bundled skills@1.5.21 bin> add <absoluteSnapshot> \
   destination is unowned is skipped and reported as a conflict rather than failing
   the workspace: leaving that path untouched is what the refusal wanted, and one
   foreign directory must not cost the agent its other skills or its host startup.
-- A source/CLI failure clears previously owned content and starts without managed
-  skills. A ref check that cannot be answered is NOT such a failure: it resolves to
-  the installed commit and nothing is rebuilt, so a moving ref cannot turn an
-  upstream outage into an agent losing its skills. A refused stale removal, corrupt journal, or failed rollback blocks the
-  workspace so disabled executable instructions cannot remain silently active.
+- **A failure to build a source never costs the agent that skill.** An install that
+  cannot acquire a source, or whose CLI faults, says nothing about whether the
+  operator still wants the skill — only that this run could not rebuild it — and the
+  bytes already published are that same source's own older commit. So:
+  - a git source that cannot be acquired keeps its published bundles exactly as they
+    are (no republish, no removal); the run records the error, keeps naming the
+    installed commit in the ledger, and writes a failed fingerprint so the next
+    preparation retries. Its siblings still install normally: one unavailable source
+    is not a reason to strand the others;
+  - a removal is a different statement and is still enacted: a source the desired set
+    no longer names has no candidate and is not preserved, so its bundles go. That
+    removal needs no source, which is why it can be honored while another fails;
+  - the whole-run failure path (anything that throws past the per-source handling)
+    keeps what is published, because a published bundle's source key names its
+    acquisition identity rather than its repository — that pass cannot tell a
+    re-pinned source from a removed one, and must not guess. Pruning waits for the
+    next run that actually computes a desired set. An EMPTY desired set is the
+    exception: that is a complete statement, and disabled executable content must not
+    survive it.
+  - A ref check that cannot be answered is likewise not a failure: it resolves to the
+    installed commit and nothing is rebuilt. A refused stale removal, corrupt journal, or failed rollback blocks the
+    workspace so disabled executable instructions cannot remain silently active.
 - A tracking Git ref is re-resolved per preparation but fetched only when its head
   moved: the resolved commit participates in the plan fingerprint, so an unmoved
   head still takes the unchanged fast path and a moved one cannot be served from

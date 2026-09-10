@@ -137,6 +137,13 @@ export interface ReconcileSkillBundlesOptions {
   /** Untrusted compatibility hints from old workspace-local markers. They may
    * improve a conflict error, but never confer deletion or replacement rights. */
   legacyOwned?: string[]
+  /** Owned bundles this run could not rebuild but that are STILL DESIRED — a
+   * source whose bytes were unavailable (upstream down, rate-limited, a CLI that
+   * failed). They are left exactly as they are: no operation is planned for them,
+   * so they are neither republished nor removed, and they stay in `owned` for the
+   * next run to rebuild. Anything absent from BOTH the candidates and this list is
+   * no longer desired and is still removed. */
+  preserveOwned?: readonly string[]
   /** The caller already holds `withSkillWorkspaceLock` across acquisition. */
   lockHeld?: boolean
   /** Reports a bundle skipped because its destination is not this ledger's to write. */
@@ -494,8 +501,19 @@ async function reconcileSkillBundlesLocked(
       options.warn?.(`skills: skipped unowned skill ${candidate.relativeRoot}: ${detail}`)
     }
 
+    // A preserved bundle is untouched: it is not a candidate to publish and not a
+    // removal to plan, so it never enters the journal. A candidate claiming the
+    // same root wins — rebuilding beats keeping.
+    const candidateRoots = new Set(candidates.map((entry) => entry.relativeRoot))
+    const preserved = new Set<string>()
+    for (const root of options.preserveOwned ?? []) {
+      const canonical = await canonicalizeRelativeRoot(options.cwd, root)
+      if (!candidateRoots.has(canonical)) preserved.add(canonical)
+    }
+    const kept = prior.filter((entry) => preserved.has(entry.relativeRoot))
+    const planned = prior.filter((entry) => !preserved.has(entry.relativeRoot))
     const paths = [
-      ...new Set([...prior.map((entry) => entry.relativeRoot), ...candidates.map((entry) => entry.relativeRoot)])
+      ...new Set([...planned.map((entry) => entry.relativeRoot), ...candidates.map((entry) => entry.relativeRoot)])
     ].sort()
     const operations: JournalOperation[] = paths.map((relativeRoot) => ({
       relativeRoot,
@@ -514,9 +532,11 @@ async function reconcileSkillBundlesLocked(
       cliVersion: options.cliVersion,
       ...(options.publicationOperationId ? { publicationOperationId: options.publicationOperationId } : {}),
       // A pruned set is no longer what that fingerprint described, and recovery cannot see the prune: leaving it would let the next plan skip the reinstall.
-      ...(ledger?.fingerprint && prior.length === recorded.length ? { priorFingerprint: ledger.fingerprint } : {}),
+      ...(ledger?.fingerprint && planned.length + kept.length === recorded.length
+        ? { priorFingerprint: ledger.fingerprint }
+        : {}),
       priorGitResolutions: ledger?.gitResolutions ?? [],
-      prior,
+      prior: planned,
       pending: candidates.map(stripCandidate),
       operations
     }
@@ -527,7 +547,7 @@ async function reconcileSkillBundlesLocked(
     recoveryLedger = nextApplying
 
     const candidatesByPath = new Map(candidates.map((entry) => [entry.relativeRoot, entry]))
-    const owned: OwnedSkillBundle[] = [...adopted]
+    const owned: OwnedSkillBundle[] = [...adopted, ...kept]
     for (const operation of operations) {
       const priorEntry = priorByPath.get(operation.relativeRoot)
       const candidate = candidatesByPath.get(operation.relativeRoot)
@@ -607,7 +627,7 @@ async function reconcileSkillBundlesLocked(
       fingerprint: conflicts.length > 0 ? `conflicts:${randomUUID()}` : options.fingerprint,
       owned,
       gitResolutions,
-      cleanup: { operations, prior }
+      cleanup: { operations, prior: planned }
     }
     await writeSkillLedger(location.file, readyWithCleanup, options.publicationKey)
     recoveryLedger = readyWithCleanup
@@ -627,8 +647,9 @@ async function reconcileSkillBundlesLocked(
     }
     return {
       installed: candidates.map((entry) => entry.relativeRoot),
-      // The whole previously-owned set, the paths that had already vanished included: none of it is owned once this returns.
-      removed: recorded.map((entry) => entry.relativeRoot),
+      // Everything previously owned that this run did not keep, the paths that had
+      // already vanished included: none of THAT is owned once this returns.
+      removed: recorded.filter((entry) => !preserved.has(entry.relativeRoot)).map((entry) => entry.relativeRoot),
       skipped: null,
       conflicts,
       owned
