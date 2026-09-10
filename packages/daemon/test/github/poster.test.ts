@@ -51,7 +51,16 @@ function fakeScheduler() {
 interface Call {
   method: string
   url: string
+  /** The posted body without the trailing hidden correlation marker. */
   body: string
+  rawBody: string
+}
+
+const MARKER_RE = /\n\n<!-- agentconnect-comment:[0-9a-f-]{36} -->$/
+
+function callOf(url: string, init?: RequestInit): Call {
+  const rawBody = init?.body ? (JSON.parse(String(init.body)) as { body: string }).body : ''
+  return { method: init?.method ?? 'GET', url: String(url), body: rawBody.replace(MARKER_RE, ''), rawBody }
 }
 
 function fakeFetch(opts: { failFirst?: number; failStatus?: number } = {}) {
@@ -59,10 +68,12 @@ function fakeFetch(opts: { failFirst?: number; failStatus?: number } = {}) {
   let n = 0
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     n += 1
-    calls.push({ method: init?.method ?? 'GET', url: String(url), body: JSON.parse(String(init?.body)).body })
+    calls.push(callOf(url, init))
     if (opts.failFirst && n <= opts.failFirst) {
       return new Response('', { status: opts.failStatus ?? 500 })
     }
+    // A read-back listing finds nothing; a POST is created.
+    if ((init?.method ?? 'GET') === 'GET') return Response.json([])
     return new Response('{"id":90071992547409931}', {
       status: 201,
       headers: { 'content-type': 'application/json' }
@@ -76,7 +87,7 @@ function hangingFetch() {
   let signal: AbortSignal | undefined
   let aborted = false
   const fetchImpl = ((url: string, init?: RequestInit) => {
-    calls.push({ method: init?.method ?? 'GET', url: String(url), body: JSON.parse(String(init?.body)).body })
+    calls.push(callOf(url, init))
     signal = init?.signal ?? undefined
     return new Promise<Response>((_resolve, reject) => {
       signal?.addEventListener(
@@ -331,11 +342,11 @@ describe('GithubFinalPoster', () => {
     await poster.publish(fullFinal)
 
     expect(f.calls).toEqual([
-      {
+      expect.objectContaining({
         method: 'POST',
         url: expect.stringContaining('/repos/acme/infra/issues/42/comments'),
         body: fullFinal
-      }
+      })
     ])
     expect(f.calls.some((call) => call.body === partial)).toBe(false)
   })
@@ -351,14 +362,14 @@ describe('GithubFinalPoster', () => {
     await poster.publish('Paths must stay in the archive directory.')
 
     expect(f.calls).toEqual([
-      {
+      expect.objectContaining({
         method: 'POST',
         url: 'https://api.github.com/repos/acme/infra/pulls/42/comments/3565283658/replies',
         body:
           'Paths must stay in the archive directory.\n\n<sub>sent by ' +
           '[review-bot](<https://app.example.test/acme/agents/review-bot>) (Codex · gpt-5.6-luna) · ' +
           '[open in session](<https://app.example.test/acme/sessions/session-1>)\n</sub>'
-      }
+      })
     ])
   })
 
@@ -437,7 +448,7 @@ describe('GithubFinalPoster', () => {
     await poster.publish('x'.repeat(70_000))
 
     const body = f.calls[0]!.body
-    expect(body).toHaveLength(60_000)
+    expect(f.calls[0]!.rawBody).toHaveLength(60_000)
     expect(body).toContain('_(truncated — see the session transcript for the full reply)_')
     expect(
       body.endsWith(
@@ -482,15 +493,129 @@ describe('GithubFinalPoster', () => {
     expect(f.calls[0]!.body).toContain('const answer = 42\n' + fence + '\n\n<sub>sent by ')
   })
 
-  it('degrades a non-auth create failure to one warning without rejecting or retrying', async () => {
+  it('degrades a definite 4xx rejection to one warning without rejecting or retrying', async () => {
     const clock = fakeScheduler()
-    const f = fakeFetch({ failFirst: 1 })
+    const f = fakeFetch({ failFirst: 1, failStatus: 422 })
     const poster = make(f.fetchImpl, clock.sched)
 
     await expect(poster.publish('final answer')).resolves.toBeUndefined()
 
     expect(f.calls).toEqual([expect.objectContaining({ method: 'POST', body: 'final answer' })])
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('github poster: create failed'))
+  })
+
+  it('carries one hidden marker per publish, after the attribution footer', async () => {
+    const clock = fakeScheduler()
+    const f = fakeFetch()
+    const poster = make(f.fetchImpl, clock.sched, { attribution })
+
+    await poster.publish('Answer')
+
+    expect(f.calls[0]!.rawBody).toMatch(/\n<\/sub>\n\n<!-- agentconnect-comment:[0-9a-f-]{36} -->$/)
+  })
+
+  it('reads the thread back after a 5xx and keeps the comment that already landed', async () => {
+    const clock = fakeScheduler()
+    const calls: Call[] = []
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push(callOf(url, init))
+      if (init?.method === 'POST') return new Response('', { status: 502 })
+      // GitHub stored the comment before answering 502: the listing carries our marker on it.
+      return new Response(
+        `[{"id":1,"body":"someone else"},{"id":90071992547409931,"body":${JSON.stringify(calls[0]!.rawBody)}}]`
+      )
+    }) as typeof fetch
+    const poster = make(fetchImpl, clock.sched)
+
+    await expect(poster.publish('final answer')).resolves.toEqual({
+      kind: 'issue_comment',
+      commentId: '90071992547409931'
+    })
+
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'GET'])
+    expect(calls[1]!.url).toContain('/repos/acme/infra/issues/42/comments?since=')
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('but the comment landed'))
+  })
+
+  it('repeats a dropped POST once the read-back shows nothing landed, with the identical body', async () => {
+    const clock = fakeScheduler()
+    const calls: Call[] = []
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push(callOf(url, init))
+      if (calls.length === 1) throw new TypeError('fetch failed')
+      if (init?.method === 'GET') return Response.json([])
+      return new Response('{"id":90071992547409931}', { status: 201 })
+    }) as typeof fetch
+    const poster = make(fetchImpl, clock.sched, { attribution })
+
+    await expect(poster.publish('final answer')).resolves.toEqual({
+      kind: 'issue_comment',
+      commentId: '90071992547409931'
+    })
+
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'GET', 'POST'])
+    expect(calls[2]!.rawBody).toBe(calls[0]!.rawBody)
+  })
+
+  it('never repeats the POST when the read-back itself fails', async () => {
+    const clock = fakeScheduler()
+    const calls: Call[] = []
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push(callOf(url, init))
+      return new Response('', { status: init?.method === 'POST' ? 503 : 500 })
+    }) as typeof fetch
+    const poster = make(fetchImpl, clock.sched)
+
+    await expect(poster.publish('final answer')).resolves.toBeUndefined()
+
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'GET'])
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('outcome unknown'))
+  })
+
+  it('waits out a short retry-after inside the deadline, then posts again', async () => {
+    const clock = fakeScheduler()
+    const calls: Call[] = []
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push(callOf(url, init))
+      if (calls.length === 1) return new Response('', { status: 429, headers: { 'retry-after': '2' } })
+      return new Response('{"id":90071992547409931}', { status: 201 })
+    }) as typeof fetch
+    const poster = make(fetchImpl, clock.sched)
+
+    const published = poster.publish('final answer')
+    await flush()
+    expect(calls).toHaveLength(1)
+    clock.advance(2_000)
+    await expect(published).resolves.toEqual({ kind: 'issue_comment', commentId: '90071992547409931' })
+
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'POST'])
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('retrying in 2000ms'))
+  })
+
+  it('gives up on a rate limit whose wait cannot fit the publish deadline', async () => {
+    const clock = fakeScheduler()
+    const f = fakeFetch({ failFirst: 1, failStatus: 429 })
+    const poster = make(f.fetchImpl, clock.sched)
+
+    await expect(poster.publish('final answer')).resolves.toBeUndefined()
+
+    expect(f.calls).toHaveLength(1)
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('rate limited'))
+  })
+
+  it('stops after three ambiguous POSTs when the thread stays empty', async () => {
+    const clock = fakeScheduler()
+    const calls: Call[] = []
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push(callOf(url, init))
+      return init?.method === 'POST' ? new Response('', { status: 502 }) : Response.json([])
+    }) as typeof fetch
+    const poster = make(fetchImpl, clock.sched)
+
+    await expect(poster.publish('final answer')).resolves.toBeUndefined()
+
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'GET', 'POST', 'GET', 'POST', 'GET'])
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('failed 3 times'))
   })
 
   it('evicts one rejected token and retries a 401/403 once with a fresh grant', async () => {
@@ -545,7 +670,7 @@ describe('GithubFinalPoster', () => {
 
   it('still resolves when reporting a create failure through a broken logger', async () => {
     const clock = fakeScheduler()
-    const f = fakeFetch({ failFirst: 1 })
+    const f = fakeFetch({ failFirst: 1, failStatus: 422 })
     const poster = new GithubFinalPoster(
       {
         token: async () => 'ghs_test',

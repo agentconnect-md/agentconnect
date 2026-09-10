@@ -20,6 +20,7 @@
  * a lost comment never fails the turn (the transcript remains authoritative).
  */
 
+import { randomUUID } from 'node:crypto'
 import type { GithubPublishedComment } from '@agentconnect.md/protocol'
 import { flattenUnsafeLinks, type FlattenOptions } from '../messages/agent-links.js'
 import { renderAttributionMessage } from '../messages/attribution.js'
@@ -67,6 +68,40 @@ const TRUNCATION_MARKER = '\n\n_(truncated — see the session transcript for th
 const LEGACY_BOUNDARIES = new Set(['agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'])
 const NO_FINAL_MESSAGE_ID = Symbol('no-final-message-id')
 const NO_COMMENTARY_MESSAGE_ID = Symbol('no-commentary-message-id')
+/** Three POSTs at most: the first, then one more after each ambiguous or rate-limited answer. */
+const MAX_POST_ATTEMPTS = 3
+/** The read-back lists comments from the publish start minus this much clock skew. */
+const READ_BACK_SKEW_MS = 60_000
+const READ_BACK_PAGE_SIZE = 100
+/** A rate limit that names no wait asks for at least a minute — never inside the publish deadline. */
+const RATE_LIMIT_DEFAULT_WAIT_MS = 60_000
+
+/** Hidden correlation marker: the one way an ambiguous POST can be told from a lost one. */
+function commentMarker(publishId: string): string {
+  return `<!-- agentconnect-comment:${publishId} -->`
+}
+
+/** Parse a GitHub body keeping ids beyond JS's safe integer range as strings. */
+function parseWithBigIds(json: string): unknown {
+  return JSON.parse(json.replace(/"id"\s*:\s*(\d{15,})/g, '"id":"$1"'))
+}
+
+function commentIdFrom(rawId: unknown): string | undefined {
+  if (typeof rawId === 'string' && /^[1-9]\d*$/.test(rawId)) return rawId
+  if (typeof rawId === 'number' && Number.isSafeInteger(rawId) && rawId > 0) return String(rawId)
+  return undefined
+}
+
+/** How long a rate-limited answer asks us to wait; undefined when the answer is not a rate limit. */
+function rateLimitWaitMs(res: Response): number | undefined {
+  const retryAfter = res.headers.get('retry-after')
+  const limited =
+    res.status === 429 ||
+    (res.status === 403 && (retryAfter !== null || res.headers.get('x-ratelimit-remaining') === '0'))
+  if (!limited) return undefined
+  const seconds = retryAfter === null ? NaN : Number(retryAfter)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : RATE_LIMIT_DEFAULT_WAIT_MS
+}
 
 type MessageKey = string | typeof NO_FINAL_MESSAGE_ID | typeof NO_COMMENTARY_MESSAGE_ID
 type ReplyPhase = 'unknown' | 'commentary' | 'final_answer'
@@ -353,6 +388,8 @@ export class GithubFinalPoster {
   private readonly sched: PosterScheduler
   private readonly finalizeTimeoutMs: number
   private readonly attribution?: GithubCommentAttributionSource
+  /** One marker per publish, identical across its retries, so a read-back recognises only this comment. */
+  private readonly publishId = randomUUID()
 
   constructor(
     private readonly deps: GithubFinalPosterDeps,
@@ -421,43 +458,52 @@ export class GithubFinalPoster {
     // Resolve dynamic attribution exactly once, immediately before the public write.
     // A session runtime may only expose its final model after the prompt completes.
     const attribution = typeof this.attribution === 'function' ? await this.attribution() : this.attribution
-    const body = this.render(text, githubAttributionFooter(attribution))
+    const marker = commentMarker(this.publishId)
+    const body = this.render(text, `${githubAttributionFooter(attribution)}\n\n${marker}`)
     const doFetch = this.deps.fetchImpl ?? fetch
+    const base = this.deps.baseUrl ?? 'https://api.github.com'
     const commentPath = this.reviewThreadRootCommentId
       ? `/repos/${this.repo}/pulls/${this.issueNumber}/comments/${this.reviewThreadRootCommentId}/replies`
       : `/repos/${this.repo}/issues/${this.issueNumber}/comments`
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    const startedAt = this.sched.now()
+    let refreshed = false
+    for (let attempt = 0; attempt < MAX_POST_ATTEMPTS; attempt += 1) {
       const token = await this.deps.token()
       // Token minting cannot be aborted. If it resolves after the deadline, do
       // not depend on the overdue timer getting CPU first: enforce the absolute
-      // cutoff before either the first request or an auth-refresh retry.
+      // cutoff before either the first request or any retry.
       if (this.abandoned) return
       if (this.sched.now() >= deadlineAt) {
         this.abandonTimedOut()
         return
       }
-      const res = await doFetch(`${this.deps.baseUrl ?? 'https://api.github.com'}${commentPath}`, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${token}`,
-          accept: 'application/vnd.github+json',
-          'content-type': 'application/json',
-          'x-github-api-version': '2022-11-28'
-        },
-        signal: this.abort.signal,
-        body: JSON.stringify({ body })
-      })
+      let res: Response
+      try {
+        res = await doFetch(`${base}${commentPath}`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'content-type': 'application/json',
+            'x-github-api-version': '2022-11-28'
+          },
+          signal: this.abort.signal,
+          body: JSON.stringify({ body })
+        })
+      } catch (err) {
+        if (this.abandoned) return
+        // The request may have landed before the connection died: never a blind second POST.
+        const landed = await this.readBack(token, base, marker, startedAt, `unreachable (${String(err)})`)
+        if (landed !== 'absent') return landed
+        continue
+      }
       if (res.ok) {
         // Comment ids are control metadata: retaining one lets the CP point the
         // informational Check at this exact public result without reading the
         // comment body. Preserve ids beyond JS's safe integer range.
         let commentId: string | undefined
         try {
-          const body = await res.text()
-          const parsed = record(JSON.parse(body.replace(/"id"\s*:\s*(\d{15,})/g, '"id":"$1"')))
-          const rawId = parsed?.id
-          if (typeof rawId === 'string' && /^[1-9]\d*$/.test(rawId)) commentId = rawId
-          if (typeof rawId === 'number' && Number.isSafeInteger(rawId) && rawId > 0) commentId = String(rawId)
+          commentId = commentIdFrom(record(parseWithBigIds(await res.text()))?.id)
         } catch {
           // The comment already exists. A missing id only loses the deep link;
           // it must not reclassify or retry the public write.
@@ -466,10 +512,7 @@ export class GithubFinalPoster {
           this.safeWarn(`github poster: created comment has no usable id on ${this.repo}#${this.issueNumber}`)
           return undefined
         }
-        return {
-          kind: this.reviewThreadRootCommentId ? 'review_comment' : 'issue_comment',
-          commentId
-        }
+        return { kind: this.publishedKind(), commentId }
       }
 
       // Undici requires a failed response body to be cancelled so the
@@ -481,16 +524,105 @@ export class GithubFinalPoster {
         // Best-effort resource cleanup only.
       }
 
-      const refreshable = attempt === 0 && (res.status === 401 || res.status === 403) && this.deps.invalidateToken
-      if (!refreshable) throw new Error(`GitHub POST ${res.status}`)
-      try {
-        this.deps.invalidateToken!(token)
-      } catch {
-        // A broken cache invalidator must preserve the poster's no-throw
-        // boundary, but retrying the same rejected token would be pointless.
-        throw new Error(`GitHub POST ${res.status}`)
+      const waitMs = rateLimitWaitMs(res)
+      if (waitMs !== undefined) {
+        // A received rate limit is a definite non-effect, worth waiting out only inside the publish deadline.
+        if (this.sched.now() + waitMs >= deadlineAt) throw new Error(`GitHub POST ${res.status} (rate limited)`)
+        this.safeWarn(`github poster: rate limited on ${this.repo}#${this.issueNumber}, retrying in ${waitMs}ms`)
+        await this.pause(waitMs)
+        continue
       }
+      if ((res.status === 401 || res.status === 403) && !refreshed && this.deps.invalidateToken) {
+        refreshed = true
+        try {
+          this.deps.invalidateToken(token)
+        } catch {
+          // A broken cache invalidator must preserve the poster's no-throw
+          // boundary, but retrying the same rejected token would be pointless.
+          throw new Error(`GitHub POST ${res.status}`)
+        }
+        continue
+      }
+      if (res.status >= 500) {
+        // A 5xx can arrive after the comment was stored; the marker decides, never a blind repeat.
+        const landed = await this.readBack(token, base, marker, startedAt, `${res.status}`)
+        if (landed !== 'absent') return landed
+        continue
+      }
+      // Any other received 4xx is a definite rejection GitHub would repeat.
+      throw new Error(`GitHub POST ${res.status}`)
     }
+    throw new Error(`GitHub POST failed ${MAX_POST_ATTEMPTS} times`)
+  }
+
+  private publishedKind(): GithubPublishedComment['kind'] {
+    return this.reviewThreadRootCommentId ? 'review_comment' : 'issue_comment'
+  }
+
+  /** Whether this publish's marker is already on the thread — the answer to an ambiguous POST. */
+  private async readBack(
+    token: string,
+    base: string,
+    marker: string,
+    startedAt: number,
+    reason: string
+  ): Promise<GithubPublishedComment | undefined | 'absent'> {
+    const listPath = this.reviewThreadRootCommentId
+      ? `/repos/${this.repo}/pulls/${this.issueNumber}/comments`
+      : `/repos/${this.repo}/issues/${this.issueNumber}/comments`
+    const since = new Date(Math.max(0, startedAt - READ_BACK_SKEW_MS)).toISOString()
+    let rows: unknown
+    try {
+      const res = await (this.deps.fetchImpl ?? fetch)(
+        `${base}${listPath}?since=${encodeURIComponent(since)}&per_page=${READ_BACK_PAGE_SIZE}`,
+        {
+          method: 'GET',
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28'
+          },
+          signal: this.abort.signal
+        }
+      )
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined) // release the connection, as the POST path does
+        throw new Error(`GitHub GET ${res.status}`)
+      }
+      rows = parseWithBigIds(await res.text())
+    } catch (err) {
+      if (this.abandoned) return undefined
+      this.safeWarn(
+        `github poster: create ${reason} on ${this.repo}#${this.issueNumber}; read-back failed (${String(err)}), outcome unknown`
+      )
+      return undefined
+    }
+    // A full page could hide our comment past it; only a page that ends proves absence.
+    if (!Array.isArray(rows) || rows.length >= READ_BACK_PAGE_SIZE) {
+      this.safeWarn(`github poster: create ${reason} on ${this.repo}#${this.issueNumber}; read-back inconclusive`)
+      return undefined
+    }
+    for (const row of rows) {
+      const comment = record(row)
+      if (typeof comment?.body !== 'string' || !comment.body.includes(marker)) continue
+      const commentId = commentIdFrom(comment.id)
+      if (!commentId) continue
+      this.safeWarn(`github poster: create ${reason} on ${this.repo}#${this.issueNumber} but the comment landed`)
+      return { kind: this.publishedKind(), commentId }
+    }
+    this.safeWarn(`github poster: create ${reason} on ${this.repo}#${this.issueNumber}; nothing landed, retrying`)
+    return 'absent'
+  }
+
+  /** Wait on the injected scheduler so the deadline and the tests both see it. */
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      try {
+        this.sched.setTimeout(resolve, ms)
+      } catch {
+        resolve()
+      }
+    })
   }
 
   private render(text: string, footer: string): string {
