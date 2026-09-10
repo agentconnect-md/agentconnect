@@ -874,17 +874,31 @@ describe('a permission card offers every option or sends the request where they 
     expect((daemon as any).permissions.pendingChatPermissions.size).toBe(1)
   })
 
-  it('sends a list it cannot offer whole to the editor path instead of truncating it', async () => {
+  it('cancels a list it cannot offer whole, and says why, rather than truncating it', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
-    const { posted } = slackPending(daemon)
+    const { pending, posted } = slackPending(daemon)
+    const applied: any[] = []
+    ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
     ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
-    // One past what the block holds. Truncating would report a pick from a menu the reader could
-    // not see the end of as their decision on the FULL request, with the agent unable to tell.
-    void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(26))
-    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
-    // No chat card at all, and the request is OPEN on the Agent page — not cancelled, not decided.
+    void pending
+    // One past what the block holds. Truncating reported a pick from a menu the reader could not
+    // see the end of as their decision on the FULL request, with the agent unable to tell.
+    await expect((daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(26))).resolves.toEqual({
+      outcome: { outcome: 'cancelled' }
+    })
+    // No card, and NO editor stand-in either: that surface's record carries no options and its
+    // Allow resolves to the first `allow_once`, so routing there would take away a choice the
+    // truncated card at least offered.
     expect(posted).toEqual([])
     expect((daemon as any).permissions.pendingChatPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    // The reader just lost a decision they could otherwise have made, so the chat says so — and
+    // points at no other surface, because none of them can offer the list either.
+    const notice = applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
+    expect(notice).toHaveLength(1)
+    expect(notice[0]).toContain('more options than this chat can show (26)')
+    expect(notice[0]).toContain('Nothing was allowed')
+    expect(notice[0]).not.toContain('console')
   })
 })
 

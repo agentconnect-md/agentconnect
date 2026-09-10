@@ -476,7 +476,7 @@ export const STATUS_MODAL_CALLBACK = 'ac_status_modal'
 /** Human label for the tool a permission request is about. ACP's `toolCall.title` is the
  *  intended display string, but some runtimes (e.g. codex) omit it at request time — fall
  *  back to the tool `kind`, then the `toolCallId`, then a generic phrase. */
-function permToolLabel(params: RequestPermissionRequest): string {
+export function permToolLabel(params: RequestPermissionRequest): string {
   const tc = params.toolCall
   const label = tc?.title?.trim() || tc?.kind?.trim() || tc?.toolCallId?.trim() || 'a tool call'
   return clampTo(label, 200)
