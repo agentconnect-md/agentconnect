@@ -96,6 +96,7 @@ import { ContextWindowIndicator } from '@/components/console/ContextWindowIndica
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
 import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
+import { composerHistoryFromRows, useComposerHistory } from '@/components/console/useComposerHistory'
 import { CommandMenu } from '@/components/console/CommandMenu'
 import { useCommandAutocomplete } from '@/components/console/useCommandAutocomplete'
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
@@ -257,12 +258,15 @@ function ComposerTextarea({
   onPickMention,
   onMentionJoiningChange,
   onCommandPick,
-  commands
+  commands,
+  history
 }: {
   sessionId: string
   placeholder: string
   onSend: () => void
   onImageFile?: (file: File) => void
+  /** The viewer's earlier prompts in this session, oldest first — Up/Down on an empty draft recalls them. */
+  history: readonly string[]
   mentionCandidates: MentionOption[]
   onPickMention: (option: MentionOption) => void | Promise<boolean>
   /** Mirrors `mention.joining` up to the parent so the (separately isolated)
@@ -280,6 +284,7 @@ function ComposerTextarea({
   const draft = usePgDraft(sessionId)
   const { setPgInput } = usePlayground()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const recall = useComposerHistory({ history, value: draft, setValue: (v) => setPgInput(sessionId, v) })
   // @mention picker (webchat-multi-agents.md §9.1/§9.2) — same contract as the
   // Home composer's: picking a candidate inserts "@Name " and typedMentionIds()
   // resolves that text back into a structural mention on send.
@@ -307,6 +312,15 @@ function ComposerTextarea({
   })
   return (
     <div className="relative">
+      {recall.label && (
+        <div
+          aria-live="polite"
+          data-testid="composer-history"
+          className="px-[15px] pt-[9px] -mb-[7px] font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
+        >
+          {recall.label}
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
@@ -334,6 +348,8 @@ function ComposerTextarea({
           onImageFile(image)
         }}
         onKeyDown={(e) => {
+          // History first: a recalled `/cmd` or `@name` must not hand Up/Down to a picker mid-walk.
+          if (recall.handleKeyDown(e)) return
           if (command.handleKeyDown(e)) return
           if (mention.handleKeyDown(e)) return
           // Enter sends — but NOT while an IME is composing (that Enter
@@ -3208,6 +3224,11 @@ export default function SessionDetailView() {
   const isSelf = (sender?: string | null): boolean => isSelfSender(sender, me)
   const senderLabel = (sender: string | null | undefined, fallback?: string): string =>
     sessionSenderLabel(sender, fallback, agentNameById, memberNameByIdentity, me)
+  // The composer's Up/Down recall pool: the viewer's own prompts in transcript order.
+  const composerHistory = useMemo(
+    () => composerHistoryFromRows(visibleMsgs ?? [], (sender) => isSelfSender(sender, me)),
+    [visibleMsgs, me]
+  )
 
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
   useEffect(() => {
@@ -5360,6 +5381,7 @@ export default function SessionDetailView() {
                             commandPickRef.current = target
                           }}
                           commands={commandParticipants}
+                          history={composerHistory}
                         />
                         <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
                           {attachmentsEnabled && (
