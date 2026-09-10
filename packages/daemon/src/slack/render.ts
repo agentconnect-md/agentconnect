@@ -476,7 +476,7 @@ export const STATUS_MODAL_CALLBACK = 'ac_status_modal'
 /** Human label for the tool a permission request is about. ACP's `toolCall.title` is the
  *  intended display string, but some runtimes (e.g. codex) omit it at request time — fall
  *  back to the tool `kind`, then the `toolCallId`, then a generic phrase. */
-function permToolLabel(params: RequestPermissionRequest): string {
+export function permToolLabel(params: RequestPermissionRequest): string {
   const tc = params.toolCall
   const label = tc?.title?.trim() || tc?.kind?.trim() || tc?.toolCallId?.trim() || 'a tool call'
   return clampTo(label, 200)
@@ -490,20 +490,31 @@ function permOptionStyle(kind: string): 'primary' | 'danger' | undefined {
   return undefined
 }
 
+/** How many option buttons one permission card offers. Slack allows 25 elements in one `actions`
+ *  block and wraps them across lines, and this card puts nothing else in that block — so the cap
+ *  is the block's own, not a row's. The 5 this used to slice to was neither. */
+export const SLACK_PERMISSION_MAX_OPTIONS = 25
+
 /**
  * Build the interactive permission-request card: a header naming the tool the agent
  * wants to run, and an actions row of buttons — one per ACP PermissionOption, green for
  * allow / red for reject. The choice rides each button `value` (`<requestId>|<optionId>`);
- * `requestId` ties the click back to the pending ACP request. Options are capped at 5
- * (Slack renders at most 5 buttons cleanly on one row). Pure — safe to unit-test.
+ * `requestId` ties the click back to the pending ACP request.
+ *
+ * Null ⇒ this card cannot offer the whole list (empty, or longer than the block holds), and the
+ * caller must put the request somewhere that can. NEVER a card built from part of the list: the
+ * reader would decide from a menu they cannot see the end of, and their pick would be reported as
+ * their decision on the FULL request — the agent unable to tell it came from a truncated set
+ * (#1811, the permission half of #1794's gap 7). Pure — safe to unit-test.
  */
 export function buildPermissionCard(
   requestId: string,
   params: RequestPermissionRequest,
   sessionTarget?: string
-): unknown[] {
+): unknown[] | null {
+  if (!params.options.length || params.options.length > SLACK_PERMISSION_MAX_OPTIONS) return null
   const header = `:lock: *Permission requested* — ${permToolLabel(params)}`
-  const buttons = params.options.slice(0, 5).map((o, i) => {
+  const buttons = params.options.map((o, i) => {
     const style = permOptionStyle(o.kind)
     return {
       type: 'button',
@@ -1536,6 +1547,17 @@ export function buildElicitationCard(
  *  decline notice's words, minus its verdict: this ask is still open on the editor path. */
 const ELICIT_DM_UNANSWERABLE =
   ":hourglass: This chat can't collect an answer for it — answer it in the session console, via *Open session* above."
+
+const PERMISSION_DM_UNANSWERABLE =
+  ":hourglass: This chat can't show every option for it — decide it in the session console, via *Open session* above."
+
+/** The stand-in for an approval DM's permission card that {@link buildPermissionCard} cannot
+ *  build: the ask, and where every option CAN be seen. The request is untouched — it stays open on
+ *  the editor path, which is where the DM points — so this is the same promise the elicitation
+ *  stand-in below makes, for the same reason (#1811). Pure. */
+export function buildPermissionDmUnanswerableCard(params: RequestPermissionRequest): unknown[] {
+  return buildPermissionResolvedCard(params, PERMISSION_DM_UNANSWERABLE, undefined)
+}
 
 /** The stand-in for an approval DM's elicitation card that {@link buildElicitationCard} cannot
  *  build for the DM surface (#1794): the question, and where it CAN be answered. Without it the

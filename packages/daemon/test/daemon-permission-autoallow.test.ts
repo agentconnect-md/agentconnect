@@ -850,6 +850,86 @@ function slackPending(daemon: any): { pending: any; posted: any[][]; updated: an
   return { pending, posted, updated }
 }
 
+describe('a permission card offers every option or sends the request where they all fit (#1811)', () => {
+  /** A permission request offering `n` options — the ACP standard set is four, so this is the
+   *  latent case: a runtime that offers more. */
+  const permOptions = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ optionId: `o${i}`, name: `Opt ${i}`, kind: 'allow_once' }))
+
+  const permReq = (n: number) =>
+    ({
+      sessionId: 's1',
+      options: permOptions(n),
+      toolCall: { toolCallId: 'tc-1', title: 'Write perm-test.txt' }
+    }) as unknown as RequestPermissionRequest
+
+  it('cards a list the actions block holds, past the five it used to slice to', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(8))
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    // Eight buttons, not five. The reader sees the whole menu their pick is read against.
+    expect((posted[0]![1]! as any).elements).toHaveLength(8)
+    expect((daemon as any).permissions.pendingChatPermissions.size).toBe(1)
+  })
+
+  it('cancels a list it cannot offer whole, and says why, rather than truncating it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { pending, posted } = slackPending(daemon)
+    const applied: any[] = []
+    ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    void pending
+    // One past what the block holds. Truncating reported a pick from a menu the reader could not
+    // see the end of as their decision on the FULL request, with the agent unable to tell.
+    await expect((daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(26))).resolves.toEqual({
+      outcome: { outcome: 'cancelled' }
+    })
+    // No card, and NO editor stand-in either: that surface's record carries no options and its
+    // Allow resolves to the first `allow_once`, so routing there would take away a choice the
+    // truncated card at least offered.
+    expect(posted).toEqual([])
+    expect((daemon as any).permissions.pendingChatPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    // The reader just lost a decision they could otherwise have made, so the chat says so — and
+    // points at no other surface, because none of them can offer the list either.
+    const notice = applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
+    expect(notice).toHaveLength(1)
+    expect(notice[0]).toContain('more options than any surface here can show (26)')
+    expect(notice[0]).toContain('Nothing was allowed')
+    expect(notice[0]).not.toContain('console')
+  })
+
+  it('cancels it on the approval-DM path too, where the console shows fewer options still', async () => {
+    // Reached with in-channel approvals OFF (and by every webchat-origin turn): the DM shares the
+    // card's builder and its block, and the console behind it never sees the options at all
+    // (#1969) — so this list is unanswerable there too, and moving it would only move the
+    // misreport. Before the guard covered this path the DM offered the first five.
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    const applied: any[] = []
+    ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: false })
+    await expect((daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(26))).resolves.toEqual({
+      outcome: { outcome: 'cancelled' }
+    })
+    expect(posted).toEqual([])
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    expect(applied.filter((a) => a.kind === 'notice')).toHaveLength(1)
+  })
+
+  it('still holds a list every surface CAN offer on the editor path, unchanged', async () => {
+    // The guard is narrow: only an unofferable list changes behaviour. Four options — the ACP
+    // standard set — still take the editor path exactly as before.
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: false })
+    void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(4))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
+  })
+})
+
 describe('a Slack card offers every option or none', () => {
   // The seven-option enum of the issue: five buttons went out, the reader never saw the last two,
   // and whichever they picked came back as `accept` on the whole question.
