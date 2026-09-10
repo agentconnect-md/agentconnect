@@ -320,7 +320,11 @@ describe('claudeSessionMeta', () => {
     }
 
     expect(claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot], protectedSettings)).toEqual(
-      cc({ thinking: THINKING, sandbox, settings: { ...protectedSettings, permissions } })
+      cc({
+        thinking: THINKING,
+        sandbox,
+        settings: { ...protectedSettings, permissions, plansDirectory: './.claude/plans' }
+      })
     )
     expect(
       claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot], protectedSettings, true)?.claudeCode
@@ -330,7 +334,13 @@ describe('claudeSessionMeta', () => {
       cc({
         thinking: THINKING,
         sandbox,
-        settings: { ...protectedSettings, permissions, ultracode: true, enableWorkflows: true }
+        settings: {
+          ...protectedSettings,
+          permissions,
+          plansDirectory: './.claude/plans',
+          ultracode: true,
+          enableWorkflows: true
+        }
       })
     )
     // An empty array still means an outer sandbox is active; undefined means it
@@ -357,6 +367,7 @@ describe('claudeSessionMeta', () => {
   it('denies literal credential paths even without profile settings', () => {
     const roots = ['/credentials/[account]/auth.json', '/credentials/[account]/auth.json', '/credentials/shared/']
     expect(claudeSessionMeta(undefined, true, undefined, undefined, roots)?.claudeCode.options.settings).toEqual({
+      plansDirectory: './.claude/plans',
       permissions: {
         deny: [
           'Read(//credentials/\\[account\\]/auth.json)',

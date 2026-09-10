@@ -427,6 +427,7 @@ export interface AcpToolSandbox {
 
 interface ClaudeSessionSettings {
   env?: ClaudeProtectedSettings['env']
+  plansDirectory?: string
   permissions?: { deny: string[] }
   modelOverrides?: unknown
   availableModels?: unknown
@@ -469,7 +470,8 @@ export function claudeSessionMeta(
   })
   const settings: ClaudeSessionSettings = {
     ...(protectedSettings ?? {}),
-    ...(deny.length > 0 ? { permissions: { deny } } : {}),
+    // Claude requires custom plans inside the workspace; its default HOME/.claude/plans is protected above.
+    ...(deny.length > 0 ? { permissions: { deny }, plansDirectory: './.claude/plans' } : {}),
     ...(ultracode ? { ultracode: true, enableWorkflows: true } : {})
   }
   return {
