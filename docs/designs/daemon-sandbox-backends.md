@@ -469,7 +469,9 @@ AVX in the guest CPU; amd64 emulation without AVX cannot run that runtime.
 
 To update dependencies, edit the pins in `docker/runtime-sandbox-base.Dockerfile`
 and build both targets on an amd64 host with AVX, using a new tag for each manual
-publication. Run these commands from the repository root:
+publication. Push the candidate bases before checking them: nothing references a new
+tag until the release Dockerfile pins it, and the checks read the pushed base the way
+release CI does. Run these commands from the repository root:
 
 ```bash
 set -eu
@@ -478,33 +480,37 @@ for variant in runtime-sandbox runtime-sandbox-full; do
   docker buildx build --builder "$(docker context show)" --platform linux/amd64 \
     -f docker/runtime-sandbox-base.Dockerfile --target "$variant-base" \
     -t "ghcr.io/agentconnect-md/$variant:base-$BASE_VERSION" --load .
+  docker push "ghcr.io/agentconnect-md/$variant:base-$BASE_VERSION"
 done
 
-pnpm install --frozen-lockfile
-pnpm --filter '@agentconnect.md/daemon^...' build
 for variant in runtime-sandbox runtime-sandbox-full; do
-  docker buildx build --builder "$(docker context show)" --platform linux/amd64 \
-    -f docker/runtime-sandbox.Dockerfile --target "$variant" \
-    --build-arg "RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-$BASE_VERSION" \
-    --build-arg "RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-$BASE_VERSION" \
-    -t "$variant:base-check" --load .
   docker buildx build --builder "$(docker context show)" --platform linux/amd64 \
     -f docker/runtime-sandbox.Dockerfile --target "$variant-verify" \
     --build-arg "RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-$BASE_VERSION" \
     --build-arg "RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-$BASE_VERSION" \
     --output type=cacheonly .
-  node scripts/verify-runtime-image.mjs "$variant:base-check"
-  pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts "$variant:base-check"
+  node scripts/verify-runtime-image.mjs "$variant" \
+    --build-arg "RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-$BASE_VERSION" \
+    --build-arg "RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-$BASE_VERSION"
 done
 ```
 
-The `-verify` target runs the runtime-table probe and the static in-image checks as
-build stages; the host script then checks only what the image configuration says.
+The `-verify` target runs the runtime-table probe, the static in-image checks and the
+shim smoke test — the image's own entrypoint started as the pod starts it, the daemon
+side dialling it over loopback, the real ACP runtime answering `initialize` and
+`session/new` — as build stages, so the host needs no toolchain. The host script
+checks what only the image configuration says (the non-root user, the tini entrypoint
+and the browser path) against the base the build was given, after asserting that the
+release stage writes no configuration of its own. To try a built image by hand, build
+the `$variant` target with `--load -t "$variant:local"` and, after `pnpm install` and
+`pnpm --filter '@agentconnect.md/daemon^...' build`, run
+`pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts "$variant:local"`,
+which starts the container with `docker run` and drives the same steps.
 
-After both final images pass, push the two base tags and inspect their registry
-digests with `docker buildx imagetools inspect`. Verify anonymous pulls, then update
-both `ARG` defaults in `docker/runtime-sandbox.Dockerfile` to `tag@sha256:digest`
-references in the dependency update PR. Do not overwrite an existing base tag.
+After both variants pass, inspect the pushed tags' registry digests with
+`docker buildx imagetools inspect`. Verify anonymous pulls, then update both `ARG`
+defaults in `docker/runtime-sandbox.Dockerfile` to `tag@sha256:digest` references in
+the dependency update PR. Do not overwrite an existing base tag.
 Changing only the manual base Dockerfile does not publish a daemon or release image;
 changing a base digest in the release Dockerfile does. Normal release CI continues
 to verify the final images and exercise a real ACP session through the shim.

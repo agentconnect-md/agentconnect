@@ -81,16 +81,51 @@ COPY --link --from=runtime-helpers --chown=0:0 /out/ /opt/agentconnect/
 FROM ${RUNTIME_SANDBOX_BASE} AS runtime-sandbox
 COPY --link --from=runtime-helpers --chown=0:0 /out/ /opt/agentconnect/
 
+# ───────────────────────────── shim smoke test ──────────────────────────────
+# The acceptance criterion, run inside the build: the image's own entrypoint started the way the pod starts it, the
+# daemon side (ShimDialer and ShimSession from the shim-builder's workspace, bind-mounted, never copied into a layer)
+# dialling it over loopback, the real ACP runtime spawned through the shim, then `initialize` and one `session/new`.
+# Nothing here is published; the marker feeds the verify stage. Only the token's directory needs root, as the pod
+# projects it, so the image's fixed uid is restored before the smoke runs.
+FROM runtime-sandbox-full AS runtime-sandbox-full-smoke
+USER root
+RUN install -d -o 10001 -g 10001 /var/run/ac-identity
+USER 10001:10001
+# Started under a subreaper as PID 1 would be; the tooling's HOME and TMPDIR are disposable, the runtime's are the pod's.
+RUN --mount=type=bind,from=shim-builder,source=/build,target=/build \
+  mkdir -p /tmp/ac-smoke/home \
+  && head -c 32 /dev/urandom | base64 > /var/run/ac-identity/token \
+  && { TINI_SUBREAPER=1 /usr/bin/tini -- node /opt/agentconnect/shim/index.js & shim=$!; } \
+  && HOME=/tmp/ac-smoke/home TMPDIR=/tmp/ac-smoke node /build/packages/daemon/node_modules/tsx/dist/cli.mjs \
+    /build/packages/daemon/scripts/smoke-runtime-image.mts --connect "127.0.0.1:${AC_SHIM_PORT}"; \
+  status=$?; kill "$shim" 2>/dev/null; wait "$shim" 2>/dev/null; [ "$status" -eq 0 ] && touch /tmp/ac-smoke.ok
+
+FROM runtime-sandbox AS runtime-sandbox-smoke
+USER root
+RUN install -d -o 10001 -g 10001 /var/run/ac-identity
+USER 10001:10001
+RUN --mount=type=bind,from=shim-builder,source=/build,target=/build \
+  mkdir -p /tmp/ac-smoke/home \
+  && head -c 32 /dev/urandom | base64 > /var/run/ac-identity/token \
+  && { TINI_SUBREAPER=1 /usr/bin/tini -- node /opt/agentconnect/shim/index.js & shim=$!; } \
+  && HOME=/tmp/ac-smoke/home TMPDIR=/tmp/ac-smoke node /build/packages/daemon/node_modules/tsx/dist/cli.mjs \
+    /build/packages/daemon/scripts/smoke-runtime-image.mts --connect "127.0.0.1:${AC_SHIM_PORT}"; \
+  status=$?; kill "$shim" 2>/dev/null; wait "$shim" 2>/dev/null; [ "$status" -eq 0 ] && touch /tmp/ac-smoke.ok
+
 # ─────────────────────────── in-image verification ──────────────────────────
-# Static assertions against the built image as its own user; the marker COPY makes one target cover both checks.
-# Built with `--output type=cacheonly`: nothing here is published, and what the image CONFIG says is checked on the host.
+# Static assertions against the built image as its own user; the marker COPYs make one target cover the table check,
+# the smoke test and these. Built with `--output type=cacheonly`: nothing here is published. The image's USER and ENV
+# reach this stage as its own uid and environment; the ENTRYPOINT does not, so scripts/verify-runtime-image.mjs reads
+# the pinned base's config on the host and asserts the release stage above writes no config of its own.
 FROM runtime-sandbox-full AS runtime-sandbox-full-verify
 COPY --from=runtime-sandbox-full-table-check /tmp/ac-table-check.ok /tmp/ac-check/table.ok
+COPY --from=runtime-sandbox-full-smoke /tmp/ac-smoke.ok /tmp/ac-check/smoke.ok
 COPY docker/runtime-sandbox/verify-image.mjs /tmp/ac-check/verify-image.mjs
 RUN node /tmp/ac-check/verify-image.mjs runtime-sandbox-full
 
 FROM runtime-sandbox AS runtime-sandbox-verify
 COPY --from=runtime-sandbox-table-check /tmp/ac-table-check.ok /tmp/ac-check/table.ok
+COPY --from=runtime-sandbox-smoke /tmp/ac-smoke.ok /tmp/ac-check/smoke.ok
 COPY docker/runtime-sandbox/verify-image.mjs /tmp/ac-check/verify-image.mjs
 RUN node /tmp/ac-check/verify-image.mjs runtime-sandbox
 
