@@ -537,6 +537,61 @@ describe('Git skill source policy boundary', () => {
     }
   })
 
+  it('repeats a commit lookup that met a 5xx and completes the acquisition', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-retry-'))
+    const offline = offlineGitHubFetch({ archive: tarGzip([{ path: `skills-${SHA}/SKILL.md`, body: 'safe' }]) })
+    let commitAnswers = 0
+    const flaky: typeof globalThis.fetch = async (input, init) => {
+      // One bad hop on the commit lookup; everything else answers as usual.
+      if (String(input).includes('/commits/') && commitAnswers++ === 0) {
+        offline.calls.push({ url: String(input), authorization: null, redirect: init?.redirect })
+        return new Response('', { status: 502 })
+      }
+      return offline.fetch(input, init)
+    }
+    try {
+      await acquireGitSkillSource(entry('acme/skills'), {
+        destination: join(root, 'acquired'),
+        agentId: 'agent-1',
+        useGitCredential: false,
+        fetch: flaky
+      })
+      expect(offline.calls.filter((call) => call.url.includes('/commits/'))).toHaveLength(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('never repeats a definite 4xx, and stops after three 5xx answers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-no-retry-'))
+    const archive = tarGzip([{ path: `skills-${SHA}/SKILL.md`, body: 'safe' }])
+    const denied = offlineGitHubFetch({ archive, identities: [{ status: 404 }] })
+    const down = offlineGitHubFetch({ archive })
+    const persistent: typeof globalThis.fetch = async (input, init) => {
+      if (!String(input).includes('/commits/')) return down.fetch(input, init)
+      down.calls.push({ url: String(input), authorization: null, redirect: init?.redirect })
+      return new Response('', { status: 502 })
+    }
+    const options = { destination: join(root, 'acquired'), agentId: 'agent-1', useGitCredential: false }
+    try {
+      await expect(acquireGitSkillSource(entry('acme/skills'), { ...options, fetch: denied.fetch })).rejects.toThrow(
+        /identity lookup failed with status 404/
+      )
+      expect(denied.calls).toHaveLength(1)
+
+      await expect(
+        acquireGitSkillSource(entry('acme/skills'), {
+          ...options,
+          destination: join(root, 'acquired-again'),
+          fetch: persistent
+        })
+      ).rejects.toThrow(/commit resolution failed with status 502/)
+      expect(down.calls.filter((call) => call.url.includes('/commits/'))).toHaveLength(3)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('allows test seams to tighten but never widen daemon archive ceilings', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-limit-ceiling-'))
     const destination = join(root, 'acquired')
