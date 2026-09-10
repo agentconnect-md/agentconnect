@@ -16,16 +16,6 @@ on:
         required: false
         type: boolean
         default: false
-      skip_sandbox:
-        description: 'Skip the Linux kernel sandbox suite (PR runs always keep it)'
-        required: false
-        type: boolean
-        default: false
-      skip_windows:
-        description: 'Skip the Windows unit suite (PR runs always keep it)'
-        required: false
-        type: boolean
-        default: false
     outputs:
       build_test_summary:
         description: 'Unit test summary markdown'
@@ -212,7 +202,6 @@ jobs:
   windows-scope:
     name: Windows Scope
     runs-on: ubuntu-latest
-    if: ${{ !inputs.skip_windows }}
     outputs:
       changed: ${{ steps.filter.outputs.changed }}
     steps:
@@ -250,10 +239,8 @@ jobs:
   # every PR; out of scope it is an empty job, hence the Linux runner — two Windows allocations that
   # would do nothing are two the queue can give someone else.
   #
-  # Release callers pass `skip_windows` for the same reason they pass `skip_sandbox`: the PR already
-  # ran it, and a 15-23 min Windows leg that can lose its own runner would strand a merged commit
-  # unpublished. Skipping `windows-scope` skips this job with it, so a release allocates no runner
-  # either way. `inputs` is empty on `pull_request`, so the unset input reads falsy and PRs run it.
+  # Releases run it too, on the same gate: a leg the release path drops is a leg whose failure
+  # reaches main unwatched. `windows-scope` answers yes for every non-PR event.
   #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
@@ -350,8 +337,10 @@ jobs:
             'Windows unit test report · shard ${{ matrix.shard }}' \
             'daemon=@agentconnect.md/daemon' \
             'cli=@agentconnect.md/cli'
+      # Published here whatever the caller asked: unlike the Unit and Integration jobs this one has
+      # no deferred output, so honouring `defer_summaries` would drop the report instead of moving it.
       - name: Publish Windows unit test summary
-        if: ${{ !cancelled() && !inputs.defer_summaries && needs.windows-scope.outputs.changed == 'true' }}
+        if: ${{ !cancelled() && needs.windows-scope.outputs.changed == 'true' }}
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
         run: cat "$CAPTURED_JOB_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
@@ -399,11 +388,9 @@ jobs:
   # Exercise the daemon's core sandbox boundaries and confined skills pipeline
   # under the real Linux kernel sandbox. These cases self-skip in the bwrap-free
   # Unit Test job above and run for real here on a bwrap-capable runner.
-  # PR-only gate: release callers pass `skip_sandbox` so it cannot block publication.
-  # `inputs` is empty on `pull_request`, so the unset input reads falsy and PRs run it.
+  # Releases run it too: publication is gated on the same legs review was.
   sandbox-linux:
     name: Sandbox (Linux)
-    if: ${{ !inputs.skip_sandbox }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
