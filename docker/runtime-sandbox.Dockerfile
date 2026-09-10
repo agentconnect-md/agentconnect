@@ -145,10 +145,10 @@ RUN curl --retry 5 -fsSL -o /tmp/devin.tar.gz \
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS runtime-base
 
 # Exact pins keep the published runtime table truthful.
-ARG CLAUDE_ACP_VERSION=0.75.1
-ARG CODEX_ACP_VERSION=1.10.0-agentconnect.2
+ARG CLAUDE_ACP_VERSION=0.76.0
+ARG CODEX_ACP_VERSION=1.11.0-agentconnect.1
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.30
-ARG AGENT_BROWSER_VERSION=0.37.0
+ARG AGENT_BROWSER_VERSION=0.37.1
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
 # shim's exec channel. openssh-client is for ssh remotes; tini is PID 1.
