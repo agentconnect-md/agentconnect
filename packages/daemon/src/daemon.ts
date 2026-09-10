@@ -61,7 +61,7 @@ import {
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import { installMicrosandbox } from './microsandbox/install.js'
-import { prepareMicrosandboxLaunch } from './microsandbox/launch.js'
+import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
 import { microsandboxGitRunner } from './microsandbox/git.js'
 import { createMicrosandboxWorkspaceMutations } from './microsandbox/files.js'
@@ -3819,6 +3819,8 @@ export class Daemon {
       },
       nativeMemory: memoryKindOf(agent) === 'native',
       scopeDir: agent.dir,
+      daemonRoot: this.root,
+      agentsRoot: this.cfg.agentsDir,
       cwd: placement.trustedSessionDir ?? (key && hostKeySessionKey(key) ? cwd : agent.workspace.path),
       hostKey: key,
       ...placement,
@@ -4639,9 +4641,7 @@ export class Daemon {
     }
     const runtime = catalog?.runtimes[agent.runtime]
     if (!runtime) throw new Error(this.runtimeUnavailableMessage(agent.runtime))
-    const microContext = micro
-      ? this.microsandboxContext(agent, opts.cwd, opts.hostKey, opts.excludeAgentToolCredentials === true)
-      : undefined
+    const microPlacement = micro ? this.microsandboxPlacement(agent, opts.cwd, opts.hostKey) : undefined
     // A dream reads only its materialized inputs to produce a memory proposal, so
     // it never needs the agent's TOOL credentials (github-app git helper, gh
     // wrapper, or materialized `*_DATA` config-file secrets like KUBECONFIG /
@@ -4678,7 +4678,12 @@ export class Daemon {
     // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11).
     const memoryAgent =
       memoryKindOf(agent) === 'native' && runInSandbox
-        ? { ...agent, dir: microContext?.launch.runtimeHome ?? privateRuntimeHomeFor(agent.dir, opts.hostKey) }
+        ? {
+            ...agent,
+            dir: microPlacement
+              ? microsandboxRuntimeHome(agent.dir, opts.hostKey, microPlacement.trustedSessionDir)
+              : privateRuntimeHomeFor(agent.dir, opts.hostKey)
+          }
         : agent
     const runtimeEnv = {
       ...(runInSandbox ? cfg.sandbox.env : {}),
@@ -4775,12 +4780,12 @@ export class Daemon {
     let launchRuntime = runtime
     try {
       const assembled = assembleRuntimeLaunch({
-        ...(microContext
+        ...(microPlacement
           ? {
               microsandbox: {
                 mounts: this.cfg.sandbox.mounts,
                 trustedMounts: microsandboxSupportMounts(this.root, sessionGitInjection?.GIT_CONFIG_GLOBAL),
-                ...this.microsandboxPlacement(agent, opts.cwd, opts.hostKey)
+                ...microPlacement
               }
             }
           : {}),
@@ -4865,9 +4870,9 @@ export class Daemon {
     const constructed: { host?: AcpHost } = {}
     const podSubject = this.k8sPlane ? this.podSubjectFor(agent, opts.hostKey) : undefined
     const host = new AcpHost(launchRuntime, {
-      ...(microContext
+      ...(microPlacement && launch.microsandbox
         ? {
-            driver: this.microsandbox!.driverFor({ ...microContext.environment, ...launch.microsandbox }),
+            driver: this.microsandbox!.driverFor({ id: microPlacement.id, ...launch.microsandbox }),
             hostKey: opts.hostKey
           }
         : {}),

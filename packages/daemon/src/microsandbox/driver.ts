@@ -8,6 +8,7 @@ import { z } from 'zod'
 import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
+import { gitcredShimPath } from '../cp/gitcred-server.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { SinkRelPathSchema } from '../shim/file-sink.js'
@@ -427,6 +428,20 @@ export class MicrosandboxManager {
     if (binding || existing) {
       let matchingSpec = binding?.spec === spec
       if (binding && !matchingSpec) {
+        const helper = canonicalPath(
+          join(this.options.root, 'run', 'microsandbox-helpers', 'git-credential'),
+          process.env
+        )
+        const legacyMounts = environment.mounts.map((mount) =>
+          mount.source === helper && mount.target === gitcredShimPath(this.options.root) && mount.mode === 'readonly'
+            ? {
+                ...mount,
+                source: canonicalPath(join(this.options.root, 'microsandbox', 'helpers', 'git-credential'), process.env)
+              }
+            : mount
+        )
+        // Retained VMs may still own the old exact read-only helper mount; new mounts use the public support directory.
+        matchingSpec = binding.spec === this.spec({ ...environment, mounts: legacyMounts }, image)
         const source = await realpath(join(this.options.root, 'microsandbox', 'helpers', 'guest.js')).catch(
           (error: NodeJS.ErrnoException) => {
             if (error.code === 'ENOENT') return undefined
@@ -434,16 +449,13 @@ export class MicrosandboxManager {
           }
         )
         // Retain an older VM's disk when only the retired, read-only guest helper mount differs.
-        if (source) {
+        if (source && !matchingSpec) {
           matchingSpec =
             binding.spec ===
             this.spec(
               {
                 ...environment,
-                mounts: [
-                  ...environment.mounts,
-                  { source, target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }
-                ]
+                mounts: [...legacyMounts, { source, target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }]
               },
               image
             )
@@ -457,7 +469,7 @@ export class MicrosandboxManager {
         binding.configHash !== hash(stableJson(existing.config()))
       ) {
         throw new Error(
-          `microsandbox environment ${environment.id} has missing or changed persisted configuration; discard it before recreating`
+          `microsandbox environment ${environment.id} has missing or changed persisted configuration. Restore the previous configuration and DeepSeek credentials, or start a new session. Existing session data has been retained.`
         )
       }
       if (existing.status === 'running' || existing.status === 'starting' || existing.status === 'draining') {
@@ -468,9 +480,13 @@ export class MicrosandboxManager {
           secrets: Object.fromEntries(environment.secrets.map((secret) => [secret.env, { value: secret.readValue() }])),
           policy: 'next_start'
         })
-        if (!result.applied) throw new Error('microsandbox could not update its host-side credentials')
-        binding.configHash = hash(stableJson((await this.options.sdk.Sandbox.get(name)).config()))
-        await this.writeBinding(binding)
+        if (!result.applied && (result.changes.length || result.conflicts.length))
+          throw new Error('microsandbox could not update its host-side credentials')
+        const configHash = hash(stableJson((await this.options.sdk.Sandbox.get(name)).config()))
+        if (binding.configHash !== configHash) {
+          binding.configHash = configHash
+          await this.writeBinding(binding)
+        }
       }
       const sandbox = await this.retryDiskOperation(() => existing.connectOrStart({ detached: true }))
       try {

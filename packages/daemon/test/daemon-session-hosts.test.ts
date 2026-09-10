@@ -179,6 +179,46 @@ describe.each(['srt', 'microsandbox'])('sandbox.env (%s)', (backend) => {
   )
 })
 
+it.skipIf(process.platform === 'win32')(
+  'does not reintroduce excluded agent secrets through the VM proxy',
+  async () => {
+    const root = scaffold({ runtime: 'dsh-acp', workspace: { mode: 'from-scratch', path: 'workspace' } }, 'shared')
+    const path = join(root, 'config.json')
+    const config = JSON.parse(readFileSync(path, 'utf8'))
+    config.runtimes = { 'dsh-acp': { command: 'node', args: ['unused'] } }
+    writeFileSync(path, JSON.stringify(config))
+    vi.stubEnv('DSH_HOME', join(root, 'host-dsh'))
+    vi.stubEnv('DEEPSEEK_API_KEY', undefined)
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      const manager = useMicrosandbox(daemon)
+      const agent = (daemon as any).agents.get('bot-a')
+      agent.runtimeOverrides = { secrets: [{ name: 'DEEPSEEK_API_KEY', value: 'fixture-agent-secret' }] }
+      for (const excludeAgentToolCredentials of [false, true]) {
+        const host = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+          hostKey: sessionHostKey(agent.id, KEY(String(excludeAgentToolCredentials))),
+          runInSandbox: true,
+          cwd: agent.workspace.path,
+          excludeAgentToolCredentials
+        }).host
+        const environment = (manager.driverFor.mock.calls.at(-1) as any)[0]
+        if (excludeAgentToolCredentials) {
+          expect(environment.secrets).toBeUndefined()
+          expect(host.opts.env.DEEPSEEK_API_KEY).toBeUndefined()
+        } else {
+          expect(environment.secrets[0].readValue()).toBe('fixture-agent-secret')
+          expect(host.opts.env.DEEPSEEK_API_KEY).toBe(environment.secrets[0].placeholder)
+        }
+      }
+    } finally {
+      await daemon.stop()
+      vi.unstubAllEnvs()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
 const dm = (ts: string, text: string, thread: string) => ({
   msgId: `slack:C1:${ts}`,
   traceId: ts,

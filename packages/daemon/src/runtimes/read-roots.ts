@@ -3,7 +3,34 @@ import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, parse, posix, relative, resolve, sep } from 'node:path'
 import type { McpServerDef, RuntimeDef, SandboxBackend, SandboxMount } from '../config/config-schema.js'
-import { resolveCommandPath } from './probe.js'
+import { resolveCommandPath, RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from './probe.js'
+
+export function protectedSandboxRoots(opts: {
+  daemonRoot?: string
+  scopeDir: string
+  agentsRoot?: string
+  hostEnv: NodeJS.ProcessEnv
+}) {
+  const { hostEnv } = opts
+  return {
+    boundary: [
+      opts.daemonRoot,
+      opts.scopeDir,
+      opts.agentsRoot,
+      hostEnv.HOME,
+      homedir(),
+      '/tmp',
+      '/var/tmp',
+      hostEnv.TMPDIR,
+      hostEnv.TMP,
+      hostEnv.TEMP,
+      '/run'
+    ].filter((path): path is string => Boolean(path)),
+    runtimeState: Object.keys(RUNTIME_STATE_LOCATIONS).flatMap((id) =>
+      runtimeStateLocations(id, hostEnv).map((location) => location.source)
+    )
+  }
+}
 
 /**
  * Read-only code roots that must remain visible after the host HOME (and the

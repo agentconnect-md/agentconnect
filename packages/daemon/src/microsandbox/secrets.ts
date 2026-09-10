@@ -1,8 +1,10 @@
 import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { stringify as stringifyYaml } from 'yaml'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { isDeepSeekRuntime } from '../runtimes/model-provider-config.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
+import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES, parseDshCredentialDocument } from '../runtimes/runtime-seeded-credentials.js'
 
 export interface MicrosandboxSecret {
@@ -29,13 +31,16 @@ export function prepareDeepSeekSecret(
     }))
   )
   let key = explicitEnv[env] ?? hostEnv[env]
+  let baseUrl = explicitEnv.DEEPSEEK_BASE_URL ?? hostEnv.DEEPSEEK_BASE_URL
   for (const file of files) {
     if (file.format !== 'dsh' && file.format !== 'dsh-env') continue
+    if (key && (baseUrl || file.format !== 'dsh-env')) continue
     try {
       const stat = lstatSync(file.source)
       if (!stat.isFile() || stat.size > MAX_SEED_FILE_BYTES) continue
       const { refs } = parseDshCredentialDocument(readFileSync(file.source, 'utf8'), file.format)
       key ||= refs[env]
+      if (file.format === 'dsh-env') baseUrl ??= refs.DEEPSEEK_BASE_URL
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
       // YAML parser errors can quote a line containing the key.
@@ -43,11 +48,15 @@ export function prepareDeepSeekSecret(
     }
   }
   const value = key?.trim()
-  const secret: MicrosandboxSecret | undefined = value
-    ? { env, placeholder: 'msb-secret-DEEPSEEK_API_KEY', host: 'api.deepseek.com', readValue: () => value }
-    : undefined
-  if (secret) {
-    const endpoint = new URL(explicitEnv.DEEPSEEK_BASE_URL ?? hostEnv.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com')
+  if (!value) return undefined
+  const secret: MicrosandboxSecret = {
+    env,
+    placeholder: 'msb-secret-DEEPSEEK_API_KEY',
+    host: 'api.deepseek.com',
+    readValue: () => value
+  }
+  try {
+    const endpoint = new URL(baseUrl ?? 'https://api.deepseek.com')
     if (
       endpoint.protocol !== 'https:' ||
       endpoint.hostname !== secret.host ||
@@ -55,11 +64,36 @@ export function prepareDeepSeekSecret(
       endpoint.username ||
       endpoint.password
     )
-      throw new Error('DeepSeek credential protection requires https://api.deepseek.com')
+      throw new Error('unsupported endpoint')
+  } catch {
+    throw new Error('DeepSeek launch refused: credential protection requires https://api.deepseek.com')
   }
   return {
     secret,
     sources: files.map((file) => file.source),
-    seedExclusions: [...new Set(files.map((file) => file.destination))]
+    seedExclusions: [...new Set(files.map((file) => file.destination))],
+    preparePrivateHome(home: string) {
+      for (const file of files) {
+        const format = file.format
+        if (format !== 'dsh' && format !== 'dsh-env') continue
+        projectRuntimeHomeSeedFile(home, file.destination, file.source, (text) => {
+          try {
+            const { data, refs } = parseDshCredentialDocument(text, format)
+            if (format === 'dsh') {
+              const target = data.version === 1 ? (data.refs as Record<string, unknown> | undefined) : data
+              if (target && Object.hasOwn(target, env)) target[env] = secret.placeholder
+              text = stringifyYaml(data)
+            } else if (refs[env]) {
+              if (!text.includes(refs[env])) return undefined
+              text = text.replaceAll(refs[env], secret.placeholder)
+            }
+            return text.replaceAll(value, secret.placeholder)
+          } catch {
+            // Invalid host seeds are skipped; invalid retained credentials fail closed without quoting their content.
+            return undefined
+          }
+        })
+      }
+    }
   }
 }

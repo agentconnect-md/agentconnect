@@ -13,6 +13,8 @@ import {
 import { MICROSANDBOX_NODE } from '../src/microsandbox/exec.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../src/shim/sandbox-paths.js'
 import { OVERLAY_BASE_ROOT } from '../src/microsandbox/overlay.js'
+import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
+import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
 
 class FakeExec {
   private readonly queue: Array<ExecEvent | Error | undefined> = []
@@ -353,6 +355,31 @@ async function fixture() {
 }
 
 describe('microsandbox process and VM ownership', () => {
+  it.skipIf(process.platform === 'win32')('launches and resumes with the actual daemon support mounts', async () => {
+    const { manager, options, environment, request, created } = await fixture()
+    const scopeDir = join(options.root, 'agent')
+    const cwd = join(scopeDir, 'workspace')
+    const hostHome = join(options.root, 'host')
+    await mkdir(cwd, { recursive: true })
+    await mkdir(hostHome)
+    const launch = prepareMicrosandboxLaunch({
+      runtimeId: 'test',
+      scopeDir,
+      cwd,
+      daemonRoot: options.root,
+      stateSourceEnv: { HOME: hostHome },
+      mounts: [],
+      trustedMounts: microsandboxSupportMounts(options.root)
+    })
+    const env = { id: environment.id, ...launch.microsandbox }
+    await (await manager.driverFor(env).launch({ ...request, env: launch.env })).stop(0)
+    await manager.stopAll()
+    const resumed = new MicrosandboxManager(options)
+    await (await resumed.driverFor(env).launch({ ...request, env: launch.env })).stop(0)
+    expect(created).toHaveLength(1)
+    await resumed.discard(env.id)
+  })
+
   it('refuses host SDK state mounts even for a runtime without its own secrets', async () => {
     const { manager, options, environment, request, created } = await fixture()
     for (const path of ['', 'microsandbox', 'microsandbox/sandboxes']) {
@@ -395,32 +422,40 @@ describe('microsandbox process and VM ownership', () => {
     expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
     expect(await readFile(path, 'utf8')).not.toContain(key)
     await resumed.stopAll()
+    created[0]!.modify.mockResolvedValueOnce({ applied: false, changes: [], conflicts: [] } as never)
     const restarted = new MicrosandboxManager(options)
     await (await restarted.driverFor(env).launch(launch)).stop(0)
+    expect(created).toHaveLength(1)
+    expect(created[0]!.status).toBe('running')
     await restarted.discard(env.id)
   })
 
-  it('retains an old unshielded VM without resuming it as a shielded environment', async () => {
-    const { manager, options, environment, request, created, volumes } = await fixture()
-    await (await manager.driverFor(environment).launch(request)).stop(0)
-    await manager.stopAll()
-    const resumed = new MicrosandboxManager(options)
-    const env = {
-      ...environment,
-      secrets: [
-        {
-          env: 'DEEPSEEK_API_KEY',
-          placeholder: 'fixture-placeholder',
-          host: 'api.deepseek.com',
-          readValue: () => 'fixture-key'
-        }
-      ]
+  it.each([false, true])(
+    'retains VM data when its credential configuration changes (protected=%s)',
+    async (protectedVm) => {
+      const { manager, options, environment, request, created, volumes } = await fixture()
+      const env = {
+        ...environment,
+        secrets: [
+          {
+            env: 'DEEPSEEK_API_KEY',
+            placeholder: 'fixture-placeholder',
+            host: 'api.deepseek.com',
+            readValue: () => 'fixture-key'
+          }
+        ]
+      }
+      await (await manager.driverFor(protectedVm ? env : environment).launch(request)).stop(0)
+      await manager.stopAll()
+      const resumed = new MicrosandboxManager(options)
+      await expect(resumed.driverFor(protectedVm ? environment : env).launch(request)).rejects.toThrow(
+        'start a new session'
+      )
+      expect(created[0]!.status).toBe('stopped')
+      expect(volumes.size).toBe(1)
+      await resumed.discard(environment.id)
     }
-    await expect(resumed.driverFor(env).launch(request)).rejects.toThrow('changed persisted configuration')
-    expect(created[0]!.status).toBe('stopped')
-    expect(volumes.size).toBe(1)
-    await resumed.discard(environment.id)
-  })
+  )
 
   it('shares read-only bases while retaining and cleaning up each session overlay disk', async () => {
     const { manager, options, environment, request, created, volumes, removeVolume } = await fixture()
@@ -710,15 +745,23 @@ describe('microsandbox process and VM ownership', () => {
     expect(created).toHaveLength(2)
   })
 
-  it('resumes the retained VM after retiring only the known guest helper mount', async () => {
-    const { manager, options, environment, request, created } = await fixture()
+  it.each([false, true])('resumes with relocated support mounts (legacy guest helper=%s)', async (withGuestHelper) => {
+    const { manager, options, environment: original, request, created } = await fixture()
+    const environment = { ...original, mounts: microsandboxSupportMounts(options.root) }
     const helpers = join(options.root, 'microsandbox', 'helpers')
     await mkdir(helpers, { recursive: true })
+    const legacyGit = join(helpers, 'git-credential')
+    await writeFile(legacyGit, await readFile(environment.mounts[0]!.source))
     const helper = join(helpers, 'guest.js')
     await writeFile(helper, 'export {}')
     const legacy: MicrosandboxEnvironment = {
       ...environment,
-      mounts: [{ source: await realpath(helper), target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }]
+      mounts: [
+        { ...environment.mounts[0]!, source: await realpath(legacyGit) },
+        ...(withGuestHelper
+          ? [{ source: await realpath(helper), target: '/opt/agentconnect-local/guest.js', mode: 'readonly' as const }]
+          : [])
+      ]
     }
     const runtime = await manager.driverFor(environment).launch(request)
     await runtime.stop(0)

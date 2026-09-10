@@ -98,7 +98,7 @@ export function parseDshCredentialDocument(text: string, format: 'dsh' | 'dsh-en
       (entry): entry is [string, string] => /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0]) && nonempty(entry[1])
     )
   )
-  return { refs, records: record(data.records) ?? {} }
+  return { data, refs, records: record(data.records) ?? {} }
 }
 
 function hermesCredentialProviders(data: unknown): string[] {

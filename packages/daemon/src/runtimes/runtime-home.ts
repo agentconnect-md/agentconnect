@@ -8,7 +8,6 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
-  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -62,17 +61,31 @@ function assertNoDestinationSymlink(home: string, target: string): void {
   }
 }
 
-export function removeRuntimeHomeSeedFiles(home: string, destinations: readonly string[]): void {
-  for (const destination of destinations) {
-    const target = containedDestination(home, destination)
-    assertNoDestinationSymlink(home, target)
-    try {
-      if (!lstatSync(target).isFile()) throw new Error('runtime HOME credential destination is not a regular file')
-      unlinkSync(target)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
+export function projectRuntimeHomeSeedFile(
+  home: string,
+  destination: string,
+  source: string,
+  project: (text: string) => string | undefined
+): void {
+  const target = containedDestination(home, destination)
+  assertNoDestinationSymlink(home, target)
+  const retained = existsSync(target)
+  const path = retained ? target : source
+  if (!existsSync(path)) return
+  const stat = lstatSync(path)
+  if (!stat.isFile() || stat.size > MAX_SEED_FILE_BYTES) {
+    if (retained) throw new Error('runtime HOME credential destination must be a small regular file')
+    return
   }
+  const original = readFileSync(path, 'utf8')
+  const content = project(original)
+  if (content === undefined) {
+    if (retained) throw new Error('Cannot protect the existing private runtime credential file')
+    return
+  }
+  if (retained && content === original) return
+  ensurePrivateDir(dirname(target))
+  writeFileSync(target, content, { mode: 0o600 })
 }
 
 function projectedJson(source: string, keys: readonly string[]): string | undefined {

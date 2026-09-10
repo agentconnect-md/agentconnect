@@ -306,26 +306,41 @@ a shared discovery descriptor retain the runtime probe's authentication result.
 For DeepSeek Harness in microsandbox, the daemon resolves the standard
 `DEEPSEEK_API_KEY` reference using the existing credential-file descriptors and
 DSH parser (`.credentials.yaml`, including the legacy layout and version-1 refs,
-then `.env`). An explicit launch or inherited host key takes precedence. The guest
+then `.env`). An explicit launch or inherited host key takes precedence, so a
+malformed unused YAML seed cannot override it. The guest
 receives only a placeholder; microsandbox's built-in TLS proxy substitutes the key
-in request headers for `https://api.deepseek.com`. Custom provider endpoints and
-custom credential-reference names are outside this first implementation.
+in request headers for `https://api.deepseek.com`. A non-default base URL in the
+launch environment, host environment or DSH `.env` refuses the launch with a
+diagnostic. Custom credential-reference names are outside this first implementation.
 
-The daemon skips both credential seed files, removes their previous private-HOME
-copies, rejects mounts exposing the host source files, and supplies the guest CA
-environment even when process-environment inheritance is disabled. Keys stay out
+When a DeepSeek key is available, the daemon projects the credential seed files
+with that ref replaced by the placeholder; other provider refs, OAuth records and
+existing private logins are preserved. Without a DeepSeek key, normal seeding is
+unchanged. The daemon rejects mounts exposing protected host paths, sharing SRT's
+boundary and runtime-state inventory, and supplies the guest CA environment even
+when process-environment inheritance is disabled. Keys stay out
 of serialized launch metadata and environment bindings. The SDK persists its own
 secret configuration on the host; this protection is against guest access.
-All VM launches reject requested mounts of the host SDK state directory or its descendants,
-including launches for runtimes that do not use secret injection themselves.
+All VM launches reject requested mounts of the host SDK state directory, its
+ancestors or its descendants, including launches for runtimes that do not use
+secret injection themselves. Public support helpers live outside SDK state;
+retained VMs can keep their previous exact read-only helper mounts.
 The proxy does not redact provider responses, so the allowed provider remains a
 trusted recipient of the key.
+
+The pinned SDK installs the proxy CA into the guest system bundle before execution.
+Combining it with operator-provided trust bundles is deferred: protected DeepSeek
+launches explicitly refuse custom `TLS_TRUST_ENV`, `REQUESTS_CA_BUNDLE` or
+`CURL_CA_BUNDLE` settings instead of silently replacing them. Use SRT for those
+configurations until custom trust is supported.
 
 New VMs receive the proxy configuration at creation. Retained protected VMs reload
 the host key before starting again; already-running VMs keep their current key
 until stopped and resumed. Previously unprotected DeepSeek VMs fail configuration
 reuse and retain their data: start a new session instead of treating an old disk
-that may contain credentials as protected. SRT and Kubernetes authentication
+that may contain credentials as protected. If a protected VM's credential later
+disappears, restore that credential and retry or start a new session; no VM or
+session data is automatically discarded. SRT and Kubernetes authentication
 paths are unchanged. No separate daemon HTTP proxy or networking option is added.
 
 ## 2. Selecting the backend
