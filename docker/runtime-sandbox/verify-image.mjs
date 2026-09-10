@@ -3,8 +3,8 @@
 //
 //   node verify-image.mjs runtime-sandbox|runtime-sandbox-full
 //
-// Everything here reads the image's filesystem or runs its executables; whatever needs the image CONFIG (USER,
-// ENTRYPOINT, ENV) stays in scripts/verify-runtime-image.mjs, which inspects the loaded image on the host.
+// Everything here reads the image's filesystem or runs its executables. The image's USER and ENV reach this stage as its
+// own uid and environment; the ENTRYPOINT does not, so scripts/verify-runtime-image.mjs reads the pinned base's config.
 import { execFileSync } from 'node:child_process'
 import { builtinModules } from 'node:module'
 
@@ -54,6 +54,8 @@ const SKILLS_CLI_PATH = '/opt/agentconnect/shim/skills/dist/cli.js'
 const SKILL_MUTATION_PATH = '/opt/agentconnect/shim/skills/workspace-mutation.js'
 // Must match SANDBOX_DSH_PRESET_DIR in sandbox-paths.ts: the shim copies this directory into a pod's $DSH_HOME.
 const DSH_PRESET_DIR = '/opt/agentconnect/dsh/agent-presets/standard-no-search'
+// Must match SANDBOX_BROWSER_EXECUTABLE_ENV in sandbox-paths.ts: the shim forwards this path into the runtime's env.
+const BROWSER_ENV = 'AGENT_BROWSER_EXECUTABLE_PATH'
 
 // First, while nothing in this stage has run yet: a build step that ran as root inside the workspace leaves state
 // the runtime cannot write, and the symptom is a runtime that will not start for the user that owns its own home.
@@ -260,6 +262,19 @@ check('the pinned agent-browser CLI runs and carries only this platform binary',
   const natives = sh("ls /usr/local/lib/node_modules/agent-browser/bin | grep '^agent-browser-' | tr '\\n' ' '").trim()
   if (natives.split(/\s+/).filter(Boolean).length !== 1) throw new Error(`bin/ carries native binaries: ${natives}`)
   return `${version} (${natives})`
+})
+
+// This stage inherits the image ENV, so an unset variable here is an unset ENV in the image — and then agent-browser
+// downloads its own 391 MB Chrome into the workspace volume while the baked one is dead weight.
+check('the baked Chrome is what agent-browser is pointed at and runs as the runtime user', () => {
+  const path = process.env[BROWSER_ENV]
+  if (!path) throw new Error(`${BROWSER_ENV} is unset in the image environment`)
+  const owner = sh(`stat -c '%U:%G %a' ${path}`)
+  if (!owner.startsWith('root:root')) throw new Error(`${path} is owned by ${owner}, not root`)
+  if (sh(`test -w ${path} && echo y || echo n`) === 'y') throw new Error(`the runtime user can rewrite ${path}`)
+  const version = sh(`${path} --version`)
+  if (!/^Google Chrome for Testing \d+\./.test(version)) throw new Error(`unexpected version output: ${version}`)
+  return `${version} at ${path} (${owner})`
 })
 
 // The wrapper keeps `agent-browser install` from fetching a browser the image already carries; root-owned like gh's.
