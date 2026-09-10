@@ -136,7 +136,7 @@ The daemon does not implement these, but interacts with them through the section
 | `--max-agents <n>`               | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
 | `--require-sandbox`              | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
 | n/a (config only)                | `sandbox.backend`              | Select the local sandbox backend; defaults to `srt`; `microsandbox` selects Linux VMs with an explicit image.                                      |
-| n/a (config only)                | `sandbox.mounts`               | Operator-owned host path mappings; `readOnly` defaults to true. SRT requires equal normalized source and target paths.                             |
+| n/a (config only)                | `sandbox.mounts`               | Host mappings: `readonly` (default), `writable`, or microsandbox-only `overlay`. SRT requires equal source/target paths.                           |
 | `--k8s`                          | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
 | `--key-server <url>`             | `KEY_SERVER`                   | Cloud-only service for session-scoped model credentials, http or https as the deployment chooses; see [key-server.md](key-server.md).              |
 | `--key-server-token-path <path>` | `KEY_SERVER_TOKEN_PATH`        | File re-read as the key-server bearer token on every request.                                                                                      |
@@ -331,8 +331,8 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
 
   // ---------- Local sandbox backend and shared host directories ----------
   "sandbox": {
-    "backend": "srt", // Default and currently the only supported backend.
-    // Entries: { source, target, readOnly }; readOnly defaults to true.
+    "backend": "srt", // Default; microsandbox is also supported on Linux.
+    // Entries: { source, target, mode }; mode defaults to readonly.
     // SRT requires existing paths and equal normalized source/target paths.
     "mounts": []
   },
@@ -397,7 +397,7 @@ roots, any operator-declared `sandbox.mounts` (host toolchains such as
 nvm's node or a rustup toolchain, made readable in every sandbox regardless
 of runtime), and the runtime's selected host credential path. Writes are limited to
 the workspace, private HOME, managed memory, SRT temporary storage, that
-credential path, and mounts with `readOnly: false` (such as a shared
+credential path, and mounts with `mode: "writable"` (such as a shared
 package-manager store). Outbound domains are approved by a provider callback and Unix sockets remain
 compatibility-open during this rollout. Proxy-aware HTTP(S) clients retain web
 egress, and the provider sets `NODE_USE_ENV_PROXY=1` so Node's built-in `fetch`

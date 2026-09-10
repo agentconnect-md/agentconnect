@@ -129,7 +129,7 @@ const SandboxMountSchema = z
   .object({
     source: z.string().min(1),
     target: z.string().min(1),
-    readOnly: z.boolean().default(true)
+    mode: z.enum(['readonly', 'writable', 'overlay']).default('readonly')
   })
   .strict()
 export type SandboxMount = z.infer<typeof SandboxMountSchema>

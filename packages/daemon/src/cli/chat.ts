@@ -68,7 +68,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   // Validate operator mounts before selecting or probing a runtime.
   const mounts = normalizeSandboxMounts(cfg.sandbox.mounts)
   const operatorReadRoots = mounts.map((mount) => mount.source)
-  const operatorWriteRoots = mounts.filter((mount) => !mount.readOnly).map((mount) => mount.source)
+  const operatorWriteRoots = mounts.filter((mount) => mount.mode === 'writable').map((mount) => mount.source)
   const agent = selectAgent(cfg.agentsDir!, opts.agentName)
   await persistSkillSandboxRequirement(root)
 

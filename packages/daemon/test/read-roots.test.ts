@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import type { SandboxMount } from '../src/config/config-schema.js'
 import {
   resolveTrustedExecutable,
   normalizeSandboxMounts,
@@ -56,8 +57,8 @@ describe('trusted runtime read roots', () => {
 
     const mounts = normalizeSandboxMounts(
       [
-        { source: '~/.rustup/toolchains/stable/bin', target: toolchain, readOnly: true },
-        { source: nodeInstall, target: nodeInstall, readOnly: true }
+        { source: '~/.rustup/toolchains/stable/bin', target: toolchain, mode: 'readonly' },
+        { source: nodeInstall, target: nodeInstall, mode: 'readonly' }
       ],
       { HOME: home }
     )
@@ -91,14 +92,14 @@ describe('trusted runtime read roots', () => {
     mkdirSync(store, { recursive: true })
     symlinkSync(store, alias, 'junction')
 
-    const mounts = [
-      { source: '~/toolchain', target: toolchain, readOnly: true },
-      { source: alias, target: store, readOnly: true },
-      { source: store, target: alias, readOnly: false }
+    const mounts: SandboxMount[] = [
+      { source: '~/toolchain', target: toolchain, mode: 'readonly' },
+      { source: alias, target: store, mode: 'readonly' },
+      { source: store, target: alias, mode: 'writable' }
     ]
     const expected = [
-      { source: realpathSync(toolchain), target: realpathSync(toolchain), readOnly: true },
-      { source: realpathSync(store), target: realpathSync(store), readOnly: false }
+      { source: realpathSync(toolchain), target: realpathSync(toolchain), mode: 'readonly' },
+      { source: realpathSync(store), target: realpathSync(store), mode: 'writable' }
     ]
     for (const entries of [mounts, [...mounts].reverse()]) {
       const normalized = normalizeSandboxMounts(entries, { HOME: home })
@@ -112,9 +113,9 @@ describe('trusted runtime read roots', () => {
     temporaryRoots.push(root)
     const file = join(root, 'toolchain.conf')
     writeFileSync(file, 'test configuration')
-    const mount = { source: file, target: file, readOnly: true }
+    const mount: SandboxMount = { source: file, target: file, mode: 'readonly' }
     expect(normalizeSandboxMounts([mount])).toEqual([
-      { source: realpathSync(file), target: realpathSync(file), readOnly: true }
+      { source: realpathSync(file), target: realpathSync(file), mode: 'readonly' }
     ])
     expect(() => normalizeSandboxMounts([{ ...mount, source: join(root, 'missing') }])).toThrow(
       /sandbox\.mounts source does not exist/
@@ -136,16 +137,16 @@ describe('trusted runtime read roots', () => {
     const alias = join(root, 'store-link')
     mkdirSync(nested, { recursive: true })
     symlinkSync(store, alias, 'junction')
-    const mounts = [
-      { source: '~/store-link', target: '/cache/../cache/store/', readOnly: true },
-      { source: store, target: '/cache/store', readOnly: false },
-      { source: nested, target: '/cache/store/nested', readOnly: true },
-      { source: store, target: '/other-cache', readOnly: true }
+    const mounts: SandboxMount[] = [
+      { source: '~/store-link', target: '/cache/../cache/store/', mode: 'readonly' },
+      { source: store, target: '/cache/store', mode: 'writable' },
+      { source: nested, target: '/cache/store/nested', mode: 'readonly' },
+      { source: store, target: '/other-cache', mode: 'readonly' }
     ]
     const expected = [
-      { source: realpathSync(store), target: '/cache/store', readOnly: false },
-      { source: realpathSync(nested), target: '/cache/store/nested', readOnly: true },
-      { source: realpathSync(store), target: '/other-cache', readOnly: true }
+      { source: realpathSync(store), target: '/cache/store', mode: 'writable' },
+      { source: realpathSync(nested), target: '/cache/store/nested', mode: 'readonly' },
+      { source: realpathSync(store), target: '/other-cache', mode: 'readonly' }
     ]
     for (const entries of [mounts, [...mounts].reverse()]) {
       const normalized = normalizeSandboxMounts(entries, { HOME: root }, 'microsandbox')
@@ -154,7 +155,7 @@ describe('trusted runtime read roots', () => {
     }
     expect(() =>
       normalizeSandboxMounts(
-        [...mounts, { source: nested, target: '/cache/store/', readOnly: false }],
+        [...mounts, { source: nested, target: '/cache/store/', mode: 'writable' }],
         { HOME: root },
         'microsandbox'
       )
@@ -167,15 +168,37 @@ describe('trusted runtime read roots', () => {
     const file = join(root, 'config')
     writeFileSync(file, 'configuration')
     const normalize = (source: string, target = '/cache') =>
-      normalizeSandboxMounts([{ source, target, readOnly: true }], {}, 'microsandbox')
+      normalizeSandboxMounts([{ source, target, mode: 'readonly' }], {}, 'microsandbox')
     expect(() => normalize(join(root, 'missing'))).toThrow(/source does not exist/)
     expect(() => normalize('relative/source')).toThrow(/source must be absolute/)
-    expect(normalize(file)).toEqual([{ source: realpathSync(file), target: '/cache', readOnly: true }])
-    for (const target of ['relative/target', '~/cache', 'C:\\cache', '/cache\0invalid']) {
+    expect(normalize(file)).toEqual([{ source: realpathSync(file), target: '/cache', mode: 'readonly' }])
+    for (const target of ['relative/target', '~/../cache', 'C:\\cache', '/cache\0invalid']) {
       expect(() => normalize(root, target)).toThrow(/absolute POSIX guest path/)
     }
     for (const target of ['/', '//', '/cache/..']) {
       expect(() => normalize(root, target)).toThrow(/must not be the guest root/)
+    }
+  })
+
+  it('resolves guest HOME at launch and limits overlays to independent directory mounts in microsandbox', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-overlay-mounts-'))
+    temporaryRoots.push(root)
+    const mount: SandboxMount = { source: root, target: '~/.cache/store', mode: 'overlay' }
+    const normalized = normalizeSandboxMounts([mount], {}, 'microsandbox')
+    expect(normalized[0]!.target).toBe('~/.cache/store')
+    expect(normalizeSandboxMounts(normalized, {}, 'microsandbox', '/session/home')[0]!.target).toBe(
+      '/session/home/.cache/store'
+    )
+    expect(() => normalizeSandboxMounts([{ ...mount, target: root }])).toThrow('requires microsandbox')
+    const file = join(root, 'file')
+    writeFileSync(file, '')
+    expect(() => normalizeSandboxMounts([{ ...mount, source: file }], {}, 'microsandbox')).toThrow(
+      'overlay source must be a directory'
+    )
+    for (const target of [mount.target, `${mount.target}/child`, '~/.cache']) {
+      expect(() => normalizeSandboxMounts([mount, { ...mount, target, mode: 'writable' }], {}, 'microsandbox')).toThrow(
+        /cannot combine|must not overlap/
+      )
     }
   })
 

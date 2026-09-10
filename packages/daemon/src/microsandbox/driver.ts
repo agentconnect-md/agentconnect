@@ -12,6 +12,7 @@ import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-run
 import { SinkRelPathSchema } from '../shim/file-sink.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
 import { MICROSANDBOX_SOCKET_BRIDGE_COMMAND, MICROSANDBOX_SOCKET_BRIDGE_ARGS } from './socket-bridge.js'
+import { overlayMounts, OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT, prepareOverlayMounts } from './overlay.js'
 import {
   MICROSANDBOX_NODE,
   openExecStream,
@@ -78,6 +79,7 @@ interface Binding {
   configHash: string
   environmentId: string
   dockerVolume?: string
+  overlayVolume?: string
 }
 
 const SpecImageSchema = z.object({ config: z.object({ image: z.string().min(1) }) })
@@ -225,7 +227,15 @@ export class MicrosandboxManager {
     return stableJson({
       version: 2,
       config: { ...this.options.config, image },
-      environment: { ...environment, mounts: [...environment.mounts].sort((a, b) => a.target.localeCompare(b.target)) },
+      environment: {
+        ...environment,
+        // Keep ordinary bind identities stable when the public configuration changes from readOnly to mode.
+        mounts: environment.mounts
+          .map(({ mode, ...mount }) =>
+            mode === 'overlay' ? { ...mount, mode } : { ...mount, readOnly: mode === 'readonly' }
+          )
+          .sort((a, b) => a.target.localeCompare(b.target))
+      },
       sockets: this.options.sockets
     })
   }
@@ -244,10 +254,19 @@ export class MicrosandboxManager {
         volume.namedWith(`${name}-docker`, 'create', 'disk', this.options.config.diskGiB * 1024)
       )
       .quietLogs()
-    for (const mount of mounts) {
+    const overlays = overlayMounts(mounts)
+    if (overlays.length) {
+      builder.volume(OVERLAY_STATE_ROOT, (volume) =>
+        volume.namedWith(`${name}-overlays`, 'create', 'disk', this.options.config.diskGiB * 1024)
+      )
+      for (const mount of overlays) {
+        builder.volume(`${OVERLAY_BASE_ROOT}/${mount.key}`, (volume) => volume.bind(mount.source).readonly())
+      }
+    }
+    for (const mount of mounts.filter((mount) => mount.mode !== 'overlay')) {
       builder.volume(mount.target, (volume) => {
         volume.bind(mount.source)
-        return mount.readOnly ? volume.readonly() : volume
+        return mount.mode === 'readonly' ? volume.readonly() : volume
       })
     }
     return builder
@@ -288,7 +307,7 @@ export class MicrosandboxManager {
     } finally {
       await (await this.options.sdk.Sandbox.get(name)).destroy({ timeoutMs: STOP_TIMEOUT_MS })
       await sandbox.detach()
-      await this.removeDockerVolume(`${name}-docker`)
+      await this.removeVolume(`${name}-docker`)
     }
   }
 
@@ -323,7 +342,7 @@ export class MicrosandboxManager {
     }
   }
 
-  private async removeDockerVolume(name: string): Promise<void> {
+  private async removeVolume(name: string): Promise<void> {
     try {
       await this.retryDiskOperation(() => this.options.sdk.Volume.remove(name))
     } catch (error) {
@@ -362,7 +381,8 @@ export class MicrosandboxManager {
         typeof binding.spec !== 'string' ||
         typeof binding.sandboxId !== 'string' ||
         typeof binding.configHash !== 'string' ||
-        (binding.dockerVolume !== undefined && binding.dockerVolume !== `${this.name(id)}-docker`)
+        (binding.dockerVolume !== undefined && binding.dockerVolume !== `${this.name(id)}-docker`) ||
+        (binding.overlayVolume !== undefined && binding.overlayVolume !== `${this.name(id)}-overlays`)
       ) {
         throw new Error('invalid binding')
       }
@@ -396,7 +416,10 @@ export class MicrosandboxManager {
             this.spec(
               {
                 ...environment,
-                mounts: [...environment.mounts, { source, target: '/opt/agentconnect-local/guest.js', readOnly: true }]
+                mounts: [
+                  ...environment.mounts,
+                  { source, target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }
+                ]
               },
               image
             )
@@ -418,6 +441,7 @@ export class MicrosandboxManager {
       }
       const sandbox = await this.retryDiskOperation(() => existing.connectOrStart({ detached: true }))
       try {
+        await prepareOverlayMounts(sandbox, environment.mounts)
         await this.startBridge(environment.id, sandbox)
         return sandbox
       } catch (error) {
@@ -438,7 +462,8 @@ export class MicrosandboxManager {
         spec,
         sandboxId: persisted.id,
         configHash: hash(stableJson(persisted.config())),
-        dockerVolume: `${name}-docker`
+        dockerVolume: `${name}-docker`,
+        ...(overlayMounts(environment.mounts).length ? { overlayVolume: `${name}-overlays` } : {})
       }
       const path = this.bindingPath(environment.id)
       await mkdir(dirname(path), { recursive: true, mode: 0o700 })
@@ -449,12 +474,14 @@ export class MicrosandboxManager {
       } finally {
         await rm(temporary, { force: true })
       }
+      await prepareOverlayMounts(sandbox, environment.mounts)
       await this.startBridge(environment.id, sandbox)
       return sandbox
     } catch (error) {
       await sandbox.destroy({ timeoutMs: STOP_TIMEOUT_MS })
       await sandbox.detach()
-      await this.removeDockerVolume(`${name}-docker`)
+      await this.removeVolume(`${name}-docker`)
+      if (overlayMounts(environment.mounts).length) await this.removeVolume(`${name}-overlays`)
       await rm(this.bindingPath(environment.id), { force: true })
       throw error
     }
@@ -679,7 +706,11 @@ export class MicrosandboxManager {
         }
         if (state) await (await state.sandbox).detach()
         this.environments.delete(id)
-        if (remove && binding?.dockerVolume) await this.removeDockerVolume(binding.dockerVolume)
+        if (remove) {
+          for (const volume of [binding?.dockerVolume, binding?.overlayVolume]) {
+            if (volume) await this.removeVolume(volume)
+          }
+        }
         if (remove) await rm(this.bindingPath(id), { force: true })
       } finally {
         if (state) state.closing = undefined

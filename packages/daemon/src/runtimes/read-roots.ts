@@ -47,11 +47,16 @@ function existingRoot(path: string, env: NodeJS.ProcessEnv, label = 'trusted run
   return realpathSync(expanded)
 }
 
-function guestMountTarget(path: string): string {
-  if (!posix.isAbsolute(path) || path.includes('\0')) {
-    throw new Error(`sandbox.mounts target must be an absolute POSIX guest path: ${path}`)
+function guestMountTarget(path: string, home?: string): string {
+  const relativeHome = path === '~' || path.startsWith('~/')
+  const normalized = posix.normalize(path)
+  if (
+    path.includes('\0') ||
+    (relativeHome ? normalized !== '~' && !normalized.startsWith('~/') : !posix.isAbsolute(path))
+  ) {
+    throw new Error(`sandbox.mounts target must be an absolute POSIX guest path or stay within ~/: ${path}`)
   }
-  const target = posix.normalize(path).replace(/\/$/, '')
+  const target = (relativeHome && home ? posix.join(home, normalized.slice(2)) : normalized).replace(/\/$/, '')
   if (!target) throw new Error('sandbox.mounts target must not be the guest root')
   return target
 }
@@ -60,13 +65,19 @@ function guestMountTarget(path: string): string {
 export function normalizeSandboxMounts(
   mounts: readonly SandboxMount[],
   env: NodeJS.ProcessEnv = process.env,
-  backend: SandboxBackend = 'srt'
+  backend: SandboxBackend = 'srt',
+  guestHome?: string
 ): SandboxMount[] {
   const normalized = new Map<string, SandboxMount>()
   for (const mount of mounts) {
     const source = existingRoot(mount.source, env, 'sandbox.mounts source')
     const target =
-      backend === 'srt' ? existingRoot(mount.target, env, 'sandbox.mounts target') : guestMountTarget(mount.target)
+      backend === 'srt'
+        ? existingRoot(mount.target, env, 'sandbox.mounts target')
+        : guestMountTarget(mount.target, guestHome)
+    if (backend !== 'microsandbox' && mount.mode === 'overlay') {
+      throw new Error('sandbox.mounts mode=overlay requires microsandbox')
+    }
     if (backend === 'srt' && source !== target) {
       throw new Error('sandbox.mounts requires source and target to be the same path for srt')
     }
@@ -75,14 +86,33 @@ export function normalizeSandboxMounts(
       if (!stat.isFile() && !stat.isDirectory()) {
         throw new Error(`sandbox.mounts source must be a file or directory for microsandbox: ${source}`)
       }
+      if (mount.mode === 'overlay' && !stat.isDirectory()) {
+        throw new Error(`sandbox.mounts overlay source must be a directory: ${source}`)
+      }
     }
     const previous = normalized.get(target)
     if (previous && previous.source !== source) {
       throw new Error(`sandbox.mounts cannot map different sources to the same target: ${target}`)
     }
-    normalized.set(target, { source, target, readOnly: mount.readOnly && (previous?.readOnly ?? true) })
+    if (previous && previous.mode !== mount.mode && [previous.mode, mount.mode].includes('overlay')) {
+      throw new Error(`sandbox.mounts cannot combine overlay and bind modes at the same target: ${target}`)
+    }
+    const mode = previous?.mode === 'writable' ? previous.mode : mount.mode
+    normalized.set(target, { source, target, mode })
   }
-  return [...normalized.values()]
+  const result = [...normalized.values()]
+  for (const mount of result.filter((mount) => mount.mode === 'overlay')) {
+    if (
+      result.some(
+        (other) =>
+          other !== mount &&
+          (other.target.startsWith(`${mount.target}/`) || mount.target.startsWith(`${other.target}/`))
+      )
+    ) {
+      throw new Error(`sandbox.mounts overlay targets must not overlap other configured mounts: ${mount.target}`)
+    }
+  }
+  return result
 }
 
 /** Resolve the existing prefix too, so a missing socket/file below a symlink is

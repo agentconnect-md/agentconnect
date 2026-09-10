@@ -91,8 +91,14 @@ describe('loadConfig', () => {
     })
     expect(cfg.sandbox).toEqual({
       backend: 'srt',
-      mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain', readOnly: true }]
+      mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain', mode: 'readonly' }]
     })
+    expect(() =>
+      ConfigSchema.parse({
+        version: 1,
+        sandbox: { mounts: [{ source: '/opt/toolchain', target: '/opt/toolchain', readOnly: true }] }
+      })
+    ).toThrow()
   })
 
   it('rejects an unimplemented sandbox backend', () => {

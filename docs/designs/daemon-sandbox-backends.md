@@ -42,7 +42,7 @@ that default:
       {
         "source": "/srv/agent-cache/pnpm",
         "target": "/cache/pnpm",
-        "readOnly": false
+        "mode": "writable"
       }
     ],
     "microsandbox": {
@@ -63,14 +63,14 @@ also overrides the release default. Networking is fixed backend behavior; the
 strict VM configuration has no network modes, port mappings, or outbound-proxy
 settings.
 
-| Setting                        | Meaning and delivery status                                                                                                                                                                                                                                                          |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `sandbox.backend`              | Implemented: `srt` is the default; `microsandbox` selects the Linux VM implementation for sandboxed launches.                                                                                                                                                                        |
-| `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent, using the selected backend.                                                                                                                                                                                          |
-| Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents.                                                                                                                                     |
-| `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                     |
-| `cpus`, `memoryMiB`, `diskGiB` | Per-VM CPU allocation, memory limit, and capacity of each writable disk; defaults are `2`, `2048`, and `10`. New VMs have a root upper disk and a Docker data disk, each capped by `diskGiB`. Both are sparse; host capacity planning remains the operator's responsibility.         |
-| `sandbox.mounts`               | Implemented: operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `readOnly` (default `true`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets. Workspace, HOME, and runtime state remain automatically provisioned. |
+| Setting                        | Meaning and delivery status                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox.backend`              | Implemented: `srt` is the default; `microsandbox` selects the Linux VM implementation for sandboxed launches.                                                                                                                                                                                                                               |
+| `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent, using the selected backend.                                                                                                                                                                                                                                                 |
+| Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents.                                                                                                                                                                                            |
+| `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                                                                            |
+| `cpus`, `memoryMiB`, `diskGiB` | Per-VM CPU allocation, memory limit, and capacity of each writable disk; defaults are `2`, `2048`, and `10`. New VMs have a root upper disk and a Docker data disk, plus one disk when overlay mounts are configured, each capped by `diskGiB`. All are sparse; host capacity planning remains the operator's responsibility.               |
+| `sandbox.mounts`               | Operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `mode` (`readonly` by default, or `writable` / `overlay`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets and `~/` relative to the session HOME. Workspace, HOME, and runtime state remain automatically provisioned. |
 
 ### Shared mounts and manual conversion
 
@@ -79,10 +79,14 @@ settings.
 automatically migrate or retain a compatibility path for them. Convert existing
 configuration manually using this table, then remove the old fields:
 
-| Previous entry                                          | Entry to add to `sandbox.mounts`                                                              |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `security.sandboxReadRoots: ["/opt/toolchain"]`         | `{ "source": "/opt/toolchain", "target": "/opt/toolchain", "readOnly": true }`                |
-| `security.sandboxWriteRoots: ["/srv/agent-cache/pnpm"]` | `{ "source": "/srv/agent-cache/pnpm", "target": "/srv/agent-cache/pnpm", "readOnly": false }` |
+| Previous entry                                          | Entry to add to `sandbox.mounts`                                                               |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `security.sandboxReadRoots: ["/opt/toolchain"]`         | `{ "source": "/opt/toolchain", "target": "/opt/toolchain", "mode": "readonly" }`               |
+| `security.sandboxWriteRoots: ["/srv/agent-cache/pnpm"]` | `{ "source": "/srv/agent-cache/pnpm", "target": "/srv/agent-cache/pnpm", "mode": "writable" }` |
+
+The former mount-level `readOnly` field is also removed: replace `true` with
+`mode: "readonly"` and `false` with `mode: "writable"` when upgrading the daemon.
+Ordinary mount identities in retained VM bindings remain unchanged by this rename.
 
 Keep a previously writable path writable when converting duplicate legacy
 entries. Launch preparation consumes only `sandbox.mounts`. Normalization expands
@@ -97,7 +101,9 @@ writable children of read-only parents rather than collapsing nested paths.
 microsandbox applies actual guest mount flags: a nested read-only mount restricts
 that subtree even inside a writable parent, and a writable child remains writable
 inside a read-only parent. Keep these nested mappings. User mappings that overlap
-the VM's automatically provisioned paths are rejected in either direction.
+the VM's automatically provisioned paths are rejected, except for children of
+the session HOME. Runtime credentials, settings, sockets, and internal overlay
+paths remain protected.
 
 SRT uses the configured paths at their host locations: its filesystem rules do
 not rename a host path inside the sandbox. Normalize `source` and `target` as
@@ -117,7 +123,7 @@ For example, SRT uses the same common configuration shape:
       {
         "source": "/srv/agent-cache/pnpm",
         "target": "/srv/agent-cache/pnpm",
-        "readOnly": false
+        "mode": "writable"
       }
     ]
   }
@@ -130,6 +136,44 @@ the actual tool process. Mount configuration does not rewrite package-manager
 settings: point the package manager at the effective target path. Do not mount
 an entire host HOME to make an isolated runtime work. Session retirement detaches
 operator-owned mounts without deleting their host contents.
+
+### Shared bases with session-local writes
+
+microsandbox also accepts `mode: "overlay"` for directory sources. Multiple
+sessions, including sessions belonging to different agents, can read the same
+host base while keeping additions, changes, and deletions on their own writable
+layer. `readonly` rejects guest writes; `writable` writes directly to the host;
+`overlay` never writes back to its host source. SRT rejects overlay mode.
+
+For example, when pnpm's default store is under the session's XDG data directory:
+
+```json
+{
+  "source": "/srv/agent-cache/pnpm",
+  "target": "~/.local/share/pnpm/store",
+  "mode": "overlay"
+}
+```
+
+The source must be an existing, populated host store directory. `~` in `source`
+uses the daemon's HOME; `~` in a microsandbox `target` uses the session HOME.
+Verify the effective target with `pnpm store path` in the actual session and
+project, since package-manager versions, environment, and filesystem layout
+affect the default. Mounting at that default avoids a separate store setting.
+This shares store contents only; each session still has its own `node_modules`.
+
+The daemon mounts each base read-only at an internal path and allocates one
+session-owned ext4 disk for all its overlay upper/work directories. Before
+starting session processes, it mounts the merged directories as root through
+the SDK. Suspension retains the disk; resume recreates the mounts; session
+deletion removes the disk. Root setup rejects symlinks in target directories.
+Overlay targets cannot overlap other configured mounts. Changes to the configured
+mount layout still require discarding a retained VM before recreating it.
+
+Use a stable base while sessions have it mounted. Live host mutation consistency
+and cache invalidation controls are separate work; this mode does not make an
+OverlayFS lower layer safe to modify in place. Guest cache misses stay private
+and are not automatically published for other sessions.
 
 Configuration is machine-local desired state. Agent configuration can select a
 runtime and request sandboxing, but cannot supply backend executables, images,

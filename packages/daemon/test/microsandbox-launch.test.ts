@@ -103,17 +103,17 @@ describe('prepareMicrosandboxLaunch', () => {
         TESTCONTAINERS_HOST_OVERRIDE: 'host-docker.example.test'
       },
       trustedRuntimeReadRoots: [tool, missing],
-      mounts: [{ source: tool, target: '/tools/tool.js', readOnly: true }]
+      mounts: [{ source: tool, target: '/tools/tool.js', mode: 'readonly' }]
     })
     expect(launch.inheritProcessEnv).toBe(false)
     expect(launch.sandbox).toBeUndefined()
     expect(launch.microsandbox.workspaceRoot).toBe(opts.scopeDir)
     expect(launch.microsandbox.mounts).toEqual(
       expect.arrayContaining([
-        { source: opts.cwd, target: opts.cwd, readOnly: false },
-        { source: join(opts.scopeDir, 'home'), target: join(opts.scopeDir, 'home'), readOnly: false },
-        { source: tool, target: tool, readOnly: true },
-        { source: tool, target: '/tools/tool.js', readOnly: true }
+        { source: opts.cwd, target: opts.cwd, mode: 'writable' },
+        { source: join(opts.scopeDir, 'home'), target: join(opts.scopeDir, 'home'), mode: 'writable' },
+        { source: tool, target: tool, mode: 'readonly' },
+        { source: tool, target: '/tools/tool.js', mode: 'readonly' }
       ])
     )
     expect(launch.microsandbox.mounts.some((mount) => mount.source === opts.scopeDir)).toBe(false)
@@ -146,7 +146,7 @@ describe('prepareMicrosandboxLaunch', () => {
     expect(explicit.microsandbox.mounts).toContainEqual({
       source: join(opts.scopeDir, 'run', 'config-files'),
       target: join(opts.scopeDir, 'run', 'config-files'),
-      readOnly: true
+      mode: 'readonly'
     })
   })
 
@@ -175,7 +175,7 @@ describe('prepareMicrosandboxLaunch', () => {
     mkdirSync(other)
     const launch = prepareMicrosandboxLaunch({ ...opts, cwd, trustedSessionDir: sessionDir })
     expect(launch.runtimeHome).toBe(join(sessionDir, 'home'))
-    expect(launch.microsandbox.mounts).toContainEqual({ source: sessionDir, target: sessionDir, readOnly: false })
+    expect(launch.microsandbox.mounts).toContainEqual({ source: sessionDir, target: sessionDir, mode: 'writable' })
     expect(
       launch.microsandbox.mounts.some((mount) => other === mount.target || other.startsWith(mount.target + '/'))
     ).toBe(false)
@@ -198,7 +198,7 @@ describe('prepareMicrosandboxLaunch', () => {
     const launch = prepareMicrosandboxLaunch({ ...opts, cwd, hostKey })
     const home = join(opts.scopeDir, 'runtime-homes', hostKeyDirName(hostKey), 'home')
     expect(launch.runtimeHome).toBe(home)
-    expect(launch.microsandbox.mounts).toContainEqual({ source: home, target: home, readOnly: false })
+    expect(launch.microsandbox.mounts).toContainEqual({ source: home, target: home, mode: 'writable' })
     expect(launch.microsandbox.mounts.some((mount) => mount.source === dirname(home))).toBe(false)
     expect(existsSync(join(opts.scopeDir, 'sessions'))).toBe(false)
   })
@@ -209,7 +209,7 @@ describe('prepareMicrosandboxLaunch', () => {
     const second = prepareMicrosandboxLaunch({ ...opts, hostKey: sessionHostKey('agent', 'second') })
     expect(first.runtimeHome).not.toBe(second.runtimeHome)
     for (const launch of [first, second]) {
-      expect(launch.microsandbox.mounts).toContainEqual({ source: opts.cwd, target: opts.cwd, readOnly: false })
+      expect(launch.microsandbox.mounts).toContainEqual({ source: opts.cwd, target: opts.cwd, mode: 'writable' })
     }
     expect(first.microsandbox.mounts.some(({ target }) => target === second.runtimeHome)).toBe(false)
     expect(existsSync(join(opts.scopeDir, 'sessions'))).toBe(false)
@@ -234,7 +234,7 @@ describe('prepareMicrosandboxLaunch', () => {
           microsandbox: { mounts: [] }
         })
         const mounts = launch.microsandbox!.mounts
-        expect(mounts).toContainEqual({ source, target: memory.readRoot(launch.runtimeHome!), readOnly: false })
+        expect(mounts).toContainEqual({ source, target: memory.readRoot(launch.runtimeHome!), mode: 'writable' })
         expect(mounts.some((mount) => mount.source === agentHome)).toBe(false)
         expect(mounts.some((mount) => mount.source === join(agentHome, '.codex'))).toBe(false)
         writeFileSync(join(source, 'MEMORY.md'), session)
@@ -262,9 +262,9 @@ describe('prepareMicrosandboxLaunch', () => {
     const launch = prepareMicrosandboxLaunch({ ...opts, trustedMounts })
     expect(launch.microsandbox.mounts).toEqual(
       expect.arrayContaining([
-        { source: opts.cwd, target: opts.cwd, readOnly: false },
-        { source: gitConfig, target: gitConfig, readOnly: true },
-        { source: trustedMounts[0]!.source, target: helper, readOnly: true }
+        { source: opts.cwd, target: opts.cwd, mode: 'writable' },
+        { source: gitConfig, target: gitConfig, mode: 'readonly' },
+        { source: trustedMounts[0]!.source, target: helper, mode: 'readonly' }
       ])
     )
     for (const target of [helper, dirname(helper), gitConfig]) {
@@ -272,7 +272,7 @@ describe('prepareMicrosandboxLaunch', () => {
         prepareMicrosandboxLaunch({
           ...opts,
           trustedMounts,
-          mounts: [{ source: opts.hostHome, target, readOnly: false }]
+          mounts: [{ source: opts.hostHome, target, mode: 'writable' }]
         })
       ).toThrow('overlaps an automatic')
     }
@@ -282,7 +282,8 @@ describe('prepareMicrosandboxLaunch', () => {
     const opts = fixture()
     for (const target of [
       opts.scopeDir,
-      join(opts.scopeDir, 'home', 'replacement'),
+      join(opts.scopeDir, 'home'),
+      join(opts.scopeDir, 'home', '.run', 'replacement'),
       '/run',
       '/var/run',
       '/run/docker',
@@ -292,7 +293,7 @@ describe('prepareMicrosandboxLaunch', () => {
       '/tmp'
     ]) {
       expect(() =>
-        prepareMicrosandboxLaunch({ ...opts, mounts: [{ source: opts.hostHome, target, readOnly: false }] })
+        prepareMicrosandboxLaunch({ ...opts, mounts: [{ source: opts.hostHome, target, mode: 'writable' }] })
       ).toThrow('overlaps an automatic')
     }
     expect(() => prepareMicrosandboxLaunch({ ...opts, trustedRuntimeReadRoots: [opts.scopeDir] })).toThrow(
@@ -304,6 +305,35 @@ describe('prepareMicrosandboxLaunch', () => {
         runtime: { command: 'external', args: [], env: [], externalExecution: true }
       })
     ).toThrow('outside the microsandbox VM')
+  })
+
+  it('mounts a shared base inside each session HOME with private writes and protected runtime state', () => {
+    const opts = fixture()
+    opts.runtimeId = 'codex-acp'
+    const source = join(opts.root, 'shared-store')
+    mkdirSync(source)
+    for (const leaf of ['session-one', 'session-two']) {
+      const session = join(opts.scopeDir, 'sessions', leaf)
+      const cwd = join(session, 'workspace')
+      mkdirSync(cwd, { recursive: true })
+      const launch = prepareMicrosandboxLaunch({
+        ...opts,
+        cwd,
+        trustedSessionDir: session,
+        mounts: [{ source, target: '~/.local/share/pnpm/store', mode: 'overlay' }]
+      })
+      const target = join(session, 'home', '.local/share/pnpm/store')
+      expect(launch.microsandbox.mounts).toContainEqual({ source, target, mode: 'overlay' })
+      expect(launch.toolSandbox?.sharedWriteRoots).toContain(target)
+      expect(() =>
+        prepareMicrosandboxLaunch({
+          ...opts,
+          cwd,
+          trustedSessionDir: session,
+          mounts: [{ source, target: '~/.codex', mode: 'overlay' }]
+        })
+      ).toThrow('protected runtime state')
+    }
   })
 
   it('reuses the native Codex auth-file link and exposes only the shared credential file', () => {
@@ -318,7 +348,7 @@ describe('prepareMicrosandboxLaunch', () => {
     )
     const launch = prepareMicrosandboxLaunch({ ...opts, runtimeId: 'codex-acp' })
     expect(readlinkSync(join(launch.runtimeHome!, '.codex', 'auth.json'))).toBe(auth)
-    expect(launch.microsandbox.mounts).toContainEqual({ source: auth, target: auth, readOnly: false })
+    expect(launch.microsandbox.mounts).toContainEqual({ source: auth, target: auth, mode: 'writable' })
     expect(
       launch.microsandbox.mounts.some((mount) => mount.source === hostCodex || mount.source === opts.hostHome)
     ).toBe(false)
@@ -353,11 +383,11 @@ describe('prepareMicrosandboxLaunch', () => {
       allowModelToolUnixSockets: true,
       explicitEnv: { CODEX_CONFIG: JSON.stringify({ 'permissions.untrusted': {}, model: 'test-model' }) },
       mounts: [
-        { source: cache, target: '/shared/cache', readOnly: false },
-        { source: opts.hostHome, target: '/credential-copy', readOnly: false },
-        { source: auth, target: '/credential-file', readOnly: true },
-        { source: hostCodex, target: '/credential-dir', readOnly: false },
-        { source: auth, target: '/credential-dir/auth.json', readOnly: false }
+        { source: cache, target: '/shared/cache', mode: 'writable' },
+        { source: opts.hostHome, target: '/credential-copy', mode: 'writable' },
+        { source: auth, target: '/credential-file', mode: 'readonly' },
+        { source: hostCodex, target: '/credential-dir', mode: 'writable' },
+        { source: auth, target: '/credential-dir/auth.json', mode: 'writable' }
       ]
     })
     expect(JSON.parse(launch.env.CODEX_CONFIG!)).toEqual({ model: 'test-model' })
@@ -395,7 +425,7 @@ describe('prepareMicrosandboxLaunch', () => {
       runtimeId: 'claude-acp',
       runtime: { command: 'claude-agent-acp', args: [], env: [] },
       explicitEnv: { ANTHROPIC_CONFIG_DIR: '/untrusted-profile', ANTHROPIC_PROFILE: 'untrusted' },
-      mounts: [{ source: config, target: '/credential-copy', readOnly: false }]
+      mounts: [{ source: config, target: '/credential-copy', mode: 'writable' }]
     })
     expect(launch.sandbox).toBeUndefined()
     const profileRoot = join(opts.scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')
@@ -409,11 +439,11 @@ describe('prepareMicrosandboxLaunch', () => {
       expect.arrayContaining([config, join(launch.runtimeHome!, '.claude'), '/credential-copy'])
     )
     expect(launch.toolSandbox?.sharedWriteRoots).toBeUndefined()
-    expect(launch.microsandbox.mounts).toContainEqual({ source: config, target: config, readOnly: false })
+    expect(launch.microsandbox.mounts).toContainEqual({ source: config, target: config, mode: 'writable' })
     expect(launch.microsandbox.mounts).toContainEqual({
       source: join(opts.scopeDir, '.agentconnect', 'runtime-policy'),
       target: join(opts.scopeDir, '.agentconnect', 'runtime-policy'),
-      readOnly: true
+      mode: 'readonly'
     })
   })
 

@@ -15,9 +15,9 @@ export function microsandboxSupportMounts(root: string, sessionGitConfigPath?: s
   }
   chmodSync(source, 0o755)
   return [
-    { source, target: gitcredShimPath(root), readOnly: true },
+    { source, target: gitcredShimPath(root), mode: 'readonly' },
     ...(sessionGitConfigPath && existsSync(sessionGitConfigPath)
-      ? [{ source: sessionGitConfigPath, target: sessionGitConfigPath, readOnly: true }]
+      ? [{ source: sessionGitConfigPath, target: sessionGitConfigPath, mode: 'readonly' as const }]
       : [])
   ]
 }
