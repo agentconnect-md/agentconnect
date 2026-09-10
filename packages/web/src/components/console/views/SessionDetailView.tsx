@@ -96,7 +96,11 @@ import { ContextWindowIndicator } from '@/components/console/ContextWindowIndica
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
 import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
-import { composerHistoryFromRows, useComposerHistory } from '@/components/console/useComposerHistory'
+import {
+  composerHistoryFromRows,
+  useComposerHistory,
+  type ComposerHistoryEntry
+} from '@/components/console/useComposerHistory'
 import { CommandMenu } from '@/components/console/CommandMenu'
 import { useCommandAutocomplete } from '@/components/console/useCommandAutocomplete'
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
@@ -259,14 +263,21 @@ function ComposerTextarea({
   onMentionJoiningChange,
   onCommandPick,
   commands,
-  history
+  history,
+  hasEarlier,
+  loadEarlier,
+  loadedRows
 }: {
   sessionId: string
   placeholder: string
   onSend: () => void
   onImageFile?: (file: File) => void
-  /** The viewer's earlier prompts in this session, oldest first — Up/Down on an empty draft recalls them. */
-  history: readonly string[]
+  /** The viewer's earlier prompts in the loaded window, oldest first — Up/Down on an empty draft recalls them. */
+  history: readonly ComposerHistoryEntry[]
+  /** Transcript paging, so Up at the oldest loaded prompt pages earlier history in. */
+  hasEarlier: boolean
+  loadEarlier: () => Promise<void>
+  loadedRows: number
   mentionCandidates: MentionOption[]
   onPickMention: (option: MentionOption) => void | Promise<boolean>
   /** Mirrors `mention.joining` up to the parent so the (separately isolated)
@@ -284,7 +295,14 @@ function ComposerTextarea({
   const draft = usePgDraft(sessionId)
   const { setPgInput } = usePlayground()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const recall = useComposerHistory({ history, value: draft, setValue: (v) => setPgInput(sessionId, v) })
+  const recall = useComposerHistory({
+    history,
+    value: draft,
+    setValue: (v) => setPgInput(sessionId, v),
+    hasEarlier,
+    loadEarlier,
+    loadedRows
+  })
   // @mention picker (webchat-multi-agents.md §9.1/§9.2) — same contract as the
   // Home composer's: picking a candidate inserts "@Name " and typedMentionIds()
   // resolves that text back into a structural mention on send.
@@ -3226,8 +3244,14 @@ export default function SessionDetailView() {
     sessionSenderLabel(sender, fallback, agentNameById, memberNameByIdentity, me)
   // The composer's Up/Down recall pool: the viewer's own prompts in transcript order.
   const composerHistory = useMemo(
-    () => composerHistoryFromRows(visibleMsgs ?? [], (sender) => isSelfSender(sender, me)),
-    [visibleMsgs, me]
+    () =>
+      composerHistoryFromRows(
+        visibleMsgs ?? [],
+        (sender) => isSelfSender(sender, me),
+        // Source session + `seq`, as rowAnchor below: immutable, and a prepended page cannot move it.
+        (m) => `${conversationSourceSessionByMessageRef.current.get(m) ?? sid ?? ''}#${m.seq}`
+      ),
+    [visibleMsgs, me, sid]
   )
 
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
@@ -5382,6 +5406,9 @@ export default function SessionDetailView() {
                           }}
                           commands={commandParticipants}
                           history={composerHistory}
+                          hasEarlier={visibleHasEarlier}
+                          loadEarlier={loadEarlierConversation}
+                          loadedRows={visibleMsgs?.length ?? 0}
                         />
                         <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
                           {attachmentsEnabled && (
