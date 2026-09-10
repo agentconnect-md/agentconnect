@@ -125,6 +125,18 @@ export function feishuElicitText(message: string): string {
   return `💬 ${clampTo(message, FEISHU_ELICIT_MESSAGE_CAP)}`
 }
 
+/** A row of buttons, as CardKit 2.0 spells one: buttons live directly in `elements`, and a
+ *  `column_set` is what puts several on one line — the same layout this repo's own reply card
+ *  already uses. JSON 2.0 has no `tag: 'action'` wrapper at all. Pure. */
+function feishuButtonRow(buttons: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    tag: 'column_set',
+    flex_mode: 'flow',
+    horizontal_spacing: '8px',
+    columns: buttons.map((button) => ({ tag: 'column', width: 'auto', elements: [button] }))
+  }
+}
+
 function feishuDismissButton(requestId: string): Record<string, unknown> {
   return {
     tag: 'button',
@@ -144,25 +156,22 @@ export function buildFeishuElicitButtons(
 ): Record<string, unknown> {
   return feishuCard([
     { tag: 'markdown', content: feishuElicitText(message) },
-    {
-      tag: 'action',
-      layout: 'flow',
-      actions: [
-        ...options.map((o, i) => ({
-          tag: 'button',
-          text: { tag: 'plain_text', content: clampTo(o.label, FEISHU_LABEL_CAP) },
-          type: 'default',
-          behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, elicitOptionToken(i)) }]
-        })),
-        feishuDismissButton(requestId)
-      ]
-    }
+    feishuButtonRow([
+      ...options.map((o, i) => ({
+        tag: 'button',
+        text: { tag: 'plain_text', content: clampTo(o.label, FEISHU_LABEL_CAP) },
+        type: 'default',
+        behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, elicitOptionToken(i)) }]
+      })),
+      feishuDismissButton(requestId)
+    ])
   ])
 }
 
 /**
- * The FORM card: one named control per field inside a CardKit `form`, then the single Confirm that
- * submits the lot and a Dismiss beside it.
+ * The FORM card: one named control per field inside a CardKit `form`, the single Confirm that
+ * submits the lot, and a Dismiss OUTSIDE the container — a form button is submit or reset, and a
+ * submit validates the required fields, which is exactly the state a refusal has to work in.
  *
  * Every control is named by the same {@link elicitFormBlockId} a Slack Confirm submits under, and
  * every option carries its POSITION — so what comes back out of this form is validated by core's
@@ -215,24 +224,23 @@ export function buildFeishuElicitForm(
       name: FEISHU_ELICIT_FORM_ID,
       elements: [
         ...elements,
+        // The one control that reads every named field above and sends them together. A button
+        // INSIDE a form needs both a `name` and a `form_action_type`, and submit is the only one
+        // of the two that carries values — reset merely clears them.
         {
-          tag: 'action',
-          layout: 'flow',
-          actions: [
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: 'Confirm' },
-              type: 'primary',
-              // The one control that reads every named field above and sends them together.
-              form_action_type: 'submit',
-              name: `${FEISHU_ELICIT_FORM_ID}_submit`,
-              behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, FEISHU_ELICIT_CONFIRM) }]
-            },
-            feishuDismissButton(requestId)
-          ]
+          tag: 'button',
+          text: { tag: 'plain_text', content: 'Confirm' },
+          type: 'primary',
+          form_action_type: 'submit',
+          name: `${FEISHU_ELICIT_FORM_ID}_submit`,
+          behaviors: [{ type: 'callback', value: feishuElicitValue(requestId, FEISHU_ELICIT_CONFIRM) }]
         }
       ]
-    }
+    },
+    // Dismiss stands OUTSIDE the form, and has to: a form button is submit or reset, and submit
+    // validates the required fields. The reader's one explicit refusal must work precisely when
+    // those fields are empty, which is the case a submit would refuse.
+    feishuButtonRow([feishuDismissButton(requestId)])
   ])
 }
 

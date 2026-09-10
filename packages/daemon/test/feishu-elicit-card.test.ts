@@ -19,6 +19,7 @@ import { elicitForm, elicitOptionToken, elicitTarget } from '../src/slack/render
 import {
   FEISHU_ELICIT_ACTION,
   FEISHU_ELICIT_SURFACE,
+  buildFeishuElicitButtons,
   buildFeishuElicitForm,
   feishuElicitValue,
   feishuUsesForm,
@@ -47,6 +48,11 @@ function elements(card: any): any[] {
 /** The `form` container's own child elements. */
 function formElements(card: any): any[] {
   return elements(card).find((e: any) => e.tag === 'form').elements
+}
+
+/** The buttons of one `column_set` row — CardKit 2.0's way of putting several on a line. */
+function rowButtons(row: any): any[] {
+  return row.columns.map((c: any) => c.elements[0])
 }
 
 describe('the payload a Feishu elicitation comes back on', () => {
@@ -109,12 +115,36 @@ describe('the form card one reduction becomes', () => {
     expect(inside[0].options.map((o: any) => o.value)).toEqual([elicitOptionToken(0), elicitOptionToken(1)])
     expect(inside[0].options.map((o: any) => o.text.content)).toEqual(['main', 'develop'])
 
-    // One Confirm for the whole card, and it is the control that reads every field above.
-    const actions = inside.at(-1).actions
-    expect(actions.map((a: any) => a.text.content)).toEqual(['Confirm', 'Dismiss'])
-    expect(actions[0].form_action_type).toBe('submit')
-    expect(actions[0].behaviors[0].value).toEqual(feishuElicitValue(REQUEST_ID, 'ok'))
-    expect(actions[1].behaviors[0].value).toEqual(feishuElicitValue(REQUEST_ID, 'x'))
+    // One Confirm for the whole card, INSIDE the form, carrying both fields a form button needs.
+    const confirm = inside.at(-1)
+    expect(confirm.tag).toBe('button')
+    expect(confirm.text.content).toBe('Confirm')
+    expect(confirm.form_action_type).toBe('submit')
+    expect(typeof confirm.name).toBe('string')
+    expect(confirm.behaviors[0].value).toEqual(feishuElicitValue(REQUEST_ID, 'ok'))
+
+    // Dismiss stands OUTSIDE the container: a submit validates the required fields, and a refusal
+    // has to work precisely when those are empty.
+    const outside = elements(card).at(-1)
+    expect(outside.tag).toBe('column_set')
+    const dismiss = rowButtons(outside)[0]
+    expect(dismiss.text.content).toBe('Dismiss')
+    expect(dismiss.form_action_type).toBeUndefined()
+    expect(dismiss.behaviors[0].value).toEqual(feishuElicitValue(REQUEST_ID, 'x'))
+  })
+
+  it('uses no JSON 1.0 `action` container anywhere, which CardKit 2.0 does not have', () => {
+    const cards = [
+      build(form({ ...BRANCH, ...CHECKS }, ['branch']))!,
+      buildFeishuElicitButtons(REQUEST_ID, 'q', [{ label: 'main' }])
+    ]
+    const tags = (node: unknown): string[] => {
+      if (Array.isArray(node)) return node.flatMap(tags)
+      if (!node || typeof node !== 'object') return []
+      const o = node as Record<string, unknown>
+      return [...(typeof o.tag === 'string' ? [o.tag] : []), ...Object.values(o).flatMap(tags)]
+    }
+    for (const card of cards) expect(tags(card)).not.toContain('action')
   })
 
   it('declines an option list past what this card offers, rather than showing part of it', () => {
@@ -200,8 +230,8 @@ describe('a Feishu turn posts an elicitation card and settles it in place', () =
   it('answers a lone single-select with one tap, and rewrites the card with the answer', async () => {
     const h = feishuTurn()
     const { requestId, result } = await raise(h, form(BRANCH, ['branch']))
-    const actions = elements(h.cards[0]!.card).find((e: any) => e.tag === 'action').actions
-    expect(actions.map((a: any) => a.text.content)).toEqual(['main', 'develop', 'Dismiss'])
+    const row = elements(h.cards[0]!.card).find((e: any) => e.tag === 'column_set')
+    expect(rowButtons(row).map((b: any) => b.text.content)).toEqual(['main', 'develop', 'Dismiss'])
 
     await h.daemon.permissions.handleElicitCardTap({ requestId, token: elicitOptionToken(1) })
     await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'develop' } })
