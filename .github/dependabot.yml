@@ -17,6 +17,8 @@ updates:
       - dependency-name: conventional-changelog-conventionalcommits
         update-types:
           - version-update:semver-major
+      # The daemon mirrors this CLI's discovery internals and asserts the exact version at build time; upgrade it manually with that audit.
+      - dependency-name: skills
     groups:
       npm-minor-and-patch:
         patterns:

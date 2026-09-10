@@ -67,7 +67,7 @@ function childTempDir(writeRoots: string[], privateHome: string): string {
   return tempDir
 }
 
-// SRT 0.0.73's cwd-anchored mandatory-deny names (`DANGEROUS_FILES` / `getDangerousDirectories()`, not exported): the files, and the directories it denies as a whole.
+// SRT 0.0.75's cwd-anchored mandatory-deny names (`DANGEROUS_FILES` / `getDangerousDirectories()`, not exported): the files, and the directories it denies as a whole.
 const SRT_PROTECTED_FILES = [
   '.gitconfig',
   '.gitmodules',
