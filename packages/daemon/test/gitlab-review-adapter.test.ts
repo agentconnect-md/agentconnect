@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WireError } from '@agentconnect.md/connection'
 import {
   CODEHOST_REVIEW_V1_FEATURE,
   type CodeHostReviewAuthorize,
@@ -244,6 +245,8 @@ interface CpOptions {
   /** Return an error to refuse a `return-unused` frame. */
   returnUnusedFails?: () => Error | undefined
   reportFails?: (result: CodeHostReviewResultReport) => Error | undefined
+  /** Return an error to fail that authorization round trip after it was recorded. */
+  authorizeFails?: (payload: CodeHostReviewAuthorize) => Error | undefined
 }
 
 function fakeCp(opts: CpOptions = {}) {
@@ -257,6 +260,8 @@ function fakeCp(opts: CpOptions = {}) {
     supportsReview: () => opts.supports !== false,
     authorize: async (payload): Promise<CodeHostReviewAuthorized> => {
       authorizations.push(payload)
+      const failure = opts.authorizeFails?.(payload)
+      if (failure) throw failure
       if (opts.refuse) {
         return { authorized: false, attemptId: payload.attemptId, reason: opts.refuse, retryable: false }
       }
@@ -544,6 +549,25 @@ describe('GitLab review adapter — pre-effect rejections (§15)', () => {
     const h = harness()
     await h.adapter.submit(KEY, request())
     await expect(h.adapter.submit(KEY, request())).rejects.toThrow(/already has a formal review attempt/)
+    expect(published(h.calls)).toHaveLength(1)
+  })
+
+  it('keeps the review attempt when the control-plane socket drops before authorization', async () => {
+    // The correlator rejects every in-flight request this way when the daemon↔CP socket closes.
+    let drops = 1
+    const h = harness({
+      cp: { authorizeFails: () => (drops-- > 0 ? new WireError('INTERNAL', 'connection closed', true) : undefined) }
+    })
+    await expect(h.adapter.submit(KEY, request())).rejects.toThrow(
+      'formal review attempt paused: control plane unreachable (connection closed)'
+    )
+    // Nothing reached GitLab, and the attempt stays reserved rather than spent.
+    expect(published(h.calls)).toHaveLength(0)
+    expect(h.adapter.owns(KEY, AGENT_ID)).toBe(true)
+
+    await expect(h.adapter.submit(KEY, request())).resolves.toMatchObject({ provider: 'gitlab', state: 'submitted' })
+    // The retry re-acquires the SAME attempt — the lease treats that as its own renewal, never a second fence.
+    expect(h.authorizations.map((authorization) => authorization.attemptId)).toEqual([ATTEMPT, ATTEMPT])
     expect(published(h.calls)).toHaveLength(1)
   })
 

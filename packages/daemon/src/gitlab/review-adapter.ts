@@ -12,6 +12,7 @@
  * Control Plane: the result frame carries ids and one normalized state only.
  */
 import { randomUUID } from 'node:crypto'
+import { WireError } from '@agentconnect.md/connection'
 import {
   codeHostReviewPublicEffect,
   type CodeHostReviewAuthorize,
@@ -415,6 +416,11 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       turn.state = codeHostReviewPublicEffect(outcome.state) === 'absent' ? 'idle' : 'done'
       return outcome
     } catch (err) {
+      // A retryable wire failure lands before the op's provider request; replaying the same attempt is the restart path.
+      if (err instanceof WireError && err.retryable) {
+        turn.state = 'idle'
+        throw new Error(`formal review attempt paused: control plane unreachable (${err.message}); call the tool again`)
+      }
       // A withheld result leaves the turn open and the attempt pre-terminal, by design.
       turn.state = err instanceof ResultWithheld ? 'idle' : 'done'
       throw err
