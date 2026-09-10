@@ -3242,17 +3242,25 @@ export default function SessionDetailView() {
   const isSelf = (sender?: string | null): boolean => isSelfSender(sender, me)
   const senderLabel = (sender: string | null | undefined, fallback?: string): string =>
     sessionSenderLabel(sender, fallback, agentNameById, memberNameByIdentity, me)
-  // The composer's Up/Down recall pool: the viewer's own prompts in transcript order.
-  const composerHistory = useMemo(
-    () =>
-      composerHistoryFromRows(
+  // The composer's Up/Down recall pool: the viewer's own prompts in transcript order, read from
+  // whichever source the page renders — fetched rows, or the steps a playground session carries.
+  const sessionSteps = session?.steps
+  const sessionUser = session?.user
+  const composerHistory = useMemo(() => {
+    const isSelf = (sender: string) => isSelfSender(sender, me)
+    if (wantTranscript) {
+      // Source session + `seq`, as rowAnchor below: immutable, and a prepended page cannot move it.
+      return composerHistoryFromRows(
         visibleMsgs ?? [],
-        (sender) => isSelfSender(sender, me),
-        // Source session + `seq`, as rowAnchor below: immutable, and a prepended page cannot move it.
+        isSelf,
         (m) => `${conversationSourceSessionByMessageRef.current.get(m) ?? sid ?? ''}#${m.seq}`
-      ),
-    [visibleMsgs, me, sid]
-  )
+      )
+    }
+    const prompts = (sessionSteps ?? []).flatMap((stp) =>
+      stp.kind === 'msg' ? [{ ...stp, sender: stp.who ?? sessionUser ?? '' }] : []
+    )
+    return composerHistoryFromRows(prompts, isSelf, (stp) => `live:${stp.turnId}`)
+  }, [wantTranscript, visibleMsgs, sessionSteps, sessionUser, me, sid])
 
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
   useEffect(() => {

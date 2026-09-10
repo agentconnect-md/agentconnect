@@ -276,6 +276,38 @@ describe('useComposerHistory', () => {
       expect(h.label()).toBe('History 1/1+')
     })
 
+    it('Escape cancels a walk that has not found an entry yet, so the arriving page recalls nothing', async () => {
+      let release!: () => void
+      const loadEarlier = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve
+          })
+      )
+      const h = mountHarness([], { hasEarlier: true, loadEarlier, loadedRows: 10 })
+      h.press('ArrowUp')
+      expect(h.label()).toBe('History · loading earlier…')
+      expect(h.press('Escape')).toEqual({ consumed: true, prevented: true })
+      expect(h.label()).toBeNull()
+      h.update({ history: [entry('found')], paging: { hasEarlier: false, loadEarlier, loadedRows: 30 } })
+      release()
+      await settle()
+      expect(h.value()).toBe('')
+      expect(h.label()).toBeNull()
+    })
+
+    it('Down cancels a walk that has not found an entry yet', () => {
+      const h = mountHarness([], {
+        hasEarlier: true,
+        loadEarlier: vi.fn(() => new Promise<void>(() => {})),
+        loadedRows: 10
+      })
+      h.press('ArrowUp')
+      expect(h.press('ArrowDown').consumed).toBe(true)
+      expect(h.label()).toBeNull()
+      expect(h.value()).toBe('')
+    })
+
     it('typing while a page loads cancels the walk and keeps the typed text', async () => {
       const loadEarlier = vi.fn(async () => {})
       const h = mountHarness([], { hasEarlier: true, loadEarlier, loadedRows: 10 })

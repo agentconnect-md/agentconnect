@@ -115,8 +115,16 @@ export function useComposerHistory({
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
     if (event.nativeEvent.isComposing) return false
+    // A page walk in flight, with or without an entry under it yet: Escape and Down cancel it.
+    if (pending !== null) {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown' && event.key !== 'Escape') return false
+      event.preventDefault()
+      if (event.key === 'Escape') leave(true)
+      else if (event.key === 'ArrowDown') setPending(null)
+      return true
+    }
     if (index === null) {
-      if (value !== '' || pending !== null) return false
+      if (value !== '') return false
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return false
       if (history.length > 0) {
         event.preventDefault()
@@ -133,15 +141,13 @@ export function useComposerHistory({
     }
     if (event.key === 'ArrowUp') {
       event.preventDefault()
-      if (pending !== null) return true
       if (index > 0) recall(index - 1)
       else if (hasEarlier && loadEarlier && current !== null) startWalk(current)
       return true
     }
     if (event.key === 'ArrowDown') {
       event.preventDefault()
-      if (pending !== null) setPending(null)
-      else if (index < history.length - 1) recall(index + 1)
+      if (index < history.length - 1) recall(index + 1)
       else leave(true)
       return true
     }
