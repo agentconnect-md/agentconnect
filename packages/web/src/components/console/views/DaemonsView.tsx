@@ -298,7 +298,7 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
                   openModal('deleteGroup', group)
                 }}
               >
-                <Icon name="trash-2" size={15} />
+                <Icon name="trash" size={15} />
                 Remove group
               </button>
             </span>
@@ -716,7 +716,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                       openModal('deleteDaemon', m)
                     }}
                   >
-                    <Icon name="trash-2" size={15} />
+                    <Icon name="trash" size={15} />
                     Delete
                   </button>
                 </>

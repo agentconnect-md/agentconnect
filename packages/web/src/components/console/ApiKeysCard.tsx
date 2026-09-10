@@ -312,7 +312,7 @@ function CreateApiKeyModal({
         {minted ? (
           <>
             <div className="mb-[14px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
-              <Icon name="alert-triangle" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
+              <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                 Copy this key now — it is shown only once and cannot be retrieved. Store it somewhere safe.
               </span>
@@ -447,7 +447,7 @@ function RevokeApiKeyModal({
     <>
       <div className="modalhead">
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
-          <Icon name="trash-2" size={16} color="var(--status-error)" />
+          <Icon name="trash" size={16} color="var(--status-error)" />
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Revoke API key</span>
         <button className="iconbtn" onClick={onClose}>
@@ -476,7 +476,7 @@ function RevokeApiKeyModal({
           onClick={() => void onConfirm()}
           className={busy ? 'pointer-events-none opacity-50' : undefined}
         >
-          <Icon name="trash-2" size={15} />
+          <Icon name="trash" size={15} />
           {busy ? 'Revoking…' : 'Revoke'}
         </Button>
       </div>

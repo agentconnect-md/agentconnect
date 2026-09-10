@@ -167,7 +167,7 @@ export default function GroupDetailView() {
                     openModal('deleteGroup', group)
                   }}
                 >
-                  <Icon name="trash-2" size={15} />
+                  <Icon name="trash" size={15} />
                   Remove group
                 </button>
               </div>

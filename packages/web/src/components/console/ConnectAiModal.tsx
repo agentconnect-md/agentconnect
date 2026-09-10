@@ -112,7 +112,7 @@ const NAV = [
   { label: 'Skills', icon: 'scroll-text', on: false },
   { label: 'Connectors', icon: 'blocks', on: true },
   { label: 'Plugins', icon: 'unplug', on: false },
-  { label: 'Memory', icon: 'history', on: false }
+  { label: 'Memory', icon: 'rotate-ccw-clock', on: false }
 ]
 
 function Frame({ on, children }: { on: boolean; children: ReactNode }) {

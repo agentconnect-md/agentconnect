@@ -34,7 +34,7 @@ export default function DeleteGroupModal({ group, onClose }: { group: MemberSetR
     <>
       <div className="modalhead">
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
-          <Icon name="trash-2" size={15} color="var(--status-error)" />
+          <Icon name="trash" size={15} color="var(--status-error)" />
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Delete group</span>
         <button className="iconbtn" onClick={onClose}>

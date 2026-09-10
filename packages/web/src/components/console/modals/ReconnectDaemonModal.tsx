@@ -65,7 +65,7 @@ export default function ReconnectDaemonModal({ daemon, onClose }: { daemon: Daem
       </div>
       <div className="modalbody">
         <div className="mb-[14px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
-          <Icon name="alert-triangle" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
+          <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
           <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
             This issues a fresh connect token for <span className="mono text-(--text-primary)">{daemon.name}</span>. Run
             the command below on its host to bring it back online — its identity and agents are preserved.

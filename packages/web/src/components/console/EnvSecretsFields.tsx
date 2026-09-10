@@ -241,7 +241,7 @@ export function EnvSecretsFields({
                   title="Remove"
                   onClick={() => setEnvRows((rs) => rs.filter((_, j) => j !== i))}
                 >
-                  <Icon name="trash-2" size={12} />
+                  <Icon name="trash" size={12} />
                 </button>
               </div>
             )
@@ -323,7 +323,7 @@ export function EnvSecretsFields({
                   title="Remove"
                   onClick={() => setSecretRows((rs) => rs.filter((_, j) => j !== i))}
                 >
-                  <Icon name="trash-2" size={12} />
+                  <Icon name="trash" size={12} />
                 </button>
               </div>
             )

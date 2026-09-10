@@ -387,7 +387,7 @@ export default function ScheduleDetailView() {
             onClick={() => void remove()}
             className="flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[14px] font-semibold leading-normal text-(--red-600)"
           >
-            <Icon name="trash-2" size={16} />
+            <Icon name="trash" size={16} />
             Delete schedule
           </button>
         </div>
@@ -441,7 +441,7 @@ export default function ScheduleDetailView() {
                   </button>
                   <div className="dmsep" />
                   <button className="dmi danger" onClick={() => void remove()}>
-                    <Icon name="trash-2" size={14} />
+                    <Icon name="trash" size={14} />
                     Delete
                   </button>
                 </div>

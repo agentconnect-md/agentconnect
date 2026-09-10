@@ -509,14 +509,14 @@ function BotsCard({
                   {RowLinks && <RowLinks bot={b} />}
                   {free && canWrite ? (
                     <button className="iconbtn h-7 w-7 flex-none" title={`Delete ${noun}`} onClick={() => onDelete(b)}>
-                      <Icon name="trash-2" size={14} />
+                      <Icon name="trash" size={14} />
                     </button>
                   ) : !free ? (
                     <span
                       title="Uninstall its integration first"
                       className="flex h-7 w-7 flex-none cursor-not-allowed items-center justify-center opacity-45"
                     >
-                      <Icon name="trash-2" size={14} />
+                      <Icon name="trash" size={14} />
                     </span>
                   ) : (
                     <span className="h-7 w-7 flex-none" />

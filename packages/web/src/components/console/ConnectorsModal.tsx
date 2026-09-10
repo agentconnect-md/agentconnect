@@ -429,7 +429,7 @@ function ConnectionForm({
         </div>
       ) : auth.type === 'no_auth' ? (
         <div className="flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
-          <Icon name="check-circle-2" size={15} color="var(--status-online-text)" className="mt-[1px] flex-none" />
+          <Icon name="circle-check" size={15} color="var(--status-online-text)" className="mt-[1px] flex-none" />
           <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
             This connector needs no credentials — just name it and add.
           </span>

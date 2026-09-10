@@ -646,7 +646,7 @@ export function WorkspaceFiles({
                     onClick={() => void confirmDelete()}
                     disabled={deleteDraft.deleting}
                   >
-                    <Icon name="trash-2" size={13} />
+                    <Icon name="trash" size={13} />
                     {deleteDraft.deleting ? 'Deleting…' : 'Delete file'}
                   </Button>
                 </>
@@ -664,7 +664,7 @@ export function WorkspaceFiles({
                   ) : null}
                   {viewerCanDelete ? (
                     <Button variant="secondary" size="xs" className="flex-none" onClick={startDelete}>
-                      <Icon name="trash-2" size={13} />
+                      <Icon name="trash" size={13} />
                       Delete
                     </Button>
                   ) : null}

@@ -81,7 +81,7 @@ function PurgedMark({ session }: { session: Session }) {
       }
       className="inline-flex flex-none"
     >
-      <Icon name="trash-2" size={12} color="var(--text-tertiary)" />
+      <Icon name="trash" size={12} color="var(--text-tertiary)" />
     </span>
   )
 }

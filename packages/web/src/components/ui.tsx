@@ -10,6 +10,11 @@ function toPascal(name: string): string {
     .join('')
 }
 
+/** Lucide keys `icons` by canonical name, so a rename drops the old one — `icon-names.test.ts` resolves through this. */
+export function lucideIcon(name: string): React.ComponentType<LucideProps> | undefined {
+  return (icons as Record<string, React.ComponentType<LucideProps>>)[toPascal(name)]
+}
+
 export function Icon({
   name,
   size = 16,
@@ -25,7 +30,7 @@ export function Icon({
   style?: CSSProperties
   strokeWidth?: number
 }) {
-  const Cmp = (icons as Record<string, React.ComponentType<LucideProps>>)[toPascal(name)]
+  const Cmp = lucideIcon(name)
   if (!Cmp) return null
   return <Cmp size={size} color={color} strokeWidth={strokeWidth} className={className} style={style} />
 }

@@ -35,7 +35,7 @@ export default function DeleteBotModal({ bot, onClose }: { bot: BotDto; onClose:
     <>
       <div className="modalhead">
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
-          <Icon name="trash-2" size={16} color="var(--status-error)" />
+          <Icon name="trash" size={16} color="var(--status-error)" />
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Delete bot</span>
         <button className="iconbtn" onClick={onClose}>
@@ -62,7 +62,7 @@ export default function DeleteBotModal({ bot, onClose }: { bot: BotDto; onClose:
           Cancel
         </Button>
         <Button variant="danger" onClick={onDelete} className={busy ? 'pointer-events-none opacity-50' : undefined}>
-          <Icon name="trash-2" size={15} />
+          <Icon name="trash" size={15} />
           {busy ? 'Deleting…' : 'Delete'}
         </Button>
       </div>

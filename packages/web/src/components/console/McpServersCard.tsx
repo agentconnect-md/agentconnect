@@ -215,7 +215,7 @@ function ProviderTile({
               <Icon name="pencil" size={12} />
             </button>
             <button className="iconbtn h-6 w-6" title="Remove" onClick={onDelete}>
-              <Icon name="trash-2" size={12} />
+              <Icon name="trash" size={12} />
             </button>
           </>
         ) : undefined
@@ -693,7 +693,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
               {isNoAuth ? (
                 <div className="flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
                   <Icon
-                    name="check-circle-2"
+                    name="circle-check"
                     size={15}
                     color="var(--status-online-text)"
                     className="mt-[1px] flex-none"
@@ -845,7 +845,7 @@ function DeleteMcpProviderModal({ provider, onClose }: { provider: McpProviderDt
     <>
       <div className="modalhead">
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
-          <Icon name="trash-2" size={16} color="var(--status-error)" />
+          <Icon name="trash" size={16} color="var(--status-error)" />
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Delete MCP server</span>
         <button className="iconbtn" onClick={onClose}>
@@ -871,7 +871,7 @@ function DeleteMcpProviderModal({ provider, onClose }: { provider: McpProviderDt
           onClick={() => void onDelete()}
           className={busy ? 'pointer-events-none opacity-50' : undefined}
         >
-          <Icon name="trash-2" size={15} />
+          <Icon name="trash" size={15} />
           {busy ? 'Deleting…' : 'Delete'}
         </Button>
       </div>

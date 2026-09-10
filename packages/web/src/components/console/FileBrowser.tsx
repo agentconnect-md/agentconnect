@@ -490,7 +490,7 @@ export function FileBrowserHistoryButton({ active, onClick }: { active: boolean;
       aria-pressed={active}
       onClick={onClick}
     >
-      <Icon name="history" size={14} />
+      <Icon name="rotate-ccw-clock" size={14} />
       History
     </button>
   )
