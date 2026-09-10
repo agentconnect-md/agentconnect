@@ -270,15 +270,22 @@ async function installSkillsLocked(
     // unchanged. An unavailable answer keeps the installed commit and so keeps the
     // fingerprint, which is what makes "unknown" a no-op rather than a rebuild.
     const plannedCommits = plannedGitCommits(gitSources, installedResolutions, trackedCommits)
-    const planFingerprint = fingerprint({
-      schema: INSTALLER_SCHEMA,
-      cli: SKILLS_CLI_SPEC,
-      runtime: agent.runtime,
-      agentId: agentId ?? '',
-      git: gitSources,
-      plan: [...plannedCommits].sort(([a], [b]) => a.localeCompare(b)),
-      local: localPrepared.map(({ key, name, contentDigest }) => ({ key, name, contentDigest }))
-    })
+    // One recipe, evaluated twice: over what this run PLANS to install (the skip
+    // decisions) and, after acquisition, over what it actually installed (the value
+    // the ledger keeps). A first install cannot know the commit a moving ref will
+    // resolve to, so recording the plan there would make the very next run's
+    // fingerprint differ from it and rebuild for nothing.
+    const fingerprintFor = (plan: Map<string, string>): string =>
+      fingerprint({
+        schema: INSTALLER_SCHEMA,
+        cli: SKILLS_CLI_SPEC,
+        runtime: agent.runtime,
+        agentId: agentId ?? '',
+        git: gitSources,
+        plan: [...plan].sort(([a], [b]) => a.localeCompare(b)),
+        local: localPrepared.map(({ key, name, contentDigest }) => ({ key, name, contentDigest }))
+      })
+    const planFingerprint = fingerprintFor(plannedCommits)
     const desiredGitResolutionCount = new Set(gitSources.map(gitResolutionDigest)).size
     assertNoUnmigratedLegacyState(legacyState)
     // Claim every prepared workspace, even before it has executable skills.
@@ -303,7 +310,7 @@ async function installSkillsLocked(
         agentId: agent.id,
         runtime: agent.runtime,
         cliVersion: PINNED_SKILLS_CLI_VERSION,
-        fingerprint: planFingerprint,
+        fingerprint: fingerprintFor(plannedGitCommits(gitSources, retainedGitResolutions, new Map())),
         candidates: [],
         gitResolutions: retainedGitResolutions,
         legacyOwned: legacyState.owned,
@@ -324,7 +331,10 @@ async function installSkillsLocked(
       await fsp.mkdir(dirname(acquisitionDir), { recursive: true, mode: 0o700 })
       await fsp.mkdir(acquisitionDir, { mode: 0o700 })
       const definitionDigest = gitResolutionDigest(entry)
-      const plannedCommit = plannedCommits.get(definitionDigest)
+      // A sibling entry that shares this acquisition identity has already resolved
+      // it in THIS run, and both must land on identical bytes; otherwise take what
+      // the plan says (the tracked head, a pin, or the installed commit).
+      const plannedCommit = resolutionsByDefinition.get(definitionDigest) ?? plannedCommits.get(definitionDigest)
       const acquisitionEntry = plannedCommit ? { ...entry, ref: plannedCommit } : entry
       const acquired = await (opts.acquireGit ?? acquireGitSkillSource)(acquisitionEntry, {
         destination: acquisitionDir,
@@ -363,6 +373,8 @@ async function installSkillsLocked(
       gitSources,
       [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
     )
+    // What the publication layer stores and compares: the commits actually acquired.
+    const installedFingerprint = fingerprintFor(plannedGitCommits(gitSources, nextGitResolutions, new Map()))
 
     const runCli = opts.runCli ?? runPinnedSkillsCli
     const candidatesByPath = new Map<string, CandidateSkillBundle>()
@@ -459,7 +471,7 @@ async function installSkillsLocked(
       agentId: agent.id,
       runtime: agent.runtime,
       cliVersion: PINNED_SKILLS_CLI_VERSION,
-      fingerprint: planFingerprint,
+      fingerprint: installedFingerprint,
       candidates,
       gitResolutions: nextGitResolutions,
       legacyOwned: legacyState.owned,
