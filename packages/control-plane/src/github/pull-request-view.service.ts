@@ -348,6 +348,8 @@ export class PullRequestViewService {
         },
         {
           auth: cred.token,
+          // A query: the transport may repeat it through one bad hop instead of degrading the panel.
+          idempotent: true,
           ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
           ...(this.baseUrl ? { baseUrl: this.baseUrl } : {})
         }
@@ -441,7 +443,7 @@ export class PullRequestViewService {
     const node = await githubGraphql<MergeNodeAnswer>(
       'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id state merged}}}',
       { owner, name, number: target.pullNumber },
-      opts
+      { ...opts, idempotent: true }
     )
     const pr = node.repository?.pullRequest
     if (!pr) throw new GithubApiError('pull request not visible to the installation', 200, 'LEASE_DENIED', false)

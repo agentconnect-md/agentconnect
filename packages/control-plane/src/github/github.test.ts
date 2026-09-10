@@ -868,6 +868,14 @@ describe('githubRequest — read retries', () => {
     await expect(get(denied.fetchImpl)).rejects.toMatchObject({ code: 'LEASE_DENIED' })
     expect(denied.calls()).toBe(1)
   })
+
+  it('repeats a POST only when the caller vouches it is idempotent — a GraphQL query', async () => {
+    const { fetchImpl, calls } = scripted([bad(502), ok])
+    expect(
+      await githubRequest('/graphql', { auth: 't', method: 'POST', body: {}, idempotent: true, fetchImpl, sleep })
+    ).toEqual({ id: 1 })
+    expect(calls()).toBe(2)
+  })
 })
 
 describe('InstallationTokenService.mintLevels — per-capability levels (issue #457)', () => {
