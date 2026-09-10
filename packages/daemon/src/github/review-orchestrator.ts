@@ -9,6 +9,7 @@
  * stays where it is.
  */
 import { randomUUID } from 'node:crypto'
+import { WireError } from '@agentconnect.md/connection'
 import {
   GITLAB_DEFAULT_BASE_URL,
   normalizeGitCloneUrl,
@@ -871,8 +872,13 @@ export class GithubReviewOrchestrator {
         ? await cp.authorizeGithubReview(authorization, orgId)
         : await cp.authorizeGithubReview(authorization)
     } catch (err) {
-      active.reviewState = 'done'
-      throw err
+      // A retryable wire failure wrote nothing at GitHub and the same attempt re-authorizes idempotently: keep the retry.
+      if (!(err instanceof WireError && err.retryable)) {
+        active.reviewState = 'done'
+        throw err
+      }
+      active.reviewState = 'idle'
+      throw new Error(`formal review not submitted: control plane unreachable (${err.message}); call the tool again`)
     }
     if (!authorizedReviewTargetMatches(active, attemptId, authorized)) {
       active.reviewState = 'done'
