@@ -41,7 +41,11 @@ const wire = vi.hoisted(() => ({
   /** Non-null holds every PR probe until released, so the strip is observable while the linkage is unknown. */
   prGate: null as null | Array<() => void>,
   /** A synthetic playground session the daemon has not created yet — its route id names no canonical session the lease could be keyed by. */
-  playground: false
+  playground: false,
+  /** Overrides the session's steps: a playground session renders these instead of fetching a transcript. */
+  steps: undefined as unknown[] | undefined,
+  /** Every draft the composer wrote through `setPgInput`, newest last; the mocked `usePgDraft` reads the newest. */
+  drafts: [] as string[]
 }))
 
 // The reader's role in the org. `viewer` is what the CP 403s on every git-write route, so the console withholds those controls.
@@ -206,7 +210,8 @@ vi.mock('@/lib/data-context', () => ({
         workspaceIsolation: wire.isolation,
         contentPurgedAt: wire.contentPurgedAt,
         ...(wire.agentless ? { agentId: '', agentName: '' } : {}),
-        ...(wire.playground ? { platform: 'playground' } : {})
+        ...(wire.playground ? { platform: 'playground' } : {}),
+        ...(wire.steps ? { steps: wire.steps } : {})
       }
     ],
     getSessions: () => [session],
@@ -274,10 +279,12 @@ vi.mock('@/components/console/PlaygroundProvider', () => ({
     pgSetFast: () => {},
     pgSetWorktree: () => {},
     pgCancel: () => {},
-    setPgInput: () => {}
+    setPgInput: (_id: string, value: string) => {
+      wire.drafts.push(value)
+    }
   }),
-  usePgDraft: () => '',
-  usePgDraftHasText: () => false
+  usePgDraft: () => wire.drafts[wire.drafts.length - 1] ?? '',
+  usePgDraftHasText: () => (wire.drafts[wire.drafts.length - 1] ?? '') !== ''
 }))
 
 import SessionDetailView from './SessionDetailView'
@@ -338,6 +345,8 @@ beforeEach(() => {
   org.role = 'collaborator'
   wire.agentless = false
   wire.playground = false
+  wire.steps = undefined
+  wire.drafts = []
   wire.rail = []
   wire.tasks = { sessionId: 'session-1', tracked: true, tasks: [], truncated: false }
   wire.taskCalls = []
@@ -374,6 +383,47 @@ describe('the session page in conversation mode', () => {
     expect(text()).toContain('TRANSCRIPT MARKER')
     expect(viewer()).toBeNull()
     expect(pane()?.className).toBe('contents')
+  })
+})
+
+describe('the composer recalls earlier prompts', () => {
+  /** Press a key in the composer the way the browser delivers it, so React's onKeyDown sees it. */
+  async function keyInComposer(key: string) {
+    const textarea = container?.querySelector<HTMLTextAreaElement>('textarea')
+    if (!textarea) throw new Error('no composer')
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+  }
+
+  it('recalls a prompt a new conversation keeps in its steps, not in a fetched transcript', async () => {
+    // A conversation started from the console has its prompts in `session.steps` and never fetches a transcript; recall must read that source too, or Up on the cleared composer does nothing right after the first send.
+    wire.playground = true
+    wire.steps = [
+      { kind: 'msg', who: '@you', turnId: 't1', text: 'deploy the thing' },
+      { kind: 'text', who: 'Ops bot', turnId: 't1', agentId: 'agent-1', text: 'on it' },
+      { kind: 'msg', who: '@you', turnId: 't2', text: 'and run the smoke test' }
+    ]
+    await render()
+    await keyInComposer('ArrowUp')
+    expect(wire.drafts).toEqual(['and run the smoke test'])
+    expect(container?.querySelector('[data-testid="composer-history"]')?.textContent).toBe('History 2/2')
+    await keyInComposer('ArrowUp')
+    expect(wire.drafts.at(-1)).toBe('deploy the thing')
+    expect(container?.querySelector('[data-testid="composer-history"]')?.textContent).toBe('History 1/2')
+    await keyInComposer('Escape')
+    expect(wire.drafts.at(-1)).toBe('')
+    expect(container?.querySelector('[data-testid="composer-history"]')).toBeNull()
+  })
+
+  it('recalls nothing from another person’s prompts', async () => {
+    wire.playground = true
+    wire.steps = [{ kind: 'msg', who: 'sam', turnId: 't1', text: 'TRANSCRIPT MARKER' }]
+    await render()
+    await keyInComposer('ArrowUp')
+    expect(wire.drafts).toEqual([])
+    expect(container?.querySelector('[data-testid="composer-history"]')).toBeNull()
   })
 })
 
