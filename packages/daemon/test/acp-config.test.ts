@@ -258,6 +258,14 @@ describe('claudeSessionMeta', () => {
 
   it('enables the native Claude sandbox only behind an outer AgentConnect sandbox', () => {
     const credentialRoot = '/host/.claude/agentconnect-auth'
+    const permissions = {
+      deny: [
+        'Read(//host/.claude/agentconnect-auth)',
+        'Read(//host/.claude/agentconnect-auth/**)',
+        'Edit(//host/.claude/agentconnect-auth)',
+        'Edit(//host/.claude/agentconnect-auth/**)'
+      ]
+    }
     const protectedSettings = {
       modelOverrides: { sonnet: 'bedrock/sonnet' },
       availableModels: ['sonnet'],
@@ -312,7 +320,7 @@ describe('claudeSessionMeta', () => {
     }
 
     expect(claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot], protectedSettings)).toEqual(
-      cc({ thinking: THINKING, sandbox, settings: protectedSettings })
+      cc({ thinking: THINKING, sandbox, settings: { ...protectedSettings, permissions } })
     )
     expect(
       claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot], protectedSettings, true)?.claudeCode
@@ -322,7 +330,7 @@ describe('claudeSessionMeta', () => {
       cc({
         thinking: THINKING,
         sandbox,
-        settings: { ...protectedSettings, ultracode: true, enableWorkflows: true }
+        settings: { ...protectedSettings, permissions, ultracode: true, enableWorkflows: true }
       })
     )
     // An empty array still means an outer sandbox is active; undefined means it
@@ -344,6 +352,25 @@ describe('claudeSessionMeta', () => {
       claudeSessionMeta(undefined, true, undefined, undefined, [credentialRoot], undefined, false, [], ['/host/store'])
         ?.claudeCode.options.sandbox?.filesystem
     ).toEqual({ allowWrite: ['/host/store'], denyRead: [credentialRoot], denyWrite: [credentialRoot] })
+  })
+
+  it('denies literal credential paths even without profile settings', () => {
+    const roots = ['/credentials/[account]/auth.json', '/credentials/[account]/auth.json', '/credentials/shared/']
+    expect(claudeSessionMeta(undefined, true, undefined, undefined, roots)?.claudeCode.options.settings).toEqual({
+      permissions: {
+        deny: [
+          'Read(//credentials/\\[account\\]/auth.json)',
+          'Read(//credentials/\\[account\\]/auth.json/**)',
+          'Edit(//credentials/\\[account\\]/auth.json)',
+          'Edit(//credentials/\\[account\\]/auth.json/**)',
+          'Read(//credentials/shared)',
+          'Read(//credentials/shared/**)',
+          'Edit(//credentials/shared)',
+          'Edit(//credentials/shared/**)'
+        ]
+      }
+    })
+    expect(claudeSessionMeta(undefined, true, undefined, undefined, [])?.claudeCode.options.settings).toBeUndefined()
   })
 
   it('returns undefined off a Claude runtime (the _meta is claude-acp-specific)', () => {

@@ -34,6 +34,9 @@ describe('AcpHost (against a fake ACP agent)', () => {
       [],
       toolSandbox.sharedWriteRoots
     )
+    expect(expected?.claudeCode.options.settings?.permissions).toEqual({
+      deny: ['Read(//credentials)', 'Read(//credentials/**)', 'Edit(//credentials)', 'Edit(//credentials/**)']
+    })
     const host = new AcpHost(
       { command: process.execPath, args: [fakeAgent, 'claude-acp'], env: [] },
       {

@@ -415,7 +415,7 @@ export const SDK_LIFECYCLE_FILTERS = [
 ] as const
 
 export interface AcpToolSandbox {
-  /** Credential paths available to the trusted runtime but denied to model-authored commands. */
+  /** Credential paths available to the trusted runtime but denied to model-authored tools. */
   protectedCredentialRoots: string[]
   /** Permit model-authored tools to use the daemon-provided Unix socket channels. */
   allowModelToolUnixSockets?: boolean
@@ -427,6 +427,7 @@ export interface AcpToolSandbox {
 
 interface ClaudeSessionSettings {
   env?: ClaudeProtectedSettings['env']
+  permissions?: { deny: string[] }
   modelOverrides?: unknown
   availableModels?: unknown
   ultracode?: true
@@ -458,27 +459,31 @@ export function claudeSessionMeta(
     }
   | undefined {
   if (!isClaudeRuntime) return undefined
-  // The seed and the memory index ride the SAME append (seed first, blank line, then
-  // memory). Either/both/neither — an empty result omits `systemPrompt` entirely.
+  // Append the system prompt and memory together, omitting an empty result.
   const append = [systemPrompt, memoryAppend].filter(Boolean).join('\n\n')
   const ultracode = reasoningEffort === ULTRACODE_EFFORT
+  const deny = [...new Set(protectedCredentialRoots)].flatMap((root) => {
+    // Claude uses gitignore patterns with // for absolute paths; cover the root and its descendants.
+    const pattern = `/${root.replace(/\/+$/, '').replace(/[\\*?[\] ]/g, (char) => `\\${char}`)}`
+    return ['Read', 'Edit'].flatMap((tool) => [`${tool}(${pattern})`, `${tool}(${pattern}/**)`])
+  })
   const settings: ClaudeSessionSettings = {
     ...(protectedSettings ?? {}),
+    ...(deny.length > 0 ? { permissions: { deny } } : {}),
     ...(ultracode ? { ultracode: true, enableWorkflows: true } : {})
   }
   return {
     claudeCode: {
       options: {
         thinking: { type: 'adaptive', display: 'summarized' },
-        // #998: the built-in agent-teams SendMessage is a live misdelivery channel;
-        // adapters spread this into SDK query() options (older ones ignore it).
+        // Suppress built-in cross-session messaging through the SDK options (#998).
         disallowedTools: [...CLAUDE_DISALLOWED_BUILTIN_TOOLS, ...extraDisallowedTools],
         ...(protectedCredentialRoots
           ? {
               sandbox: claudeInnerSandboxSettings(protectedCredentialRoots, allowModelToolUnixSockets, sharedWriteRoots)
             }
           : {}),
-        ...(protectedSettings || ultracode ? { settings } : {})
+        ...(protectedSettings || ultracode || deny.length > 0 ? { settings } : {})
       },
       emitRawSDKMessages: SDK_LIFECYCLE_FILTERS
     },
