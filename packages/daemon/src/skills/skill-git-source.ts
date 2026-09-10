@@ -346,6 +346,11 @@ async function discardResponse(response: Response): Promise<void> {
   await response.body?.cancel().catch(() => undefined)
 }
 
+// A read repeats an unreachable host or a 5xx: immediately once, then after 300–600ms; an abort is final.
+const READ_RETRY_DELAYS_MS = [0, 300]
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
 async function fetchWithRedirectPolicy(
   fetchImpl: typeof globalThis.fetch,
   url: URL,
@@ -353,10 +358,20 @@ async function fetchWithRedirectPolicy(
   redirect: 'error' | 'manual',
   label: string
 ): Promise<Response> {
-  try {
-    return await fetchImpl(url, { ...init, redirect })
-  } catch {
-    throw new Error(`${label} request failed`)
+  for (let attempt = 0; ; attempt += 1) {
+    const delay = READ_RETRY_DELAYS_MS[attempt]
+    let response: Response
+    try {
+      response = await fetchImpl(url, { ...init, redirect })
+    } catch {
+      if (delay === undefined || init.signal?.aborted) throw new Error(`${label} request failed`)
+      await sleep(delay + Math.floor(Math.random() * delay))
+      continue
+    }
+    // Every caller here is a GET, so a 5xx is safe to repeat; the last answer stays the caller's to classify.
+    if (response.status < 500 || delay === undefined) return response
+    await discardResponse(response)
+    await sleep(delay + Math.floor(Math.random() * delay))
   }
 }
 
