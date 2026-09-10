@@ -516,6 +516,12 @@ node <bundled skills@1.5.21 bin> add <absoluteSnapshot> \
   renamed receipt on a runtime switch, not a second installation over the first.
   The unchanged fast path re-hashes every owned live tree; existence alone is
   insufficient.
+- A changed plan replaces only bundles whose file manifests changed. A desired
+  bundle with the same manifest, verified live bytes, recorded directory identity,
+  and contained workspace path remains in place while its source record advances.
+  Untouched bundles stay in the journal's prior set for rollback and do not spawn
+  mutation helpers. A missing or modified bundle still follows the normal
+  installation or ownership-refusal path.
 - An external SQLite lease serializes every process that can mutate the same
   canonical workspace. `BEGIN IMMEDIATE` protects the workspace key,
   owner-PID/token, and optional detached-helper process-group ID. A live owner or

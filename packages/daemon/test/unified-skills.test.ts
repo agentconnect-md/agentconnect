@@ -167,7 +167,9 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
 
     // The switch must not read its own bundle as a foreign path, and both harnesses must agree on the real directory.
     expect(switched.errors).toEqual([])
-    expect(switched.installed).toEqual(['.claude/skills/aliased'])
+    expect(switched.installed).toEqual([])
+    expect(switched.removed).toEqual([])
+    expect(switched.owned).toEqual(['.claude/skills/aliased'])
     // Surviving bytes are the proof it was not installed under one root and then removed under the other.
     expect(await readFile(join(cwd, '.claude/skills/aliased/SKILL.md'), 'utf8')).toContain('# v1')
   }, 120_000)
