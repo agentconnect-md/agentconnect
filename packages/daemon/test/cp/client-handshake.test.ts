@@ -671,6 +671,7 @@ describe('CpClient handshake', () => {
       makeDeps(t, {
         onBootstrapUpgrade: async (lifecycle) => {
           directives.push(lifecycle)
+          await client.reportLifecycleProgress({ operationId: lifecycle.operationId, phase: 'preparing' })
           return { status: 'installed', restart }
         }
       })
@@ -696,6 +697,14 @@ describe('CpClient handshake', () => {
     )
     await tick()
     expect(directives).toEqual([{ operationId: 'op-1', action: 'upgrade', targetVersion: '2.0.0' }])
+    const preparing = t.lastSent()
+    expect(preparing).toMatchObject({
+      type: 'daemon/lifecycle/progress',
+      payload: { operationId: 'op-1', phase: 'preparing' }
+    })
+    expect(t.sent.map((text) => JSON.parse(text).type)).not.toContain('register')
+    t.pushInbound(JSON.stringify(buildEnvelope('ack', { ok: true }, { corr: preparing.id })))
+    await tick()
     const result = t.lastSent()
     expect(result).toMatchObject({
       type: 'daemon/bootstrap/result',
@@ -711,7 +720,7 @@ describe('CpClient handshake', () => {
     expect(t.sent.map((text) => JSON.parse(text).type)).not.toContain('register')
   })
 
-  it('reports installer failure and continues registration on the same connection', async () => {
+  it.each([true, false])('continues registration after installer failure with result ack=%s', async (ok) => {
     const t = new FakeTransport()
     const client = new CpClient(
       makeDeps(t, {
@@ -742,7 +751,7 @@ describe('CpClient handshake', () => {
       type: 'daemon/bootstrap/result',
       payload: { operationId: 'op-1', status: 'failed', reason: 'registry unavailable' }
     })
-    t.pushInbound(JSON.stringify(buildEnvelope('ack', { ok: true }, { corr: result.id })))
+    t.pushInbound(JSON.stringify(buildEnvelope('ack', { ok }, { corr: result.id })))
     await tick()
     expect(t.lastSent().type).toBe('register')
     expect(t.closed).toBeUndefined()

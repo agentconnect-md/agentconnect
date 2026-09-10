@@ -19,6 +19,7 @@ import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
+import { DaemonLifecycleBadge } from '@/components/console/DaemonLifecycleBadge'
 import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -604,7 +605,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
             />
           </div>
           {/* Mobile appends the host, desktop the agent count; the upgrade hint hides mid-op, where the status says so. */}
-          <div className="flex min-w-0 items-center gap-[7px]">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-[7px] gap-y-[3px]">
             <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px] desktop:leading-[1.5] desktop:tabular-nums">
               {m.version}
               {m.host && m.host !== m.name && <span className="desktop:hidden">{` · ${m.host}`}</span>}
@@ -615,6 +616,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               latest={m.latestVersion}
               onClick={canUpgrade ? () => openModal('upgradeDaemon', m) : undefined}
             />
+            {m.lifecycleOp?.phase === 'preparing' && <DaemonLifecycleBadge op={m.lifecycleOp} />}
           </div>
         </div>
         <span

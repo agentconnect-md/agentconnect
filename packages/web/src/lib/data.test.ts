@@ -33,6 +33,19 @@ import {
 } from './data'
 
 describe('planned daemon lifecycle status', () => {
+  it('keeps availability during preparation and switches presentation only on reported restart', () => {
+    const op = { op: 'upgrade' as const, status: 'pending' as const, phase: 'preparing' as const }
+    const placed = { status: 'online' as const, daemon: 'daemon-1' }
+    for (const connection of ['online', 'offline'] as const) {
+      const daemon = { status: connection, lifecycleStatus: lifecycleStatus(op) ?? null }
+      expect(presentedDaemonStatus(daemon)).toBe(connection)
+      expect(effectiveAgentStatus(placed, daemon)).toBe(connection)
+      expect(effectiveAgentStatus({ ...placed, status: 'paused' }, daemon)).toBe('paused')
+    }
+    expect(lifecycleStatus({ ...op, phase: 'restarting' })).toBe('restarting')
+    expect(lifecycleStatus({ ...op, status: 'failed' })).toBeUndefined()
+  })
+
   it('keeps online agents in the explicit restart or upgrade transition', () => {
     expect(lifecycleStatus({ op: 'upgrade', status: 'pending' })).toBe('upgrading')
     expect(lifecycleStatus({ op: 'restart', status: 'pending' })).toBe('restarting')

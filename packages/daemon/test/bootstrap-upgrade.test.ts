@@ -93,15 +93,28 @@ describe('auth-only daemon bootstrap upgrade', () => {
             sessionEpoch: 2,
             heartbeatSec: 15,
             serverTime: SERVER_TIME,
-            lifecycle: { operationId: 'op-1', action: 'upgrade', targetVersion: '9.9.9' }
+            lifecycle: { operationId: 'op-1', action: 'upgrade', targetVersion: '9.9.9', reportProgress: true }
           },
           { corr: auth.id as string }
         )
       )
     )
+    const preparing = await waitForSent(transport, 'daemon/lifecycle/progress')
+    expect(preparing.payload).toEqual({ operationId: 'op-1', phase: 'preparing' })
+    expect(install).not.toHaveBeenCalled()
+    transport.pushInbound(encode(buildEnvelope('ack', { ok: true }, { corr: preparing.id as string })))
     const result = await waitForSent(transport, 'daemon/bootstrap/result')
     expect(result.payload).toEqual({ operationId: 'op-1', status: 'installed' })
     transport.pushInbound(encode(buildEnvelope('ack', { ok: true }, { corr: result.id as string })))
+    await vi.waitFor(() =>
+      expect(
+        transport.sent.map((text) => JSON.parse(text)).filter((frame) => frame.type === 'daemon/lifecycle/progress')
+      ).toHaveLength(2)
+    )
+    const restarting = transport.sent
+      .map((text) => JSON.parse(text))
+      .find((frame) => frame.payload?.phase === 'restarting')
+    transport.pushInbound(encode(buildEnvelope('ack', { ok: true }, { corr: restarting.id })))
 
     await expect(run).resolves.toBe('restart')
     expect(install).toHaveBeenCalledWith(

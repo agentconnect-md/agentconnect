@@ -10,6 +10,7 @@ export const INSTALL_WIDE_FRAME_TYPES: ReadonlySet<FrameType> = new Set<FrameTyp
   'register',
   'register/ok',
   'daemon/bootstrap/result',
+  'daemon/lifecycle/progress',
   'capabilities/update',
   'heartbeat',
   'facts/runtime-profile',

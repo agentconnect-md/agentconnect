@@ -145,6 +145,7 @@ function toDto(
           id: latestOp.id,
           op: latestOp.op,
           status: expired ? 'failed' : latestOp.status,
+          phase: latestOp.phase,
           targetVersion: latestOp.targetVersion,
           outcome: expired ? 'timed out — the daemon did not re-register before the deadline' : latestOp.outcome
         }
@@ -536,6 +537,7 @@ export function daemonRoutes(deps: HttpDeps) {
           id: opRow.id,
           op: opRow.op,
           status: opRow.status,
+          phase: opRow.phase,
           targetVersion: opRow.targetVersion,
           outcome: opRow.outcome
         })
@@ -556,8 +558,12 @@ export function daemonRoutes(deps: HttpDeps) {
 
       const result =
         op === 'upgrade' && targetVersion
-          ? await deps.control.daemonUpgrade(id, { targetVersion, drainFirst: true })
-          : await deps.control.daemonRestart(id, { reason: 'console-initiated restart', drainFirst: true })
+          ? await deps.control.daemonUpgrade(id, { operationId: opRow.id, targetVersion, drainFirst: true })
+          : await deps.control.daemonRestart(id, {
+              operationId: opRow.id,
+              reason: 'console-initiated restart',
+              drainFirst: true
+            })
 
       // Definitely unsent (pre-dispatch NoConnection) → fail the op + 503.
       if (result.kind === 'unsent') {
@@ -624,6 +630,7 @@ export function daemonRoutes(deps: HttpDeps) {
         id: latest.id,
         op: latest.op,
         status: latest.status,
+        phase: latest.phase,
         targetVersion: latest.targetVersion,
         outcome: latest.outcome
       })
@@ -709,6 +716,7 @@ export function daemonRoutes(deps: HttpDeps) {
           id: opRow.id,
           op: opRow.op,
           status: expired ? ('failed' as const) : opRow.status,
+          phase: opRow.phase,
           targetVersion: opRow.targetVersion,
           outcome: expired ? 'timed out — the daemon did not re-register before the deadline' : opRow.outcome
         }

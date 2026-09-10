@@ -777,17 +777,35 @@ describe('POST /daemons/:id/upgrade', () => {
       payload: { version: '0.5.0' }
     })
     expect(res.statusCode).toBe(202)
-    expect(calls).toEqual([{ method: 'upgrade', id: DAEMON, payload: { targetVersion: '0.5.0', drainFirst: true } }])
     // The 202 returns the opened op (with its id) so the console can track it.
     const opened = res.json() as { id: string; op: string; status: string; targetVersion: string | null }
     expect(opened).toMatchObject({ op: 'upgrade', status: 'pending', targetVersion: '0.5.0' })
     expect(opened.id).toBeTruthy()
+    expect(calls).toEqual([
+      { method: 'upgrade', id: DAEMON, payload: { operationId: opened.id, targetVersion: '0.5.0', drainFirst: true } }
+    ])
+
+    await new PgDaemonLifecycleOpRepo(prisma).recordProgress(
+      DaemonId(DAEMON),
+      1n,
+      { operationId: opened.id, phase: 'preparing' },
+      new Date()
+    )
 
     const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as (DaemonDto & {
       lifecycleOp: LifecycleOp | null
     })[]
     const row = rows.find((r) => r.daemonId === DAEMON)!
-    expect(row.lifecycleOp).toMatchObject({ id: opened.id, op: 'upgrade', status: 'pending', targetVersion: '0.5.0' })
+    expect(row.lifecycleOp).toMatchObject({
+      id: opened.id,
+      op: 'upgrade',
+      status: 'pending',
+      phase: 'preparing',
+      targetVersion: '0.5.0'
+    })
+    expect(row.status).toBe('ready')
+    const progress = await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}/lifecycle/${opened.id}` })
+    expect(progress.json()).toMatchObject({ status: 'pending', phase: 'preparing' })
   })
 
   it('503s when the daemon is not reachable (no op opened)', async () => {

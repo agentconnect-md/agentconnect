@@ -188,7 +188,12 @@ describe('auth handler — valid key mints next epoch; invalid key closes 4401',
 
     const ok = await stub.expectFrame('auth/ok')
     if (!isFrame('auth/ok')(ok)) throw new Error('expected auth/ok')
-    expect(ok.payload.lifecycle).toEqual({ operationId: op.id, action: 'upgrade', targetVersion: '2.0.0' })
+    expect(ok.payload.lifecycle).toEqual({
+      operationId: op.id,
+      action: 'upgrade',
+      targetVersion: '2.0.0',
+      reportProgress: true
+    })
     expect((await h.deps.lifecycleOps.getById(op.id))?.acceptedAt).not.toBeNull()
     expect((await h.deps.lifecycleOps.getById(op.id))?.commandEpoch).toBe(1n)
 
@@ -200,6 +205,55 @@ describe('auth handler — valid key mints next epoch; invalid key closes 4401',
     const ack = await stub.expectFrame('ack')
     if (!isFrame('ack')(ack)) throw new Error('expected ack')
     expect(ack.payload.ok).toBe(true)
+    expect((await h.deps.lifecycleOps.getById(op.id))?.status).toBe('failed')
+  })
+
+  it('persists authenticated progress before registration and refuses stale or foreign reports', async () => {
+    const h = buildWsHarness(prisma)
+    const token = await h.mintToken(DAEMON)
+    const op = await h.deps.lifecycleOps.open({
+      daemonId: DaemonId(DAEMON),
+      op: 'upgrade',
+      targetVersion: '2.0.0',
+      commandEpoch: 0n,
+      deadline: new Date(h.clock.now() + 60_000)
+    })
+    const { stub, conn } = h.connect()
+    stub.inject('auth', { ...authPayload(token), bootstrapProtocolVersion: 1 })
+    await stub.expectFrame('auth/ok')
+    expect(conn.state).toBe('REGISTERING')
+    const report = async (phase: 'preparing' | 'restarting' | 'failed', operationId = op.id) => {
+      const id = stub.inject('daemon/lifecycle/progress', { operationId, phase })
+      await stub.settled()
+      const ack = stub.sent.find((frame) => frame.corr === id)
+      if (!ack || !isFrame('ack')(ack)) throw new Error('expected correlated ack')
+      return ack.payload.ok
+    }
+
+    expect(await report('preparing')).toBe(true)
+    expect((await h.deps.lifecycleOps.getById(op.id))?.phase).toBe('preparing')
+    expect(
+      await h.deps.lifecycleOps.recordProgress(
+        DaemonId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),
+        1n,
+        { operationId: op.id, phase: 'restarting' },
+        new Date(h.clock.now())
+      )
+    ).toBe(false)
+    expect(
+      await h.deps.lifecycleOps.recordProgress(
+        DaemonId(DAEMON),
+        0n,
+        { operationId: op.id, phase: 'restarting' },
+        new Date(h.clock.now())
+      )
+    ).toBe(false)
+    expect(await report('restarting', 'another-operation')).toBe(false)
+    expect(await report('restarting')).toBe(true)
+    expect(await report('preparing')).toBe(false)
+    expect((await h.deps.lifecycleOps.getById(op.id))?.phase).toBe('restarting')
+    expect(await report('failed')).toBe(true)
+    expect(await report('restarting')).toBe(false)
     expect((await h.deps.lifecycleOps.getById(op.id))?.status).toBe('failed')
   })
 })

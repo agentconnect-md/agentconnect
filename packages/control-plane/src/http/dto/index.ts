@@ -9,6 +9,7 @@ import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentMemoryBinding,
+  DaemonLifecyclePhase,
   AgentPermissionRequestRecord,
   ExternalMemoryBinding,
   ManagedMemoryBinding,
@@ -181,6 +182,7 @@ export const DaemonLifecycleOpDto = z.object({
   id: z.string(),
   op: z.enum(['restart', 'upgrade']),
   status: z.enum(['pending', 'succeeded', 'failed']),
+  phase: DaemonLifecyclePhase.nullable(),
   /** The version an `upgrade` drives toward; null for restart. */
   targetVersion: z.string().nullable(),
   /** Short closure detail (decline reason / timeout); null while pending / on success. */

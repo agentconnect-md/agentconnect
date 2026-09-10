@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useConsoleData } from '@/lib/data-context'
 import { getDaemonLifecycleOp, type DaemonLifecycleOpDto } from '@/lib/api'
+import { daemonLifecycleLabel } from '../DaemonLifecycleBadge'
 import type { DaemonRow } from '@/lib/data'
 import { registerCommandedLifecycleOpId } from '@/lib/daemon-notifications'
 import { Button, Icon } from '@/components/ui'
@@ -192,10 +193,14 @@ export default function DaemonLifecycleModal({
                 </span>
                 <div className="flex-1">
                   <div className="font-sans text-[13px] font-semibold leading-normal">
-                    {isUpgrade ? 'Installing and relaunching…' : 'Draining and relaunching…'}
+                    {tracked ? daemonLifecycleLabel(tracked) : isUpgrade ? 'Upgrading…' : 'Restarting…'}
                   </div>
                   <div className="mono text-[11px] text-(--text-tertiary)">
-                    {daemon.name} will re-register once its supervisor brings it back.
+                    {tracked?.phase === 'preparing'
+                      ? live?.status === 'online'
+                        ? 'Agents continue working while the new version is prepared.'
+                        : 'Preparing the new version. Agents will be available when the daemon is back online.'
+                      : 'Agents will be available when the restart completes.'}
                   </div>
                 </div>
               </>

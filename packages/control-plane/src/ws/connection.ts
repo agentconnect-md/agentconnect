@@ -213,7 +213,7 @@ export class DaemonConnection implements ConnChannel {
       case 'AUTHENTICATING':
         return type === 'auth'
       case 'REGISTERING':
-        return type === 'register' || type === 'daemon/bootstrap/result'
+        return type === 'register' || type === 'daemon/bootstrap/result' || type === 'daemon/lifecycle/progress'
       case 'READY':
       case 'DRAINING':
         return true

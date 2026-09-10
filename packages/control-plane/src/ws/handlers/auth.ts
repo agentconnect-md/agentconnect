@@ -95,7 +95,7 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
       await deps.lifecycleOps.markAccepted(op.id, new Date(deps.clock.now()), commandEpoch)
       okFrame = {
         ...okFrame,
-        lifecycle: { operationId: op.id, action: 'upgrade', targetVersion: op.targetVersion }
+        lifecycle: { operationId: op.id, action: 'upgrade', targetVersion: op.targetVersion, reportProgress: true }
       }
     }
   }

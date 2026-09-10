@@ -4,6 +4,7 @@
 import type { AgentIcon } from '@/lib/agent-icon'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol/code-host'
+import type { DaemonLifecyclePhase } from '@agentconnect.md/protocol'
 import type {
   DaemonSessionRetention,
   ManagedMemoryHome,
@@ -54,9 +55,11 @@ export function status(s: string): StatusInfo {
 }
 
 export function lifecycleStatus(
-  op: Pick<DaemonLifecycleOp, 'op' | 'status'> | null | undefined
+  op: Pick<DaemonLifecycleOp, 'op' | 'status' | 'phase'> | null | undefined
 ): LifecycleStatusKey | undefined {
   if (op?.status !== 'pending') return undefined
+  if (op.phase === 'preparing') return undefined
+  if (op.phase === 'restarting') return 'restarting'
   return op.op === 'upgrade' ? 'upgrading' : 'restarting'
 }
 
@@ -2191,6 +2194,7 @@ export interface DaemonLifecycleOp {
   id: string
   op: 'restart' | 'upgrade'
   status: 'pending' | 'succeeded' | 'failed'
+  phase?: DaemonLifecyclePhase | null
   targetVersion: string | null
   outcome: string | null
 }

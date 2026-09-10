@@ -46,12 +46,15 @@ instructions.
 
 ## Planned daemon lifecycle status
 
-A pending daemon upgrade or restart is a planned transition, not an unexpected outage.
-While that lifecycle operation is pending, the console shows the daemon and its active
-placed agents as `upgrading` or `restarting` with the paused-state color. An agent that
-an operator explicitly paused remains `paused`. Once the operation succeeds, fails, or
-expires, the console returns to the daemon's current connection status; a daemon that
-did not return then reads `offline`.
+A daemon reports `preparing` while it installs the target version and prepares its
+sandbox image before stopping. The console keeps the daemon's actual connection status
+and shows a separate `Preparing upgrade` badge; its agents remain online while it is
+serving. Preparation during offline recovery must never imply that agents are online.
+Once the daemon reports `restarting`, its active placed agents show `restarting` with
+the paused-state color through drain and relaunch. An explicitly paused agent remains
+`paused`. Operations without phase reports keep the generic `upgrading` or `restarting`
+presentation. On success, failure, or expiry, the current connection status applies;
+success still requires the new version to reach READY.
 
 ## An unavailable agent is reported by its actual cause
 

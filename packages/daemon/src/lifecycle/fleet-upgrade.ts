@@ -1,4 +1,9 @@
-import { K8S_SUPERVISOR, RESERVED_RESTART_CODE, type DaemonControlAck } from '@agentconnect.md/protocol'
+import {
+  K8S_SUPERVISOR,
+  RESERVED_RESTART_CODE,
+  type DaemonControlAck,
+  type DaemonLifecycleProgress
+} from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import { cliEntryPointer, resolveRoot } from '../paths.js'
 import { readCliEntry, runCliUpgrade } from './cli-upgrade.js'
@@ -18,6 +23,7 @@ export interface FleetUpgradeHost {
   root: () => string | undefined
   configPath: () => string | undefined
   upgradeInstaller: () => typeof runCliUpgrade | undefined
+  reportProgress: (progress: DaemonLifecycleProgress) => Promise<void>
   stop: () => Promise<void>
   requestExit: (code: number) => void
 }
@@ -80,18 +86,43 @@ export class FleetUpgradeCoordinator {
     return { accepted: true, root, ...(cliEntry ? { cliEntry } : {}), ...(willDrainUntil ? { willDrainUntil } : {}) }
   }
 
-  private startFleetUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
+  private async reportProgress(
+    operationId: string | undefined,
+    phase: DaemonLifecycleProgress['phase']
+  ): Promise<void> {
+    if (!operationId) return
+    try {
+      await this.host.reportProgress({ operationId, phase })
+    } catch (err) {
+      this.host.log().warn(`cp: could not report upgrade progress: ${formatErr(err)}`)
+    }
+  }
+
+  private startFleetUpgrade(
+    cliEntry: string,
+    targetVersion: string,
+    root: string,
+    operationId?: string
+  ): Promise<boolean> {
     const log = this.host.log()
     const installation = Promise.resolve()
-      .then(() =>
-        (this.host.upgradeInstaller() ?? runCliUpgrade)(cliEntry, targetVersion, root, log, this.host.configPath())
-      )
+      .then(async () => {
+        await this.reportProgress(operationId, 'preparing')
+        return (this.host.upgradeInstaller() ?? runCliUpgrade)(
+          cliEntry,
+          targetVersion,
+          root,
+          log,
+          this.host.configPath()
+        )
+      })
       .catch((err) => {
         log.error(`cp: could not install daemon ${targetVersion}: ${formatErr(err)}`)
         return false
       })
-      .then((ok) => {
+      .then(async (ok) => {
         if (!ok) {
+          await this.reportProgress(operationId, 'failed')
           log.error(`cp: upgrade to ${targetVersion} aborted — daemon continues on the current version`)
           this.lifecycleInFlight = false
           if (this.fleetUpgradeInFlight?.installation === installation) this.fleetUpgradeInFlight = undefined
@@ -102,11 +133,12 @@ export class FleetUpgradeCoordinator {
     return installation
   }
 
-  private finishFleetExit(kind: FleetExitKind): void {
+  private finishFleetExit(kind: FleetExitKind, operationId?: string): void {
     if (this.fleetExitStarted) return
     this.fleetExitStarted = true
     void (async () => {
       try {
+        await this.reportProgress(operationId, 'restarting')
         await this.host.stop()
       } catch (err) {
         this.host.log().error(`cp: ${kind} shutdown failed: ${formatErr(err)}`)
@@ -117,33 +149,38 @@ export class FleetUpgradeCoordinator {
   }
 
   /** Admit immediately, then install before the existing drain-and-relaunch path. */
-  scheduleFleetExit(kind: FleetExitKind, targetVersion?: string): DaemonControlAck {
+  scheduleFleetExit(kind: FleetExitKind, targetVersion?: string, operationId?: string): DaemonControlAck {
     const admission = this.admitFleetExit(kind, targetVersion)
     if (!admission.accepted) return admission
     void (async () => {
-      if (kind === 'upgrade' && !(await this.startFleetUpgrade(admission.cliEntry!, targetVersion!, admission.root))) {
+      if (
+        kind === 'upgrade' &&
+        !(await this.startFleetUpgrade(admission.cliEntry!, targetVersion!, admission.root, operationId))
+      ) {
         return
       }
-      this.finishFleetExit(kind)
+      this.finishFleetExit(kind, operationId)
     })()
 
     return { accepted: true, ...(admission.willDrainUntil ? { willDrainUntil: admission.willDrainUntil } : {}) }
   }
 
-  async runBootstrapFleetUpgrade(targetVersion: string): Promise<BootstrapUpgradeOutcome> {
+  async runBootstrapFleetUpgrade(targetVersion: string, operationId?: string): Promise<BootstrapUpgradeOutcome> {
     if (targetVersion === DAEMON_VERSION) return { status: 'current' }
     const existing = this.fleetUpgradeInFlight
     if (existing?.targetVersion === targetVersion) {
       const installed = await existing.installation
+      if (installed) await this.reportProgress(operationId, 'restarting')
       return installed
         ? { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
         : { status: 'failed', reason: `failed to install ${targetVersion}` }
     }
     const admission = this.admitFleetExit('upgrade', targetVersion)
     if (!admission.accepted) return { status: 'failed', reason: admission.reason }
-    if (!(await this.startFleetUpgrade(admission.cliEntry!, targetVersion, admission.root))) {
+    if (!(await this.startFleetUpgrade(admission.cliEntry!, targetVersion, admission.root, operationId))) {
       return { status: 'failed', reason: `failed to install ${targetVersion}` }
     }
+    await this.reportProgress(operationId, 'restarting')
     return { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
   }
 }
