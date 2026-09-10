@@ -99,6 +99,8 @@ export interface GithubRequestOpts {
   bigIdsAsStrings?: boolean
   /** Between read retries; injectable so tests do not wait out real delays. */
   sleep?: (ms: number) => Promise<void>
+  /** The caller vouches this POST has no effect (a GraphQL query), so it repeats like a GET. */
+  idempotent?: boolean
 }
 
 // A GET is the one verb safe to repeat blind; every write's retry belongs to its caller's fenced, marker-first loop.
@@ -140,7 +142,7 @@ export async function githubRequest<T>(path: string, opts: GithubRequestOpts): P
 /** {@link githubRequest} keeping the pagination cursor — for the list endpoints
  *  whose first page is not the whole answer. */
 export async function githubRequestPage<T>(path: string, opts: GithubRequestOpts): Promise<GithubPage<T>> {
-  const retries = (opts.method ?? 'GET') === 'GET' ? READ_RETRY_DELAYS_MS : []
+  const retries = (opts.method ?? 'GET') === 'GET' || opts.idempotent === true ? READ_RETRY_DELAYS_MS : []
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await githubRequestOnce<T>(path, opts)

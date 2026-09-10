@@ -350,12 +350,24 @@ describe('degraded shapes', () => {
 
   it('maps a GitHub 5xx to unreachable, not to denied', async () => {
     // 'denied' points the operator at a nonexistent installation problem for the length of an outage;
-    // a server error is GitHub being down, which is the 'unreachable' story.
-    const { service } = build([() => new Response('Server Error', { status: 502 })])
+    // a server error is GitHub being down, which is the 'unreachable' story. The query is repeated
+    // twice before the panel degrades, so the outage has to outlast three answers.
+    const bad = () => new Response('Server Error', { status: 502 })
+    const { service, calls } = build([bad, bad, bad])
 
     const view = await service.view(IDENTITY)
 
     expect(view).toMatchObject({ degraded: true, degradedReason: 'unreachable' })
+    expect(calls).toHaveLength(3)
+  })
+
+  it('reads through one bad hop: a 502 followed by a full answer is a full panel', async () => {
+    const { service, calls } = build([() => new Response('Server Error', { status: 502 }), ok(fullAnswer())])
+
+    const view = await service.view(IDENTITY)
+
+    expect(view).toMatchObject({ degraded: false, title: 'Ship the panel' })
+    expect(calls).toHaveLength(2)
   })
 
   it('maps a REST-level rate limit (403 + x-ratelimit-remaining: 0) to rate_limited', async () => {
@@ -384,15 +396,16 @@ describe('degraded shapes', () => {
   })
 
   it('maps a network failure to unreachable', async () => {
-    const { service } = build([
-      () => {
-        throw new TypeError('fetch failed')
-      }
-    ])
+    const down = () => {
+      throw new TypeError('fetch failed')
+    }
+    // Two repeats before the panel degrades, so the failure has to outlast three attempts.
+    const { service, calls } = build([down, down, down])
 
     const view = await service.view(IDENTITY)
 
     expect(view).toMatchObject({ degraded: true, degradedReason: 'unreachable' })
+    expect(calls).toHaveLength(3)
   })
 })
 
