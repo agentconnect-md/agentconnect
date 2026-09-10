@@ -62,6 +62,7 @@ const ARGS: Record<string, Record<string, unknown>> = {
   listAgentHooks: { agentId: 'agent-1' },
   listHookRuns: { hookId: 'hook-1' },
   getOperation: { operationId: '0a5f4b3c-2d1e-4f6a-9b8c-7d6e5f4a3b2c' },
+  getGithubRepositoryAccess: { installationId: 'ins-1', owner: 'acme', repo: 'api' },
   createAgent: { name: 'my-agent', runtime: 'claude' },
   updateAgent: { agentId: AGENT_UUID, model: 'opus' },
   setAgentWorkspace: { agentId: AGENT_UUID, confirm: 'my-agent', mode: 'git', gitRepo: 'acme/api', access: 'write' },

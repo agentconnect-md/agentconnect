@@ -751,6 +751,7 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
       removeIntegration: { integrationId: randomUUID(), confirm: 'x' },
       setAgentWorkspace: { agentId: randomUUID(), confirm: 'x', mode: 'scratch' },
       getOperation: { operationId: randomUUID() },
+      getGithubRepositoryAccess: { installationId: randomUUID(), owner: 'acme', repo: 'api' },
       listGithubRepositories: { installationId: randomUUID() },
       createGithubTrigger: {
         agentId: randomUUID(),
@@ -768,10 +769,14 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
         slug: 'agentconnect-test',
         installUrl: async () => 'https://github.com/apps/agentconnect-test/installations/new',
         outdatedInstallations: async () => new Map()
+      } as never,
+      // The per-user access route exists only where this gate is configured.
+      githubUserAuthz: {
+        accessFor: async () => ({ permission: 'read', canRead: true, canWrite: false, identityRequired: true })
       } as never
     })
     const githubKey = await mintKeyAs(DEFAULT_OWNER_ID)
-    const GITHUB_GATED = new Set(['listGithubInstallations', 'listGithubRepositories'])
+    const GITHUB_GATED = new Set(['listGithubInstallations', 'listGithubRepositories', 'getGithubRepositoryAccess'])
     for (const tool of MCP_TOOLS) {
       const target = GITHUB_GATED.has(tool.name) ? { app: githubApp, key: githubKey } : { app, key }
       const out = await callTool(target.app, target.key, tool.name, idArgs[tool.name])
