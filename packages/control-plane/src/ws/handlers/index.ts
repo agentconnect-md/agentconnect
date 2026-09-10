@@ -24,6 +24,7 @@ import type { DaemonWsDeps } from '../deps.js'
 import type { DaemonConnection } from '../connection.js'
 import { handleAuth } from './auth.js'
 import { handleDaemonBootstrapResult } from './daemon-bootstrap-result.js'
+import { handleDaemonLifecycleProgress } from './daemon-lifecycle-progress.js'
 import { handleRegister } from './register.js'
 import { handleCapabilitiesUpdate } from './capabilities-update.js'
 import { handleHeartbeat } from './heartbeat.js'
@@ -79,6 +80,7 @@ export class FrameRouter {
     this.table = {
       auth: handleAuth,
       'daemon/bootstrap/result': handleDaemonBootstrapResult,
+      'daemon/lifecycle/progress': handleDaemonLifecycleProgress,
       register: handleRegister,
       'capabilities/update': handleCapabilitiesUpdate,
       heartbeat: handleHeartbeat,

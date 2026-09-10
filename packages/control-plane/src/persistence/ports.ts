@@ -13,6 +13,8 @@ import type { MemoryTransactionReq, MemoryTransactionResult } from '@agentconnec
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
   AuthReq,
+  DaemonLifecyclePhase,
+  DaemonLifecycleProgress,
   RegisterReq,
   Heartbeat,
   FactsRuntimeProfile,
@@ -334,6 +336,7 @@ export interface DaemonLifecycleOpRecord {
   targetVersion: string | null
   initiator: string | null
   status: DaemonLifecycleOpStatus
+  phase: DaemonLifecyclePhase | null
   commandEpoch: bigint
   /** Set once the daemon ACKs `accepted:true` — the op is "armed". A READY before this
    *  must not settle it (the command hadn't been accepted/executed yet). */
@@ -345,6 +348,7 @@ export interface DaemonLifecycleOpRecord {
 }
 
 export interface DaemonLifecycleOpRepo {
+  recordProgress(daemonId: DaemonId, epoch: bigint, progress: DaemonLifecycleProgress, at: Date): Promise<boolean>
   /** Open a `pending` op. Throws Prisma P2002 (the partial unique index) when the
    *  daemon already has one in flight — the route maps that to 409. */
   open(input: OpenLifecycleOpInput): Promise<DaemonLifecycleOpRecord>

@@ -110,6 +110,27 @@ beforeEach(() => {
 })
 
 describe('DaemonsView pool', () => {
+  it('shows upgrade preparation alongside the live availability of an owned daemon', () => {
+    mocks.daemons = [
+      daemon({
+        lifecycleOp: {
+          id: 'upgrade-1',
+          op: 'upgrade',
+          status: 'pending',
+          phase: 'preparing',
+          targetVersion: '2.0.0',
+          outcome: null
+        }
+      })
+    ]
+
+    const html = render()
+
+    expect(html).toContain('Preparing upgrade')
+    expect(html).toContain('>online<')
+    expect(html).not.toContain('>upgrading<')
+  })
+
   it('shows one Cloud entry for the whole pool, however many Pods are in it', () => {
     mocks.daemons = [member('p1'), member('p2'), member('p3', { status: 'offline' })]
 

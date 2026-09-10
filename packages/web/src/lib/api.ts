@@ -1148,6 +1148,7 @@ export interface DaemonLifecycleOpDto {
   id: string
   op: 'restart' | 'upgrade'
   status: 'pending' | 'succeeded' | 'failed'
+  phase?: import('@agentconnect.md/protocol').DaemonLifecyclePhase | null
   targetVersion: string | null
   outcome: string | null
 }

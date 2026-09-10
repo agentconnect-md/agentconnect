@@ -7,6 +7,7 @@
  * route), and the row is closed out-of-band by the register→READY closure or a decline.
  */
 import type { DaemonLifecycleOp } from '../../generated/prisma/client.js'
+import type { DaemonLifecyclePhase, DaemonLifecycleProgress } from '@agentconnect.md/protocol'
 import type { PrismaLike } from '../prisma.js'
 import type {
   DaemonLifecycleOpRepo,
@@ -25,6 +26,7 @@ function toRecord(o: DaemonLifecycleOp): DaemonLifecycleOpRecord {
     targetVersion: o.targetVersion,
     initiator: o.initiator,
     status: o.status as DaemonLifecycleOpStatus,
+    phase: o.phase as DaemonLifecyclePhase | null,
     commandEpoch: o.commandEpoch,
     acceptedAt: o.acceptedAt,
     startedAt: o.startedAt,
@@ -36,6 +38,31 @@ function toRecord(o: DaemonLifecycleOp): DaemonLifecycleOpRecord {
 
 export class PgDaemonLifecycleOpRepo implements DaemonLifecycleOpRepo {
   constructor(private readonly db: PrismaLike) {}
+
+  async recordProgress(
+    daemonId: DaemonId,
+    epoch: bigint,
+    progress: DaemonLifecycleProgress,
+    at: Date
+  ): Promise<boolean> {
+    const result = await this.db.daemonLifecycleOp.updateMany({
+      where: {
+        id: progress.operationId,
+        daemonId,
+        status: 'pending',
+        commandEpoch: { lte: epoch },
+        deadline: { gt: at },
+        ...(progress.phase === 'preparing'
+          ? { op: 'upgrade' as const, OR: [{ phase: null }, { phase: 'preparing' }] }
+          : {})
+      },
+      data:
+        progress.phase === 'failed'
+          ? { status: 'failed', outcome: progress.reason ?? 'daemon upgrade preparation failed', settledAt: at }
+          : { phase: progress.phase }
+    })
+    return result.count > 0
+  }
 
   async open(input: OpenLifecycleOpInput): Promise<DaemonLifecycleOpRecord> {
     const row = await this.db.daemonLifecycleOp.create({

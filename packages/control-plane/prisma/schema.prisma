@@ -493,6 +493,7 @@ model DaemonLifecycleOp {
   targetVersion String? // the version to reach (upgrade only); null for restart
   initiator     String? // app_user.id that commanded it; null under devAuth / system
   status        DaemonLifecycleOpStatus @default(pending)
+  phase         String? // daemon-reported preparing or restarting; absent for unreported operations
   // The daemon `sessionEpoch` at command-send time. The op only settles on a READY
   // whose epoch is STRICTLY GREATER (the daemon re-authed after draining + relaunching),
   // so a coincidental reconnect at the same epoch can never close it.

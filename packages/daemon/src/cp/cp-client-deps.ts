@@ -7,6 +7,7 @@ import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type {
   FactsMcpServer,
+  BootstrapLifecycle,
   FactsRuntimeProfile,
   GitCommitIdentity,
   Heartbeat,
@@ -103,7 +104,7 @@ export interface CpClientRegistrationHost {
   hostCount(): number
   activeSessions(): number
   bootstrapUpgradeCapable(): boolean
-  runBootstrapFleetUpgrade(targetVersion: string): Promise<BootstrapUpgradeOutcome>
+  runBootstrapFleetUpgrade(targetVersion: string, operationId?: string): Promise<BootstrapUpgradeOutcome>
 }
 
 /** The replay batch that runs once this daemon reaches READY on each (re)connect. */
@@ -227,8 +228,11 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     onAuthFatal: () => host.exitFatal(1),
     ...(host.bootstrapUpgradeCapable()
       ? {
-          onBootstrapUpgrade: (lifecycle: { targetVersion: string }) =>
-            host.runBootstrapFleetUpgrade(lifecycle.targetVersion)
+          onBootstrapUpgrade: (lifecycle: BootstrapLifecycle) =>
+            host.runBootstrapFleetUpgrade(
+              lifecycle.targetVersion,
+              lifecycle.reportProgress ? lifecycle.operationId : undefined
+            )
         }
       : {}),
     agentVersion: DAEMON_VERSION,

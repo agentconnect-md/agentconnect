@@ -125,6 +125,20 @@ export async function runBootstrapUpgrade(
     const lifecycle = (reply.payload as AuthOk).lifecycle
     if (!lifecycle || lifecycle.action !== 'upgrade' || lifecycle.targetVersion === DAEMON_VERSION) return 'continue'
 
+    const progress = async (phase: 'preparing' | 'restarting'): Promise<void> => {
+      if (!lifecycle.reportProgress) return
+      try {
+        const reply = await correlator.request(
+          buildEnvelope('daemon/lifecycle/progress', { operationId: lifecycle.operationId, phase }),
+          (encoded) => transport!.send(encoded),
+          { maxTries: 1, ackTimeoutMs: BOOTSTRAP_TIMEOUT_MS }
+        )
+        if (reply.type !== 'ack' || !(reply.payload as { ok?: boolean }).ok) throw new Error('progress rejected')
+      } catch (err) {
+        deps.log.error(`cp: could not report bootstrap progress: ${(err as Error).message}`)
+      }
+    }
+    await progress('preparing')
     const installed = await deps.install(cliEntry, lifecycle.targetVersion, root, deps.log, opts.configPath)
     if (!installed) {
       await reportResult(transport, correlator, lifecycle, 'failed', `failed to install ${lifecycle.targetVersion}`)
@@ -133,6 +147,7 @@ export async function runBootstrapUpgrade(
     await reportResult(transport, correlator, lifecycle, 'installed').catch((err) => {
       deps.log.error(`cp: could not confirm bootstrap installation: ${(err as Error).message}`)
     })
+    await progress('restarting')
     return 'restart'
   } catch (err) {
     deps.log.info(`cp: bootstrap check skipped (${(err as Error).message})`)

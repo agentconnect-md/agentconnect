@@ -389,8 +389,20 @@ export const DaemonBootstrapResult = z.object({
 })
 export type DaemonBootstrapResult = z.infer<typeof DaemonBootstrapResult>
 
+export const DaemonLifecyclePhase = z.enum(['preparing', 'restarting'])
+export type DaemonLifecyclePhase = z.infer<typeof DaemonLifecyclePhase>
+
+// Operation-scoped progress; completion still requires the target daemon to reach READY.
+export const DaemonLifecycleProgress = z.object({
+  operationId: z.string().min(1).max(200),
+  phase: z.enum(['preparing', 'restarting', 'failed']),
+  reason: z.string().max(500).optional()
+})
+export type DaemonLifecycleProgress = z.infer<typeof DaemonLifecycleProgress>
+
 /** Fleet: drain+exit, supervisor restarts — C→D REQ, protocol §8.3 / frame #27. */
 export const DaemonRestart = z.object({
+  operationId: z.string().optional(),
   reason: z.string(),
   drainFirst: z.boolean().default(true)
 })
@@ -398,6 +410,7 @@ export type DaemonRestart = z.infer<typeof DaemonRestart>
 
 /** Fleet: drain+exit for version bump — C→D REQ, protocol §8.3 / frame #28. */
 export const DaemonUpgrade = z.object({
+  operationId: z.string().optional(),
   targetVersion: z.string(),
   drainFirst: z.boolean().default(true)
 })

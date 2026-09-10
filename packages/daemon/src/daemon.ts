@@ -1486,6 +1486,9 @@ export class Daemon {
       root: () => this.opts.root,
       configPath: () => this.opts.configPath,
       upgradeInstaller: () => this.opts.upgradeInstaller,
+      reportProgress: async (progress) => {
+        await this.cpClient?.reportLifecycleProgress(progress)
+      },
       stop: () => this.stop(),
       requestExit: (code) => this.requestExit(code)
     })
@@ -17985,7 +17988,8 @@ export class Daemon {
         this.observedChannelsSync.retractChannels(integrationId, channelIds),
       runCronNow: (cronId) => this.runCronNow(cronId),
       runDrain: (drain, onProgress) => this.runDrain(drain, onProgress),
-      scheduleFleetExit: (kind, targetVersion) => this.fleetUpgrade.scheduleFleetExit(kind, targetVersion)
+      scheduleFleetExit: (kind, targetVersion, operationId) =>
+        this.fleetUpgrade.scheduleFleetExit(kind, targetVersion, operationId)
     }
   }
 
@@ -18035,7 +18039,8 @@ export class Daemon {
       hostCount: () => new Set([...this.hosts.keys()].map(hostKeyAgentId)).size,
       activeSessions: () => this.pending.size,
       bootstrapUpgradeCapable: () => this.bootstrapUpgradeCapable(),
-      runBootstrapFleetUpgrade: (targetVersion) => this.fleetUpgrade.runBootstrapFleetUpgrade(targetVersion),
+      runBootstrapFleetUpgrade: (targetVersion, operationId) =>
+        this.fleetUpgrade.runBootstrapFleetUpgrade(targetVersion, operationId),
       readiness: () => this.readiness,
       probeRuntimesAndEmit: () => this.runtimeFacts.probeAndEmit(),
       syncOrganizationSuggestions: () => this.syncOrganizationSuggestions(),

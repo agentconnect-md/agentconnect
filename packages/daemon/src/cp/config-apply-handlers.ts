@@ -165,7 +165,7 @@ export interface ConfigApplyControlHost {
   retractChannels(integrationId: string, channelIds: readonly string[]): Promise<void>
   runCronNow(cronId: string): Ack
   runDrain(drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone>
-  scheduleFleetExit(kind: 'restart' | 'upgrade', targetVersion?: string): DaemonControlAck
+  scheduleFleetExit(kind: 'restart' | 'upgrade', targetVersion?: string, operationId?: string): DaemonControlAck
 }
 
 /** Everything the CP apply path touches on the `Daemon`. */
@@ -933,8 +933,10 @@ export function buildConfigApply(host: ConfigApplyHost): ConfigApply {
     applyAgentStop: (stop: AgentStop) => applyAgentStop(host, stop),
     applyDaemonDrain: (drain: Drain, onProgress: (p: DrainProgress) => void): Promise<DrainDone> =>
       host.runDrain(drain, onProgress),
-    applyDaemonRestart: (_req: DaemonRestart): DaemonControlAck => host.scheduleFleetExit('restart'),
-    applyDaemonUpgrade: (req: DaemonUpgrade): DaemonControlAck => host.scheduleFleetExit('upgrade', req.targetVersion),
+    applyDaemonRestart: (req: DaemonRestart): DaemonControlAck =>
+      host.scheduleFleetExit('restart', undefined, req.operationId),
+    applyDaemonUpgrade: (req: DaemonUpgrade): DaemonControlAck =>
+      host.scheduleFleetExit('upgrade', req.targetVersion, req.operationId),
     applySessionVisibility: (p: SessionVisibilityPush) => applySessionVisibility(host, p)
   }
 }

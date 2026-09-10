@@ -165,6 +165,15 @@ bundles without the entry keep their existing upgrade behavior. This preparation
 step requires an updated CLI; an older CLI still prepares the image on daemon
 startup.
 
+For tracked upgrades, the daemon reports `preparing` before installation and
+`restarting` before shutdown through the acknowledged `daemon/lifecycle/progress`
+request. Reports identify the durable operation and are fenced by daemon identity,
+connection epoch, deadline, and terminal status; preparation cannot overwrite a
+recorded restart. Preparation failures settle the operation while the old daemon
+continues serving. Bootstrap commands advertise progress support so recovery can
+report the same phases before registration. The console displays preparation
+alongside actual availability; only target-version READY completes an upgrade.
+
 Without `--restart`, the running daemon is unchanged. The selected version takes
 effect on its next launch.
 

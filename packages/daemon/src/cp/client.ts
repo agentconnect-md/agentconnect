@@ -77,6 +77,7 @@ import type {
   ManagedSkillReadReq,
   ManagedSkillChunk,
   BootstrapLifecycle,
+  DaemonLifecycleProgress,
   FrameOrgPeer,
   OrganizationMode
 } from '@agentconnect.md/protocol'
@@ -507,7 +508,9 @@ export class CpClient {
         outcome = { status: 'failed', reason: err instanceof Error ? err.message : String(err) }
       }
       if (outcome.status === 'failed') {
-        await this.reportBootstrapResult(expectedTransport, ok.lifecycle, 'failed', outcome.reason)
+        await this.reportBootstrapResult(expectedTransport, ok.lifecycle, 'failed', outcome.reason).catch((err) => {
+          this.deps.log.error(`cp: could not confirm bootstrap failure: ${(err as Error).message}`)
+        })
       } else if (outcome.status === 'installed') {
         await this.reportBootstrapResult(expectedTransport, ok.lifecycle, 'installed').catch((err) => {
           this.deps.log.error(`cp: could not confirm bootstrap installation: ${(err as Error).message}`)
@@ -610,6 +613,19 @@ export class CpClient {
     const reply = await this.correlator.request(result, (encoded) => transport.send(encoded))
     if (reply.type !== 'ack' || !(reply.payload as { ok?: boolean }).ok) {
       throw new Error('control plane rejected the bootstrap result')
+    }
+  }
+
+  async reportLifecycleProgress(progress: DaemonLifecycleProgress): Promise<void> {
+    const transport = this.transport
+    if (!transport) return
+    const reply = await this.correlator.request(
+      buildEnvelope('daemon/lifecycle/progress', progress),
+      (encoded) => transport.send(encoded),
+      { maxTries: 1, ackTimeoutMs: 5_000 }
+    )
+    if (reply.type !== 'ack' || !(reply.payload as { ok?: boolean }).ok) {
+      throw new Error('control plane rejected lifecycle progress')
     }
   }
 

@@ -34,6 +34,7 @@ export type AuthReq = z.infer<typeof AuthReq>
 
 export const BootstrapLifecycle = z.object({
   operationId: z.string(),
+  reportProgress: z.boolean().optional(),
   action: z.literal('upgrade'),
   targetVersion: z.string()
 })

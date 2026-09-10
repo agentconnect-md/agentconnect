@@ -35,11 +35,15 @@ describe('daemon fleet upgrade coordination', () => {
     const requestExit = vi.fn()
     const daemon = new Daemon({ root: scaffold(), supervisor: 'cli', upgradeInstaller, requestExit })
     ;(daemon as any).stop = vi.fn(async () => {})
+    const reportLifecycleProgress = vi.fn(async () => {})
+    ;(daemon as any).cpClient = { reportLifecycleProgress }
 
-    expect((daemon as any).fleetUpgrade.scheduleFleetExit('upgrade', '9.9.9')).toEqual({ accepted: true })
+    expect((daemon as any).fleetUpgrade.scheduleFleetExit('upgrade', '9.9.9', 'upgrade-1')).toEqual({ accepted: true })
     await vi.waitFor(() => expect(upgradeInstaller).toHaveBeenCalledTimes(1))
+    expect(reportLifecycleProgress).toHaveBeenCalledWith({ operationId: 'upgrade-1', phase: 'preparing' })
+    expect((daemon as any).stop).not.toHaveBeenCalled()
 
-    const reconnectOutcome = (daemon as any).fleetUpgrade.runBootstrapFleetUpgrade('9.9.9')
+    const reconnectOutcome = (daemon as any).fleetUpgrade.runBootstrapFleetUpgrade('9.9.9', 'upgrade-1')
     finishInstall(true)
 
     const outcome = await reconnectOutcome
@@ -47,5 +51,22 @@ describe('daemon fleet upgrade coordination', () => {
     expect(upgradeInstaller).toHaveBeenCalledTimes(1)
     outcome.restart()
     await vi.waitFor(() => expect(requestExit).toHaveBeenCalledTimes(1))
+    expect(reportLifecycleProgress).toHaveBeenCalledWith({ operationId: 'upgrade-1', phase: 'restarting' })
+  })
+
+  it('reports preparation failure without stopping the serving daemon', async () => {
+    const requestExit = vi.fn()
+    const daemon = new Daemon({ root: scaffold(), supervisor: 'cli', upgradeInstaller: async () => false, requestExit })
+    const stop = vi.fn(async () => {})
+    const reportLifecycleProgress = vi.fn(async () => {})
+    Object.assign(daemon, { stop, cpClient: { reportLifecycleProgress } })
+
+    expect((daemon as any).fleetUpgrade.scheduleFleetExit('upgrade', '9.9.9', 'upgrade-2')).toEqual({ accepted: true })
+
+    await vi.waitFor(() =>
+      expect(reportLifecycleProgress).toHaveBeenCalledWith({ operationId: 'upgrade-2', phase: 'failed' })
+    )
+    expect(stop).not.toHaveBeenCalled()
+    expect(requestExit).not.toHaveBeenCalled()
   })
 })
