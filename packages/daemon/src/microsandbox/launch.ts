@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
 import { sandboxBoundary } from '../acp/sandbox.js'
 import { applyCodexPermissionProfile } from '../acp/codex-permission-profiles.js'
@@ -13,7 +13,7 @@ import {
   prepareClaudeProtectedSettings
 } from '../runtime-defs/claude-runtime.js'
 import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
-import { canonicalPath, compactReadRoots, normalizeSandboxMounts } from '../runtimes/read-roots.js'
+import { canonicalPath, compactReadRoots, contains, normalizeSandboxMounts } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome, removeRuntimeHomeSeedFiles, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
@@ -60,11 +60,6 @@ export interface PrepareMicrosandboxLaunchOptions {
   allowModelToolUnixSockets?: boolean
   trustedMounts?: SandboxMount[]
   mounts: SandboxMount[]
-}
-
-function contains(root: string, path: string): boolean {
-  const rel = relative(root, path)
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
 export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions): PreparedRuntimeLaunch & {

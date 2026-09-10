@@ -132,7 +132,7 @@ export function canonicalPath(path: string, env: NodeJS.ProcessEnv): string {
   }
 }
 
-function contains(root: string, path: string): boolean {
+export function contains(root: string, path: string): boolean {
   const rel = relative(root, path)
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }

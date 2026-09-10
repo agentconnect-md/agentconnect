@@ -9,6 +9,7 @@ import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-dri
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
+import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { SinkRelPathSchema } from '../shim/file-sink.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
 import { MICROSANDBOX_SOCKET_BRIDGE_COMMAND, MICROSANDBOX_SOCKET_BRIDGE_ARGS } from './socket-bridge.js'
@@ -411,6 +412,12 @@ export class MicrosandboxManager {
   }
 
   private async open(environment: MicrosandboxEnvironment): Promise<Sandbox> {
+    const stateRoot = canonicalPath(join(this.options.root, 'microsandbox'), process.env)
+    for (const mount of environment.mounts) {
+      const source = canonicalPath(mount.source, process.env)
+      if (contains(source, stateRoot) || contains(stateRoot, source))
+        throw new Error('microsandbox mounts cannot expose host sandbox state')
+    }
     const name = this.name(environment.id)
     const binding = await this.readBinding(environment.id)
     // Image changes apply to new environments; retained disks keep their original image.

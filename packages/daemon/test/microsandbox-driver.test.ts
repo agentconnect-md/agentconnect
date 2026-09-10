@@ -353,6 +353,19 @@ async function fixture() {
 }
 
 describe('microsandbox process and VM ownership', () => {
+  it('refuses host SDK state mounts even for a runtime without its own secrets', async () => {
+    const { manager, options, environment, request, created } = await fixture()
+    for (const path of ['', 'microsandbox', 'microsandbox/sandboxes']) {
+      const env = {
+        ...environment,
+        mounts: [{ source: join(options.root, path), target: '/config', mode: 'readonly' as const }]
+      }
+      await expect(manager.driverFor(env).launch(request)).rejects.toThrow('cannot expose host sandbox state')
+    }
+    expect(created).toHaveLength(0)
+    await manager.stopAll()
+  })
+
   it('keeps secrets out of bindings and execs, and rotates them when the retained VM resumes', async () => {
     const { manager, options, environment, request, created, processes } = await fixture()
     let key = 'fixture-first-key'
@@ -365,8 +378,7 @@ describe('microsandbox process and VM ownership', () => {
     const env = { ...environment, secrets: [secret] }
     const launch = {
       ...request,
-      env: { DEEPSEEK_API_KEY: secret.placeholder, NODE_EXTRA_CA_CERTS: '/.msb/tls/ca.pem' },
-      inheritProcessEnv: false
+      env: { DEEPSEEK_API_KEY: secret.placeholder, NODE_EXTRA_CA_CERTS: '/.msb/tls/ca.pem' }
     }
     await (await manager.driverFor(env).launch(launch)).stop(0)
     expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
@@ -708,9 +720,15 @@ describe('microsandbox process and VM ownership', () => {
       ...environment,
       mounts: [{ source: await realpath(helper), target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }]
     }
-    const runtime = await manager.driverFor(legacy).launch(request)
+    const runtime = await manager.driverFor(environment).launch(request)
     await runtime.stop(0)
     await manager.stopAll()
+    // Simulate a binding written before host SDK state mounts were forbidden.
+    const bindings = join(options.root, 'microsandbox', 'bindings')
+    const path = join(bindings, (await readdir(bindings))[0]!)
+    const binding = JSON.parse(await readFile(path, 'utf8'))
+    binding.spec = (manager as any).spec(legacy)
+    await writeFile(path, JSON.stringify(binding))
     const resumed = new MicrosandboxManager({
       ...options,
       config: { ...options.config, image: 'next-image' }

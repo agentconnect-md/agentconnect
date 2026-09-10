@@ -316,6 +316,8 @@ copies, rejects mounts exposing the host source files, and supplies the guest CA
 environment even when process-environment inheritance is disabled. Keys stay out
 of serialized launch metadata and environment bindings. The SDK persists its own
 secret configuration on the host; this protection is against guest access.
+All VM launches reject requested mounts of the host SDK state directory or its descendants,
+including launches for runtimes that do not use secret injection themselves.
 The proxy does not redact provider responses, so the allowed provider remains a
 trusted recipient of the key.
 
