@@ -299,7 +299,7 @@ describe('runChat', () => {
     expect(hostFactory).not.toHaveBeenCalled()
   })
 
-  it.each([true, false])('rejects a missing mount before creating any host (readOnly=%s)', async (readOnly) => {
+  it.each(['readonly', 'writable'])('rejects a missing mount before creating any host (mode=%s)', async (mode) => {
     const files = scaffold()
     const source = join(files.root, 'no-such-mount')
     writeFileSync(
@@ -308,7 +308,7 @@ describe('runChat', () => {
         version: 1,
         controlPlane: { enabled: false },
         runtimes: { fake: { command: process.execPath, args: [fakeAgent], env: [] } },
-        sandbox: { mounts: [{ source, target: source, readOnly }] }
+        sandbox: { mounts: [{ source, target: source, mode }] }
       })
     )
     const hostFactory = vi.fn()
