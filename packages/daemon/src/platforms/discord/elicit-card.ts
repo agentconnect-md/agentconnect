@@ -241,6 +241,9 @@ export function buildDiscordElicitModal(
       label.component = {
         type: 3,
         custom_id: id,
+        // Stated rather than defaulted: Discord defaults `required` to true and refuses a zero
+        // `min_values` under it, so an optional field would fail the WHOLE dialog to open.
+        required: need,
         min_values: Math.min(min, max),
         max_values: max,
         options: target.options.map((o, n) => ({
@@ -306,6 +309,13 @@ export const discordElicitCards: ElicitCardFacet = {
     } satisfies DiscordElicitDraft
   },
 
+  /** A Discord THREAD is a channel of its own, so that is where a card of this turn lands and the
+   *  only place its settlement can address. `postChrome` resolves the same target from the same
+   *  two fields; naming it here is what keeps core's handle pointing at the real message. */
+  cardChannel(turn: ElicitCardTurn): string {
+    return turn.plan.thread || turn.plan.channel
+  },
+
   async send(
     host: ElicitCardHost,
     turn: ElicitCardTurn,
@@ -314,9 +324,9 @@ export const discordElicitCards: ElicitCardFacet = {
   ): Promise<string | undefined> {
     const d = draft as DiscordElicitDraft
     return await host.postCardSerialized(turn, (conn) =>
-      (conn as DiscordConnection).postChrome(turn.plan.channel, d.text, {
-        keyboard: d.components,
-        ...(turn.plan.thread !== undefined ? { threadTs: turn.plan.thread } : {})
+      // Posted to the same coordinates `cardChannel` names, so the settlement finds it there.
+      (conn as DiscordConnection).postChrome(discordElicitCards.cardChannel!(turn), d.text, {
+        keyboard: d.components
       })
     )
   },

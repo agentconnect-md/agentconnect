@@ -119,9 +119,13 @@ describe('the dialog one reduction becomes', () => {
     expect(note.component.required).toBe(false)
   })
 
-  it('lets an optional select take nothing, which is how a field stays omittable', () => {
+  it('lets an optional select take nothing, and SAYS it is optional', () => {
     const modal = build(form(CHECKS))!
     expect(field(modal, 0).component.min_values).toBe(0)
+    // Discord defaults `required` to true and refuses a zero `min_values` under it, so leaving the
+    // flag off would fail the whole dialog to open rather than merely mislabel one field.
+    expect(field(modal, 0).component.required).toBe(false)
+    expect(field(build(form(CHECKS, ['checks']))!, 0).component.required).toBe(true)
   })
 
   it('has no dialog for more fields than a modal holds, and declines rather than dropping one', () => {
@@ -139,27 +143,32 @@ describe('the dialog one reduction becomes', () => {
 interface Harness {
   daemon: any
   conn: any
-  cards: { text: string; components: DiscordComponents }[]
-  edits: { text: string; components?: DiscordComponents }[]
+  cards: { channel: string; text: string; components: DiscordComponents }[]
+  edits: { channel: string; text: string; components?: DiscordComponents }[]
   notices: () => string[]
 }
 
-function discordTurn(): Harness {
+function discordTurn(turn: { thread?: string } = {}): Harness {
   const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
   daemon.store = {
     getSessionByAcpIdForAgent: () => ({ triggeredBy: 'user-1' }),
     getDisplayNames: () => new Map(),
     upsertElicit: vi.fn(async () => {})
   }
-  const cards: { text: string; components: DiscordComponents }[] = []
-  const edits: { text: string; components?: DiscordComponents }[] = []
+  const cards: { channel: string; text: string; components: DiscordComponents }[] = []
+  const edits: { channel: string; text: string; components?: DiscordComponents }[] = []
   const conn = Object.create(DiscordConnection.prototype)
-  conn.postChrome = async (_c: string, text: string, opts: { keyboard?: DiscordComponents } = {}) => {
-    cards.push({ text, components: opts.keyboard ?? [] })
+  conn.postChrome = async (channel: string, text: string, opts: { keyboard?: DiscordComponents } = {}) => {
+    cards.push({ channel, text, components: opts.keyboard ?? [] })
     return '4242'
   }
-  conn.updateMessage = async (_c: string, _id: string, text: string, opts: { keyboard?: DiscordComponents } = {}) => {
-    edits.push({ text, ...(opts.keyboard !== undefined ? { components: opts.keyboard } : {}) })
+  conn.updateMessage = async (
+    channel: string,
+    _id: string,
+    text: string,
+    opts: { keyboard?: DiscordComponents } = {}
+  ) => {
+    edits.push({ channel, text, ...(opts.keyboard !== undefined ? { components: opts.keyboard } : {}) })
   }
   daemon.pending.set(JSON.stringify(['agent-1', 's1']), {
     plan: {
@@ -172,7 +181,8 @@ function discordTurn(): Harness {
       statusThread: 'T1',
       agentName: 'agent',
       isDm: false,
-      approvalSurfaceSuppressed: false
+      approvalSurfaceSuppressed: false,
+      ...(turn.thread !== undefined ? { thread: turn.thread } : {})
     },
     hostKey: 'agent-1',
     outwardSessionId: 'sess-1',
@@ -293,6 +303,17 @@ describe('a Discord turn posts an elicitation card and settles it in place', () 
     await expect(h.daemon.permissions.onAcpElicit('agent-1', 's1', req)).resolves.toBeUndefined()
     expect(h.cards).toEqual([])
     expect(h.notices().at(-1)).toContain("can't collect an answer for")
+  })
+
+  it('posts a threaded card IN its thread, and settles it there', async () => {
+    // A Discord thread is a channel of its own: a card edited against the parent is a card never
+    // edited at all, and the reader is left looking at live buttons that answer nothing.
+    const h = discordTurn({ thread: 'T-thread' })
+    const { requestId, result } = await raise(h, form(BRANCH, ['branch']))
+    expect(h.cards[0]!.channel).toBe('T-thread')
+    await h.daemon.permissions.handleElicitCardTap({ requestId, token: elicitOptionToken(0) })
+    await expect(result).resolves.toEqual({ action: 'accept', content: { branch: 'main' } })
+    expect(h.edits[0]!.channel).toBe('T-thread')
   })
 
   it('cancels an abandoned card and says so on the card itself', async () => {

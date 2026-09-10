@@ -1552,7 +1552,9 @@ export class PermissionCoordinator {
       surface: 'chat',
       facet,
       conn: p.conn,
-      channel: p.plan.channel,
+      // Where the card actually LANDS, which is not always the turn's channel: a Discord thread is
+      // a channel of its own, and a card edited against its parent is a card never edited at all.
+      channel: facet.cardChannel?.(p) ?? p.plan.channel,
       answerConv: p.plan.transcriptChannel,
       // An MCP approval keeps its durable record in `permission_requests` and its own console
       // surface, so it is not also a transcript card.
@@ -1597,7 +1599,10 @@ export class PermissionCoordinator {
     if (!live) {
       const settled = this.takeSettledBeforePost(requestId)
       if (ts && settled)
-        facet.settle({ conn: p.conn, channel: p.plan.channel, ts }, elicitSettlement(params, !!url, settled))
+        facet.settle(
+          { conn: p.conn, channel: facet.cardChannel?.(p) ?? p.plan.channel, ts },
+          elicitSettlement(params, !!url, settled)
+        )
       return await result
     }
     if (!ts) {
