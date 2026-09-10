@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-/** The in-sandbox shim executable. Lives at a fixed path in the runtime image
- *  (`/opt/agentconnect/shim`), root-owned and read-only, with tini as PID 1. */
+// The persistent sandbox service shared by Kubernetes and local VMs.
+import { readFileSync } from 'node:fs'
 import { runSandboxRuntimeProvider } from '../acp/sandbox-runtime-provider.js'
 import { ShimClient } from './client.js'
 import { createAutoMergeHandler } from './auto-merge-handler.js'
@@ -29,6 +29,10 @@ const log = {
 }
 
 async function main(): Promise<number> {
+  const localIdentity = process.argv[2] === '--identity-stdin' ? readFileSync(0, 'utf8').trim() : undefined
+  if (localIdentity !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(localIdentity)) {
+    throw new Error('invalid sandbox identity')
+  }
   const port = Number(process.env[SHIM_LISTEN_PORT_ENV] ?? DEFAULT_SHIM_LISTEN_PORT)
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     log.warn(`${SHIM_LISTEN_PORT_ENV} is not a valid port`)
@@ -36,8 +40,7 @@ async function main(): Promise<number> {
   }
   const workspaceRoot = process.env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT
   const exec = createExecHandler({ workspaceRoot, log })
-  // Its own handler beside exec: it owns child processes with a pod-long lifetime rather than
-  // answering one request, and it must never be reachable through the git-only exec inventory.
+  // Watchers own long-lived processes and stay outside the git-only exec inventory.
   const automerge = createAutoMergeHandler({ log })
   const server = new ShimServer({ log })
   // Tunnel listeners follow pod lifetime so credential renewal cannot break client sockets.
@@ -45,8 +48,8 @@ async function main(): Promise<number> {
   const client = new ShimClient({
     endpoint: 'accepted-daemon-channel',
     dial: () => server.nextTransport(),
-    // Without this the runner skips executable hints entirely, so CLAUDE_CODE_EXECUTABLE and
-    // path-qualified registry commands would never resolve in the sandbox.
+    ...(localIdentity ? { readToken: () => localIdentity } : {}),
+    // Resolve executable hints and path-qualified registry commands inside the sandbox.
     resolveCommand: resolveCommandInPath,
     // Image-accepted provider config (AC_CLAUDE_*/AC_CODEX_* → the runtime's BASE_URL/API_KEY).
     podEnv: process.env,
@@ -64,7 +67,8 @@ async function main(): Promise<number> {
     features: ['cluster-skills-v1', 'cluster-skills-v2'],
     log
   })
-  await server.start(port)
+  await server.start(port, localIdentity ? '127.0.0.1' : undefined)
+  if (localIdentity) process.stdout.write('ready\n')
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
       tunnels.close()

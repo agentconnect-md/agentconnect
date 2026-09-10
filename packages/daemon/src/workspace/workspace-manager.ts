@@ -90,6 +90,7 @@ const WINDOWS_TRANSIENT_FS_ERRORS = new Set(['EACCES', 'EBUSY', 'EPERM'])
  * one exact pinned CLI + trusted receipt/reconcile wrapper, then returns that cwd.
  */
 export interface PrepareWorkspaceOptions {
+  installSkills?: (agent: Agent, cwd: string) => Promise<string[]>
   /** Resolve centrally accepted immutable bundles from the daemon cache. Dream
    * skills and these sources are then reconciled in one ownership transaction. */
   managedSkills?: (agent: Agent) => Promise<LocalSkillSource[]>
@@ -301,6 +302,10 @@ export class WorkspaceManager {
   }
 
   async withSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
+    if (opts.installSkills) {
+      await this.excludeInstalledSkills(agent, acpCwd, await opts.installSkills(agent, acpCwd))
+      return acpCwd
+    }
     // Resolving local sources (managed cache + accepted Dream) is best-effort: a
     // failure to read/validate them means we install none of THOSE sources, not
     // that the workspace fails to come up (git + messaging still have to work).
@@ -345,7 +350,11 @@ export class WorkspaceManager {
         .map((line) => line.trim())
       if (commonDir === '' || checkoutRoot === '') return
       const roots = bundlePathsFromCheckoutRoot(checkoutRoot, acpCwd, owned)
-      await excludeManagedSkillBundles(isAbsolute(commonDir) ? commonDir : join(acpCwd, commonDir), roots)
+      await excludeManagedSkillBundles(
+        isAbsolute(commonDir) ? commonDir : join(acpCwd, commonDir),
+        roots,
+        this.fsFor(agent.id)
+      )
     } catch (err) {
       // A from-scratch workspace has no repository to exclude in, and bookkeeping must not fail a launch.
       skillsLog.debug(`skills: could not record managed bundles as ignored: ${(err as Error).message}`)

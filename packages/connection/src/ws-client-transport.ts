@@ -87,6 +87,7 @@ export interface DialOpts {
   handshakeTimeoutMs?: number
   selfPingMs?: number
   idleMs?: number
+  createConnection?: WebSocket.ClientOptions['createConnection']
 }
 
 export class ClientTransport implements Transport {
@@ -116,6 +117,7 @@ export class ClientTransport implements Transport {
     return new Promise<Transport>((resolve, reject) => {
       const ws = new WebSocket(wsUrl, [opts.subprotocol], {
         maxPayload: MAX_FRAME_BYTES,
+        ...(opts.createConnection ? { createConnection: opts.createConnection } : {}),
         handshakeTimeout: opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
       })
       const onPreOpenError = (err: Error): void => {

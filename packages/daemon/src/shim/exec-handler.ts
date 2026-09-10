@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { z } from 'zod'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { existsSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
@@ -114,6 +116,7 @@ export function createExecHandler(
     workspaceRoot: deps.workspaceRoot,
     stateRoot: join(deps.workspaceRoot, '.agentconnect', 'cluster-skill-state')
   })
+  const workspaceSkills = new Map<string, ClusterSkillHandler>()
   return async (capability, payload, abort, context) => {
     if (capability === 'materialize') {
       await applyFileSinkPayload(payload)
@@ -121,7 +124,26 @@ export function createExecHandler(
     }
     if (capability === 'exec') return runGit(payload, deps, abort)
     if (capability === 'probe') return probeRuntimes(deps, abort)
-    if (capability === 'skills') return skillHandler.handle(payload, abort, context)
+    if (capability === 'skills') {
+      if (typeof payload !== 'object' || payload === null || !('cwd' in payload)) {
+        return skillHandler.handle(payload, abort, context)
+      }
+      const scoped = z
+        .object({ cwd: z.string().min(1), request: z.unknown() })
+        .strict()
+        .parse(payload)
+      const cwd = resolveCwd(deps.workspaceRoot, scoped.cwd)
+      let handler = workspaceSkills.get(cwd)
+      if (!handler) {
+        handler = new ClusterSkillHandler({
+          stagingRoot: join(SANDBOX_SKILL_STAGING_DIR, createHash('sha256').update(cwd).digest('hex')),
+          workspaceRoot: cwd,
+          stateRoot: join(cwd, '.agentconnect', 'cluster-skill-state')
+        })
+        workspaceSkills.set(cwd, handler)
+      }
+      return handler.handle(scoped.request, abort, context)
+    }
     // The console's file operations, run on the mounted volume. The mount is handed over as the
     // ANCHOR rather than the daemon's root being validated here: the operations walk to it from an
     // open descriptor, so "is this inside the mount" and "which directory is it" are one question

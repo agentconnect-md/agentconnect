@@ -11,8 +11,8 @@
  * The patterns go in `info/exclude` of the COMMON directory — Git resolves that path there rather
  * than per worktree, which is what we want: every worktree of a clone installs the same bundles.
  */
-import { promises as fsp } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
+import { localWorkspaceFs, type WorkspaceFs } from './workspace-fs.js'
 
 const BEGIN = '# BEGIN agentconnect-managed skills'
 const END = '# END agentconnect-managed skills'
@@ -50,20 +50,19 @@ function stripBlock(content: string): string {
  * excluded. Written through a rename so a concurrent reader never sees a partial file; two sessions
  * of one agent write identical content, and a lost update self-heals on the next preparation.
  */
-export async function excludeManagedSkillBundles(commonDir: string, relativeRoots: string[]): Promise<void> {
+export async function excludeManagedSkillBundles(
+  commonDir: string,
+  relativeRoots: string[],
+  fs: WorkspaceFs = localWorkspaceFs
+): Promise<void> {
   const file = join(commonDir, 'info', 'exclude')
-  const current = await fsp.readFile(file, 'utf8').catch(() => '')
+  const current = (await fs.readFile(file)) ?? ''
   const kept = stripBlock(current)
   const patterns = [...new Set(relativeRoots.map(excludePattern))].sort()
   const block = patterns.length === 0 ? '' : `${[BEGIN, ...patterns, END].join('\n')}\n`
   const head = kept === '' || kept.endsWith('\n') ? kept : `${kept}\n`
   const next = block === '' ? kept : `${head}${block}`
   if (next === current) return
-  await fsp.mkdir(dirname(file), { recursive: true })
-  const tmp = `${file}.agentconnect-${process.pid}`
-  await fsp.writeFile(tmp, next, { mode: 0o644 })
-  await fsp.rename(tmp, file).catch(async (err: unknown) => {
-    await fsp.rm(tmp, { force: true }).catch(() => undefined)
-    throw err
-  })
+  await fs.mkdir(dirname(file))
+  await fs.writeFile(file, next, { mode: 0o644 })
 }

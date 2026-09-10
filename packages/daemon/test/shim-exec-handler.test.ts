@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError, createExecHandler } from '../src/shim/exec-handler.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
@@ -26,7 +26,7 @@ afterAll(() => {
 })
 
 function repository(): string {
-  const root = mkdtempSync(join(tmpdir(), 'ac-execguard-'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ac-execguard-')))
   roots.push(root)
   execFileSync('git', ['init', '--initial-branch=main'], { cwd: root })
   writeFileSync(join(root, 'file.txt'), 'x\n')
@@ -49,6 +49,23 @@ function handler(root: string) {
 }
 
 describe('sandbox exec handler', () => {
+  it('scopes skill reads to their checkout and refuses a symlink escape', async () => {
+    const root = repository()
+    const cwd = join(root, 'checkout')
+    mkdirSync(cwd)
+    const execute = handler(root)
+    await expect(execute('skills', { cwd, request: { op: 'verify', roots: [] } })).resolves.toEqual({ intact: [] })
+    await expect(execute('skills', { request: { op: 'verify', roots: [] } })).rejects.toThrow()
+    await expect(execute('skills', { cwd: dirname(root), request: { op: 'verify', roots: [] } })).rejects.toThrow(
+      'escapes'
+    )
+    if (process.platform !== 'win32') {
+      symlinkSync(dirname(root), join(root, 'outside'))
+      await expect(
+        execute('skills', { cwd: join(root, 'outside'), request: { op: 'verify', roots: [] } })
+      ).rejects.toThrow('escapes')
+    }
+  })
   it('runs a permitted subcommand and reports its output', async () => {
     const root = repository()
     const result = (await handler(root)('exec', {
@@ -105,12 +122,12 @@ describe('sandbox exec handler', () => {
     const configCount = Number(env.GIT_CONFIG_COUNT)
     const result = (await handler(root)('exec', {
       tool: 'git',
-      args: ['push', '--porcelain', 'agentconnect-test', 'refs/heads/main:refs/heads/main'],
+      args: ['push', '--porcelain', 'fixture-remote', 'refs/heads/main:refs/heads/main'],
       env: {
         ...env,
         GIT_ALLOW_PROTOCOL: 'file',
         GIT_CONFIG_COUNT: String(configCount + 1),
-        [`GIT_CONFIG_KEY_${configCount}`]: 'remote.agentconnect-test.url',
+        [`GIT_CONFIG_KEY_${configCount}`]: 'remote.fixture-remote.url',
         [`GIT_CONFIG_VALUE_${configCount}`]: remote
       }
     })) as GitExecResult

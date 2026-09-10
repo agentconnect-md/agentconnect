@@ -1,14 +1,32 @@
 import { LocalWorkspaceFs, type WorkspaceFs } from '../workspace/workspace-fs.js'
 
-// Existing VMs perform mutations themselves so virtiofs observes directory renames immediately.
+// Resolve reads and writes in the same filesystem that the runtime sees.
 export class MicrosandboxWorkspaceFs extends LocalWorkspaceFs {
   constructor(
-    private readonly resolve: (
-      path: string
-    ) => Pick<WorkspaceFs, 'mkdir' | 'writeFile' | 'rename' | 'rmdir' | 'rmTree'> | undefined,
+    private readonly resolve: (path: string) => WorkspaceFs | undefined,
     private readonly releaseMount?: (path: string) => Promise<boolean>
   ) {
     super()
+  }
+
+  override async stat(path: string) {
+    const guest = this.resolve(path)
+    return guest ? await guest.stat(path) : await super.stat(path)
+  }
+
+  override async readdir(path: string) {
+    const guest = this.resolve(path)
+    return guest ? await guest.readdir(path) : await super.readdir(path)
+  }
+
+  override async readFile(path: string) {
+    const guest = this.resolve(path)
+    return guest ? await guest.readFile(path) : await super.readFile(path)
+  }
+
+  override async readFileBytes(path: string, maxBytes: number) {
+    const guest = this.resolve(path)
+    return guest ? await guest.readFileBytes(path, maxBytes) : await super.readFileBytes(path, maxBytes)
   }
 
   override async mkdir(path: string, mode?: number): Promise<void> {
