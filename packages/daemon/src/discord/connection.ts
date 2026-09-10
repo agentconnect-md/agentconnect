@@ -6,7 +6,9 @@ import {
   MessageFlags,
   type Message,
   type Channel,
-  type ChatInputCommandInteraction
+  type ChatInputCommandInteraction,
+  type ButtonInteraction,
+  type ModalSubmitInteraction
 } from 'discord.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { platformIntegrationConfig } from '../platforms/integration-config.js'
@@ -24,6 +26,7 @@ import {
   type DiscordComponents,
   type DiscordSelectKind
 } from './render.js'
+import { DISCORD_ELICIT_MODAL, DISCORD_ELICIT_OPEN, parseDiscordElicit } from '../platforms/discord/elicit-card.js'
 import type {
   InteractionActor,
   PlatformChannelHistoryOptions,
@@ -105,6 +108,19 @@ export interface DiscordDeps {
     sessionKey: string
     actor?: InteractionActor
   }) => Promise<{ text: string; components: DiscordComponents } | undefined>
+  /** The DIALOG one elicitation card's Answer button opens (§7.3) — Discord's modal, built by
+   *  core from the card's own params. Undefined ⇒ nothing to open, and the tap is merely acked.
+   *  Synchronous by necessity: a modal must be the interaction's FIRST response, and Discord
+   *  allows three seconds for it, so there is no room to go and ask. */
+  onElicitOpen?: (a: { requestId: string; actor?: InteractionActor }) => unknown | undefined
+  /** A tapped elicitation option, or Dismiss (`token` null). */
+  onElicitChoice?: (a: { requestId: string; token: string | null; actor?: InteractionActor }) => Promise<void>
+  /** One submitted elicitation dialog: every field's value under the id its component carried. */
+  onElicitSubmit?: (a: {
+    requestId: string
+    values: Record<string, string | string[]>
+    actor?: InteractionActor
+  }) => Promise<void>
   newTraceId: () => string
   log?: Logger
   /** Min spacing (ms) between outbound writes (serialized send-queue). Tests pass 0. */
@@ -260,7 +276,21 @@ export class DiscordConnection implements PlatformConnection {
         this.onSlashCommand(interaction)
         return
       }
+      // A submitted elicitation dialog carries every answer at once; it belongs to no status card.
+      if (interaction.isModalSubmit()) {
+        this.onElicitModalSubmit(interaction)
+        return
+      }
       if (!interaction.isButton()) return
+      // Elicitation components are routed BEFORE the ack: opening a modal must be the
+      // interaction's FIRST response, and a deferred update has already spent it. They are also
+      // routed before the status-key lookup, since an elicitation card is not a status card — its
+      // own `custom_id` carries the request, so it needs no message-to-session registry.
+      const elicit = parseDiscordElicit(interaction.customId)
+      if (elicit) {
+        await this.onElicitInteraction(interaction, elicit)
+        return
+      }
       void interaction.deferUpdate().catch(() => {})
       const channel = interaction.channelId
       const sessionKey = this.statusKeys.get(`${channel}:${interaction.message.id}`)
@@ -326,6 +356,49 @@ export class DiscordConnection implements PlatformConnection {
    * and the tappable cards all reuse handleCommand. The real output posts to the
    * channel/thread (public), matching how a typed `/command` behaves today.
    */
+  /** Route one tap on an elicitation card. The Answer button opens the dialog core built for this
+   *  card; every other component is an answer in itself and is acked before it is applied, so the
+   *  client's spinner clears whatever the answer turns out to be worth. */
+  private async onElicitInteraction(
+    interaction: ButtonInteraction,
+    elicit: { requestId: string; token: string | null }
+  ): Promise<void> {
+    const actor: InteractionActor = { userId: interaction.user.id, isBot: interaction.user.bot }
+    if (elicit.token === DISCORD_ELICIT_OPEN) {
+      const modal = this.deps.onElicitOpen?.({ requestId: elicit.requestId, actor })
+      // Nothing to open — a settled card, or one this surface answers with a tap — so the tap is
+      // acked and the card left as it is, rather than the client being left spinning.
+      if (!modal) {
+        void interaction.deferUpdate().catch(() => {})
+        return
+      }
+      await interaction
+        // Typed off `showModal` itself rather than through a `discord-api-types` import: that
+        // package is discord.js's own transitive dependency, not one this daemon declares.
+        .showModal(modal as Parameters<ButtonInteraction['showModal']>[0])
+        .catch((err: Error) => this.deps.log?.debug(`discord: showModal failed: ${err.message}`))
+      return
+    }
+    void interaction.deferUpdate().catch(() => {})
+    await this.deps.onElicitChoice?.({ requestId: elicit.requestId, token: elicit.token, actor })
+  }
+
+  /** Read one submitted dialog: every field under the id its component carried, a list where the
+   *  control answers with one (a select) and a string where it answers with words (a text input).
+   *  The FIELD decides which of those it was, which is core's to say and not this connection's. */
+  private onElicitModalSubmit(interaction: ModalSubmitInteraction): void {
+    const elicit = parseDiscordElicit(interaction.customId)
+    if (!elicit || elicit.token !== DISCORD_ELICIT_MODAL) return
+    void interaction.deferUpdate().catch(() => {})
+    const values: Record<string, string | string[]> = {}
+    for (const [customId, data] of interaction.fields.fields) {
+      if ('values' in data) values[customId] = [...data.values]
+      else if ('value' in data && typeof data.value === 'string') values[customId] = data.value
+    }
+    const actor: InteractionActor = { userId: interaction.user.id, isBot: interaction.user.bot }
+    void this.deps.onElicitSubmit?.({ requestId: elicit.requestId, values, actor })
+  }
+
   private onSlashCommand(interaction: ChatInputCommandInteraction): void {
     const text = this.slashCommandText(interaction)
     void interaction.reply({ content: text, flags: MessageFlags.Ephemeral }).catch(() => {})

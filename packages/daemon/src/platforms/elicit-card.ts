@@ -181,6 +181,21 @@ export interface ElicitCardFacet {
    *  `form` is re-derived by core from the card's own params, so it is the very field list the
    *  card rendered. Null ⇒ the tap named nothing this card offers, and core refuses it aloud. */
   tap?(handle: ElicitCardHandle, card: ElicitCardTapTarget, token: string): ElicitCardTap | null
+  /** Where a card of this surface is POSTED, when that is not the turn's own channel. Absent ⇒ it
+   *  is — which is true of Slack (a thread is a `ts` within its channel) and of Telegram (a topic
+   *  is a field on a send). A Discord thread is a CHANNEL of its own, so a card posted in one is
+   *  edited there and nowhere else; core records what this returns as the card's coordinates, so
+   *  the settlement addresses the very message the ask posted. */
+  cardChannel?(turn: ElicitCardTurn): string
+  /** The payload of a SECONDARY surface this card's own control opens — Discord's modal, which is
+   *  the only place that platform accepts a typed answer. Absent ⇒ the card is answered where it
+   *  was posted, which is what Slack's and Telegram's are; null ⇒ this particular card is too
+   *  (Discord's one-tap row). Opaque to core, which only hands it to the connection that asked.
+   *
+   *  It is rebuilt from the card's own params on every open rather than held from the post, so the
+   *  dialog offers the very fields the ask reduced to (#1815) — and so a card outliving the
+   *  process that posted it opens the same form. */
+  editor?(handle: ElicitCardHandle, card: ElicitCardTapTarget): unknown | null
   /** Whether this typed message answers THIS card, and with what. Absent ⇒ the surface collects no
    *  typed answer and every message in its chats is a prompt, which is what a Slack card's is.
    *  Null ⇒ not this card's answer, and core keeps looking. The fields are keyed as a Confirm's
