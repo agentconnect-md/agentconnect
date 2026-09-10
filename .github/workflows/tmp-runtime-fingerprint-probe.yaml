@@ -31,6 +31,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
+      # Uncached on purpose: a from-scratch install and shim build must reproduce the digest of the cached runs.
       - name: Digest the runtime payload
         uses: docker/build-push-action@v7
         with:
@@ -38,6 +39,7 @@ jobs:
           file: docker/runtime-sandbox.Dockerfile
           target: runtime-payload-digest-export
           platforms: linux/amd64
+          no-cache: true
           outputs: type=local,dest=${{ runner.temp }}/payload-digest
           cache-from: type=registry,ref=ghcr.io/agentconnect-md/${{ matrix.target }}:buildcache
 
