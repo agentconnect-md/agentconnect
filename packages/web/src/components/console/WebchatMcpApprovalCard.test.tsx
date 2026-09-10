@@ -5,7 +5,7 @@
 // this card can deliver — `onDecided` is what lets the conversation carry a
 // multi-step flow past its first write, and it must fire exactly when the outcome
 // is actually known.
-import { act } from 'react'
+import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,6 +20,9 @@ vi.mock('@/lib/api', () => ({
 }))
 
 const { WebchatMcpApprovalCard, approvalNotice } = await import('./WebchatMcpApprovalCard')
+
+type Decided = NonNullable<ComponentProps<typeof WebchatMcpApprovalCard>['onDecided']>
+const decidedSpy = () => vi.fn<Decided>()
 
 const PENDING = {
   operationId: 'e6229709-3d5a-432b-a7d3-613395a7d7ed',
@@ -49,7 +52,7 @@ afterEach(() => {
   host.remove()
 })
 
-async function render(onDecided: ReturnType<typeof vi.fn>): Promise<void> {
+async function render(onDecided: Decided): Promise<void> {
   await act(async () => {
     root.render(<WebchatMcpApprovalCard orgId="org1" agentId="agent1" conversationId="conv1" onDecided={onDecided} />)
   })
@@ -66,7 +69,7 @@ function clickButton(label: string): void {
 
 describe('WebchatMcpApprovalCard', () => {
   it('tells the conversation once the decision has a known outcome', async () => {
-    const onDecided = vi.fn()
+    const onDecided = decidedSpy()
     decide.mockResolvedValue({ ...PENDING, status: 'completed', completedAt: '2026-09-10T04:01:00.000Z' })
     await render(onDecided)
     clickButton('Approve')
@@ -79,7 +82,7 @@ describe('WebchatMcpApprovalCard', () => {
   })
 
   it('stays silent while the operation is still running — that is not an outcome', async () => {
-    const onDecided = vi.fn()
+    const onDecided = decidedSpy()
     decide.mockResolvedValue({ ...PENDING, status: 'executing' })
     await render(onDecided)
     clickButton('Approve')
@@ -90,7 +93,7 @@ describe('WebchatMcpApprovalCard', () => {
   })
 
   it('reports a denial too: the agent is waiting on that answer just as much', async () => {
-    const onDecided = vi.fn()
+    const onDecided = decidedSpy()
     decide.mockResolvedValue({ ...PENDING, status: 'failed', completedAt: '2026-09-10T04:01:00.000Z' })
     await render(onDecided)
     clickButton('Deny')
@@ -101,7 +104,7 @@ describe('WebchatMcpApprovalCard', () => {
   })
 
   it('recovers a lost decision response through the exact-operation refetch', async () => {
-    const onDecided = vi.fn()
+    const onDecided = decidedSpy()
     decide.mockRejectedValue(new Error('network'))
     get.mockResolvedValue({ ...PENDING, status: 'completed', completedAt: '2026-09-10T04:01:00.000Z' })
     await render(onDecided)
