@@ -8,11 +8,14 @@ import { z } from 'zod'
 import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
+import { gitcredShimPath } from '../cp/gitcred-server.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
+import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { SinkRelPathSchema } from '../shim/file-sink.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
 import { MICROSANDBOX_SOCKET_BRIDGE_COMMAND, MICROSANDBOX_SOCKET_BRIDGE_ARGS } from './socket-bridge.js'
 import { overlayMounts, OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT, prepareOverlayMounts } from './overlay.js'
+import type { MicrosandboxSecret } from './secrets.js'
 import {
   MICROSANDBOX_NODE,
   openExecStream,
@@ -38,6 +41,7 @@ export interface MicrosandboxEnvironment {
   id: string
   mounts: SandboxMount[]
   workspaceRoot: string
+  secrets?: MicrosandboxSecret[]
 }
 
 export type MicrosandboxExecOptions = MicrosandboxExecuteOptions
@@ -229,6 +233,9 @@ export class MicrosandboxManager {
       config: { ...this.options.config, image },
       environment: {
         ...environment,
+        ...(environment.secrets
+          ? { secrets: environment.secrets.map(({ env, placeholder, host }) => ({ env, placeholder, host })) }
+          : {}),
         // Keep ordinary bind identities stable when the public configuration changes from readOnly to mode.
         mounts: environment.mounts
           .map(({ mode, ...mount }) =>
@@ -240,7 +247,7 @@ export class MicrosandboxManager {
     })
   }
 
-  private builder(name: string, mounts: SandboxMount[]) {
+  private builder(name: string, mounts: SandboxMount[], secrets: MicrosandboxSecret[] = []) {
     const builder = this.options.sdk.Sandbox.builder(name)
       .image(this.options.config.image)
       .rootDisk((disk) => disk.size(this.options.config.diskGiB * 1024))
@@ -254,6 +261,18 @@ export class MicrosandboxManager {
         volume.namedWith(`${name}-docker`, 'create', 'disk', this.options.config.diskGiB * 1024)
       )
       .quietLogs()
+    for (const secret of secrets) {
+      builder.secret((entry) =>
+        entry
+          .env(secret.env)
+          .value(secret.readValue())
+          .placeholder(secret.placeholder)
+          .allowHost(secret.host)
+          .injectBasicAuth(false)
+          .injectQuery(false)
+          .injectBody(false)
+      )
+    }
     const overlays = overlayMounts(mounts)
     if (overlays.length) {
       builder.volume(OVERLAY_STATE_ROOT, (volume) =>
@@ -394,6 +413,12 @@ export class MicrosandboxManager {
   }
 
   private async open(environment: MicrosandboxEnvironment): Promise<Sandbox> {
+    const stateRoot = canonicalPath(join(this.options.root, 'microsandbox'), process.env)
+    for (const mount of environment.mounts) {
+      const source = canonicalPath(mount.source, process.env)
+      if (contains(source, stateRoot) || contains(stateRoot, source))
+        throw new Error('microsandbox mounts cannot expose host sandbox state')
+    }
     const name = this.name(environment.id)
     const binding = await this.readBinding(environment.id)
     // Image changes apply to new environments; retained disks keep their original image.
@@ -403,6 +428,20 @@ export class MicrosandboxManager {
     if (binding || existing) {
       let matchingSpec = binding?.spec === spec
       if (binding && !matchingSpec) {
+        const helper = canonicalPath(
+          join(this.options.root, 'run', 'microsandbox-helpers', 'git-credential'),
+          process.env
+        )
+        const legacyMounts = environment.mounts.map((mount) =>
+          mount.source === helper && mount.target === gitcredShimPath(this.options.root) && mount.mode === 'readonly'
+            ? {
+                ...mount,
+                source: canonicalPath(join(this.options.root, 'microsandbox', 'helpers', 'git-credential'), process.env)
+              }
+            : mount
+        )
+        // Retained VMs may still own the old exact read-only helper mount; new mounts use the public support directory.
+        matchingSpec = binding.spec === this.spec({ ...environment, mounts: legacyMounts }, image)
         const source = await realpath(join(this.options.root, 'microsandbox', 'helpers', 'guest.js')).catch(
           (error: NodeJS.ErrnoException) => {
             if (error.code === 'ENOENT') return undefined
@@ -410,16 +449,13 @@ export class MicrosandboxManager {
           }
         )
         // Retain an older VM's disk when only the retired, read-only guest helper mount differs.
-        if (source) {
+        if (source && !matchingSpec) {
           matchingSpec =
             binding.spec ===
             this.spec(
               {
                 ...environment,
-                mounts: [
-                  ...environment.mounts,
-                  { source, target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }
-                ]
+                mounts: [...legacyMounts, { source, target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }]
               },
               image
             )
@@ -433,11 +469,24 @@ export class MicrosandboxManager {
         binding.configHash !== hash(stableJson(existing.config()))
       ) {
         throw new Error(
-          `microsandbox environment ${environment.id} has missing or changed persisted configuration; discard it before recreating`
+          `microsandbox environment ${environment.id} has missing or changed persisted configuration. Restore the previous configuration and DeepSeek credentials, or start a new session. Existing session data has been retained.`
         )
       }
       if (existing.status === 'running' || existing.status === 'starting' || existing.status === 'draining') {
         await existing.stopWithTimeout(STOP_TIMEOUT_MS)
+      }
+      if (environment.secrets?.length) {
+        const result = await existing.modify({
+          secrets: Object.fromEntries(environment.secrets.map((secret) => [secret.env, { value: secret.readValue() }])),
+          policy: 'next_start'
+        })
+        if (!result.applied && (result.changes.length || result.conflicts.length))
+          throw new Error('microsandbox could not update its host-side credentials')
+        const configHash = hash(stableJson((await this.options.sdk.Sandbox.get(name)).config()))
+        if (binding.configHash !== configHash) {
+          binding.configHash = configHash
+          await this.writeBinding(binding)
+        }
       }
       const sandbox = await this.retryDiskOperation(() => existing.connectOrStart({ detached: true }))
       try {
@@ -450,7 +499,7 @@ export class MicrosandboxManager {
         throw error
       }
     }
-    const sandbox = await this.builder(name, environment.mounts)
+    const sandbox = await this.builder(name, environment.mounts, environment.secrets)
       .vsock(this.options.sockets.mcp, 5000)
       .vsock(this.options.sockets.gitcred, 5001)
       .create()
@@ -465,15 +514,7 @@ export class MicrosandboxManager {
         dockerVolume: `${name}-docker`,
         ...(overlayMounts(environment.mounts).length ? { overlayVolume: `${name}-overlays` } : {})
       }
-      const path = this.bindingPath(environment.id)
-      await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-      const temporary = `${path}.${randomUUID()}.tmp`
-      try {
-        await writeFile(temporary, JSON.stringify(binding), { mode: 0o600, flag: 'wx' })
-        await rename(temporary, path)
-      } finally {
-        await rm(temporary, { force: true })
-      }
+      await this.writeBinding(binding)
       await prepareOverlayMounts(sandbox, environment.mounts)
       await this.startBridge(environment.id, sandbox)
       return sandbox
@@ -484,6 +525,18 @@ export class MicrosandboxManager {
       if (overlayMounts(environment.mounts).length) await this.removeVolume(`${name}-overlays`)
       await rm(this.bindingPath(environment.id), { force: true })
       throw error
+    }
+  }
+
+  private async writeBinding(binding: Binding): Promise<void> {
+    const path = this.bindingPath(binding.environmentId)
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    const temporary = `${path}.${randomUUID()}.tmp`
+    try {
+      await writeFile(temporary, JSON.stringify(binding), { mode: 0o600, flag: 'wx' })
+      await rename(temporary, path)
+    } finally {
+      await rm(temporary, { force: true })
     }
   }
 

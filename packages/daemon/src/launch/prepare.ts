@@ -1,12 +1,12 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '../acp/sandbox.js'
 import { prepareSandboxTempDir, SANDBOX_TEMP_DIR_ENV } from '../acp/sandbox-temp.js'
 import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
 import type { RuntimeDef, SandboxMount } from '../config/config-schema.js'
 import { prepareMicrosandboxLaunch } from '../microsandbox/launch.js'
-import { compactReadRoots } from '../runtimes/read-roots.js'
+import type { MicrosandboxSecret } from '../microsandbox/secrets.js'
+import { compactReadRoots, protectedSandboxRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import {
   hostPackageCacheEnv,
@@ -14,7 +14,6 @@ import {
   runtimeHomeEnvironment,
   runtimeHomePath
 } from '../runtimes/runtime-home.js'
-import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
 import { primaryCheckoutIn, secondaryCheckoutsIn } from '../workspace/secondary-layout.js'
 import { confinedSessionDirIn, sessionGitDirsIn, sessionHomeIn } from '../workspace/session-layout.js'
 import {
@@ -143,7 +142,7 @@ export interface PreparedRuntimeLaunch {
    *  was confined or nothing was found. Logged at spawn so a stale grant is visible after the fact. */
   gitMetadataWriteRoots: string[]
   runtimeHome?: string
-  microsandbox?: { mounts: SandboxMount[]; workspaceRoot: string }
+  microsandbox?: { mounts: SandboxMount[]; workspaceRoot: string; secrets?: MicrosandboxSecret[] }
   toolSandbox?: AcpToolSandbox
   sandbox?: {
     mechanism: SandboxMechanism
@@ -288,30 +287,14 @@ export function prepareRuntimeLaunch(opts: {
       runtimeHome: sessionHome ?? runtimeHomePath(opts.scopeDir)
     })
     const daemonRoot = safeRoot(opts.daemonRoot!, 'AgentConnect daemon root')
-    const agentRoot = safeRoot(opts.scopeDir, 'agent root')
-    const hostHomeRoots = compactReadRoots(
-      [...new Set([stateSourceEnv.HOME, homedir()].filter((path): path is string => Boolean(path)))].map((path) =>
-        safeRoot(path, 'host HOME')
-      )
-    )
-    const sharedTempRoots = ['/tmp', '/var/tmp', stateSourceEnv.TMPDIR, stateSourceEnv.TMP, stateSourceEnv.TEMP]
-      .filter((path): path is string => Boolean(path))
-      .map((path) => safeRoot(path, 'shared temp root'))
-    // Linux service sockets conventionally live below /run; /var/run resolves
-    // there as well. The outer parent keeps AF_UNIX available for AgentConnect's
-    // exact carve-backs, so mount visibility is the host-socket boundary.
-    const hostSocketRoots = [safeRoot('/run', 'host socket root')]
-    protectedRuntimeStateRoots = Object.keys(RUNTIME_STATE_LOCATIONS).flatMap((id) =>
-      runtimeStateLocations(id, stateSourceEnv).map((location) => safeRoot(location.source, `${id} host state root`))
-    )
-    protectedBoundaryRoots = [
+    const protectedPaths = protectedSandboxRoots({
       daemonRoot,
-      agentRoot,
-      ...(opts.agentsRoot ? [safeRoot(opts.agentsRoot, 'agents root')] : []),
-      ...hostHomeRoots,
-      ...sharedTempRoots,
-      ...hostSocketRoots
-    ]
+      scopeDir: opts.scopeDir,
+      agentsRoot: opts.agentsRoot,
+      hostEnv: stateSourceEnv
+    })
+    protectedBoundaryRoots = protectedPaths.boundary.map((path) => safeRoot(path, 'protected sandbox boundary'))
+    protectedRuntimeStateRoots = protectedPaths.runtimeState.map((path) => safeRoot(path, 'host runtime state root'))
     protectedRoots = [...protectedBoundaryRoots, ...protectedRuntimeStateRoots]
     denyReadRoots = compactReadRoots(protectedRoots)
   }

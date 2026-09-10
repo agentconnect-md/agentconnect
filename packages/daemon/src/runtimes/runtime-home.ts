@@ -1,19 +1,26 @@
 import {
   chmodSync,
+  closeSync,
   constants,
   copyFileSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { home as hostHomeDir, runtimeStateLocations } from './probe.js'
 import { extractOmpCredentials } from './omp-credentials.js'
 import { MAX_SEED_FILE_BYTES } from './runtime-seeded-credentials.js'
+import { withDescentSync } from '../shim/safe-descent.js'
 
 const LEGACY_RUNTIME_STATE: Record<string, string[]> = {
   'claude-acp': ['.claude'],
@@ -59,6 +66,73 @@ function assertNoDestinationSymlink(home: string, target: string): void {
       throw new Error(`runtime HOME destination contains a symlink: ${current}`)
     }
   }
+}
+
+export function projectRuntimeHomeSeedFile(
+  home: string,
+  destination: string,
+  source: string,
+  project: (text: string) => string | undefined
+): void {
+  const target = containedDestination(home, destination)
+  assertNoDestinationSymlink(home, target)
+  if (!existsSync(target) && !existsSync(source)) return
+  const segments = relative(home, target).split(sep)
+  const leaf = segments.pop()!
+  withDescentSync(home, segments, (parent) => {
+    const destination = join(parent, leaf)
+    let retained = true
+    let input: number
+    const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    try {
+      input = openSync(destination, flags)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      retained = false
+      try {
+        input = openSync(source, flags)
+      } catch (error) {
+        if (['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) return
+        throw error
+      }
+    }
+    let original: string
+    try {
+      const stat = fstatSync(input)
+      if (!stat.isFile() || stat.size > MAX_SEED_FILE_BYTES) {
+        if (retained) throw new Error('runtime HOME credential source must be a small regular file')
+        return
+      }
+      const bytes = Buffer.alloc(stat.size + 1)
+      let length = 0
+      while (length < bytes.length) {
+        const count = readSync(input, bytes, length, bytes.length - length, length)
+        if (!count) break
+        length += count
+      }
+      if (length > stat.size) throw new Error('runtime HOME credential file changed during projection')
+      original = bytes.subarray(0, length).toString('utf8')
+    } finally {
+      closeSync(input)
+    }
+    const content = project(original)
+    if (content === undefined) {
+      if (retained) throw new Error('Cannot protect the existing private runtime credential file')
+      return
+    }
+    if (retained && content === original) return
+    const temporary = join(parent, `.credential-${randomUUID()}.tmp`)
+    try {
+      writeFileSync(temporary, content, { flag: 'wx', mode: 0o600 })
+      renameSync(temporary, destination)
+    } finally {
+      try {
+        unlinkSync(temporary)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+  })
 }
 
 function projectedJson(source: string, keys: readonly string[]): string | undefined {

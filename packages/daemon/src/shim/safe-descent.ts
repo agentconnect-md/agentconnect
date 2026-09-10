@@ -1,33 +1,5 @@
-/**
- * Path resolution that holds INODES instead of names, for the sandbox side of the workspace-file
- * channel.
- *
- * Everything else in this seam checks a path and then acts on that path, and on a volume the agent's
- * runtime owns those are two different resolutions of one name. Between them it can rename the
- * checkout aside, put a symlink at the same place, let the work follow it, and restore the original
- * before any closing check — which is how four rounds of progressively stricter path revalidation
- * each closed a window and exposed the next. The problem is not that the checks were too loose. It is
- * that a name is not a directory.
- *
- * A file descriptor is. Once `/agent/repo` is open, that handle refers to the inode: renaming the
- * path, replacing it with a symlink, even deleting it changes nothing about what the handle reaches.
- * So the rule here is that a path is resolved exactly ONCE, into a handle, and every step afterwards
- * is taken relative to a handle — never by naming the same place again.
- *
- * The kernel primitive for that is `openat(dirfd, name, …)`, which Node does not expose. On Linux
- * `/proc/self/fd/<n>/<name>` is the same thing: the kernel resolves the magic link straight to the
- * inode the descriptor holds rather than re-walking the path it came from. That is why this module is
- * Linux-only, and why it is here in `shim/` rather than in the shared placement layer — the daemon
- * serves self-hosted macOS and Windows installs, where its own workspace is not on a filesystem an
- * agent controls and this whole hazard is absent.
- *
- * `O_NOFOLLOW` covers only the LAST component of a path, so the descent takes one component at a
- * time: each step is a single name, opened from the previous handle, with symlinks refused. A
- * symlinked directory inside the workspace is therefore rejected rather than resolved — the one
- * behaviour that differs from the daemon-local path, which resolves it and then checks where it
- * landed. A leaf symlink was already refused on both.
- */
-import { constants, promises as fs, type Dirent, type Stats } from 'node:fs'
+// Linux descriptor-relative descent binds agent-writable paths to inodes and rejects symlinks at each step.
+import { closeSync, constants, mkdirSync, openSync, promises as fs, type Dirent, type Stats } from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 
@@ -213,5 +185,29 @@ export async function withDescent<T>(
     // Reverse order is not required by the kernel; it just keeps the close sequence the mirror of the
     // open sequence, so a leak shows up as an unbalanced pair rather than as a puzzle.
     for (const handle of [...open].reverse()) await handle.close()
+  }
+}
+
+// Synchronous launch preparation uses the same descriptor-relative descent as guest filesystem operations.
+export function withDescentSync<T>(anchor: string, segments: string[], work: (parent: string) => T): T {
+  if (process.platform !== 'linux')
+    throw new UnsafePathError('fd-bound credential projection requires Linux', 'ENOTSUP')
+  if (!isAbsolute(anchor)) throw new UnsafePathError('anchor must be absolute', 'EINVAL')
+  const handles: number[] = []
+  try {
+    handles.push(openSync(anchor, DIR_FLAGS))
+    for (const segment of segments) {
+      assertComponent(segment)
+      const path = join(`/proc/self/fd/${handles.at(-1)!}`, segment)
+      try {
+        mkdirSync(path, { mode: 0o700 })
+      } catch (error) {
+        if (errno(error) !== 'EEXIST') throw error
+      }
+      handles.push(openSync(path, DIR_FLAGS))
+    }
+    return work(`/proc/self/fd/${handles.at(-1)!}`)
+  } finally {
+    for (const handle of handles.reverse()) closeSync(handle)
   }
 }

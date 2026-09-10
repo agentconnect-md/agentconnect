@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { decode, encode } from 'cborg'
-import type { ExecEvent } from 'microsandbox'
+import type { ExecEvent, ModifyOptions } from 'microsandbox'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MicrosandboxManager,
@@ -13,6 +13,8 @@ import {
 import { MICROSANDBOX_NODE } from '../src/microsandbox/exec.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../src/shim/sandbox-paths.js'
 import { OVERLAY_BASE_ROOT } from '../src/microsandbox/overlay.js'
+import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
+import { microsandboxSupportMounts } from '../src/microsandbox/support.js'
 
 class FakeExec {
   private readonly queue: Array<ExecEvent | Error | undefined> = []
@@ -72,6 +74,7 @@ function fakeSdk() {
     readonly spec = {
       image: 'test-image',
       env: [{ key: 'PATH', value: '/image/bin' }],
+      secrets: {} as Record<string, { value: string; placeholder: string; host: string }>,
       runtime: { workdir: '/image', user: 'agent' }
     }
     readonly stopWithTimeout = vi.fn(async () => {
@@ -99,6 +102,10 @@ function fakeSdk() {
     config() {
       return this.spec
     }
+    readonly modify = vi.fn(async (options: ModifyOptions) => {
+      for (const [name, spec] of Object.entries(options.secrets ?? {})) this.spec.secrets[name]!.value = spec.value!
+      return { applied: true }
+    })
     async startDetached() {
       for (const name of this.volumeNames) {
         const volume = volumes.get(name)!
@@ -206,6 +213,7 @@ function fakeSdk() {
       builder(name: string) {
         const volumeNames: string[] = []
         const mounts: FakeSandbox['mounts'] = []
+        const secrets: FakeSandbox['spec']['secrets'] = {}
         let image = 'test-image'
         const builder = {
           image(value: string) {
@@ -231,6 +239,43 @@ function fakeSdk() {
             return builder
           },
           quietLogs() {
+            return builder
+          },
+          secret(configure: (entry: any) => unknown) {
+            let name = ''
+            const data = { value: '', placeholder: '', host: '' }
+            const entry = {
+              env(value: string) {
+                name = value
+                return entry
+              },
+              value(value: string) {
+                data.value = value
+                return entry
+              },
+              placeholder(value: string) {
+                data.placeholder = value
+                return entry
+              },
+              allowHost(value: string) {
+                data.host = value
+                return entry
+              },
+              injectBasicAuth(value: boolean) {
+                expect(value).toBe(false)
+                return entry
+              },
+              injectQuery(value: boolean) {
+                expect(value).toBe(false)
+                return entry
+              },
+              injectBody(value: boolean) {
+                expect(value).toBe(false)
+                return entry
+              }
+            }
+            configure(entry)
+            secrets[name] = data
             return builder
           },
           volume(target: string, configure: (volume: any) => unknown) {
@@ -265,6 +310,7 @@ function fakeSdk() {
             }
             const sandbox = new FakeSandbox(name, volumeNames, mounts)
             sandbox.spec.image = image
+            sandbox.spec.secrets = secrets
             created.push(sandbox)
             sandboxes.set(name, sandbox)
             return sandbox
@@ -309,6 +355,108 @@ async function fixture() {
 }
 
 describe('microsandbox process and VM ownership', () => {
+  it.skipIf(process.platform === 'win32')('launches and resumes with the actual daemon support mounts', async () => {
+    const { manager, options, environment, request, created } = await fixture()
+    const scopeDir = join(options.root, 'agent')
+    const cwd = join(scopeDir, 'workspace')
+    const hostHome = join(options.root, 'host')
+    await mkdir(cwd, { recursive: true })
+    await mkdir(hostHome)
+    const launch = prepareMicrosandboxLaunch({
+      runtimeId: 'test',
+      scopeDir,
+      cwd,
+      daemonRoot: options.root,
+      stateSourceEnv: { HOME: hostHome },
+      mounts: [],
+      trustedMounts: microsandboxSupportMounts(options.root)
+    })
+    const env = { id: environment.id, ...launch.microsandbox }
+    await (await manager.driverFor(env).launch({ ...request, env: launch.env })).stop(0)
+    await manager.stopAll()
+    const resumed = new MicrosandboxManager(options)
+    await (await resumed.driverFor(env).launch({ ...request, env: launch.env })).stop(0)
+    expect(created).toHaveLength(1)
+    await resumed.discard(env.id)
+  })
+
+  it('refuses host SDK state mounts even for a runtime without its own secrets', async () => {
+    const { manager, options, environment, request, created } = await fixture()
+    for (const path of ['', 'microsandbox', 'microsandbox/sandboxes']) {
+      const env = {
+        ...environment,
+        mounts: [{ source: join(options.root, path), target: '/config', mode: 'readonly' as const }]
+      }
+      await expect(manager.driverFor(env).launch(request)).rejects.toThrow('cannot expose host sandbox state')
+    }
+    expect(created).toHaveLength(0)
+    await manager.stopAll()
+  })
+
+  it('keeps secrets out of bindings and execs, and rotates them when the retained VM resumes', async () => {
+    const { manager, options, environment, request, created, processes } = await fixture()
+    let key = 'fixture-first-key'
+    const secret = {
+      env: 'DEEPSEEK_API_KEY',
+      placeholder: 'fixture-placeholder',
+      host: 'api.deepseek.com',
+      readValue: () => key
+    }
+    const env = { ...environment, secrets: [secret] }
+    const launch = {
+      ...request,
+      env: { DEEPSEEK_API_KEY: secret.placeholder, NODE_EXTRA_CA_CERTS: '/.msb/tls/ca.pem' }
+    }
+    await (await manager.driverFor(env).launch(launch)).stop(0)
+    expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
+    expect(JSON.stringify(processes[0]!.request)).not.toContain(key)
+    expect(JSON.stringify(processes[0]!.request)).toContain('NODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem')
+    const directory = join(options.root, 'microsandbox', 'bindings')
+    const path = join(directory, (await readdir(directory))[0]!)
+    expect(await readFile(path, 'utf8')).not.toContain(key)
+    await manager.stopAll()
+    key = 'fixture-rotated-key'
+    const resumed = new MicrosandboxManager(options)
+    await (await resumed.driverFor(env).launch(launch)).stop(0)
+    expect(created).toHaveLength(1)
+    expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
+    expect(await readFile(path, 'utf8')).not.toContain(key)
+    await resumed.stopAll()
+    created[0]!.modify.mockResolvedValueOnce({ applied: false, changes: [], conflicts: [] } as never)
+    const restarted = new MicrosandboxManager(options)
+    await (await restarted.driverFor(env).launch(launch)).stop(0)
+    expect(created).toHaveLength(1)
+    expect(created[0]!.status).toBe('running')
+    await restarted.discard(env.id)
+  })
+
+  it.each([false, true])(
+    'retains VM data when its credential configuration changes (protected=%s)',
+    async (protectedVm) => {
+      const { manager, options, environment, request, created, volumes } = await fixture()
+      const env = {
+        ...environment,
+        secrets: [
+          {
+            env: 'DEEPSEEK_API_KEY',
+            placeholder: 'fixture-placeholder',
+            host: 'api.deepseek.com',
+            readValue: () => 'fixture-key'
+          }
+        ]
+      }
+      await (await manager.driverFor(protectedVm ? env : environment).launch(request)).stop(0)
+      await manager.stopAll()
+      const resumed = new MicrosandboxManager(options)
+      await expect(resumed.driverFor(protectedVm ? environment : env).launch(request)).rejects.toThrow(
+        'start a new session'
+      )
+      expect(created[0]!.status).toBe('stopped')
+      expect(volumes.size).toBe(1)
+      await resumed.discard(environment.id)
+    }
+  )
+
   it('shares read-only bases while retaining and cleaning up each session overlay disk', async () => {
     const { manager, options, environment, request, created, volumes, removeVolume } = await fixture()
     const first: MicrosandboxEnvironment = {
@@ -597,19 +745,33 @@ describe('microsandbox process and VM ownership', () => {
     expect(created).toHaveLength(2)
   })
 
-  it('resumes the retained VM after retiring only the known guest helper mount', async () => {
-    const { manager, options, environment, request, created } = await fixture()
+  it.each([false, true])('resumes with relocated support mounts (legacy guest helper=%s)', async (withGuestHelper) => {
+    const { manager, options, environment: original, request, created } = await fixture()
+    const environment = { ...original, mounts: microsandboxSupportMounts(options.root) }
     const helpers = join(options.root, 'microsandbox', 'helpers')
     await mkdir(helpers, { recursive: true })
+    const legacyGit = join(helpers, 'git-credential')
+    await writeFile(legacyGit, await readFile(environment.mounts[0]!.source))
     const helper = join(helpers, 'guest.js')
     await writeFile(helper, 'export {}')
     const legacy: MicrosandboxEnvironment = {
       ...environment,
-      mounts: [{ source: await realpath(helper), target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }]
+      mounts: [
+        { ...environment.mounts[0]!, source: await realpath(legacyGit) },
+        ...(withGuestHelper
+          ? [{ source: await realpath(helper), target: '/opt/agentconnect-local/guest.js', mode: 'readonly' as const }]
+          : [])
+      ]
     }
-    const runtime = await manager.driverFor(legacy).launch(request)
+    const runtime = await manager.driverFor(environment).launch(request)
     await runtime.stop(0)
     await manager.stopAll()
+    // Simulate a binding written before host SDK state mounts were forbidden.
+    const bindings = join(options.root, 'microsandbox', 'bindings')
+    const path = join(bindings, (await readdir(bindings))[0]!)
+    const binding = JSON.parse(await readFile(path, 'utf8'))
+    binding.spec = (manager as any).spec(legacy)
+    await writeFile(path, JSON.stringify(binding))
     const resumed = new MicrosandboxManager({
       ...options,
       config: { ...options.config, image: 'next-image' }

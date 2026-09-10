@@ -91,6 +91,16 @@ const DSH_PROVIDER_REFS: Record<string, string> = {
   OPENROUTER_API_KEY: 'openrouter'
 }
 
+export function parseDshCredentialDocument(text: string, format: 'dsh' | 'dsh-env') {
+  const data = record(format === 'dsh' ? parseYaml(text) : parseEnv(text)) ?? {}
+  const refs = Object.fromEntries(
+    Object.entries(record(data.version === 1 ? data.refs : data) ?? {}).filter(
+      (entry): entry is [string, string] => /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0]) && nonempty(entry[1])
+    )
+  )
+  return { data, refs, records: record(data.records) ?? {} }
+}
+
 function hermesCredentialProviders(data: unknown): string[] {
   const auth = record(data) ?? {}
   const hasToken = (raw: unknown): boolean => {
@@ -114,14 +124,9 @@ function credentialsInFile(text: string, file: SeededCredentialFile): { present:
     return { present, providers: present ? ['devin'] : [] }
   }
   if (file.format === 'dsh' || file.format === 'dsh-env') {
-    const data = record(file.format === 'dsh' ? parseYaml(text) : parseEnv(text))
-    if (!data) return { present: false, providers: [] }
-    const refs = record(data.version === 1 ? data.refs : data) ?? {}
-    const stored = Object.entries(refs).filter(
-      ([name, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && nonempty(value)
-    )
-    const providers = stored.flatMap(([name]) => (DSH_PROVIDER_REFS[name] ? [DSH_PROVIDER_REFS[name]!] : []))
-    for (const [name, raw] of Object.entries(record(data.records) ?? {})) {
+    const { refs, records } = parseDshCredentialDocument(text, file.format)
+    const providers = Object.keys(refs).flatMap((name) => (DSH_PROVIDER_REFS[name] ? [DSH_PROVIDER_REFS[name]!] : []))
+    for (const [name, raw] of Object.entries(records)) {
       const value = record(raw)
       const env = record(value?.env)
       if (

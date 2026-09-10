@@ -8,6 +8,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { createServer } from 'node:net'
@@ -53,6 +54,161 @@ afterEach(() => {
 })
 
 describe('prepareMicrosandboxLaunch', () => {
+  it.skipIf(process.platform !== 'linux').each(['legacy', 'versioned', 'dotenv'])(
+    'protects %s DeepSeek keys while preserving other private provider credentials',
+    (format) => {
+      const opts = fixture()
+      const hostDsh = join(opts.hostHome, '.dsh')
+      const guestDsh = join(opts.scopeDir, 'home', '.dsh')
+      mkdirSync(hostDsh)
+      mkdirSync(guestDsh, { recursive: true })
+      const key = 'fixture-deepseek-host-key'
+      const file = format === 'dotenv' ? '.env' : '.credentials.yaml'
+      const content =
+        format === 'dotenv'
+          ? `DEEPSEEK_API_KEY=${key}\nOPENROUTER_API_KEY=fixture-other-provider\n`
+          : format === 'versioned'
+            ? `version: 1\nrefs:\n  DEEPSEEK_API_KEY: ${key}\n  OPENROUTER_API_KEY: fixture-other-provider\nrecords:\n  login:\n    token: fixture-oauth-grant\n`
+            : `DEEPSEEK_API_KEY: ${key}\nOPENROUTER_API_KEY: fixture-other-provider\n`
+      writeFileSync(join(hostDsh, file), content)
+      writeFileSync(join(guestDsh, file), content.replace('fixture-other-provider', 'fixture-private-login'))
+      const launch = prepareMicrosandboxLaunch({ ...opts, runtimeId: 'dsh-acp' })
+      const secret = launch.microsandbox.secrets![0]!
+      expect(secret.readValue()).toBe(key)
+      expect(launch.env.DEEPSEEK_API_KEY).toBe(secret.placeholder)
+      expect(launch.env.NODE_EXTRA_CA_CERTS).toBe('/.msb/tls/ca.pem')
+      expect(JSON.stringify(launch)).not.toContain(key)
+      expect(secret.host).toBe('api.deepseek.com')
+      const projected = readFileSync(join(guestDsh, file), 'utf8')
+      expect(projected).not.toContain(key)
+      expect(projected).toContain('fixture-private-login')
+      expect(projected).toContain(secret.placeholder)
+      if (format === 'versioned') expect(projected).toContain('fixture-oauth-grant')
+      expect(readFileSync(join(hostDsh, file), 'utf8')).toBe(content)
+    }
+  )
+
+  it.skipIf(process.platform !== 'linux')(
+    'rejects host credential mounts and symlinked private copies instead of modifying the host',
+    () => {
+      const opts = fixture()
+      const hostDsh = join(opts.hostHome, '.dsh')
+      mkdirSync(hostDsh)
+      const source = join(hostDsh, '.credentials.yaml')
+      const content = 'DEEPSEEK_API_KEY: fixture-host-key\n'
+      writeFileSync(source, content)
+      const deepseek = { ...opts, runtimeId: 'dsh-acp' }
+      expect(() =>
+        prepareMicrosandboxLaunch({ ...deepseek, mounts: [{ source: hostDsh, target: '/config', mode: 'readonly' }] })
+      ).toThrow('protected host path')
+      rmSync(source)
+      expect(() =>
+        prepareMicrosandboxLaunch({ ...deepseek, mounts: [{ source: hostDsh, target: '/config', mode: 'readonly' }] })
+      ).toThrow('protected host path')
+      writeFileSync(source, content)
+      rmSync(join(opts.scopeDir, 'home', '.dsh', '.credentials.yaml'), { force: true })
+      symlinkSync(source, join(opts.scopeDir, 'home', '.dsh', '.credentials.yaml'))
+      expect(() => prepareMicrosandboxLaunch(deepseek)).toThrow('symlink')
+      expect(readFileSync(source, 'utf8')).toBe(content)
+    }
+  )
+
+  it('retains DSH file and guest login state when only another provider is configured', () => {
+    const opts = fixture()
+    const hostDsh = join(opts.hostHome, '.dsh')
+    mkdirSync(hostDsh)
+    writeFileSync(join(hostDsh, '.credentials.yaml'), 'OPENAI_API_KEY: fixture-openai-key\n')
+    const launch = prepareMicrosandboxLaunch({ ...opts, runtimeId: 'dsh-acp' })
+    expect(launch.microsandbox.secrets).toBeUndefined()
+    const path = join(launch.runtimeHome!, '.dsh', '.credentials.yaml')
+    expect(readFileSync(path, 'utf8')).toContain('fixture-openai-key')
+    writeFileSync(path, 'OPENAI_API_KEY: fixture-guest-login\n')
+    prepareMicrosandboxLaunch({ ...opts, runtimeId: 'dsh-acp' })
+    expect(readFileSync(path, 'utf8')).toContain('fixture-guest-login')
+  })
+
+  it.skipIf(process.platform !== 'linux')(
+    'uses an explicit key despite malformed host YAML and rejects an unsupported dotenv endpoint',
+    () => {
+      const opts = fixture()
+      const hostDsh = join(opts.hostHome, '.dsh')
+      mkdirSync(hostDsh)
+      writeFileSync(join(hostDsh, '.credentials.yaml'), 'DEEPSEEK_API_KEY: first\nDEEPSEEK_API_KEY: second\n')
+      const options = { ...opts, runtimeId: 'dsh-acp', explicitEnv: { DEEPSEEK_API_KEY: 'fixture-explicit-key' } }
+      const launch = prepareMicrosandboxLaunch(options)
+      expect(launch.microsandbox.secrets![0]!.readValue()).toBe('fixture-explicit-key')
+      expect(existsSync(join(launch.runtimeHome!, '.dsh', '.credentials.yaml'))).toBe(false)
+      writeFileSync(join(hostDsh, '.env'), 'DEEPSEEK_BASE_URL=https://gateway.example.test\n')
+      expect(() => prepareMicrosandboxLaunch(options)).toThrow('launch refused')
+    }
+  )
+
+  it('refuses custom TLS trust instead of silently dropping the operator bundle', () => {
+    const opts = fixture()
+    for (const name of [
+      'NODE_EXTRA_CA_CERTS',
+      'SSL_CERT_FILE',
+      'SSL_CERT_DIR',
+      'GIT_SSL_CAINFO',
+      'REQUESTS_CA_BUNDLE',
+      'CURL_CA_BUNDLE'
+    ]) {
+      expect(() =>
+        prepareMicrosandboxLaunch({
+          ...opts,
+          runtimeId: 'dsh-acp',
+          explicitEnv: { DEEPSEEK_API_KEY: 'fixture-key', [name]: '/operator/ca.pem' }
+        })
+      ).toThrow('custom TLS trust bundles')
+    }
+  })
+
+  it('uses the same protected host roots as SRT for configured mounts', () => {
+    const opts = fixture()
+    for (const name of ['.codex', '.claude', '.dsh']) {
+      const source = join(opts.hostHome, name)
+      mkdirSync(source)
+      expect(() =>
+        prepareMicrosandboxLaunch({
+          ...opts,
+          mounts: [{ source, target: '/config', mode: 'readonly' }]
+        })
+      ).toThrow('protected host path')
+    }
+  })
+
+  it.skipIf(process.platform !== 'linux')(
+    'keeps SRT credential seeding and masks explicit DeepSeek keys only for microsandbox',
+    () => {
+      const opts = fixture()
+      mkdirSync(join(opts.hostHome, '.dsh'))
+      const key = 'fixture-file-key'
+      writeFileSync(join(opts.hostHome, '.dsh', '.credentials.yaml'), `DEEPSEEK_API_KEY: ${key}\n`)
+      const srt = prepareRuntimeLaunch({
+        ...opts,
+        runtimeId: 'dsh-acp',
+        runInSandbox: true,
+        daemonRoot: opts.root,
+        sandboxMechanism: 'bwrap'
+      })
+      expect(readFileSync(join(srt.runtimeHome!, '.dsh', '.credentials.yaml'), 'utf8')).toContain(key)
+      const launch = prepareMicrosandboxLaunch({
+        ...opts,
+        runtimeId: 'dsh-acp',
+        explicitEnv: { DEEPSEEK_API_KEY: 'fixture-explicit-key' }
+      })
+      expect(launch.microsandbox.secrets![0]!.readValue()).toBe('fixture-explicit-key')
+      expect(JSON.stringify(launch)).not.toContain('fixture-explicit-key')
+      expect(() =>
+        prepareMicrosandboxLaunch({
+          ...opts,
+          runtimeId: 'dsh-acp',
+          explicitEnv: { DEEPSEEK_BASE_URL: 'https://proxy.example.test' }
+        })
+      ).toThrow('requires https://api.deepseek.com')
+    }
+  )
+
   it.each([
     ['claude-acp', false],
     ['claude-acp', true],
@@ -253,6 +409,8 @@ describe('prepareMicrosandboxLaunch', () => {
     writeFileSync(helper, 'original host helper')
     writeFileSync(gitConfig, '[core]\n hooksPath = /dev/null\n')
     const trustedMounts = microsandboxSupportMounts(opts.root, gitConfig)
+    const replacement = join(opts.root, 'replacement')
+    mkdirSync(replacement)
     expect(readFileSync(helper, 'utf8')).toBe('original host helper')
     expect(readFileSync(trustedMounts[0]!.source, 'utf8')).toBe(
       '#!/bin/sh\nexec /opt/agentconnect/bin/git-credential "$@"\n'
@@ -272,7 +430,7 @@ describe('prepareMicrosandboxLaunch', () => {
         prepareMicrosandboxLaunch({
           ...opts,
           trustedMounts,
-          mounts: [{ source: opts.hostHome, target, mode: 'writable' }]
+          mounts: [{ source: replacement, target, mode: 'writable' }]
         })
       ).toThrow('overlaps an automatic')
     }
@@ -280,6 +438,8 @@ describe('prepareMicrosandboxLaunch', () => {
 
   it('rejects operator mounts shadowing private data or socket bridges', () => {
     const opts = fixture()
+    const source = join(opts.root, 'replacement')
+    mkdirSync(source)
     for (const target of [
       opts.scopeDir,
       join(opts.scopeDir, 'home'),
@@ -292,9 +452,9 @@ describe('prepareMicrosandboxLaunch', () => {
       '/tmp/agentconnect',
       '/tmp'
     ]) {
-      expect(() =>
-        prepareMicrosandboxLaunch({ ...opts, mounts: [{ source: opts.hostHome, target, mode: 'writable' }] })
-      ).toThrow('overlaps an automatic')
+      expect(() => prepareMicrosandboxLaunch({ ...opts, mounts: [{ source, target, mode: 'writable' }] })).toThrow(
+        'overlaps an automatic'
+      )
     }
     expect(() => prepareMicrosandboxLaunch({ ...opts, trustedRuntimeReadRoots: [opts.scopeDir] })).toThrow(
       'entire agent or host HOME'
@@ -384,9 +544,7 @@ describe('prepareMicrosandboxLaunch', () => {
       explicitEnv: { CODEX_CONFIG: JSON.stringify({ 'permissions.untrusted': {}, model: 'test-model' }) },
       mounts: [
         { source: cache, target: '/shared/cache', mode: 'writable' },
-        { source: opts.hostHome, target: '/credential-copy', mode: 'writable' },
         { source: auth, target: '/credential-file', mode: 'readonly' },
-        { source: hostCodex, target: '/credential-dir', mode: 'writable' },
         { source: auth, target: '/credential-dir/auth.json', mode: 'writable' }
       ]
     })
@@ -394,7 +552,7 @@ describe('prepareMicrosandboxLaunch', () => {
     const policy: CodexPermissionProfileConfig = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!)
     for (const profile of Object.values(policy.modeProfiles)) {
       const filesystem = policy.configOverrides.find((line) => line.startsWith(`permissions.${profile}.filesystem=`))!
-      for (const path of ['/credential-copy/.codex/auth.json', '/credential-file', '/credential-dir/auth.json']) {
+      for (const path of ['/credential-file', '/credential-dir/auth.json']) {
         expect(filesystem).toContain(`${JSON.stringify(path)} = "deny"`)
       }
     }
@@ -425,7 +583,7 @@ describe('prepareMicrosandboxLaunch', () => {
       runtimeId: 'claude-acp',
       runtime: { command: 'claude-agent-acp', args: [], env: [] },
       explicitEnv: { ANTHROPIC_CONFIG_DIR: '/untrusted-profile', ANTHROPIC_PROFILE: 'untrusted' },
-      mounts: [{ source: config, target: '/credential-copy', mode: 'writable' }]
+      mounts: [{ source: join(config, '.credentials.json'), target: '/credential-copy', mode: 'writable' }]
     })
     expect(launch.sandbox).toBeUndefined()
     const profileRoot = join(opts.scopeDir, '.agentconnect', 'runtime-policy', 'claude-profile-disabled')

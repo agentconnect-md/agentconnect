@@ -3,7 +3,34 @@ import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, parse, posix, relative, resolve, sep } from 'node:path'
 import type { McpServerDef, RuntimeDef, SandboxBackend, SandboxMount } from '../config/config-schema.js'
-import { resolveCommandPath } from './probe.js'
+import { resolveCommandPath, RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from './probe.js'
+
+export function protectedSandboxRoots(opts: {
+  daemonRoot?: string
+  scopeDir: string
+  agentsRoot?: string
+  hostEnv: NodeJS.ProcessEnv
+}) {
+  const { hostEnv } = opts
+  return {
+    boundary: [
+      opts.daemonRoot,
+      opts.scopeDir,
+      opts.agentsRoot,
+      hostEnv.HOME,
+      homedir(),
+      '/tmp',
+      '/var/tmp',
+      hostEnv.TMPDIR,
+      hostEnv.TMP,
+      hostEnv.TEMP,
+      '/run'
+    ].filter((path): path is string => Boolean(path)),
+    runtimeState: Object.keys(RUNTIME_STATE_LOCATIONS).flatMap((id) =>
+      runtimeStateLocations(id, hostEnv).map((location) => location.source)
+    )
+  }
+}
 
 /**
  * Read-only code roots that must remain visible after the host HOME (and the
@@ -115,9 +142,8 @@ export function normalizeSandboxMounts(
   return result
 }
 
-/** Resolve the existing prefix too, so a missing socket/file below a symlink is
- * still expressed against the path the kernel will see later. */
-function canonicalPath(path: string, env: NodeJS.ProcessEnv): string {
+// Resolve existing prefixes so missing files below symlinks use their eventual kernel path.
+export function canonicalPath(path: string, env: NodeJS.ProcessEnv): string {
   const expanded = expandedAbsolute(path, env, 'trusted runtime read path')
   let current = expanded
   const missing: string[] = []
@@ -133,7 +159,7 @@ function canonicalPath(path: string, env: NodeJS.ProcessEnv): string {
   }
 }
 
-function contains(root: string, path: string): boolean {
+export function contains(root: string, path: string): boolean {
   const rel = relative(root, path)
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
