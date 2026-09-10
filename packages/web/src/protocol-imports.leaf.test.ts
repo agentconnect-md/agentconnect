@@ -22,6 +22,9 @@ function bundledSources(dir: string): string[] {
   })
 }
 
+/** An `import(` in one of these positions opens a TS inline import TYPE, which is erased long before a bundler runs. */
+const TYPE_POSITION = /(?:(?<![|&])[:<|&]|\b(?:typeof|keyof|extends|as|satisfies))\s*$/
+
 /** Protocol specifiers a file pulls a VALUE from — an `import type` / `export type` clause never reaches a bundler. */
 function protocolValueImports(source: string): string[] {
   // Comments go first, so prose quoting an import does not read as one.
@@ -33,7 +36,8 @@ function protocolValueImports(source: string): string[] {
   }
   // Side-effect `import 'x'` and dynamic `import('x')`, neither of which has a `from` clause.
   for (const match of code.matchAll(/\bimport\s*(?:\(\s*)?['"]([^'"]+)['"]/g)) {
-    if (match[1]!.startsWith(PACKAGE)) found.add(match[1]!)
+    // `||` and `&&` are logical, not union/intersection; `=>` and `,` front an arrow body or an argument. None count.
+    if (match[1]!.startsWith(PACKAGE) && !TYPE_POSITION.test(code.slice(0, match.index))) found.add(match[1]!)
   }
   return [...found]
 }
@@ -55,7 +59,16 @@ describe('the console value-imports only bundler-safe protocol modules', () => {
     expect(read(`import { a, type B } from '${PACKAGE}/code-host'`)).toEqual([`${PACKAGE}/code-host`])
     expect(read(`export { sumAmounts } from '${PACKAGE}/decimal-amount'`)).toEqual([`${PACKAGE}/decimal-amount`])
     expect(read(`const m = await import('${PACKAGE}')`)).toEqual([PACKAGE])
+    expect(read(`const c = dynamic(() => import('${PACKAGE}'))`)).toEqual([PACKAGE])
+    expect(read(`const p = enabled && import('${PACKAGE}')`)).toEqual([PACKAGE])
+    expect(read(`const p = cached || import('${PACKAGE}')`)).toEqual([PACKAGE])
+    expect(read(`import '${PACKAGE}/register'`)).toEqual([`${PACKAGE}/register`])
     expect(read(`import type { HookKind } from '${PACKAGE}'`)).toEqual([])
+    expect(read(`return apiGet<import('${PACKAGE}').MemoryEntryListResult>(url)`)).toEqual([])
+    expect(read(`function post(body: import('${PACKAGE}').MemoryEntryCreateRequest) {}`)).toEqual([])
+    expect(read(`type Client = (typeof import('${PACKAGE}'))['default']`)).toEqual([])
+    expect(read(`type U = HookKind | import('${PACKAGE}').MemoryEntryContent`)).toEqual([])
+    expect(read(`type I = Base & import('${PACKAGE}').MemoryEntryCapabilities`)).toEqual([])
     expect(read(`export type { HookKind } from '${PACKAGE}'`)).toEqual([])
     expect(read(`// see \`import { x } from '${PACKAGE}'\``)).toEqual([])
     expect(read(`import { x } from './data'\nimport type { HookKind } from '${PACKAGE}'`)).toEqual([])
