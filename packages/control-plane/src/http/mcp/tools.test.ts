@@ -59,6 +59,18 @@ const ARGS: Record<string, Record<string, unknown>> = {
   listHookRuns: { hookId: 'hook-1' },
   createAgent: { name: 'my-agent', runtime: 'claude' },
   updateAgent: { agentId: AGENT_UUID, model: 'opus' },
+  setAgentWorkspace: { agentId: AGENT_UUID, mode: 'git', gitRepo: 'acme/api', access: 'write' },
+  listGithubRepositories: { installationId: 'ins-1' },
+  createGithubTrigger: {
+    agentId: AGENT_UUID,
+    name: 'Reviews on acme/api',
+    repoFullName: 'acme/api',
+    family: 'pull_request',
+    events: ['pull_request:*', 'issue_comment:created'],
+    commentFamilies: ['pull_request'],
+    reviewPolicy: 'full',
+    reportingMode: 'check'
+  },
   deleteAgent: { agentId: AGENT_UUID, confirm: 'my-agent' },
   renameDaemon: { daemonId: 'daemon-1', name: 'edge-1' },
   upsertCron: { agentId: AGENT_UUID, schedule: '0 9 * * *', trigger: 'do the thing', timezone: 'Asia/Shanghai' },
@@ -148,7 +160,9 @@ describe('MCP tool registry — §6.2 invariants', () => {
     ['updateAgent', { agentId: AGENT_UUID.replaceAll('-', ''), model: 'bypass' }],
     ['updateAgent', { agentId: `{${AGENT_UUID}}`, model: 'bypass' }],
     ['deleteAgent', { agentId: AGENT_UUID.replaceAll('-', ''), confirm: 'my-agent' }],
-    ['deleteAgent', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent' }]
+    ['deleteAgent', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent' }],
+    ['setAgentWorkspace', { agentId: AGENT_UUID.replaceAll('-', ''), mode: 'scratch' }],
+    ['setAgentWorkspace', { agentId: `{${AGENT_UUID}}`, mode: 'scratch' }]
   ] as const)('%s rejects PostgreSQL-compatible noncanonical UUID text before dispatch', (toolName, args) => {
     expect(findTool(toolName)!.schema.safeParse(args).success).toBe(false)
   })
@@ -157,7 +171,9 @@ describe('MCP tool registry — §6.2 invariants', () => {
     ['updateAgent', { agentId: AGENT_UUID.replaceAll('-', ''), model: 'bypass' }],
     ['updateAgent', { agentId: `{${AGENT_UUID}}`, model: 'bypass' }],
     ['deleteAgent', { agentId: AGENT_UUID.replaceAll('-', ''), confirm: 'my-agent' }],
-    ['deleteAgent', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent' }]
+    ['deleteAgent', { agentId: `{${AGENT_UUID}}`, confirm: 'my-agent' }],
+    ['setAgentWorkspace', { agentId: AGENT_UUID.replaceAll('-', ''), mode: 'scratch' }],
+    ['setAgentWorkspace', { agentId: `{${AGENT_UUID}}`, mode: 'scratch' }]
   ] as const)('%s refuses a direct noncanonical UUID call without issuing REST requests', async (toolName, args) => {
     const { ctx, calls } = recordingCtx()
     const result = await findTool(toolName)!.call(ctx, args)
@@ -280,6 +296,61 @@ describe('MCP write tools — bodies and upsert semantics', () => {
     expect(calls).toEqual([
       { method: 'POST', path: `/orgs/${ORG_ID}/agents`, body: { name: 'helper', runtime: 'claude', fastMode: true } }
     ])
+  })
+
+  it('createAgent carries a git workspace through in the same POST', async () => {
+    const { calls } = await run('createAgent', {
+      name: 'reviewer',
+      runtime: 'claude',
+      workspace: { mode: 'git', gitRepo: 'acme/api', gitBranch: 'main', access: 'write' }
+    })
+    expect(calls).toEqual([
+      {
+        method: 'POST',
+        path: `/orgs/${ORG_ID}/agents`,
+        body: {
+          name: 'reviewer',
+          runtime: 'claude',
+          workspace: { mode: 'git', gitRepo: 'acme/api', gitBranch: 'main', access: 'write' }
+        }
+      }
+    ])
+    // The address is the ONLY repository input: derived provenance is never accepted here.
+    const schema = findTool('createAgent')!.schema
+    expect(schema.safeParse({ name: 'a', runtime: 'claude', workspace: { mode: 'git' } }).success).toBe(false)
+    expect(
+      schema.safeParse({ name: 'a', runtime: 'claude', workspace: { mode: 'git', gitRepo: 'a/b', repoId: '1' } })
+        .success
+    ).toBe(false)
+  })
+
+  it('setAgentWorkspace PUTs the workspace body to the agent’s workspace edit path', async () => {
+    const { calls } = await run('setAgentWorkspace')
+    expect(calls).toEqual([
+      {
+        method: 'PUT',
+        path: `/orgs/${ORG_ID}/agents/${AGENT_UUID}/workspace`,
+        body: { mode: 'git', gitRepo: 'acme/api', access: 'write' } // agentId is routing-only
+      }
+    ])
+    const scratch = await run('setAgentWorkspace', { agentId: AGENT_UUID, mode: 'scratch' })
+    expect(scratch.calls[0]!.body).toEqual({ mode: 'scratch' })
+  })
+
+  it('createGithubTrigger POSTs a github-kind hook, and the webhook kind stays out of the catalog', async () => {
+    const { calls } = await run('createGithubTrigger')
+    expect(calls).toEqual([
+      {
+        method: 'POST',
+        path: `/orgs/${ORG_ID}/hooks`,
+        body: { kind: 'github', ...ARGS.createGithubTrigger }
+      }
+    ])
+    // No tool may mint an ingress URL or a signing secret (§6.3).
+    const schema = findTool('createGithubTrigger')!.schema
+    expect(schema.safeParse({ ...ARGS.createGithubTrigger, kind: 'webhook' }).success).toBe(false)
+    expect(schema.safeParse({ ...ARGS.createGithubTrigger, hmac: true }).success).toBe(false)
+    expect(schema.safeParse({ ...ARGS.createGithubTrigger, repoFullName: 'acme' }).success).toBe(false)
   })
 
   it('upsertCron PUTs to the given cron id, and mints a UUID when creating', async () => {

@@ -214,6 +214,7 @@ Tools **call the CP service layer directly or reuse route-handler logic**, prese
 | `listAgents` / `getAgent`                                      | GET /agents(:id)                                           | –       |
 | `listWorkspaceFiles` / `readWorkspaceFile`                     | GET /agents/:id/workspace/files(file) (proxied, unstored)  | –       |
 | `createAgent` / `updateAgent`                                  | POST /agents · PATCH /agents/:id                           | ✎       |
+| `setAgentWorkspace`                                            | PUT /agents/:id/workspace                                  | ✎       |
 | `deleteAgent`                                                  | DELETE /agents/:id                                         | ✎🔥     |
 | `listDaemons` / `renameDaemon`                                 | GET /daemons (liveness) · PATCH /daemons/:id               | –/✎     |
 | `listDaemonCapabilities` / `getDaemon`                         | GET /daemons/capabilities · GET /daemons/:id               | –       |
@@ -223,10 +224,17 @@ Tools **call the CP service layer directly or reuse route-handler logic**, prese
 | `getUsage`                                                     | GET /usage                                                 | –       |
 | `listIntegrations` / `setChannelTrigger` / `removeIntegration` | GET · PATCH channels/:channelId · DELETE                   | –/✎(🔥) |
 | `listBots` / `listMembers` / `listAgentHooks` / `listHookRuns` | GET (metadata only, no secret)                             | –       |
+| `listGithubInstallations` / `listGithubRepositories`           | GET /github/installations(/:id/repositories)               | –       |
+| `createGithubTrigger`                                          | POST /hooks (`kind:"github"` only)                         | ✎       |
 
 Write tools require `mcp:write` for OAuth tokens or an unrestricted personal key. Role gates (deny all writes for viewers; reserve some operations for owner) are **not reimplemented in tools**; REST guards remain authoritative.
 
 ### 6.3 Credential-Specific Boundaries and Deny-List
+
+A workspace write (`setAgentWorkspace`, and `createAgent`'s `workspace`) carries no
+credential either: the ADDRESS is the whole input, provenance and the numeric
+repository id are server-derived, and the route's identity-assertion gate still
+requires the caller's own GitHub permission for the tier requested.
 
 - **Personal key / OAuth token (external tools)**: the user explicitly authorized the credential, so the tool catalog is **curation, not a security boundary**. Credential/member/organization/access-control operations are intentionally absent so the user's AI lacks convenient high-risk buttons, but hard boundaries are user RBAC + OAuth scopes. Existing guards block the worst cases (a key cannot mint another key, `me-keys.ts:84`; OAuth follows the same rule).
 - **Delegated key (a platform-injected session credential, §4)**: add a **server-side hard denial beyond the catalog**. New guard `denyDelegated` returns 403 whenever `req.delegation` exists for these route families, preventing direct handcrafted requests that bypass tools:
@@ -234,7 +242,11 @@ Write tools require `mcp:write` for OAuth tokens or an unrestricted personal key
   - members and organization: writes under `/members`, `PATCH|DELETE /orgs/:orgId`;
   - access control: writes to all three `/sharing` families and `/agents/:id/call-policy`;
   - credential-bearing integrations: writes to `/bots`, Slack install / GitHub installation funnels, and `/slack/config`;
-  - hook writes (persistent entry points; read-only in v1);
+  - webhook-kind hook writes — that kind MINTS a persistent ingress URL and an
+    HMAC secret, so no tool creates one. Code-host (`kind:"github"`) triggers are
+    exposed (`createGithubTrigger`): they mint no capability, reach only a
+    repository an installation the org already owns covers, and an agent that
+    cannot be given its trigger cannot be finished from chat at all;
   - **its own host agent** — the "cannot unlock itself" property. The cancelled design got this from guards on `kind='assistant'`; with the toolset inside an ordinary agent, the successor must re-establish it against whatever configures that agent's admin sessions.
 
 ### 6.4 Destructive Operations Require Schema-Level Confirmation
