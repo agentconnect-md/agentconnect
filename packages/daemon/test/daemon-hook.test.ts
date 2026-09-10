@@ -39,7 +39,7 @@ import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { openTestStore } from './store-support.js'
 import { statePath } from '../src/paths.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
-import { FakeClock } from '@agentconnect.md/connection'
+import { FakeClock, WireError } from '@agentconnect.md/connection'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -1959,6 +1959,8 @@ describe('Daemon rd/msg hook fires', () => {
         body: 'Approved.'
       })
     ).rejects.toThrow('simulated crash window')
+    // A non-retryable authorization failure still consumes the turn's one attempt.
+    expect((daemon as any).activeGithubTurnMeta.get(key).reviewState).toBe('done')
 
     const row = (await (daemon as any).store.listInboxBySessionKeyFifo()).find(
       ({ id }: { id: string }) => id === inboxId
@@ -1973,6 +1975,118 @@ describe('Daemon rd/msg hook fires', () => {
     expect(persisted).not.toHaveProperty('reviewResult')
     expect(persisted).not.toHaveProperty('reviewReportAttemptId')
     expect(persisted).not.toHaveProperty('reviewReportResult')
+    await daemon.stop()
+  })
+
+  it('keeps the formal-review retry when the control-plane socket drops before authorization', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: streamingHost().factory
+    })
+    await daemon.start()
+
+    const headSha = 'a'.repeat(40)
+    const baseSha = 'b'.repeat(40)
+    const hook: Record<string, unknown> = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'drop',
+      firedAt: new Date().toISOString()
+    }
+    const inboxId = `${HOOK_ID}:drop`
+    const key = `hook:acme/infra:42:${AGENT_ID}`
+    expect(
+      await (daemon as any).store.appendInbox({
+        id: inboxId,
+        sessionKey: key,
+        agentId: AGENT_ID,
+        msg: '{}',
+        hookContext: JSON.stringify(hook),
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+    ;(daemon as any).activeGithubTurnMeta.set(key, {
+      entry: { inboxId, hookContext: hook },
+      hook,
+      snapshot: {
+        configRevision: '1',
+        dispatchRevision: '1',
+        dispatchDaemonId: '44444444-4444-4444-8444-444444444444',
+        reviewPolicy: 'full',
+        reportingMode: 'check',
+        gateMode: 'informational'
+      },
+      repoId: '123',
+      repoFullName: 'acme/infra',
+      pullNumber: 42,
+      expectedHeadSha: headSha,
+      expectedBaseSha: baseSha,
+      reportSha: headSha,
+      sessionId: 'acp-drop',
+      reviewState: 'idle'
+    })
+    // The correlator rejects every in-flight request this way when the daemon↔CP socket closes.
+    const authorizeGithubReview = vi
+      .fn()
+      .mockRejectedValueOnce(new WireError('INTERNAL', 'connection closed', true))
+      .mockImplementation(async ({ attemptId }: { attemptId: string }) => ({
+        attemptId,
+        token: 'ghs_review',
+        ttlSec: 60,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        repoId: '123',
+        repoFullName: 'acme/infra',
+        pullNumber: 42,
+        expectedHeadSha: headSha,
+        expectedBaseSha: baseSha
+      }))
+    ;(daemon as any).cpClient = {
+      stop: vi.fn(async () => {}),
+      authorizeGithubReview,
+      reportGithubReviewResult: vi.fn(async () => ({ accepted: true }))
+    }
+    const submit = vi.spyOn((daemon as any).githubReviews.githubReviewClient, 'submit').mockResolvedValue({
+      state: 'submitted',
+      reviewId: '9001',
+      event: 'APPROVE',
+      verdict: 'pass',
+      commitId: headSha
+    })
+    vi.spyOn((daemon as any).githubReviews, 'githubCommentAttribution').mockResolvedValue(undefined)
+    const req = {
+      agentId: AGENT_ID,
+      platform: 'hook',
+      channel: 'acme/infra',
+      thread: '42',
+      event: 'APPROVE',
+      verdict: 'pass',
+      body: 'Approved.'
+    }
+
+    await expect((daemon as any).githubReviews.submitGithubReview(req)).rejects.toThrow(
+      'formal review not submitted: control plane unreachable (connection closed)'
+    )
+    // Nothing reached GitHub, so the turn keeps its attempt instead of dying on the wire failure.
+    expect(submit).not.toHaveBeenCalled()
+    expect((daemon as any).activeGithubTurnMeta.get(key).reviewState).toBe('idle')
+    const attemptId = hook.reviewAttemptId
+    expect(attemptId).toEqual(expect.any(String))
+
+    await expect((daemon as any).githubReviews.submitGithubReview(req)).resolves.toMatchObject({
+      state: 'submitted',
+      reviewId: '9001'
+    })
+    // The retry re-authorizes the SAME attempt and goes marker-first, never a blind second POST.
+    expect(authorizeGithubReview).toHaveBeenCalledTimes(2)
+    expect(authorizeGithubReview.mock.calls.map((call) => call[0].attemptId)).toEqual([attemptId, attemptId])
+    expect(submit).toHaveBeenCalledWith(
+      expect.objectContaining({ attemptId, recovering: true }),
+      expect.objectContaining({ event: 'APPROVE', verdict: 'pass' }),
+      undefined
+    )
+    expect((daemon as any).activeGithubTurnMeta.get(key).reviewState).toBe('done')
     await daemon.stop()
   })
 
