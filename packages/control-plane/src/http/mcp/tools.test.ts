@@ -13,6 +13,8 @@ import { KNOWN_PLATFORMS } from '@agentconnect.md/protocol'
 import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult } from './tools.js'
 
 const ORG_ID = 'org-123'
+const HOST_AGENT_UUID = '9b7a1c64-6f2e-4c1b-8f0a-2a5d7e3b1c90'
+const CONVERSATION_ID = 'conv-1'
 
 interface RecordedCall {
   method: string
@@ -27,6 +29,8 @@ function recordingCtx(): { ctx: McpToolCtx; calls: RecordedCall[] } {
   const calls: RecordedCall[] = []
   const ctx: McpToolCtx = {
     orgId: ORG_ID,
+    delegatedAgentId: HOST_AGENT_UUID,
+    delegatedConversationId: CONVERSATION_ID,
     get: async (path, query): Promise<RestResult> => {
       calls.push({ method: 'GET', path, ...(query ? { query } : {}) })
       const resource = { id: 'integ-1', name: 'my-agent' }
@@ -57,6 +61,7 @@ const ARGS: Record<string, Record<string, unknown>> = {
   getSession: { sessionId: 'sess-1' },
   listAgentHooks: { agentId: 'agent-1' },
   listHookRuns: { hookId: 'hook-1' },
+  getOperation: { operationId: '0a5f4b3c-2d1e-4f6a-9b8c-7d6e5f4a3b2c' },
   createAgent: { name: 'my-agent', runtime: 'claude' },
   updateAgent: { agentId: AGENT_UUID, model: 'opus' },
   setAgentWorkspace: { agentId: AGENT_UUID, confirm: 'my-agent', mode: 'git', gitRepo: 'acme/api', access: 'write' },
@@ -146,6 +151,45 @@ describe('MCP tool registry — §6.2 invariants', () => {
     })
     const rest = w.calls[0]!.path.slice(`/orgs/${ORG_ID}/integrations/`.length)
     expect(rest.split('/')).toEqual(['i%2F..%2Fx', 'channels', 'C%3Flimit%3D1'])
+  })
+
+  it('the operation reads are scoped to the delegated conversation, never to a named one', async () => {
+    const operationId = '0a5f4b3c-2d1e-4f6a-9b8c-7d6e5f4a3b2c'
+    const one = await run('getOperation')
+    expect(one.calls).toEqual([
+      {
+        method: 'GET',
+        path: `/orgs/${ORG_ID}/agents/${HOST_AGENT_UUID}/webchat/${CONVERSATION_ID}/mcp-operations/${operationId}`
+      }
+    ])
+    const pending = await run('listOperations')
+    expect(pending.calls).toEqual([
+      { method: 'GET', path: `/orgs/${ORG_ID}/agents/${HOST_AGENT_UUID}/webchat/${CONVERSATION_ID}/mcp-operations` }
+    ])
+    // The conversation is server-supplied, so there is no argument to point elsewhere.
+    expect(findTool('getOperation')!.schema.safeParse({ operationId, conversationId: 'other' }).success).toBe(false)
+    expect(findTool('listOperations')!.schema.safeParse({ conversationId: 'other' }).success).toBe(false)
+  })
+
+  it('an external credential has no operations, and is told so without a request', async () => {
+    for (const [tool, args] of [
+      ['getOperation', { operationId: '0a5f4b3c-2d1e-4f6a-9b8c-7d6e5f4a3b2c' }],
+      ['listOperations', {}]
+    ] as const) {
+      const calls: RecordedCall[] = []
+      const external: McpToolCtx = {
+        orgId: ORG_ID,
+        get: async (path) => {
+          calls.push({ method: 'GET', path })
+          return { statusCode: 200, body: '{}' }
+        },
+        send: async () => ({ statusCode: 500, body: 'never' })
+      }
+      const out = await findTool(tool)!.call(external, args)
+      expect(out.statusCode, tool).toBe(400)
+      expect(JSON.parse(out.body).message).toContain('webchat conversation')
+      expect(calls, `${tool}: must not reach a route`).toEqual([])
+    }
   })
 
   it('strict schemas reject unknown arguments', () => {

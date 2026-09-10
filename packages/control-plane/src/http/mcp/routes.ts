@@ -327,7 +327,12 @@ export function mcpRoutes(deps: HttpDeps) {
       // if the caller had issued the request directly.
       const ctx: McpToolCtx = {
         orgId,
-        ...(invocationContext ? { delegatedAgentId: invocationContext.agentId } : {}),
+        ...(invocationContext
+          ? {
+              delegatedAgentId: invocationContext.agentId,
+              delegatedConversationId: invocationContext.conversationId
+            }
+          : {}),
         get: async (path, query) => {
           const qs = new URLSearchParams()
           for (const [k, v] of Object.entries(query ?? {})) {

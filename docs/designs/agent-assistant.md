@@ -225,7 +225,13 @@ Tools **call the CP service layer directly or reuse route-handler logic**, prese
 | `listIntegrations` / `setChannelTrigger` / `removeIntegration` | GET · PATCH channels/:channelId · DELETE                   | –/✎(🔥) |
 | `listBots` / `listMembers` / `listAgentHooks` / `listHookRuns` | GET (metadata only, no secret)                             | –       |
 | `listGithubInstallations` / `listGithubRepositories`           | GET /github/installations(/:id/repositories)               | –       |
+| `getOperation` / `listOperations`                              | GET /agents/:id/webchat/:conversationId/mcp-operations(…)  | –       |
 | `createGithubTrigger`                                          | POST /hooks (`kind:"github"` only)                         | ✎       |
+
+The two operation reads are the delegated-webchat arm's own: they answer about
+side-effecting operations awaiting or past the conversation owner's approval
+(webchat-preset-agentconnect-mcp.md §9), are scoped to the caller's own
+conversation, and tell an external credential plainly that it has none.
 
 Write tools require `mcp:write` for OAuth tokens or an unrestricted personal key. Role gates (deny all writes for viewers; reserve some operations for owner) are **not reimplemented in tools**; REST guards remain authoritative.
 

@@ -146,7 +146,7 @@ import {
 } from '@/lib/session-rail-filter'
 import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
-import { WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
+import { approvalNotice, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import {
   sessionEffortAfterModelChange,
@@ -5281,6 +5281,13 @@ export default function SessionDetailView() {
                           agentId={session.agentId}
                           conversationId={webchatConversationId}
                           className="mb-2"
+                          // A delegated write never executes in the agent's own request: it
+                          // answered with an operationId and the turn ended, so the decision is
+                          // news the conversation has to deliver, or a flow that writes stops
+                          // dead at its first write. The CP stays off the message path.
+                          onDecided={(operation, decision, outcome) => {
+                            onPgSend(approvalNotice(operation, decision, outcome))
+                          }}
                         />
                       )}
                       {/* Queued messages (Claude Code-style): sends accepted while a turn was
