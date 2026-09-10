@@ -189,11 +189,12 @@ export const ConfigSchema = z.object({
   sandbox: z
     .object({
       backend: SandboxBackendSchema.default('srt'),
+      env: z.record(EnvironmentName, ProcessValue).default({}),
       mounts: z.array(SandboxMountSchema).default([]),
       microsandbox: MicrosandboxConfigSchema.optional()
     })
     .strict()
-    .default({ backend: 'srt', mounts: [] }),
+    .default({ backend: 'srt', env: {}, mounts: [] }),
   security: z
     .object({
       // Prevent ACP runtimes from implicitly inheriting apps/connectors attached

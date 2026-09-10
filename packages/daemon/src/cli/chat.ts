@@ -135,7 +135,10 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   }
 
   const agentEnv = agentChildEnv(agent)
-  const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
+  const runtimeEnv = {
+    ...(runInSandbox ? cfg.sandbox.env : {}),
+    ...Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
+  }
   const memoryAgent =
     memoryKindOf(agent) === 'native' && runInSandbox ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
   // Memory backend env joins the agent env BEFORE materialization, as the daemon does, so

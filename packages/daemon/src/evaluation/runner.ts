@@ -781,7 +781,10 @@ export class RawAcpEvaluationRunner {
       if (!mechanism) throw new Error('raw ACP evaluation requires a supported Linux SRT/bwrap sandbox')
       const runInSandbox = effectiveRunInSandbox(true, agent.runInSandbox, mechanism)
       const baseEnv = agentChildEnv(agent)
-      const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
+      const runtimeEnv = {
+        ...cfg.sandbox.env,
+        ...Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
+      }
       const memoryOffEnv = memoryProviderFor(
         { ...agent, memory: { provider: 'none' } },
         runtime,

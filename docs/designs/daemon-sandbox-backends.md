@@ -18,7 +18,7 @@ Control Plane does not carry ACP or provider request traffic.
 ## 1. Configuration and ownership
 
 The daemon-owned `sandbox` object in `~/.agentconnect/config.json` defaults to
-`{ "backend": "srt", "mounts": [] }`. The minimal configuration is:
+`{ "backend": "srt", "env": {}, "mounts": [] }`. The minimal configuration is:
 
 ```json
 {
@@ -38,6 +38,9 @@ that default:
   },
   "sandbox": {
     "backend": "microsandbox",
+    "env": {
+      "PNPM_CONFIG_STORE_DIR": "/cache/pnpm"
+    },
     "mounts": [
       {
         "source": "/srv/agent-cache/pnpm",
@@ -66,6 +69,7 @@ settings.
 | Setting                        | Meaning and delivery status                                                                                                                                                                                                                                                                                                                 |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox.backend`              | Implemented: `srt` is the default; `microsandbox` selects the Linux VM implementation for sandboxed launches.                                                                                                                                                                                                                               |
+| `sandbox.env`                  | Environment defaults for sandboxed session runtimes, default `{}`; shared by SRT and microsandbox. Runtime and agent variables override them; daemon-enforced private paths and security settings remain authoritative.                                                                                                                     |
 | `security.requireSandbox`      | Existing behavior: require sandboxed execution for every agent, using the selected backend.                                                                                                                                                                                                                                                 |
 | Agent **Run in sandbox**       | Keeps its current role when the daemon does not require sandboxing. Selecting a backend does not change the trust choice for unsandboxed agents.                                                                                                                                                                                            |
 | `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                                                                            |
@@ -119,6 +123,9 @@ For example, SRT uses the same common configuration shape:
 {
   "sandbox": {
     "backend": "srt",
+    "env": {
+      "PNPM_CONFIG_STORE_DIR": "/srv/agent-cache/pnpm"
+    },
     "mounts": [
       {
         "source": "/srv/agent-cache/pnpm",
@@ -137,6 +144,26 @@ settings: point the package manager at the effective target path. Do not mount
 an entire host HOME to make an isolated runtime work. Session retirement detaches
 operator-owned mounts without deleting their host contents.
 
+### Sandbox environment defaults
+
+Use `sandbox.env` for machine-local settings that accompany mounts. Values are
+strings passed literally: the daemon does not expand `~`, `${HOME}`, or shell
+commands. The child tool may implement its own expansion, as pnpm does for
+`${HOME}` in the example below. Environment variable names must be valid process
+variable names; values may be empty, must not contain NUL, and are limited to
+16,384 characters each.
+
+The merge order is inherited environment, `sandbox.env`, runtime-definition env,
+agent env/secrets, then daemon-owned runtime and security settings. Private
+`HOME` and XDG directories remain session-owned. Config-file variables such as
+`KUBECONFIG_DATA` follow the existing materialization rules. Unsandboxed agents,
+daemon subprocesses, and runtime compatibility probes do not consume these
+defaults. The local `chat` command uses them when running with SRT.
+
+Restart the daemon after editing `config.json`. A retained microsandbox session
+uses the updated environment when its runtime restarts; changing only
+`sandbox.env` does not require discarding its VM or disks.
+
 ### Shared bases with session-local writes
 
 microsandbox also accepts `mode: "overlay"` for directory sources. Multiple
@@ -145,13 +172,23 @@ host base while keeping additions, changes, and deletions on their own writable
 layer. `readonly` rejects guest writes; `writable` writes directly to the host;
 `overlay` never writes back to its host source. SRT rejects overlay mode.
 
-For example, when pnpm's default store is under the session's XDG data directory:
+For example, mount a shared pnpm store under the session's XDG data directory:
 
 ```json
 {
-  "source": "/srv/agent-cache/pnpm",
-  "target": "~/.local/share/pnpm/store",
-  "mode": "overlay"
+  "sandbox": {
+    "backend": "microsandbox",
+    "env": {
+      "PNPM_CONFIG_STORE_DIR": "${HOME}/.local/share/pnpm/store"
+    },
+    "mounts": [
+      {
+        "source": "/srv/agent-cache/pnpm",
+        "target": "~/.local/share/pnpm/store",
+        "mode": "overlay"
+      }
+    ]
+  }
 }
 ```
 
@@ -159,8 +196,12 @@ The source must be an existing, populated host store directory. `~` in `source`
 uses the daemon's HOME; `~` in a microsandbox `target` uses the session HOME.
 Verify the effective target with `pnpm store path` in the actual session and
 project, since package-manager versions, environment, and filesystem layout
-affect the default. Mounting at that default avoids a separate store setting.
-This shares store contents only; each session still has its own `node_modules`.
+affect the default.
+An explicit store setting keeps pnpm from choosing a project-local store when
+the workspace and mounted store are on different filesystems. This shares store
+contents only; each session still has its own `node_modules`. Registry metadata
+is a separate cache, so a populated store alone does not guarantee a fresh
+session can install fully offline.
 
 The daemon mounts each base read-only at an internal path and allocates one
 session-owned ext4 disk for all its overlay upper/work directories. Before

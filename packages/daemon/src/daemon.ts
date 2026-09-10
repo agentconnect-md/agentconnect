@@ -3124,10 +3124,11 @@ export class Daemon {
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
-      // Same runtime-def env base the spawn path merges under the agent env, so
-      // the standing-context config-file description matches what materialized.
-      runtimeEnvFor: (runtimeId) =>
-        Object.fromEntries((this.runtimes[runtimeId]?.env ?? []).map((entry) => [entry.name, entry.value])),
+      // Match the spawn defaults so standing context describes the files actually materialized.
+      runtimeEnvFor: (agent) => ({
+        ...(this.agentRunsInSandbox(agent) ? this.cfg.sandbox.env : {}),
+        ...Object.fromEntries((this.runtimes[agent.runtime]?.env ?? []).map((entry) => [entry.name, entry.value]))
+      }),
       // Inject the agent's tool set. Memory/collaboration tools are universal, so a
       // session is registered even with no platform integration. The token binds this
       // ACP session to its exact channel/thread/delivery integration.
@@ -4672,7 +4673,10 @@ export class Daemon {
       memoryKindOf(agent) === 'native' && runInSandbox
         ? { ...agent, dir: microContext?.launch.runtimeHome ?? privateRuntimeHomeFor(agent.dir, opts.hostKey) }
         : agent
-    const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
+    const runtimeEnv = {
+      ...(runInSandbox ? cfg.sandbox.env : {}),
+      ...Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
+    }
     // On --k8s the runtime runs in the agent's pod, so the session gitconfig has to be COMPUTED in
     // pod coordinates and WRITTEN there: the file travels with the launch (SpawnRequest.files) and
     // is re-materialized on every spawn, because a resumed Sandbox is a new pod with an empty tmpfs.
@@ -4749,7 +4753,7 @@ export class Daemon {
       shimDirs.add(this.glabBinDir)
     }
     if (shimDirs.size > 0) {
-      env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? microContext?.launch.env.PATH ?? process.env.PATH ?? ''}`
+      env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? runtimeEnv.PATH ?? process.env.PATH ?? ''}`
     }
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // OS sandbox decision (issue #312). security.requireSandbox forces every agent
