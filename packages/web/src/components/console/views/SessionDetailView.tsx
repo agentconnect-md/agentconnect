@@ -2423,6 +2423,7 @@ export default function SessionDetailView() {
     isPgBusy,
     setPgImage,
     pgSend,
+    pgNotice,
     pgAttach,
     markSessionTarget,
     getPgQueue,
@@ -5286,7 +5287,16 @@ export default function SessionDetailView() {
                           // news the conversation has to deliver, or a flow that writes stops
                           // dead at its first write. The CP stays off the message path.
                           onDecided={(operation, decision, outcome) => {
-                            onPgSend(approvalNotice(operation, decision, outcome))
+                            // pgNotice, not the composer's send: an unsent draft and a
+                            // staged image belong to the owner, and deciding is not a send.
+                            if (isContinuable) markSessionTarget(session.id)
+                            pgNotice(
+                              session.id,
+                              session.agentId ?? '',
+                              approvalNotice(operation, decision, outcome),
+                              isWebchat ? session.channelId : undefined,
+                              isWebchat ? liveRoster : undefined
+                            )
                           }}
                         />
                       )}

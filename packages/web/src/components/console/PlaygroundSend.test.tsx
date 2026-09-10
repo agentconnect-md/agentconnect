@@ -51,6 +51,11 @@ class StubSocket {
 }
 
 let pgSend: ReturnType<typeof usePlayground>['pgSend']
+let pgNotice: ReturnType<typeof usePlayground>['pgNotice']
+let setPgInput: ReturnType<typeof usePlayground>['setPgInput']
+let getPgInput: ReturnType<typeof usePlayground>['getPgInput']
+let setPgImage: ReturnType<typeof usePlayground>['setPgImage']
+let getPgImage: ReturnType<typeof usePlayground>['getPgImage']
 let openPlayground: ReturnType<typeof usePlayground>['openPlayground']
 let getPgQueue: ReturnType<typeof usePlayground>['getPgQueue']
 let pgCancelQueued: ReturnType<typeof usePlayground>['pgCancelQueued']
@@ -61,6 +66,11 @@ let pgAnswerElicitation: ReturnType<typeof usePlayground>['pgAnswerElicitation']
 function Probe() {
   const pg = usePlayground()
   pgSend = pg.pgSend
+  pgNotice = pg.pgNotice
+  setPgInput = pg.setPgInput
+  getPgInput = pg.getPgInput
+  setPgImage = pg.setPgImage
+  getPgImage = pg.getPgImage
   openPlayground = pg.openPlayground
   getPgQueue = pg.getPgQueue
   pgCancelQueued = pg.pgCancelQueued
@@ -92,6 +102,39 @@ afterEach(() => {
   act(() => root.unmount())
   host.remove()
   vi.clearAllMocks()
+})
+
+// An approval decision is news the conversation must speak, but the composer is
+// the OWNER's: clicking Approve while a follow-up is half-typed (or an image is
+// staged) must not send their draft, and must not send their image with the notice.
+describe('pgNotice leaves the composer alone', () => {
+  const image = { name: 'shot.png', mimeType: 'image/png' as const, data: 'AAAA' }
+
+  it('keeps an unsent draft and a staged attachment exactly where they were', () => {
+    act(() => setPgInput('s1', 'half-typed follow-up'))
+    act(() => setPgImage('s1', image))
+    expect(pgNotice('s1', 'a1', '[approval] createAgent (operation op-1) is now completed.')).toBe(true)
+    expect(getPgInput('s1')).toBe('half-typed follow-up')
+    expect(getPgImage('s1')).toEqual(image)
+  })
+
+  it('sends nothing for an empty notice, and never pulls the staged image in', () => {
+    act(() => setPgImage('s1', image))
+    expect(pgNotice('s1', 'a1', '   ')).toBe(false)
+    expect(getPgImage('s1')).toEqual(image)
+  })
+
+  it('still queues behind a streaming turn, like any other input', () => {
+    act(() => {
+      expect(pgSend('s1', 'a1', 'hello')).toBe(true)
+    })
+    act(() => {
+      expect(pgNotice('s1', 'a1', '[approval] createAgent is now completed.')).toBe(true)
+    })
+    expect(getPgQueue('s1').map((q) => q.text)).toEqual(['[approval] createAgent is now completed.'])
+    // Queued as text only: the owner's staged image is not conscripted into it.
+    expect(getPgQueue('s1').map((q) => q.image)).toEqual([undefined])
+  })
 })
 
 describe('pgSend acceptance', () => {

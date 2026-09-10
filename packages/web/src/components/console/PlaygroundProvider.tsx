@@ -112,6 +112,18 @@ interface PlaygroundData {
      *  agent whose runtime has the skill instead of waking the roster to decline. */
     commandPick?: { agentId: string; name: string }
   ) => boolean
+  /** Send one line the CONVERSATION speaks rather than the person — today, an
+   *  approval decision the agent has to hear about because its own request only
+   *  received an operationId. Delivered exactly like a message (steer, queue or
+   *  send now) but with NO composer side effects: the owner's unsent draft and
+   *  staged attachment are theirs, and clicking Approve is not a send. */
+  pgNotice: (
+    id: string,
+    agentId: string,
+    text: string,
+    conversationId?: string,
+    participants?: Array<{ agentId: string; name: string; primary?: boolean }>
+  ) => boolean
   /** Reattach a webchat session after a cold page load: probe the conversation's
    *  daemons for a turn still streaming (the reload wiped the busy flag, lanes,
    *  and streamed reply) and, on a hit, recreate the lane, restore the typing
@@ -1861,21 +1873,19 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [mutateSteps, openSteerTurnLane, participantName, pushStep, requeueSteer]
   )
 
-  const pgSend = useCallback(
+  /** Deliver one turn's worth of input: steer the live turn, queue behind what is
+   *  already waiting, or send now. Shared by the composer and by a notice the
+   *  conversation itself has to speak, which owns no draft and no attachment. */
+  const submitTurn = useCallback(
     (
       id: string,
       agentForId: string,
-      textArg?: string,
+      text: string,
+      image: SessionImage | undefined,
       conversationId?: string,
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
-      imageArg?: SessionImage,
       commandPick?: { agentId: string; name: string }
     ) => {
-      const text = String(textArg ?? pgDrafts.current[id] ?? '').trim()
-      const image = imageArg ?? pgImageBy[id]
-      if (!text && !image) return false
-      setPgInput(id, '')
-      setPgImage(id)
       // Queue while a turn streams (Claude Code-style) — and also while older
       // queued messages are still waiting for the dispatcher, so a send landing
       // between a turn's end and the dispatch of the queue head stays FIFO.
@@ -1911,7 +1921,45 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       sendTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick)
       return true
     },
-    [pgImageBy, sendSteer, sendTurn, setPgImage, setPgInput]
+    [sendSteer, sendTurn]
+  )
+
+  const pgSend = useCallback(
+    (
+      id: string,
+      agentForId: string,
+      textArg?: string,
+      conversationId?: string,
+      knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
+      imageArg?: SessionImage,
+      commandPick?: { agentId: string; name: string }
+    ) => {
+      const text = String(textArg ?? pgDrafts.current[id] ?? '').trim()
+      const image = imageArg ?? pgImageBy[id]
+      if (!text && !image) return false
+      setPgInput(id, '')
+      setPgImage(id)
+      return submitTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick)
+    },
+    [pgImageBy, setPgImage, setPgInput, submitTurn]
+  )
+
+  /** A line the CONVERSATION speaks, not the person: an approval decision the agent
+   *  has to hear about. It must not touch the composer — a half-typed follow-up and
+   *  a staged image belong to the owner, and clicking Approve is not a send. */
+  const pgNotice = useCallback(
+    (
+      id: string,
+      agentForId: string,
+      text: string,
+      conversationId?: string,
+      knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>
+    ) => {
+      const trimmed = text.trim()
+      if (!trimmed) return false
+      return submitTurn(id, agentForId, trimmed, undefined, conversationId, knownParticipants)
+    },
+    [submitTurn]
   )
 
   // Dispatch the oldest queued message the moment its session's turn ends. The
@@ -2075,6 +2123,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      pgNotice,
       pgAttach,
       markSessionTarget,
       getPgQueue,
@@ -2103,6 +2152,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      pgNotice,
       pgAttach,
       markSessionTarget,
       getPgQueue,
