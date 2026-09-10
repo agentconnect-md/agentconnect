@@ -458,6 +458,28 @@ export const MCP_TOOLS: McpToolDef[] = [
       })
   },
   {
+    // The workspace write goes out under the CALLER's GitHub authority, so this is
+    // the preflight for it: without it the only way to learn that the caller lacks
+    // write is a 403 from createAgent, after the user has answered every question.
+    name: 'getGithubRepositoryAccess',
+    description:
+      'YOUR own effective GitHub permission on one repository (admin / write / read / none), and whether it is enough to read or to push. Check it before asking for a workspace at `write` access: that write is granted under your GitHub identity, not the App’s, so a caller with read gets a 403 at creation time. 404 means this deployment does not gate repository access per user, and nothing needs checking.',
+    schema: z
+      .object({
+        installationId: z
+          .string()
+          .min(1)
+          .describe('The installation’s `id` from listGithubInstallations (that row id, not GitHub’s numeric one)'),
+        owner: z.string().min(1).describe('Repository owner (the part before the slash)'),
+        repo: z.string().min(1).describe('Repository name (the part after the slash)')
+      })
+      .strict(),
+    call: (ctx, a) =>
+      ctx.get(
+        org(ctx, `/github/installations/${seg(a.installationId)}/repositories/${seg(a.owner)}/${seg(a.repo)}/access`)
+      )
+  },
+  {
     name: 'listBots',
     description: 'List the durable bot identities of the organization (metadata only — never token material).',
     schema: NoArgs,
