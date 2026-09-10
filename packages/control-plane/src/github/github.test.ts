@@ -734,6 +734,81 @@ describe('InstallationTokenService', () => {
   })
 })
 
+describe('githubRequest — read retries', () => {
+  /** A fetch stub that answers from `script` in order and records how often it was asked. */
+  function scripted(script: Array<() => Response>) {
+    let calls = 0
+    const fetchImpl: FetchLike = async () => {
+      const next = script[Math.min(calls, script.length - 1)]!
+      calls += 1
+      return next()
+    }
+    return { fetchImpl, calls: () => calls }
+  }
+  const ok = () => Response.json({ id: 1 })
+  const bad = (status: number) => () => Response.json({ message: 'upstream' }, { status })
+  const sleeps: number[] = []
+  const sleep = async (ms: number) => void sleeps.push(ms)
+  const get = (fetchImpl: FetchLike) =>
+    githubRequest<{ id: number }>('/repos/acme/infra', { auth: 't', fetchImpl, sleep })
+
+  it('repeats a GET that met a 5xx, immediately first and after a short wait second', async () => {
+    sleeps.length = 0
+    const { fetchImpl, calls } = scripted([bad(502), bad(503), ok])
+    expect(await get(fetchImpl)).toEqual({ id: 1 })
+    expect(calls()).toBe(3)
+    expect(sleeps).toHaveLength(2)
+    expect(sleeps[0]).toBe(0)
+    expect(sleeps[1]).toBeGreaterThanOrEqual(300)
+    expect(sleeps[1]).toBeLessThan(600)
+  })
+
+  it('repeats a GET whose connection dropped, then gives up with the retryable error', async () => {
+    const reset = () => {
+      throw new Error('fetch failed: ECONNRESET')
+    }
+    const recovered = scripted([reset, ok])
+    expect(await get(recovered.fetchImpl)).toEqual({ id: 1 })
+    expect(recovered.calls()).toBe(2)
+
+    const dead = scripted([reset])
+    await expect(get(dead.fetchImpl)).rejects.toMatchObject({ status: 0, code: 'INTERNAL', retryable: true })
+    expect(dead.calls()).toBe(3)
+  })
+
+  it('does not repeat a timed-out GET — the 10s budget was already spent once', async () => {
+    const { fetchImpl, calls } = scripted([
+      () => {
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+      }
+    ])
+    await expect(get(fetchImpl)).rejects.toMatchObject({ status: 0, retryable: true })
+    expect(calls()).toBe(1)
+  })
+
+  it('never repeats a write, a rate limit, or a denial', async () => {
+    const post = scripted([bad(502)])
+    await expect(
+      githubRequest('/repos/acme/infra/issues', {
+        auth: 't',
+        method: 'POST',
+        body: {},
+        fetchImpl: post.fetchImpl,
+        sleep
+      })
+    ).rejects.toMatchObject({ status: 502 })
+    expect(post.calls()).toBe(1)
+
+    const limited = scripted([bad(429)])
+    await expect(get(limited.fetchImpl)).rejects.toMatchObject({ code: 'RATE_LIMITED' })
+    expect(limited.calls()).toBe(1)
+
+    const denied = scripted([bad(404)])
+    await expect(get(denied.fetchImpl)).rejects.toMatchObject({ code: 'LEASE_DENIED' })
+    expect(denied.calls()).toBe(1)
+  })
+})
+
 describe('InstallationTokenService.mintLevels — per-capability levels (issue #457)', () => {
   const IID = 42n
 

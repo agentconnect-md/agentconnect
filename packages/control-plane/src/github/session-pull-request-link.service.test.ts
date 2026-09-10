@@ -182,10 +182,11 @@ describe('SessionPullRequestLinkService', () => {
   })
 
   it('keeps transient capture failures retryable and ignores a panel miss cache', async () => {
+    // The transport repeats a read twice on its own, so an outage the queue must see spans three answers.
     let calls = 0
     const fetch = vi.fn(async () => {
       calls += 1
-      if (calls <= 2) return new Response(JSON.stringify({ message: 'try later' }), { status: 503 })
+      if (calls <= 6) return new Response(JSON.stringify({ message: 'try later' }), { status: 503 })
       return new Response(JSON.stringify([pull(7, 'open')]), { status: 200 })
     })
     const service = new SessionPullRequestLinkService({
@@ -196,11 +197,23 @@ describe('SessionPullRequestLinkService', () => {
       latestSessionIdOfAgent: async () => SESSION.id,
       fetchImpl: fetch as unknown as FetchLike
     })
-
-    expect(await service.resolve(AGENT, SESSION)).toBeNull()
-    expect(await service.capture(AGENT, SESSION)).toEqual({ status: 'retry' })
-    expect(await service.capture(AGENT, SESSION)).toMatchObject({ status: 'resolved', link: { pullNumber: 7 } })
-    expect(fetch).toHaveBeenCalledTimes(3)
+    // The second transport retry sleeps on a real timer; run it forward rather than waiting it out.
+    vi.useFakeTimers()
+    const settled = async <T>(pending: Promise<T>): Promise<T> => {
+      await vi.runAllTimersAsync()
+      return pending
+    }
+    try {
+      expect(await settled(service.resolve(AGENT, SESSION))).toBeNull()
+      expect(await settled(service.capture(AGENT, SESSION))).toEqual({ status: 'retry' })
+      expect(await settled(service.capture(AGENT, SESSION))).toMatchObject({
+        status: 'resolved',
+        link: { pullNumber: 7 }
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(fetch).toHaveBeenCalledTimes(7)
   })
 
   it('classifies an empty head lookup as a definitive capture absence', async () => {

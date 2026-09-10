@@ -1,8 +1,9 @@
 /**
  * Thin GitHub REST wrapper — the only spot the CP talks to github.com (the
  * pattern set by `http/slack-identity.ts` for Slack). `fetch` is injectable so
- * integration tests stub the API without network; timeouts are short and every
- * error is typed for the WS handler's ErrorCode mapping.
+ * integration tests stub the API without network; timeouts are short, a read
+ * repeats a transient failure twice, and every error is typed for the WS
+ * handler's ErrorCode mapping.
  *
  * NEVER log request headers or token-bearing response bodies.
  */
@@ -60,6 +61,21 @@ export interface GithubRequestOpts {
    *  and a follow-up redeliver call 404s on a nonexistent id. The caller's type
    *  must declare those ids as `string`. */
   bigIdsAsStrings?: boolean
+  /** Between read retries; injectable so tests do not wait out real delays. */
+  sleep?: (ms: number) => Promise<void>
+}
+
+// A GET is the one verb safe to repeat blind; every write's retry belongs to its caller's fenced, marker-first loop.
+// The first retry is immediate (a 502 or a reset is usually one bad hop); the second waits 300–600ms.
+const READ_RETRY_DELAYS_MS = [0, 300]
+
+const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** Unreachable or 5xx on a read; a timeout already spent its 10s and would only spend it again. */
+function isTransientRead(err: unknown): boolean {
+  if (!(err instanceof GithubApiError)) return false
+  if (err.status >= 500) return true
+  return err.status === 0 && (err.cause as { name?: string } | undefined)?.name !== 'TimeoutError'
 }
 
 /** One page of a paginated GitHub list: the body plus the `rel="next"` cursor. */
@@ -88,6 +104,20 @@ export async function githubRequest<T>(path: string, opts: GithubRequestOpts): P
 /** {@link githubRequest} keeping the pagination cursor — for the list endpoints
  *  whose first page is not the whole answer. */
 export async function githubRequestPage<T>(path: string, opts: GithubRequestOpts): Promise<GithubPage<T>> {
+  const retries = (opts.method ?? 'GET') === 'GET' ? READ_RETRY_DELAYS_MS : []
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await githubRequestOnce<T>(path, opts)
+    } catch (err) {
+      // A rate limit names its own wait and stays the caller's; only the transient read class repeats here.
+      const delay = retries[attempt]
+      if (delay === undefined || !isTransientRead(err)) throw err
+      await (opts.sleep ?? realSleep)(delay + Math.floor(Math.random() * delay))
+    }
+  }
+}
+
+async function githubRequestOnce<T>(path: string, opts: GithubRequestOpts): Promise<GithubPage<T>> {
   const fetchImpl = opts.fetchImpl ?? (fetch as FetchLike)
   let res: Response
   try {
@@ -103,7 +133,9 @@ export async function githubRequestPage<T>(path: string, opts: GithubRequestOpts
       signal: AbortSignal.timeout(TIMEOUT_MS)
     })
   } catch (e) {
-    throw new GithubApiError(`github unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
+    const unreachable = new GithubApiError(`github unreachable: ${(e as Error).message}`, 0, 'INTERNAL', true)
+    unreachable.cause = e // the read-retry loop tells a timeout from a reset by it
+    throw unreachable
   }
   if (res.ok) {
     const text = await res.text()
