@@ -705,15 +705,25 @@ export class PermissionCoordinator {
   /** Say in the channel that a permission request offered more options than the card can show, so
    *  it was declined. The reader just lost a decision they could otherwise have made, and a
    *  silently cancelled tool call would read as the agent stalling. Deliberately points at NO
-   *  other surface: the console's Allow resolves to the first `allow_once`, so sending them there
-   *  would trade a truncated menu for an invisible one. Best effort — the decline never depends on
-   *  the notice landing. */
+   *  other surface: they all top out in the same place, and the console never sees the options at
+   *  all (#1969) — sending them there would trade a truncated menu for an invisible one. Best
+   *  effort: the decline never depends on the notice landing. */
   private noticePermissionOptionsUnrenderable(p: Pending, params: RequestPermissionRequest): void {
     const text =
       `:lock: The agent asked for permission to run ${permToolLabel(params)} with more options ` +
-      `than this chat can show (${params.options.length}), so it was declined. Nothing was allowed.`
+      `than any surface here can show (${params.options.length}), so it was declined. Nothing was allowed.`
     try {
-      this.host.enqueueApply(p, { kind: 'notice', text })
+      // Said on whichever surface this turn HAS, exactly as the editor path's own notice is: a
+      // webchat turn hears it on its stream, every chat turn in its channel.
+      if (p.webchat) {
+        p.webchat.sink.output({
+          conversationId: p.webchat.conversationId,
+          turnId: p.webchat.turnId,
+          index: p.webchat.index++,
+          event: { kind: 'message', text }
+        })
+      }
+      if ((!p.webchat || p.webchat.continuation) && p.conn) this.host.enqueueApply(p, { kind: 'notice', text })
     } catch (err) {
       this.host.log().warn(`permission option notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
     }
@@ -1399,24 +1409,26 @@ export class PermissionCoordinator {
       })
       return { outcome: { outcome: 'cancelled' } }
     }
-    const chatApprovalEligible =
+    // A list NO surface here can offer whole is not answered anywhere, and that is the honest end
+    // of it (#1811). This sits above the chat/editor split because every surface tops out in the
+    // same place: the in-channel card and the approval DM share one builder and one block, and the
+    // console never sees the options at all — its record carries none and its Allow resolves to
+    // the FIRST `allow_once` (#1969). Truncating reported a pick from a menu the reader could not
+    // see the end of as their decision on the full request; routing to a surface that shows fewer
+    // options still would only move the misreport. So nothing is decided, the agent is told, and
+    // the turn's own surface says why.
+    if (params.options.length > SLACK_PERMISSION_MAX_OPTIONS) {
+      this.permissionEvaluationDetails.set(evaluationParams, { reason: 'permission_options_unrenderable' })
+      this.noticePermissionOptionsUnrenderable(p, params)
+      return { outcome: { outcome: 'cancelled' } }
+    }
+    const chatApprovalEnabled =
       this.host.agents().get(agentId)?.allowRuntimeChangesInChat === true &&
       turnChromeFor(p.plan.platform).chatInputCards === true &&
       p.conn instanceof SlackConnection &&
       !p.plan.approvalSurfaceSuppressed &&
       params.options.length > 0
-    // A list the card cannot offer WHOLE is not answered anywhere, and that is the honest end of
-    // it (#1811). Truncating reported a pick from a menu the reader could not see the end of as
-    // their decision on the full request. The editor path is no stand-in either: its record
-    // carries no options and its Allow resolves to the FIRST `allow_once`, so routing there would
-    // take away a choice the truncated card at least offered. So: nothing is decided, the agent is
-    // told, and the chat says why.
-    if (chatApprovalEligible && params.options.length > SLACK_PERMISSION_MAX_OPTIONS) {
-      this.permissionEvaluationDetails.set(evaluationParams, { reason: 'permission_options_unrenderable' })
-      this.noticePermissionOptionsUnrenderable(p, params)
-      return { outcome: { outcome: 'cancelled' } }
-    }
-    if (chatApprovalEligible) {
+    if (chatApprovalEnabled) {
       return await this.awaitChatPermission(agentId, sessionId, params, evaluationParams, p)
     }
     // Default policy: hold the runtime request and surface only a neutral notice

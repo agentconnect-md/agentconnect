@@ -896,9 +896,37 @@ describe('a permission card offers every option or sends the request where they 
     // points at no other surface, because none of them can offer the list either.
     const notice = applied.filter((a) => a.kind === 'notice').map((a) => a.text as string)
     expect(notice).toHaveLength(1)
-    expect(notice[0]).toContain('more options than this chat can show (26)')
+    expect(notice[0]).toContain('more options than any surface here can show (26)')
     expect(notice[0]).toContain('Nothing was allowed')
     expect(notice[0]).not.toContain('console')
+  })
+
+  it('cancels it on the approval-DM path too, where the console shows fewer options still', async () => {
+    // Reached with in-channel approvals OFF (and by every webchat-origin turn): the DM shares the
+    // card's builder and its block, and the console behind it never sees the options at all
+    // (#1969) — so this list is unanswerable there too, and moving it would only move the
+    // misreport. Before the guard covered this path the DM offered the first five.
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    const applied: any[] = []
+    ;(daemon as any).enqueueApply = (_p: any, action: any) => void applied.push(action)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: false })
+    await expect((daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(26))).resolves.toEqual({
+      outcome: { outcome: 'cancelled' }
+    })
+    expect(posted).toEqual([])
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    expect(applied.filter((a) => a.kind === 'notice')).toHaveLength(1)
+  })
+
+  it('still holds a list every surface CAN offer on the editor path, unchanged', async () => {
+    // The guard is narrow: only an unofferable list changes behaviour. Four options — the ACP
+    // standard set — still take the editor path exactly as before.
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: false })
+    void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(4))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
   })
 })
 
