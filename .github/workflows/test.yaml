@@ -244,16 +244,22 @@ jobs:
   # rather than a win32-simulating unit test: the failures this catches are the ones only a real
   # Win32 filesystem and process model produce.
   #
+  # The scope gate sits on the steps, not on the job. A job skipped by `if:` publishes one check
+  # named for the unexpanded `${{ matrix.shard }}`, so on the PRs that skip it neither shard's
+  # context exists and neither can be a required check. Running the job always keeps both names on
+  # every PR; out of scope it is an empty job, hence the Linux runner — two Windows allocations that
+  # would do nothing are two the queue can give someone else.
+  #
   # Release callers pass `skip_windows` for the same reason they pass `skip_sandbox`: the PR already
   # ran it, and a 15-23 min Windows leg that can lose its own runner would strand a merged commit
-  # unpublished. `inputs` is empty on `pull_request`, so the unset input reads falsy and PRs run it.
+  # unpublished. Skipping `windows-scope` skips this job with it, so a release allocates no runner
+  # either way. `inputs` is empty on `pull_request`, so the unset input reads falsy and PRs run it.
   #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
     name: Unit Test (Windows) (${{ matrix.shard }})
     needs: windows-scope
-    if: ${{ needs.windows-scope.outputs.changed == 'true' }}
-    runs-on: windows-latest
+    runs-on: ${{ needs.windows-scope.outputs.changed == 'true' && 'windows-latest' || 'ubuntu-latest' }}
     # The daemon balances its halves by file size (`scripts/vitest-shard-sequencer.ts`); the CLI is 6 s, so it keeps Vitest's own split.
     strategy:
       fail-fast: false
@@ -269,13 +275,16 @@ jobs:
       # Before checkout: the runner's Git installs with `core.autocrlf=true`, which would rewrite
       # every fixture's line endings and diverge golden files from the Linux jobs' bytes.
       - name: Keep line endings as committed
+        if: ${{ needs.windows-scope.outputs.changed == 'true' }}
         run: git config --global core.autocrlf false
       - name: Checkout
+        if: ${{ needs.windows-scope.outputs.changed == 'true' }}
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6
+        if: ${{ needs.windows-scope.outputs.changed == 'true' }}
         with:
           # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
           # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
@@ -287,6 +296,7 @@ jobs:
           # jobs keep theirs — there the trade runs the other way.
           cache: false
       - uses: actions/setup-node@v7
+        if: ${{ needs.windows-scope.outputs.changed == 'true' }}
         with:
           node-version-file: .nvmrc
       # Only what this job runs, plus its workspace closure — 7 of the 14 projects. A full install
@@ -298,6 +308,7 @@ jobs:
       # The other jobs keep the full install: every Linux job shares one cache key, so a partial
       # store saved by one would cost the full-install jobs a re-download on every run.
       - name: Install
+        if: ${{ needs.windows-scope.outputs.changed == 'true' }}
         run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..." --filter "@agentconnect.md/cli..."
       # `os.tmpdir()` resolves onto C:, this runner's network-attached OS disk, while the workspace,
       # the pnpm store and `RUNNER_TEMP` already sit on D:, which is storage local to the host. The
@@ -306,6 +317,7 @@ jobs:
       # arm in one run: 1399 s of test time on C against 857 s on D, ranges disjoint. Node reads
       # TEMP first on win32; TMP is set too because other tooling reads that one.
       - name: Put the suite's temp root on the host-local disk
+        if: ${{ needs.windows-scope.outputs.changed == 'true' }}
         run: |
           echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
           echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
@@ -315,20 +327,21 @@ jobs:
       # One step per package, the second running even after the first fails: a recursive `pnpm run`
       # aborts its siblings on the first failure, which would hide one package behind the other.
       - name: Daemon unit tests
+        if: ${{ needs.windows-scope.outputs.changed == 'true' }}
         env:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: pnpm --filter @agentconnect.md/daemon test:unit --shard=${{ matrix.shard }}
       - name: CLI unit tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.windows-scope.outputs.changed == 'true' }}
         env:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: pnpm --filter @agentconnect.md/cli test:unit --shard=${{ matrix.shard }}
       - name: Merge Windows unit test summaries
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.windows-scope.outputs.changed == 'true' }}
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
@@ -338,7 +351,7 @@ jobs:
             'daemon=@agentconnect.md/daemon' \
             'cli=@agentconnect.md/cli'
       - name: Publish Windows unit test summary
-        if: ${{ !cancelled() && !inputs.defer_summaries }}
+        if: ${{ !cancelled() && !inputs.defer_summaries && needs.windows-scope.outputs.changed == 'true' }}
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
         run: cat "$CAPTURED_JOB_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
