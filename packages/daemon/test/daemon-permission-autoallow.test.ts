@@ -850,6 +850,44 @@ function slackPending(daemon: any): { pending: any; posted: any[][]; updated: an
   return { pending, posted, updated }
 }
 
+describe('a permission card offers every option or sends the request where they all fit (#1811)', () => {
+  /** A permission request offering `n` options — the ACP standard set is four, so this is the
+   *  latent case: a runtime that offers more. */
+  const permOptions = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ optionId: `o${i}`, name: `Opt ${i}`, kind: 'allow_once' }))
+
+  const permReq = (n: number) =>
+    ({
+      sessionId: 's1',
+      options: permOptions(n),
+      toolCall: { toolCallId: 'tc-1', title: 'Write perm-test.txt' }
+    }) as unknown as RequestPermissionRequest
+
+  it('cards a list the actions block holds, past the five it used to slice to', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(8))
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    // Eight buttons, not five. The reader sees the whole menu their pick is read against.
+    expect((posted[0]![1]! as any).elements).toHaveLength(8)
+    expect((daemon as any).permissions.pendingChatPermissions.size).toBe(1)
+  })
+
+  it('sends a list it cannot offer whole to the editor path instead of truncating it', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const { posted } = slackPending(daemon)
+    ;(daemon as any).agents.set('agent-1', { allowRuntimeChangesInChat: true })
+    // One past what the block holds. Truncating would report a pick from a menu the reader could
+    // not see the end of as their decision on the FULL request, with the agent unable to tell.
+    void (daemon as any).permissions.onAcpPermission('agent-1', 's1', permReq(26))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(1))
+    // No chat card at all, and the request is OPEN on the Agent page — not cancelled, not decided.
+    expect(posted).toEqual([])
+    expect((daemon as any).permissions.pendingChatPermissions.size).toBe(0)
+  })
+})
+
 describe('a Slack card offers every option or none', () => {
   // The seven-option enum of the issue: five buttons went out, the reader never saw the last two,
   // and whichever they picked came back as `accept` on the whole question.

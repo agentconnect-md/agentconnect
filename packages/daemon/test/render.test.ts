@@ -12,6 +12,7 @@ import {
   buildStatusBlocks,
   buildStatusModal,
   buildPermissionCard,
+  buildPermissionDmUnanswerableCard,
   buildPermissionResolvedCard,
   buildPermissionUpdateCard,
   buildElicitationCard,
@@ -1370,18 +1371,38 @@ describe('permission card', () => {
     expect(btns.map((b: any) => b.style)).toEqual(['primary', 'primary', 'danger'])
   })
 
-  it('caps at 5 buttons', () => {
-    const many = Array.from({ length: 8 }, (_, i) => ({ optionId: `o${i}`, name: `Opt ${i}`, kind: 'allow_once' }))
-    const [, actions] = buildPermissionCard('p', req({ options: many as any })) as any[]
-    expect(actions.elements).toHaveLength(5)
+  it('offers every option the actions block holds, and NO card at all past that', () => {
+    // The 5 this used to slice to was neither the block's limit nor a row's; Slack holds 25
+    // elements in one `actions` block and this card puts nothing else there.
+    const opts = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ optionId: `o${i}`, name: `Opt ${i}`, kind: 'allow_once' }))
+    const [, actions] = buildPermissionCard('p', req({ options: opts(8) as any })) as any[]
+    expect(actions.elements).toHaveLength(8)
+    expect((buildPermissionCard('p', req({ options: opts(25) as any })) as any[])[1].elements).toHaveLength(25)
+
+    // Past it there is no card, rather than a card built from part of the list: a pick from a
+    // menu the reader cannot see the end of would be reported as their decision on the whole
+    // request, and the agent could not tell (#1811).
+    expect(buildPermissionCard('p', req({ options: opts(26) as any }))).toBeNull()
+    expect(buildPermissionCard('p', req({ options: [] as any }))).toBeNull()
+  })
+
+  it('hands an approval DM the ask and the console when the list will not fit', () => {
+    const many = Array.from({ length: 26 }, (_, i) => ({ optionId: `o${i}`, name: `Opt ${i}`, kind: 'allow_once' }))
+    expect(buildPermissionCard('p', req({ options: many as any }))).toBeNull()
+    const card = buildPermissionDmUnanswerableCard(req({ options: many as any }))
+    // One section and nothing to press — which is the point: the request stays open on the
+    // editor path, and the DM says where every option can be seen.
+    expect(card).toHaveLength(1)
+    expect((card[0] as any).text.text).toContain('session console')
   })
 
   it('falls back to kind then toolCallId then a generic label when title is absent', () => {
-    const byKind = buildPermissionCard('p', req({ toolCall: { toolCallId: 'tc1', kind: 'execute' } as any }))
+    const byKind = buildPermissionCard('p', req({ toolCall: { toolCallId: 'tc1', kind: 'execute' } as any }))!
     expect((byKind[0] as any).text.text).toContain('execute')
-    const byId = buildPermissionCard('p', req({ toolCall: { toolCallId: 'tc9' } as any }))
+    const byId = buildPermissionCard('p', req({ toolCall: { toolCallId: 'tc9' } as any }))!
     expect((byId[0] as any).text.text).toContain('tc9')
-    const generic = buildPermissionCard('p', req({ toolCall: undefined as any }))
+    const generic = buildPermissionCard('p', req({ toolCall: undefined as any }))!
     expect((generic[0] as any).text.text).toContain('a tool call')
   })
 
@@ -1492,7 +1513,7 @@ describe('every card we build is one Slack would accept', () => {
           options: [{ optionId: 'a', name: 'Allow Once', kind: 'allow_once' }]
         } as any,
         'sess-target'
-      ),
+      )!,
       buildElicitationCard('elicit-1', req({ b: { type: 'boolean' } }), 'sess-target', SLACK_DM_ELICIT_SURFACE)!,
       // The DM stand-in for a question that surface has no control for — a card of one section,
       // which is exactly why it can carry no answer.

@@ -42,6 +42,7 @@ import {
   buildElicitDmUnanswerableCard,
   buildElicitationResolvedCard,
   buildPermissionCard,
+  buildPermissionDmUnanswerableCard,
   buildPermissionResolvedCard,
   clampTo,
   elicitCardShape,
@@ -61,6 +62,7 @@ import {
   multiSelectAccepts,
   numberAccepts,
   SLACK_DM_ELICIT_SURFACE,
+  SLACK_PERMISSION_MAX_OPTIONS,
   textAccepts,
   WEBCHAT_ELICIT_SURFACE
 } from '../slack/render.js'
@@ -662,12 +664,16 @@ export class PermissionCoordinator {
     if (!this.pendingChatPermissions.has(requestId)) return await result
     const blocks = buildPermissionCard(requestId, params, this.host.httpSlackSessionTarget(p))
     const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
-    const ts = await this.host.postCardSerialized(p, (slack) =>
-      (slack as SlackConnection).postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
-        ...(slackAgentIdentityOptions(p.plan) ?? {}),
-        chrome: true
-      })
-    )
+    // The gate above admits only a list this card can offer whole, so null is unreachable here —
+    // and treated as the card never posting rather than trusted to be impossible.
+    const ts = blocks
+      ? await this.host.postCardSerialized(p, (slack) =>
+          (slack as SlackConnection).postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
+            ...(slackAgentIdentityOptions(p.plan) ?? {}),
+            chrome: true
+          })
+        )
+      : undefined
     const live = this.pendingChatPermissions.get(requestId)
     if (!live) {
       if (ts) {
@@ -737,7 +743,7 @@ export class PermissionCoordinator {
     // untouched — it stays open on the editor path, which is where the DM points.
     const card =
       rec.kind === 'permission'
-        ? buildPermissionCard(requestId, rec.params, sessionTarget)
+        ? (buildPermissionCard(requestId, rec.params, sessionTarget) ?? buildPermissionDmUnanswerableCard(rec.params))
         : (buildElicitationCard(requestId, rec.params, sessionTarget, SLACK_DM_ELICIT_SURFACE) ??
           buildElicitDmUnanswerableCard(rec.params))
     const fromSlack = p.plan.platform === 'slack'
@@ -1380,7 +1386,13 @@ export class PermissionCoordinator {
       turnChromeFor(p.plan.platform).chatInputCards === true &&
       p.conn instanceof SlackConnection &&
       !p.plan.approvalSurfaceSuppressed &&
-      params.options.length > 0
+      params.options.length > 0 &&
+      // An upper bound beside the lower one: a list the card cannot offer WHOLE does not become a
+      // shorter card, it takes the editor path below — where the request stays open, every option
+      // is on the Agent page, and chat gets its neutral notice (#1811). Truncating instead would
+      // report a pick from a menu the reader could not see the end of as their decision on the
+      // full request.
+      params.options.length <= SLACK_PERMISSION_MAX_OPTIONS
     if (chatApprovalEnabled) {
       return await this.awaitChatPermission(agentId, sessionId, params, evaluationParams, p)
     }
