@@ -143,6 +143,51 @@ const AgentSlug = z
 
 const OutputMode = z.enum(['none', 'minimal', 'low', 'medium', 'high'])
 
+/** Mirrors the REST `AgentWorkspaceInputBody` (git-workspace-model.md §5): the
+ *  ADDRESS is the only repository input — provenance and the rename-proof numeric
+ *  id are derived server-side, never supplied here. Kept FLAT rather than a
+ *  discriminated union so every published inputSchema stays one `type: "object"`,
+ *  and shared by `createAgent` and `setAgentWorkspace`, which take one shape. */
+const workspaceShape = {
+  mode: z.enum(['scratch', 'git']).describe('"git" checks a repository out; "scratch" is an empty working directory'),
+  gitRepo: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Required for "git": a cloneable HTTPS or SSH address; bare `owner/repo` is github.com shorthand'),
+  gitBranch: z.string().min(1).optional().describe('Branch to check out; omit for the repository default'),
+  agentDir: z.string().min(1).optional().describe('Subdirectory of the repository to work in'),
+  worktree: z.boolean().optional().describe('true gives every session its own isolated worktree'),
+  access: z
+    .enum(['read', 'write'])
+    .optional()
+    .describe(
+      'read clones; write also lets the agent push and publish GitHub reviews and checks. Omit to take the highest tier the target can carry. The CALLER must hold the requested permission on the repository.'
+    )
+} as const
+
+const GIT_ONLY_KEYS = ['gitRepo', 'gitBranch', 'agentDir', 'worktree', 'access'] as const
+
+/** The mode gate the flat shape cannot express: an address is mandatory for a git
+ *  workspace and meaningless for a scratch one. */
+function checkWorkspaceMode(value: Record<string, unknown>, ctx: z.RefinementCtx): void {
+  if (value.mode === 'git') {
+    if (value.gitRepo === undefined) {
+      ctx.addIssue({ code: 'custom', message: 'gitRepo is required when mode is "git"', path: ['gitRepo'] })
+    }
+    return
+  }
+  for (const key of GIT_ONLY_KEYS) {
+    if (value[key] !== undefined) {
+      ctx.addIssue({ code: 'custom', message: `${key} applies to mode "git" only`, path: [key] })
+    }
+  }
+}
+
+/** The `family:action` patterns a github trigger subscribes to — validated
+ *  authoritatively by the route against the row's own family. */
+const GithubHookEvents = z.array(z.string().min(1)).min(1).max(20)
+
 export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'whoami',
@@ -338,6 +383,33 @@ export const MCP_TOOLS: McpToolDef[] = [
     call: (ctx) => ctx.get(org(ctx, '/integrations'))
   },
   {
+    name: 'listGithubInstallations',
+    description:
+      'The organization’s live installations of the deployment GitHub App — the account (owner) each covers, whether it grants all repositories or a selected set, and the pull-request/checks permissions its repositories carry. A repository is reachable ONLY through an installation listed here, so check this before pointing a workspace or a trigger at one. An empty list means the App is not installed yet; 404 means this deployment has no GitHub App at all.',
+    schema: NoArgs,
+    call: (ctx) => ctx.get(org(ctx, '/github/installations'))
+  },
+  {
+    name: 'listGithubRepositories',
+    description:
+      'The repositories one installation grants, each with the default branch a workspace should take unless the user names another. Paged (≤100 per page); private rows are filtered to those you can read on GitHub and `privateReposHidden` says some were withheld. GitHub offers no server-side search here — page and filter locally.',
+    schema: z
+      .object({
+        installationId: z
+          .string()
+          .min(1)
+          .describe('The installation’s `id` from listGithubInstallations (that row id, not GitHub’s numeric one)'),
+        page: z.number().int().positive().optional().describe('1-based page (default 1)'),
+        perPage: z.number().int().positive().max(100).optional().describe('Page size (default 100)')
+      })
+      .strict(),
+    call: (ctx, a) =>
+      ctx.get(org(ctx, `/github/installations/${seg(a.installationId)}/repositories`), {
+        page: a.page as number | undefined,
+        perPage: a.perPage as number | undefined
+      })
+  },
+  {
     name: 'listBots',
     description: 'List the durable bot identities of the organization (metadata only — never token material).',
     schema: NoArgs,
@@ -351,13 +423,14 @@ export const MCP_TOOLS: McpToolDef[] = [
   },
   {
     name: 'listAgentHooks',
-    description: 'List the inbound-webhook triggers defined for an agent.',
+    description:
+      'List the triggers defined for an agent — inbound webhooks and code-host (GitHub / GitLab) subscriptions alike, with the repository and subject family each covers.',
     schema: z.object({ agentId: z.string().min(1).describe('The agent id (from listAgents)') }).strict(),
     call: (ctx, a) => ctx.get(org(ctx, `/agents/${seg(a.agentId)}/hooks`))
   },
   {
     name: 'listHookRuns',
-    description: 'Delivery/run history for an inbound-webhook trigger, newest first (metadata only).',
+    description: 'Delivery/run history for one trigger, newest first (metadata only).',
     schema: z.object({ hookId: z.string().min(1).describe('The hook id (from listAgentHooks)') }).strict(),
     call: (ctx, a) => ctx.get(org(ctx, `/hooks/${seg(a.hookId)}/runs`))
   },
@@ -366,7 +439,7 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'createAgent',
     description:
-      'Create a new agent. Only core configuration is exposed here — workspace, env vars, secrets, memory and sharing are configured in the console.',
+      'Create a new agent, optionally with its Git workspace in the same call. Env vars, secrets, memory and sharing are configured in the console; triggers are their own tools (createGithubTrigger, upsertCron).',
     write: true,
     schema: z
       .object({
@@ -393,7 +466,15 @@ export const MCP_TOOLS: McpToolDef[] = [
           .describe(
             'Pin to ONE daemon from listDaemons, for placementKind "daemon". Only a daemon whose `pinnable` is true may be named: a managed pool member is replaceable and is refused. Omit to leave unplaced.'
           ),
-        pause: z.boolean().optional()
+        pause: z.boolean().optional(),
+        workspace: z
+          .object(workspaceShape)
+          .strict()
+          .superRefine(checkWorkspaceMode)
+          .optional()
+          .describe(
+            'Where the agent works. Omit for a scratch directory; pass mode "git" to check out a repository at creation instead of wiring it afterwards. An agent that reviews or edits one repository wants it here.'
+          )
       })
       .strict(),
     call: (ctx, a) => ctx.send('POST', org(ctx, '/agents'), bodyOf(a))
@@ -423,6 +504,35 @@ export const MCP_TOOLS: McpToolDef[] = [
       return sameUuid(ctx.delegatedAgentId, agentId)
         ? delegatedSelfMutationDenied()
         : ctx.send('PATCH', org(ctx, `/agents/${seg(agentId)}`), bodyOf(a, 'agentId'))
+    }
+  },
+  {
+    // §6.4 🔥 not because a row disappears but because the daemon-local checkout
+    // does: replacing the repository, the branch, or the mode discards whatever
+    // was only ever on that disk. A caller with a personal key executes straight
+    // through, so the confirmation has to live HERE, not in a delegated approval.
+    name: 'setAgentWorkspace',
+    description:
+      'Replace an agent’s workspace: point it at a Git repository (mode "git") or back to a scratch directory. Who vouches for the repository is derived from the address — a github.com repository inside one of the organization’s App installations or a managed GitLab project earns managed credentials, a public repository elsewhere is cloned anonymously and stays read-only. Changing the repository, branch or mode PERMANENTLY DISCARDS the daemon-local checkout, including uncommitted work, and active work is drained first; `confirm` must exactly equal the agent’s `name` (slug), so restate what is being replaced and get the user’s explicit approval before calling. Use this for an existing agent; a new one takes its workspace in createAgent, where there is nothing to lose yet.',
+    write: true,
+    destructive: true,
+    schema: z
+      .object({
+        agentId: CanonicalUuid.describe('The agent id (from listAgents)'),
+        confirm: z.string().min(1).describe('The agent’s exact `name` (slug) — a deliberate re-type, not a copy'),
+        ...workspaceShape
+      })
+      .strict()
+      .superRefine(checkWorkspaceMode),
+    call: async (ctx, a) => {
+      const agentId = canonicalUuid(a.agentId)
+      if (!agentId) return invalidAgentId()
+      if (sameUuid(ctx.delegatedAgentId, agentId)) return delegatedSelfMutationDenied()
+      const target = await ctx.get(org(ctx, `/agents/${seg(agentId)}`))
+      if (target.statusCode !== 200) return target
+      const name = (JSON.parse(target.body) as { name?: unknown }).name
+      if (typeof name !== 'string' || name !== a.confirm) return confirmMismatch('the agent’s `name` (slug)')
+      return ctx.send('PUT', org(ctx, `/agents/${seg(agentId)}/workspace`), bodyOf(a, 'agentId', 'confirm'))
     }
   },
   {
@@ -525,6 +635,63 @@ export const MCP_TOOLS: McpToolDef[] = [
       if (a.confirm !== expected) return confirmMismatch('the cron’s `name` (or its id when it has no name)')
       return ctx.send('DELETE', org(ctx, `/crons/${seg(a.cronId)}`))
     }
+  },
+  {
+    // Code-host triggers only: a `webhook` hook mints an ingress URL and an HMAC
+    // secret, and that capability-minting kind stays out of the catalog (§6.3).
+    name: 'createGithubTrigger',
+    description:
+      'Subscribe one GitHub repository to an agent — the trigger that starts a session when a pull request opens, an issue is filed, or a deployment reports. The repository must sit inside one of the organization’s App installations (listGithubInstallations). One trigger covers ONE subject `family`, so watching both pull requests and issues is two calls and a second trigger on the same family is a 409. Canonical event shapes: a family watched only from its opening is `["<family>:opened"]`; watched on every update it is `["<family>:*", "issue_comment:created"]` with `commentFamilies: ["<family>"]` (GitHub emits one issue_comment stream for both issue and PR threads, so a row that subscribes to it MUST scope it). Reviews and run reporting (`reviewPolicy`, `reportingMode`) exist on pull requests only and need the agent’s workspace repository at write access.',
+    write: true,
+    schema: z
+      .object({
+        agentId: z.string().uuid().describe('The agent this trigger fires (from listAgents)'),
+        name: z.string().trim().min(1).max(120).describe('Display name shown in the console'),
+        repoFullName: z
+          .string()
+          .trim()
+          .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"')
+          .describe('The repository, as owner/repo (from listGithubRepositories)'),
+        family: z
+          .enum(['pull_request', 'issues', 'push', 'deployment'])
+          .describe('The subject this trigger covers — immutable after creation'),
+        events: GithubHookEvents.describe('`family:action` patterns, or `family:*`; every one must belong to `family`'),
+        commentFamilies: z
+          .array(z.enum(['issues', 'pull_request']))
+          .max(2)
+          .optional()
+          .describe('Which thread family an `issue_comment` subscription belongs to — this row’s own family'),
+        labelFilter: z
+          .array(z.string().trim().min(1).max(100))
+          .max(20)
+          .optional()
+          .describe('Only run when the subject currently carries one of these labels'),
+        mentionOnly: z.boolean().optional().describe('Run only when the event’s text @-mentions this agent or the App'),
+        reviewPolicy: z
+          .enum(['off', 'comment', 'request_changes', 'full'])
+          .optional()
+          .describe(
+            'How the turn publishes on a pull request: off = an ordinary comment, comment/request_changes/full = a formal review with inline comments (pull_request family only)'
+          ),
+        reportingMode: z
+          .enum(['off', 'check', 'status'])
+          .optional()
+          .describe('Publish the run as a GitHub Check (`check`) or a commit status (`status`)'),
+        gateMode: z
+          .enum(['informational', 'required'])
+          .optional()
+          .describe('Whether a published Check merely reports (default) or gates the merge'),
+        enabled: z.boolean().optional(),
+        targetPlatform: z.enum(CP_PLATFORM_IDS).optional().describe('Mirror the turn into a chat conversation'),
+        targetChannel: z.string().min(1).optional(),
+        targetIntegrationId: z
+          .string()
+          .uuid()
+          .optional()
+          .describe('Integration to mirror through (from listIntegrations)')
+      })
+      .strict(),
+    call: (ctx, a) => ctx.send('POST', org(ctx, '/hooks'), { kind: 'github', ...bodyOf(a) })
   },
   {
     name: 'setChannelTrigger',

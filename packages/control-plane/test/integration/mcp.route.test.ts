@@ -45,8 +45,13 @@ afterEach(async () => {
   await Promise.all(opened.splice(0).map((a) => a.close()))
 })
 
-function build(configOverrides?: Parameters<typeof buildHttpApp>[1]): HttpApp {
-  const app = buildHttpApp(prisma, configOverrides)
+function build(
+  configOverrides?: Parameters<typeof buildHttpApp>[1],
+  liveness?: Parameters<typeof buildHttpApp>[2],
+  control?: Parameters<typeof buildHttpApp>[3],
+  depsOverrides?: Parameters<typeof buildHttpApp>[4]
+): HttpApp {
+  const app = buildHttpApp(prisma, configOverrides, liveness, control, depsOverrides)
   opened.push(app)
   return app
 }
@@ -705,10 +710,32 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
       runCron: { cronId: randomUUID() },
       deleteCron: { cronId: randomUUID(), confirm: 'x' },
       setChannelTrigger: { integrationId: randomUUID(), channelId: 'C1', trigger: 'any' },
-      removeIntegration: { integrationId: randomUUID(), confirm: 'x' }
+      removeIntegration: { integrationId: randomUUID(), confirm: 'x' },
+      setAgentWorkspace: { agentId: randomUUID(), confirm: 'x', mode: 'scratch' },
+      listGithubRepositories: { installationId: randomUUID() },
+      createGithubTrigger: {
+        agentId: randomUUID(),
+        name: 'reach',
+        repoFullName: 'acme/api',
+        family: 'pull_request',
+        events: ['pull_request:opened']
+      }
     }
+    // The GitHub read family exists only where the deployment configured an App,
+    // so those two tools are probed against an app that has one — otherwise their
+    // routes are legitimately absent and the drift guard would read as a rename.
+    const githubApp = build(undefined, undefined, undefined, {
+      github: {
+        slug: 'agentconnect-test',
+        installUrl: async () => 'https://github.com/apps/agentconnect-test/installations/new',
+        outdatedInstallations: async () => new Map()
+      } as never
+    })
+    const githubKey = await mintKeyAs(DEFAULT_OWNER_ID)
+    const GITHUB_GATED = new Set(['listGithubInstallations', 'listGithubRepositories'])
     for (const tool of MCP_TOOLS) {
-      const out = await callTool(app, key, tool.name, idArgs[tool.name])
+      const target = GITHUB_GATED.has(tool.name) ? { app: githubApp, key: githubKey } : { app, key }
+      const out = await callTool(target.app, target.key, tool.name, idArgs[tool.name])
       if (out.isError) {
         expect(toolText(out), `${tool.name} hit a route-level 404 (route drift)`).not.toContain('Route ')
       }

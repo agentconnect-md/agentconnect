@@ -516,8 +516,10 @@ per-request credential adds no security boundary.
 ## 9. Tool catalog and confirmation
 
 The delegated catalog reuses the existing curated AgentConnect MCP catalog. Existing
-exclusions for credential, membership, organization, access-control, bot, and hook
-writes remain.
+exclusions for credential, membership, organization, access-control, and bot writes
+remain, as does the exclusion of webhook-kind hook writes, which mint a persistent
+ingress URL and a signing secret. Code-host trigger creation and workspace writes
+are catalog entries with side effects and take the operation path like any other.
 
 Every catalog entry has a server-owned effect classification. Reads may execute in
 the initiating request. Any entry classified as having side effects must enter the
