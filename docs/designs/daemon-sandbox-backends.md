@@ -315,7 +315,8 @@ diagnostic. Custom credential-reference names are outside this first implementat
 
 OpenCode uses the same proxy and lifecycle for `type: api` records in its native
 `auth.json` (including XDG data-directory overrides). Each provider receives its
-own placeholder and allowed HTTPS hosts. Routing comes from standard host OpenCode
+own placeholder and allowed HTTPS hosts; providers sharing a key share one
+placeholder with their combined authorized hosts. Routing comes from standard host OpenCode
 config and `OPENCODE_CONFIG_CONTENT`, then provider defaults or OpenCode's cached model
 catalog. Unknown destinations require an explicit host `provider.options.baseURL`;
 guest workspace configuration cannot authorize a new destination. Standard

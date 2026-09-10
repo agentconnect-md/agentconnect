@@ -141,15 +141,24 @@ export function prepareOpenCodeSecrets(
     const name = `OPENCODE_API_${createHash('sha256').update(provider).digest('hex').slice(0, 16).toUpperCase()}`
     secrets.set(provider, { env: name, placeholder: `msb-secret-${name}`, host: hosts, readValue: () => key })
   }
+  const sharedKeys = new Map<string, MicrosandboxSecret>()
+  for (const [provider, secret] of secrets) {
+    const shared = sharedKeys.get(secret.readValue())
+    if (shared) {
+      shared.host = [...new Set([shared.host, secret.host].flat())].sort()
+      secrets.set(provider, shared)
+    } else sharedKeys.set(secret.readValue(), secret)
+  }
+  const bindings = [...sharedKeys.values()]
   const files = [{ source: authLocation.source, destination: authLocation.destination }, ...configFiles]
   const redact = (text: string): string => {
-    for (const secret of secrets.values()) text = text.replaceAll(secret.readValue(), secret.placeholder)
+    for (const secret of bindings) text = text.replaceAll(secret.readValue(), secret.placeholder)
     return text
   }
   const projectedConfig = (data: unknown): string =>
     JSON.stringify(data, (_key, value: unknown) => (typeof value === 'string' ? redact(value) : value))
   return {
-    secrets: [...secrets.values()],
+    secrets: bindings,
     sources: [...files.map(({ source }) => source), ...(needsCatalog ? [catalogPath] : [])],
     seedExclusions: files.map(({ destination }) => destination),
     preparePrivateHome(home) {

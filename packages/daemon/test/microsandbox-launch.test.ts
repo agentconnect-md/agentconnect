@@ -112,6 +112,40 @@ describe('prepareMicrosandboxLaunch', () => {
     )
   })
 
+  it.skipIf(process.platform !== 'linux')('preserves every authorized host when OpenCode providers share a key', () => {
+    const key = 'fixture-shared-"key\\value'
+    const { opts } = openCodeFixture({ east: { type: 'api', key }, west: { type: 'api', key } })
+    const config = {
+      provider: {
+        east: { options: { baseURL: 'https://east.example.test/v1', apiKey: key } },
+        west: { options: { baseURL: 'https://west.example.test/v1', apiKey: key } }
+      }
+    }
+    const source = join(opts.hostHome, '.config', 'opencode', 'opencode.json')
+    mkdirSync(dirname(source), { recursive: true })
+    writeFileSync(source, JSON.stringify(config))
+    const launch = prepareMicrosandboxLaunch({
+      ...opts,
+      explicitEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config), MODEL_TOKEN: key }
+    })
+    expect(launch.microsandbox.secrets).toHaveLength(1)
+    const secret = launch.microsandbox.secrets![0]!
+    expect(secret.host).toEqual(['east.example.test', 'west.example.test'])
+    const auth = JSON.parse(readFileSync(join(launch.runtimeHome!, '.local', 'share', 'opencode', 'auth.json'), 'utf8'))
+    const privateConfig = JSON.parse(
+      readFileSync(join(launch.runtimeHome!, '.config', 'opencode', 'opencode.json'), 'utf8')
+    )
+    const envConfig = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT!)
+    for (const provider of ['east', 'west']) {
+      expect(auth[provider].key).toBe(secret.placeholder)
+      expect(privateConfig.provider[provider].options.apiKey).toBe(secret.placeholder)
+      expect(envConfig.provider[provider].options.apiKey).toBe(secret.placeholder)
+    }
+    expect(launch.env.MODEL_TOKEN).toBe(secret.placeholder)
+    expect(secret.readValue()).toBe(key)
+    expect(JSON.parse(readFileSync(source, 'utf8'))).toEqual(config)
+  })
+
   it.skipIf(process.platform !== 'linux')(
     'uses trusted OpenCode JSONC routing and projects duplicate keys in config',
     () => {
