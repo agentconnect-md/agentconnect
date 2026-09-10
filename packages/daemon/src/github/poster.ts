@@ -68,11 +68,38 @@ const TRUNCATION_MARKER = '\n\n_(truncated — see the session transcript for th
 const LEGACY_BOUNDARIES = new Set(['agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'])
 const NO_FINAL_MESSAGE_ID = Symbol('no-final-message-id')
 const NO_COMMENTARY_MESSAGE_ID = Symbol('no-commentary-message-id')
-/** Three POSTs at most: the first, then one more after each ambiguous or rate-limited answer. */
+/** Three POSTs at most: the first, then one more after each definite non-effect (rate limited, never sent). */
 const MAX_POST_ATTEMPTS = 3
 /** The read-back lists comments from the publish start minus this much clock skew. */
 const READ_BACK_SKEW_MS = 60_000
 const READ_BACK_PAGE_SIZE = 100
+/** How long GitHub gets to finish committing a request whose answer was lost before the read-back looks. */
+const READ_BACK_SETTLE_MS = 1_000
+/** Failures before any byte left the client — DNS, refused, no route, connect timeout. */
+const NEVER_SENT_CODES = new Set([
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT'
+])
+
+const codeOf = (value: unknown): string | undefined => {
+  const code = (value as { code?: unknown } | undefined)?.code
+  return typeof code === 'string' ? code : undefined
+}
+
+/** True when the request provably never left: the one throw that is safe to repeat. */
+function neverSent(err: unknown): boolean {
+  const cause = (err as { cause?: unknown } | undefined)?.cause
+  const code = codeOf(cause) ?? codeOf(err)
+  if (code !== undefined) return NEVER_SENT_CODES.has(code)
+  // Happy Eyeballs reports one refusal per address inside an AggregateError.
+  const errors = (cause as { errors?: unknown } | undefined)?.errors
+  return Array.isArray(errors) && errors.length > 0 && errors.every((e) => NEVER_SENT_CODES.has(codeOf(e) ?? ''))
+}
+
 /** A rate limit that names no wait asks for at least a minute — never inside the publish deadline. */
 const RATE_LIMIT_DEFAULT_WAIT_MS = 60_000
 
@@ -492,10 +519,14 @@ export class GithubFinalPoster {
         })
       } catch (err) {
         if (this.abandoned) return
-        // The request may have landed before the connection died: never a blind second POST.
-        const landed = await this.readBack(token, base, marker, startedAt, `unreachable (${String(err)})`)
-        if (landed !== 'absent') return landed
-        continue
+        // A request that never left is the one throw safe to repeat; anything later may still be committing.
+        if (neverSent(err)) {
+          this.safeWarn(
+            `github poster: GitHub unreachable on ${this.repo}#${this.issueNumber} (${String(err)}); retrying`
+          )
+          continue
+        }
+        return await this.readBack(token, base, marker, startedAt, `unreachable (${String(err)})`)
       }
       if (res.ok) {
         // Comment ids are control metadata: retaining one lets the CP point the
@@ -544,10 +575,8 @@ export class GithubFinalPoster {
         continue
       }
       if (res.status >= 500) {
-        // A 5xx can arrive after the comment was stored; the marker decides, never a blind repeat.
-        const landed = await this.readBack(token, base, marker, startedAt, `${res.status}`)
-        if (landed !== 'absent') return landed
-        continue
+        // A 5xx can arrive after the comment was stored: the marker may recover it, nothing may repeat it.
+        return await this.readBack(token, base, marker, startedAt, `${res.status}`)
       }
       // Any other received 4xx is a definite rejection GitHub would repeat.
       throw new Error(`GitHub POST ${res.status}`)
@@ -559,14 +588,17 @@ export class GithubFinalPoster {
     return this.reviewThreadRootCommentId ? 'review_comment' : 'issue_comment'
   }
 
-  /** Whether this publish's marker is already on the thread — the answer to an ambiguous POST. */
+  /** Recover an ambiguous POST by its marker, or give up: a missing marker is never proof of no effect. */
   private async readBack(
     token: string,
     base: string,
     marker: string,
     startedAt: number,
     reason: string
-  ): Promise<GithubPublishedComment | undefined | 'absent'> {
+  ): Promise<GithubPublishedComment | undefined> {
+    // The original request may still be committing after its answer was lost; give it a moment first.
+    await this.pause(READ_BACK_SETTLE_MS)
+    if (this.abandoned) return undefined
     const listPath = this.reviewThreadRootCommentId
       ? `/repos/${this.repo}/pulls/${this.issueNumber}/comments`
       : `/repos/${this.repo}/issues/${this.issueNumber}/comments`
@@ -610,8 +642,10 @@ export class GithubFinalPoster {
       this.safeWarn(`github poster: create ${reason} on ${this.repo}#${this.issueNumber} but the comment landed`)
       return { kind: this.publishedKind(), commentId }
     }
-    this.safeWarn(`github poster: create ${reason} on ${this.repo}#${this.issueNumber}; nothing landed, retrying`)
-    return 'absent'
+    this.safeWarn(
+      `github poster: create ${reason} on ${this.repo}#${this.issueNumber}; no comment carries the marker yet, outcome unknown, not retrying`
+    )
+    return undefined
   }
 
   /** Wait on the injected scheduler so the deadline and the tests both see it. */

@@ -527,7 +527,12 @@ describe('GithubFinalPoster', () => {
     }) as typeof fetch
     const poster = make(fetchImpl, clock.sched)
 
-    await expect(poster.publish('final answer')).resolves.toEqual({
+    const published = poster.publish('final answer')
+    await flush()
+    // The read-back waits for GitHub to finish committing before it looks.
+    expect(calls.map((call) => call.method)).toEqual(['POST'])
+    clock.advance(1_000)
+    await expect(published).resolves.toEqual({
       kind: 'issue_comment',
       commentId: '90071992547409931'
     })
@@ -537,13 +542,16 @@ describe('GithubFinalPoster', () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('but the comment landed'))
   })
 
-  it('repeats a dropped POST once the read-back shows nothing landed, with the identical body', async () => {
+  it('repeats a POST that provably never left — a refused connection — with the identical body', async () => {
     const clock = fakeScheduler()
     const calls: Call[] = []
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       calls.push(callOf(url, init))
-      if (calls.length === 1) throw new TypeError('fetch failed')
-      if (init?.method === 'GET') return Response.json([])
+      if (calls.length === 1) {
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })
+        })
+      }
       return new Response('{"id":90071992547409931}', { status: 201 })
     }) as typeof fetch
     const poster = make(fetchImpl, clock.sched, { attribution })
@@ -553,8 +561,33 @@ describe('GithubFinalPoster', () => {
       commentId: '90071992547409931'
     })
 
-    expect(calls.map((call) => call.method)).toEqual(['POST', 'GET', 'POST'])
-    expect(calls[2]!.rawBody).toBe(calls[0]!.rawBody)
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'POST'])
+    expect(calls[1]!.rawBody).toBe(calls[0]!.rawBody)
+  })
+
+  it('keeps a dropped connection ambiguous: reads back after a settle and never repeats on an empty thread', async () => {
+    const clock = fakeScheduler()
+    const calls: Call[] = []
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push(callOf(url, init))
+      if (calls.length === 1) {
+        // The request left; GitHub may still be committing it when the socket died.
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+        })
+      }
+      return Response.json([])
+    }) as typeof fetch
+    const poster = make(fetchImpl, clock.sched)
+
+    const published = poster.publish('final answer')
+    await flush()
+    expect(calls.map((call) => call.method)).toEqual(['POST'])
+    clock.advance(1_000)
+    await expect(published).resolves.toBeUndefined()
+
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'GET'])
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('outcome unknown, not retrying'))
   })
 
   it('never repeats the POST when the read-back itself fails', async () => {
@@ -566,7 +599,10 @@ describe('GithubFinalPoster', () => {
     }) as typeof fetch
     const poster = make(fetchImpl, clock.sched)
 
-    await expect(poster.publish('final answer')).resolves.toBeUndefined()
+    const published = poster.publish('final answer')
+    await flush()
+    clock.advance(1_000)
+    await expect(published).resolves.toBeUndefined()
 
     expect(calls.map((call) => call.method)).toEqual(['POST', 'GET'])
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('outcome unknown'))
@@ -603,18 +639,20 @@ describe('GithubFinalPoster', () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('rate limited'))
   })
 
-  it('stops after three ambiguous POSTs when the thread stays empty', async () => {
+  it('caps the never-sent repeats at three POSTs', async () => {
     const clock = fakeScheduler()
     const calls: Call[] = []
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       calls.push(callOf(url, init))
-      return init?.method === 'POST' ? new Response('', { status: 502 }) : Response.json([])
+      throw new TypeError('fetch failed', {
+        cause: Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })
+      })
     }) as typeof fetch
     const poster = make(fetchImpl, clock.sched)
 
     await expect(poster.publish('final answer')).resolves.toBeUndefined()
 
-    expect(calls.map((call) => call.method)).toEqual(['POST', 'GET', 'POST', 'GET', 'POST', 'GET'])
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'POST', 'POST'])
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('failed 3 times'))
   })
 
