@@ -11,7 +11,7 @@ import { FakeClock } from '../../test/fakes/fake-clock.js'
 import type { AgentRepoAuthorizationRecord, GithubInstallationRecord } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
 import { githubAppBotIdentity, resolveGithubAppConfig, type GithubAppConfig } from './config.js'
-import { GithubApiError, githubRequest, mintAppJwt, type FetchLike } from './api.js'
+import { GithubApiError, githubRequest, githubRetryAfterMs, mintAppJwt, type FetchLike } from './api.js'
 import { InstallationTokenInvalidatedError, InstallationTokenService } from './installation-token.service.js'
 import { deriveInstallStateKey, mintInstallState, verifyInstallState, INSTALL_STATE_TTL_MS } from './install-state.js'
 import { GithubService } from './service.js'
@@ -731,6 +731,50 @@ describe('InstallationTokenService', () => {
         })
     )
     await expect(svc.mint(IID, 'acme/infra', 'write')).rejects.toMatchObject({ code: 'RATE_LIMITED', retryable: true })
+  })
+
+  it('maps a secondary-rate-limit 403 (retry-after, remaining still positive) to RATE_LIMITED with the wait', async () => {
+    const clock = new FakeClock(1_700_000_000_000)
+    const { svc } = service(
+      clock,
+      () =>
+        new Response(JSON.stringify({ message: 'You have exceeded a secondary rate limit.' }), {
+          status: 403,
+          headers: { 'retry-after': '45', 'x-ratelimit-remaining': '4990' }
+        })
+    )
+    await expect(svc.mint(IID, 'acme/infra', 'write')).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      retryable: true,
+      retryAfterMs: 45_000
+    })
+  })
+
+  it('carries x-ratelimit-reset so the caller can wait for the primary window from its own clock', async () => {
+    const clock = new FakeClock(1_700_000_000_000)
+    const resetSec = 1_700_000_900
+    const { svc } = service(
+      clock,
+      () =>
+        new Response(JSON.stringify({ message: 'API rate limit exceeded' }), {
+          status: 403,
+          headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(resetSec) }
+        })
+    )
+    const err = await svc.mint(IID, 'acme/infra', 'write').catch((e: unknown) => e)
+    expect(err).toMatchObject({ code: 'RATE_LIMITED', rateLimitResetAt: resetSec * 1000 })
+    expect(githubRetryAfterMs(err, clock.now())).toBe(900_000)
+  })
+
+  it('keeps a plain 403 without rate-limit signals as a non-retryable denial with no wait', async () => {
+    const clock = new FakeClock(1_700_000_000_000)
+    const { svc } = service(
+      clock,
+      () => new Response(JSON.stringify({ message: 'Resource not accessible by integration' }), { status: 403 })
+    )
+    const err = await svc.mint(IID, 'acme/infra', 'write').catch((e: unknown) => e)
+    expect(err).toMatchObject({ code: 'LEASE_DENIED', retryable: false })
+    expect(githubRetryAfterMs(err, clock.now())).toBeUndefined()
   })
 })
 
