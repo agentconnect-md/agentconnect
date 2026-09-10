@@ -119,6 +119,14 @@ describe('the dialog one reduction becomes', () => {
     expect(note.component.required).toBe(false)
   })
 
+  it("bounds a typed field by the modal's own box, which is under the card cap", () => {
+    // A Discord text input holds 4000 where a card accepts 4096, so the reduction offers 4000 —
+    // the surface's limit applied where every other surface limit is applied.
+    const ask = form({ note: { type: 'string', maxLength: 4096 } })
+    expect(field(build(ask)!, 0).component.max_length).toBe(4000)
+    expect(elicitTarget(ask, DISCORD_ELICIT_SURFACE)?.maxLength).toBe(4000)
+  })
+
   it('lets an optional select take nothing, and SAYS it is optional', () => {
     const modal = build(form(CHECKS))!
     expect(field(modal, 0).component.min_values).toBe(0)

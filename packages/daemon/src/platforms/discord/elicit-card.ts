@@ -113,6 +113,9 @@ const DISCORD_ELICIT_MARK: Record<ElicitCardMark, string> = {
  */
 export const DISCORD_ELICIT_SURFACE: ElicitSurface = {
   kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum', 'text', 'number']),
+  // A modal text input holds 4000, under the 4096 a card accepts, so the reduction bounds a typed
+  // field to what this dialog can actually take rather than the builder quietly trimming it.
+  textLimits: { maxLength: DISCORD_TEXT_INPUT_CAP },
   optionLimits: {
     enum: { maxOptions: DISCORD_ELICIT_MAX_BUTTONS },
     'multi-enum': { maxOptions: DISCORD_SELECT_MAX_OPTIONS }
@@ -228,6 +231,7 @@ export function buildDiscordElicitModal(
         // Single-line unless the schema asks for room: `maxLength` is the only signal we have.
         style: (target.maxLength ?? 0) > 200 ? 2 : 1,
         required: need,
+        // Already bounded by the reduction; the floor is kept as one, not as a second opinion.
         max_length: Math.min(target.maxLength ?? DISCORD_TEXT_INPUT_CAP, DISCORD_TEXT_INPUT_CAP),
         ...(target.defaultValue !== undefined ? { value: String(target.defaultValue) } : {})
       }

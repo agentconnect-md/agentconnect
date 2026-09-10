@@ -625,12 +625,22 @@ export type ElicitKind = 'enum' | 'boolean' | 'multi-enum' | 'text' | 'number'
  *  values ({@link elicitOptionToken}), so no surface refuses a long one (#1794). */
 export interface ElicitSurface {
   kinds: ReadonlySet<ElicitKind>
+  /** The longest typed answer this surface's own control accepts, when that is shorter than
+   *  {@link ELICIT_TEXT_CAP}. Declared here for the same reason an option limit is: a bound left
+   *  in a card builder is one the REDUCTION cannot see, so a field the surface could never take
+   *  whole is discovered at build time, when the only move left is to withhold the entire card.
+   *  Applied here instead, an unanswerable field is simply not a field — and `elicitForm` then
+   *  declines the ask only when the schema actually REQUIRED it. */
+  textLimits?: { maxLength?: number }
   /** Per-kind option limits, because one surface's controls do not all hold the same list: on
    *  Slack a row of buttons and a select menu do not take the same number of options. A kind
    *  absent from the map is unlimited — webchat renders them all. Widening one kind's limit
    *  never widens another's. */
   optionLimits?: Partial<Record<ElicitKind, { maxOptions?: number }>>
 }
+
+/** Slack's own cap on a `plain_text_input`'s `min_length`/`max_length`. */
+const SLACK_INPUT_LENGTH_CAP = 3000
 
 /** Slack allows 25 elements in one `actions` block and wraps them across lines, so the card can
  *  offer every option of a list this long and still keep its Dismiss button. A longer list is
@@ -686,6 +696,7 @@ export function elicitCardValues(target: ElicitTarget, carried: string | string[
  *  one number for the surface. */
 export const SLACK_ELICIT_SURFACE: ElicitSurface = {
   kinds: new Set<ElicitKind>(['enum', 'boolean', 'multi-enum', 'text', 'number']),
+  textLimits: { maxLength: SLACK_INPUT_LENGTH_CAP },
   optionLimits: {
     enum: { maxOptions: SLACK_ELICIT_MAX_BUTTONS },
     'multi-enum': { maxOptions: SLACK_SELECT_MAX_OPTIONS }
@@ -870,7 +881,7 @@ function itemBound(value: unknown): number | undefined {
 
 /** Build the `text` target for a bare string property, or null when a constraint makes it
  *  unrenderable: an unsupported `format`, a pattern we refuse to run, an impossible length. */
-function textTarget(name: string, prop: Record<string, unknown>): ElicitTarget | null {
+function textTarget(name: string, prop: Record<string, unknown>, surfaceMax?: number): ElicitTarget | null {
   const format = prop.format
   if (format !== undefined && !ELICIT_FORMATS.includes(format as ElicitFormat)) return null
   const pattern = prop.pattern
@@ -880,7 +891,10 @@ function textTarget(name: string, prop: Record<string, unknown>): ElicitTarget |
   // The ceiling this surface can actually enforce. A declared minimum above it is
   // unanswerable — dropping it would accept a short answer the schema forbids — and the
   // effective maximum is carried on the target so the browser bounds its own draft by it.
-  const ceiling = effectiveTextMax(typeof pattern === 'string' ? pattern : undefined)
+  // Three ceilings, and the lowest wins: what a card accepts at all, what a pattern is cheap over,
+  // and what THIS surface's own box holds — a Slack `plain_text_input` takes 3000 where the card
+  // cap is 4096, so the same ask is a narrower box there and a shorter one is no answer at all.
+  const ceiling = Math.min(effectiveTextMax(typeof pattern === 'string' ? pattern : undefined), surfaceMax ?? Infinity)
   const max = declared === undefined ? ceiling : Math.min(declared, ceiling)
   if (min !== undefined && min > max) return null
   if (max === 0) return null
@@ -1073,7 +1087,7 @@ function elicitCandidates(params: CreateElicitationRequest, surface: ElicitSurfa
         keep({ propName: name, kind: 'enum', options })
       // Free text is the string with nothing to choose from — an enumerated one is a pick,
       // and typing into it would let an unoffered value through.
-      if (!options.length && renderable.has('text')) keep(textTarget(name, prop))
+      if (!options.length && renderable.has('text')) keep(textTarget(name, prop, surface.textLimits?.maxLength))
     }
     if ((prop?.type === 'number' || prop?.type === 'integer') && renderable.has('number'))
       keep(numberTarget(name, prop))
@@ -1542,9 +1556,6 @@ export function buildElicitationResolvedCard(params: CreateElicitationRequest, d
 
 // ── Elicitation form cards (`input` blocks in the message, issue #1794's last Slack item) ────
 
-/** Slack's own cap on a `plain_text_input`'s `min_length`/`max_length`. */
-const SLACK_INPUT_LENGTH_CAP = 3000
-
 /** The longest list `checkboxes` and `radio_buttons` hold — past ten Slack answers `no more than
  *  10 items allowed`, so a longer list falls back to the select menu, which holds a hundred. */
 const SLACK_CHOICE_MAX_OPTIONS = 10
@@ -1566,8 +1577,11 @@ function elicitFormInputElement(target: ElicitTarget): Record<string, unknown> |
   const action_id = ELICIT_FORM_INPUT_ACTION as string
   if (target.kind === 'text') {
     const min = target.minLength
-    if (min !== undefined && min > SLACK_INPUT_LENGTH_CAP) return null
+    // Bounded by the REDUCTION, which drops a field whose own minimum is past this surface's box
+    // ({@link SLACK_ELICIT_SURFACE.textLimits}) — so a target that reaches here already fits, and
+    // this clamp is a floor under a bug rather than the place the limit is decided.
     const max = Math.min(target.maxLength ?? SLACK_INPUT_LENGTH_CAP, SLACK_INPUT_LENGTH_CAP)
+    if (min !== undefined && min > max) return null
     return {
       type: 'plain_text_input',
       action_id,
