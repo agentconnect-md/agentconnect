@@ -885,6 +885,12 @@ async function verifyGithubRepositoryIdentity(
   }
 }
 
+/** A ref the operator pinned to exact bytes: never re-read, never tracked. */
+export function isPinnedGitSkillRef(entry: AgentSkillEntry): boolean {
+  const ref = resolveBoundedGitSkillSource(entry).ref
+  return ref !== undefined && /^[0-9a-f]{40}$/i.test(ref)
+}
+
 export interface ResolveGitSkillCommitOptions {
   agentId: string
   useGitCredential: boolean

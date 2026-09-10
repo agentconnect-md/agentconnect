@@ -7,7 +7,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { GitSkillRefTracker, isPinnedGitSkillRef } from '../src/skills/git-skill-ref-tracker.js'
+import { GitSkillRefTracker } from '../src/skills/git-skill-ref-tracker.js'
+import { isPinnedGitSkillRef } from '../src/skills/skill-git-source.js'
 import { resolveTrackedCommits, retainedAfterTracking, gitResolutionDigest } from '../src/skills/install-skills.js'
 import type { GitSkillCommitResolution } from '../src/skills/skill-git-source.js'
 
@@ -124,14 +125,19 @@ describe('GitSkillRefTracker', () => {
 })
 
 describe('tracking-ref retention helpers', () => {
-  it('resolves each acquisition identity once and ignores a non-SHA answer', async () => {
-    const entries = [entry(), entry({ name: 'twin' }), entry({ name: 'branch', ref: 'main' })]
+  it('resolves each acquisition identity once, skips a pinned ref, and ignores a non-SHA answer', async () => {
+    const entries = [
+      entry(),
+      entry({ name: 'twin' }),
+      entry({ name: 'branch', ref: 'main' }),
+      entry({ name: 'exact', ref: MOVED })
+    ]
     let calls = 0
     const tracked = await resolveTrackedCommits(entries, async (candidate) => {
       calls += 1
       return (candidate as { ref?: string }).ref === 'main' ? 'not-a-sha' : FIRST
     })
-    // The first two share one repo/ref identity, so they share one resolution.
+    // The first two share one repo/ref identity; the pinned one is never asked.
     expect(calls).toBe(2)
     expect([...tracked.values()]).toEqual([FIRST])
     expect(tracked.get(gitResolutionDigest(entry()))).toBe(FIRST)

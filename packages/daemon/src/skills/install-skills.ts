@@ -31,7 +31,7 @@ import {
   type SkillFileReceipt
 } from './skill-install-ledger.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
-import { acquireGitSkillSource, resolveBoundedGitSkillSource } from './skill-git-source.js'
+import { acquireGitSkillSource, isPinnedGitSkillRef, resolveBoundedGitSkillSource } from './skill-git-source.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, snapshotLocalSkillSource } from './skill-source-snapshot.js'
 import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell, type SkillsCliCellResult } from './skills-cli-cell.js'
 
@@ -253,8 +253,6 @@ async function installSkillsLocked(
       })
     }
 
-    // Ask before fingerprinting: a moved tracking head has to change the plan, or
-    // the unchanged fast path below would answer with the previous commit's tree.
     const trackedCommits = await resolveTrackedCommits(gitSources, opts.resolveGitRef)
     const planFingerprint = fingerprint({
       schema: INSTALLER_SCHEMA,
@@ -262,7 +260,6 @@ async function installSkillsLocked(
       runtime: agent.runtime,
       agentId: agentId ?? '',
       git: gitSources,
-      tracked: [...trackedCommits].sort(([a], [b]) => a.localeCompare(b)),
       local: localPrepared.map(({ key, name, contentDigest }) => ({ key, name, contentDigest }))
     })
     const legacyState = await readLegacyOwned(cwd)
@@ -636,9 +633,10 @@ async function prepareSnapshotDestination(destination: string): Promise<void> {
   await fsp.chmod(parent, 0o700)
 }
 
-/** Resolve every tracking ref once, keyed by acquisition identity. A resolver
- * that answers null (offline, rate-limited, or a pinned ref) contributes
- * nothing, so the retained commit keeps serving. */
+/** Resolve every TRACKING ref once, keyed by acquisition identity. A pinned ref
+ * is never asked about, and a resolver that answers null (offline, rate-limited)
+ * contributes nothing — in both cases the retained commit keeps serving, so an
+ * unavailable answer can never rebuild a workspace. */
 export async function resolveTrackedCommits(
   entries: AgentSkillEntry[],
   resolve: ((entry: AgentSkillEntry) => Promise<string | null>) | undefined
@@ -646,6 +644,7 @@ export async function resolveTrackedCommits(
   const tracked = new Map<string, string>()
   if (!resolve) return tracked
   for (const entry of entries) {
+    if (isPinnedGitSkillRef(entry)) continue
     const digest = gitResolutionDigest(entry)
     if (tracked.has(digest)) continue
     const commit = await resolve(entry)
@@ -654,8 +653,10 @@ export async function resolveTrackedCommits(
   return tracked
 }
 
-/** Retention survives only where the tracked head still agrees with it: a moved
- * head must invalidate the plan, an unmoved one must keep the fast path. */
+/** Retention survives only where the tracked head still agrees with it. Dropping
+ * one leaves fewer retentions than acquisition identities, which is exactly the
+ * condition the unchanged fast path already refuses to run on — so a moved head
+ * reinstalls and an unmoved (or unknown) one keeps skipping. */
 export function retainedAfterTracking(
   retained: SkillGitResolution[],
   tracked: Map<string, string>
