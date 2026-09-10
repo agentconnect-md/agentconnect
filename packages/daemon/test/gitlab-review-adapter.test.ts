@@ -247,6 +247,8 @@ interface CpOptions {
   reportFails?: (result: CodeHostReviewResultReport) => Error | undefined
   /** Return an error to fail that authorization round trip after it was recorded. */
   authorizeFails?: (payload: CodeHostReviewAuthorize) => Error | undefined
+  /** Return an error to fail that permit request before any record exists for it. */
+  issueFails?: (payload: Extract<CodeHostReviewOpRequest, { op: 'issue' }>) => Error | undefined
 }
 
 function fakeCp(opts: CpOptions = {}) {
@@ -296,7 +298,9 @@ function fakeCp(opts: CpOptions = {}) {
           ? opts.operateFails?.(payload)
           : payload.op === 'return-unused'
             ? opts.returnUnusedFails?.()
-            : undefined
+            : payload.op === 'issue'
+              ? opts.issueFails?.(payload)
+              : undefined
       if (failure) throw failure
       if (payload.op === 'issue') {
         const recordId = `rec-${payload.kind}-${payload.ordinal}`
@@ -559,7 +563,7 @@ describe('GitLab review adapter — pre-effect rejections (§15)', () => {
       cp: { authorizeFails: () => (drops-- > 0 ? new WireError('INTERNAL', 'connection closed', true) : undefined) }
     })
     await expect(h.adapter.submit(KEY, request())).rejects.toThrow(
-      'formal review attempt paused: control plane unreachable (connection closed)'
+      'formal review not submitted: control plane unreachable (connection closed)'
     )
     // Nothing reached GitLab, and the attempt stays reserved rather than spent.
     expect(published(h.calls)).toHaveLength(0)
@@ -569,6 +573,28 @@ describe('GitLab review adapter — pre-effect rejections (§15)', () => {
     // The retry re-acquires the SAME attempt — the lease treats that as its own renewal, never a second fence.
     expect(h.authorizations.map((authorization) => authorization.attemptId)).toEqual([ATTEMPT, ATTEMPT])
     expect(published(h.calls)).toHaveLength(1)
+  })
+
+  it('keeps a socket drop after publication terminal — a replay would publish the review twice', async () => {
+    // The approval permit is requested only after the summary and inline comments are published and
+    // their publication record settled, so a replayed attempt would see nothing pending and publish again.
+    let dropped = false
+    const h = harness({
+      cp: {
+        issueFails: (payload) => {
+          if (payload.kind !== 'approval' || dropped) return undefined
+          dropped = true
+          return new WireError('INTERNAL', 'connection closed', true)
+        }
+      }
+    })
+    const approve = request({ event: 'APPROVE', verdict: 'pass' })
+    await expect(h.adapter.submit(KEY, approve)).rejects.toThrow('connection closed')
+    expect(published(h.calls)).toHaveLength(1)
+
+    await expect(h.adapter.submit(KEY, approve)).rejects.toThrow(/already has a formal review attempt/)
+    expect(published(h.calls)).toHaveLength(1)
+    expect(h.calls.filter((call) => call.path.endsWith('/approve'))).toHaveLength(0)
   })
 
   it('is unavailable outside an authorized active merge-request turn', async () => {

@@ -416,10 +416,10 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       turn.state = codeHostReviewPublicEffect(outcome.state) === 'absent' ? 'idle' : 'done'
       return outcome
     } catch (err) {
-      // A retryable wire failure lands before the op's provider request; replaying the same attempt is the restart path.
-      if (err instanceof WireError && err.retryable) {
+      // A retryable wire failure before the lease exists wrote nothing; once it does, a replay could publish twice.
+      if (err instanceof WireError && err.retryable && turn.hook.codeReview?.fence === undefined) {
         turn.state = 'idle'
-        throw new Error(`formal review attempt paused: control plane unreachable (${err.message}); call the tool again`)
+        throw new Error(`formal review not submitted: control plane unreachable (${err.message}); call the tool again`)
       }
       // A withheld result leaves the turn open and the attempt pre-terminal, by design.
       turn.state = err instanceof ResultWithheld ? 'idle' : 'done'
