@@ -511,9 +511,11 @@ async function reconcileSkillBundlesLocked(
       if (!candidateRoots.has(canonical)) preserved.add(canonical)
     }
     const kept = prior.filter((entry) => preserved.has(entry.relativeRoot))
-    const planned = prior.filter((entry) => !preserved.has(entry.relativeRoot))
     const paths = [
-      ...new Set([...planned.map((entry) => entry.relativeRoot), ...candidates.map((entry) => entry.relativeRoot)])
+      ...new Set([
+        ...prior.filter((entry) => !preserved.has(entry.relativeRoot)).map((entry) => entry.relativeRoot),
+        ...candidates.map((entry) => entry.relativeRoot)
+      ])
     ].sort()
     const operations: JournalOperation[] = paths.map((relativeRoot) => ({
       relativeRoot,
@@ -532,11 +534,13 @@ async function reconcileSkillBundlesLocked(
       cliVersion: options.cliVersion,
       ...(options.publicationOperationId ? { publicationOperationId: options.publicationOperationId } : {}),
       // A pruned set is no longer what that fingerprint described, and recovery cannot see the prune: leaving it would let the next plan skip the reinstall.
-      ...(ledger?.fingerprint && planned.length + kept.length === recorded.length
-        ? { priorFingerprint: ledger.fingerprint }
-        : {}),
+      ...(ledger?.fingerprint && prior.length === recorded.length ? { priorFingerprint: ledger.fingerprint } : {}),
       priorGitResolutions: ledger?.gitResolutions ?? [],
-      prior: planned,
+      // Preserved receipts stay in the durable recovery state — recovery rebuilds
+      // `owned` from here, and a crash mid-publication must not orphan the files
+      // this run deliberately left alone. Their paths carry no operation, which is
+      // what keeps them untouched.
+      prior,
       pending: candidates.map(stripCandidate),
       operations
     }
@@ -627,7 +631,7 @@ async function reconcileSkillBundlesLocked(
       fingerprint: conflicts.length > 0 ? `conflicts:${randomUUID()}` : options.fingerprint,
       owned,
       gitResolutions,
-      cleanup: { operations, prior: planned }
+      cleanup: { operations, prior }
     }
     await writeSkillLedger(location.file, readyWithCleanup, options.publicationKey)
     recoveryLedger = readyWithCleanup

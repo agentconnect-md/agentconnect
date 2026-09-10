@@ -333,7 +333,7 @@ async function installSkillsLocked(
     // bundles are kept: the source is still desired and the bytes on disk are its
     // own older commit, so removing them would cost the agent a working skill for
     // an upstream outage. See §6.3.
-    const unresolvedDefinitions = new Set<string>()
+    const unresolvedScopes = new Set<string>()
     for (const [index, entry] of gitSources.entries()) {
       const definitionDigest = gitResolutionDigest(entry)
       try {
@@ -380,7 +380,7 @@ async function installSkillsLocked(
         const message = error instanceof Error ? error.message : 'unknown Git skill source error'
         result.errors.push({ source: entry.name, error: message })
         opts.warn?.(`skills: Git source ${entry.name} unavailable (${message}); keeping what is installed`)
-        unresolvedDefinitions.add(definitionDigest)
+        unresolvedScopes.add(gitSourceScope(definitionDigest, entry.skills))
         // The ledger must keep naming the commit that is ON DISK — the tracking
         // check may have dropped this retention to force the (now failed) rebuild.
         const installed = installedByDefinition.get(definitionDigest)
@@ -395,11 +395,11 @@ async function installSkillsLocked(
     // Owned bundles belonging to a source this run could not build: still desired,
     // so the publication leaves them exactly as they are instead of removing them.
     const preserveOwned =
-      unresolvedDefinitions.size > 0
+      unresolvedScopes.size > 0
         ? (ledger?.owned ?? [])
             .filter((bundle) => {
-              const digest = gitSourceKeyDefinition(bundle.sourceKey)
-              return digest !== undefined && unresolvedDefinitions.has(digest)
+              const scope = gitSourceKeyScope(bundle.sourceKey)
+              return scope !== undefined && unresolvedScopes.has(scope)
             })
             .map((bundle) => bundle.relativeRoot)
         : []
@@ -503,7 +503,7 @@ async function installSkillsLocked(
       cliVersion: PINNED_SKILLS_CLI_VERSION,
       // A run that could not build every desired source has not met its plan, so
       // its fingerprint must not let the next preparation skip the retry.
-      fingerprint: unresolvedDefinitions.size > 0 ? `failed:${randomUUID()}` : installedFingerprint,
+      fingerprint: unresolvedScopes.size > 0 ? `failed:${randomUUID()}` : installedFingerprint,
       candidates,
       ...(preserveOwned.length > 0 ? { preserveOwned } : {}),
       gitResolutions: nextGitResolutions,
@@ -755,12 +755,21 @@ export function currentGitResolutions(
     .sort((a, b) => a.definitionDigest.localeCompare(b.definitionDigest))
 }
 
-/** The acquisition identity inside a published git bundle's source key
+/** One ENTRY's publication scope: its acquisition identity plus its selections.
+ * Sibling entries share a repository and ref — the acquisition identity excludes
+ * the subdirectory and the selection set — so identity alone would preserve a
+ * sibling that was just disabled. */
+export function gitSourceScope(definitionDigest: string, skills: readonly string[]): string {
+  return `${definitionDigest}|${skills.length > 0 ? fingerprint([...skills]) : ''}`
+}
+
+/** The same scope read back out of a published bundle's source key
  * (`git:<index>:<definitionDigest>:<commit>[:selections]`), or undefined for a
  * bundle that did not come from a git source. */
-export function gitSourceKeyDefinition(sourceKey: string): string | undefined {
+export function gitSourceKeyScope(sourceKey: string): string | undefined {
   const parts = sourceKey.split(':')
-  return parts[0] === 'git' && parts.length >= 4 ? parts[2] : undefined
+  if (parts[0] !== 'git' || parts.length < 4) return undefined
+  return `${parts[2]}|${parts[4] ?? ''}`
 }
 
 export function gitResolutionDigest(entry: AgentSkillEntry): string {

@@ -195,6 +195,42 @@ describe('a failed install keeps what is still desired', () => {
     expect(await installedRoots()).toEqual(['git-skill'])
   })
 
+  // Sibling entries share a repository and ref, so the acquisition identity alone
+  // would preserve a sibling that was just disabled — leaving explicitly disabled
+  // executable content active, which is the one thing the old clearing pass got right.
+  it('preserves the failed entry, not every entry sharing its acquisition identity', async () => {
+    const oneDir = await writeSkill(join(sources, 'catalog'), 'one', 'one')
+    const twoDir = await writeSkill(join(sources, 'catalog'), 'two', 'two')
+    const cli = fakeCli(() => '.runtime')
+    const one = { name: 'one', source: 'acme/skills', githubRepoId: '42', subDir: 'catalog/one', skills: ['one'] }
+    const two = { name: 'two', source: 'acme/skills', githubRepoId: '42', subDir: 'catalog/two', skills: ['two'] }
+    const acquireGit = async (candidate: { subDir?: string; ref?: string }) => ({
+      sourceDir: candidate.subDir === 'catalog/one' ? oneDir : twoDir,
+      resolvedCommit: candidate.ref ?? FIRST
+    })
+
+    await installSkills({ id: 'a1', runtime: 'claude', skills: [one, two] } as never, cwd, {
+      stateDir,
+      acquireGit,
+      resolveGitRef: async () => FIRST,
+      runCli: cli.run
+    })
+    expect(await installedRoots()).toEqual(['one', 'two'])
+
+    // `two` is disabled and `one` cannot be acquired: only `one` is preserved.
+    const pruned = await installSkills({ id: 'a1', runtime: 'claude', skills: [one] } as never, cwd, {
+      stateDir,
+      acquireGit: async () => {
+        throw new Error('unavailable')
+      },
+      resolveGitRef: async () => FIRST,
+      runCli: cli.run
+    })
+    expect(pruned.errors.map((e) => e.source)).toEqual(['one'])
+    expect(await installedRoots()).toEqual(['one'])
+    expect(pruned.removed).toEqual(['.runtime/skills/two'])
+  })
+
   it('clears on failure only when nothing is desired at all — that is a complete statement', async () => {
     const gitDir = await writeSkill(sources, 'git-skill', 'git')
     const cli = fakeCli(() => '.runtime')
