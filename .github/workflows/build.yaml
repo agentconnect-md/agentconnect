@@ -346,8 +346,8 @@ jobs:
 
       # The Dockerfile's verify target: the runtime-table probe stage, cached by the base pin and the declared
       # roster, plus the static assertions run inside the built image as its user. Nothing is loaded or pushed.
-      # Exported to the cache AFTER the Build step above because `mode=max` replaces the cache manifest with the
-      # exporting build's graph, and this graph is a superset of the image's; the Push step only reads the cache.
+      # The probe stages are not in the image's graph, and a `mode=max` export replaces the whole cache manifest,
+      # so the Build step above would drop them from the shared ref; they live under their own `-verify` ref.
       - name: Verify the runtime sandbox image inside the build
         if: startsWith(matrix.verify, 'runtime-sandbox')
         uses: docker/build-push-action@v7
@@ -359,8 +359,10 @@ jobs:
           outputs: type=cacheonly
           build-args: ${{ matrix.build_args }}
           build-contexts: ${{ matrix.build_contexts }}
-          cache-from: type=registry,ref=${{ matrix.cache_ref }}
-          cache-to: type=registry,ref=${{ matrix.cache_ref }},mode=max
+          cache-from: |
+            type=registry,ref=${{ matrix.cache_ref }}
+            type=registry,ref=${{ matrix.cache_ref }}-verify
+          cache-to: type=registry,ref=${{ matrix.cache_ref }}-verify,mode=max
 
       # What only the image CONFIG can answer, against the LOADED image: a non-root USER, tini as the
       # ENTRYPOINT, and the browser path ENV pointing at the baked Chrome.
