@@ -263,11 +263,12 @@ export class MicrosandboxManager {
       .quietLogs()
     for (const secret of secrets) {
       builder.secret((entry) =>
-        entry
-          .env(secret.env)
-          .value(secret.readValue())
-          .placeholder(secret.placeholder)
-          .allowHost(secret.host)
+        [secret.host]
+          .flat()
+          .reduce(
+            (entry, host) => entry.allowHost(host),
+            entry.env(secret.env).value(secret.readValue()).placeholder(secret.placeholder)
+          )
           .injectBasicAuth(false)
           .injectQuery(false)
           .injectBody(false)
@@ -469,7 +470,7 @@ export class MicrosandboxManager {
         binding.configHash !== hash(stableJson(existing.config()))
       ) {
         throw new Error(
-          `microsandbox environment ${environment.id} has missing or changed persisted configuration. Restore the previous configuration and DeepSeek credentials, or start a new session. Existing session data has been retained.`
+          `microsandbox environment ${environment.id} has missing or changed persisted configuration. Restore the previous configuration and runtime credentials, or start a new session. Existing session data has been retained.`
         )
       }
       if (existing.status === 'running' || existing.status === 'starting' || existing.status === 'draining') {

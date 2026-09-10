@@ -6,13 +6,33 @@ import { isDeepSeekRuntime } from '../runtimes/model-provider-config.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES, parseDshCredentialDocument } from '../runtimes/runtime-seeded-credentials.js'
+import { prepareOpenCodeSecrets } from './opencode-secrets.js'
 
 export interface MicrosandboxSecret {
   env: string
   placeholder: string
-  host: string
+  host: string | string[]
   // The value stays host-side and cannot enter serialized launch metadata.
   readValue: () => string
+}
+
+export interface MicrosandboxCredentials {
+  secrets: MicrosandboxSecret[]
+  sources: string[]
+  seedExclusions: string[]
+  preparePrivateHome: (home: string) => void
+}
+
+export function prepareMicrosandboxCredentials(
+  runtimeId: string,
+  runtime: RuntimeDef | undefined,
+  hostEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string> = {}
+): MicrosandboxCredentials | undefined {
+  return (
+    prepareDeepSeekSecret(runtimeId, runtime, hostEnv, explicitEnv) ??
+    prepareOpenCodeSecrets(runtimeId, runtime, hostEnv, explicitEnv)
+  )
 }
 
 export function prepareDeepSeekSecret(
@@ -69,7 +89,7 @@ export function prepareDeepSeekSecret(
     throw new Error('DeepSeek launch refused: credential protection requires https://api.deepseek.com')
   }
   return {
-    secret,
+    secrets: [secret],
     sources: files.map((file) => file.source),
     seedExclusions: [...new Set(files.map((file) => file.destination))],
     preparePrivateHome(home: string) {

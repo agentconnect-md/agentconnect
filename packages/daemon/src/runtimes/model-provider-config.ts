@@ -25,9 +25,12 @@ export interface ModelProviderTarget {
   opencodeProvider?: string
 }
 
-function isOpenCodeRuntime(runtimeId: string, runtime: RuntimeDef): boolean {
+export function isOpenCodeRuntime(runtimeId: string, runtime?: RuntimeDef): boolean {
   if (runtimeId === 'opencode') return true
-  return [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])opencode(?:@[^\/]*)?$/.test(part.toLowerCase()))
+  return (
+    !!runtime &&
+    [runtime.command, ...runtime.args].some((part) => /(?:^|[\/@])opencode(?:@[^\/]*)?$/.test(part.toLowerCase()))
+  )
 }
 
 // The bin, not the package: `dsh-acp` is the single bin of @openma/deepseek-harness-acp.

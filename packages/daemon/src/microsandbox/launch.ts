@@ -26,7 +26,7 @@ import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
 import { MICROSANDBOX_SOCKET_BRIDGES, MICROSANDBOX_TUNNEL_PATHS } from './socket-bridge.js'
 import { OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT } from './overlay.js'
-import { prepareDeepSeekSecret, type MicrosandboxSecret } from './secrets.js'
+import { prepareMicrosandboxCredentials, type MicrosandboxSecret } from './secrets.js'
 
 const IMAGE_PATH = '/opt/agentconnect/pathbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 const HOST_IPC_ENV = [
@@ -112,22 +112,22 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   for (const path of [...writable, ...configDirs]) mkdirSync(path, { recursive: true, mode: 0o700 })
 
   const credentials = prepareSharedRuntimeCredentials({ runtimeId: opts.runtimeId, runtime: opts.runtime, hostEnv })
-  const deepseek = prepareDeepSeekSecret(opts.runtimeId, opts.runtime, hostEnv, opts.explicitEnv)
+  const protectedCredentials = prepareMicrosandboxCredentials(opts.runtimeId, opts.runtime, hostEnv, opts.explicitEnv)
   if (
-    deepseek &&
+    protectedCredentials &&
     [...TLS_TRUST_ENV, 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'].some((name) =>
       (opts.explicitEnv?.[name] ?? hostEnv[name])?.trim()
     )
   ) {
     throw new Error(
-      'DeepSeek launch refused: microsandbox credential protection does not yet support custom TLS trust bundles; use SRT for this configuration'
+      'Runtime launch refused: microsandbox credential protection does not yet support custom TLS trust bundles; use SRT for this configuration'
     )
   }
   runtimeHome = prepareRuntimeHome(opts.runtimeId, scopeDir, hostEnv, runtimeHome, [
     ...(credentials?.seedExclusions ?? []),
-    ...(deepseek?.seedExclusions ?? [])
+    ...(protectedCredentials?.seedExclusions ?? [])
   ])
-  deepseek?.preparePrivateHome(runtimeHome)
+  protectedCredentials?.preparePrivateHome(runtimeHome)
   credentials?.preparePrivateHome(runtimeHome)
   writable.push(...(credentials?.writablePaths ?? []))
   const readRoots = (opts.trustedRuntimeReadRoots ?? []).filter((path) => {
@@ -195,11 +195,14 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   }
 
   const env = { ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, hostEnv), ...credentials?.env }
-  if (deepseek?.secret) {
-    const secret = deepseek.secret
-    for (const [name, value] of Object.entries(env))
-      env[name] = value.replaceAll(secret.readValue(), secret.placeholder)
-    env[secret.env] = secret.placeholder
+  if (protectedCredentials) {
+    for (const secret of protectedCredentials.secrets) {
+      for (const [name, value] of Object.entries(env))
+        env[name] = value
+          .replaceAll(secret.readValue(), secret.placeholder)
+          .replaceAll(JSON.stringify(secret.readValue()).slice(1, -1), secret.placeholder)
+      env[secret.env] = secret.placeholder
+    }
     env.NODE_EXTRA_CA_CERTS = '/.msb/tls/ca.pem'
     env.SSL_CERT_FILE = env.REQUESTS_CA_BUNDLE = env.CURL_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt'
   }
@@ -228,15 +231,15 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 })
   env[GITCRED_SOCKET_ENV] = MICROSANDBOX_TUNNEL_PATHS.gitcred
   const mounts = [...automatic, ...configured]
-  const deepseekSources = deepseek?.sources.map((path) => canonicalPath(path, hostEnv)) ?? []
-  if (mounts.some(({ source }) => deepseekSources.some((path) => contains(source, path)))) {
-    throw new Error('sandbox.mounts would expose a host DeepSeek credential file')
+  const protectedSourcesForLaunch = protectedCredentials?.sources.map((path) => canonicalPath(path, hostEnv)) ?? []
+  if (mounts.some(({ source }) => protectedSourcesForLaunch.some((path) => contains(source, path)))) {
+    throw new Error('sandbox.mounts would expose a protected host credential source')
   }
   const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
   const claudeSettings = claudeRuntime ? prepareClaudeProtectedSettings(scopeDir, env) : undefined
-  const privateStateTargets = deepseek
-    ? deepseek.seedExclusions.map((path) => join(runtimeHome, path))
+  const privateStateTargets = protectedCredentials
+    ? protectedCredentials.seedExclusions.map((path) => join(runtimeHome, path))
     : credentialProfile === 'codex'
       ? [join(runtimeHome, '.codex')]
       : claudeRuntime
@@ -301,7 +304,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
     microsandbox: {
       mounts,
       workspaceRoot: scopeDir,
-      ...(deepseek?.secret ? { secrets: [deepseek.secret] } : {})
+      ...(protectedCredentials ? { secrets: protectedCredentials.secrets } : {})
     }
   }
 }

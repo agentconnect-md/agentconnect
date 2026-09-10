@@ -301,7 +301,7 @@ descriptors also prepare the corresponding files in the private runtime HOME.
 Keyring-only logins are not detected by file discovery. Credential formats without
 a shared discovery descriptor retain the runtime probe's authentication result.
 
-### DeepSeek credential protection
+### API key protection
 
 For DeepSeek Harness in microsandbox, the daemon resolves the standard
 `DEEPSEEK_API_KEY` reference using the existing credential-file descriptors and
@@ -312,6 +312,23 @@ receives only a placeholder; microsandbox's built-in TLS proxy substitutes the k
 in request headers for `https://api.deepseek.com`. A non-default base URL in the
 launch environment, host environment or DSH `.env` refuses the launch with a
 diagnostic. Custom credential-reference names are outside this first implementation.
+
+OpenCode uses the same proxy and lifecycle for `type: api` records in its native
+`auth.json` (including XDG data-directory overrides). Each provider receives its
+own placeholder and allowed HTTPS hosts. Routing comes from standard host OpenCode
+config and `OPENCODE_CONFIG_CONTENT`, then provider defaults or OpenCode's cached model
+catalog. Unknown destinations require an explicit host `provider.options.baseURL`;
+guest workspace configuration cannot authorize a new destination. Standard
+providers do not require a warm model cache. Copies of the protected keys in
+seeded OpenCode config files are replaced too; the host files are unchanged.
+This path protects keys discovered in native `auth.json`; it does not discover
+additional keys stored only in other configuration sources.
+
+OpenCode OAuth records remain unchanged in the mounted private credential file
+and are readable by the guest. Guest-refreshed OAuth records survive subsequent
+preparation. OAuth-only launches retain the existing seeding path, without proxy
+secrets or additional credential shielding. This change does not add an OAuth
+proxy or refresh coordinator.
 
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
@@ -332,14 +349,14 @@ The proxy does not redact provider responses, so the allowed provider remains a
 trusted recipient of the key.
 
 The pinned SDK installs the proxy CA into the guest system bundle before execution.
-Combining it with operator-provided trust bundles is deferred: protected DeepSeek
+Combining it with operator-provided trust bundles is deferred: protected runtime
 launches explicitly refuse custom `TLS_TRUST_ENV`, `REQUESTS_CA_BUNDLE` or
 `CURL_CA_BUNDLE` settings instead of silently replacing them. Use SRT for those
 configurations until custom trust is supported.
 
 New VMs receive the proxy configuration at creation. Retained protected VMs reload
 the host key before starting again; already-running VMs keep their current key
-until stopped and resumed. Previously unprotected DeepSeek VMs fail configuration
+until stopped and resumed. Previously unprotected VMs fail configuration
 reuse and retain their data: start a new session instead of treating an old disk
 that may contain credentials as protected. If a protected VM's credential later
 disappears, restore that credential and retry or start a new session; no VM or

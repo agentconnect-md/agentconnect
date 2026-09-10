@@ -54,6 +54,134 @@ afterEach(() => {
 })
 
 describe('prepareMicrosandboxLaunch', () => {
+  function openCodeFixture(auth: Record<string, unknown>) {
+    const opts = { ...fixture(), runtimeId: 'opencode' }
+    const source = join(opts.hostHome, '.local', 'share', 'opencode', 'auth.json')
+    mkdirSync(dirname(source), { recursive: true })
+    writeFileSync(source, JSON.stringify(auth))
+    return { opts, source }
+  }
+
+  it.skipIf(process.platform !== 'linux')(
+    'projects OpenCode API keys and preserves OAuth records across refresh and key rotation',
+    () => {
+      const oauth = {
+        type: 'oauth',
+        access: 'fixture-oauth-access',
+        refresh: 'fixture-refresh',
+        expires: 1,
+        accountId: 'fixture-account'
+      }
+      const auth = {
+        opencode: { type: 'api', key: 'fixture-zen-key', metadata: { duplicate: 'fixture-zen-key' } },
+        deepseek: { type: 'api', key: 'fixture-deepseek-key' },
+        openai: oauth
+      }
+      const { opts, source } = openCodeFixture(auth)
+      const launch = prepareMicrosandboxLaunch(opts)
+      const path = join(launch.runtimeHome!, '.local', 'share', 'opencode', 'auth.json')
+      const privateAuth = JSON.parse(readFileSync(path, 'utf8'))
+      expect(privateAuth.openai).toEqual(oauth)
+      expect(privateAuth.opencode.key).toMatch(/^msb-secret-OPENCODE_API_/)
+      expect(privateAuth.deepseek.key).not.toBe(privateAuth.opencode.key)
+      expect(launch.microsandbox.secrets!.map(({ host }) => host)).toEqual([['api.deepseek.com'], ['opencode.ai']])
+      for (const key of [auth.opencode.key, auth.deepseek.key]) {
+        expect(readFileSync(path, 'utf8')).not.toContain(key)
+        expect(JSON.stringify(launch)).not.toContain(key)
+      }
+      expect(JSON.parse(readFileSync(source, 'utf8'))).toEqual(auth)
+      privateAuth.openai.access = 'fixture-refreshed-access'
+      writeFileSync(path, JSON.stringify(privateAuth))
+      writeFileSync(source, JSON.stringify({ ...auth, opencode: { type: 'api', key: 'fixture-rotated-key' } }))
+      const resumed = prepareMicrosandboxLaunch(opts)
+      expect(resumed.microsandbox.secrets!.find(({ host }) => host.includes('opencode.ai'))!.readValue()).toBe(
+        'fixture-rotated-key'
+      )
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(privateAuth)
+    }
+  )
+
+  it('keeps OAuth-only OpenCode launches on the existing unprotected credential path', () => {
+    const oauth = { type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: 1 }
+    const { opts, source } = openCodeFixture({ openai: oauth })
+    const launch = prepareMicrosandboxLaunch(opts)
+    expect(launch.microsandbox.secrets).toBeUndefined()
+    expect(launch.env.NODE_EXTRA_CA_CERTS).toBeUndefined()
+    expect(readFileSync(join(launch.runtimeHome!, '.local', 'share', 'opencode', 'auth.json'), 'utf8')).toBe(
+      readFileSync(source, 'utf8')
+    )
+  })
+
+  it.skipIf(process.platform !== 'linux')(
+    'uses trusted OpenCode JSONC routing and projects duplicate keys in config',
+    () => {
+      const key = 'fixture-custom-provider-key'
+      const { opts, source } = openCodeFixture({ custom: { type: 'api', key } })
+      const config = join(opts.hostHome, '.config', 'opencode', 'opencode.jsonc')
+      mkdirSync(dirname(config), { recursive: true })
+      writeFileSync(
+        config,
+        `// host config\n${JSON.stringify({ provider: { custom: { options: { baseURL: 'https://gateway.example.test/v1', apiKey: key } } } })}`
+      )
+      const launch = prepareMicrosandboxLaunch(opts)
+      expect(launch.microsandbox.secrets![0]!.host).toEqual(['gateway.example.test'])
+      const guestConfig = readFileSync(join(launch.runtimeHome!, '.config', 'opencode', 'opencode.jsonc'), 'utf8')
+      expect(guestConfig).not.toContain(key)
+      expect(guestConfig).toContain(launch.microsandbox.secrets![0]!.placeholder)
+      for (const file of [source, config]) {
+        expect(() =>
+          prepareMicrosandboxLaunch({ ...opts, mounts: [{ source: file, target: '/config-copy', mode: 'readonly' }] })
+        ).toThrow(/protected host (path|credential source)/)
+      }
+      expect(readFileSync(config, 'utf8')).toContain(key)
+    }
+  )
+
+  it.skipIf(process.platform !== 'linux')(
+    'uses the OpenCode catalog for additional providers and preserves SRT seeding',
+    () => {
+      const key = 'fixture-catalog-provider-key'
+      const { opts } = openCodeFixture({ catalog: { type: 'api', key } })
+      const catalog = join(opts.hostHome, '.cache', 'opencode', 'models.json')
+      mkdirSync(dirname(catalog), { recursive: true })
+      writeFileSync(
+        catalog,
+        JSON.stringify({
+          catalog: {
+            api: 'https://api.example.test/v1',
+            models: { alternate: { provider: { api: 'https://alternate.example.test/v1' } } }
+          }
+        })
+      )
+      const launch = prepareMicrosandboxLaunch(opts)
+      expect(launch.microsandbox.secrets![0]!.host).toEqual(['alternate.example.test', 'api.example.test'])
+      const srtScope = join(opts.root, 'srt')
+      const srtCwd = join(srtScope, 'workspace')
+      mkdirSync(srtCwd, { recursive: true })
+      const srt = prepareRuntimeLaunch({
+        ...opts,
+        scopeDir: srtScope,
+        cwd: srtCwd,
+        runInSandbox: true,
+        daemonRoot: opts.root,
+        sandboxMechanism: 'bwrap'
+      })
+      expect(readFileSync(join(srt.runtimeHome!, '.local', 'share', 'opencode', 'auth.json'), 'utf8')).toContain(key)
+    }
+  )
+
+  it('refuses unresolved or non-HTTPS OpenCode endpoints without including API keys in errors', () => {
+    const { opts } = openCodeFixture({ custom: { type: 'api', key: 'fixture-secret-not-in-error' } })
+    for (const baseURL of [undefined, 'http://gateway.example.test/v1']) {
+      expect(() =>
+        prepareMicrosandboxLaunch({
+          ...opts,
+          explicitEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { custom: { options: { baseURL } } } }) }
+        })
+      ).toThrow('OpenCode launch refused')
+    }
+  })
+
   it.skipIf(process.platform !== 'linux').each(['legacy', 'versioned', 'dotenv'])(
     'protects %s DeepSeek keys while preserving other private provider credentials',
     (format) => {
