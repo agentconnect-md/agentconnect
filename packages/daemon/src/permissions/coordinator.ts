@@ -2055,7 +2055,8 @@ export class PermissionCoordinator {
   }
 
   /**
-   * Answer a card from its DIALOG's submission — {@link openElicitEditor}'s other half.
+   * Answer a card from a submitted set of NAMED VALUES — a Discord dialog's fields, a Feishu
+   * form's controls. {@link openElicitEditor}'s other half where the surface has a dialog at all.
    *
    * A dialog's controls report their arity by SHAPE: a list-taking control answers with a list
    * even where it was configured to take one. The FIELD is what says which it was, so a
@@ -2069,7 +2070,7 @@ export class PermissionCoordinator {
     actor?: InteractionActor
   }): Promise<void> {
     const rec = this.pendingElicits.get(a.requestId)
-    if (!rec || rec.surface !== 'chat' || !rec.facet.editor) return
+    if (!rec || rec.surface !== 'chat') return
     const form = this.cardForm(rec)
     if (!form) return
     const fields: Record<string, string | string[]> = {}

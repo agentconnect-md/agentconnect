@@ -714,6 +714,8 @@ export class ConnectionReconciler {
           this.host.onInbound(msg, this.host.srcIntegrationIds(conn))
         },
         onStatusAction: (a) => this.host.handleStatusAction(a),
+        onElicitChoice: (a) => this.host.handleElicitCardTap(a),
+        onElicitSubmit: (a) => this.host.submitElicitEditor(a),
         log: this.log
       })
       try {

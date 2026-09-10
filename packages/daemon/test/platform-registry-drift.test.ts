@@ -71,11 +71,11 @@ describe('daemon platform registry (audit F16)', () => {
 
   it('pins which surfaces declare an elicitation card, and lets no other origin inherit one', () => {
     // #1794 gap 6: the facet is OPTIONAL, so this is not a drift check against `platformIds()` —
-    // it is the pin on today's true set. Feishu is the fourth implementer and gets its own
-    // change; adding one must fail here first.
+    // it is the pin on today's true set, which is now EVERY chat platform. A new one arriving
+    // without a card must fail here rather than silently declining every ask.
     const daemon = new Daemon({ root: bareRoot() }) as any
     const withCards = platformIds().filter((id: string) => daemon.turnSurfaces.exact(id)?.elicitCards)
-    expect(withCards).toEqual(['slack', 'telegram', 'discord'])
+    expect(withCards).toEqual(['slack', 'telegram', 'discord', 'feishu'])
     // Exact lookup, so a webchat / hook / dream turn rendering through the core (Slack) surface
     // does not inherit Slack's cards — webchat's own card is core-owned.
     for (const origin of ['webchat', 'hook', 'dream']) {

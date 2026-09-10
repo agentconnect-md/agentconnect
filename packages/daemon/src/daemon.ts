@@ -470,6 +470,7 @@ import {
 } from './platforms/telegram/turn-output.js'
 import { parseTelegramElicit, telegramElicitCards } from './platforms/telegram/elicit-card.js'
 import { discordElicitCards } from './platforms/discord/elicit-card.js'
+import { feishuElicitCards } from './platforms/feishu/elicit-card.js'
 import { applyDiscordAction as applyDiscordActionExternal } from './platforms/discord/turn-output.js'
 import { applyFeishuAction as applyFeishuActionExternal, type FeishuTurnState } from './platforms/feishu/turn-output.js'
 import { LinearConnection } from './platforms/linear/connection.js'
@@ -1027,6 +1028,7 @@ export class Daemon {
       })
       registry.register({
         platform: 'feishu',
+        elicitCards: feishuElicitCards,
         createConverger: (ctx) => new FeishuConverger(ctx.mode as never, ctx.resolveFileLink),
         initialTurnState: (): FeishuTurnState => ({}),
         apply: (p, action) => this.applyFeishuAction(p, action as FeishuAction),

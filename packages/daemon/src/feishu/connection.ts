@@ -9,6 +9,7 @@ import type {
   WireFeishuCardActionResponse,
   WireFeishuCardActionTarget
 } from '@agentconnect.md/protocol'
+import { parseFeishuElicit } from '../platforms/feishu/elicit-card.js'
 import type { Agent } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
@@ -116,6 +117,14 @@ export interface FeishuDeps {
   /** Fired when a user selects Cancel run from an active reply card's overflow menu.
    * The connection resolves the callback message id to the turn's local session key. */
   onStatusAction?: (a: { kind: 'cancel'; sessionKey: string; actor?: InteractionActor }) => void
+  /** A tapped elicitation option, or Dismiss (`token` null) — §7.3. */
+  onElicitChoice?: (a: { requestId: string; token: string | null; actor?: InteractionActor }) => Promise<void>
+  /** One submitted elicitation form: every named control's value, as CardKit reports them. */
+  onElicitSubmit?: (a: {
+    requestId: string
+    values: Record<string, string | string[]>
+    actor?: InteractionActor
+  }) => Promise<void>
   newTraceId: () => string
   log?: Logger
   /** Min spacing (ms) between outbound writes (serialized send-queue). Tests pass 0. */
@@ -760,6 +769,11 @@ export class FeishuConnection implements PlatformConnection {
     const channel = event.context?.open_chat_id ?? event.open_chat_id
     const actorId = event.operator?.open_id ?? event.operator?.user_id
     const value = asRecord(event.action?.value)
+    // An elicitation card carries the request in its OWN payload, so it needs no message-to-session
+    // registry and is matched before the session-control card below. Anyone who can see it may
+    // answer it, which is the same rule its buttons follow on every other surface.
+    const elicit = parseFeishuElicit(value)
+    if (elicit) return this.onElicitCardAction(event, elicit, actorId)
     if (
       !messageId ||
       !actorId ||
@@ -778,6 +792,32 @@ export class FeishuConnection implements PlatformConnection {
       actor: { userId: actorId }
     })
     return { toast: { type: 'info', content: 'Cancellation requested.' } }
+  }
+
+  /** Route one interaction on an elicitation card: a Confirm carries every named control at once
+   *  in `form_value`, and every other control is a whole answer in itself. The toast is what tells
+   *  the reader the tap landed — a CardKit callback that answers nothing shows them nothing. */
+  private onElicitCardAction(
+    event: FeishuRawCardActionEvent,
+    elicit: { requestId: string; token: string | null },
+    actorId?: string
+  ): FeishuCardActionResponse | undefined {
+    const actor: InteractionActor | undefined = actorId ? { userId: actorId } : undefined
+    const form = event.action?.form_value
+    if (form && this.deps.onElicitSubmit) {
+      const values: Record<string, string | string[]> = {}
+      for (const [name, raw] of Object.entries(form)) {
+        // A text input answers with a string and a select with one or a list; the FIELD each
+        // belongs to is what says which, and core reconciles that against the card's own form.
+        if (typeof raw === 'string') values[name] = raw
+        else if (Array.isArray(raw)) values[name] = raw.filter((v): v is string => typeof v === 'string')
+      }
+      void this.deps.onElicitSubmit({ requestId: elicit.requestId, values, ...(actor ? { actor } : {}) })
+      return undefined
+    }
+    if (!this.deps.onElicitChoice) return undefined
+    void this.deps.onElicitChoice({ requestId: elicit.requestId, token: elicit.token, ...(actor ? { actor } : {}) })
+    return undefined
   }
 
   /** Send one chunk: reply INTO the topic thread when `anchor` is a message id (the
@@ -806,6 +846,38 @@ export class FeishuConnection implements PlatformConnection {
     return anchor && anchor.startsWith('om_')
       ? this.handle.api.replyCard(anchor, card)
       : this.handle.api.createCard(channel, card)
+  }
+
+  /** Post one elicitation card (§7.3), returning the message id its settlement addresses. Best
+   *  effort like every other card post: undefined when the platform refused it, which core reads
+   *  as an ask nobody could be shown. */
+  async postElicitCard(
+    channel: string,
+    anchor: string | undefined,
+    card: Record<string, unknown>
+  ): Promise<string | undefined> {
+    return this.queue.enqueue(async () => {
+      try {
+        const res = await this.sendPermissionCard(channel, anchor, card)
+        return res.messageId
+      } catch (err) {
+        this.rememberPermissionIssue(err, channel)
+        this.deps.log?.debug(`feishu: elicitation card post failed (ch=${channel}): ${(err as Error).message}`)
+        return undefined
+      }
+    })
+  }
+
+  /** Rewrite a posted elicitation card as settled — the CardKit analog of Slack's `chat.update`.
+   *  Best effort by construction: no ACP outcome depends on it. */
+  async updateElicitCard(messageId: string, card: Record<string, unknown>): Promise<void> {
+    await this.queue.enqueue(async () => {
+      try {
+        await this.handle.api.patchCardMessage(messageId, card)
+      } catch (err) {
+        this.deps.log?.debug(`feishu: elicitation card update failed (id=${messageId}): ${(err as Error).message}`)
+      }
+    })
   }
 
   private sendCardEntity(channel: string, anchor: string | undefined, cardId: string): Promise<{ messageId?: string }> {
