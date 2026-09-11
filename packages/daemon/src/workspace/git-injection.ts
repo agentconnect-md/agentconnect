@@ -202,6 +202,7 @@ function workspaceGitConfigPairs(repository?: string): ReadonlyArray<readonly [s
     ['core.fsmonitor', 'false'],
     ['core.sparseCheckout', 'false'],
     ['core.sparseCheckoutCone', 'false'],
+    ['checkout.workers', '2'],
     ['credential.helper', ''],
     ['http.followRedirects', 'false'],
     // Disable checkout- or server-selected secondary download locations.

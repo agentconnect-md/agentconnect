@@ -313,6 +313,12 @@ The primary checkout keeps its roles for `shared` isolation, the console's
 workspace views and `pullOnNewSession`; for confined sessions it is no longer
 the parent of anything.
 
+Session preparation runs at most two independent repository roots concurrently,
+including the working-directory root. Reference roots keep their default branches
+and fail independently; a working-directory failure is returned only after the
+other started preparations settle. Daemon-managed Git uses two checkout workers
+to reduce file materialization time on shared filesystems.
+
 ### What changes for a confined session
 
 - **Refs are a snapshot.** The clone's `refs/remotes/origin/*` are the remote's

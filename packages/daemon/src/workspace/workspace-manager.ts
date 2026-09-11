@@ -1875,14 +1875,17 @@ export class WorkspaceManager {
     if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, opts)
     if (request.isolation === 'shared') return primary
 
-    // A from-scratch primary keeps its scratch directory as the cwd — isolation has no clone to
-    // branch it off — but its secondaries still get per-session worktrees (decisions 4 and 5).
-    const cwd =
-      agent.workspace.mode === 'git-repo'
-        ? await this.prepareRootSessionDirectory(agent, this.primaryRoot(agent), request)
-        : undefined
-    await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent), request)
-    if (cwd === undefined) return primary
+    // Scratch keeps its original cwd while its secondary roots receive per-session directories.
+    const cwd = await this.prepareSessionRoots(
+      agent,
+      async () =>
+        agent.workspace.mode === 'git-repo'
+          ? await this.prepareRootSessionDirectory(agent, this.primaryRoot(agent), request)
+          : primary,
+      this.referenceRootsOf(agent),
+      request
+    )
+    if (agent.workspace.mode !== 'git-repo') return cwd
     const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
     return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
   }
@@ -1925,10 +1928,13 @@ export class WorkspaceManager {
     if (!prepared) {
       throw new Error(`github review checkout of ${root.repoFullName} is unavailable to agent "${agent.id}"`)
     }
-    const cwd = await this.prepareRootSessionDirectory(agent, prepared, request)
-    await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent, prepared.subtreeName), request)
-    // The same post-steps the primary cwd gets, deliberately: skills install into the working
-    // directory, and the reviewed root is the one the model stands in. `agentDir` is the primary's.
+    const cwd = await this.prepareSessionRoots(
+      agent,
+      () => this.prepareRootSessionDirectory(agent, prepared, request),
+      this.referenceRootsOf(agent, prepared.subtreeName),
+      request
+    )
+    // Install skills in the reviewed root itself; agentDir belongs only to the primary root.
     const acpCwd = await this.withLocalSkills(agent, this.resolveRootAcpCwd(agent.id, cwd, undefined), opts)
     // Attested LAST, because the attestation says a session was placed here: a preparation that
     // failed a post-step must leave the caller's revision-only fallback a primary cwd it can use,
@@ -1976,32 +1982,43 @@ export class WorkspaceManager {
     ]
   }
 
-  /**
-   * Every reference root's worktree for this session, at the SAME id as the working directory's.
-   *
-   * Never a review checkout: the reviewed revision belongs to the one root the session is about,
-   * and the others ride along at their default branch as references (decision 5). Per-root failure
-   * is local like a clone failure (decision 7) — that root is absent from this session and nothing
-   * else about it changes.
-   */
-  private async prepareReferenceSessionWorktrees(
+  // Prepare at most two independent roots at once; reference failures remain local to that root.
+  private async prepareSessionRoots(
     agent: Agent,
+    prepareCwd: () => Promise<string>,
     roots: readonly { root: WorkspaceRoot; label: string }[],
     request: PrepareSessionWorkspaceRequest
-  ): Promise<void> {
+  ): Promise<string> {
     const rootRequest: PrepareSessionWorkspaceRequest = {
       sessionKey: request.sessionKey,
       isolation: 'session',
       ...(request.initiatedBy !== undefined ? { initiatedBy: request.initiatedBy } : {}),
       ...(request.confined ? { confined: true } : {})
     }
-    for (const { root, label } of roots) {
-      try {
-        await this.prepareRootSessionDirectory(agent, root, rootRequest)
-      } catch (err) {
-        workspaceLog.warn(`workspace: ${label} has no session worktree for agent "${agent.id}" (${formatErr(err)})`)
-      }
+    let cwd = ''
+    const preparations = [
+      async () => {
+        cwd = await prepareCwd()
+      },
+      ...roots.map(({ root, label }) => async () => {
+        try {
+          await this.prepareRootSessionDirectory(agent, root, rootRequest)
+        } catch (err) {
+          workspaceLog.warn(`workspace: ${label} has no session worktree for agent "${agent.id}" (${formatErr(err)})`)
+        }
+      })
+    ]
+    const pending = preparations.values()
+    const results = await Promise.allSettled(
+      Array.from({ length: Math.min(2, preparations.length) }, async () => {
+        for (const prepare of pending) await prepare()
+      })
+    )
+    // Drain started work before a required-root failure releases the daemon's workspace mutation gate.
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason
     }
+    return cwd
   }
 
   /** The stable per-session worktree of one root, checked out at the reviewed revision when there is one. */
@@ -2366,13 +2383,16 @@ export class WorkspaceManager {
     await this.prepareSecondaryRoots(agent)
     const cwdRoot = reviewRoot ?? (await this.resumedReviewedRoot(agent, request))
     if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, {})
-    const cwd =
-      agent.workspace.mode === 'git-repo'
-        ? await this.prepareRootSessionClone(agent, this.primaryRootAt(agent, mount), request)
-        : undefined
-    await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent), request)
-    // A from-scratch session keeps the mount as its cwd — on its own pod, so it is private by construction.
-    if (cwd === undefined) return this.clusterWorkspaceCheckout(agent, mount)
+    const cwd = await this.prepareSessionRoots(
+      agent,
+      async () =>
+        agent.workspace.mode === 'git-repo'
+          ? await this.prepareRootSessionClone(agent, this.primaryRootAt(agent, mount), request)
+          : this.clusterWorkspaceCheckout(agent, mount),
+      this.referenceRootsOf(agent),
+      request
+    )
+    if (agent.workspace.mode !== 'git-repo') return cwd
     return this.resolveRootAcpCwd(agent.id, cwd, normalizeRepoSubdir(agent.workspace.agentDir))
   }
 
