@@ -1434,3 +1434,76 @@ describe('mid-turn steering', () => {
     expect(frames(socket).some((f) => f.steer === true)).toBe(false)
   })
 })
+
+// The first send of a fresh playground rides the socket `openPlayground` warmed seconds earlier —
+// connect() hands a still-CONNECTING one straight to the turn — so a dial that dies in the browser
+// (one that never reaches the relay at all) used to lose exactly the message that opens a
+// conversation, and the retry the reader typed by hand started a SECOND conversation blind to it.
+describe('a dial that dies before the turn reaches the socket', () => {
+  class DyingSocket extends StubSocket {
+    static instances: DyingSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: (() => void) | null
+    constructor() {
+      super()
+      DyingSocket.instances.push(this)
+    }
+  }
+  /** Let a rebuild settle: its socket is two promises deep (mint, then dial). */
+  const settle = () => act(async () => {})
+
+  beforeEach(async () => {
+    DyingSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', DyingSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+  })
+
+  it('rebuilds once and puts the SAME turn on the fresh socket', async () => {
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello')
+    })
+    await act(async () => {
+      DyingSocket.instances[0]!.onerror?.({})
+    })
+    await settle()
+    expect(DyingSocket.instances).toHaveLength(2)
+    const live = DyingSocket.instances[1]!
+    await act(async () => {
+      live.readyState = 1
+      live.onopen?.()
+    })
+    const turnId = getLiveSteps('s1').find((s) => s.text === 'hello')?.turnId
+    expect(JSON.parse(String(live.send.mock.calls[0]?.[0]))).toMatchObject({ text: 'hello', turnId })
+    expect(getLiveSteps('s1').some((s) => String(s.text).includes('Could not reach the agent'))).toBe(false)
+  })
+
+  it('reports the turn unsent when the rebuilt dial dies too', async () => {
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello')
+    })
+    await act(async () => {
+      DyingSocket.instances[0]!.onerror?.({})
+    })
+    await settle()
+    await act(async () => {
+      DyingSocket.instances[1]!.onerror?.({})
+    })
+    await settle()
+    expect(DyingSocket.instances).toHaveLength(2)
+    expect(getLiveSteps('s1').some((s) => String(s.text).includes('Could not reach the agent'))).toBe(true)
+  })
+
+  it('does not rebuild on a CP verdict — a refusal is an answer, not a blip', async () => {
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockRejectedValue(new api.ApiError('webchat relay pool not configured', 503))
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'hello')
+    })
+    await settle()
+    expect(vi.mocked(api.webchatWsUrl)).toHaveBeenCalledTimes(1)
+    expect(getLiveSteps('s1').some((s) => String(s.text).includes('Webchat relay not configured'))).toBe(true)
+  })
+})

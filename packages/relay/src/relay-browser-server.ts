@@ -40,7 +40,18 @@ export interface RelayBrowserServerDeps {
   keepaliveMs?: number
 }
 
-function refuse(socket: Duplex, status: number, msg: string): void {
+/** Refuse the upgrade. The wire answer stays coarse — the `reason` is for the operator, and this line is the ONLY record a refused dial leaves: the browser learns its socket failed and nothing more, so without it a console reporting "could not reach the agent" is indistinguishable from one whose dial never arrived. */
+function refuse(
+  socket: Duplex,
+  status: number,
+  msg: string,
+  log: Logger,
+  reason: string,
+  conversationId?: string
+): void {
+  log.warn(
+    `webchat: refused browser dial ${status} — ${reason}${conversationId ? ` (conversation ${conversationId})` : ''}`
+  )
   socket.write(`HTTP/1.1 ${status} ${msg}\r\nConnection: close\r\n\r\n`)
   socket.destroy()
 }
@@ -60,7 +71,7 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
     if (url.pathname !== RELAY_WEBCHAT_WS_PATH) return // not ours
 
     const token = url.searchParams.get('token')
-    if (!token) return refuse(socket, 401, 'Unauthorized')
+    if (!token) return refuse(socket, 401, 'Unauthorized', deps.log, 'missing token')
     const rawConv = url.searchParams.get('conversation_id')
     const requestedConversationId = rawConv && UUID_RE.test(rawConv) ? rawConv.toLowerCase() : undefined
 
@@ -71,10 +82,13 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
       try {
         result = await deps.verify('webchat-token', token)
       } catch {
-        return refuse(socket, 503, 'Verify Unavailable') // relay↔CP link down → retryable
+        // relay↔CP link down → retryable
+        return refuse(socket, 503, 'Verify Unavailable', deps.log, 'cp verify unavailable', requestedConversationId)
       }
       if (!result.ok || !result.agentId || !result.daemonId || !result.conversationId) {
-        return refuse(socket, 401, 'Unauthorized')
+        // The CP's reason is the whole diagnosis — `agent unplaced` and `daemon offline` are the two a healthy-looking agent hits, and both read as a dead socket in the browser.
+        const reason = result.reason ?? (result.ok ? 'incomplete verification' : 'unverified')
+        return refuse(socket, 401, 'Unauthorized', deps.log, reason, requestedConversationId)
       }
       const { agentId, daemonId } = result
       const conversationId = result.conversationId.toLowerCase()
@@ -82,7 +96,7 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
       // authoritative; rejecting a mismatch prevents a valid token for one
       // conversation from being replayed against another session key.
       if (!UUID_RE.test(conversationId) || (rawConv !== null && requestedConversationId !== conversationId)) {
-        return refuse(socket, 401, 'Unauthorized')
+        return refuse(socket, 401, 'Unauthorized', deps.log, 'conversation mismatch', requestedConversationId)
       }
       const user = result.user ?? 'webchat'
       // The verified roster (webchat-multi-agents.md §6.2). A pre-roster CP omits

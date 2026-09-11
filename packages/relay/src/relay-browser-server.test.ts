@@ -57,6 +57,7 @@ async function start(
     verify?: (kind: 'webchat-token', token: string) => Promise<RcVerifyResult>
     daemon?: RelayDaemonConnection | undefined
     ack?: RdAck
+    log?: Logger
   } = {}
 ): Promise<Harness> {
   http = createServer()
@@ -77,7 +78,7 @@ async function start(
     verify,
     daemons,
     router,
-    log: silentLog
+    log: opts.log ?? silentLog
   })
   const port = (http.address() as AddressInfo).port
   return { base: `ws://127.0.0.1:${port}`, router, sendMsg, sent }
@@ -139,6 +140,19 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
       verify: async () => ({ ok: true, agentId: AGENT, conversationId: RESUME })
     }) // no daemonId
     await expect(dial(base, '?token=t')).rejects.toThrow('status:401')
+  })
+
+  // A refused dial is invisible on both sides otherwise: the browser is told only that its socket
+  // failed, and every reason worth acting on ("agent unplaced", "daemon offline") lives in the CP's
+  // verdict. Without this line an operator cannot tell a refusal from a dial that never arrived.
+  it('logs the CP verdict behind a refusal', async () => {
+    const warnings: string[] = []
+    const { base } = await start({
+      verify: async () => ({ ok: false, reason: 'agent unplaced' }),
+      log: { debug: () => {}, info: () => {}, warn: (m) => warnings.push(m), error: () => {} }
+    })
+    await expect(dial(base, '?token=t')).rejects.toThrow('status:401')
+    expect(warnings.some((w) => w.includes('agent unplaced') && w.includes('401'))).toBe(true)
   })
 
   it('uses the token-bound conversation id when the compatibility query is omitted', async () => {
