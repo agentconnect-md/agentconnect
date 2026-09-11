@@ -1013,4 +1013,30 @@ describe('microsandbox process and VM ownership', () => {
     await busy.stop(0)
     await manager.stopAll()
   })
+
+  it('leaves a lock holder this daemon has no binding for running', async () => {
+    const { manager, options, request, created } = await fixture()
+    const sibling = { id: 'agent/session-sibling', mounts: [], workspaceRoot: '/workspace' }
+    const blocked = { id: 'agent/session-blocked', mounts: [], workspaceRoot: '/workspace' }
+    const idle = await manager.driverFor(sibling).launch(request)
+    await idle.stop(0)
+    await manager.suspend(sibling.id)
+    const vm = created[0]!
+    const stops = vm.stopWithTimeout.mock.calls.length
+    const bindings = join(options.root, 'microsandbox', 'bindings')
+    for (const file of await readdir(bindings)) await rm(join(bindings, file))
+    const volume = 'agentconnect-example-blocked-overlays'
+    options.lockHolder = async () => ({ pid: 4242, sandbox: vm.name })
+    interceptCreate(options, async () => {
+      throw new options.sdk.InvalidConfigError(
+        `invalid config: volume "${volume}" is already attached with an incompatible disk mode`
+      )
+    })
+    await expect(manager.driverFor(blocked).launch(request)).rejects.toThrow(
+      `volume "${volume}" is still locked by pid 4242 (sandbox ${vm.name})`
+    )
+    expect(vm.stopWithTimeout.mock.calls).toHaveLength(stops)
+    expect(created).toHaveLength(1)
+    await manager.stopAll()
+  })
 })

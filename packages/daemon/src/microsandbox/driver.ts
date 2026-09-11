@@ -495,14 +495,16 @@ export class MicrosandboxManager {
     if (!holder?.sandbox) return false
     let id: string | undefined
     for (const candidate of await this.environmentIds()) if (this.name(candidate) === holder.sandbox) id = candidate
-    const state = id === undefined ? undefined : this.environments.get(id)
+    // A sandbox this daemon has no binding for can be running work no counter here can see.
+    if (id === undefined) return false
+    const state = this.environments.get(id)
     // Only a settled start can be suspended: awaiting one queued behind this start would deadlock on the gate.
     if (state && !(state.started && !state.closing && !state.failed && !state.active && !state.processes.size))
       return false
     this.options.log?.warn(
-      `microsandbox: suspending idle environment ${id ?? holder.sandbox} — it inherited the disk lock of volume "${volume}"`
+      `microsandbox: suspending idle environment ${id} — it inherited the disk lock of volume "${volume}"`
     )
-    if (id !== undefined && state) await this.suspend(id)
+    if (state) await this.suspend(id)
     else await (await this.find(holder.sandbox))?.stopWithTimeout(STOP_TIMEOUT_MS)
     return true
   }
