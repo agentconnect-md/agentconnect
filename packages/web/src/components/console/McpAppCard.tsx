@@ -15,7 +15,12 @@
  * against its own record of the card rather than against anything the frame said.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { McpAppRpc } from '@agentconnect.md/protocol'
+import {
+  MCP_APPS_PROTOCOL_VERSION,
+  MCP_APP_CONTEXT_MAX_CHARS,
+  MCP_APP_MESSAGE_MAX_CHARS,
+  type McpAppRpc
+} from '@agentconnect.md/protocol'
 import { Icon } from '@/components/ui'
 import type { SessionStep } from '@/lib/data'
 import {
@@ -101,16 +106,42 @@ export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
       switch (msg.method) {
         // ── answered in the browser ───────────────────────────────────────────────────────────
         case 'ui/initialize':
+          // Every field here is REQUIRED by `McpUiInitializeResult`, and the official SDK's
+          // `App.connect()` rejects a result missing any of them — so an app built on the SDK
+          // would never finish initializing. `hostCapabilities` (not `capabilities`) is the
+          // spec's name, and what it declares is honest: the four host methods the daemon serves,
+          // links, logging, and TEXT content in both directions, because text is all this host
+          // decodes out of a content-block list.
           reply({
             result: {
-              capabilities: { tools: {}, resources: {} },
-              hostContext: { theme, displayMode: 'inline' },
-              hostInfo: { name: 'agentconnect-console' }
+              protocolVersion: MCP_APPS_PROTOCOL_VERSION,
+              hostInfo: { name: 'agentconnect-console', version: MCP_APPS_PROTOCOL_VERSION },
+              hostCapabilities: {
+                serverTools: {},
+                serverResources: {},
+                openLinks: {},
+                logging: {},
+                message: { text: {} },
+                updateModelContext: { text: {}, structuredContent: {} }
+              },
+              hostContext: { theme, displayMode: 'inline' }
             }
           })
           // The view is up; hand it the call it was opened for, in the order the spec sends them.
-          if (app.toolInput) post({ jsonrpc: '2.0', method: 'ui/notifications/tool-input', params: app.toolInput })
-          if (app.toolResult) post({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: app.toolResult })
+          // `tool-input` carries its arguments UNDER `arguments`: a bare object parses to empty
+          // params against the notification schema, which loses them silently.
+          if (app.toolInput) {
+            post({ jsonrpc: '2.0', method: 'ui/notifications/tool-input', params: { arguments: app.toolInput } })
+          }
+          if (app.toolResult) {
+            // `content` is required on the result notification, so an app-only result sends an
+            // empty list rather than omitting the field.
+            post({
+              jsonrpc: '2.0',
+              method: 'ui/notifications/tool-result',
+              params: { ...app.toolResult, content: app.toolResult.content ?? [] }
+            })
+          }
           return
         case 'ui/notifications/initialized':
           return
@@ -268,12 +299,56 @@ export function toDaemonRpc(method: string, params: Record<string, unknown>): Mc
       : null
   }
   if (method === 'ui/message') {
-    const text = params.text ?? params.content
-    return typeof text === 'string' && text.length > 0 ? { method: 'ui/message', text } : null
+    // The spec sends `{ role: 'user', content: ContentBlock[] }`, not a string — a host reading a
+    // string field gets nothing from a valid SDK request. A plain string is still tolerated, for
+    // a hand-written page that never loaded the SDK.
+    const text = appBlocksText(params.content ?? params.text)
+    return text.length > 0 ? { method: 'ui/message', text: text.slice(0, MCP_APP_MESSAGE_MAX_CHARS) } : null
   }
   if (method === 'ui/update-model-context') {
-    const context = params.context
-    return typeof context === 'string' ? { method: 'ui/update-model-context', context } : null
+    // `content` blocks and/or `structuredContent`, either of which may be absent. The structured
+    // half is serialized rather than dropped: an app keeping its state there is saying precisely
+    // what it wants the next turn to know.
+    const text = appBlocksText(params.content ?? params.context)
+    const structured = params.structuredContent
+    const serialized =
+      structured && typeof structured === 'object'
+        ? safeJson(structured)
+        : typeof structured === 'string'
+          ? structured
+          : ''
+    const context = [text, serialized].filter((part) => part.length > 0).join('\n')
+    // An EMPTY context is a real update — an app clearing what it had said — so it is forwarded.
+    return { method: 'ui/update-model-context', context: context.slice(0, MCP_APP_CONTEXT_MAX_CHARS) }
   }
   return null
+}
+
+/**
+ * The text an MCP Apps content-block list carries, joined.
+ *
+ * Only `text` blocks are read, which is exactly what `hostCapabilities` declares: an image or an
+ * embedded resource in an app's message has nowhere to go in a daemon prompt, and claiming
+ * support would drop it silently instead of visibly.
+ */
+export function appBlocksText(blocks: unknown): string {
+  if (typeof blocks === 'string') return blocks.trim()
+  if (!Array.isArray(blocks)) return ''
+  return blocks
+    .map((block) => {
+      const b = block as { type?: unknown; text?: unknown } | null
+      return b && b.type === 'text' && typeof b.text === 'string' ? b.text : ''
+    })
+    .filter((text) => text.length > 0)
+    .join('\n')
+    .trim()
+}
+
+/** Serialize an app's structured context, or nothing when it will not serialize (a cycle). */
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? ''
+  } catch {
+    return ''
+  }
 }

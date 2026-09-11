@@ -188,19 +188,14 @@ describe('LiveAppRegistry — what a frame is allowed to reach', () => {
     expect(reg.resolve({ appId: 'never', conversationId: 'conv-1' })).toEqual({ refused: 'unknown' })
   })
 
-  it('lets a view call only its own server’s tools', () => {
+  it('names the card’s own server, so a tool name can never select a different one', () => {
     const reg = new LiveAppRegistry()
     reg.open(liveApp())
-    expect(reg.resolve({ appId: 'app-1', conversationId: 'conv-1', toolName: 'charts__render' })).toMatchObject({
-      app: { server: 'charts' }
-    })
-    expect(reg.resolve({ appId: 'app-1', conversationId: 'conv-1', toolName: 'secrets__read' })).toEqual({
-      refused: 'wrong_server'
-    })
-    // Nor a daemon-native tool, which is not this server's either.
-    expect(reg.resolve({ appId: 'app-1', conversationId: 'conv-1', toolName: 'sendMessage' })).toEqual({
-      refused: 'wrong_server'
-    })
+    // The registry does not inspect the tool name at all: the server comes from the card, which
+    // is what makes a cross-server call impossible rather than merely detected. Whether that
+    // server HAS the named tool is the host's question — see resolveViewTool.
+    const resolved = reg.resolve({ appId: 'app-1', conversationId: 'conv-1' })
+    expect(resolved).toMatchObject({ app: { server: 'charts' } })
   })
 
   it('supersedes the OLDEST card past the per-conversation cap and returns it to be settled', () => {
@@ -277,6 +272,13 @@ describe('LiveAppRegistry — what a frame is allowed to reach', () => {
     // Whitespace-only context is nothing said, not an empty bullet.
     reg.setContext('a', '   ')
     expect(appContextBlock(reg.contextsFor('sk-1'))).toBeNull()
+  })
+
+  it('names a refusal for a tool the card’s server does not have, distinct from an unknown card', () => {
+    // Which SERVER a view reaches is the card's, so a name can never select one — what a bad name
+    // earns is "that server has no such tool", never another server's call.
+    expect(APP_RPC_REFUSALS.unknown_tool).not.toEqual(APP_RPC_REFUSALS.unknown)
+    expect(APP_RPC_REFUSALS.unknown_tool).toMatch(/tool/i)
   })
 
   it('names every refusal in words a frame can show its reader', () => {

@@ -56,14 +56,14 @@ interface Entry {
 /** Why a view RPC was refused, named by what was wrong rather than by an HTTP-shaped code —
  *  each one is a different thing to tell the frame, and `unknown` is deliberately indistinguishable
  *  from "settled" and from "another conversation's", so probing an id learns nothing. */
-export type AppRpcRefusal = 'unknown' | 'wrong_server' | 'rate_limited'
+export type AppRpcRefusal = 'unknown' | 'unknown_tool' | 'rate_limited'
 
 /** What each refusal is told to the FRAME. `unknown` says nothing about why — a settled card, a
  *  card in another conversation and an id that never existed all read the same, so probing one
  *  learns nothing. */
 export const APP_RPC_REFUSALS: Record<AppRpcRefusal, string> = {
   unknown: 'this interface is no longer active',
-  wrong_server: 'this interface may only call tools of the server that opened it',
+  unknown_tool: 'the server that opened this interface has no such tool',
   rate_limited: 'too many calls from this interface — wait a moment and try again'
 }
 
@@ -118,18 +118,16 @@ export class LiveAppRegistry {
    * Resolve a view RPC against the card it claims. `conversationId` is the SENDER's — taken from
    * the routed frame, never from the payload — so a card id learned anywhere else is still
    * unusable, and the refusal for one is the same `unknown` an id that never existed gets.
+   *
+   * Note what this does NOT inspect: the tool name. Which SERVER a call reaches is `app.server`
+   * and nothing else, so a name cannot select one — that makes a cross-server call impossible
+   * rather than merely detected. Whether that server has the named tool is the host's question,
+   * because only the host holds its tool list, and a lexical check here could not tell a genuine
+   * upstream name containing the separator from an attempt at another server's namespace.
    */
-  resolve(a: {
-    appId: string
-    conversationId: string
-    /** Set for `tools/call`: the tool the view wants, which must belong to this card's server. */
-    toolName?: string
-  }): { app: LiveApp } | { refused: AppRpcRefusal } {
+  resolve(a: { appId: string; conversationId: string }): { app: LiveApp } | { refused: AppRpcRefusal } {
     const entry = this.entries.get(a.appId)
     if (!entry || entry.app.conversationId !== a.conversationId) return { refused: 'unknown' }
-    if (a.toolName !== undefined && !a.toolName.startsWith(`${entry.app.server}__`)) {
-      return { refused: 'wrong_server' }
-    }
     return { app: entry.app }
   }
 

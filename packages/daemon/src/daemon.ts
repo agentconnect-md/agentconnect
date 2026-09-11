@@ -13961,11 +13961,7 @@ export class Daemon {
     rpc: McpAppRpc,
     author?: { user?: string; userId?: string }
   ): Promise<void> {
-    const resolved = this.liveApps.resolve({
-      appId,
-      conversationId,
-      ...(rpc.method === 'tools/call' ? { toolName: rpc.name } : {})
-    })
+    const resolved = this.liveApps.resolve({ appId, conversationId })
     if ('refused' in resolved) {
       // A refusal still has to reach the frame, and the refused card is by definition not the
       // place to look for its stream — so the conversation's own live one carries it. A refusal
@@ -13986,13 +13982,25 @@ export class Daemon {
             answer({ ok: false, error: APP_RPC_REFUSALS.rate_limited })
             return
           }
-          const split = splitAppToolName(rpc.name)
-          if (!split) {
-            answer({ ok: false, error: APP_RPC_REFUSALS.wrong_server })
+          // The SERVER is the card's, always; the name is resolved against that server's own tool
+          // list. A view calls its tool by the name its server gave it (`refresh`) and has no
+          // business knowing the `<server>__<tool>` namespace an operator's config produced.
+          const tool = await this.appsHost.resolveViewTool(app.server, rpc.name)
+          if (tool === undefined) {
+            answer({ ok: false, error: APP_RPC_REFUSALS.unknown_tool })
             return
           }
-          const call = await this.appsHost.callForView(split.server, split.tool, rpc.args ?? {})
-          answer({ ok: true, result: { content: call.content, ...(call.isError ? { isError: true } : {}) } })
+          const call = await this.appsHost.callForView(app.server, tool, rpc.args ?? {})
+          // The RAW upstream result, structured content included: that payload is what the view
+          // asked for and what it has to render, and the model's half of it would be no use here.
+          answer({
+            ok: true,
+            result: {
+              content: call.content,
+              ...(call.structuredContent ? { structuredContent: call.structuredContent } : {}),
+              ...(call.isError ? { isError: true } : {})
+            }
+          })
           return
         }
         case 'resources/read':

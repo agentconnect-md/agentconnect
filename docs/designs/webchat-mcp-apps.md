@@ -213,20 +213,49 @@ the declaration, never from the page.
 
 ### 7.3 Which host methods the daemon serves
 
-| view → host               | served by | note                                                                                      |
-| ------------------------- | --------- | ----------------------------------------------------------------------------------------- |
-| `ui/initialize`           | browser   | handshake; the host's reply carries theme + display mode + dimensions                     |
-| `ui/notifications/*`      | browser   | size changes, logging                                                                     |
-| `ui/open-link`            | browser   | `http`/`https` only, opened in a new tab with `noopener` — same rule the consent card has |
-| `tools/call`              | daemon    | forwarded to the upstream server. Only tools of **this app's own server**                 |
-| `resources/read`          | daemon    | forwarded; `ui://` and the server's own resources only                                    |
-| `ui/message`              | daemon    | injected as an ordinary user turn in the conversation, attributed to the reader           |
-| `ui/update-model-context` | daemon    | held on the session, bounded, and prepended to the next turn                              |
+| view → host               | served by | note                                                                                                                                                                              |
+| ------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ui/initialize`           | browser   | handshake; the result carries `protocolVersion`, `hostInfo`, `hostCapabilities` and `hostContext` — all four required, and the SDK's `App.connect()` rejects a result missing any |
+| `ui/notifications/*`      | browser   | size changes, logging                                                                                                                                                             |
+| `ui/open-link`            | browser   | `http`/`https` only, opened in a new tab with `noopener` — same rule the consent card has                                                                                         |
+| `tools/call`              | daemon    | forwarded to the upstream server. Only tools of **this app's own server**                                                                                                         |
+| `resources/read`          | daemon    | forwarded; `ui://` and the server's own resources only                                                                                                                            |
+| `ui/message`              | daemon    | injected as an ordinary user turn in the conversation, attributed to the reader                                                                                                   |
+| `ui/update-model-context` | daemon    | held on the session, bounded, and prepended to the next turn                                                                                                                      |
 
 The two the daemon forwards are the ones that matter for authorization, and the rule is
 the same one the read-port tools already follow: **the candidate set comes from the
 trusted session snapshot, never from the payload.** A view may only reach the server
 that opened it, and only for a live `appId` in its own conversation.
+
+**A tool name never selects a server.** The server is `app.server`, from the card; the name is
+resolved against _that_ server's tool list. This matters in both directions. A view calls its
+tool by the name its own server gave it (`refresh`) and has no business knowing that an
+operator configured that server as `charts`, so the bridge's `charts__refresh` namespace is
+translated at this boundary — and because the server is never derived from the name, a name
+like `secrets__read` is simply looked up on this card's server, not found, and refused. A
+lexical prefix check could do neither job: it would reject every ordinary app's buttons, and it
+could not tell a genuine upstream name containing `__` from an attempt at another server's
+namespace.
+
+**A view's `tools/call` gets the RAW upstream result**, structured content included. The
+model-facing shaping drops `structuredContent`, which is precisely what a refresh or pagination
+tool answers with — hand the model's half back and the interface has nothing to render.
+
+**Both payload shapes are the spec's, not strings.** `ui/message` sends
+`{ role: "user", content: ContentBlock[] }`, and `ui/update-model-context` sends `content`
+and/or `structuredContent`. The host decodes `text` blocks and serializes the structured half,
+which is exactly what its `hostCapabilities` declares — claiming image support would drop an
+app's image silently instead of visibly.
+
+**A card's events outlive its turn.** The frame is still on screen and its bridge still served
+after the opening turn ends, so the daemon keeps sending replies and settlements on that card's
+original `turnId` — while the browser's ordered turn cursor is retired at `done` and its lane
+refuses to reopen. `app_rpc_result` and `app_resolved` therefore bypass stream admission
+entirely: an RPC result is correlated by its own `callId` and a settlement is an idempotent
+update keyed by `appId`, so neither needs the cursor to be correct. Without that bypass, a
+button pressed after the agent finished would hang to its timeout, and a closed card would
+render as live forever.
 
 ### 7.4 Bounds
 

@@ -62,6 +62,7 @@ let pgCancelQueued: ReturnType<typeof usePlayground>['pgCancelQueued']
 let getLiveSteps: ReturnType<typeof usePlayground>['getLiveSteps']
 let pgAttach: ReturnType<typeof usePlayground>['pgAttach']
 let pgAnswerElicitation: ReturnType<typeof usePlayground>['pgAnswerElicitation']
+let pgAppRpc: ReturnType<typeof usePlayground>['pgAppRpc']
 
 function Probe() {
   const pg = usePlayground()
@@ -77,6 +78,7 @@ function Probe() {
   getLiveSteps = pg.getLiveSteps
   pgAttach = pg.pgAttach
   pgAnswerElicitation = pg.pgAnswerElicitation
+  pgAppRpc = pg.pgAppRpc
   return null
 }
 
@@ -1505,5 +1507,121 @@ describe('a dial that dies before the turn reaches the socket', () => {
     await settle()
     expect(vi.mocked(api.webchatWsUrl)).toHaveBeenCalledTimes(1)
     expect(getLiveSteps('s1').some((s) => String(s.text).includes('Webchat relay not configured'))).toBe(true)
+  })
+})
+
+describe('MCP App card lifetime (webchat-mcp-apps.md §7.3)', () => {
+  class AppSocket extends StubSocket {
+    static instances: AppSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      AppSocket.instances.push(this)
+    }
+  }
+
+  async function openStream() {
+    AppSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', AppSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgSend('s1', 'agent-1', 'open the chooser', 'c1')
+    })
+    const socket = AppSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+    })
+    const turn = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
+    return { socket, turnId: turn.turnId }
+  }
+
+  const CARD = {
+    kind: 'app',
+    appId: 'app-1',
+    title: 'Deploy target',
+    toolName: 'charts__pick_target',
+    html: '<p>frame</p>'
+  }
+
+  function send(socket: AppSocket, turnId: string, index: number, event: unknown): void {
+    socket.onmessage?.({
+      data: JSON.stringify({ type: 'output', output: { turnId, agentId: 'agent-1', index, event } })
+    })
+  }
+
+  it('stands the card in the transcript with a boundary, so the reply after it starts fresh', async () => {
+    const { socket, turnId } = await openStream()
+    act(() => send(socket, turnId, 0, CARD))
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      { kind: 'app', boundary: true, app: { appId: 'app-1', title: 'Deploy target' } }
+    ])
+  })
+
+  it('settles a card AFTER its opening turn has finished — a frame outlives the turn cursor', async () => {
+    const { socket, turnId } = await openStream()
+    act(() => send(socket, turnId, 0, CARD))
+    // The turn ends. Its cursor is retired and its lane refuses to reopen, which is exactly the
+    // state in which the reader is still looking at the frame and its bridge is still served.
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-1' } }) })
+    })
+    // The daemon settles the card on the card's ORIGINAL turnId. Dropping this would leave a
+    // closed frame rendering as live forever.
+    act(() => send(socket, turnId, 1, { kind: 'app_resolved', appId: 'app-1', outcome: 'closed' }))
+    const steps = getLiveSteps('s1').filter((step) => step.kind === 'app')
+    expect(steps).toMatchObject([{ app: { appId: 'app-1', outcome: 'closed' } }])
+    // The template goes with the settlement: a settled frame is never re-armed.
+    expect(steps[0]?.app?.html).toBeUndefined()
+  })
+
+  it('completes a view RPC issued after the turn finished, instead of letting it time out', async () => {
+    const { socket, turnId } = await openStream()
+    act(() => send(socket, turnId, 0, CARD))
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-1' } }) })
+    })
+
+    let settled: unknown
+    await act(async () => {
+      void pgAppRpc('s1', 'agent-1', 'app-1', { method: 'tools/call', name: 'refresh' }, 'c1').then((outcome) => {
+        settled = outcome
+      })
+    })
+    // The browser-minted callId is what correlates the answer; read it off the wire.
+    const sent = socket.send.mock.calls
+      .map((call) => JSON.parse(String(call[0])) as { type?: string; callId?: string })
+      .find((frame) => frame.type === 'app_rpc')
+    expect(sent?.callId).toBeTypeOf('string')
+
+    await act(async () => {
+      send(socket, turnId, 1, {
+        kind: 'app_rpc_result',
+        appId: 'app-1',
+        callId: sent!.callId,
+        outcome: { ok: true, result: { structuredContent: { rows: [1] } } }
+      })
+    })
+    await act(async () => undefined)
+    expect(settled).toEqual({ ok: true, result: { structuredContent: { rows: [1] } } })
+  })
+
+  it('drops an RPC answer nobody is waiting for, so a replayed stream is harmless', async () => {
+    const { socket, turnId } = await openStream()
+    act(() => send(socket, turnId, 0, CARD))
+    act(() =>
+      send(socket, turnId, 1, {
+        kind: 'app_rpc_result',
+        appId: 'app-1',
+        callId: 'never-asked',
+        outcome: { ok: true, result: {} }
+      })
+    )
+    // No throw, and no transcript row: an answer to nothing is not an event the reader sees.
+    expect(getLiveSteps('s1').filter((step) => step.kind === 'app')).toHaveLength(1)
   })
 })

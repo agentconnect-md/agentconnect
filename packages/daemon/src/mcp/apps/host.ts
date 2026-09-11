@@ -229,10 +229,56 @@ export class McpAppsHost {
     }
   }
 
-  /** Serve a view's `tools/call` — the same upstream path a runtime call takes, deliberately, so
-   *  an app's call is a real tool call with a real transcript row and not a side channel. */
-  async callForView(server: string, tool: string, args: Record<string, unknown>): Promise<AppToolCall> {
-    return await this.call(server, tool, args)
+  /**
+   * The upstream tool name a VIEW's `tools/call` means, on this card's own server — or undefined
+   * when that server exposes no such tool.
+   *
+   * A view knows its server's own names (`refresh`). It does not know, and must not need to know,
+   * that an operator configured that server as `charts` and so the bridge calls the tool
+   * `charts__refresh` — the namespace is AgentConnect's deployment detail. The bare name is
+   * therefore tried first, and this server's own prefix is accepted too for a view that happens
+   * to have seen the bridge name.
+   *
+   * The SERVER is never derived from the name: it comes from the card. That is what makes a
+   * cross-server call impossible rather than merely detected — a name like `secrets__read` is
+   * looked up on this card's server, does not exist there, and is refused.
+   */
+  async resolveViewTool(server: string, name: string): Promise<string | undefined> {
+    const conn = await this.connect(server)
+    if (!conn) return undefined
+    if (conn.tools.has(name)) return name
+    const prefix = `${server}${APP_TOOL_SEPARATOR}`
+    const stripped = name.startsWith(prefix) ? name.slice(prefix.length) : undefined
+    return stripped !== undefined && conn.tools.has(stripped) ? stripped : undefined
+  }
+
+  /**
+   * Serve a view's `tools/call` — the same upstream path a runtime call takes, deliberately, so an
+   * app's call is a real tool call and not a side channel, but with the RAW result rather than the
+   * model's half of it.
+   *
+   * The distinction is the whole point of the separate method. {@link call} shapes a result for
+   * the model, which drops `structuredContent` — and structured content is precisely what a view
+   * asked for: a refresh or pagination tool answers with the rows, and handing the model's text
+   * back instead leaves the interface with nothing to render.
+   */
+  async callForView(
+    server: string,
+    tool: string,
+    args: Record<string, unknown>
+  ): Promise<{ content: unknown[]; structuredContent?: Record<string, unknown>; isError: boolean }> {
+    const conn = await this.connect(server)
+    if (!conn) throw new Error(`MCP server "${server}" is not reachable`)
+    if (!conn.tools.has(tool)) throw new Error(`MCP server "${server}" does not expose a tool named "${tool}"`)
+    const raw = (await conn.client.callTool(
+      { name: tool, arguments: args },
+      { timeout: CALL_TIMEOUT_MS, maxTotalTimeout: CALL_TIMEOUT_MS }
+    )) as { content?: unknown[]; structuredContent?: Record<string, unknown>; isError?: boolean }
+    return {
+      content: Array.isArray(raw.content) ? raw.content : [],
+      ...(raw.structuredContent ? { structuredContent: raw.structuredContent } : {}),
+      isError: raw.isError === true
+    }
   }
 
   /** Serve a view's `resources/read`, restricted to the card's own server. */
