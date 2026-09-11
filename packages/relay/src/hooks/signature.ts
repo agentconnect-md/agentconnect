@@ -1,23 +1,29 @@
 /**
- * Shared `sha256=<hex>` HMAC header verification — the security-sensitive core
- * (prefix parse, hex decode, length check BEFORE timingSafeEqual) used by both
- * public ingress endpoints: `X-AC-Signature` on the generic webhook and
- * `X-Hub-Signature-256` on the GitHub endpoint. One implementation so the two
- * cannot drift.
+ * Shared HMAC-SHA256 header verification — the security-sensitive core (hex
+ * decode and length check BEFORE timingSafeEqual) used by every public ingress
+ * endpoint: `X-AC-Signature` on the generic webhook, `X-Hub-Signature-256` on
+ * the GitHub endpoint, and the bare-hex `X-Gitea-Signature` on the Gitea one.
+ * One implementation so they cannot drift.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto'
 
-/** True iff `header` is `sha256=<hex>` of HMAC-SHA256(secret, rawBody), timing-safe. */
-export function verifySha256Header(secret: string, rawBody: Buffer, header: string | undefined): boolean {
-  if (!header || !header.startsWith('sha256=')) return false
+/** True iff `hex` is the lowercase/uppercase hex HMAC-SHA256(secret, rawBody), timing-safe. */
+export function verifyHexHmacSha256(secret: string, rawBody: Buffer, hex: string | undefined): boolean {
+  if (!hex) return false
   const expected = createHmac('sha256', secret).update(rawBody).digest()
   let presented: Buffer
   try {
-    presented = Buffer.from(header.slice('sha256='.length), 'hex')
+    presented = Buffer.from(hex, 'hex')
   } catch {
     return false
   }
   return presented.length === expected.length && timingSafeEqual(presented, expected)
+}
+
+/** True iff `header` is `sha256=<hex>` of HMAC-SHA256(secret, rawBody), timing-safe. */
+export function verifySha256Header(secret: string, rawBody: Buffer, header: string | undefined): boolean {
+  if (!header || !header.startsWith('sha256=')) return false
+  return verifyHexHmacSha256(secret, rawBody, header.slice('sha256='.length))
 }
 
 /** Replay window for Slack's `X-Slack-Request-Timestamp` (Slack's own recommendation). */

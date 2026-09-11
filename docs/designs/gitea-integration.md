@@ -293,22 +293,35 @@ display, the connection's bot user id as the veto set, the signing key inline.
 
 ## 8. Event Mapping and Routing
 
-| Product family                     | Gitea source                                                                                                                          |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `issues:opened` / `:edited` / …    | `issues` with the matching `action`                                                                                                   |
-| issue conversation comment         | `issue_comment`, `is_pull: false`, `action: created`                                                                                  |
-| pull-request conversation comment  | `pull_request_comment`, `is_pull: true`, `action: created`                                                                            |
-| pull-request diff comment          | `pull_request_review_comment`, `action: reviewed` — one delivery per review submission, carrying only the summary in `review.content` |
-| `merge_request:opened`             | `pull_request` `opened`                                                                                                               |
-| `merge_request:synchronize`        | `pull_request_sync` `synchronized`                                                                                                    |
-| `merge_request:reviewer_requested` | `pull_request_review_request` `review_requested` naming the bot                                                                       |
-| `merge_request:reopened`           | `pull_request` `reopened`                                                                                                             |
-| maintenance cleanup family         | `pull_request` `closed` with `merged: true`; `issues` `closed`                                                                        |
-| `push:*`                           | `push`                                                                                                                                |
+| Product family                    | Gitea source                                                                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `issues:opened` / `:edited` / …   | `issues` with the matching `action`                                                                                                   |
+| issue conversation comment        | `issue_comment`, `is_pull: false`, `action: created`                                                                                  |
+| pull-request conversation comment | `pull_request_comment`, `is_pull: true`, `action: created`                                                                            |
+| pull-request diff comment         | `pull_request_review_comment`, `action: reviewed` — one delivery per review submission, carrying only the summary in `review.content` |
+| `merge_request:opened`            | `pull_request` `opened`                                                                                                               |
+| `merge_request:synchronize`       | `pull_request_sync` `synchronized`                                                                                                    |
+| `merge_request:review_requested`  | `pull_request_review_request` `review_requested` naming the bot                                                                       |
+| `merge_request:reopened`          | `pull_request` `reopened`                                                                                                             |
+| maintenance cleanup family        | `pull_request` `closed` with `merged: true`; `issues` `closed`                                                                        |
+| `push:*`                          | `push`                                                                                                                                |
 
 Edited-comment noise, draft toggles, label churn, and assignment events are
-vetoed exactly as in §12. `pull_request.head.sha` and `base.sha` are present
-on every pull-request payload and become the head fence.
+vetoed exactly as in §12; Gitea delivers label, assignment, and milestone churn
+under its own `issue_label`/`issue_assign`/`issue_milestone` event types, which
+the table above simply does not name, and a draft toggle rides `pull_request`
+`edited`, which is inert for the same reason. `pull_request.head.sha` and
+`base.sha` are present on every pull-request payload and become the head fence.
+
+The normalized event names are GitLab's, so a stored pattern stays
+provider-neutral: `issues:opened`, `merge_request:opened`,
+`merge_request:synchronize`, `merge_request:review_requested`, `note:created`,
+`push`, and the maintenance pair `issues:closed` / `merge_request:merged`. A
+review submission is the one delivery GitLab has no counterpart for, and its
+verdict is the only thing the relay can carry into the correlation below, so it
+normalizes to `review:commented`, `review:approved`, or
+`review:changes_requested` — one per review event type, gated by the
+pull-request comment family rather than by an event pattern.
 
 A review delivery is lossy in a way the diff-comment trigger has to absorb
 (§16): it carries the summary body and nothing about the inline comments — no

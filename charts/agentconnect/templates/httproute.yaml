@@ -181,6 +181,7 @@ the relay host (relay.host, else apiHost, else the website host):
   /webhooks/in                  → relay pool (generic inbound webhook HTTP POST)
   /webhooks/github              → relay pool (GitHub App webhook)
   /webhooks/gitlab              → relay pool (GitLab project webhook, Standard Webhooks)
+  /webhooks/gitea               → relay pool (Gitea repository webhook, hex HMAC-SHA256)
   /slack/events                 → relay pool (Slack Events API, http transport)
   /slack/interactions           → relay pool (Slack interactivity + block_suggestion)
   /feishu/events                → relay pool (Feishu/Lark HTTP event callback)
@@ -244,6 +245,9 @@ spec:
         - path:
             type: PathPrefix
             value: /webhooks/gitlab
+        - path:
+            type: PathPrefix
+            value: /webhooks/gitea
         - path:
             type: PathPrefix
             value: /slack/events
