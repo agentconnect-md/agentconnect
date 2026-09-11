@@ -544,6 +544,24 @@ is a behavior-neutral refactor of exactly these:
    projection table keyed by provider.
 8. **The deployment-config base-URL lock** becomes per-provider.
 
+G1 fills those tables before the behavior behind them exists, so several entries
+are deliberately inert and each is replaced by the step that gives it work:
+
+| Entry                                                                    | Replaced by |
+| ------------------------------------------------------------------------ | ----------- |
+| CP provider module: workspace arms decline, hook convergence is a no-op  | G2          |
+| CP hook compile: a `gitea` row never compiles, so the pool holds no rule | G2          |
+| CP `codeHostStateExists('gitea')`: no table exists to count yet          | G2          |
+| Daemon credentials: no helper path grammar, so a request is "not ours"   | G4          |
+| Daemon ack, final poster, effect lease                                   | G4          |
+| Daemon hook admission: no lane, no generation, no batch                  | G4          |
+| Daemon hook normalization: session key and subject label only            | G4          |
+| Console: hook marks and labels are real; pickers do not offer the host   | G6          |
+
+The daemon's turn-final `hostFence` is NOT inert: a delivery carrying a Gitea
+member is refused there under `code_host_not_implemented`, so the placeholders
+above can only be reached by a delivery the relay also refuses.
+
 Two things stay un-generalized on purpose. The Control Plane's provider-neutral
 note-projection service keeps its GitLab constant, because Gitea does not use
 a note projection and a third implementer of it does not exist. And the spec
@@ -595,13 +613,16 @@ Each step is one pull request, merged in order.
 
 - **G0 — Seam extraction.** §13, behavior-neutral, green on the existing
   GitHub and GitLab suites. Lands before any `gitea` string exists.
-- **G1 — Protocol and Setup Server.** `gitea` in `CODE_HOST_PROVIDERS`,
-  `gitea-v1`, frame members, `giteaHost`; the Setup Server entry, probe, and
-  floor.
+- **G1 — Protocol and Setup Server.** _Landed (#PR_G1)._ `gitea` in
+  `CODE_HOST_PROVIDERS`, `gitea-v1`, frame members, `giteaHost`; the Setup Server
+  entry, probe, and floor. `CODE_HOST_PROVIDERS` gaining the value is what forced
+  an entry in every provider table on all four hosts, so the step also filled
+  those (§13). The open-connector blocklist entry moved here from G2 with them:
+  it is a one-line default beside the provider vocabulary, not connection state.
 - **G2 — Control Plane connection and bindings.** `GiteaConnection`,
   `GiteaRepositoryBinding`, secrets, the connect/replace/disconnect routes,
-  the picker, the provisioning saga, webhook install and rotation, the
-  membership-authorization arm, the blocklist entry.
+  the picker, the provisioning saga, webhook install and rotation, and the
+  membership-authorization arm.
 - **G3 — Relay ingress.** `hooks/gitea/`: signature, event mapping, veto and
   gate table, delivery key, rerun dispatch.
 - **G4 — Daemon credentials, workspace, sessions.** Managed-host entry, helper
