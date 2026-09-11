@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync } from 'node:fs'
-import { basename, delimiter, dirname, join } from 'node:path'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { CURATED_RUNTIME_CATALOG } from './curated.js'
@@ -208,12 +208,15 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
     ...state(join(home(env), '.gemini', 'tmp'), join('.gemini', 'tmp'), [])
   ],
 
-  // Qwen Code (Gemini-CLI fork) — ~/.qwen.
-  'qwen-code': (env) =>
-    state(join(home(env), '.qwen'), '.qwen', undefined, undefined, [
+  // Seed native Qwen config and login files, excluding settings backups and runtime snapshots.
+  'qwen-code': (env) => {
+    const configured = env.QWEN_HOME || join(home(env), '.qwen')
+    const source = resolve(configured.replace(/^~(?=[/\\]|$)/, () => home(env)))
+    return state(source, '.qwen', ['mcp-oauth-tokens.json', 'google_accounts.json', 'installation_id'], undefined, [
       { path: 'oauth_creds.json', format: 'oauth', provider: 'qwen' },
       { path: 'settings.json', format: 'qwen-settings' }
-    ]),
+    ])
+  },
 
   // GitHub Copilot CLI — ~/.copilot (honors $COPILOT_HOME).
   'github-copilot-cli': (env) =>

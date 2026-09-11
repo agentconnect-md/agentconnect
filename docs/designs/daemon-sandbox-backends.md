@@ -454,6 +454,25 @@ arbitrary headers or extensions are outside discovery. Native Grok 1.0.25's
 per-model API path was verified with the SDK CA and a real ACP tool turn; its
 cached xAI API-login path still needs validation with a valid native login.
 
+Qwen Code uses the same proxy for keys saved in `settings.json`: model-provider
+`envKey` references to the file's `env` values (including native protocol defaults
+and `providerProtocol` mappings), plus legacy `security.auth.apiKey`. This is file
+credential import; environment-only logins are not added. Shared discovery and
+private-HOME seeding honor `QWEN_HOME`, and private launches pin both `QWEN_HOME`
+and `QWEN_RUNTIME_DIR`. The seed inventory includes native settings, OAuth and
+account files, excluding settings backups and runtime snapshots.
+
+Only explicit HTTPS model `baseUrl` or legacy auth `baseUrl` values from the host
+settings authorize proxy injection. Missing or unsupported endpoints, unknown
+protocols and interpolation keep placeholders without importing a plaintext key.
+Default endpoints, `.env`, workspace/CLI overrides and extra keys stored only in
+arbitrary fields are outside this path. Matching key values and Bearer headers in
+the seeded files are replaced; repeated keys share their authorized destinations.
+Guest edits cannot authorize new hosts. OAuth-only launches retain native seeding,
+and guest-refreshed OAuth state survives API-key rotation. SRT imports the same
+native files without enabling this VM proxy. Native Qwen 0.23.3's OpenAI-compatible
+API path was verified with the SDK CA and a real ACP tool turn.
+
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
 existing private logins are preserved. Without a DeepSeek key, normal seeding is

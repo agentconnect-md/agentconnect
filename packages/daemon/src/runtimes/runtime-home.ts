@@ -334,6 +334,8 @@ const AMBIENT_STATE_ENV = new Set([
   'PI_CODING_AGENT_DIR',
   'GROK_HOME',
   'GROK_AUTH_PATH',
+  'QWEN_HOME',
+  'QWEN_RUNTIME_DIR',
   'CLINE_DIR',
   'CLINE_DATA_DIR',
   'CLINE_PROVIDER_SETTINGS_PATH',
@@ -416,6 +418,7 @@ const RUNTIME_PRIVATE_ENV: Record<string, RuntimePrivateEnv> = {
   omp: (home) => ({ PI_CODING_AGENT_DIR: join(home, '.omp', 'agent') }),
   'pi-acp': (home) => ({ PI_CODING_AGENT_DIR: join(home, '.pi', 'agent') }),
   'grok-build': (home) => ({ GROK_HOME: join(home, '.grok'), GROK_AUTH_PATH: join(home, '.grok', 'auth.json') }),
+  'qwen-code': (home) => ({ QWEN_HOME: join(home, '.qwen'), QWEN_RUNTIME_DIR: join(home, '.qwen') }),
   cline: (home) => ({
     CLINE_DIR: join(home, '.cline'),
     CLINE_DATA_DIR: join(home, '.cline', 'data')
