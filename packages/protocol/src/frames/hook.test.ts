@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  codeHostHookMetadataOf,
   GithubHookMetadata,
   GithubReviewAuthorize,
   GitlabHookMetadata,
@@ -12,7 +13,8 @@ import {
   buildEnvelope,
   decodeEnvelope,
   isGithubPullRequestRevisionEvent,
-  isFrame
+  isFrame,
+  pickCodeHostHookMembers
 } from '../index.js'
 
 const HOOK_ID = '11111111-1111-4111-8111-111111111111'
@@ -345,5 +347,43 @@ describe('code-host M0 shapes (gitlab-com-integration.md §17.2)', () => {
         publishedOutput: note
       }).success
     ).toBe(false)
+  })
+})
+
+describe('code-host member view (gitea-integration.md §13)', () => {
+  it('derives one provider-keyed view from the wire members and keys it by repository', () => {
+    expect(codeHostHookMetadataOf({ github })).toEqual({
+      provider: 'github',
+      repo: { provider: 'github', externalId: github.repoId, path: github.repoFullName },
+      metadata: github
+    })
+    expect(codeHostHookMetadataOf({ gitlab })).toEqual({
+      provider: 'gitlab',
+      repo: { provider: 'gitlab', externalId: gitlab.projectId, path: gitlab.projectPath },
+      metadata: gitlab
+    })
+  })
+
+  it('fails closed on a frame carrying no member or (malformed) more than one', () => {
+    expect(codeHostHookMetadataOf({})).toBeUndefined()
+    expect(codeHostHookMetadataOf({ github, gitlab })).toBeUndefined()
+  })
+
+  it('reads the member a decoded frame kept for an older peer', () => {
+    const decoded = HookReport.parse({
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'delivery-1',
+      status: 'success',
+      gitlab
+    })
+    expect(decoded.gitlab).toEqual(gitlab)
+    expect(codeHostHookMetadataOf(decoded)?.provider).toBe('gitlab')
+  })
+
+  it('copies the members forward as they are for a frame that only forwards them', () => {
+    expect(pickCodeHostHookMembers({ github })).toEqual({ github })
+    expect(pickCodeHostHookMembers({ gitlab, github: undefined })).toEqual({ gitlab })
+    expect(pickCodeHostHookMembers({})).toEqual({})
   })
 })

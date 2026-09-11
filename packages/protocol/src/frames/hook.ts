@@ -1,5 +1,11 @@
 import { z } from 'zod'
-import { CodeHostExternalId, CodeHostProviderString, HOOK_KINDS } from '../code-host.js'
+import {
+  CodeHostExternalId,
+  CodeHostProviderString,
+  HOOK_KINDS,
+  type CodeHostProvider,
+  type CodeHostRepoRef
+} from '../code-host.js'
 
 /** Decimal wire form for Prisma/GitHub bigint values. */
 export const HookBigIntString = z.string().regex(/^(?:0|[1-9]\d*)$/)
@@ -141,6 +147,51 @@ export const GitlabHookMetadata = z.object({
   noteId: HookBigIntString.optional()
 })
 export type GitlabHookMetadata = z.infer<typeof GitlabHookMetadata>
+
+/** The wire shape every code-host member reader accepts: one optional member per provider, named by its id. */
+export interface CodeHostHookMembers {
+  github?: GithubHookMetadata | undefined
+  gitlab?: GitlabHookMetadata | undefined
+}
+
+/** The trusted member each provider's wire member carries; a provider missing here fails to compile below. */
+interface CodeHostHookMetadataByProvider {
+  github: GithubHookMetadata
+  gitlab: GitlabHookMetadata
+}
+
+/** The trusted member typed for one provider. */
+export type CodeHostHookMetadataOf<P extends CodeHostProvider> = CodeHostHookMetadataByProvider[P]
+
+/** Decode-time view of a frame's trusted member (gitea-integration.md §13): one provider-keyed arm over the optional wire siblings, plus the rename-stable repo key. */
+export type CodeHostHookMetadata<P extends CodeHostProvider = CodeHostProvider> = {
+  [K in P]: { provider: K; repo: Required<CodeHostRepoRef>; metadata: CodeHostHookMetadataOf<K> }
+}[P]
+
+/** Every member a frame carries, in provider order — a well-formed frame carries at most one; a new provider adds its arm here. */
+function codeHostHookMembers(frame: CodeHostHookMembers): CodeHostHookMetadata[] {
+  const members: CodeHostHookMetadata[] = []
+  if (frame.github) {
+    const { repoId: externalId, repoFullName: path } = frame.github
+    members.push({ provider: 'github', repo: { provider: 'github', externalId, path }, metadata: frame.github })
+  }
+  if (frame.gitlab) {
+    const { projectId: externalId, projectPath: path } = frame.gitlab
+    members.push({ provider: 'gitlab', repo: { provider: 'gitlab', externalId, path }, metadata: frame.gitlab })
+  }
+  return members
+}
+
+/** The one provider member a frame carries; undefined for none or (malformed) several, so a consumer fails closed on both. */
+export function codeHostHookMetadataOf(frame: CodeHostHookMembers): CodeHostHookMetadata | undefined {
+  const members = codeHostHookMembers(frame)
+  return members.length === 1 ? members[0] : undefined
+}
+
+/** A frame's provider members copied forward as they are, for a frame that forwards trusted metadata rather than reading it. */
+export function pickCodeHostHookMembers(frame: CodeHostHookMembers): CodeHostHookMembers {
+  return { ...(frame.github ? { github: frame.github } : {}), ...(frame.gitlab ? { gitlab: frame.gitlab } : {}) }
+}
 
 export const HookReviewEvent = z.enum(['COMMENT', 'REQUEST_CHANGES', 'APPROVE'])
 export type HookReviewEvent = z.infer<typeof HookReviewEvent>
@@ -309,11 +360,12 @@ export const HookReport = z
         message: 'publishedComment and publishedOutput are mutually exclusive'
       })
     }
-    if (report.github && report.gitlab) {
+    const members = codeHostHookMembers(report)
+    if (members.length > 1) {
       ctx.addIssue({
         code: 'custom',
-        path: ['gitlab'],
-        message: 'github and gitlab metadata are mutually exclusive'
+        path: [members[1]!.provider],
+        message: 'provider metadata members are mutually exclusive'
       })
     }
   })
@@ -339,7 +391,7 @@ export const HookStart = z
     ...HookConfigSnapshot.shape
   })
   .superRefine((start, ctx) => {
-    if ((start.github === undefined) === (start.gitlab === undefined)) {
+    if (codeHostHookMembers(start).length !== 1) {
       ctx.addIssue({
         code: 'custom',
         path: ['github'],
