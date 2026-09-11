@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { lstat, mkdir, open, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
+import { ClusterSkillLedgerSchema } from '../store/cluster-skill-ledger.js'
 import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell } from '../skills/skills-cli-cell.js'
 import {
   reconcileSkillBundles,
@@ -13,6 +14,8 @@ import {
 import {
   ClusterSkillRequestSchema,
   ClusterSkillReconcileReplySchema,
+  ClusterSkillReconcileResultSchema,
+  skillReceiptPage,
   MAX_CLUSTER_SKILL_FILES,
   MAX_CLUSTER_SKILL_SOURCES,
   MAX_CLUSTER_SKILL_TOTAL_BYTES,
@@ -25,7 +28,11 @@ import {
   type ClusterSkillReconcileReply,
   type ClusterSkillUpload,
   type ClusterSkillUploadReply,
-  type ClusterSkillVerifyReply
+  type ClusterSkillVerifyReply,
+  type ClusterSkillPrior,
+  type ClusterSkillPriorReply,
+  type ClusterSkillReceipt,
+  type ClusterSkillReceiptPage
 } from './skill-protocol.js'
 
 interface Operation {
@@ -38,6 +45,8 @@ interface Operation {
   skillsAgentId: string
   authority: ClusterSkillBegin['authority']
   abort: AbortController
+  priorRoots: ClusterSkillReconcile['priorRoots']
+  result?: ClusterSkillReconcileReply
 }
 
 export interface ClusterSkillRequestContext {
@@ -77,6 +86,8 @@ export class ClusterSkillHandler {
     | ClusterSkillUploadReply
     | ClusterSkillReconcileReply
     | ClusterSkillVerifyReply
+    | ClusterSkillPriorReply
+    | ClusterSkillReceiptPage
   > {
     const parsed = ClusterSkillRequestSchema.parse(payload)
     if (abort?.aborted) {
@@ -86,6 +97,8 @@ export class ClusterSkillHandler {
     if (parsed.op === 'begin') return await this.begin(parsed, context)
     if (parsed.op === 'manifest') return this.manifest(parsed)
     if (parsed.op === 'upload') return await this.upload(parsed, abort)
+    if (parsed.op === 'prior') return this.prior(parsed, context)
+    if (parsed.op === 'receipt') return this.receipt(parsed, context)
     if (parsed.op === 'verify') {
       if (!this.deps.workspaceRoot) throw new Error('cluster skill verification is unavailable')
       return {
@@ -155,7 +168,8 @@ export class ClusterSkillHandler {
       abort: new AbortController(),
       files: new Map(),
       pendingManifest: input.moreFiles === true,
-      declaredBytes: 0
+      declaredBytes: 0,
+      priorRoots: []
     }
     this.operations.set(handle, operation)
     this.declare(operation, input.files)
@@ -192,21 +206,64 @@ export class ClusterSkillHandler {
     }
   }
 
+  private operationFor(
+    input: { handle: string; operationId: string },
+    context?: ClusterSkillRequestContext
+  ): Operation {
+    const operation = this.operations.get(input.handle)
+    if (!operation || operation.operationId !== input.operationId)
+      throw new Error('unknown cluster skill staging handle')
+    this.assertBoundAuthority(operation.authority, context)
+    const current = this.highestTerms.get(operation.authority.workspaceIncarnation)
+    if (
+      operation.abort.signal.aborted ||
+      current?.term !== operation.authority.term ||
+      current.daemonId !== operation.authority.daemonId
+    )
+      throw new Error('cluster skill reconciliation lost duty authority')
+    return operation
+  }
+
+  private prior(input: ClusterSkillPrior, context?: ClusterSkillRequestContext): ClusterSkillPriorReply {
+    const operation = this.operationFor(input, context)
+    if (operation.result || input.offset !== operation.priorRoots.length)
+      throw new Error('unexpected prior skill receipt offset')
+    const roots = ClusterSkillLedgerSchema.parse({ roots: [...operation.priorRoots, ...input.roots] }).roots
+    if (new Set(roots.map((root) => root.path)).size !== roots.length)
+      throw new Error('duplicate prior skill receipt root')
+    operation.priorRoots = roots
+    return { received: roots.length }
+  }
+
+  private async receipt(
+    input: ClusterSkillReceipt,
+    context?: ClusterSkillRequestContext
+  ): Promise<ClusterSkillReceiptPage> {
+    const operation = this.operationFor(input, context)
+    if (!operation.result) throw new Error('cluster skill receipt is not ready')
+    const page = skillReceiptPage(operation.result, input.offset)
+    if (page.nextOffset === undefined) await this.discard(input.handle)
+    return page
+  }
+
   private async reconcile(
     input: ClusterSkillReconcile,
     abort?: AbortSignal,
     context?: ClusterSkillRequestContext
-  ): Promise<ClusterSkillReconcileReply> {
-    const operation = this.operations.get(input.handle)
-    if (!operation || operation.operationId !== input.operationId)
-      throw new Error('unknown cluster skill staging handle')
-    this.assertBoundAuthority(input.authority, context)
+  ): Promise<ClusterSkillReceiptPage> {
+    const operation = this.operationFor(input, context)
+    if (operation.result) throw new Error('cluster skill reconciliation is already complete')
     if (JSON.stringify(operation.authority) !== JSON.stringify(input.authority)) {
       throw new Error('cluster skill authority changed during staging')
     }
-    const current = this.highestTerms.get(input.authority.workspaceIncarnation)
-    if (!current || current.term !== input.authority.term || current.daemonId !== input.authority.daemonId) {
-      throw new Error('cluster skill reconciliation lost duty authority')
+    if (input.priorRootCount !== undefined) {
+      const roots = ClusterSkillLedgerSchema.parse({ roots: [...operation.priorRoots, ...input.priorRoots] }).roots
+      if (roots.length !== input.priorRootCount) throw new Error('cluster skill prior receipt is incomplete')
+      if (new Set(roots.map((root) => root.path)).size !== roots.length)
+        throw new Error('duplicate prior skill receipt root')
+      input = { ...input, priorRoots: roots }
+    } else if (operation.priorRoots.length) {
+      throw new Error('cluster skill prior receipt count is missing')
     }
     if (!this.deps.workspaceRoot || !this.deps.stateRoot) throw new Error('cluster skill publication is unavailable')
     if (operation.pendingManifest) throw new Error('cluster skill manifest is incomplete')
@@ -230,6 +287,17 @@ export class ClusterSkillHandler {
       throw new Error('reconcile source was not declared')
     }
     const sourceMeta = new Map(input.sources.map((source) => [source.sourceId, source]))
+    const ownedRoot = (root: Omit<CandidateSkillBundle, 'sourceDir'>) => {
+      const source = sourceMeta.get(root.sourceKey)
+      if (!source) throw new Error('cluster skill publisher returned an unknown source')
+      return {
+        path: root.relativeRoot,
+        sourceId: root.sourceKey,
+        sourceKind: source.sourceKind,
+        digest: root.treeDigest,
+        files: root.files.map(({ path, mode, size, sha256 }) => ({ path, mode, size, sha256 }))
+      }
+    }
     const candidates: CandidateSkillBundle[] = []
     const cleanups: Array<() => void> = []
     try {
@@ -264,6 +332,23 @@ export class ClusterSkillHandler {
           })
         }
       }
+      // Validate the largest possible result before publication; conflicts and installed roots are subsets of this set.
+      const desiredRoots = [
+        ...new Map(candidates.map((candidate) => [candidate.relativeRoot, ownedRoot(candidate)])).values()
+      ]
+      const desired = ClusterSkillReconcileResultSchema.parse({
+        roots: desiredRoots,
+        conflicts: desiredRoots.map((root) => root.path)
+      })
+      if (input.priorRootCount === undefined) ClusterSkillReconcileReplySchema.parse(desired)
+      else {
+        let offset = 0
+        do {
+          const page = skillReceiptPage(desired, offset)
+          if (page.nextOffset === undefined) break
+          offset = page.nextOffset
+        } while (true)
+      }
       const result = await reconcileSkillBundles({
         cwd: this.deps.workspaceRoot,
         stateDir: this.deps.stateRoot,
@@ -288,19 +373,19 @@ export class ClusterSkillHandler {
         publicationKey: input.replayKey,
         candidates
       })
-      const roots = result.owned.map((root) => {
-        const source = sourceMeta.get(root.sourceKey)
-        if (!source) throw new Error('cluster skill publisher returned an unknown source')
-        return {
-          path: root.relativeRoot,
-          sourceId: root.sourceKey,
-          sourceKind: source.sourceKind,
-          digest: root.treeDigest,
-          files: root.files.map(({ path, mode, size, sha256 }) => ({ path, mode, size, sha256 }))
-        }
+      const reply = ClusterSkillReconcileResultSchema.parse({
+        roots: result.owned.map(ownedRoot),
+        conflicts: result.conflicts
       })
+      if (input.priorRootCount !== undefined) {
+        operation.result = reply
+        return await this.receipt(
+          { op: 'receipt', handle: input.handle, operationId: input.operationId, offset: 0 },
+          context
+        )
+      }
       await this.discard(operation.handle)
-      return ClusterSkillReconcileReplySchema.parse({ roots, conflicts: result.conflicts })
+      return ClusterSkillReconcileReplySchema.parse(reply)
     } finally {
       for (const cleanup of cleanups) cleanup()
     }

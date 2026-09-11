@@ -269,12 +269,14 @@ export class ShimClient {
           }
           expected = { agentId: frame.agentId, generation: frame.generation }
           const token = (this.deps.readToken ?? (() => readFileSync(SHIM_IDENTITY_TOKEN_PATH, 'utf8').trim()))()
+          const supported = frame.supportedFeatures ?? ['cluster-skills-v1', 'cluster-skills-v2']
+          const features = this.deps.features?.filter((feature) => supported.includes(feature))
           transport.send(
             JSON.stringify({
               type: 'shim/identity',
               token,
               ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {}),
-              ...(this.deps.features?.length ? { features: this.deps.features } : {})
+              ...(features?.length ? { features } : {})
             } satisfies Extract<ShimFrame, { type: 'shim/identity' }>)
           )
           return

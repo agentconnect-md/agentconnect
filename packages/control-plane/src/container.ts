@@ -940,7 +940,7 @@ export function buildContainer(
     placement: placementResolver,
     memberSets: repos.memberSet,
     liveness: connReg,
-    recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
+    recomputeDuties: (orgId: string) => dutyRecompute.recomputeOrg(orgId),
     log: { warn: (o, m) => http.log.warn(o, m) }
   })
 

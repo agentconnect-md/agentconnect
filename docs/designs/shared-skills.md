@@ -82,6 +82,19 @@ digests and CLI-derived relative roots outside the agent-writable workspace.
   receipt-owned roots, and returns the applied ledger before ACP starts. Shared
   journal writes are fenced by duty term and SandboxClaim UID.
 
+The publisher, durable ledger, and shared shim admit up to 64 installed bundles,
+each with 64 files and relative paths of at most 1024 UTF-8 bytes. These selected
+installation limits are separate from the larger source snapshot manifest.
+`cluster-skills-v3` pages prior receipts, installation results, and verification
+requests within the 220 KiB control-message budget. Small receipts still use one
+reconcile round trip. Publication checks result capacity before changing workspace
+files; older shims retain their single-frame admission until their image is updated.
+
+Serving activation and explicit launch acquire and project execution duty before
+preparing a sandbox workspace. Claim admission runs outside the agent lifecycle
+queue because installing a granted bundle can use that queue itself. A replica-only
+unstage retains its move token but does not claim duty or start a non-holder runtime.
+
 Implementation anchors:
 
 | Building block                               | Location                                                          | Role                                                        |

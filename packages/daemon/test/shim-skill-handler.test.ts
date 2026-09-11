@@ -1,14 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { chmod, lstat, mkdir, mkdtemp, readFile, symlink, utimes, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ShimRequester } from '../src/shim/channels.js'
 import { ClusterSkillClient } from '../src/shim/skill-client.js'
 import { ClusterSkillHandler } from '../src/shim/skill-handler.js'
-import { MAX_CLUSTER_SKILL_CHUNK_BYTES } from '../src/shim/skill-protocol.js'
+import { MAX_CLUSTER_SKILL_CHUNK_BYTES, MAX_CLUSTER_SKILL_CONTROL_BYTES } from '../src/shim/skill-protocol.js'
 import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
 import { treeDigest } from '../src/skills/skill-install-ledger.js'
+import { ClusterSkillCoordinator } from '../src/skills/cluster-skill-coordinator.js'
+import { legacySandboxSkillLedger } from '../src/skills/sandbox-skill-ledger.js'
+import { LocalStore } from '../src/store/local-store.js'
+import { memoryStoreDatabase } from './store-support.js'
 
 const sha256 = (value: Buffer): string => createHash('sha256').update(value).digest('hex')
 
@@ -34,6 +38,194 @@ async function fixture(content = Buffer.from('hello')) {
 }
 
 describe('cluster skill shim staging', () => {
+  it('rejects an oversized selected skill set before publishing any workspace files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-admission-'))
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    try {
+      const authority = {
+        groupId: 'g',
+        term: '1',
+        daemonId: 'd',
+        agentId: 'a',
+        workspaceIncarnation: 'w',
+        shimGeneration: 1
+      }
+      const handler = new ClusterSkillHandler({
+        stagingRoot: join(root, 'staging'),
+        workspaceRoot: workspace,
+        stateRoot: join(root, 'state')
+      })
+      const client = new ClusterSkillClient({ request: (_cap, payload) => handler.handle(payload) }, true, true, true)
+      const operationId = randomUUID()
+      const bodies = Array.from({ length: 65 }, (_, index) =>
+        Buffer.from(`---\nname: skill-${index}\ndescription: fixture\n---\n# Fixture\n`)
+      )
+      const files = bodies.map((body, index) => ({
+        sourceId: 'source',
+        path: `skill-${index}/SKILL.md`,
+        size: body.length,
+        sha256: sha256(body)
+      }))
+      const { handle } = await client.begin({ operationId, authority, skillsAgentId: 'codex', files })
+      for (const [index, file] of files.entries()) await client.upload(operationId, handle, file, bodies[index]!)
+      await expect(
+        client.reconcile({
+          operationId,
+          handle,
+          authority,
+          priorRoots: [],
+          replayKey: 'a'.repeat(64),
+          allowDesiredAdoption: false,
+          sources: [{ sourceId: 'source', sourceKind: 'managed', selections: [] }]
+        })
+      ).rejects.toThrow()
+      expect(await readdir(workspace)).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses incomplete, out-of-order and superseded prior receipts before publication', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-prior-'))
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    try {
+      const handler = new ClusterSkillHandler({
+        stagingRoot: join(root, 'staging'),
+        workspaceRoot: workspace,
+        stateRoot: join(root, 'state')
+      })
+      const operationId = randomUUID()
+      const authority = {
+        groupId: 'g',
+        term: '1',
+        daemonId: 'd',
+        agentId: 'a',
+        workspaceIncarnation: 'w',
+        shimGeneration: 1
+      }
+      const { handle } = await new ClusterSkillClient(
+        { request: (_cap, payload) => handler.handle(payload) },
+        true,
+        true,
+        true
+      ).begin({ operationId, authority, skillsAgentId: 'codex', files: [] })
+      const files = [{ path: 'SKILL.md', mode: 0o600, size: 0, sha256: sha256(Buffer.alloc(0)) }]
+      const roots = [
+        { path: '.agents/skills/one', sourceId: 'source', sourceKind: 'managed', digest: treeDigest(files), files }
+      ]
+      await expect(handler.handle({ op: 'prior', operationId, handle, offset: 1, roots })).rejects.toThrow(
+        'unexpected prior skill receipt offset'
+      )
+      await expect(handler.handle({ op: 'prior', operationId, handle, offset: 0, roots })).resolves.toEqual({
+        received: 1
+      })
+      await expect(
+        handler.handle({
+          op: 'reconcile',
+          operationId,
+          handle,
+          authority,
+          priorRoots: [],
+          priorRootCount: 2,
+          replayKey: 'a'.repeat(64),
+          allowDesiredAdoption: false,
+          sources: []
+        })
+      ).rejects.toThrow('cluster skill prior receipt is incomplete')
+      await handler.handle({
+        op: 'begin',
+        operationId: randomUUID(),
+        authority: { ...authority, term: '2' },
+        skillsAgentId: 'codex',
+        files: []
+      })
+      await expect(handler.handle({ op: 'prior', operationId, handle, offset: 1, roots })).rejects.toThrow(
+        'lost duty authority'
+      )
+      expect(await readdir(workspace)).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('commits, migrates, verifies and removes a receipt larger than one frame', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-receipts-'))
+    const workspace = join(root, 'workspace')
+    const stateRoot = join(root, 'state')
+    await mkdir(workspace)
+    const store = await LocalStore.open({
+      database: memoryStoreDatabase(),
+      shared: true,
+      ownerId: 'member-a',
+      orgForAgent: () => 'org'
+    })
+    try {
+      const authority = {
+        groupId: 'g',
+        term: '1',
+        daemonId: 'member-a',
+        agentId: 'a',
+        workspaceIncarnation: 'workspace'
+      }
+      await store.projectDutyWriteFence({ groupId: 'g', term: '1', daemonId: 'member-a' })
+      const sources = []
+      const nested = ['a', 'b', 'c', 'd'].map((letter) => letter.repeat(180))
+      for (let index = 0; index < 6; index++) {
+        const name = `skill-${index}`
+        const sourceDir = join(root, name)
+        await mkdir(join(sourceDir, ...nested), { recursive: true })
+        await writeFile(join(sourceDir, 'SKILL.md'), `---\nname: ${name}\ndescription: fixture\n---\n# Fixture\n`)
+        for (let file = 1; file < 50; file++) await writeFile(join(sourceDir, ...nested, `file-${file}.txt`), 'fixture')
+        sources.push({
+          sourceId: name,
+          sourceKind: 'managed' as const,
+          sourceDir,
+          selections: [name],
+          expectedLeaves: [name]
+        })
+      }
+      const handler = new ClusterSkillHandler({
+        stagingRoot: join(root, 'staging'),
+        workspaceRoot: workspace,
+        stateRoot
+      })
+      const requests: string[] = []
+      const client = new ClusterSkillClient(
+        {
+          request: async (_capability, payload) => {
+            expect(Buffer.byteLength(JSON.stringify(payload))).toBeLessThanOrEqual(MAX_CLUSTER_SKILL_CONTROL_BYTES)
+            requests.push((payload as { op: string }).op)
+            const reply = await handler.handle(payload)
+            expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(MAX_CLUSTER_SKILL_CONTROL_BYTES)
+            return reply
+          }
+        },
+        true,
+        true,
+        true
+      )
+      const coordinator = new ClusterSkillCoordinator(store)
+      const common = { authority, skillsAgentId: 'codex', shimGeneration: 1, client }
+      const ledger = await coordinator.reconcile({ ...common, sources })
+      expect(ledger.roots.flatMap((root) => root.files)).toHaveLength(300)
+      expect(Buffer.byteLength(JSON.stringify(ledger))).toBeGreaterThan(MAX_CLUSTER_SKILL_CONTROL_BYTES)
+      expect((await store.clusterSkillLedger('a', 'workspace'))?.ledger).toEqual(ledger)
+      expect((await legacySandboxSkillLedger('cluster-shim', workspace, stateRoot))?.roots).toHaveLength(6)
+      expect(await client.verify(ledger.roots)).toEqual({ intact: Array(6).fill(true) })
+      expect(requests.filter((op) => op === 'verify').length).toBeGreaterThan(1)
+      expect(requests).toContain('receipt')
+      await expect(coordinator.reconcile({ ...common, sources: [] })).resolves.toMatchObject({ roots: [] })
+      expect(requests.filter((op) => op === 'prior').length).toBeGreaterThan(1)
+      expect(await readdir(join(workspace, '.agents/skills'))).toEqual([])
+      expect((await store.clusterSkillLedger('a', 'workspace'))?.revision).toBe(2)
+    } finally {
+      await store.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 120_000)
+
   it('assembles a paged manifest and enforces the totals no single page can see', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-shim-paged-'))
     const handler = new ClusterSkillHandler({ stagingRoot: join(root, 'staging'), inactiveMs: 1_000 })

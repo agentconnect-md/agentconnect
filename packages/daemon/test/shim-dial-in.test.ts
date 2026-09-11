@@ -260,7 +260,7 @@ describe('sandbox shim dial-in', () => {
     })
     const { endpoint } = await sandbox({
       workspaceRoot: workspace,
-      features: ['cluster-skills-v1'],
+      features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'],
       backoff: fastBackoff(),
       handle: (capability, payload, abort, context) =>
         capability === 'skills' ? handler.handle(payload, abort, context) : Promise.resolve(undefined)
@@ -277,7 +277,7 @@ describe('sandbox shim dial-in', () => {
       log: quiet
     })
     dialers.push(dialer)
-    const spawn: SpawnRecord = { ...record(), grants: ['skills'] }
+    const spawn: SpawnRecord = { ...record(), grants: ['skills', 'skills-wide', 'skills-receipts'] }
     await dialer.connect(endpoint, spawn, 8_000)
     await waitFor(() => session.isAttached())
 
@@ -290,7 +290,8 @@ describe('sandbox shim dial-in', () => {
       workspaceIncarnation: 'claim',
       shimGeneration: 1
     }
-    const client = new ClusterSkillClient(session)
+    expect(session.hasCapability('skills-receipts')).toBe(true)
+    const client = new ClusterSkillClient(session, true, true, true)
     const operationId = randomUUID()
     const file = {
       sourceId: 'managed:channel',

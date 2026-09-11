@@ -581,10 +581,16 @@ export class DutyCoordinator {
    *  ask would suppress the very answer that makes a stale delivery routable —
    *  the incumbent's identity — turning a re-routable trigger into a drop. So a
    *  full or draining member still asks, and hands back anything it wins. */
-  async claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
-    // A drain that has already begun is the one case worth short-circuiting: it
-    // cannot be resolved by learning a holder, because this member is leaving.
-    if (this.host.dutyClaimsSuspended() || this.host.drainingAgents().has(agentId)) {
+  async claimDutyForTrigger(
+    agentId: string,
+    isLifecycleCurrent?: () => boolean
+  ): Promise<{ granted: boolean; holder?: string }> {
+    // An explicit lifecycle admission can claim behind its own drain gate, while its operation remains current.
+    const blocked = () =>
+      this.host.dutyClaimsSuspended() ||
+      this.host.draining() ||
+      (isLifecycleCurrent ? !isLifecycleCurrent() : this.host.drainingAgents().has(agentId))
+    if (blocked()) {
       this.log.debug(`duty: not claiming ${agentId} while draining`)
       return { granted: false }
     }
@@ -606,8 +612,7 @@ export class DutyCoordinator {
       // The group we were actually given may cover several agents, so capacity
       // is judged against it — never against the single agent we asked about.
       const arriving = grant.members.filter((m) => m.kind === 'agent' && !this.duties.holdsAgent(m.refId)).length
-      const draining =
-        this.host.dutyClaimsSuspended() || this.host.draining() || this.host.drainingAgents().has(agentId)
+      const draining = blocked()
       if (draining || arriving > this.dutyHeadroomForPendingClaim()) {
         const why = draining ? 'a drain started while the claim was in flight' : 'it does not fit remaining capacity'
         this.log.info(`duty: handing ${grant.groupId} straight back — ${why}`)

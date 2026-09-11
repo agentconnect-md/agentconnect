@@ -279,8 +279,9 @@ through their host-side representation.
 
 Retired-root sweeps skip cold VMs; explicit Console reads may resume them. If
 optional microsandbox initialization fails, host file inspection remains
-available while VM launches remain refused. The shared Kubernetes skill receipt
-size limits and duty-authority requirements also apply to microsandbox.
+available while VM launches remain refused. Kubernetes and microsandbox share
+the paged skill receipt protocol and require duty admission before serving
+activation or explicit launch prepares a sandbox workspace.
 
 Kubernetes mode retains `K8sDriver`, its resource configuration, and image rollout.
 An explicitly configured local microsandbox backend

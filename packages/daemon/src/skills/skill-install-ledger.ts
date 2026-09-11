@@ -4,16 +4,12 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { under } from '../fs/contained-path.js'
 import { inspectLocalSkillSource } from './skill-source-snapshot.js'
+import { MAX_SKILL_BUNDLES, MAX_SKILL_PATH_BYTES, MAX_SKILL_RECEIPT_FILES } from './skill-limits.js'
 import { canonicalSkillMutationRoot, runSkillWorkspaceMutation } from './skill-workspace-mutator.js'
 import { withSkillMutationHelperLease, type SkillMutationHelperLease } from './skill-workspace-lock-lease.js'
 
-// An applying/cleanup journal can contain two complete receipt sets: up to 64
-// bundles × 64 files × a 1 KiB path in each set, plus 4 KiB source keys and JSON
-// escaping. Control characters and backslashes are rejected below, bounding
-// remaining string escaping to at most 2×. The legal worst case is below 24 MiB;
-// 32 MiB leaves structural headroom while keeping hostile state reads capped.
+// Two sets of 64 bundles × 64 files × 1 KiB paths, source keys and JSON escaping fit below this bounded journal read.
 export const MAX_SKILL_LEDGER_BYTES = 32 * 1024 * 1024
-const MAX_RECEIPT_FILES = 64
 const MAX_RECEIPT_BYTES = 4 * 1024 * 1024
 const MAX_RECEIPT_FILE_BYTES = 512 * 1024
 const MAX_LAYOUT_SEGMENTS = 8
@@ -462,6 +458,7 @@ async function reconcileSkillBundlesLocked(
     }
 
     const deduped = dedupeCandidates(await canonicalizeCandidates(options.cwd, options.candidates))
+    if (deduped.length > MAX_SKILL_BUNDLES) throw safety('skill installation exceeds its bundle limit')
     const gitResolutions = validateGitResolutions(options.gitResolutions ?? [])
     for (const candidate of deduped) {
       validateCandidate(candidate)
@@ -523,6 +520,9 @@ async function reconcileSkillBundlesLocked(
       const canonical = await canonicalizeRelativeRoot(options.cwd, root)
       const priorEntry = priorByPath.get(canonical)
       if (priorEntry && !candidateRoots.has(canonical) && !kept.has(canonical)) kept.set(canonical, priorEntry)
+    }
+    if (adopted.length + kept.size + candidates.length > MAX_SKILL_BUNDLES) {
+      throw safety('skill installation exceeds its bundle limit')
     }
     const paths = [
       ...new Set([
@@ -781,7 +781,12 @@ export function treeDigest(files: SkillFileReceipt[]): string {
 }
 
 function validateRelativeRoot(value: string): void {
-  if (isAbsolute(value) || value.includes('\0') || value.includes('\\') || Buffer.byteLength(value, 'utf8') > 1_024) {
+  if (
+    isAbsolute(value) ||
+    value.includes('\0') ||
+    value.includes('\\') ||
+    Buffer.byteLength(value, 'utf8') > MAX_SKILL_PATH_BYTES
+  ) {
     throw safety(`unsafe skill receipt path: ${value}`)
   }
   const parts = value.split('/')
@@ -807,7 +812,7 @@ function validateReceipt(bundle: SkillBundleReceipt): void {
     !/^[a-f0-9]{64}$/.test(bundle.treeDigest) ||
     !Array.isArray(bundle.files) ||
     bundle.files.length === 0 ||
-    bundle.files.length > MAX_RECEIPT_FILES
+    bundle.files.length > MAX_SKILL_RECEIPT_FILES
   ) {
     throw safety('invalid skill bundle receipt')
   }
@@ -824,7 +829,7 @@ function validateReceipt(bundle: SkillBundleReceipt): void {
       CONTROL_RE.test(file.path) ||
       parts.some((part) => !part || part === '.' || part === '..') ||
       parts.length > 32 ||
-      Buffer.byteLength(file.path, 'utf8') > 1_024 ||
+      Buffer.byteLength(file.path, 'utf8') > MAX_SKILL_PATH_BYTES ||
       (file.mode !== 0o600 && file.mode !== 0o700) ||
       !Number.isSafeInteger(file.size) ||
       file.size < 0 ||
@@ -1294,7 +1299,7 @@ function validateGitResolutions(value: unknown): SkillGitResolution[] {
 }
 
 function parseOwnedList(value: unknown): OwnedSkillBundle[] {
-  if (!Array.isArray(value) || value.length > 64) throw safety('skill ownership ledger is invalid')
+  if (!Array.isArray(value) || value.length > MAX_SKILL_BUNDLES) throw safety('skill ownership ledger is invalid')
   return value.map((entry) => {
     validateOwned(entry as OwnedSkillBundle)
     return entry as OwnedSkillBundle
@@ -1302,7 +1307,7 @@ function parseOwnedList(value: unknown): OwnedSkillBundle[] {
 }
 
 function parseReceiptList(value: unknown): SkillBundleReceipt[] {
-  if (!Array.isArray(value) || value.length > 64) throw safety('skill ownership ledger is invalid')
+  if (!Array.isArray(value) || value.length > MAX_SKILL_BUNDLES) throw safety('skill ownership ledger is invalid')
   return value.map((entry) => {
     validateReceipt(entry as SkillBundleReceipt)
     return entry as SkillBundleReceipt

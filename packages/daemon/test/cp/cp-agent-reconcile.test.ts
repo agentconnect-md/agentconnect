@@ -15,6 +15,8 @@ import {
 import { RegisterReq, type AgentSpec, type DutyGrantEntry } from '@agentconnect.md/protocol'
 import { agentRemovalObligationsDir } from '../../src/paths.js'
 import { fakeSlackAppFactory } from '../fakes/slack-app.js'
+import { ClusterSkillClient } from '../../src/shim/skill-client.js'
+import { ClusterSkillHandler } from '../../src/shim/skill-handler.js'
 
 const MOVE_ID = '77777777-7777-4777-8777-777777777777'
 const MOVE_ID_2 = '88888888-8888-4888-8888-888888888888'
@@ -75,6 +77,14 @@ function makeDaemon(root: string) {
 }
 
 const seam = (d: Daemon) => (d as any).cpConfigApply()
+
+function signal() {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
 
 /** Make the daemon a duty-governed pool member — `frame` scope is what `dutyEnforced()` reads. */
 function poolMember(daemon: Daemon, client: Record<string, unknown> = {}) {
@@ -505,19 +515,21 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await daemon.stop()
   })
 
-  it('a token-less activate on a member that holds no duty releases the fence without a host (#1093)', async () => {
+  it.each([undefined, MOVE_ID])('unstage with token %s restores a non-holder without claiming duty', async (moveId) => {
     const root = root1()
     writeAgent(root, 'bot-a')
     const { daemon, hosts } = makeDaemon(root)
     await daemon.start()
     const fetchDutyAgent = vi.fn(async () => ({ bundle: DUTY_BUNDLE }))
-    poolMember(daemon, { fetchDutyAgent })
+    const claimDuty = vi.fn()
+    poolMember(daemon, { fetchDutyAgent, claimDuty })
     expect((daemon as any).servesAgent('bot-a')).toBe(false)
 
     await expect(seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
     await expect(
       seam(daemon).applyAgentActivate({
         agentId: 'bot-a',
+        ...(moveId ? { moveId, unstageOnly: true } : {}),
         spec: { name: 'bot-a', runtime: 'claude' },
         integrations: [],
         crons: []
@@ -534,6 +546,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await (daemon as any).flushReconcile()
     expect(hosts).toEqual([])
     expect((daemon as any).hosts.has('bot-a')).toBe(false)
+    expect(claimDuty).not.toHaveBeenCalled()
 
     // The duty grant is what starts it, and the current replica makes that install a no-fetch.
     await (daemon as any).dutyCoordinator.admitDutyGrants([dutyGrant('bot-a')])
@@ -542,6 +555,137 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await (daemon as any).ensureHostAsync('bot-a')
     expect(hosts.map((h) => h.id)).toEqual(['bot-a'])
     await daemon.stop()
+  })
+
+  // This fixture executes the Linux sandbox's real filesystem publisher on the test host.
+  it.skipIf(process.platform === 'win32').each([
+    ['launch', false],
+    ['activate', false],
+    ['launch', true],
+    ['activate', true]
+  ] as const)(
+    '%s admits duty before sandbox preparation and honors a completed stop: %s',
+    async (kind, stopWhileClaiming) => {
+      const root = root1()
+      writeAgent(root, 'bot-a')
+      const { daemon, hosts } = makeDaemon(root)
+      const d = daemon as any
+      await daemon.start()
+      try {
+        d.runtimeCatalog.entries.claude = { ...d.runtimeCatalog.entries.claude, skillsAgentId: 'claude-code' }
+        if (kind === 'activate') {
+          expect(await seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).toEqual({ ok: true })
+        }
+        const claimed = signal()
+        const releaseClaim = signal()
+        const claimDuty = vi.fn(async () => {
+          claimed.resolve()
+          await releaseClaim.promise
+          return { granted: true, grant: dutyGrant('bot-a') }
+        })
+        poolMember(daemon, { claimDuty, fetchDutyAgent: async () => ({ bundle: DUTY_BUNDLE }) })
+        const workspace = join(root, 'sandbox-workspace')
+        mkdirSync(workspace)
+        const handler = new ClusterSkillHandler({
+          stagingRoot: join(root, 'staging'),
+          workspaceRoot: workspace,
+          stateRoot: join(root, 'state')
+        })
+        const client = new ClusterSkillClient({ request: (_cap, payload) => handler.handle(payload) }, true, true, true)
+        d.k8sPlane = {
+          withSandbox: async (_subject: unknown, fn: () => Promise<unknown>) => fn(),
+          ensureChannel: async () => {},
+          workspaceRootFor: () => workspace,
+          workspaceIncarnationFor: () => 'workspace',
+          shimGenerationFor: () => 1,
+          skillClientFor: () => client
+        }
+        const prepare = vi.spyOn(d.workspaces, 'prepareClusterWorkspace').mockResolvedValue(workspace)
+        const activate = {
+          agentId: 'bot-a',
+          moveId: MOVE_ID,
+          spec: { name: 'bot-a', runtime: 'claude' },
+          integrations: [],
+          crons: []
+        }
+        const pending =
+          kind === 'activate'
+            ? seam(daemon).applyAgentActivate(activate)
+            : seam(daemon).applyAgentLaunch({ agentId: 'bot-a' })
+        await claimed.promise
+        expect(prepare).not.toHaveBeenCalled()
+        expect(hosts).toEqual([])
+        const duplicate = kind === 'activate' ? seam(daemon).applyAgentActivate(activate) : undefined
+        if (stopWhileClaiming) {
+          expect(await seam(daemon).applyAgentStop({ agentId: 'bot-a', launchId: 'launch', reason: 'test' })).toEqual({
+            ok: true
+          })
+        }
+        releaseClaim.resolve()
+        if (stopWhileClaiming) {
+          if (kind === 'activate') {
+            expect(await pending).toEqual({ ok: false, reason: 'agent/activate: execution duty is not ready' })
+            expect(await duplicate).toEqual(await pending)
+          } else await expect(pending).rejects.toThrow('agent/launch: execution duty is not ready')
+          expect(d.cpClient.releaseDuties).toHaveBeenCalledWith([GROUP_ID])
+          expect(prepare).not.toHaveBeenCalled()
+          expect(hosts).toEqual([])
+          return
+        }
+        if (kind === 'activate') {
+          expect(await pending).toEqual({ ok: true })
+          expect(await duplicate).toEqual({ ok: true })
+        } else expect(await pending).toMatchObject({ agentId: 'bot-a' })
+        expect(claimDuty).toHaveBeenCalledTimes(1)
+        expect(prepare).toHaveBeenCalled()
+        expect(hosts.map((host) => host.id)).toEqual(['bot-a'])
+        expect(d.servesAgent('bot-a')).toBe(true)
+      } finally {
+        d.k8sPlane = undefined
+        await daemon.stop()
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('a superseding detach returns an in-flight activation claim without preparing a workspace', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    const d = daemon as any
+    await daemon.start()
+    try {
+      expect(await seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).toEqual({ ok: true })
+      const claimed = signal()
+      const releaseClaim = signal()
+      poolMember(daemon, {
+        claimDuty: async () => {
+          claimed.resolve()
+          await releaseClaim.promise
+          return { granted: true, grant: dutyGrant('bot-a') }
+        }
+      })
+      const prepare = vi.spyOn(d.workspaces, 'prepareWorkspaceForActivation')
+      const pending = seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        moveId: MOVE_ID,
+        spec: { name: 'bot-a', runtime: 'claude' },
+        integrations: [],
+        crons: [],
+        prepareWorkspace: true
+      })
+      await claimed.promise
+      expect(await seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID_2 })).toEqual({ ok: true })
+      releaseClaim.resolve()
+      expect(await pending).toEqual({ ok: false, reason: 'agent/activate: execution duty is not ready' })
+      expect(d.cpClient.releaseDuties).toHaveBeenCalledWith([GROUP_ID])
+      expect(prepare).not.toHaveBeenCalled()
+      expect(hosts).toEqual([])
+      expect(readAgentMoveStage(join(root, 'agents'), 'bot-a')).toMatchObject({ moveId: MOVE_ID_2, state: 'staging' })
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('a token-less activate still proves its host on the member that holds the duty', async () => {

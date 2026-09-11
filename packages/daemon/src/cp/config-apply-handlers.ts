@@ -111,6 +111,7 @@ export interface ConfigApplyGateHost {
   reserveAgentDrain(agentId: string): (preserveGate: boolean) => void
   agentRemovalPending(agentId: string): boolean
   agentDestructivePending(agentId: string): boolean
+  agentDrainVersion(agentId: string): number
   clearRemovalAfterDestruction(agentId: string): void
   clearRemovalForReadd(agentId: string): void
   queueAgentLifecycle<T>(
@@ -118,7 +119,13 @@ export interface ConfigApplyGateHost {
     work: () => Promise<T>,
     opts?: { failureOwner?: string; onSettled?: () => void }
   ): Promise<T>
-  queueAgentMove(kind: 'detach' | 'activate', agentId: string, moveId: string, work: () => Promise<Ack>): Promise<Ack>
+  queueAgentMove(
+    kind: 'detach' | 'activate',
+    agentId: string,
+    moveId: string,
+    work: () => Promise<Ack>,
+    admit?: () => Promise<Ack | undefined>
+  ): Promise<Ack>
 }
 
 /** Live agents, their hosts, workspaces, and the credentials bound to them. */
@@ -153,6 +160,7 @@ export interface ConfigApplyRuntimeHost {
   activationCapabilityError(agent: LoadedAgent): string | undefined
   /** True when this daemon holds the duty that serves the agent. */
   servesAgent(agentId: string): boolean
+  claimAgentDuty(agentId: string, isLifecycleCurrent: () => boolean): Promise<{ granted: boolean }>
   closeUnusedPlatformConnections(): Promise<void>
 }
 
@@ -526,7 +534,26 @@ export function applyAgentDetach(host: ConfigApplyHost, detach: AgentDetach): Pr
 
 export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivate): Promise<Ack> {
   const { agentId } = activate
-  return host.queueAgentMove('activate', agentId, activate.moveId ?? 'unstage', async () => {
+  const requiresRuntime = activate.moveId !== undefined && !activate.unstageOnly
+  const drainVersion = host.agentDrainVersion(agentId)
+  const isCurrent = (): boolean => {
+    const stage = host.moveStageMetadata().get(agentId)
+    return (
+      stage?.moveId === activate.moveId &&
+      stage?.state === 'staging' &&
+      host.moveStagedAgents().has(agentId) &&
+      host.drainingAgents().has(agentId) &&
+      !host.agentDestructivePending(agentId) &&
+      host.agentDrainVersion(agentId) === drainVersion &&
+      !host.singleAgentMode()
+    )
+  }
+  const admit = async (): Promise<Ack | undefined> => {
+    if (!requiresRuntime || !isCurrent() || host.servesAgent(agentId)) return
+    const claim = await host.claimAgentDuty(agentId, isCurrent)
+    if (!claim.granted) return { ok: false, reason: 'agent/activate: execution duty is not ready' }
+  }
+  const work = async (): Promise<Ack> => {
     if (host.singleAgentMode()) {
       return { ok: false, reason: 'agent move is unavailable in --agent single-agent mode' }
     }
@@ -543,6 +570,12 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
       !host.drainingAgents().has(agentId)
     ) {
       return { ok: false, reason: 'agent/activate: staging fence is missing or superseded' }
+    }
+    if (host.agentDrainVersion(agentId) !== drainVersion) {
+      return { ok: false, reason: 'agent/activate: superseded by a newer agent drain' }
+    }
+    if (requiresRuntime && !host.servesAgent(agentId)) {
+      return { ok: false, reason: 'agent/activate: execution duty is not ready' }
     }
     // Capacity counts agents, not hosts: a confined agent's per-session hosts are bounded by session admission.
     const capacityUsed = host.agents().size + host.activatingAgents().size
@@ -631,7 +664,7 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
         return { ok: false, reason: `agent/activate: ${capabilityError}` }
       }
       let rollbackPreparedWorkspace: (() => void) | undefined
-      if (activate.prepareWorkspace || activate.reconcileWorkspace) {
+      if ((activate.prepareWorkspace || activate.reconcileWorkspace) && host.servesAgent(agentId)) {
         try {
           // A prior incarnation of this agent id must relinquish every
           // queued/running preparation before activation rewrites or
@@ -655,13 +688,10 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
           return { ok: false, reason: `agent/activate: workspace preparation failed: ${(err as Error).message}` }
         }
       }
-      // Prove ACP can initialize under the still-closed gate; the workspace reconciled first, so the
-      // spawned runtime and its sandbox bind the new directory rather than an unlinked old one.
-      // An unstage restores the replica, not serving authority: a non-holder must not bind the sandbox (#1093).
-      // Read HERE, never captured: a revoke landing during the awaits above already stopped this host.
-      // Tokened stays host-proving: its target is the placement, or a source whose duty the move never released.
-      if (activate.moveId !== undefined || host.servesAgent(agentId)) {
+      // Re-read duty at the execution boundary; a move token cannot authorize a sandbox after a revoke.
+      if (requiresRuntime || host.servesAgent(agentId)) {
         try {
+          if (!host.servesAgent(agentId)) throw new Error('execution duty was revoked during activation')
           // Key-server mode gives every session its own credential-scoped host, so there is no
           // shared agent host to prove — reconciling the workspace is the whole of the proof.
           if (host.keyServer()) await host.prepareAgentWorkspace(agent, undefined, undefined, true)
@@ -680,7 +710,7 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
           return { ok: false, reason: `agent/activate: ${(err as Error).message}` }
         }
       }
-      if (host.agentDestructivePending(agentId)) {
+      if (host.agentDestructivePending(agentId) || (requiresRuntime && !host.servesAgent(agentId))) {
         host.moveStagedAgents().add(agentId)
         await host.stopHost(agentId).catch(() => {})
         try {
@@ -693,7 +723,9 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
           ok: false,
           reason: host.agentRemovalPending(agentId)
             ? 'agent/activate: superseded by agent removal'
-            : 'agent/activate: superseded by a newer agent drain'
+            : !host.servesAgent(agentId)
+              ? 'agent/activate: execution duty was revoked during activation'
+              : 'agent/activate: superseded by a newer agent drain'
         }
       }
       try {
@@ -716,7 +748,8 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
       host.preparingWorkspaces().delete(agentId)
       host.activatingAgents().delete(agentId)
     }
-  })
+  }
+  return host.queueAgentMove('activate', agentId, activate.moveId ?? 'unstage', work, admit)
 }
 
 export async function listAgentPermissionRequests(
@@ -820,16 +853,28 @@ export function applyCollabRoutes(host: ConfigApplyRegistryHost, snap: CollabRou
   host.cpCollab().replace(snap)
 }
 
-export function applyAgentLaunch(host: ConfigApplyHost, launch: AgentLaunch): Promise<AgentLaunched> {
+export async function applyAgentLaunch(host: ConfigApplyHost, launch: AgentLaunch): Promise<AgentLaunched> {
+  const drainVersion = host.agentDrainVersion(launch.agentId)
+  const isCurrent = (): boolean =>
+    host.agents().has(launch.agentId) &&
+    !host.moveStagedAgents().has(launch.agentId) &&
+    !host.agentDestructivePending(launch.agentId) &&
+    host.agentDrainVersion(launch.agentId) === drainVersion
+  // Claim outside the lifecycle queue because admitting the grant may install an agent through that same queue.
+  if (isCurrent() && !host.servesAgent(launch.agentId)) {
+    const claim = await host.claimAgentDuty(launch.agentId, isCurrent)
+    if (!claim.granted) throw new Error('agent/launch: execution duty is not ready')
+  }
   return host.queueAgentLifecycle(launch.agentId, async () => {
     if (host.moveStagedAgents().has(launch.agentId)) {
       throw new Error(`agent/launch: agent ${launch.agentId} is staged for a daemon move`)
     }
     const agent = host.agents().get(launch.agentId)
     if (!agent) throw new Error(`agent/launch: unknown agent ${launch.agentId}`)
-    if (host.agentDestructivePending(launch.agentId)) {
+    if (host.agentDestructivePending(launch.agentId) || host.agentDrainVersion(launch.agentId) !== drainVersion) {
       throw new Error(`agent/launch: superseded by a newer agent drain for ${launch.agentId}`)
     }
+    if (!host.servesAgent(launch.agentId)) throw new Error('agent/launch: execution duty is not ready')
     // Revive a stopped agent only after every older lifecycle mutation has
     // settled. The queue prevents launch from clearing a slow remove's gate.
     host.drainingAgents().delete(launch.agentId)

@@ -133,9 +133,8 @@ export interface AgentMoveDeps {
    *  placement names no machine of its own. Absent ⇒ placement alone (the pre-duty behavior). */
   placement?: PlacementResolver
   log?: AgentMoveLog
-  /** Placement decides duty incumbency (design §4.4 soak policy), so a completed
-   *  move re-derives the org's groups. Fire-and-forget; the sweep is the backstop. */
-  recomputeDuties?: (orgId: string) => void
+  /** Re-derive placement eligibility before a target claims its execution duty. */
+  recomputeDuties?: (orgId: string) => Promise<void> | void
 }
 
 interface MoveBundle {
@@ -365,7 +364,7 @@ export class AgentMoveService {
     // Repairing a pool placement is the ledger's job: re-derive the duty group, clear any stale
     // member fence that would make the next grant a dark hold, and let the lease exchange install.
     if (placement.kind !== 'daemon') {
-      this.deps.recomputeDuties?.(agent.orgId)
+      await this.deps.recomputeDuties?.(agent.orgId)
       await this.unstageEligibleSources(agent, new Map(), placement)
       await this.convergeDerived(agent, (await this.snapshot(agent)).httpBotIds)
       return agent
@@ -600,7 +599,6 @@ export class AgentMoveService {
     let moved: AgentRecord | null
     try {
       moved = await this.deps.agents.movePlacement(agent.id, source, target, editor, opts)
-      if (moved) this.deps.recomputeDuties?.(moved.orgId)
     } catch (err) {
       await this.restoreSourceIfStillOwner(agent, source, sourceBundle)
       throw new AgentMoveFailed('failed to persist agent placement', err)
@@ -615,6 +613,7 @@ export class AgentMoveService {
     // through `duty/fetch` and starts serving. Committing the placement IS the move — a
     // synchronous activation would only name one member the ledger is free to replace next beat.
     if (target.kind !== 'daemon') {
+      await this.deps.recomputeDuties?.(moved.orgId)
       await this.unstageEligibleSources(moved, stagedSources, target)
       await this.convergeDerived(moved, sourceBundle.httpBotIds)
       return moved
@@ -680,7 +679,11 @@ export class AgentMoveService {
         'source unstage',
         await this.deps.control.agentActivate(
           daemonId,
-          { ...this.activationDefinition(agent, bundle), ...(moveId === undefined ? {} : { moveId }) },
+          {
+            ...this.activationDefinition(agent, bundle),
+            unstageOnly: true,
+            ...(moveId === undefined ? {} : { moveId })
+          },
           agent.orgId
         )
       )
@@ -1062,7 +1065,7 @@ export class AgentMoveService {
         source,
         editor
       )
-      if (restored) this.deps.recomputeDuties?.(restored.orgId)
+      if (restored) await this.deps.recomputeDuties?.(restored.orgId)
     } catch (err) {
       this.deps.log?.warn({ err, agentId: moved.id }, 'agent move: placement rollback failed')
     }
@@ -1099,6 +1102,7 @@ export class AgentMoveService {
     // complete snapshot synchronously while the staging tombstone remains armed.
     const moveId = randomUUID()
     requireAck(`${label} staging detach`, await this.detach(daemonId, agent.id, agent.orgId, { moveId }))
+    await this.deps.recomputeDuties?.(agent.orgId)
     requireAck(
       `${label} activate`,
       await this.deps.control.agentActivate(

@@ -1,4 +1,5 @@
 import type { ShimRequester } from './channels.js'
+import { ClusterSkillLedgerSchema } from '../store/cluster-skill-ledger.js'
 import {
   ClusterSkillBeginReplySchema,
   ClusterSkillBeginSchema,
@@ -6,6 +7,12 @@ import {
   ClusterSkillManifestReplySchema,
   ClusterSkillManifestSchema,
   ClusterSkillReconcileReplySchema,
+  ClusterSkillReconcileResultSchema,
+  ClusterSkillPriorSchema,
+  ClusterSkillPriorReplySchema,
+  ClusterSkillReceiptPageSchema,
+  ClusterSkillVerifySchema,
+  skillControlPages,
   ClusterSkillUploadReplySchema,
   ClusterSkillVerifyReplySchema,
   LEGACY_MAX_CLUSTER_SKILL_FILES,
@@ -13,7 +20,6 @@ import {
   MAX_CLUSTER_SKILL_CHUNK_BYTES,
   MAX_CLUSTER_SKILL_CONTROL_BYTES,
   MAX_CLUSTER_SKILL_FILES,
-  MAX_CLUSTER_SKILL_MANIFEST_PAGE,
   MAX_CLUSTER_SKILL_TOTAL_BYTES,
   type ClusterSkillBegin,
   type ClusterSkillBeginReply,
@@ -24,16 +30,14 @@ import {
   type ClusterSkillVerifyReply
 } from './skill-protocol.js'
 
-/** Room for a page's op/operationId/handle/moreFiles keys around the file rows. */
-const MANIFEST_PAGE_ENVELOPE_BYTES = 512
-
 export class ClusterSkillClient {
   /** `wide` mirrors the peer's `cluster-skills-v2` grant. */
   constructor(
     private readonly requester: ShimRequester,
     private readonly wide = false,
     // Enabled when the caller supplies a matching shim bundle; retained images may predate this field.
-    readonly fileModes = false
+    readonly fileModes = false,
+    private readonly receiptPaging = false
   ) {}
 
   /** What the BOUND image admits, so a caller can drop one oversized source instead of failing a launch. */
@@ -52,7 +56,7 @@ export class ClusterSkillClient {
     if (input.files.length > maxFiles || total > maxTotalBytes) {
       throw new Error('cluster skill sources exceed what this sandbox image admits')
     }
-    const pages = this.wide ? pageFiles(input.files) : [input.files]
+    const pages = this.wide ? skillControlPages(input.files) : [input.files]
     const request = ClusterSkillBeginSchema.parse({
       op: 'begin',
       ...input,
@@ -87,15 +91,65 @@ export class ClusterSkillClient {
     }
   }
 
-  async reconcile(input: Omit<ClusterSkillReconcile, 'op'>): Promise<ClusterSkillReconcileReply> {
-    const request = ClusterSkillReconcileSchema.parse({ op: 'reconcile', ...input })
-    return ClusterSkillReconcileReplySchema.parse(
-      await this.requester.request('skills', request, { timeoutMs: 15 * 60_000 })
+  async reconcile(input: Omit<ClusterSkillReconcile, 'op' | 'priorRootCount'>): Promise<ClusterSkillReconcileReply> {
+    if (!this.receiptPaging) {
+      const request = ClusterSkillReconcileSchema.parse({ op: 'reconcile', ...input })
+      return ClusterSkillReconcileReplySchema.parse(
+        await this.requester.request('skills', request, { timeoutMs: 15 * 60_000 })
+      )
+    }
+    const priorRoots = ClusterSkillLedgerSchema.parse({ roots: input.priorRoots }).roots
+    const request = { op: 'reconcile' as const, ...input, priorRoots, priorRootCount: priorRoots.length }
+    if (Buffer.byteLength(JSON.stringify(request)) > MAX_CLUSTER_SKILL_CONTROL_BYTES) {
+      request.priorRoots = []
+      ClusterSkillReconcileSchema.parse(request)
+      let offset = 0
+      for (const roots of skillControlPages(priorRoots)) {
+        const page = ClusterSkillPriorSchema.parse({
+          op: 'prior',
+          operationId: input.operationId,
+          handle: input.handle,
+          offset,
+          roots
+        })
+        const reply = ClusterSkillPriorReplySchema.parse(await this.requester.request('skills', page))
+        offset += roots.length
+        if (reply.received !== offset) throw new Error('inconsistent prior skill receipt offset')
+      }
+    }
+    let page = ClusterSkillReceiptPageSchema.parse(
+      await this.requester.request('skills', ClusterSkillReconcileSchema.parse(request), { timeoutMs: 15 * 60_000 })
     )
+    const result = { roots: [...page.roots], conflicts: page.conflicts }
+    while (page.nextOffset !== undefined) {
+      if (page.nextOffset !== result.roots.length) throw new Error('inconsistent skill receipt offset')
+      page = ClusterSkillReceiptPageSchema.parse(
+        await this.requester.request('skills', {
+          op: 'receipt',
+          operationId: input.operationId,
+          handle: input.handle,
+          offset: page.nextOffset
+        })
+      )
+      if (page.roots.length === 0 || JSON.stringify(page.conflicts) !== JSON.stringify(result.conflicts))
+        throw new Error('inconsistent skill receipt page')
+      result.roots.push(...page.roots)
+      ClusterSkillReconcileResultSchema.parse(result)
+    }
+    return ClusterSkillReconcileResultSchema.parse(result)
   }
 
   async verify(roots: ClusterSkillReconcile['priorRoots']): Promise<ClusterSkillVerifyReply> {
-    return ClusterSkillVerifyReplySchema.parse(await this.requester.request('skills', { op: 'verify', roots }))
+    ClusterSkillLedgerSchema.parse({ roots })
+    const intact: boolean[] = []
+    for (const page of skillControlPages(roots)) {
+      const reply = ClusterSkillVerifyReplySchema.parse(
+        await this.requester.request('skills', ClusterSkillVerifySchema.parse({ op: 'verify', roots: page }))
+      )
+      if (reply.intact.length !== page.length) throw new Error('inconsistent skill verification receipt')
+      intact.push(...reply.intact)
+    }
+    return { intact }
   }
 
   private async uploadChunk(
@@ -119,22 +173,4 @@ export class ClusterSkillClient {
       })
     )
   }
-}
-
-/** Split a manifest into frame-safe pages, on BYTES as well as count: the count cap is a coarse
- *  guard and long paths blow the control-byte budget well before 512 rows. */
-function pageFiles(files: ClusterSkillFile[]): ClusterSkillFile[][] {
-  const budget = MAX_CLUSTER_SKILL_CONTROL_BYTES - MANIFEST_PAGE_ENVELOPE_BYTES
-  const pages: ClusterSkillFile[][] = [[]]
-  let bytes = 0
-  for (const file of files) {
-    const row = Buffer.byteLength(JSON.stringify(file)) + 1
-    if (pages.at(-1)!.length > 0 && (pages.at(-1)!.length >= MAX_CLUSTER_SKILL_MANIFEST_PAGE || bytes + row > budget)) {
-      pages.push([])
-      bytes = 0
-    }
-    pages.at(-1)!.push(file)
-    bytes += row
-  }
-  return pages
 }

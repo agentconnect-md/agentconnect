@@ -539,6 +539,8 @@ export const AgentActivate = z.object({
   agentId: z.string().uuid(),
   /** Absent ⇒ authoritative unstage: release any fence held, and start no host unless the duty is held. */
   moveId: z.string().uuid().optional(),
+  /** Restore an eligible replica without claiming duty; the move token still fences the unstage. */
+  unstageOnly: z.boolean().optional(),
   /**
    * One authoritative, acknowledged bootstrap bundle. Unlike the live CRUD
    * EVTs, these definitions are synchronously persisted under the staging gate

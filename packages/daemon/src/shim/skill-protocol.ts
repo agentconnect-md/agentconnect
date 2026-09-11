@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { createHash } from 'node:crypto'
+import { ClusterSkillOwnedRootSchema, ClusterSkillPathSchema } from '../store/cluster-skill-ledger.js'
+import { MAX_SKILL_BUNDLES } from '../skills/skill-limits.js'
 
 export const MAX_CLUSTER_SKILL_SOURCES = 64
 // A Git source is a whole collection repo; these mirror GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, and the
@@ -22,15 +24,7 @@ const DecimalTermSchema = z
   .string()
   .regex(/^(?:0|[1-9][0-9]*)$/)
   .max(40)
-const RelativeSkillPathSchema = z
-  .string()
-  .min(1)
-  .max(512)
-  .refine((value) => {
-    if (value.includes('\0') || value.startsWith('/') || value.startsWith('\\')) return false
-    const parts = value.replaceAll('\\', '/').split('/')
-    return parts.every((part) => part.length > 0 && part !== '.' && part !== '..')
-  }, 'path must be a contained relative path')
+const RelativeSkillPathSchema = ClusterSkillPathSchema
 
 export const ClusterSkillAuthoritySchema = z
   .object({
@@ -123,26 +117,7 @@ export const ClusterSkillSourceSchema = z
   })
   .strict()
 
-export const ClusterSkillPriorRootSchema = z
-  .object({
-    path: RelativeSkillPathSchema,
-    sourceId: z.string().min(1).max(160),
-    sourceKind: z.enum(['agent', 'managed', 'dream']),
-    digest: Sha256Schema,
-    files: z
-      .array(
-        z
-          .object({
-            path: RelativeSkillPathSchema,
-            mode: z.number().int().min(0).max(0o777),
-            size: z.number().int().nonnegative(),
-            sha256: Sha256Schema
-          })
-          .strict()
-      )
-      .max(64)
-  })
-  .strict()
+export const ClusterSkillPriorRootSchema = ClusterSkillOwnedRootSchema
 
 export const ClusterSkillReconcileSchema = z
   .object({
@@ -150,7 +125,8 @@ export const ClusterSkillReconcileSchema = z
     operationId: z.string().uuid(),
     handle: z.string().min(16).max(128),
     authority: ClusterSkillAuthoritySchema,
-    priorRoots: z.array(ClusterSkillPriorRootSchema).max(256),
+    priorRoots: z.array(ClusterSkillPriorRootSchema).max(MAX_SKILL_BUNDLES),
+    priorRootCount: z.number().int().min(0).max(MAX_SKILL_BUNDLES).optional(),
     replayKey: z.string().regex(/^[a-f0-9]{64}$/),
     allowDesiredAdoption: z.boolean(),
     sources: z.array(ClusterSkillSourceSchema).max(MAX_CLUSTER_SKILL_SOURCES)
@@ -162,8 +138,6 @@ export const ClusterSkillReconcileSchema = z
       if (ids.has(source.sourceId)) ctx.addIssue({ code: 'custom', message: 'duplicate reconcile source' })
       ids.add(source.sourceId)
     }
-    const receiptFiles = value.priorRoots.reduce((total, root) => total + root.files.length, 0)
-    if (receiptFiles > MAX_CLUSTER_SKILL_FILES) ctx.addIssue({ code: 'custom', message: 'prior receipt exceeds limit' })
     if (Buffer.byteLength(JSON.stringify(value)) > MAX_CLUSTER_SKILL_CONTROL_BYTES) {
       ctx.addIssue({ code: 'custom', message: 'reconcile request exceeds frame-safe limit' })
     }
@@ -172,7 +146,28 @@ export const ClusterSkillReconcileSchema = z
 export const ClusterSkillVerifySchema = z
   .object({
     op: z.literal('verify'),
-    roots: z.array(ClusterSkillPriorRootSchema).max(256)
+    roots: z.array(ClusterSkillPriorRootSchema).max(MAX_SKILL_BUNDLES)
+  })
+  .strict()
+  .superRefine(assertSkillControlSize)
+
+export const ClusterSkillPriorSchema = z
+  .object({
+    op: z.literal('prior'),
+    operationId: z.string().uuid(),
+    handle: z.string().min(16).max(128),
+    offset: z.number().int().min(0).max(MAX_SKILL_BUNDLES),
+    roots: z.array(ClusterSkillPriorRootSchema).min(1).max(MAX_SKILL_BUNDLES)
+  })
+  .strict()
+  .superRefine(assertSkillControlSize)
+
+export const ClusterSkillReceiptSchema = z
+  .object({
+    op: z.literal('receipt'),
+    operationId: z.string().uuid(),
+    handle: z.string().min(16).max(128),
+    offset: z.number().int().min(0).max(MAX_SKILL_BUNDLES)
   })
   .strict()
 
@@ -181,8 +176,14 @@ export const ClusterSkillRequestSchema = z.discriminatedUnion('op', [
   ClusterSkillManifestSchema,
   ClusterSkillUploadSchema,
   ClusterSkillReconcileSchema,
-  ClusterSkillVerifySchema
+  ClusterSkillVerifySchema,
+  ClusterSkillPriorSchema,
+  ClusterSkillReceiptSchema
 ])
+
+export const ClusterSkillPriorReplySchema = z
+  .object({ received: z.number().int().min(0).max(MAX_SKILL_BUNDLES) })
+  .strict()
 
 export const ClusterSkillBeginReplySchema = z.object({ handle: z.string().min(16).max(128) }).strict()
 export const ClusterSkillManifestReplySchema = z
@@ -191,42 +192,13 @@ export const ClusterSkillManifestReplySchema = z
 export const ClusterSkillUploadReplySchema = z
   .object({ received: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILE_BYTES), complete: z.boolean() })
   .strict()
-export const ClusterSkillReconcileReplySchema = z
+export const ClusterSkillReconcileResultSchema = z
   .object({
-    roots: z
-      .array(
-        z
-          .object({
-            path: RelativeSkillPathSchema,
-            sourceId: z.string().min(1).max(160),
-            sourceKind: z.enum(['agent', 'managed', 'dream']),
-            digest: Sha256Schema,
-            files: z
-              .array(
-                z
-                  .object({
-                    path: RelativeSkillPathSchema,
-                    mode: z.number().int().min(0).max(0o777),
-                    size: z.number().int().nonnegative(),
-                    sha256: Sha256Schema
-                  })
-                  .strict()
-              )
-              .max(64)
-          })
-          .strict()
-      )
-      .max(256),
-    conflicts: z.array(RelativeSkillPathSchema).max(512)
+    roots: z.array(ClusterSkillPriorRootSchema).max(MAX_SKILL_BUNDLES),
+    conflicts: z.array(RelativeSkillPathSchema).max(MAX_SKILL_BUNDLES)
   })
   .strict()
   .superRefine((value, ctx) => {
-    const receiptFiles = value.roots.reduce((total, root) => total + root.files.length, 0)
-    if (receiptFiles > MAX_CLUSTER_SKILL_FILES)
-      ctx.addIssue({ code: 'custom', message: 'result receipt exceeds limit' })
-    if (Buffer.byteLength(JSON.stringify(value)) > MAX_CLUSTER_SKILL_CONTROL_BYTES) {
-      ctx.addIssue({ code: 'custom', message: 'reconcile response exceeds frame-safe limit' })
-    }
     const paths = new Set<string>()
     for (const root of value.roots) {
       if (paths.has(root.path)) ctx.addIssue({ code: 'custom', message: 'duplicate result root' })
@@ -236,6 +208,54 @@ export const ClusterSkillReconcileReplySchema = z
       }
     }
   })
+
+export const ClusterSkillReconcileReplySchema = ClusterSkillReconcileResultSchema.superRefine(assertSkillControlSize)
+export const ClusterSkillReceiptPageSchema = ClusterSkillReconcileResultSchema.safeExtend({
+  nextOffset: z.number().int().min(1).max(MAX_SKILL_BUNDLES).optional()
+}).superRefine(assertSkillControlSize)
+
+function assertSkillControlSize(value: unknown, ctx: z.RefinementCtx): void {
+  if (Buffer.byteLength(JSON.stringify(value)) > MAX_CLUSTER_SKILL_CONTROL_BYTES) {
+    ctx.addIssue({ code: 'custom', message: 'skill control message exceeds frame-safe limit' })
+  }
+}
+
+// A receipt root stays whole; its own file and path limits guarantee it fits in one page.
+export function skillControlPages<T>(
+  rows: T[],
+  maxRows = MAX_CLUSTER_SKILL_MANIFEST_PAGE,
+  overheadBytes = 2048
+): T[][] {
+  const budget = MAX_CLUSTER_SKILL_CONTROL_BYTES - overheadBytes
+  const pages: T[][] = [[]]
+  let bytes = 0
+  for (const row of rows) {
+    const size = Buffer.byteLength(JSON.stringify(row)) + 1
+    if (size > budget) throw new Error('skill control row exceeds frame-safe limit')
+    if (pages.at(-1)!.length > 0 && (pages.at(-1)!.length >= maxRows || bytes + size > budget)) {
+      pages.push([])
+      bytes = 0
+    }
+    pages.at(-1)!.push(row)
+    bytes += size
+  }
+  return pages
+}
+
+export function skillReceiptPage(result: ClusterSkillReconcileReply, offset: number): ClusterSkillReceiptPage {
+  if (offset > result.roots.length) throw new Error('skill receipt offset exceeds result')
+  const overhead = Buffer.byteLength(
+    JSON.stringify({ roots: [], conflicts: result.conflicts, nextOffset: MAX_SKILL_BUNDLES })
+  )
+  const roots = skillControlPages(result.roots.slice(offset), MAX_SKILL_BUNDLES, overhead)[0]!
+  const nextOffset = offset + roots.length
+  return ClusterSkillReceiptPageSchema.parse({
+    roots,
+    conflicts: result.conflicts,
+    ...(nextOffset < result.roots.length ? { nextOffset } : {})
+  })
+}
+
 export const ClusterSkillVerifyReplySchema = z.object({ intact: z.array(z.boolean()).max(512) }).strict()
 
 export type ClusterSkillBegin = z.infer<typeof ClusterSkillBeginSchema>
@@ -248,5 +268,9 @@ export type ClusterSkillVerify = z.infer<typeof ClusterSkillVerifySchema>
 export type ClusterSkillRequest = z.infer<typeof ClusterSkillRequestSchema>
 export type ClusterSkillBeginReply = z.infer<typeof ClusterSkillBeginReplySchema>
 export type ClusterSkillUploadReply = z.infer<typeof ClusterSkillUploadReplySchema>
-export type ClusterSkillReconcileReply = z.infer<typeof ClusterSkillReconcileReplySchema>
+export type ClusterSkillReconcileReply = z.infer<typeof ClusterSkillReconcileResultSchema>
+export type ClusterSkillPrior = z.infer<typeof ClusterSkillPriorSchema>
+export type ClusterSkillPriorReply = z.infer<typeof ClusterSkillPriorReplySchema>
+export type ClusterSkillReceipt = z.infer<typeof ClusterSkillReceiptSchema>
+export type ClusterSkillReceiptPage = z.infer<typeof ClusterSkillReceiptPageSchema>
 export type ClusterSkillVerifyReply = z.infer<typeof ClusterSkillVerifyReplySchema>
