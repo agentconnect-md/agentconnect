@@ -1,8 +1,10 @@
 // No 'use client' here: reached only from the console's client trees
 // (ModalProvider and the views), exactly like `registry.ts`.
 
+import { CODE_HOST_PROVIDERS, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { larkFeishuBrand, type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import type { BotDto } from '@/lib/api'
+import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { platformLabel } from '@/lib/platform-labels'
 import { platformRegistry } from './registry'
 
@@ -60,8 +62,8 @@ export const BOT_PLATFORMS: readonly PlatformTile[] = platformTiles(platformRegi
  *  code host the deployment has not configured says so in its own pane. */
 export const PLATFORMS: readonly PlatformTile[] = [
   ...BOT_PLATFORMS,
-  { key: 'github', label: 'GitHub' },
-  { key: 'gitlab', label: 'GitLab' },
+  // One tile per code host, named by the code-host projection rather than spelled again here.
+  ...CODE_HOST_PROVIDERS.map((provider) => ({ key: provider, label: CODE_HOST_PROJECTION[provider].label })),
   // The generic trigger closes the row: chat platforms and code hosts are the named products.
   { key: 'webhook', label: 'Webhook' }
 ]
@@ -72,6 +74,12 @@ export const PLATFORMS: readonly PlatformTile[] = [
  *  capabilities gate them; every picker must treat them as always available. */
 export function isCoreTriggerKind(key: string): boolean {
   return !BOT_PLATFORMS.some((tile) => tile.key === key) && PLATFORMS.some((tile) => tile.key === key)
+}
+
+/** What watching a code host does for the agent, in that host's own subject vocabulary. */
+const CODE_HOST_BLURB: Record<CodeHostProvider, string> = {
+  github: 'React to issues & PRs',
+  gitlab: 'React to issues & MRs'
 }
 
 /**
@@ -86,8 +94,8 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   discord: 'Reply in servers',
   feishu: 'Reply in groups & chats',
   linear: 'Work delegated issues',
-  github: 'React to issues & PRs',
-  gitlab: 'React to issues & MRs',
+  // The code-host rows are total over the providers, so a new host cannot reach the picker unblurbed.
+  ...CODE_HOST_BLURB,
   webhook: 'Trigger by posting a URL'
 }
 
