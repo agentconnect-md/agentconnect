@@ -1739,51 +1739,70 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // setups (leaving the getting-started "first conversation" tick to the 60s poll) —
       // so nudge the session lists shortly after the send lands.
       const isNewConversation = !conversationId && !conversationIds.current.get(id)
-      const conn = connect(id, agentForId, conversationId)
-      conn.ready
-        .then((ws) => {
-          const frame = JSON.stringify({
-            text,
-            turnId: requestedTurnId,
-            ...(roster.length > 1 ? { mentions: sentMentions, targets } : {}),
-            ...(image ? { attachments: [image] } : {}),
-            // Runtime staging is a single-agent affordance — multi-agent
-            // conversations expose no runtime controls (§9.1/§9.3).
-            ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {}),
-            ...(roster.length <= 1 && stagedWorktree.current.has(id)
-              ? { worktree: stagedWorktree.current.get(id) }
-              : {})
-          })
-          // Kept until the agent acks: a reconnect that finds it unacked re-sends it. Single-agent only — the relay mints the canonical post identity per received frame, so a re-sent multi-agent turn partially admitted the first time would land under a second postId on the rest of the roster (duplicate user messages in the merged transcript).
-          if (roster.length <= 1) pendingTurnFrames.current.set(id, { turnId: requestedTurnId, frame })
-          else pendingTurnFrames.current.delete(id)
-          ws.send(frame)
-          if (isNewConversation) setTimeout(refreshSessions, 2500)
+      const putOnWire = (ws: WebSocket): void => {
+        const frame = JSON.stringify({
+          text,
+          turnId: requestedTurnId,
+          ...(roster.length > 1 ? { mentions: sentMentions, targets } : {}),
+          ...(image ? { attachments: [image] } : {}),
+          // Runtime staging is a single-agent affordance — multi-agent conversations expose no runtime controls (§9.1/§9.3).
+          ...(roster.length <= 1 && stagedRuntime.current.get(id) ? { runtime: stagedRuntime.current.get(id) } : {}),
+          ...(roster.length <= 1 && stagedWorktree.current.has(id) ? { worktree: stagedWorktree.current.get(id) } : {})
         })
-        .catch((err) => {
-          // A 503 from the token mint means the CP has no relay pool configured — the
-          // agent may be perfectly healthy, so name the real cause instead of "unreachable".
-          const noRelay = err instanceof ApiError && err.status === 503
-          // A 409 from the conversation mint names the exact blocker (an agent's
-          // daemon lacking multi-agent webchat support) — surface it verbatim.
-          const conflict = err instanceof ApiError && err.status === 409 ? err.message : undefined
-          // A 404 on a RESUME is the CP refusing this account the conversation (private to its owner, or a roster member out of view) — not an unreachable agent.
-          const notYours = Boolean(conversationId) && err instanceof ApiError && err.status === 404
-          pushStep(id, {
-            kind: 'done',
-            turnId: requestedTurnId,
-            text: noRelay
-              ? '⚠️ Webchat relay not configured — set PUBLIC_RELAY_URL on the control plane.'
-              : conflict
-                ? `⚠️ ${conflict}`
-                : notYours
-                  ? '⚠️ You can’t continue this conversation — it is private to the person who started it, or includes an agent you can’t view.'
-                  : '⚠️ Could not reach the agent.'
-          })
-          pendingTurnFrames.current.delete(id)
-          dropLanes(id)
-          setBusy(id, false)
+        // Kept until the agent acks: a reconnect that finds it unacked re-sends it. Single-agent only — the relay mints the canonical post identity per received frame, so a re-sent multi-agent turn partially admitted the first time would land under a second postId on the rest of the roster (duplicate user messages in the merged transcript).
+        if (roster.length <= 1) pendingTurnFrames.current.set(id, { turnId: requestedTurnId, frame })
+        else pendingTurnFrames.current.delete(id)
+        ws.send(frame)
+        if (isNewConversation) setTimeout(refreshSessions, 2500)
+      }
+      const reportUnsent = (err: unknown): void => {
+        // A 503 from the token mint means the CP has no relay pool configured — the agent may be perfectly healthy, so name the real cause instead of "unreachable".
+        const noRelay = err instanceof ApiError && err.status === 503
+        // A 409 from the conversation mint names the exact blocker (an agent's daemon lacking multi-agent webchat support) — surface it verbatim.
+        const conflict = err instanceof ApiError && err.status === 409 ? err.message : undefined
+        // A 404 on a RESUME is the CP refusing this account the conversation (private to its owner, or a roster member out of view) — not an unreachable agent.
+        const notYours = Boolean(conversationId) && err instanceof ApiError && err.status === 404
+        pushStep(id, {
+          kind: 'done',
+          turnId: requestedTurnId,
+          text: noRelay
+            ? '⚠️ Webchat relay not configured — set PUBLIC_RELAY_URL on the control plane.'
+            : conflict
+              ? `⚠️ ${conflict}`
+              : notYours
+                ? '⚠️ You can’t continue this conversation — it is private to the person who started it, or includes an agent you can’t view.'
+                : '⚠️ Could not reach the agent.'
         })
+        pendingTurnFrames.current.delete(id)
+        dropLanes(id)
+        setBusy(id, false)
+      }
+      // Drop a connection whose dial died under this turn. Its handlers go first: the close would otherwise clear the composer's busy flag out from under the rebuild that replaces it.
+      const abandon = (conn: Conn): void => {
+        conn.closing = true
+        if (conn.reconnectTimer) window.clearTimeout(conn.reconnectTimer)
+        if (conn.ws) {
+          conn.ws.onclose = null
+          conn.ws.onerror = null
+          conn.ws.close()
+        }
+        if (conns.current.get(id) === conn) conns.current.delete(id)
+      }
+      // ONE rebuild before a turn is declared unsent. The first send of a fresh playground rides the socket `openPlayground` warmed seconds earlier (connect() reuses a CONNECTING one), so a dial that died in the browser took the message that opens the conversation down with it — and the retry the reader typed by hand started a SECOND conversation, blind to the first. Only a transport failure is rebuilt: a CP verdict (no relay pool, an incapable daemon, a conversation that is not theirs) is an answer, not a blip. A failure AFTER the frame reached the socket is the reconnect's resend to recover, never a fresh dial's.
+      const putThrough = (conn: Conn, mayRebuild: boolean): void => {
+        let onWire = false
+        conn.ready
+          .then((ws) => {
+            onWire = true
+            putOnWire(ws)
+          })
+          .catch((err) => {
+            if (!mayRebuild || onWire || err instanceof ApiError) return reportUnsent(err)
+            abandon(conn)
+            putThrough(connect(id, agentForId, conversationId), false)
+          })
+      }
+      putThrough(connect(id, agentForId, conversationId), true)
     },
     [pgSessions, connect, pushStep, setBusy, refreshSessions]
   )
