@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { lstat, readFile, realpath } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Socket } from 'node:net'
@@ -10,6 +10,7 @@ import type { Logger } from '../log.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { ShimSession } from '../shim/session.js'
 import { ClusterSkillClient } from '../shim/skill-client.js'
+import { SANDBOX_SKILL_STAGING_DIR } from '../shim/sandbox-paths.js'
 import { DEFAULT_SHIM_LISTEN_PORT, SHIM_LISTEN_PORT_ENV, SHIM_WORKSPACE_ROOT_ENV } from '../shim/protocol.js'
 import { openExecStream, MICROSANDBOX_NODE, type MicrosandboxExecStream } from './exec.js'
 import { openGuestTcp } from './tcp.js'
@@ -50,8 +51,8 @@ except KeyError:
     gid = uid
 if group:
     gid = int(group) if group.isdecimal() else grp.getgrnam(group).gr_gid
-os.makedirs('/run/agentconnect/skills-staging', mode=0o700, exist_ok=True)
-os.chown('/run/agentconnect/skills-staging', uid, gid)
+os.makedirs('${SANDBOX_SKILL_STAGING_DIR}', mode=0o700, exist_ok=True)
+os.chown('${SANDBOX_SKILL_STAGING_DIR}', uid, gid)
 root = tempfile.mkdtemp(prefix='agentconnect-shim-', dir='/run')
 os.chmod(root, 0o755)
 with open(os.path.join(root, 'package.json'), 'x') as output:
@@ -71,9 +72,13 @@ export interface MicrosandboxShim {
   stop(): Promise<void>
 }
 
-export function microsandboxSkillTarget(shim: MicrosandboxShim, cwd: string) {
+export async function microsandboxSkillTarget(shim: MicrosandboxShim, cwd: string) {
+  // VM replacement preserves bind-mounted storage; replacing that storage must revoke its receipts.
+  const stat = await lstat(cwd, { bigint: true })
+  if (!stat.isDirectory()) throw new Error('skill workspace root is unsafe')
+  const identity = [await realpath(cwd), String(stat.dev), String(stat.ino)]
   return {
-    workspaceIncarnation: `${shim.incarnation}:${createHash('sha256').update(cwd).digest('hex')}`,
+    workspaceIncarnation: `workspace:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`,
     client: new ClusterSkillClient(
       {
         request: (capability, request, options) => shim.session.request(capability, { cwd, request }, options)
@@ -186,11 +191,20 @@ export async function startMicrosandboxShim(input: {
     const timer = setTimeout(() => reject(new Error('sandbox shim startup timed out')), TIMEOUT_MS)
     pump = (async () => {
       let output = ''
+      let started = false
       for await (const event of handle!) {
         if (event.kind === 'stdout') {
-          output += Buffer.from(event.data).toString()
-          if (output === 'ready\n') resolve()
-          else if (!'ready\n'.startsWith(output)) throw new Error('invalid sandbox shim readiness response')
+          const chunk = Buffer.from(event.data).toString()
+          if (started) log.info(chunk.trim())
+          else {
+            output += chunk
+            if (output.startsWith('ready\n')) {
+              started = true
+              resolve()
+              if (output.length > 6) log.info(output.slice(6).trim())
+              output = ''
+            } else if (!'ready\n'.startsWith(output)) throw new Error('invalid sandbox shim readiness response')
+          }
         }
         if (event.kind === 'stderr') log.info(Buffer.from(event.data).toString().trim())
       }

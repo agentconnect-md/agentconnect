@@ -173,6 +173,7 @@ import {
   agentSandboxSubject,
   sandboxSubjectFor,
   sandboxSubjectSessionLeaf,
+  sandboxSubjectAgentId,
   sessionSandboxSubject,
   type SandboxSubject
 } from './k8s/sandbox-identity.js'
@@ -3867,6 +3868,7 @@ export class Daemon {
   }
 
   private microsandboxWorkspaceEnvironment(agent: LoadedAgent, path: string): MicrosandboxEnvironment | undefined {
+    if (!this.microsandbox) return undefined
     const placement = this.microsandboxPlacement(agent, path)
     const existing = this.microsandbox?.environment(placement.id)
     const mounted = (environment: MicrosandboxEnvironment) =>
@@ -3884,7 +3886,7 @@ export class Daemon {
 
   private microsandboxRequester(environment: MicrosandboxEnvironment): ShimRequester & { agentId: string } {
     return {
-      agentId: environment.id.split('/')[0]!,
+      agentId: sandboxSubjectAgentId(environment.id),
       request: (capability, payload, options) =>
         this.microsandbox!.withShim(environment, (shim) => shim.session.request(capability, payload, options))
     }
@@ -3894,7 +3896,7 @@ export class Daemon {
     const cluster = this.k8sPlane?.workspaceFilesFor(agentId)
     if (cluster) return cluster
     const agent = this.agents.get(agentId)
-    if (!agent || !this.usesMicrosandbox(agent)) return undefined
+    if (!agent || !this.usesMicrosandbox(agent) || !this.microsandbox) return undefined
     return new ShimWorkspaceFiles({
       request: (capability, payload, options) => {
         const root = (payload as { root: string }).root
@@ -3917,7 +3919,7 @@ export class Daemon {
     if (!agent || !this.usesMicrosandbox(agent)) return undefined
     const environment = this.microsandboxWorkspaceEnvironment(agent, cwd)
     if (!environment) return undefined
-    return this.microsandbox!.withShim(environment, (shim) => read(microsandboxSkillTarget(shim, cwd)))
+    return this.microsandbox!.withShim(environment, async (shim) => read(await microsandboxSkillTarget(shim, cwd)))
   }
 
   /** Where a memory home is reached from: this member's sandbox plane (under `--k8s`) and its CP connection. */
@@ -4304,20 +4306,23 @@ export class Daemon {
         if (!pending) {
           pending = (async () => {
             const groupId = `local:${createHash('sha256').update(agent.id).digest('hex')}`
-            const owner = {
+            const localFence = {
               groupId,
               term: String(await this.store.nextSandboxGeneration(groupId)),
               daemonId: randomUUID()
             }
-            if (!(await this.store.projectDutyWriteFence(owner)))
+            if (!(await this.store.projectDutyWriteFence(localFence)))
               throw new Error('local skill publication authority was lost')
-            return owner
+            return localFence
           })()
           this.localSkillAuthorities.set(agent.id, pending)
+          void pending.catch(() => {
+            if (this.localSkillAuthorities.get(agent.id) === pending) this.localSkillAuthorities.delete(agent.id)
+          })
         }
         localAuthority = await pending
       }
-      const { client, workspaceIncarnation } = microsandboxSkillTarget(shim, cwd)
+      const { client, workspaceIncarnation } = await microsandboxSkillTarget(shim, cwd)
       const initialLedger = (await this.store.clusterSkillLedger(agent.id, workspaceIncarnation))
         ? undefined
         : await legacySandboxSkillLedger(agent.id, cwd, join(this.root, 'skill-installs'))
@@ -16783,6 +16788,8 @@ export class Daemon {
       // bound is skipped: retiring a root is never worth waking a suspended pod, and the next pass
       // that finds one bound sweeps it.
       if (this.workspaces.sandboxMode && this.workspaces.sandboxMountFor(agent.id) === undefined) continue
+      // Retiring old roots must not create or wake an idle VM merely to inspect its workspace.
+      if (this.usesMicrosandbox(agent) && !this.microsandbox?.environment(agentSandboxSubject(agent.id))) continue
       const pending = await this.withSandboxVolume(agent.id, () => this.workspaces.retiredSecondaryRoots(agent)).catch(
         (err: unknown) => {
           failures.push((err as Error).message)

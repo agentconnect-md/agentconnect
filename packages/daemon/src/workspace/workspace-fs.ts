@@ -147,3 +147,36 @@ export class LocalWorkspaceFs implements WorkspaceFs {
 
 /** One instance is enough: it holds no state, and every local agent shares this disk. */
 export const localWorkspaceFs = new LocalWorkspaceFs()
+
+// Route every operation explicitly so additions to WorkspaceFs must also update this boundary.
+export class RoutedWorkspaceFs implements WorkspaceFs {
+  constructor(private readonly route: (path: string) => Promise<WorkspaceFs>) {}
+
+  async stat(path: string): ReturnType<WorkspaceFs['stat']> {
+    return (await this.route(path)).stat(path)
+  }
+  async readdir(path: string): Promise<string[]> {
+    return (await this.route(path)).readdir(path)
+  }
+  async mkdir(path: string, mode?: number): Promise<void> {
+    return (await this.route(path)).mkdir(path, mode)
+  }
+  async readFile(path: string): Promise<string | undefined> {
+    return (await this.route(path)).readFile(path)
+  }
+  async readFileBytes(path: string, maxBytes: number): ReturnType<WorkspaceFs['readFileBytes']> {
+    return (await this.route(path)).readFileBytes(path, maxBytes)
+  }
+  async writeFile(path: string, content: string, options?: { mode?: number }): Promise<void> {
+    return (await this.route(path)).writeFile(path, content, options)
+  }
+  async rename(from: string, to: string): Promise<void> {
+    return (await this.route(from)).rename(from, to)
+  }
+  async rmdir(path: string): Promise<boolean> {
+    return (await this.route(path)).rmdir(path)
+  }
+  async rmTree(path: string): Promise<void> {
+    return (await this.route(path)).rmTree(path)
+  }
+}

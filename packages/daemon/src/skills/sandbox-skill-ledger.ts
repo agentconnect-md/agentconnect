@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto'
 import { lstat } from 'node:fs/promises'
 import { ClusterSkillLedgerSchema, type ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
-import { assertSkillLedgerOwner, readSkillLedger, skillLedgerLocation } from './skill-install-ledger.js'
+import {
+  assertSkillLedgerOwner,
+  readSkillLedger,
+  recoverSkillLedger,
+  skillLedgerLocation,
+  withSkillWorkspaceLock
+} from './skill-install-ledger.js'
 
 // Only the daemon-owned receipt can authorize adopting skills installed before the VM handled them.
 export async function legacySandboxSkillLedger(
@@ -14,20 +20,26 @@ export async function legacySandboxSkillLedger(
     throw error
   })
   if (!directory?.isDirectory()) return undefined
-  const ledger = await readSkillLedger(await skillLedgerLocation(cwd, stateDir))
-  if (!ledger) return undefined
-  assertSkillLedgerOwner(ledger, agentId)
-  if (ledger.phase !== 'ready' || ledger.cleanup) {
-    throw new Error('an unfinished host skill installation must be recovered before moving it into the sandbox')
-  }
-  return ClusterSkillLedgerSchema.parse({
-    roots: ledger.owned.map((root) => ({
-      path: root.relativeRoot,
-      sourceId: `legacy:${createHash('sha256').update(root.sourceKey).digest('hex')}`,
-      sourceKind: 'agent',
-      digest: root.treeDigest,
-      files: root.files
-    })),
-    gitResolutions: ledger.gitResolutions
-  })
+  return withSkillWorkspaceLock(
+    cwd,
+    async () => {
+      const location = await skillLedgerLocation(cwd, stateDir)
+      const ledger = await readSkillLedger(location)
+      if (!ledger) return undefined
+      assertSkillLedgerOwner(ledger, agentId)
+      // These journals describe host-originated mutations and must recover using their original filesystem identities.
+      const ready = await recoverSkillLedger(cwd, location, ledger)
+      return ClusterSkillLedgerSchema.parse({
+        roots: ready.owned.map((root) => ({
+          path: root.relativeRoot,
+          sourceId: `legacy:${createHash('sha256').update(root.sourceKey).digest('hex')}`,
+          sourceKind: 'agent',
+          digest: root.treeDigest,
+          files: root.files
+        })),
+        gitResolutions: ready.gitResolutions
+      })
+    },
+    stateDir
+  )
 }

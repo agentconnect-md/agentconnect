@@ -189,6 +189,59 @@ describe('Daemon session lifecycle (#118)', () => {
       expect(d.microsandboxWorkspaceEnvironment(agent, agent.workspace.path)).toBe(environment)
       expect(context).toHaveBeenCalledExactlyOnceWith(agent, agent.workspace.path)
       expect(d.microsandboxWorkspaceEnvironment(agent, join(agent.dir, 'unmounted'))).toBeUndefined()
+      d.microsandbox = undefined
+      expect(d.microsandboxWorkspaceEnvironment(agent, agent.workspace.path)).toBeUndefined()
+      expect(d.workspaceFilesFor(agent.id)).toBeUndefined()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('does not wake a cold microsandbox just to sweep retired roots', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      d.cfg.sandbox.backend = 'microsandbox'
+      d.agents.get('bot-a').runInSandbox = true
+      d.microsandbox = { environment: () => undefined, stopAll: async () => {} }
+      const list = vi.spyOn(d.workspaces, 'retiredSecondaryRoots').mockResolvedValue([])
+      await d.sweepRetiredWorkspaceRoots()
+      expect(list).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('retries microsandbox skill authority after a transient store failure', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      const agent = d.agents.get('bot-a')
+      mkdirSync(agent.workspace.path, { recursive: true })
+      const environment = { id: 'bot-a/agent' }
+      d.microsandbox = {
+        environment: () => environment,
+        stopAll: async () => {},
+        withShim: async (_environment: unknown, run: (shim: unknown) => Promise<unknown>) =>
+          run({
+            session: { hasCapability: () => true, generation: 1, isAttached: () => true }
+          })
+      }
+      vi.spyOn(d, 'microsandboxContext').mockReturnValue({ environment })
+      vi.spyOn(d.store, 'clusterSkillLedger').mockResolvedValue({ revision: 1, ledger: { roots: [] } })
+      const prepare = vi.spyOn(d, 'reconcileSandboxSkills').mockResolvedValue({ roots: [] })
+      const fence = vi
+        .spyOn(d.store, 'projectDutyWriteFence')
+        .mockRejectedValueOnce(new Error('store busy'))
+        .mockResolvedValue(true)
+      await expect(d.reconcileMicrosandboxSkills(agent, agent.workspace.path)).rejects.toThrow('store busy')
+      await expect(d.reconcileMicrosandboxSkills(agent, agent.workspace.path)).resolves.toEqual([
+        '.agentconnect/cluster-skill-state'
+      ])
+      expect(fence).toHaveBeenCalledTimes(2)
+      expect(prepare).toHaveBeenCalledOnce()
     } finally {
       await daemon.stop()
     }
