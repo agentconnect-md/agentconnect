@@ -431,6 +431,18 @@ export const MCP_TOOLS: McpToolDef[] = [
           )
   },
   {
+    // The one read that hands the model something to SHOW, not just something to
+    // know: the install link is how "the App is not installed" turns into a step
+    // the user can take. The route mints a signed, one-shot, org-bound state on
+    // each call (starting a connection change), so it keeps its own viewer gate —
+    // a viewer's 403 is relayed as-is, never worked around here.
+    name: 'getGithubApp',
+    description:
+      'Whether this deployment has a GitHub App, its slug, and a fresh link to install the App on GitHub for THIS organization (`installUrl`: one-shot, org-bound, valid ~15 minutes). Call it when listGithubInstallations comes back empty, or when no installation covers the repository’s owner, and hand the link to the user verbatim — they pick the account and repositories on GitHub, and the setup callback claims the installation for the organization. 404 means the deployment has no GitHub App at all (an operator task); 403 means you may view but not connect — an editor or owner has to open the link.',
+    schema: NoArgs,
+    call: (ctx) => ctx.get(org(ctx, '/github/app'))
+  },
+  {
     name: 'listGithubInstallations',
     description:
       'The organization’s live installations of the deployment GitHub App — the account (owner) each covers, whether it grants all repositories or a selected set, and the pull-request/checks permissions its repositories carry. A repository is reachable ONLY through an installation listed here, so check this before pointing a workspace or a trigger at one. An empty list means the App is not installed yet; 404 means this deployment has no GitHub App at all.',
