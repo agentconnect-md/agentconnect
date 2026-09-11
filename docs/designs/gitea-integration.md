@@ -120,12 +120,15 @@ personal access token. Before anything is stored the Control Plane:
    veto sets and repository catalogs); and
 4. seals the token behind the connection's secret-store port.
 
-The recommended token scopes are `read:user`, `write:repository`,
-`write:issue`, and `read:organization`; the Console shows the list beside the
-input and the connect step verifies each by a probe read it will need anyway
-(the user read, a repository listing, an organization listing). A token
-without `write:issue` cannot comment and is refused at connect time rather
-than at the first turn.
+The required token scopes are `read:user`, `write:repository`, `write:issue`,
+and `read:organization` — confirmed sufficient and minimal by §16's scope
+probe; the Console shows the list beside the input and the connect step
+verifies each by a probe read it will need anyway (the user read, a repository
+listing, an organization listing). A token without `write:issue` cannot comment
+and is refused at connect time rather than at the first turn. The organization
+scope is not optional: `GET /orgs/:org/repos`, which the picker needs, is
+organization-scoped rather than repository-scoped, and `GET /user/orgs`
+requires the user and organization scopes together.
 
 One organization holds at most one active connection in v1. A second bot
 would be a per-agent identity, which is deliberately later work (§14).
@@ -176,6 +179,12 @@ re-checks it on every convergence: a bot demoted to `write` keeps serving
 sessions (comments, reviews, statuses, Git all need only `write`) but the
 binding enters `admin_degraded`, webhook repair is suspended, and the Console
 names the missing permission.
+
+`admin` also carries the collaborator gate, not only webhook management: the
+permission lookup of §8 is refused unless the caller is an instance
+administrator, the subject itself, or an admin of that repository (§16). So
+`admin_degraded` fails every membership authorization closed; it must never
+fall back to trusting the delivery.
 
 ## 5. Resource Model
 
@@ -236,17 +245,28 @@ webhook removal clears it.
 true` (the API default is inactive), no `branch_filter`, and the event union
 of the enabled hooks on the repository:
 
-| Product family             | Gitea webhook events                                               |
-| -------------------------- | ------------------------------------------------------------------ |
-| `issues:*`                 | `issues`                                                           |
-| issue conversation comment | `issue_comment`                                                    |
-| `merge_request:*`          | `pull_request`, `pull_request_sync`, `pull_request_review_request` |
-| pull-request comment       | `issue_comment`, `pull_request_comment`                            |
-| `push:*`                   | `push`                                                             |
+| Product family             | Gitea webhook events                                                                      |
+| -------------------------- | ----------------------------------------------------------------------------------------- |
+| `issues:*`                 | `issues`                                                                                  |
+| issue conversation comment | `issue_comment`                                                                           |
+| `merge_request:*`          | `pull_request`, `pull_request_sync`, `pull_request_review_request`, `pull_request_review` |
+| pull-request comment       | `issue_comment`, `pull_request_comment`, `pull_request_review`                            |
+| `push:*`                   | `push`                                                                                    |
 
 Comment events are over-subscribed for the same reason GitLab over-subscribes
 `note`: a per-thread session opened by an issue or pull-request trigger
 continues through comments. The endpoint is `<relay>/webhooks/gitea`.
+
+A subscription name is not an event-type name, and the API does not reject an
+unknown one. `pull_request_review` is the subscription that delivers all three
+review event types, `pull_request_review_comment` included; submitting that
+type name as a subscription stores nothing and yields a hook that fires
+nothing, with the same HTTP 201 as a valid request (§16). The installer
+therefore reads the created hook's `events` array back and reconciles it
+against the intended union instead of trusting the status code. The reply also
+expands the umbrella names — `issues` stores `issue_assign`, `issue_label`,
+`issue_milestone`, and `issue_comment` alongside itself — so the comparison is
+by subset, not equality.
 
 **Verification.** The relay enforces HTTPS and the 1 MiB raw-body limit, parses
 only enough bounded JSON to read `repository.id`, looks up the compiled rules
@@ -273,22 +293,51 @@ display, the connection's bot user id as the veto set, the signing key inline.
 
 ## 8. Event Mapping and Routing
 
-| Product family                     | Gitea source                                                              |
-| ---------------------------------- | ------------------------------------------------------------------------- |
-| `issues:opened` / `:edited` / …    | `issues` with the matching `action`                                       |
-| issue conversation comment         | `issue_comment`, `is_pull: false`, `action: created`                      |
-| pull-request conversation comment  | `pull_request_comment`, `is_pull: true`, `action: created`                |
-| pull-request diff comment          | `pull_request_review_comment` (the review payload with `review.type` set) |
-| `merge_request:opened`             | `pull_request` `opened`                                                   |
-| `merge_request:synchronize`        | `pull_request_sync` `synchronized`                                        |
-| `merge_request:reviewer_requested` | `pull_request_review_request` `review_requested` naming the bot           |
-| `merge_request:reopened`           | `pull_request` `reopened`                                                 |
-| maintenance cleanup family         | `pull_request` `closed` with `merged: true`; `issues` `closed`            |
-| `push:*`                           | `push`                                                                    |
+| Product family                     | Gitea source                                                                                                                          |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `issues:opened` / `:edited` / …    | `issues` with the matching `action`                                                                                                   |
+| issue conversation comment         | `issue_comment`, `is_pull: false`, `action: created`                                                                                  |
+| pull-request conversation comment  | `pull_request_comment`, `is_pull: true`, `action: created`                                                                            |
+| pull-request diff comment          | `pull_request_review_comment`, `action: reviewed` — one delivery per review submission, carrying only the summary in `review.content` |
+| `merge_request:opened`             | `pull_request` `opened`                                                                                                               |
+| `merge_request:synchronize`        | `pull_request_sync` `synchronized`                                                                                                    |
+| `merge_request:reviewer_requested` | `pull_request_review_request` `review_requested` naming the bot                                                                       |
+| `merge_request:reopened`           | `pull_request` `reopened`                                                                                                             |
+| maintenance cleanup family         | `pull_request` `closed` with `merged: true`; `issues` `closed`                                                                        |
+| `push:*`                           | `push`                                                                                                                                |
 
 Edited-comment noise, draft toggles, label churn, and assignment events are
 vetoed exactly as in §12. `pull_request.head.sha` and `base.sha` are present
 on every pull-request payload and become the head fence.
+
+A review delivery is lossy in a way the diff-comment trigger has to absorb
+(§16): it carries the summary body and nothing about the inline comments — no
+path, line, hunk, body, or even the review id — so the trigger prompt is built
+by listing the pull request's reviews and reading
+`GET /pulls/:index/reviews/:id/comments` for the review the delivery
+describes. Correlation uses what the delivery does populate: a candidate is a
+review whose `user.id` equals `sender.id`, whose `state` matches the event
+type (`COMMENT`, `APPROVED`, or `REQUEST_CHANGES`), and whose `body` equals
+`review.content`. The delivery's top-level `commit_id` is never assigned for
+review events and arrives as an empty string (§16), so it is not compared;
+`pull_request.head.sha` is the branch tip at delivery time, not the commit
+the review was submitted against, so it is context for the prompt and never
+a filter on candidates.
+Exactly one candidate is the review. Several — the same person submitting
+twice with identical summaries before the first delivery is processed —
+cannot be told apart by the delivery, and "newest" would pair one summary
+with another review's comments, so the turn reads the inline comments of
+every candidate, labeled by review id; the pull-request batching of §8
+merges the deliveries into one turn anyway. No candidate is a summary-only
+trigger that says so in the prompt, never a failed lookup. The same event type
+arrives for a summary-only comment review, which carries no inline comments
+at all; that too is a valid trigger. And `requested_reviewer` on a review delivery names the review's
+author, not a requested reviewer — only `pull_request_review_request` uses that
+field as its name suggests, so the reviewer-requested trigger must key on the
+event type before reading it.
+
+A standalone inline comment — one left outside a review submission — produces
+no delivery at all, so there is no such trigger to build.
 
 **Loop prevention.** A delivery whose `sender.id` is the connection's bot
 user id is rejected, with the §12.1 exception that the bot's own same-repository
@@ -298,7 +347,12 @@ the veto set has one member; per-agent identities would widen it (§14).
 **Collaborator gate.** Lifecycle, comment, and external pull-request deliveries
 are live-authorized through `rc/codehost-membership-authz`, whose Gitea arm
 calls `GET /repos/:owner/:repo/collaborators/:username/permission` with the
-connection token and accepts `write`, `admin`, or `owner`. Gitea's lookup is
+connection token and accepts `write`, `admin`, or `owner`. The lookup of
+another user's permission requires the bot to be an admin of that repository,
+so the gate and §4.4's `admin` requirement stand or fall together; a user with
+no access answers 200 with `"none"` rather than 404, and every instance
+administrator answers `owner` whether or not they are a collaborator, which
+accepting `owner` admits by construction (§16). Gitea's lookup is
 by username; the relay forwards `sender.login` beside `sender.id`, and the
 Control Plane re-resolves the username to its numeric id and refuses a
 mismatch, so a renamed or reassigned username cannot borrow a permission. An
@@ -346,7 +400,15 @@ single-publish barrier, and the standing-context prompt block of §14.1 are
 reused with a `# Gitea` block. The turn-start acknowledgement adds the `eyes`
 reaction only after reading the instance's `GET /api/v1/settings/ui`
 reaction list once per connection; an instance that has removed `eyes` gets
-no reaction rather than an error.
+no reaction rather than an error. The list is `allowed_reactions`, `eyes` is in
+the default set, and a content value outside it is refused with HTTP 403 and
+`'<name>' is not an allowed reaction` — not a validation status, so the
+acknowledgement treats 403 on this one call as "no reaction" rather than as a
+credential fault. Repeating a reaction the bot already left answers 200 instead
+of 201, which makes the acknowledgement replay-safe, and reactions emit no
+webhook, so the acknowledgement cannot feed its own ingress. The issue-comment
+reaction path also accepts an inline review comment id, so reacting to a diff
+comment needs no second endpoint.
 
 ### 10.2 Controlled Effects
 
@@ -379,7 +441,9 @@ adapter with the draft-note steps replaced:
 2. reconcile: list the pull request's reviews and delete any pending review
    authored by the bot user — under the lease it can only be an orphan of an
    earlier attempt, and Gitea lets the author delete it — refusing to
-   proceed while one cannot be deleted;
+   proceed while one cannot be deleted; the list is unfiltered, so the
+   selection is by `state == "PENDING"` and reviewer, and the delete is
+   guarded on that state by the client (§16);
 3. re-fetch the pull request and refuse a changed head;
 4. `POST /repos/:owner/:repo/pulls/:index/reviews` with `commit_id` set to the
    fenced head, `event` mapped `COMMENT → COMMENT`, `REQUEST_CHANGES →
@@ -429,8 +493,25 @@ Inline comments are single-line: `line` on `RIGHT` becomes `new_position`,
 line with the start recorded in the comment body's first line. This is a
 declared parity gap, not an approximation hidden from the agent.
 
+Three properties of the reconcile step are confirmed by §16 and constrain it.
+`GET /pulls/:index/reviews` shows a pending review to its author and to
+instance administrators only — the query is unfiltered, the response
+conversion at the 1.27.3 tag skips other users' pending rows — which is
+exactly what lets step 2 see the bot's own orphan; the gitea.com development
+build returned every pending row to any reader, and nothing here relies on
+that. A pending row is identified by
+`state: "PENDING"`; there is no separate `pending` flag. The list also contains
+a `state: "REQUEST_REVIEW"` row for each outstanding reviewer request, which is
+not a verdict and must not be read as one. And `DELETE
+/pulls/:index/reviews/:id` is not restricted to pending reviews — it answers
+204 for an already-submitted one, authorizing only "instance admin or the
+review's own author" — so the state guard in step 2 is the only thing standing
+between a retry and the destruction of a published review.
+
 Gitea refuses `APPROVED` and `REQUEST_CHANGES` from the pull request's own
-author with HTTP 422. When the pull request was opened by the bot — the
+author with HTTP 422, as `approve your own pull is not allowed` and `reject
+your own pull is not allowed`, and refuses the bot as its own reviewer with
+`poster of pr can't be reviewer`. When the pull request was opened by the bot — the
 internal-CI lane — the adapter classifies the refusal `self_review_forbidden`
 and republishes the same content as `COMMENT`, reporting the downgrade in the
 attempt outcome. `COMMENT` never supersedes an earlier `REQUEST_CHANGES`;
@@ -613,12 +694,164 @@ Each step is one pull request, merged in order.
   grant pickers, the operator guide (`docs/self-hosted-gitea.md`), and the
   docs index.
 
-Before G2 is designed in detail, three probes run against a 1.27 instance and
-their answers are recorded in this document: whether an `admin` bot's
-`collaborators/:user/permission` lookup returns other users' permissions
-without further condition, the exact event type and payload of an inline
-review comment, and the token scope category each endpoint in §4.2 actually
-enforces.
+### Probe results (2026-09-12, gitea.com, Gitea 1.27 development build)
+
+The three probes G2 waited on have run: against `gitea.com`, whose
+`GET /api/v1/version` reports `1.27.0+dev`, using a throwaway private
+repository and a bot personal access token. Source quotations are from the
+`v1.27.3` tag.
+
+**1. The permission lookup of another user requires repository admin.** The
+route itself demands nothing beyond a token —
+`m.Get("/permission", repo.GetRepoPermissions)` sits inside
+`m.Group("/collaborators", …, reqToken())`, with no `reqAdmin()` on the route or
+the group, unlike the sibling `Put` and `Delete`. The gate is the handler's own
+first statement in `routers/api/v1/repo/collaborators.go`:
+
+```go
+if !ctx.Doer.IsAdmin && !strings.EqualFold(ctx.Doer.LowerName, collaboratorUsername) && !ctx.IsUserRepoAdmin() {
+	ctx.APIError(http.StatusForbidden, "Only admins can query all permissions, repo admins can query all repo permissions, collaborators can query only their own")
+	return
+}
+```
+
+So the caller must be an instance administrator, the subject itself, or an admin
+of that repository. Live, on a public repository where the bot holds neither
+admin nor collaboration, the lookup of another username answered 403 with
+exactly that message while the lookup of the bot's own username answered 200
+with `"read"` — the self branch needs no membership, and matches
+case-insensitively. §4.4 and §8 are amended: the bot's `admin` grant carries the
+collaborator gate, so `admin_degraded` fails authorization closed.
+
+The success shape is `{permission, role_name, user}` with both strings equal,
+HTTP 200. Two of its answers are not collaborator facts. A user with no access
+at all returns `"none"`, not 404 — 404 is reserved for a username that does not
+exist (`user does not exist [uid: 0, name: …]`). And every instance
+administrator returns `owner` on any repository, because
+`GetIndividualUserRepoPermission` short-circuits on
+`user.IsAdmin || user.ID == repo.OwnerID`; two gitea.com administrators read
+back as `owner` on the probe repository while four ordinary accounts read back
+as `none`. Accepting `write|admin|owner` therefore admits every instance
+administrator by construction — acceptable, but a stated property rather than an
+accident.
+
+**2. A review is one delivery, and the inline comments are not in it.**
+Submitting `POST /pulls/:index/reviews` with `event: COMMENT`, a summary body,
+and one inline comment on `probe.txt` produced exactly one POST to the capture
+endpoint:
+
+```text
+X-Gitea-Event:      pull_request_comment
+X-Gitea-Event-Type: pull_request_review_comment
+X-Gitea-Delivery:   71edfd2a-…
+action:             reviewed
+review:             {"type": "pull_request_review_comment", "content": "review body"}
+```
+
+`review.content` is the summary body only. The payload's top-level keys are
+`action`, `commit_id`, `number`, `pull_request`, `repository`,
+`requested_reviewer`, `review`, and `sender`; no path, line, diff hunk, comment
+body, comment id, or review id appears anywhere in it. A consumer that needs the
+inline content must list the pull request's reviews, correlate on `user.id`,
+`state`, and `body` against the delivery's `sender.id`, event type, and
+`review.content` (§8 states the rule and its ambiguity fallback), and read
+`GET /pulls/:index/reviews/:id/comments`, which returns `path`, `position`,
+`diff_hunk`, and `body`. The delivery's top-level `commit_id` is present but
+empty on every review event: `webhookNotifier.PullRequestReview` never
+assigns `PullRequestPayload.CommitID`, and the captured review delivery
+carried `"commit_id": ""` beside a populated `pull_request.head.sha`, so a
+correlation that compares it would match nothing. `requested_reviewer` on a
+review delivery is the review's author, not a requested reviewer.
+`review.type` always repeats the event type, and the verdict variants are
+`pull_request_review_approved` and `pull_request_review_rejected`
+(`services/webhook/notifier.go`, `webhookNotifier.PullRequestReview`, which maps
+the review type to one hook event and sends a single `PullRequestPayload`). A
+review with a summary and no inline comments produced the same
+`pull_request_review_comment` type, so the event type does not separate a diff
+comment from a summary-only comment review.
+
+A single inline comment outside a review submission produces nothing. The
+webhook notifier has no `PullRequestCodeComment` member at all, and the build
+serving gitea.com exposes no API to create one —
+`POST /pulls/comments/:id/replies` answers 405 with `Allow: GET`, even though
+the route exists at the tag. Resolving a conversation
+(`POST /pulls/comments/:id/resolve`, 204) and creating a pending review
+(`event: PENDING`, 200) likewise emitted no delivery.
+
+Two header facts confirm §7, over all eight deliveries captured:
+`X-Gitea-Signature` was the bare lowercase hex HMAC-SHA256 of the exact raw
+body under the hook secret, and `X-Hub-Signature-256` was the same digest with
+a `sha256=` prefix (a legacy `X-Hub-Signature` carries HMAC-SHA1).
+`X-Gitea-Delivery` is a fresh UUID per delivery. `pull_request_sync` adds
+top-level `before` and `after` to the pull-request payload.
+
+Two further observations were recorded while standing the hook up, and both are
+reflected in §7. `POST /hooks` answers 201 for an event name it does not
+recognize and silently drops it: `["pull_request_review_comment"]` and
+`["bogus_event"]` each created a hook whose `events` came back `[]`, firing
+nothing. `pull_request_review` is the subscription that delivers the three
+review event types. And `["issues"]` stored
+`issues, issue_assign, issue_label, issue_milestone, issue_comment`, so the
+umbrella names expand and the created hook must be compared by subset.
+
+Finally, the §10.3 mechanism was reproduced directly: a `POST …/reviews` with
+`event: COMMENT` and no `comments` array returned the id of the pending review
+created earlier, with `state` flipped to `COMMENT` and the earlier
+`comments_count: 1` carried over — the caller's pending review is found and
+submitted, not bypassed. `DELETE …/reviews/:id` answered 204 both for a pending
+review and for an already-submitted one;
+`routers/api/v1/repo/pull_review.go` authorizes only
+`ctx.Doer.IsAdmin || ctx.Doer.ID == review.ReviewerID` and imposes no
+pending-only restriction. `ListPullReviews` passes
+`FindReviewOptions{IssueID: pr.IssueID}` with no type or reviewer filter, but
+`services/convert/pull_review.go` at the tag skips a `ReviewTypePending` row
+unless the caller is its author or an instance administrator, so on 1.27.3
+another user's pending review is hidden while the bot's own is visible with
+`state: "PENDING"` and no separate `pending` field. The gitea.com development
+build observed here returned other users' pending rows too; the design relies
+only on the author's own visibility, which both builds provide. Requesting a reviewer adds a
+`state: "REQUEST_REVIEW"` row to the same list. Self-verdicts were refused 422
+with `approve your own pull is not allowed` and `reject your own pull is not
+allowed`; requesting the bot itself was refused 422 with
+`poster of pr can't be reviewer`.
+
+**3. Scope categories are per group, and the level comes from the method.**
+`tokenRequiresScopes(...)` reads the required level from the request method —
+`POST`, `PUT`, `PATCH`, and `DELETE` need `write:`, anything else `read:` — and
+the category from the enclosing `m.Group`. Three groups cover §4.2:
+
+| Endpoint                                            | Category       | Where the category comes from                                                                 |
+| --------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
+| `GET /user`                                         | `user`         | the `/user` group, `tokenRequiresScopes(…CategoryUser)`                                       |
+| `GET /user/repos`                                   | `repository`   | per-route `m.Combo("/repos", tokenRequiresScopes(…CategoryRepository))`                       |
+| `GET /orgs/{org}/repos`                             | `organization` | the `/orgs/{org}` group; the route itself adds nothing for `Get`                              |
+| `GET /user/orgs`                                    | both           | `tokenRequiresScopes(…CategoryUser, …CategoryOrganization)` — both are required, not either   |
+| `GET /repos/{o}/{r}`                                | `repository`   | the first `/repos` group, `tokenRequiresScopes(…CategoryRepository)`                          |
+| `GET /repos/{o}/{r}/collaborators/{u}/permission`   | `repository`   | same group                                                                                    |
+| `POST /repos/{o}/{r}/hooks`                         | `repository`   | same group, write by method                                                                   |
+| `GET /repos/{o}/{r}/pulls/{i}`                      | `repository`   | same group                                                                                    |
+| `POST /repos/{o}/{r}/pulls/{i}/reviews`             | `repository`   | same group, write by method                                                                   |
+| `POST /repos/{o}/{r}/pulls/{i}/requested_reviewers` | `repository`   | same group, write by method                                                                   |
+| `POST /repos/{o}/{r}/statuses/{sha}`                | `repository`   | same group, write by method                                                                   |
+| `POST /repos/{o}/{r}/issues/{i}/comments`           | `issue`        | the second, separate `/repos` group, `tokenRequiresScopes(…CategoryIssue)`                    |
+| `POST /repos/{o}/{r}/issues/{i}/reactions`          | `issue`        | same issue group, write by method                                                             |
+| clone / fetch / push over HTTPS                     | `repository`   | `CheckRepoScopedToken` → `GetRequiredScopes(level, …CategoryRepository)`, level from the mode |
+
+Two of these are not where a reader would guess. `GET /orgs/{org}/repos` is
+organization-scoped despite returning repositories, and `GET /user/orgs`
+requires the user and organization scopes together — which is why §4.1 lists
+`read:organization` as required rather than optional. The issue group is a
+second `m.Group("/repos", …)` registered after the repository one, so comments
+and reactions on a pull request need `write:issue` even though every other
+pull-request call needs `write:repository`.
+
+Every endpoint above was exercised live and succeeded, including both git
+directions over HTTPS with the token as the password. The probe token carried
+the write level of every category except `admin` — a `GET /admin/emails`
+refusal reported `required=[read:admin]` against a token scope list of the
+eight `write:` categories — so the §4.1 set was confirmed by category
+attribution rather than by absence, and a token narrowed to the four listed
+scopes remains the recommendation to verify at connect time.
 
 ## 17. Validation
 
