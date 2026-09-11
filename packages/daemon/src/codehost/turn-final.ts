@@ -24,6 +24,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { githubTurnFinal, type GithubTurnFinalHost } from '../github/turn-final.js'
 import { gitlabTurnFinal, type GitlabTurnFinalHost } from '../gitlab/turn-final.js'
+import { giteaTurnFinal, type GiteaTurnFinalHost } from '../gitea/turn-final.js'
 import type { GithubCommentAttributionSource } from '../github/poster.js'
 import type { GitlabPublishFailure } from '../gitlab/poster.js'
 import { replyTargetProvider, type CodeHostReplyTarget } from './reply-target.js'
@@ -55,7 +56,7 @@ export type CodeHostDelivery = CodeHostHookMembers & { event?: string }
 export type CodeHostThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
 
 /** What the daemon lends these members; each provider declares only the part it reads. */
-export type CodeHostTurnFinalHost = GithubTurnFinalHost & GitlabTurnFinalHost
+export type CodeHostTurnFinalHost = GithubTurnFinalHost & GitlabTurnFinalHost & GiteaTurnFinalHost
 
 /** One code host's turn-final members. */
 export interface CodeHostTurnFinal<P extends CodeHostProvider = CodeHostProvider> {
@@ -77,7 +78,8 @@ export interface CodeHostTurnFinal<P extends CodeHostProvider = CodeHostProvider
 /** Adding a code host is adding one entry; the record over the provider union makes a missing one a compile error. */
 const TURN_FINALS: { readonly [P in CodeHostProvider]: CodeHostTurnFinal<P> } = {
   github: githubTurnFinal,
-  gitlab: gitlabTurnFinal
+  gitlab: gitlabTurnFinal,
+  gitea: giteaTurnFinal
 }
 
 /** Every registered member, in provider order — the order a member that claims its own delivery resolves in. */

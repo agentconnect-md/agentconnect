@@ -31,6 +31,7 @@ import {
   type CodeHostRepoRef,
   type CodehostTurnFacts,
   type GithubHookMetadata,
+  type GiteaHookMetadata,
   type GitlabHookMetadata,
   type HookContext,
   type RdMsgHook,
@@ -85,6 +86,27 @@ export function gitlabSessionThread(gitlab: GitlabHookMetadata): string {
   return target.kind === 'push'
     ? `gitlab:${gitlab.projectId}:push:${target.ref}`
     : `gitlab:${gitlab.projectId}:${target.kind}:${target.iid}`
+}
+
+/**
+ * The §8 provider-qualified thread value, recomputed from trusted metadata.
+ *
+ * Gitea's issues and pull requests share ONE index space, so the subject kind is part of the key or
+ * issue 7 and pull request 7 would share a session. The push form is the ref, exactly as GitLab's is.
+ */
+export function giteaSessionThread(gitea: GiteaHookMetadata): string {
+  const target = gitea.target
+  return target.kind === 'push'
+    ? `gitea:${gitea.repoId}:push:${target.ref}`
+    : `gitea:${gitea.repoId}:${target.kind}:${target.index}`
+}
+
+/** `PR #42` / `issue #7` / the pushed ref — the subject as a person would say it. */
+function giteaSubjectLabel(gitea: GiteaHookMetadata | undefined): string {
+  const target = gitea?.target
+  if (!target) return 'Gitea'
+  if (target.kind === 'push') return target.ref
+  return target.kind === 'pull' ? `PR #${target.index}` : `issue #${target.index}`
 }
 
 /** `example-group/example-project!77` — GitLab's native reference syntax. */
@@ -617,6 +639,21 @@ const HOOK_NORMALIZERS: { readonly [P in CodeHostProvider]: HookNormalizer<P> } 
         ? anchorEventLine(c.action ? `${c.event}:${c.action}` : (c.event ?? 'event'), gitlabSubjectRef(c, gitlab), c)
         : undefined,
     threadUrl: (c) => c?.htmlUrl
+  },
+  // gitea-integration.md §8 and §16: the session-key grammar is protocol knowledge and belongs
+  // here with GitLab's, and the subject label is display. Everything that would ANSWER a Gitea
+  // delivery is G4's, and `standingContext` answering undefined is how this build says it will not
+  // answer one — the turn-final host fence refuses the delivery before a prompt is built.
+  gitea: {
+    sessionThread: (gitea) => (gitea ? giteaSessionThread(gitea) : undefined),
+    sessionTitle: () => undefined,
+    standingContext: () => undefined,
+    turnFacts: () => undefined,
+    subjectLabel: (_c, gitea) => giteaSubjectLabel(gitea),
+    eventLine: (_c, gitea, subject) => (gitea?.target.kind === 'push' ? `Pushed ${subject}` : undefined),
+    text: () => undefined,
+    anchorLine: () => undefined,
+    threadUrl: (c) => c?.htmlUrl
   }
 }
 
@@ -629,7 +666,7 @@ type HookProviderCase<P extends CodeHostProvider = CodeHostProvider> = {
   }
 }[P]
 
-function hookProviderOf(msg: Pick<RdMsgHook, 'github' | 'gitlab' | 'context'>): HookProviderCase | undefined {
+function hookProviderOf(msg: Pick<RdMsgHook, 'github' | 'gitlab' | 'gitea' | 'context'>): HookProviderCase | undefined {
   const trusted = codeHostHookMetadataOf(msg)
   if (trusted) return trusted
   const source = msg.context?.source

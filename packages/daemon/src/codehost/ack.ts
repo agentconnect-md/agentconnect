@@ -19,6 +19,7 @@
  */
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import { replyTargetProvider, type CodeHostReplyTarget } from './reply-target.js'
+import { giteaNotImplemented } from '../gitea/not-implemented.js'
 
 /** Bounded because it races a prompt that is already starting; an unreachable host must
  *  never hold a turn open, and a late reaction is worthless anyway. */
@@ -87,8 +88,24 @@ const gitlabAck: CodeHostAckAdapter = {
   }
 }
 
+/**
+ * Gitea's acknowledgement is G4's (gitea-integration.md §10.1): the reaction is only placed after
+ * reading the instance's allowed-reaction list once per connection, so there is a request to build
+ * and a 403 to read as "no reaction" rather than as a credential fault. Until then the adapter
+ * refuses — caught below like any other failure, so the turn loses a signal and nothing else. It is
+ * unreachable anyway: a reply target is what selects an adapter, and Gitea produces none yet.
+ */
+const giteaAck: CodeHostAckAdapter = {
+  provider: 'gitea',
+  request: () => giteaNotImplemented('turn-start reactions')
+}
+
 /** Adding a code host is adding one entry; the record over the provider union makes a missing one a compile error. */
-const ACKS: { readonly [P in CodeHostProvider]: CodeHostAckAdapter } = { github: githubAck, gitlab: gitlabAck }
+const ACKS: { readonly [P in CodeHostProvider]: CodeHostAckAdapter } = {
+  github: githubAck,
+  gitlab: gitlabAck,
+  gitea: giteaAck
+}
 
 /**
  * Place the "seen it" reaction on whatever fired this turn. Resolves once the request

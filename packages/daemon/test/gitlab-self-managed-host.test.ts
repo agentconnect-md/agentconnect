@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import {
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
+  GITEA_DEFAULT_BASE_URL,
   GITLAB_DEFAULT_BASE_URL,
   type AgentSpec,
   type GitCredGrant
@@ -49,13 +50,16 @@ const INSTANCE = 'https://gitlab.example.test:8443/gitlab'
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
 describe('the injected host→provider table (§24.4)', () => {
-  it('round-trips, and an absent table means the default axis value: GitHub plus GitLab.com', () => {
+  it('round-trips, and an absent table means every axis at its default value', () => {
     const table = managedHostTableFor(INSTANCE)
-    expect(encodeManagedHostTable(table)).toBe(`github=https://github.com gitlab=${INSTANCE}`)
+    expect(encodeManagedHostTable(table)).toBe(
+      `github=https://github.com gitlab=${INSTANCE} gitea=${GITEA_DEFAULT_BASE_URL}`
+    )
     expect(decodeManagedHostTable(encodeManagedHostTable(table))).toEqual(table)
     expect(decodeManagedHostTable(undefined)).toEqual([
       { provider: 'github', baseUrl: 'https://github.com' },
-      { provider: 'gitlab', baseUrl: GITLAB_DEFAULT_BASE_URL }
+      { provider: 'gitlab', baseUrl: GITLAB_DEFAULT_BASE_URL },
+      { provider: 'gitea', baseUrl: GITEA_DEFAULT_BASE_URL }
     ])
     expect(gitlabManagedHost().baseUrl).toBe(GITLAB_DEFAULT_BASE_URL)
     expect(gitlabManagedHost(`${INSTANCE}/`).baseUrl).toBe(INSTANCE)

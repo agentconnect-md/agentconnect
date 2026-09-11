@@ -15,6 +15,7 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import type { QueueEntry } from '../daemon/turn-types.js'
 import { githubHookAdmission } from '../github/hook-admission.js'
 import { gitlabHookAdmission } from '../gitlab/hook-admission.js'
+import { giteaHookAdmission } from '../gitea/hook-admission.js'
 
 /** The three timing gates one open comment batch is sealed by; both providers share them. */
 export const REVIEW_BATCH_QUIET_MS = 5_000
@@ -82,7 +83,8 @@ export interface CodeHostHookAdmission {
 /** Adding a code host is adding one entry; the record over the provider union makes a missing one a compile error. */
 const ADMISSIONS: { readonly [P in CodeHostProvider]: CodeHostHookAdmission } = {
   github: githubHookAdmission,
-  gitlab: gitlabHookAdmission
+  gitlab: gitlabHookAdmission,
+  gitea: giteaHookAdmission
 }
 
 /** The module owning one delivery, resolved off the frame's trusted provider member. */
