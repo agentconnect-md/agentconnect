@@ -76,7 +76,8 @@ export const Tag = {
   Usage: 'Usage',
   Stream: 'Stream',
   GitHub: 'GitHub',
-  GitLab: 'GitLab'
+  GitLab: 'GitLab',
+  Gitea: 'Gitea'
 } as const
 
 /** Group order + blurbs for the docs sidebar (OpenAPI top-level `tags`). */

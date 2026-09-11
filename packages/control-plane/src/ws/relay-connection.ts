@@ -21,6 +21,7 @@ import type {
   RcGithubCommentAuthz,
   RcGithubRerequest,
   RcGithubRerequestResult,
+  RcCodeHostDelivery,
   RcGithubInstallation,
   RcPullRequestFeedback,
   RcRegister,
@@ -108,6 +109,8 @@ export interface RelayConnDeps {
   onGithubInstallation: (m: RcGithubInstallation) => Promise<void>
   /** Persist a signature-verified, body-free PR feedback signal before GitHub is acknowledged. */
   onPullRequestFeedback?: (m: RcPullRequestFeedback) => Promise<boolean>
+  /** Apply a relay `rc/codehost-delivery` observation (gitea-integration.md §6, §7). Fire-and-forget. */
+  onCodeHostDelivery?: (m: RcCodeHostDelivery) => Promise<void>
   /** The in-memory relay index — this connection registers itself for `rc/daemon-revoke` push. */
   relayReg: RelayRegistry
   /** Resolve a browser webchat token → identity + the agent's CURRENT placement
@@ -219,6 +222,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/pull-request-feedback':
           await this.handlePullRequestFeedback(frame, frame.payload)
           return
+        case 'rc/codehost-delivery':
+          await this.handleCodeHostDelivery(frame.payload)
+          return
         default:
           this.sendError(frame.id, 'PROTOCOL_STATE', `unsupported: ${frame.type}`)
       }
@@ -250,6 +256,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/thread-participant' ||
           type === 'rc/thread-lookup' ||
           type === 'rc/github-installation' ||
+          type === 'rc/codehost-delivery' ||
           (type === 'rc/pull-request-feedback' && this.features.includes(PULL_REQUEST_FEEDBACK_FEATURE))
         )
       default:
@@ -317,6 +324,15 @@ export class RelayConnection implements RelayChannel {
       await this.deps.onGithubInstallation(poke)
     } catch {
       // swallowed — cache-invalidation only, never worth the socket
+    }
+  }
+
+  private async handleCodeHostDelivery(observed: RcCodeHostDelivery): Promise<void> {
+    // Fire-and-forget EVT, same discipline as handleRunReport: a store blip never tears down the link.
+    try {
+      await this.deps.onCodeHostDelivery?.(observed)
+    } catch {
+      // swallowed — a dropped observation leaves the binding unverified until the next delivery
     }
   }
 

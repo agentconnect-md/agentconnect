@@ -40,6 +40,9 @@ import {
   PgGitlabProjectCredentialRepo,
   PgGitlabProjectCredentialSecretStore,
   PgGitlabWebhookSecretStore,
+  PgGiteaConnectionRepo,
+  PgGiteaRepositoryBindingRepo,
+  PgGiteaWebhookSecretStore,
   PgOrgRepo,
   PgOrgInviteLinkRepo,
   PgWaitlistRepo,
@@ -252,6 +255,9 @@ export function buildHttpApp(
       gitlab?: Omit<NonNullable<HttpDeps['gitlab']>, 'hookRerun'> & { hookRerun?: GitlabHookRerunService }
     }
 ): HttpApp {
+  // The gitea seam a suite wires: the hook compile sources and the spec host follow it exactly as
+  // the gitlab ones follow theirs, so a suite without one never compiles a gitea rule.
+  const giteaSeam = depsOverrides?.gitea
   const clock = systemClock
 
   // Mirror the composition root's shared-transaction seam (§8): repos see the
@@ -374,7 +380,8 @@ export function buildHttpApp(
     undefined,
     agentRepoAuthRepo,
     depsOverrides?.gitlab?.api.baseUrl,
-    hookRepo
+    hookRepo,
+    giteaSeam?.api.baseUrl
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
@@ -442,7 +449,15 @@ export function buildHttpApp(
       const agent = await agentRepo.get(orgId, agentId)
       if (!agent) return
       await (depsOverrides?.agentDelivery ?? agentDelivery).upsert(agent, () => {})
-    }
+    },
+    giteaSeam
+      ? {
+          bindings: new PgGiteaRepositoryBindingRepo(prisma),
+          connections: new PgGiteaConnectionRepo(prisma),
+          webhookSecrets: new PgGiteaWebhookSecretStore(prisma, cipher),
+          host: giteaSeam.api.baseUrl
+        }
+      : undefined
   )
   // The §16.1 rerun authorizer rides the gitlab seam; a suite may still override it.
   if (coreOverrides.gitlab && !coreOverrides.gitlab.hookRerun) {
@@ -489,6 +504,8 @@ export function buildHttpApp(
       gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
       gitlabAgentAccount: new PgGitlabAgentAccountRepo(prisma),
       gitlabInstanceState: new PgGitlabInstanceStateStore(prisma),
+      giteaConnection: new PgGiteaConnectionRepo(prisma),
+      giteaRepositoryBinding: new PgGiteaRepositoryBindingRepo(prisma),
       integration: integrationRepo,
       bot: botRepo,
       botSecret: botSecretStore,
