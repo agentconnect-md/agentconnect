@@ -386,17 +386,36 @@ adapter with the draft-note steps replaced:
 REQUEST_CHANGES`, `APPROVE → APPROVED`, and a hidden signed
    attempt-and-ordinal marker in the summary **and in every inline comment**,
    so staged comments are attributable before the summary exists;
-5. on a timeout or ambiguous response, list the reviews again: a submitted
-   review by the bot carrying this attempt's marker is the outcome; a pending
-   review carrying this attempt's markers is a staged-but-unsubmitted
-   attempt, which is deleted and classified `not_submitted`; anything else is
-   an unknown effect that keeps the lease held for reconciliation rather than
-   releasing it; and
+5. on a timeout or ambiguous response, keep the lease and apply §15.2's
+   rules: a submitted review by the bot carrying this attempt's summary
+   marker is the outcome; a deterministic provider rejection, or an
+   operation record durably returned unused before `request_started`, is
+   `not_submitted` and the same attempt may retry under its lease; anything
+   else — including a pending review that carries this attempt's inline
+   markers — is `ambiguous_locked` after the bounded observation window; and
 6. release the lease only after a deterministic outcome is recorded.
 
-A preempted generation follows §15.1 unchanged: its head fence classifies it
-`not_submitted` and its pending review, if any, is deleted before the lease
-is released.
+A marked pending review proves that staging happened, not that the request
+has finished. Gitea's submission step looks up the caller's _current_
+pending review, so a request that timed out at the client may still be
+running and would publish whatever pending comments exist at the moment it
+submits — including a later attempt's, under the old summary and verdict.
+Deleting the pending review does not cancel that request, so deletion is
+never a basis for release. `ambiguous_locked` therefore holds the lease
+indefinitely and suppresses the ordinary fallback; it clears only when a
+later reconciliation pass finds the marked review submitted, or when an
+operator explicitly releases it from the Console after confirming in Gitea
+that no submission appeared — at which point the orphan pending review is
+deleted under the still-held lease and only then is the lease returned. The
+step-2 reconcile likewise deletes only pending reviews whose markers belong
+to attempts already recorded as settled; it never runs while a lease is held
+`ambiguous_locked`, because the lease is what stops it.
+
+A preempted generation follows §15.1 with the same restriction: before
+`request_started` its head fence classifies it `not_submitted` and the lease
+is released with nothing staged; once a request has started, preemption
+classifies only the _turn_, and the publication itself is settled by the
+rules above before the lease can move.
 
 Inline comments are single-line: `line` on `RIGHT` becomes `new_position`,
 `line` on `LEFT` becomes `old_position`, and a range collapses to its end
