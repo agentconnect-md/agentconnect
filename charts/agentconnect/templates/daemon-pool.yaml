@@ -154,6 +154,10 @@ spec:
         - name: daemon-pool
           image: "{{ .Values.image.registry }}/{{ .Values.daemonPool.image }}:{{ $daemonTag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if not (kindIs "invalid" .Values.daemonPool.maxAgents) }}
+          # Restates the image's CMD, which `args` replaces wholesale. Null-guarded: 0 is unbounded.
+          args: ['run', '--k8s', '--max-agents', {{ .Values.daemonPool.maxAgents | int | quote }}]
+          {{- end }}
           env:
             # Shared with the orphan-reconciler CronJob (daemon-pool-reconciler.yaml): the CP
             # address, the warm pool, the sandbox namespace and the supervisor declaration come

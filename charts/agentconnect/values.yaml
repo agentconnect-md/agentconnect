@@ -171,6 +171,9 @@ daemonPool:
   tag: ''
   # Three distinct Pod UIDs become three distinct install-wide pool members in the CP.
   replicas: 3
+  # Agents ONE member accepts duty for — held, not working: an idle agent still costs a duty entry.
+  # Null leaves the daemon's own default, 0 is unbounded. A member's config file is an emptyDir.
+  maxAgents: null
   # Existing Secret whose config.json is the strict data-plane document:
   # {"version":1,"databaseUrl":"postgresql://...","maxConnections":4}
   # Referenced BY NAME, like `secrets.existingSecret`: create it in the namespace
