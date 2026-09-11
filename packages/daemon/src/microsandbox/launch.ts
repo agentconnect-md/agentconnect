@@ -112,12 +112,15 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   )
   for (const path of [...writable, ...configDirs]) mkdirSync(path, { recursive: true, mode: 0o700 })
 
-  const credentials = prepareSharedRuntimeCredentials({ runtimeId: opts.runtimeId, runtime: opts.runtime, hostEnv })
   const protectedCredentials = prepareMicrosandboxCredentials(opts.runtimeId, opts.runtime, hostEnv, opts.explicitEnv)
+  const credentials =
+    protectedCredentials?.shareNativeCredentials === false
+      ? undefined
+      : prepareSharedRuntimeCredentials({ runtimeId: opts.runtimeId, runtime: opts.runtime, hostEnv })
   if (
     protectedCredentials?.secrets.length &&
-    [...TLS_TRUST_ENV, 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'].some((name) =>
-      (opts.explicitEnv?.[name] ?? hostEnv[name])?.trim()
+    [...TLS_TRUST_ENV, ...(protectedCredentials.tlsTrustEnv ?? []), 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'].some(
+      (name) => (opts.explicitEnv?.[name] ?? hostEnv[name])?.trim()
     )
   ) {
     throw new Error(
@@ -238,13 +241,14 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
   const claudeSettings = claudeRuntime ? prepareClaudeProtectedSettings(scopeDir, env) : undefined
-  const privateStateTargets = protectedCredentials
-    ? protectedCredentials.seedExclusions.map((path) => join(runtimeHome, path))
-    : credentialProfile === 'codex'
+  const privateStateTargets = [
+    ...(protectedCredentials?.seedExclusions.map((path) => join(runtimeHome, path)) ?? []),
+    ...(credentialProfile === 'codex'
       ? [join(runtimeHome, '.codex')]
       : claudeRuntime
         ? [join(runtimeHome, '.claude'), join(runtimeHome, '.claude.json')]
-        : []
+        : [])
+  ]
   const privateState = privateStateTargets.filter(existsSync).map((path) => realpathSync(path))
   const credentialSources = [...(credentials?.writablePaths ?? []), ...privateState].map((path) =>
     existsSync(path) ? realpathSync(path) : path

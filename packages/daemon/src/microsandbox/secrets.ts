@@ -7,6 +7,7 @@ import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES, parseDshCredentialDocument } from '../runtimes/runtime-seeded-credentials.js'
 import { prepareOpenCodeSecrets } from './opencode-secrets.js'
+import { prepareClaudeApiSecret, prepareCodexApiSecret } from './native-api-secrets.js'
 
 export interface MicrosandboxSecret {
   env: string
@@ -21,6 +22,8 @@ export interface MicrosandboxCredentials {
   replacements: ReadonlyMap<string, string>
   sources: string[]
   seedExclusions: string[]
+  shareNativeCredentials?: boolean
+  tlsTrustEnv?: readonly string[]
   preparePrivateHome: (home: string) => void
 }
 
@@ -29,7 +32,9 @@ const CREDENTIAL_PREPARERS = new Map<
   (hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>) => MicrosandboxCredentials | undefined
 >([
   ['dsh-acp', prepareDeepSeekSecret],
-  ['opencode', prepareOpenCodeSecrets]
+  ['opencode', prepareOpenCodeSecrets],
+  ['claude-acp', prepareClaudeApiSecret],
+  ['codex-acp', prepareCodexApiSecret]
 ])
 
 export function prepareMicrosandboxCredentials(

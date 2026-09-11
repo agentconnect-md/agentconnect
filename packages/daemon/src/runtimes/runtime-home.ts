@@ -72,7 +72,7 @@ export function projectRuntimeHomeSeedFile(
   home: string,
   destination: string,
   source: string,
-  project: (text: string) => string | undefined
+  project: (text: string, retained: boolean) => string | undefined
 ): void {
   const target = containedDestination(home, destination)
   assertNoDestinationSymlink(home, target)
@@ -115,7 +115,7 @@ export function projectRuntimeHomeSeedFile(
     } finally {
       closeSync(input)
     }
-    const content = project(original)
+    const content = project(original, retained)
     if (content === undefined) {
       if (retained) throw new Error('Cannot protect the existing private runtime credential file')
       return
