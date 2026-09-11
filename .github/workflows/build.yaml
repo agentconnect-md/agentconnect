@@ -577,14 +577,16 @@ jobs:
 
   # The Helm chart rides the same release train as the images: chart version = the release
   # with the `v` stripped (OCI/SemVer form), appVersion = the release tag (the image-tag
-  # form its templates default to). Published after `finalize` so a chart version never
-  # exists without its images, and before the dispatch below so a consumer deploying on
-  # that signal can pull the chart at the version it names.
+  # form its templates default to). Gated on the built images but NOT on `finalize`: it reads
+  # nothing that job produces, so the two run side by side instead of costing every release a
+  # serial job. The trade is narrow — while `finalize` runs, a chart pulled straight from the
+  # registry names this release's tag on components whose alias has yet to land, and nothing
+  # consumes it that way: the dispatch below is this workflow's only signal and awaits both.
   publish-chart:
     name: Publish Helm chart
     needs:
       - prepare
-      - finalize
+      - build-images
     runs-on: ubuntu-latest
     permissions:
       contents: read
