@@ -66,6 +66,20 @@ abort('daemon-pool grace period must outlast the shutdown drain budget') unless 
 # deliberately left behind when everything else took the daemon-pool vocabulary.
 abort('daemon pool must use the fixed Kubernetes identity') unless pod['serviceAccountName'] == 'ac-cloud-daemon'
 abort('daemon pool must use its effective component tag') unless container['image'] == 'ghcr.io/agentconnect-md/daemon:v1.41.0-rc.89'
+# Unset leaves the image's own CMD, so an install that says nothing about the ceiling gets the
+# daemon's default rather than a chart-owned one.
+abort('an unset maxAgents must not override the image CMD') if container.key?('args')
+# 0 is the daemon's UNBOUNDED sentinel, so the guard has to test for null, not for truth — a
+# truthiness check would silently drop exactly the value that removes the ceiling.
+%w[256 0].each do |ceiling|
+  rendered_ceiling, error_ceiling, status_ceiling = Open3.capture3(*command, '--set', "daemonPool.maxAgents=#{ceiling}")
+  abort("rendering maxAgents=#{ceiling} failed:\n#{error_ceiling}") unless status_ceiling.success?
+  pooled = YAML.load_stream(rendered_ceiling).compact.find { |doc|
+    doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-daemon-pool'
+  }
+  args = pooled.dig('spec', 'template', 'spec', 'containers').find { |item| item['name'] == 'daemon-pool' }&.fetch('args', nil)
+  abort("maxAgents=#{ceiling} must reach the daemon as argv") unless args == ['run', '--k8s', '--max-agents', ceiling]
+end
 # Keyed from the EFFECTIVE full reference so a `runtime.image` pin or digest change rolls the
 # members and repeats runtime discovery exactly like a tag change does.
 abort('runtime image changes must roll daemon-pool probes') unless pod_template.dig('metadata', 'annotations', 'agentconnect.md/runtime-sandbox-image') == 'ghcr.io/agentconnect-md/runtime-sandbox:v1.41.0-rc.88'
@@ -291,9 +305,10 @@ abort('reconciler must run under the members security context') unless job_pod['
 reconcile_container = job_pod.fetch('containers').find { |item| item['name'] == 'reconcile' } || abort('missing reconcile container')
 # One image, one tag: the sweep's rules ship with the daemon the members run.
 abort('reconciler must run the daemon image at the pool tag') unless reconcile_container['image'] == container['image']
-# `args` replaces CMD and leaves the image's tini ENTRYPOINT in place, so the node invocation is
-# spelled out — `['reconcile', '--once']` alone would ask tini to exec a binary named `reconcile`.
-abort('reconciler must run exactly one sweep') unless reconcile_container['args'] == ['node', 'dist/index.js', 'reconcile', '--once']
+# `args` replaces CMD and leaves the image's ENTRYPOINT, which carries the node invocation, so a
+# subcommand is all this states. Pinned because the two sit in different files: an ENTRYPOINT that
+# stopped carrying it would leave this asking tini to exec a binary named `reconcile`.
+abort('reconciler must run exactly one sweep') unless reconcile_container['args'] == ['reconcile', '--once']
 abort('reconciler must satisfy the same container security context') unless reconcile_container['securityContext'] == container['securityContext']
 reconcile_env = reconcile_container.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
 # The anti-drift assertion the shared env partial exists for: a sweep pointed at another

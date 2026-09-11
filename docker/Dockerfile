@@ -224,8 +224,10 @@ USER 10002:10002
 
 # tini so a SIGTERM reaches the daemon and its drain actually runs — without it
 # PID 1 ignores the signal and every rollout ends in SIGKILL mid-drain.
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "dist/index.js", "run", "--k8s"]
+# The interpreter is the entrypoint and the subcommand is the CMD, so a deployment that needs a
+# flag states `args` as the daemon's own argv instead of restating how the image is launched.
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "dist/index.js"]
+CMD ["run", "--k8s"]
 
 # ────────────────────────────── web: build ──────────────────────────────────
 FROM manifests AS web-builder

@@ -73,10 +73,8 @@ spec:
               # daemon the members run, so the two cannot disagree about what an orphan is.
               image: "{{ .Values.image.registry }}/{{ .Values.daemonPool.image }}:{{ $daemonTag }}"
               imagePullPolicy: {{ .Values.image.pullPolicy }}
-              # `args` replaces the image's CMD and leaves its tini ENTRYPOINT in place, so the
-              # node invocation is spelled out here — `args: ['reconcile','--once']` alone would
-              # ask tini to exec a binary named `reconcile`.
-              args: ['node', 'dist/index.js', 'reconcile', '--once']
+              # `args` replaces the image's CMD; the ENTRYPOINT already carries the node invocation.
+              args: ['reconcile', '--once']
               env:
                 # The same partial the members read (daemon-pool.yaml), so the namespace swept,
                 # the warm pool and the control-plane address cannot drift from the pool's.
