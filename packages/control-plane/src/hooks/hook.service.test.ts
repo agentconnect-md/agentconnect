@@ -187,7 +187,7 @@ function make(
 }
 
 /** A ready gitea binding, its connected bot, and the sealed keys — the gitea-compile sources (§7). */
-function giteaSources(opts: NonNullable<Parameters<typeof make>[0]['gitea']>): GiteaHookCompileSources {
+function giteaSources(opts: NonNullable<NonNullable<Parameters<typeof make>[0]>['gitea']>): GiteaHookCompileSources {
   const binding: GiteaRepositoryBindingRecord = {
     id: 'gitea-binding-1',
     orgId: 'org',
@@ -508,6 +508,6 @@ describe('HookService.compile — gitea (gitea-integration.md §7)', () => {
     expect(await make({ gitea: { keys: null } }).svc.compile(hook(GITEA_HOOK))).toBeNull()
     expect(await make({ gitea: { connection: { state: 'disconnecting' } } }).svc.compile(hook(GITEA_HOOK))).toBeNull()
     // No gitea sources wired at all: the row compiles to nothing rather than to a GitHub rule.
-    expect(await make({ installations: [installation('1')] }).svc.compile(hook(GITEA_HOOK))).toBeNull()
+    expect(await make({ installations: [installation(1n)] }).svc.compile(hook(GITEA_HOOK))).toBeNull()
   })
 })

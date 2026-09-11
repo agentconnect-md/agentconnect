@@ -132,14 +132,12 @@ export function giteaRoutes(deps: HttpDeps) {
     const upstream = async (reply: FastifyReply, e: GiteaApiError, orgId: string, connectionId: string) => {
       if (e.code === 'AUTH_REJECTED') {
         await gitea.connections.onAuthRejected(orgId, connectionId)
-        return reply
-          .code(409)
-          .send({
-            error: ERROR_NAMES[409],
-            statusCode: 409,
-            message: 'the Gitea token was rejected — replace it',
-            code: 'token_rejected'
-          })
+        return reply.code(409).send({
+          error: ERROR_NAMES[409],
+          statusCode: 409,
+          message: 'the Gitea token was rejected — replace it',
+          code: 'token_rejected'
+        })
       }
       const status = e.code === 'RATE_LIMITED' ? 429 : 502
       return reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message: `gitea: ${e.message}` })
