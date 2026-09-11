@@ -177,6 +177,7 @@ jobs:
             'daemon=@agentconnect.md/daemon' \
             'cli=@agentconnect.md/cli' \
             'setup=@agentconnect.md/setup' \
+            'web=@agentconnect.md/web' \
             'k8s-client=@agentconnect.md/k8s-client'
       - name: Publish unit test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
