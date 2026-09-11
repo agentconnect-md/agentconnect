@@ -9,8 +9,8 @@
  * subject itself fired it.
  *
  * That shared shape is why this is a seam member and not a branch. The two arms differ only
- * in path, auth header and body — each provider owns its own three, registration order is
- * resolution order, and adding a code host is adding one entry.
+ * in path, auth header and body — each provider owns its own three, the reply target's provider
+ * selects between them, and adding a code host is adding one entry.
  *
  * Best-effort by construction: nothing here throws, the turn never awaits it, and a failure
  * is one warn. A lost reaction costs a signal, never the answer. The reaction is also never
@@ -18,7 +18,7 @@
  * dies without publishing.
  */
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
-import type { GithubReplyTarget } from '../github/hook-coords.js'
+import { replyTargetProvider, type CodeHostReplyTarget } from './reply-target.js'
 
 /** Bounded because it races a prompt that is already starting; an unreachable host must
  *  never hold a turn open, and a late reaction is worthless anyway. */
@@ -36,14 +36,11 @@ export interface CodeHostAckDeps {
 /** One provider's acknowledgement request. */
 interface CodeHostAckAdapter {
   readonly provider: CodeHostProvider
-  /** True when this delivery's reply target names THIS provider. */
-  claims(target: GithubReplyTarget): boolean
-  request(target: GithubReplyTarget, token: string, apiBaseUrl: string): { url: string; init: RequestInit }
+  request(target: CodeHostReplyTarget, token: string, apiBaseUrl: string): { url: string; init: RequestInit }
 }
 
 const githubAck: CodeHostAckAdapter = {
   provider: 'github',
-  claims: (target) => target.provider === undefined,
   request(target, token, apiBaseUrl) {
     // A PR review comment and a conversation comment are different GitHub resources with
     // different reaction paths; a delivery with neither was fired by the subject, and a PR
@@ -72,7 +69,6 @@ const githubAck: CodeHostAckAdapter = {
 
 const gitlabAck: CodeHostAckAdapter = {
   provider: 'gitlab',
-  claims: (target) => target.provider === 'gitlab',
   request(target, token, apiBaseUrl) {
     // `repo` is the numeric project id on a GitLab target and `number` the subject IID (§14.1).
     const subject = `/projects/${target.repo}/${target.subjectKind === 'merge_request' ? 'merge_requests' : 'issues'}/${target.number}`
@@ -91,8 +87,8 @@ const gitlabAck: CodeHostAckAdapter = {
   }
 }
 
-/** Registration order is resolution order; adding a code host is adding one entry. */
-const ACKS: readonly CodeHostAckAdapter[] = [githubAck, gitlabAck]
+/** Adding a code host is adding one entry; the record over the provider union makes a missing one a compile error. */
+const ACKS: { readonly [P in CodeHostProvider]: CodeHostAckAdapter } = { github: githubAck, gitlab: gitlabAck }
 
 /**
  * Place the "seen it" reaction on whatever fired this turn. Resolves once the request
@@ -101,9 +97,8 @@ const ACKS: readonly CodeHostAckAdapter[] = [githubAck, gitlabAck]
  * A repeat is deliberately not suppressed — both hosts treat a reaction that is already
  * present as a success, so a redelivered turn needs no state of its own to stay idempotent.
  */
-export async function acknowledgeCodeHostTrigger(target: GithubReplyTarget, deps: CodeHostAckDeps): Promise<void> {
-  const adapter = ACKS.find((candidate) => candidate.claims(target))
-  if (!adapter) return
+export async function acknowledgeCodeHostTrigger(target: CodeHostReplyTarget, deps: CodeHostAckDeps): Promise<void> {
+  const adapter = ACKS[replyTargetProvider(target)]
   const doFetch = deps.fetchImpl ?? fetch
   try {
     const { url, init } = adapter.request(target, await deps.token(), deps.apiBaseUrl())

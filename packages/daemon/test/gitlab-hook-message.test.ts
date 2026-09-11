@@ -15,7 +15,7 @@ import {
   UNTRUSTED_CONTENT_BEGIN_GITLAB,
   UNTRUSTED_CONTENT_END
 } from '../src/messages/hook-message.js'
-import { githubThreadWorktreeCleanup } from '../src/github/hook-coords.js'
+import { codeHostThreadWorktreeCleanup } from '../src/codehost/turn-final.js'
 
 const HOOK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
@@ -250,16 +250,16 @@ describe('gitlab hook normalization (§12.3)', () => {
 
   it('maps merged MRs and closed issues to the shared worktree-cleanup family, fenced on metadata', () => {
     const gitlab = { projectId: PROJECT, projectPath: 'p', target: { kind: 'merge_request' as const, iid: 77 } }
-    expect(githubThreadWorktreeCleanup({ event: 'merge_request:merged', gitlab })).toBe('pull_request_merged')
+    expect(codeHostThreadWorktreeCleanup({ event: 'merge_request:merged', gitlab })).toBe('pull_request_merged')
     expect(
-      githubThreadWorktreeCleanup({
+      codeHostThreadWorktreeCleanup({
         event: 'issues:closed',
         gitlab: { ...gitlab, target: { kind: 'issue', iid: 42 } }
       })
     ).toBe('issue_closed')
     // The event alone never authorizes maintenance (a malformed frame must run
     // as an ordinary hook, not silently delete a checkout).
-    expect(githubThreadWorktreeCleanup({ event: 'merge_request:merged' })).toBeUndefined()
-    expect(githubThreadWorktreeCleanup({ event: 'issues:closed', gitlab })).toBeUndefined()
+    expect(codeHostThreadWorktreeCleanup({ event: 'merge_request:merged' })).toBeUndefined()
+    expect(codeHostThreadWorktreeCleanup({ event: 'issues:closed', gitlab })).toBeUndefined()
   })
 })

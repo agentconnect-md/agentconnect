@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { acknowledgeCodeHostTrigger } from '../src/codehost/ack.js'
-import type { GithubReplyTarget } from '../src/github/hook-coords.js'
+import type { CodeHostReplyTarget } from '../src/codehost/reply-target.js'
 
 const HOOK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
@@ -25,14 +25,15 @@ function harness(overrides: { fetchImpl?: typeof fetch; token?: () => Promise<st
   }
 }
 
-const github = (extra: Partial<GithubReplyTarget> = {}): GithubReplyTarget => ({
+const github = (extra: Partial<CodeHostReplyTarget> = {}): CodeHostReplyTarget => ({
   hookId: HOOK,
+  provider: 'github',
   repo: 'acme/infra',
   number: 42,
   ...extra
 })
 
-const gitlab = (extra: Partial<GithubReplyTarget> = {}): GithubReplyTarget => ({
+const gitlab = (extra: Partial<CodeHostReplyTarget> = {}): CodeHostReplyTarget => ({
   hookId: HOOK,
   provider: 'gitlab',
   subjectKind: 'issue',

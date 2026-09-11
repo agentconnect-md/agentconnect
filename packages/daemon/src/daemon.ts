@@ -584,17 +584,17 @@ import {
   githubDeletedHookEvent,
   hookOutputFallbackAllowed,
   githubReviewResultForCompletion,
-  githubThreadWorktreeCleanup,
   hookOutcomeFailure,
   MAX_HOOK_REPORT_INFLIGHT,
   type ActiveGithubReplyBatchMeta,
   type ActiveGithubTurnMeta,
-  type GithubReplyTarget,
   type HookCompletionOwner,
   type HookDispatchContext,
   type NotePublishFailure,
   type SessionWorktreeCleanupResult
 } from './github/hook-coords.js'
+import type { CodeHostReplyTarget } from './codehost/reply-target.js'
+import { codeHostThreadWorktreeCleanup, turnFinalFor } from './codehost/turn-final.js'
 import {
   FailStopError,
   LifecycleCleanupBlockedError,
@@ -10605,7 +10605,7 @@ export class Daemon {
        *  id (session-concept.md §1.1) — every consumer of this reports it onward. */
       onSessionReady?: (sessionId: string) => void
     },
-    githubReply?: GithubReplyTarget,
+    githubReply?: CodeHostReplyTarget,
     hookContext?: HookDispatchContext,
     posterPublishState: QueueEntry['posterPublishState'] = githubReply ? 'not_started' : undefined
   ): Promise<string | null> {
@@ -12056,7 +12056,7 @@ export class Daemon {
       ...(plan.githubTurnEligible && githubReply
         ? {
             github: {
-              ...this.githubReviews.makeGithubReply(agentId, githubReply, sessionId),
+              ...this.githubReviews.makeCodeHostReply(agentId, githubReply, sessionId),
               deferredFinalTranscript: false
             }
           }
@@ -13320,9 +13320,10 @@ export class Daemon {
   }
 
   /** Stamp this turn's normalized note outcome on the durable hook context (14.1) so settlement
-   *  carries it; gitlab reply targets only. Returns whether anything was recorded. */
+   *  carries it; only a host whose poster names an absent comment. Returns whether anything was recorded. */
   private markNotePublishFailure(entry: QueueEntry, code: NotePublishFailure | undefined): boolean {
-    if (!code || !entry.hookContext || entry.githubReply?.provider !== 'gitlab') return false
+    const reply = entry.githubReply
+    if (!code || !entry.hookContext || !reply || !turnFinalFor(reply).reportsAbsentOutput) return false
     entry.hookContext.notePublishFailure = code
     return true
   }
@@ -13339,10 +13340,11 @@ export class Daemon {
     if (!hookContext) return
     // The PERSISTED outcome is authoritative — it is the only one a replayed row still has. A proven
     // note identity outranks any marker: the publication happened, whatever an earlier attempt recorded.
+    const reply = entry.githubReply
     const notePublishFailure = hookContext.publishedOutput
       ? undefined
       : (hookContext.notePublishFailure ??
-        (entry.githubReply?.provider === 'gitlab' ? p.github?.poster.failure : undefined))
+        (reply && turnFinalFor(reply).reportsAbsentOutput ? p.github?.poster.failure : undefined))
     const failure = hookOutcomeFailure(
       hookContext.githubReviewBatch,
       batchPublishesItems(hookContext),
@@ -18222,7 +18224,7 @@ export class Daemon {
         await this.store.removeInbox(row.id)
         continue
       }
-      const cleanup = githubThreadWorktreeCleanup(hookContext)
+      const cleanup = codeHostThreadWorktreeCleanup(hookContext)
       const deleted = githubDeletedHookEvent(hookContext)
       if (hookContext && (cleanup || deleted)) {
         const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, row.agentId, msg.transportScope)

@@ -11,7 +11,6 @@
 import { randomUUID } from 'node:crypto'
 import { WireError } from '@agentconnect.md/connection'
 import {
-  GITLAB_DEFAULT_BASE_URL,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   type GithubHookMetadata,
@@ -20,7 +19,6 @@ import {
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
-import { gitlabApiBaseUrl } from '../gitlab/api-base.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { CpClient } from '../cp/client.js'
@@ -37,15 +35,12 @@ import {
   authorizedReviewTargetMatches,
   githubDeletedHookEvent,
   githubFallbackAllowed,
-  githubThreadWorktreeCleanup,
   hookSnapshot,
   isGithubReviewCommentHook,
   reviewPolicyAllows,
   reviewResultForWire,
   type ActiveGithubReplyBatchMeta,
   type ActiveGithubTurnMeta,
-  type GithubReplyTarget,
-  type GithubThreadWorktreeCleanup,
   type HookCompletionOwner,
   type HookDispatchContext,
   type SessionWorktreeCleanupResult
@@ -54,10 +49,18 @@ import type { CallMeta, QueueEntry } from '../daemon/turn-types.js'
 import type { WebchatTurnContext } from '../webchat/types.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
 import { effectiveSessionIsolation, type PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
-import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './poster.js'
-import { GitlabFinalPoster } from '../gitlab/poster.js'
-import { GITLAB_HOST_MISMATCH_REASON } from '../gitlab/host-fence.js'
+import { GithubReplyCollector, type GithubCommentAttribution } from './poster.js'
 import { acknowledgeCodeHostTrigger } from '../codehost/ack.js'
+import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
+import {
+  codeHostHostFence,
+  codeHostReplyTarget,
+  codeHostThreadWorktreeCleanup,
+  turnFinalFor,
+  type CodeHostFinalPoster,
+  type CodeHostThreadWorktreeCleanup,
+  type CodeHostTurnFinalHost
+} from '../codehost/turn-final.js'
 import { GithubReviewClient, type GithubReviewEffect } from './review.js'
 
 /** Dispatch options this seam needs; a subset of the daemon's own. */
@@ -137,7 +140,7 @@ export interface GithubReviewHost {
     webchat?: WebchatTurnContext,
     callMeta?: CallMeta,
     opts?: GithubHookDispatchOptions,
-    githubReply?: GithubReplyTarget,
+    githubReply?: CodeHostReplyTarget,
     hookContext?: HookDispatchContext
   ): Promise<string | null>
   /** Turn-finalization in dispatchOne reads these maps too, so they stay on the Daemon. */
@@ -160,6 +163,17 @@ export class GithubReviewOrchestrator {
     provider: 'github',
     owns: (key, agentId) => this.host.activeGithubTurn(key)?.hook.agentId === agentId,
     submit: (_key, req) => this.submitGithubReview(req)
+  }
+
+  /** What the §6.5 turn-final members read back here: each provider's effect mint, and the instance its spec names. */
+  private readonly turnFinalHost: CodeHostTurnFinalHost = {
+    getPostToken: (agentId, repo, hookId) => this.host.getPostToken(agentId, repo, hookId),
+    invalidatePost: (agentId, repo, presented) => this.host.invalidatePost(agentId, repo, presented),
+    getGitlabPostToken: (agentId, projectId, hookId) => this.host.getGitlabPostToken(agentId, projectId, hookId),
+    invalidateGitlabPost: (agentId, projectId, presented) =>
+      this.host.invalidateGitlabPost(agentId, projectId, presented),
+    gitlabHostFor: (agentId) => this.agents.get(agentId)?.gitlabHost,
+    log: { warn: (message: string) => this.log.warn(message) }
   }
 
   constructor(private readonly host: GithubReviewHost) {}
@@ -189,7 +203,7 @@ export class GithubReviewOrchestrator {
   async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
     const durable = await this.replayDurableAdmission(msg)
     if (durable) return durable
-    const cleanup = githubThreadWorktreeCleanup(msg)
+    const cleanup = codeHostThreadWorktreeCleanup(msg)
     const maintenance = cleanup !== undefined || githubDeletedHookEvent(msg)
     const agent = this.agents.get(msg.agentId)
     if (!agent) {
@@ -197,16 +211,8 @@ export class GithubReviewOrchestrator {
       return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
     }
     // §24.4: a delivery naming another instance than the spec is REFUSED, never re-targeted.
-    if (msg.gitlab !== undefined) {
-      const expected = agent.gitlabHost ?? GITLAB_DEFAULT_BASE_URL
-      const delivered = msg.gitlab.host ?? GITLAB_DEFAULT_BASE_URL
-      if (delivered !== expected) {
-        this.log.warn(
-          `hook: fire ${msg.msgId} for agent "${msg.agentId}" names gitlab instance ${delivered} but its spec is bound to ${expected} — refusing`
-        )
-        return { msgId: msg.msgId, accepted: false, reason: GITLAB_HOST_MISMATCH_REASON }
-      }
-    }
+    const hostMismatch = codeHostHostFence(msg, this.turnFinalHost)
+    if (hostMismatch) return { msgId: msg.msgId, accepted: false, reason: hostMismatch }
     if (!maintenance && this.host.paused(msg.agentId)) {
       this.log.info(`hook: agent "${msg.agentId}" is paused — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'paused' }
@@ -252,7 +258,7 @@ export class GithubReviewOrchestrator {
    * without one the fire runs headless.
    */
   async onHookFire(msg: RdMsgHook): Promise<{ accepted: boolean; reason?: string }> {
-    const cleanup = githubThreadWorktreeCleanup(msg)
+    const cleanup = codeHostThreadWorktreeCleanup(msg)
     const deleted = githubDeletedHookEvent(msg)
     // A lifecycle cleanup always addresses the stable GitHub thread session,
     // never an optional IM anchor configured for ordinary hook output.
@@ -288,55 +294,10 @@ export class GithubReviewOrchestrator {
       }
       return { accepted: true }
     }
-    // P3 outbound: github fires on a NUMBERED thread publish their completed reply as
-    // one comment (always on — design; push fires have no thread and stay silent).
-    const c = msg.context
-    const trustedInlineTarget =
-      c?.source === 'github' &&
-      msg.github?.subjectKind === 'pull_request' &&
-      msg.github.pullNumber !== undefined &&
-      msg.github.reviewThreadRootCommentId !== undefined
-        ? {
-            hookId: msg.hookId,
-            repo: msg.github.repoFullName,
-            number: msg.github.pullNumber,
-            ...(msg.github.reviewCommentId
-              ? {
-                  reviewCommentId: msg.github.reviewCommentId,
-                  triggerComment: { kind: 'review_comment' as const, id: msg.github.reviewCommentId }
-                }
-              : {}),
-            reviewThreadRootCommentId: msg.github.reviewThreadRootCommentId
-          }
-        : undefined
-    // Inline coordinates and their PR target are one body-free trusted unit.
-    // A mixed-version frame without that unit keeps the rolling-compatible
-    // ordinary issue/PR comment path derived from HookContext.
-    // GitLab (§14.1) rides the same pipe: repo = numeric project id, number = IID; pushes have no thread and stay silent.
-    const gitlabReply =
-      c?.source === 'gitlab' && msg.gitlab && msg.gitlab.target.kind !== 'push'
-        ? {
-            hookId: msg.hookId,
-            provider: 'gitlab' as const,
-            subjectKind: msg.gitlab.target.kind,
-            repo: msg.gitlab.projectId,
-            number: msg.gitlab.target.iid,
-            ...(msg.gitlab.noteId ? { triggerComment: { kind: 'note' as const, id: msg.gitlab.noteId } } : {})
-          }
-        : undefined
-    const githubReply =
-      trustedInlineTarget ??
-      gitlabReply ??
-      (c?.source === 'github' && c.repo && c.number !== undefined
-        ? {
-            hookId: msg.hookId,
-            repo: c.repo,
-            number: c.number,
-            ...(msg.github?.issueCommentId
-              ? { triggerComment: { kind: 'issue_comment' as const, id: msg.github.issueCommentId } }
-              : {})
-          }
-        : undefined)
+    // P3 outbound: a code-host fire on a NUMBERED subject publishes its completed reply as one
+    // comment (always on — design; a push has no thread and stays silent). Which coordinates
+    // that is belongs to the delivery's own turn-final member.
+    const githubReply = codeHostReplyTarget(msg)
     if (githubReply) hookContext.githubReply = githubReply
     const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(msg.agentId, nmsg, msg.target?.integrationId))
     const anchor = await this.host.anchorTrigger(
@@ -390,7 +351,7 @@ export class GithubReviewOrchestrator {
   async completeGithubThreadWorktreeCleanup(
     hook: HookDispatchContext,
     key: string,
-    cleanup: GithubThreadWorktreeCleanup,
+    cleanup: CodeHostThreadWorktreeCleanup,
     owner: HookCompletionOwner
   ): Promise<void> {
     try {
@@ -971,7 +932,7 @@ export class GithubReviewOrchestrator {
       }
       item.publishState = 'in_flight'
       await this.host.persistHookState(active.entry, undefined, true)
-      const published = await this.makeGithubReply(req.agentId, reply, active.sessionId).poster.publish(
+      const published = await this.makeCodeHostReply(req.agentId, reply, active.sessionId).poster.publish(
         supplied.get(root)!
       )
       // Batch replies are a GitHub-only surface (inline review threads) — narrow away the gitlab arm of the shared poster union.
@@ -991,62 +952,32 @@ export class GithubReviewOrchestrator {
   /** Light the code host's "seen it" reaction on whatever fired this turn, through the same
    *  repo-targeted mint the turn's poster will use — reactions need no wider grant. Returns a
    *  promise only so tests can settle it; dispatch never awaits one. */
-  acknowledgeTrigger(agentId: string, ref: GithubReplyTarget): Promise<void> {
+  acknowledgeTrigger(agentId: string, ref: CodeHostReplyTarget): Promise<void> {
+    const lease = turnFinalFor(ref).effectLease(agentId, ref, this.turnFinalHost)
     return acknowledgeCodeHostTrigger(ref, {
-      token:
-        ref.provider === 'gitlab'
-          ? async () => (await this.host.getGitlabPostToken(agentId, ref.repo, ref.hookId)).token
-          : async () => (await this.host.getPostToken(agentId, ref.repo, ref.hookId)).token,
-      apiBaseUrl:
-        ref.provider === 'gitlab'
-          ? () => gitlabApiBaseUrl(this.agents.get(agentId)?.gitlabHost)
-          : () => 'https://api.github.com',
+      token: lease.token,
+      apiBaseUrl: lease.apiBaseUrl,
       log: { warn: (message: string) => this.log.warn(message) }
     })
   }
 
-  /** Build the per-turn GitHub final-answer selector and poster, tokened
-   *  via the repo-targeted gitcred mint (issues/PR write, no contents — never
-   *  enters agent env). Attribution is resolved at publish time so the completed
-   *  comment carries the session's final runtime/model selection. */
-  makeGithubReply(
+  /** Build the per-turn final-answer selector and the owning host's poster, tokened via that
+   *  host's effect lease. Attribution is resolved at publish time so the completed comment
+   *  carries the session's final runtime/model selection. */
+  makeCodeHostReply(
     agentId: string,
-    ref: GithubReplyTarget,
+    ref: CodeHostReplyTarget,
     sessionId: string
-  ): { poster: GithubFinalPoster | GitlabFinalPoster; collector: GithubReplyCollector } {
-    if (ref.provider === 'gitlab') {
-      return {
-        collector: new GithubReplyCollector(),
-        poster: new GitlabFinalPoster(
-          {
-            token: async () => (await this.host.getGitlabPostToken(agentId, ref.repo, ref.hookId)).token,
-            invalidateToken: (token) => this.host.invalidateGitlabPost(agentId, ref.repo, token),
-            // §24.4: the instance this agent's spec names, read when the note is actually posted.
-            apiBaseUrl: () => gitlabApiBaseUrl(this.agents.get(agentId)?.gitlabHost),
-            log: { warn: (m: string) => this.log.warn(m) }
-          },
-          ref.repo,
-          ref.subjectKind ?? 'issue',
-          ref.number,
-          () =>
-            this.agents.get(agentId)?.output.showFooter ? this.githubCommentAttribution(agentId, sessionId) : undefined
-        )
-      }
-    }
+  ): { poster: CodeHostFinalPoster; collector: GithubReplyCollector } {
+    const turnFinal = turnFinalFor(ref)
     return {
       collector: new GithubReplyCollector(),
-      poster: new GithubFinalPoster(
-        {
-          token: async () => (await this.host.getPostToken(agentId, ref.repo, ref.hookId)).token,
-          invalidateToken: (token) => this.host.invalidatePost(agentId, ref.repo, token),
-          log: { warn: (m: string) => this.log.warn(m) }
-        },
-        ref.repo,
-        ref.number,
-        () =>
+      poster: turnFinal.finalPoster(ref, {
+        ...turnFinal.effectLease(agentId, ref, this.turnFinalHost),
+        attribution: () =>
           this.agents.get(agentId)?.output.showFooter ? this.githubCommentAttribution(agentId, sessionId) : undefined,
-        ref.reviewThreadRootCommentId
-      )
+        log: { warn: (m: string) => this.log.warn(m) }
+      })
     }
   }
 

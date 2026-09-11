@@ -21,7 +21,8 @@ import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
 import type { FeishuConnection } from '../feishu/connection.js'
-import type { GithubReplyTarget, HookDispatchContext } from '../github/hook-coords.js'
+import type { HookDispatchContext } from '../github/hook-coords.js'
+import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import type { WebchatTurnContext } from '../webchat/types.js'
 import type { WorkspaceFileLinkResolver } from '../messages/workspace-file-links.js'
 
@@ -283,10 +284,10 @@ export interface QueueEntry {
    *  turns, or a replayed entry re-admitted from an already-present row). Set once on
    *  admission and used to delete the row on every terminal path. */
   inboxId?: string
-  /** P3 outbound: publish the turn's completed reply on this GitHub thread. Hook
+  /** P3 outbound: publish the turn's completed reply on this code-host thread. Hook
    * deliveries duplicate this reference in their durable HookDispatchContext so
    * restart replay can recreate the poster behind its publish-state fence. */
-  githubReply?: GithubReplyTarget
+  githubReply?: CodeHostReplyTarget
   /** Selected before session/new|load so cancellation uses the exact host. */
   selectedHost?: SelectedTurnHost
   /** Session initialization must await cleanup before releasing ownership. */

@@ -96,7 +96,11 @@ with an external transport. Do not "finish the job" by forcing either into
 GitLab has now arrived and made the seam a two-implementer one
 ([`gitlab-com-integration.md`](docs/designs/gitlab-com-integration.md) §6.5,
 §8.1 `CodeHostRepository`), so its members exist: the Layer-2 turn output that
-removed the hardcoded `github` case from the dispatch path, and
+removed the hardcoded `github` case from the dispatch path,
+`daemon/src/codehost/turn-final.ts` — `CodeHostTurnFinal` registered per
+provider, owning a delivery's reply target, its effect lease and REST root, the
+final poster, the turn-start instance fence, and the lifecycle pairing that
+retires a thread's checkout — and
 `daemon/src/codehost/review-adapter.ts` — `CodeHostReviewAdapter` plus the
 router that hands provider-routed `submitCodeReview` to whichever adapter owns
 the active review turn, the GitHub review orchestrator's member or the GitLab
