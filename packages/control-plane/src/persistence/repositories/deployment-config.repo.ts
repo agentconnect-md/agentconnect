@@ -12,11 +12,13 @@ import type { SecretCipher } from '../../secrets/cipher.js'
 import { withTx } from '../prisma.js'
 import {
   DeploymentConfigConflictError,
+  DeploymentConfigGiteaBaseUrlLockedError,
   DeploymentConfigGitlabBaseUrlLockedError,
   DeploymentConfigMissingSecretsError,
   DeploymentConfigSecretRefreshRequiredError,
   DeploymentConfigService,
   deploymentSecretsRequiringRefresh,
+  effectiveGiteaBaseUrl,
   effectiveGitlabBaseUrl,
   parseDeploymentConfigValues,
   type DeploymentConfigPersistence,
@@ -28,6 +30,7 @@ import {
 
 import { DEPLOYMENT_CONFIG_ID, lockAxisExclusive } from './gitlab-axis.js'
 import { GITLAB_DEFAULT_BASE_URL, normalizeGitlabBaseUrl } from '../../gitlab/config.js'
+import { GITEA_DEFAULT_BASE_URL, normalizeGiteaBaseUrl } from '../../gitea/config.js'
 
 const adminSelect = {
   schemaVersion: true,
@@ -97,7 +100,12 @@ const CODE_HOST_STATE_EXISTS: Record<CodeHostProvider, (tx: Prisma.TransactionCl
       tx.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })
     ])
     return connections + bindings + accounts + hooks + claims > 0
-  }
+  },
+  // G2 adds the Gitea connection, binding, secret and claim tables this must count
+  // (gitea-integration.md §5); with none of them existing yet, no Gitea state can pin the axis and
+  // the base URL is freely editable. The `gitea` hook kind is in the enum but no route can write
+  // one, so counting it here would be counting a row nothing can create.
+  gitea: async () => false
 }
 
 function codeHostStateExists(tx: Prisma.TransactionClient, provider: CodeHostProvider): Promise<boolean> {
@@ -109,13 +117,18 @@ export class PgDeploymentConfigRepository implements DeploymentConfigPersistence
    *  document: with no row, `GITLAB_BASE_URL` is what the running deployment
    *  already serves, so it — not GitLab.com — is what a first write must match. */
   private readonly envGitlabBaseUrl: string
+  /** The Gitea twin of the axis above: with no row, `GITEA_BASE_URL` is what the deployment serves. */
+  private readonly envGiteaBaseUrl: string
 
   constructor(
     private readonly prisma: PrismaClient,
-    envGitlabBaseUrl?: string
+    envGitlabBaseUrl?: string,
+    envGiteaBaseUrl?: string
   ) {
     const raw = envGitlabBaseUrl?.trim()
     this.envGitlabBaseUrl = raw ? normalizeGitlabBaseUrl(raw) : GITLAB_DEFAULT_BASE_URL
+    const rawGitea = envGiteaBaseUrl?.trim()
+    this.envGiteaBaseUrl = rawGitea ? normalizeGiteaBaseUrl(rawGitea) : GITEA_DEFAULT_BASE_URL
   }
 
   async readAdmin(): Promise<StoredDeploymentConfigAdmin | null> {
@@ -158,6 +171,12 @@ export class PgDeploymentConfigRepository implements DeploymentConfigPersistence
       const nextBaseUrl = effectiveGitlabBaseUrl(input.values)
       if (previousBaseUrl !== nextBaseUrl && (await codeHostStateExists(tx, 'gitlab'))) {
         throw new DeploymentConfigGitlabBaseUrlLockedError(previousBaseUrl, nextBaseUrl)
+      }
+      // The same lock on the Gitea axis (gitea-integration.md §3), under the same exclusive lock.
+      const previousGiteaBaseUrl = previousValues ? effectiveGiteaBaseUrl(previousValues) : this.envGiteaBaseUrl
+      const nextGiteaBaseUrl = effectiveGiteaBaseUrl(input.values)
+      if (previousGiteaBaseUrl !== nextGiteaBaseUrl && (await codeHostStateExists(tx, 'gitea'))) {
+        throw new DeploymentConfigGiteaBaseUrlLockedError(previousGiteaBaseUrl, nextGiteaBaseUrl)
       }
       const refreshKeys = previousValues ? deploymentSecretsRequiringRefresh(previousValues, input.values) : []
       const missingRefresh = refreshKeys.filter((key) => !input.secrets[key])
@@ -234,7 +253,7 @@ export class PgDeploymentConfigRepository implements DeploymentConfigPersistence
 
 /** Composition convenience used by the CP container and tests. */
 export class PgDeploymentConfigStore extends DeploymentConfigService {
-  constructor(prisma: PrismaClient, cipher: SecretCipher, envGitlabBaseUrl?: string) {
-    super(new PgDeploymentConfigRepository(prisma, envGitlabBaseUrl), cipher)
+  constructor(prisma: PrismaClient, cipher: SecretCipher, envGitlabBaseUrl?: string, envGiteaBaseUrl?: string) {
+    super(new PgDeploymentConfigRepository(prisma, envGitlabBaseUrl, envGiteaBaseUrl), cipher)
   }
 }

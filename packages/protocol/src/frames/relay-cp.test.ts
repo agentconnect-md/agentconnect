@@ -922,7 +922,7 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     const ok = decodeRelayCpFrame(envelope('rc/hook-rerun', base))
     expect(ok.ok).toBe(true)
     if (ok.ok && ok.frame.type === 'rc/hook-rerun') {
-      expect(ok.frame.payload.gitlab.target).toMatchObject({ kind: 'merge_request', iid: 42 })
+      expect(ok.frame.payload.gitlab?.target).toMatchObject({ kind: 'merge_request', iid: 42 })
       expect(ok.frame.payload.deliveryKey).toBe('rerun_1')
     }
     expect(

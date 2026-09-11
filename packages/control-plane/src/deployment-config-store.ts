@@ -16,6 +16,7 @@ export {
   DEPLOYMENT_SECRET_KEYS,
   GITLAB_BASE_URL_LOCKED_REASON,
   DeploymentConfigConflictError,
+  DeploymentConfigGiteaBaseUrlLockedError,
   DeploymentConfigGitlabBaseUrlLockedError,
   DeploymentConfigMissingSecretsError,
   DeploymentConfigSecretRefreshRequiredError,
@@ -41,6 +42,8 @@ export interface OpenDeploymentConfigStoreOptions extends SecretCipherConfig {
   /** The deployment's `GITLAB_BASE_URL` fallback: with no persisted document it
    *  is the axis already in effect, so the first write is fenced against it. */
   gitlabBaseUrl?: string
+  /** The same for `GITEA_BASE_URL` (gitea-integration.md §3). */
+  giteaBaseUrl?: string
 }
 
 export interface DeploymentConfigStoreHandle {
@@ -51,6 +54,11 @@ export interface DeploymentConfigStoreHandle {
 /** Open exactly the DB + SecretCipher slice shared by CP and setup tooling. */
 export function openDeploymentConfigStore(options: OpenDeploymentConfigStoreOptions): DeploymentConfigStoreHandle {
   const prisma = createPrisma(options.databaseUrl)
-  const store = new PgDeploymentConfigStore(prisma, makeSecretCipher(options), options.gitlabBaseUrl)
+  const store = new PgDeploymentConfigStore(
+    prisma,
+    makeSecretCipher(options),
+    options.gitlabBaseUrl,
+    options.giteaBaseUrl
+  )
   return { store, close: disconnectPrisma }
 }

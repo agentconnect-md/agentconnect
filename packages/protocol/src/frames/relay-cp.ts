@@ -6,7 +6,14 @@ import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
-import { GithubHookMetadata, GitlabHookMetadata, HookBigIntString, OptionalHookConfigSnapshot } from './hook.js'
+import {
+  codeHostHookMetadataOf,
+  GiteaHookMetadata,
+  GithubHookMetadata,
+  GitlabHookMetadata,
+  HookBigIntString,
+  OptionalHookConfigSnapshot
+} from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { PullRequestFeedbackSignal } from './session.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
@@ -229,12 +236,18 @@ export const RcCodeHostMembershipAuthz = z.object({
   provider: z.string().min(1), // 'gitlab' today; open string so a new host degrades per-value
   repoExternalId: z.string().regex(/^[1-9]\d*$/), // numeric project/repository id — the match key
   actorExternalId: z.string().regex(/^[1-9]\d*$/), // sender/actor numeric user id
+  // The actor's current login beside its id, for a provider whose permission lookup is by name
+  // (Gitea, gitea-integration.md §8). The CP re-resolves the name to a numeric id and refuses a
+  // mismatch, so a renamed or reassigned login can never borrow a permission. Additive optional:
+  // an older relay omits it and a provider that looks up by id never needs it.
+  actorUsername: z.string().min(1).optional(),
   // Unmentioned thread continuation also requires the subject author's current
   // membership; an explicit maintainer summon omits this second actor.
   subjectAuthorExternalId: z
     .string()
     .regex(/^[1-9]\d*$/)
     .optional(),
+  subjectAuthorUsername: z.string().min(1).optional(),
   // Fence authorization to the exact compiled rule that accepted the delivery.
   configRevision: HookBigIntString,
   dispatchRevision: HookBigIntString,
@@ -360,6 +373,26 @@ export const RcGitlabHookRule = z.object({
 })
 export type RcGitlabHookRule = z.infer<typeof RcGitlabHookRule>
 
+/** The gitea member of a compiled rule (gitea-integration.md §7); it carries the signing key inline, so the rule is NEVER logged. */
+export const RcGiteaHookRule = z.object({
+  repoId: z.string().regex(/^[1-9]\d*$/), // numeric repository id — the match key
+  repoPath: z.string().min(1), // display/logs only; never matched on
+  sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitea:<repoId>
+  events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
+  commentFamilies: z.array(z.enum(['issues', 'pull_request'])).optional(),
+  mentionOnly: z.boolean(),
+  agentName: z.string().optional(),
+  // The connection's single bot user: the §8 veto set and the mention/reviewer target. Gitea's
+  // permission lookup is by username, so the relay forwards the login beside the numeric id.
+  botUserId: z.string().regex(/^[1-9]\d*$/),
+  botUsername: z.string().min(1),
+  // Hex HMAC-SHA256 key for the `X-Gitea-Signature` verification of §7.
+  signingKey: z.string().min(1),
+  // The instance this rule addresses (§3), copied opaquely onto forwarded metadata as the turn-time host fence; absent means gitea.com.
+  host: z.string().optional()
+})
+export type RcGiteaHookRule = z.infer<typeof RcGiteaHookRule>
+
 // C→R EVT — one enabled hook's compiled rule, broadcast to the WHOLE pool
 // (webhook-type ingress is pool-served, shared-bot-relay.md §5). Upsert
 // semantics: the CP re-sends the full frame on hook create/update/enable, on
@@ -390,7 +423,9 @@ export const RcHookAssign = z
     // kind=github (P2) — required for that kind
     github: RcGithubHookRule.optional(),
     // kind=gitlab (gitlab-com-integration.md §11.3) — required for that kind
-    gitlab: RcGitlabHookRule.optional()
+    gitlab: RcGitlabHookRule.optional(),
+    // kind=gitea (gitea-integration.md §7) — required for that kind
+    gitea: RcGiteaHookRule.optional()
   })
   .superRefine((rule, ctx) => {
     if (rule.dispatchDaemonId !== undefined && rule.dispatchDaemonId !== rule.daemonId) {
@@ -407,6 +442,7 @@ export type RcHookAssign = z.infer<typeof RcHookAssign>
 interface CodeHostHookRuleByProvider {
   github: RcGithubHookRule
   gitlab: RcGitlabHookRule
+  gitea: RcGiteaHookRule
 }
 
 /** Decode-time view of a compiled code-host rule (gitea-integration.md §13): `kind` names the provider whose member carries the rule, plus the rename-stable repo key. */
@@ -416,7 +452,7 @@ export type CodeHostHookRule<P extends CodeHostProvider = CodeHostProvider> = {
 
 /** The code-host rule a compiled rule carries; undefined for the generic kind or a kind missing its member. */
 export function codeHostHookRuleOf(
-  rule: Pick<RcHookAssign, 'kind' | 'github' | 'gitlab'>
+  rule: Pick<RcHookAssign, 'kind' | 'github' | 'gitlab' | 'gitea'>
 ): CodeHostHookRule | undefined {
   if (rule.kind === 'github' && rule.github) {
     const { repoId: externalId, repoFullName: path } = rule.github
@@ -425,6 +461,10 @@ export function codeHostHookRuleOf(
   if (rule.kind === 'gitlab' && rule.gitlab) {
     const { projectId: externalId, projectPath: path } = rule.gitlab
     return { provider: 'gitlab', repo: { provider: 'gitlab', externalId, path }, rule: rule.gitlab }
+  }
+  if (rule.kind === 'gitea' && rule.gitea) {
+    const { repoId: externalId, repoPath: path } = rule.gitea
+    return { provider: 'gitea', repo: { provider: 'gitea', externalId, path }, rule: rule.gitea }
   }
   return undefined
 }
@@ -448,17 +488,33 @@ export type RcHookRemove = z.infer<typeof RcHookRemove>
  * Sent to ONE relay at a time (never broadcast) for the same reason; the CP
  * moves to another eligible relay only on a DEFINITIVE refusal below.
  * Gated on `gitlab-rerun-v1`, not `gitlab-com-v1`: the older bit predates this
- * frame and its holder cannot decode it.
+ * frame and its holder cannot decode it. The Gitea rerun (gitea-integration.md
+ * §10.4) rides the same frame through a `gitea` sibling gated on `gitea-v1`:
+ * exactly one provider member carries the freshly read subject metadata, and a
+ * relay that holds no rule for the member's provider refuses the frame closed.
  */
-export const RcHookRerun = z.object({
-  hookId: z.string().uuid(),
-  agentId: z.string().uuid(),
-  deliveryKey: z.string().min(1), // Control-Plane-minted; the HookRun/dedup identity
-  configRevision: HookBigIntString,
-  dispatchRevision: HookBigIntString,
-  event: z.string().min(1), // normalized 'family:action', e.g. 'merge_request:rerun'
-  gitlab: GitlabHookMetadata
-})
+export const RcHookRerun = z
+  .object({
+    hookId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    deliveryKey: z.string().min(1), // Control-Plane-minted; the HookRun/dedup identity
+    configRevision: HookBigIntString,
+    dispatchRevision: HookBigIntString,
+    event: z.string().min(1), // normalized 'family:action', e.g. 'merge_request:rerun'
+    // `gitlab` was required pre-Gitea, so every existing sender stays valid; a relay
+    // without `gitea-v1` never receives the gitea member and keeps requiring this one.
+    gitlab: GitlabHookMetadata.optional(),
+    gitea: GiteaHookMetadata.optional()
+  })
+  .superRefine((rerun, ctx) => {
+    if (codeHostHookMetadataOf(rerun) === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['gitlab'],
+        message: 'exactly one provider metadata member is required'
+      })
+    }
+  })
 export type RcHookRerun = z.infer<typeof RcHookRerun>
 
 /**
@@ -534,6 +590,7 @@ export const RcRunReport = z
     event: z.string().min(1).optional(), // 'issues:opened' etc (github); absent for webhook kind
     github: GithubHookMetadata.optional(),
     gitlab: GitlabHookMetadata.optional(),
+    gitea: GiteaHookMetadata.optional(),
     status: z.enum(['accepted', 'failed']),
     reason: z.string().optional() // delivery-stage reason; use isRetryableHookDeliveryReason before redelivery
   })

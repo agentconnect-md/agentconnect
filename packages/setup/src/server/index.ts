@@ -17,6 +17,7 @@ import {
   DEPLOYMENT_CONFIG_SCHEMA_VERSION,
   DEPLOYMENT_SECRET_KEYS,
   DeploymentConfigConflictError,
+  DeploymentConfigGiteaBaseUrlLockedError,
   DeploymentConfigGitlabBaseUrlLockedError,
   DeploymentConfigMissingSecretsError,
   DeploymentConfigSecretRefreshRequiredError,
@@ -33,6 +34,7 @@ import { loadDeploymentEnvironment } from '../deployment-environment.js'
 import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from '../logto-connectors.js'
 import {
   githubDeploymentPut,
+  giteaDeploymentPut,
   gitlabDeploymentPut,
   linearDeploymentPut,
   localAuthLogtoPut,
@@ -49,6 +51,7 @@ import {
 } from '../github-app.js'
 import { gitlabConfiguredUrls } from '../gitlab-app.js'
 import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
+import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../gitea-probe.js'
 import { linearConfiguredUrls } from '../linear-app.js'
 import {
   auditSlackManifest,
@@ -125,6 +128,15 @@ const ConfigureGitlabBody = z.strictObject({
       clientId: z.string().trim().min(1).max(500),
       clientSecret: z.string().min(1).max(10_000).optional(),
       /** Empty or absent means GitLab.com — the default value of the axis (§24.1). */
+      baseUrl: z.string().trim().max(500).nullable().optional()
+    })
+    .nullable()
+})
+
+const ConfigureGiteaBody = z.strictObject({
+  instance: z
+    .strictObject({
+      /** Empty or absent means gitea.com — the default value of the axis (gitea-integration.md §3). */
       baseUrl: z.string().trim().max(500).nullable().optional()
     })
     .nullable()
@@ -637,6 +649,9 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     if (error instanceof DeploymentConfigGitlabBaseUrlLockedError) {
       return problem(reply, 409, error.message, error.code)
     }
+    if (error instanceof DeploymentConfigGiteaBaseUrlLockedError) {
+      return problem(reply, 409, error.message, error.code)
+    }
     if (error instanceof LogtoManagementError) {
       const status =
         error.code === 'LOGTO_UNAVAILABLE' ? 502 : error.code === 'SOCIAL_CONNECTOR_UNSUPPORTED' ? 400 : 409
@@ -904,6 +919,30 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         put = gitlabDeploymentPut(current, application ? { ...application, baseUrl: probe?.baseUrl ?? null } : null)
       } catch (error) {
         return problem(reply, 400, error instanceof Error ? error.message : 'invalid GitLab OAuth application')
+      }
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      return { revision: saved.revision, restartRequired: true as const, ...(probe ? { probe } : {}) }
+    })
+  })
+
+  app.post('/api/v1/configure/gitea', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = ConfigureGiteaBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'a valid Gitea instance base URL is required')
+    const instance = parsed.data.instance
+    const requestedBaseUrl = instance?.baseUrl?.trim()
+    // The staged probe (gitea-integration.md §3): the URL shape and the 1.23 version floor refuse
+    // the save; unreachable, untrusted and not-an-API-root are warnings the operator reads, because
+    // this process and the Control Plane need not share a network position.
+    const probe = requestedBaseUrl ? await probeGiteaInstance(requestedBaseUrl, fetchImpl) : null
+    if (probe && giteaProbeBlocksSave(probe)) return problem(reply, 400, probe.message, probe.status)
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before configuring Gitea')
+      let put: ReturnType<typeof giteaDeploymentPut>
+      try {
+        put = giteaDeploymentPut(current, instance ? { baseUrl: probe?.baseUrl ?? null } : null)
+      } catch (error) {
+        return problem(reply, 400, error instanceof Error ? error.message : 'invalid Gitea instance')
       }
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
       return { revision: saved.revision, restartRequired: true as const, ...(probe ? { probe } : {}) }
@@ -1729,6 +1768,8 @@ export async function serveSetupServer(env: NodeJS.ProcessEnv = process.env): Pr
     // The no-document GitLab axis this deployment already serves: a first write
     // that would move it while GitLab state exists is refused.
     ...(env.GITLAB_BASE_URL ? { gitlabBaseUrl: env.GITLAB_BASE_URL } : {}),
+    // The same for the Gitea axis (gitea-integration.md §3).
+    ...(env.GITEA_BASE_URL ? { giteaBaseUrl: env.GITEA_BASE_URL } : {}),
     SECRET_CIPHER: config.SECRET_CIPHER,
     VAULT_TRANSIT_KEY: config.VAULT_TRANSIT_KEY,
     VAULT_TRANSIT_MOUNT: config.VAULT_TRANSIT_MOUNT,

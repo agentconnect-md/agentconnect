@@ -13,7 +13,7 @@ import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
-import { SiGithub } from 'react-icons/si'
+import { SiGitea, SiGithub } from 'react-icons/si'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { LARK_MARK_SRC } from './console/platforms/feishu/mark'
 import { platformMark } from './console/platforms/marks'
@@ -230,6 +230,12 @@ export function GitlabMark({ fillPct = 60 }: { fillPct?: number }) {
   return <IconifyIcon icon={gitlabIcon} ssr style={markBox(fillPct)} aria-hidden />
 }
 
+// Gitea mark — the simple-icons glyph, single-color like GitHub's rather than multi-color, so it
+// takes `color` the same way and reads on both surfaces.
+export function GiteaMark({ color = 'currentColor', fillPct = 60 }: { color?: string; fillPct?: number }) {
+  return <SiGitea style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} aria-hidden />
+}
+
 /** The Kubernetes wheel — what a SELF-HOSTED pool is: the operator's own cluster, named by the
  *  thing they actually run. Cloud is the same pool as a product and keeps its own cloud glyph. */
 export function KubernetesMark({ fillPct = 100 }: { fillPct?: number }) {
@@ -263,9 +269,12 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   if (x.includes('github')) {
     return <SiGithub style={sq} color="currentColor" aria-hidden />
   }
-  // The other code host, capped the same way: the tanuki is a full-bleed glyph too.
+  // The other code hosts, capped the same way: both are full-bleed glyphs too.
   if (x.includes('gitlab')) {
     return <IconifyIcon icon={gitlabIcon} ssr style={sq} aria-hidden />
+  }
+  if (x.includes('gitea')) {
+    return <SiGitea style={sq} color="currentColor" aria-hidden />
   }
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />

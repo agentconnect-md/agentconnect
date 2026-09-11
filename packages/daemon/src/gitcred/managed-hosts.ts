@@ -58,16 +58,25 @@ export function normalizeManagedBaseUrl(host?: string): string | undefined {
   return trimmed === '' ? undefined : trimmed
 }
 
+/** The default value of the Gitea host axis (gitea-integration.md §3) — absent is gitea.com. */
+export const GITEA_COM_BASE_URL = 'https://gitea.com'
+
+/** The Gitea instance a spec's Gitea consumers address; an absent host means gitea.com (§3). */
+export function giteaManagedHost(giteaHost?: string): ManagedCredentialHost {
+  return { provider: 'gitea', baseUrl: normalizeManagedBaseUrl(giteaHost) ?? GITEA_COM_BASE_URL }
+}
+
 /** The GitLab instance a spec's GitLab consumers address; an absent host means GitLab.com (§24.1). */
 export function gitlabManagedHost(gitlabHost?: string): ManagedCredentialHost {
   return { provider: 'gitlab', baseUrl: normalizeManagedBaseUrl(gitlabHost) ?? GITLAB_COM_BASE_URL }
 }
 
-/** The default table — GitHub plus the one GitLab instance a spec names — and what an absent or
- *  unparseable env falls back to. An injected table is composed per provider by the daemon's
- *  code-host credential registry, which this leaf cannot reach. */
-export function managedHostTableFor(gitlabHost?: string): ManagedCredentialHost[] {
-  return [GITHUB_MANAGED_HOST, gitlabManagedHost(gitlabHost)]
+/** The default table — GitHub, the one GitLab instance a spec names, and Gitea at its own axis
+ *  default — and what an absent or unparseable env falls back to. It names the same providers the
+ *  daemon's code-host credential registry injects, which this leaf cannot reach: a fallback that
+ *  classified fewer hosts than a present table would make an absent env a different product. */
+export function managedHostTableFor(gitlabHost?: string, giteaHost?: string): ManagedCredentialHost[] {
+  return [GITHUB_MANAGED_HOST, gitlabManagedHost(gitlabHost), giteaManagedHost(giteaHost)]
 }
 
 /** `github=https://github.com gitlab=https://gitlab.example.test:8443/gitlab` — space separated,

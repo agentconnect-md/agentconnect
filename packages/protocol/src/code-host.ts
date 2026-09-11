@@ -10,7 +10,7 @@ import { z } from 'zod'
  * so authorization, hook matching, and run effects must key on
  * `(provider, externalId)` and never on a display path.
  */
-export const CODE_HOST_PROVIDERS = ['github', 'gitlab'] as const
+export const CODE_HOST_PROVIDERS = ['github', 'gitlab', 'gitea'] as const
 export type CodeHostProvider = (typeof CODE_HOST_PROVIDERS)[number]
 
 export function isCodeHostProvider(value: unknown): value is CodeHostProvider {

@@ -18,6 +18,7 @@ import type { CredentialRepoPathParser } from '../gitcred/repo-path.js'
 import type { ManagedCredentialScope } from '../workspace/git-injection.js'
 import { githubCredentials } from '../github/credentials.js'
 import { gitlabCredentials } from '../gitlab/credentials.js'
+import { giteaCredentials } from '../gitea/credentials.js'
 
 /** The provider a credential request carries only when it is not the implicit one (the empty cache-key segment). */
 export type QualifiedCodeHostProvider = Exclude<CodeHostProvider, typeof IMPLICIT_CREDENTIAL_PROVIDER>
@@ -26,6 +27,8 @@ export type QualifiedCodeHostProvider = Exclude<CodeHostProvider, typeof IMPLICI
 export interface CodeHostSpecHosts {
   /** The GitLab instance this spec's GitLab consumers address; absent ⇒ GitLab.com. */
   gitlabHost?: string
+  /** The Gitea instance this spec's Gitea consumers address; absent ⇒ gitea.com (gitea-integration.md §11). */
+  giteaHost?: string
 }
 
 /** Where one authorized additional repository's subtree hangs under `repos/` (multi-repository-workspaces.md). */
@@ -63,7 +66,8 @@ export interface CodeHostCredentialModule {
 /** Adding a code host is adding one entry; the record over the provider union makes a missing one a compile error. */
 const MODULES: { readonly [P in CodeHostProvider]: CodeHostCredentialModule } = {
   github: githubCredentials,
-  gitlab: gitlabCredentials
+  gitlab: gitlabCredentials,
+  gitea: giteaCredentials
 }
 
 /** The module owning one provider — undefined for an anonymous remote and for a name this build does not carry. */

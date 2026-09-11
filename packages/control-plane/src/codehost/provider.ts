@@ -137,6 +137,7 @@ export interface LegacySpecWorkspaceShared {
 /** A projected spec, read for the §24.4 instance axis its host put there. */
 export interface CodeHostShapedSpec {
   gitlabHost?: string
+  giteaHost?: string
 }
 
 /** The route context an additional-repository grant mutation runs in. */

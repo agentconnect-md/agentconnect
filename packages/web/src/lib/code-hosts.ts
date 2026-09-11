@@ -25,8 +25,26 @@ export interface CodeHostProjection {
 
 export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> = {
   github: { label: 'GitHub', publicHost: 'github.com', repoNoun: 'repository', repoNounShort: 'repo' },
-  gitlab: { label: 'GitLab', publicHost: 'gitlab.com', repoNoun: 'project', repoNounShort: 'project' }
+  gitlab: { label: 'GitLab', publicHost: 'gitlab.com', repoNoun: 'project', repoNounShort: 'project' },
+  gitea: { label: 'Gitea', publicHost: 'gitea.com', repoNoun: 'repository', repoNounShort: 'repo' }
 }
+
+/**
+ * Whether the console has the complete surface a PICKER tile promises — the connect card, the
+ * repository picker, the settings panes behind it.
+ *
+ * A provider is known to the wire before its console surface exists (gitea-integration.md §16: G1
+ * makes `gitea` a code host, G6 gives it a card), and a tile that opens nothing is worse than no
+ * tile. Total over the providers rather than a list of exclusions, so the step that adds the surface
+ * flips one value here.
+ */
+const CODE_HOST_CONSOLE_READY: Record<CodeHostProvider, boolean> = { github: true, gitlab: true, gitea: false }
+
+/** The hosts the console OFFERS. Every `Record<CodeHostProvider, …>` above stays total regardless:
+ *  a row, a label and a mark are needed wherever an existing hook or grant names the host. */
+export const PICKABLE_CODE_HOST_PROVIDERS: readonly CodeHostProvider[] = CODE_HOST_PROVIDERS.filter(
+  (provider) => CODE_HOST_CONSOLE_READY[provider]
+)
 
 /** Project every provider onto one value — a total table without a second list of which hosts exist. */
 export function codeHostRecord<T>(of: (provider: CodeHostProvider) => T): Record<CodeHostProvider, T> {

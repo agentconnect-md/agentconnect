@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
-import { CODE_HOST_PROVIDERS, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { GithubMark, GitlabMark } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon, Toggle } from '@/components/ui'
-import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
+import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import type { RepoAccess } from '@/lib/api'
@@ -45,8 +45,8 @@ const WORKSPACE_MODE_OPTIONS: {
     mark: (selected) =>
       workspaceModeMark(<Icon name="sparkles" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
   },
-  // One tile per code host, named and worded by its own projection.
-  ...CODE_HOST_PROVIDERS.map((provider) => ({
+  // One tile per code host the console can pick a repository on, named and worded by its own projection.
+  ...PICKABLE_CODE_HOST_PROVIDERS.map((provider) => ({
     value: provider,
     label: CODE_HOST_PROJECTION[provider].label,
     hint: `Clone a ${CODE_HOST_PROJECTION[provider].repoNounShort} on a branch.`,

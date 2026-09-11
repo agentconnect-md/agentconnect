@@ -140,6 +140,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#logto-section">Logto</a>
       <a href="#github-section">GitHub</a>
       <a href="#gitlab-section">GitLab</a>
+      <a href="#gitea-section">Gitea</a>
       <a href="#slack-section">Slack</a>
       <a href="#linear-section">Linear</a>
       <a href="#google-section">Google</a>
@@ -268,6 +269,24 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <label id="gitlab-initial-secret-field" class="field">Secret<input id="gitlab-secret" type="password" autocomplete="new-password" placeholder="Required when the Application ID changes"></label>
         </div>
         <div class="row"><button id="save-gitlab">Save GitLab application</button><button id="cancel-gitlab-configuration" hidden>Cancel</button><button id="clear-gitlab" class="danger" hidden>Clear configuration</button></div>
+      </section>
+
+      <section id="gitea-section" class="panel setup-section" aria-labelledby="gitea-heading">
+        <div class="provider-head">
+          <div><h3 id="gitea-heading">Gitea</h3><p class="muted">The Gitea instance this deployment addresses. Gitea registers no application, so the address is the whole setting.</p></div>
+          <span id="gitea-match" class="badge">Not configured</span>
+        </div>
+        <dl class="credentials">
+          <dt>Instance</dt><dd class="value-line"><code id="gitea-instance">https://gitea.com</code><button class="edit-configuration" data-provider="gitea">Edit</button></dd>
+        </dl>
+        <p id="gitea-status" class="muted"></p>
+        <p id="gitea-probe" class="muted" hidden></p>
+        <p class="muted">Each organization connects Gitea by pasting the personal access token of a bot user it created, in the console — nothing about that identity is a deployment setting. Gitea 1.23 or later is required, and the address is checked against that floor when it is saved.</p>
+        <p class="muted">Leave the field empty for gitea.com. A self-hosted instance under a path prefix keeps the prefix. Forgejo and Codeberg are not supported.</p>
+        <div id="gitea-config-controls" class="subsection">
+          <label class="field">Instance base URL<input id="gitea-base-url" autocomplete="off" placeholder="Leave empty for https://gitea.com"></label>
+        </div>
+        <div class="row"><button id="save-gitea">Save Gitea instance</button><button id="cancel-gitea-configuration" hidden>Cancel</button><button id="clear-gitea" class="danger" hidden>Clear configuration</button></div>
       </section>
 
       <section id="slack-section" class="panel setup-section" aria-labelledby="slack-heading">
@@ -699,6 +718,21 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('cancel-gitlab-configuration').hidden = true;
       el('clear-gitlab').hidden = !gitlab;
 
+      const gitea = values.gitea;
+      text('gitea-instance', (gitea && gitea.baseUrl) || 'https://gitea.com');
+      el('gitea-base-url').value = (gitea && gitea.baseUrl) || '';
+      showIdentityEditors('gitea', Boolean(gitea));
+      // A probe verdict belongs to the save that produced it, never to a reload.
+      el('gitea-probe').hidden = true;
+      el('gitea-status').textContent = gitea
+        ? ((gitea.baseUrl || 'https://gitea.com') + ' is configured.')
+        : 'Save the instance address to let organizations connect Gitea. Empty means gitea.com.';
+      match('gitea-match', gitea ? 'warn' : '', gitea ? "Can't verify automatically" : 'Not configured');
+      el('gitea-config-controls').hidden = Boolean(gitea);
+      el('save-gitea').hidden = Boolean(gitea);
+      el('cancel-gitea-configuration').hidden = true;
+      el('clear-gitea').hidden = !gitea;
+
       const slack = values.slack;
       text('slack-app-id', slack && slack.appId);
       text('slack-client-id', slack && slack.clientId);
@@ -866,6 +900,14 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('slack-edit-controls').hidden = false;
         el('clear-slack').hidden = true;
         el('slack-edit-app-id').focus();
+      } else if (provider === 'gitea') {
+        if (!values.gitea) return;
+        el('gitea-base-url').value = values.gitea.baseUrl || '';
+        el('gitea-config-controls').hidden = false;
+        el('save-gitea').hidden = false;
+        el('cancel-gitea-configuration').hidden = false;
+        el('clear-gitea').hidden = true;
+        el('gitea-base-url').focus();
       } else if (provider === 'gitlab') {
         if (!values.gitlab) return;
         el('gitlab-id').value = values.gitlab.clientId;
@@ -1034,7 +1076,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
     async function clearProvider(provider) {
       if (!currentStatus) throw new Error('Deployment configuration is not loaded');
-      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'slack' ? 'Slack' : provider === 'linear' ? 'Linear' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
+      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'gitea' ? 'Gitea' : provider === 'slack' ? 'Slack' : provider === 'linear' ? 'Linear' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
       if (!window.confirm('Clear the saved ' + label + ' configuration and secrets?')) return;
       const values = currentStatus.values;
       let next = values;
@@ -1054,6 +1096,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
           'github.webhookSecret': null,
           ...(connectorReused ? { 'logto.githubConnectorClientSecret': null } : {})
         };
+      } else if (provider === 'gitea') {
+        // Gitea holds no deployment secret, so clearing the address clears the whole entry.
+        next = { ...values, gitea: null };
       } else if (provider === 'gitlab') {
         next = { ...values, gitlab: null };
         secrets = { 'gitlab.clientSecret': null };
@@ -1360,6 +1405,20 @@ export const SETUP_HTML = String.raw`<!doctype html>
       line.textContent = probe ? probe.message : '';
     }
 
+    async function saveGitea() {
+      const baseUrl = el('gitea-base-url').value.trim();
+      const saved = await json(await fetch(api + '/configure/gitea', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({ instance: { ...(baseUrl ? { baseUrl } : {}) } })
+      }));
+      await load();
+      // Shape and the version floor already blocked the save, so any verdict here is a line to read.
+      const line = el('gitea-probe');
+      line.hidden = !saved.probe;
+      line.textContent = saved.probe ? saved.probe.message : '';
+      message('Gitea instance saved. Restart AgentConnect to apply it.');
+    }
+
     async function saveLinear() {
       const clientSecret = el('linear-client-secret').value;
       const signingSecret = el('linear-signing-secret').value;
@@ -1647,6 +1706,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('clear-slack').onclick = () => clearProvider('slack').catch((error) => message(error.message, true));
     el('check-slack').onclick = () => checkSlack().catch((error) => message(error.message, true));
     el('reconcile-slack').onclick = () => reconcileSlack().catch((error) => message(error.message, true));
+    el('save-gitea').onclick = () => saveGitea().catch((error) => message(error.message, true));
+    el('cancel-gitea-configuration').onclick = cancelConfigurationEdit;
+    el('clear-gitea').onclick = () => clearProvider('gitea').catch((error) => message(error.message, true));
     el('save-gitlab').onclick = () => saveGitlab().catch((error) => message(error.message, true));
     el('cancel-gitlab-configuration').onclick = cancelConfigurationEdit;
     el('clear-gitlab').onclick = () => clearProvider('gitlab').catch((error) => message(error.message, true));

@@ -148,16 +148,53 @@ export const GitlabHookMetadata = z.object({
 })
 export type GitlabHookMetadata = z.infer<typeof GitlabHookMetadata>
 
+/** One Gitea hook subject (gitea-integration.md §8): issues and pull requests share one index space, so the subject kind is the discriminator. */
+export const GiteaHookTarget = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('issue'), index: z.number().int().positive() }),
+  z.object({
+    kind: z.literal('pull'),
+    index: z.number().int().positive(),
+    // Source-repository + revision facts, present when the verified payload carries them.
+    sourceRepoId: HookBigIntString.optional(),
+    headSha: z.string().min(1).optional(),
+    baseSha: z.string().min(1).optional(),
+    isDraft: z.boolean().optional(),
+    // Relay-derived trusted routing fact (reviewer request / authorized mention); authored text stays off the CP wire.
+    explicitReviewRequest: z.boolean().optional()
+  }),
+  z.object({ kind: z.literal('push'), ref: z.string().min(1) })
+])
+export type GiteaHookTarget = z.infer<typeof GiteaHookTarget>
+
+/** Signature-verified, body-free Gitea subject metadata — the trusted normalization
+ *  discriminator the daemon recomputes session keys from; never inferred from model-visible text. */
+export const GiteaHookMetadata = z.object({
+  repoId: HookBigIntString,
+  repoPath: z.string().min(1), // current owner/repo — display only, never a match key
+  webhookId: HookBigIntString.optional(),
+  // The instance this delivery came from, copied from the compiled rule and never read off the
+  // payload (gitea-integration.md §3). The turn-time fence: a delivery whose host disagrees with
+  // the session's spec-carried host is refused, never re-targeted. Absent means gitea.com.
+  host: z.string().optional(),
+  target: GiteaHookTarget,
+  // The comment delivery's own id — Gitea's counterpart of `issueCommentId`, and the exact
+  // acknowledgement-reaction target. Absent means the subject itself fired this delivery.
+  commentId: HookBigIntString.optional()
+})
+export type GiteaHookMetadata = z.infer<typeof GiteaHookMetadata>
+
 /** The wire shape every code-host member reader accepts: one optional member per provider, named by its id. */
 export interface CodeHostHookMembers {
   github?: GithubHookMetadata | undefined
   gitlab?: GitlabHookMetadata | undefined
+  gitea?: GiteaHookMetadata | undefined
 }
 
 /** The trusted member each provider's wire member carries; a provider missing here fails to compile below. */
 interface CodeHostHookMetadataByProvider {
   github: GithubHookMetadata
   gitlab: GitlabHookMetadata
+  gitea: GiteaHookMetadata
 }
 
 /** The trusted member typed for one provider. */
@@ -179,6 +216,10 @@ function codeHostHookMembers(frame: CodeHostHookMembers): CodeHostHookMetadata[]
     const { projectId: externalId, projectPath: path } = frame.gitlab
     members.push({ provider: 'gitlab', repo: { provider: 'gitlab', externalId, path }, metadata: frame.gitlab })
   }
+  if (frame.gitea) {
+    const { repoId: externalId, repoPath: path } = frame.gitea
+    members.push({ provider: 'gitea', repo: { provider: 'gitea', externalId, path }, metadata: frame.gitea })
+  }
   return members
 }
 
@@ -190,7 +231,11 @@ export function codeHostHookMetadataOf(frame: CodeHostHookMembers): CodeHostHook
 
 /** A frame's provider members copied forward as they are, for a frame that forwards trusted metadata rather than reading it. */
 export function pickCodeHostHookMembers(frame: CodeHostHookMembers): CodeHostHookMembers {
-  return { ...(frame.github ? { github: frame.github } : {}), ...(frame.gitlab ? { gitlab: frame.gitlab } : {}) }
+  return {
+    ...(frame.github ? { github: frame.github } : {}),
+    ...(frame.gitlab ? { gitlab: frame.gitlab } : {}),
+    ...(frame.gitea ? { gitea: frame.gitea } : {})
+  }
 }
 
 export const HookReviewEvent = z.enum(['COMMENT', 'REQUEST_CHANGES', 'APPROVE'])
@@ -325,6 +370,7 @@ export const HookReport = z
     event: z.string().min(1).optional(), // 'pull_request:synchronize', etc.
     github: GithubHookMetadata.optional(),
     gitlab: GitlabHookMetadata.optional(),
+    gitea: GiteaHookMetadata.optional(),
     status: z.enum(['success', 'failed']),
     durationMs: z.number().int().nonnegative().optional(), // dispatch → turn end
     sessionId: z.string().optional(), // the session the run prompted, by its outward id (§1.1)
@@ -388,6 +434,7 @@ export const HookStart = z
     // `github` was required pre-GitLab, so every existing sender stays valid.
     github: GithubHookMetadata.optional(),
     gitlab: GitlabHookMetadata.optional(),
+    gitea: GiteaHookMetadata.optional(),
     ...HookConfigSnapshot.shape
   })
   .superRefine((start, ctx) => {

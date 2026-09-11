@@ -16,7 +16,13 @@ import {
   WebchatOutput,
   WebchatPost
 } from './webchat.js'
-import { GitlabHookMetadata, GithubHookMetadata, HookContext, OptionalHookConfigSnapshot } from './hook.js'
+import {
+  GiteaHookMetadata,
+  GitlabHookMetadata,
+  GithubHookMetadata,
+  HookContext,
+  OptionalHookConfigSnapshot
+} from './hook.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
@@ -531,6 +537,9 @@ export const RdMsgHook = z.object({
   // normalization discriminator. Optional member — an older daemon never sees
   // it (dispatch is gated on the daemon advertising gitlab-com-v1).
   gitlab: GitlabHookMetadata.optional(),
+  // Gitea counterpart (gitea-integration.md §8). Optional member — an older daemon never
+  // sees it (dispatch is gated on the daemon advertising gitea-v1).
+  gitea: GiteaHookMetadata.optional(),
   context: HookContext.optional(), // trimmed envelope; message extraction/fencing happens on the daemon
   target: CronTarget.optional() // output anchoring; absent ⇒ headless
 })

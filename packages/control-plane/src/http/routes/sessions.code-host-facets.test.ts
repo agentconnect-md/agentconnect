@@ -1,5 +1,5 @@
 /**
- * Session integration facets across the two code hosts.
+ * Session integration facets across the code hosts.
  *
  * A hook session's `platform` is the literal 'hook' for every kind, so the facet
  * has to be PROMOTED from the hook definition's kind. GitHub was promoted and
@@ -20,6 +20,7 @@ const ORG_ID = 'org-1'
 const AGENT_ID = 'agent-1'
 const GITHUB_HOOK = '11111111-1111-4111-8111-111111111111'
 const GITLAB_HOOK = '22222222-2222-4222-8222-222222222222'
+const GITEA_HOOK = '44444444-4444-4444-8444-444444444444'
 const WEBHOOK = '33333333-3333-4333-8333-333333333333'
 
 const at = new Date('2026-08-22T00:00:00Z')
@@ -44,12 +45,14 @@ const facetIndex = {
   integrations: [
     hookSession(GITHUB_HOOK, 'sess-github'),
     hookSession(GITLAB_HOOK, 'sess-gitlab'),
+    hookSession(GITEA_HOOK, 'sess-gitea'),
     hookSession(WEBHOOK, 'sess-webhook')
   ],
   channels: [],
   triggers: [
     hookSession(GITHUB_HOOK, 'sess-github'),
     hookSession(GITLAB_HOOK, 'sess-gitlab'),
+    hookSession(GITEA_HOOK, 'sess-gitea'),
     hookSession(WEBHOOK, 'sess-webhook')
   ]
 }
@@ -57,6 +60,7 @@ const facetIndex = {
 const hookRows = [
   { id: GITHUB_HOOK, agentId: AGENT_ID, kind: 'github', name: 'owner/repo', repoId: 123n },
   { id: GITLAB_HOOK, agentId: AGENT_ID, kind: 'gitlab', name: 'acme/platform', repoId: 4210n },
+  { id: GITEA_HOOK, agentId: AGENT_ID, kind: 'gitea', name: 'example-org/example-repo', repoId: 556677n },
   { id: WEBHOOK, agentId: AGENT_ID, kind: 'webhook', name: 'acme/build', repoId: null }
 ]
 
@@ -131,11 +135,12 @@ describe('session integration facets across code hosts', () => {
       integrations: string[]
       triggers: Array<{ value: string; integration: string; hookKind: string | null; githubRepoId: string | null }>
     }
-    expect([...body.integrations].sort()).toEqual(['github', 'gitlab', 'hook'])
+    expect([...body.integrations].sort()).toEqual([...CODE_HOST_PROVIDERS, 'hook'].sort())
     expect(body.triggers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ value: `hook:${GITLAB_HOOK}`, integration: 'gitlab', hookKind: 'gitlab' }),
         expect.objectContaining({ value: `hook:${GITHUB_HOOK}`, integration: 'github', hookKind: 'github' }),
+        expect.objectContaining({ value: `hook:${GITEA_HOOK}`, integration: 'gitea', hookKind: 'gitea' }),
         expect.objectContaining({ value: `hook:${WEBHOOK}`, integration: 'hook', hookKind: 'webhook' })
       ])
     )
@@ -169,7 +174,11 @@ describe('session integration facets across code hosts', () => {
     expect(passed.integration).toBe('hook')
     // A promoted host missing here would be counted twice: once as its own, once as a webhook.
     expect(Object.keys(passed.codeHostHookIds).sort()).toEqual([...CODE_HOST_PROVIDERS].sort())
-    expect(passed.codeHostHookIds).toMatchObject({ github: [GITHUB_HOOK], gitlab: [GITLAB_HOOK] })
+    expect(passed.codeHostHookIds).toMatchObject({
+      github: [GITHUB_HOOK],
+      gitlab: [GITLAB_HOOK],
+      gitea: [GITEA_HOOK]
+    })
   })
 
   it('resolves no code-host definitions for a filter that needs none', async () => {

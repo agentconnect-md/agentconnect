@@ -727,11 +727,15 @@ export function dispatchGitlabRerun(deps: GitlabRerunDeps, rerun: RcHookRerun): 
     deps.log.info(`gitlab rerun: no rule yet for ${rerun.hookId}:${rerun.deliveryKey}`)
     return { admitted: false, code: 'replay_pending' }
   }
+  // `rc/hook-rerun` is provider-keyed (gitea-integration.md §10.4): a member this handler does not
+  // own is not a rule mismatch it can fix, so it refuses definitively and the Control Plane moves on.
+  const gitlab = rerun.gitlab
   if (
+    !gitlab ||
     rule.kind !== 'gitlab' ||
     !rule.gitlab ||
     rule.agentId !== rerun.agentId ||
-    rule.gitlab.projectId !== rerun.gitlab.projectId ||
+    rule.gitlab.projectId !== gitlab.projectId ||
     rule.configRevision !== rerun.configRevision ||
     rule.dispatchRevision !== rerun.dispatchRevision
   ) {
@@ -742,25 +746,25 @@ export function dispatchGitlabRerun(deps: GitlabRerunDeps, rerun: RcHookRerun): 
     deps.log.info(`gitlab rerun: rate-limited ${rule.hookId}:${rerun.deliveryKey}`)
     return { admitted: false, code: 'limiter_exhausted' }
   }
-  const family = rerun.gitlab.target.kind === 'issue' ? ('issues' as const) : ('merge_request' as const)
+  const family = gitlab.target.kind === 'issue' ? ('issues' as const) : ('merge_request' as const)
   const msg: RdMsgHook = {
     source: 'hook',
     agentId: rule.agentId,
-    sessionKey: gitlabSessionKey(rule, rerun.gitlab.target),
+    sessionKey: gitlabSessionKey(rule, gitlab.target),
     msgId: `${rule.hookId}:${rerun.deliveryKey}`,
     hookId: rule.hookId,
     deliveryKey: rerun.deliveryKey,
     firedAt: new Date(deps.clock.now()).toISOString(),
     ...hookSnapshotForDelivery(rule),
     event: rerun.event,
-    gitlab: rerun.gitlab,
+    gitlab,
     // Control-authored envelope: no third-party text, so nothing to fence.
     context: {
       source: 'gitlab',
       event: family,
       action: 'rerun',
-      repo: rerun.gitlab.projectPath,
-      ...(rerun.gitlab.target.kind !== 'push' ? { number: rerun.gitlab.target.iid } : {}),
+      repo: gitlab.projectPath,
+      ...(gitlab.target.kind !== 'push' ? { number: gitlab.target.iid } : {}),
       truncated: false
     },
     ...(rule.target ? { target: rule.target } : {})

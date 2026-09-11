@@ -646,7 +646,7 @@ describe('gitlab rerun dispatch (§16.1 "Run again")', () => {
     h.table.upsert(rule())
     dispatchGitlabRerun(
       h.deps,
-      frame({ event: 'issues:rerun', gitlab: { ...frame().gitlab, target: { kind: 'issue', iid: 42 } } })
+      frame({ event: 'issues:rerun', gitlab: { ...frame().gitlab!, target: { kind: 'issue', iid: 42 } } })
     )
     await flush()
     expect((h.sent[0] as RdMsgHook).sessionKey).toBe(`gitlab:${PROJECT}:issue:42`)
@@ -658,10 +658,33 @@ describe('gitlab rerun dispatch (§16.1 "Run again")', () => {
     expect(dispatchGitlabRerun(h.deps, frame({ configRevision: '4' }))).toEqual(mismatch)
     expect(dispatchGitlabRerun(h.deps, frame({ dispatchRevision: '6' }))).toEqual(mismatch)
     expect(dispatchGitlabRerun(h.deps, frame({ agentId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }))).toEqual(mismatch)
-    expect(dispatchGitlabRerun(h.deps, frame({ gitlab: { ...frame().gitlab, projectId: '999' } }))).toEqual(mismatch)
+    expect(dispatchGitlabRerun(h.deps, frame({ gitlab: { ...frame().gitlab!, projectId: '999' } }))).toEqual(mismatch)
     await flush()
     expect(h.sent).toHaveLength(0)
     // A definitive refusal leaves nothing behind for the CP to reconcile.
+    expect(h.reports).toHaveLength(0)
+  })
+
+  it('refuses a rerun whose provider member is not its own (gitea-integration.md §10.4)', async () => {
+    h.table.upsert(rule())
+    // `rc/hook-rerun` carries exactly one provider member. A gitea member reaching the gitlab
+    // handler is not a fence it can repair, so the refusal is definitive and nothing is dispatched.
+    const giteaRerun = {
+      hookId: HOOK,
+      agentId: AGENT,
+      deliveryKey: 'rerun_2',
+      configRevision: '3',
+      dispatchRevision: '5',
+      event: 'merge_request:rerun',
+      gitea: {
+        repoId: String(PROJECT),
+        repoPath: 'example-org/example-repo',
+        target: { kind: 'pull' as const, index: 77 }
+      }
+    }
+    expect(dispatchGitlabRerun(h.deps, giteaRerun)).toEqual({ admitted: false, code: 'rule_mismatch' })
+    await flush()
+    expect(h.sent).toHaveLength(0)
     expect(h.reports).toHaveLength(0)
   })
 

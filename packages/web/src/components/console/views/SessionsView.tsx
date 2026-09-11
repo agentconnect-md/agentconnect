@@ -37,7 +37,7 @@ import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-v
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
-import { AgentIconView, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentIconView, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -436,6 +436,11 @@ export default function SessionsView() {
     gitlab: (
       <span className="flex h-[15px] w-[15px] items-center justify-center">
         <GitlabMark />
+      </span>
+    ),
+    gitea: (
+      <span className="flex h-[15px] w-[15px] items-center justify-center">
+        <GiteaMark color="var(--text-tertiary)" />
       </span>
     ),
     webhook: catFace('webhook')
