@@ -329,6 +329,35 @@ a shared discovery descriptor retain the runtime probe's authentication result.
 
 ### API key protection
 
+Claude Code and Codex file-based API logins use microsandbox's built-in TLS proxy.
+The daemon discovers Claude's saved `primaryApiKey` in its active global config
+(including `CLAUDE_CONFIG_DIR` and the legacy `.config.json` layout), or Codex's
+`OPENAI_API_KEY` in `CODEX_HOME/auth.json`. Private copies contain placeholders;
+the raw host API credential file is not mounted. Claude retains the existing
+global-config seed allowlist, and private settings survive later preparation.
+Codex's private `auth.json` is a regular projected file, replacing the shared
+auth-file link for API logins. Matching key values in its seeded `config.toml`
+and launch environment are replaced too. No native authentication environment
+variable is added, so the runtime still selects its own authentication method.
+
+Claude authorizes its configured `ANTHROPIC_BASE_URL` host, defaulting to
+`api.anthropic.com`. Codex resolves the host `config.toml`, selected profile and
+`CODEX_CONFIG` overrides: the built-in provider uses `openai_base_url` or
+`api.openai.com`; a custom provider can use the file login when
+`requires_openai_auth = true`. `OPENAI_BASE_URL` does not control the pinned Codex
+runtime's routing. Unsupported endpoints keep the placeholder without receiving
+proxy injection; there is no plaintext fallback. Guest-side endpoint changes
+cannot authorize an additional host. This path covers registered `claude-acp`
+and `codex-acp` file logins, not keyring-only, helper-only or environment-only keys.
+
+Pure OAuth logins keep their existing shared credentials and native refresh.
+Claude can also keep a separate shared OAuth directory alongside its projected
+API config. If that directory contains the raw API config, launch refuses the
+overlapping mount. Codex files explicitly selecting a non-API authentication
+mode while also storing an API key are refused rather than exposing the key or
+silently changing native authentication. These mixed-source layouts remain
+compatibility follow-ups; this change does not add OAuth proxying.
+
 For DeepSeek Harness in microsandbox, the daemon resolves the standard
 `DEEPSEEK_API_KEY` reference using the existing credential-file descriptors and
 DSH parser (`.credentials.yaml`, including the legacy layout and version-1 refs,
@@ -391,7 +420,7 @@ trusted recipient of the key.
 
 The pinned SDK installs the proxy CA into the guest system bundle before execution.
 Combining it with operator-provided trust bundles is deferred: protected runtime
-launches explicitly refuse custom `TLS_TRUST_ENV`, `REQUESTS_CA_BUNDLE` or
+launches explicitly refuse custom `TLS_TRUST_ENV`, `CODEX_CA_CERTIFICATE`, `REQUESTS_CA_BUNDLE` or
 `CURL_CA_BUNDLE` settings instead of silently replacing them. Use SRT for those
 configurations until custom trust is supported.
 

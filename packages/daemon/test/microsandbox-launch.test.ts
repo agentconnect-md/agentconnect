@@ -733,12 +733,12 @@ describe('prepareMicrosandboxLaunch', () => {
     }
   })
 
-  it('reuses the native Codex auth-file link and exposes only the shared credential file', () => {
+  it('reuses the native Codex OAuth auth-file link and exposes only the shared credential file', () => {
     const opts = fixture()
     const hostCodex = join(opts.hostHome, '.codex')
     const auth = join(hostCodex, 'auth.json')
     mkdirSync(hostCodex)
-    writeFileSync(auth, JSON.stringify({ OPENAI_API_KEY: 'synthetic-test-key' }))
+    writeFileSync(auth, JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'synthetic-oauth-token' } }))
     const original = credentials.prepareSharedRuntimeCredentials
     vi.spyOn(credentials, 'prepareSharedRuntimeCredentials').mockImplementation((options) =>
       original({ ...options, platform: 'linux' })
