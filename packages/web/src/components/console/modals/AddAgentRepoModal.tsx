@@ -14,9 +14,12 @@
 // remains underneath. Escape closes only this layer (capture-phase listener),
 // so a nested open never tears down the caller.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { CODE_HOST_PROVIDERS, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import { GithubMark, LoadingState } from '@/components/marks'
+import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon } from '@/components/ui'
+import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import {
@@ -44,8 +47,8 @@ import {
   type RepoAccess
 } from '@/lib/api'
 
-/** Which host the picker is offering. Grants are provider-qualified (§8.1). */
-type GrantProvider = 'github' | 'gitlab'
+/** Which host the picker is offering. Grants are provider-qualified (§8.1), so the offer IS the provider axis. */
+type GrantProvider = CodeHostProvider
 
 // The two grant tiers. Read is a clone/read scope; write additionally grants
 // push access, pull_requests:write for formal reviews, and actions:write for
@@ -286,10 +289,19 @@ export default function AddAgentRepoModal({
   const typedIsListed = !!typedRepo && matches.some((r) => r.fullName.toLowerCase() === typedRepo.toLowerCase())
   const typedTaken = !!typedRepo && (isWorkspace(typedRepo) || isAuthorized(typedRepo))
 
-  const canSubmit =
-    provider === 'gitlab'
-      ? !!glPick && glTakenBy(glPick) === null && gl.provisioning === null
-      : !!pick && !isWorkspace(pick) && !isAuthorized(pick) && !uncovered && !probeDenies
+  // Each host's own footer gate and its own create payload — a grant is provider-qualified
+  // (§8.1). Total, so a new host states both instead of submitting through GitHub's.
+  const grantSubmit: Record<CodeHostProvider, { ready: boolean; input: Parameters<typeof createAgentRepo>[1] }> = {
+    github: {
+      ready: !!pick && !isWorkspace(pick) && !isAuthorized(pick) && !uncovered && !probeDenies,
+      input: { repoFullName: pick, access }
+    },
+    gitlab: {
+      ready: !!glPick && glTakenBy(glPick) === null && gl.provisioning === null,
+      input: { provider: 'gitlab', projectId: glPick, access }
+    }
+  }
+  const canSubmit = grantSubmit[provider].ready
 
   const submit = async () => {
     if (busyRef.current || !canSubmit) return
@@ -297,10 +309,7 @@ export default function AddAgentRepoModal({
     setSaving(true)
     setErr(null)
     try {
-      const row = await createAgentRepo(
-        agent.id,
-        provider === 'gitlab' ? { provider: 'gitlab', projectId: glPick, access } : { repoFullName: pick, access }
-      )
+      const row = await createAgentRepo(agent.id, grantSubmit[provider].input)
       onCreated(row)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'GITHUB_IDENTITY_REQUIRED') {
@@ -319,6 +328,366 @@ export default function AddAgentRepoModal({
       setSaving(false)
       busyRef.current = false
     }
+  }
+
+  // How the picked host is named and what it calls the object being authorized.
+  const hostProjection = CODE_HOST_PROJECTION[provider]
+  // One tile per code host — the offer's row set IS the provider axis, each tile worded by its projection.
+  const hostTiles = CODE_HOST_PROVIDERS.map((v) => ({
+    v,
+    label: CODE_HOST_PROJECTION[v].label,
+    hint: `Authorize a ${CODE_HOST_PROJECTION[v].repoNoun}.`,
+    mark: <CodeHostMark provider={v} color="var(--text-primary)" />
+  }))
+
+  // Each host's own picker — GitHub's installation roster, GitLab's project list. Total over the
+  // providers, so a new code host brings its own pane instead of inheriting the first one's.
+  const grantPicker: Record<CodeHostProvider, () => ReactNode> = {
+    github: () =>
+      gh === null ? (
+        <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          <Icon name="loader" size={15} className="flex-none animate-spin" />
+          Checking your GitHub setup…
+        </div>
+      ) : !gh.enabled ? (
+        <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+          <Icon name="info" size={15} className="mt-[1px] flex-none" />
+          <span>
+            The GitHub App isn&rsquo;t configured for this deployment. Ask a deployment owner to configure it before
+            authorizing repositories.
+          </span>
+        </div>
+      ) : gh.installations.length === 0 ? (
+        <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
+          <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
+            Connect GitHub to grant repos
+          </div>
+          <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+            Install the AgentConnect GitHub app, then choose which repositories this agent can access.
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <Button size="sm" onClick={() => void openGhInstall()}>
+              <span className="flex h-4 w-4 items-center justify-center">
+                <GithubMark color="#fff" />
+              </span>
+              Install GitHub app
+            </Button>
+            <button type="button" className="lnk inline-flex items-center gap-[6px]" onClick={() => void syncGh()}>
+              <Icon
+                name={ghSyncing ? 'loader' : 'refresh-cw'}
+                size={13}
+                className={ghSyncing ? 'animate-spin' : undefined}
+              />
+              I&rsquo;ve installed it — sync
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="fld relative mb-[18px] min-w-0">
+            <span className="fldlbl">Repository</span>
+            <div
+              className={fixedRepo ? 'inp min-w-0 cursor-default gap-2' : 'inp min-w-0 cursor-pointer gap-2'}
+              onClick={() => {
+                if (fixedRepo) return
+                setQ('')
+                setPickOpen((v) => !v)
+              }}
+            >
+              <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
+                {pick ? (
+                  <>
+                    <Icon
+                      name={picked && !picked.private ? 'book-marked' : 'lock'}
+                      size={16}
+                      color="var(--text-tertiary)"
+                      className="flex-none"
+                    />
+                    <span
+                      className="min-w-0 flex-1 truncate font-mono text-[12.5px] font-medium leading-normal"
+                      title={pick}
+                    >
+                      {pick}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
+                      <GithubMark color="var(--text-secondary)" />
+                    </span>
+                    <span className="truncate text-(--text-tertiary)">
+                      {repos === null ? 'Loading repositories…' : 'Pick a repository'}
+                    </span>
+                  </>
+                )}
+              </span>
+              {!fixedRepo && <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />}
+            </div>
+            {privateReposHidden ? <GithubPrivateReposNotice profileHref={orgPath('/profile#sign-in-methods')} /> : null}
+            {!fixedRepo && pickOpen && (
+              <>
+                <div className="fscrim" onClick={() => setPickOpen(false)} />
+                <div className="fmenu left-0 right-0 z-40 min-w-0 rounded-lg p-2 shadow-(--shadow-xl)">
+                  <input
+                    className="fsearch h-10 rounded-md px-3 font-sans text-[13px] font-medium leading-normal"
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    placeholder="Search or type owner/repo…"
+                    autoFocus
+                  />
+                  {reposError === 'failed' && (
+                    <div className="flex items-center gap-2 px-2 py-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+                      <span className="min-w-0 flex-1">
+                        Couldn’t load repositories from GitHub — the list may be incomplete.
+                      </span>
+                      <button
+                        type="button"
+                        className="lnk flex-none text-[12px]"
+                        onClick={() => {
+                          invalidateGithubRepoRosterCache()
+                          setReposError(null)
+                          setPrivateReposHidden(false)
+                          setRepos(null)
+                          setReposNonce((n) => n + 1)
+                        }}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
+                  {matches.map((r) => {
+                    const taken = isWorkspace(r.fullName) || isAuthorized(r.fullName)
+                    return (
+                      <button
+                        key={r.fullName}
+                        className={`fopt min-h-[46px] items-center gap-3 px-2 py-2 ${taken ? 'cursor-default opacity-55' : ''}`}
+                        disabled={taken}
+                        onClick={() => {
+                          setPick(r.fullName)
+                          setPickOpen(false)
+                        }}
+                      >
+                        <Icon
+                          name={r.private ? 'lock' : 'book-marked'}
+                          size={16}
+                          color="var(--text-tertiary)"
+                          className="flex-none"
+                        />
+                        <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+                          <span
+                            className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)"
+                            title={r.fullName}
+                          >
+                            {r.fullName}
+                          </span>
+                          <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                            {isWorkspace(r.fullName)
+                              ? 'The agent’s workspace — already fully covered'
+                              : isAuthorized(r.fullName)
+                                ? 'Already authorized for this agent'
+                                : (r.description ?? 'No description')}
+                          </span>
+                        </span>
+                        {isWorkspace(r.fullName) ? (
+                          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
+                            workspace
+                          </span>
+                        ) : isAuthorized(r.fullName) ? (
+                          <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">added</span>
+                        ) : (
+                          pick.toLowerCase() === r.fullName.toLowerCase() && (
+                            <Icon name="check" size={17} color="var(--brand)" />
+                          )
+                        )}
+                      </button>
+                    )
+                  })}
+                  {typedRepo && !typedIsListed && !typedTaken && (
+                    <button
+                      key={`typed:${typedRepo}`}
+                      className="fopt min-h-[46px] items-center gap-3 px-2 py-2"
+                      onClick={() => {
+                        setPick(typedRepo)
+                        setPickOpen(false)
+                      }}
+                    >
+                      <Icon name="book-marked" size={16} color="var(--text-tertiary)" className="flex-none" />
+                      <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+                        <span className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                          {typedRepo}
+                        </span>
+                        <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                          Use this repository — must be covered by an installation
+                        </span>
+                      </span>
+                    </button>
+                  )}
+                  {typedRepo && typedTaken && (
+                    <div className="fnohit">
+                      {isWorkspace(typedRepo)
+                        ? `${typedRepo} is the agent’s workspace`
+                        : `${typedRepo} is already authorized`}
+                    </div>
+                  )}
+                  {repos !== null && matches.length === 0 && !typedRepo && !reposError && (
+                    <div className="fnohit">No repositories match &ldquo;{q}&rdquo;</div>
+                  )}
+                  {repos === null && (
+                    <div className="px-2 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                      Loading repositories…
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="fldlbl mb-2">Access</div>
+          <div className="mb-4 flex flex-col gap-[9px]">
+            {TIERS.map((t) => {
+              const on = access === t.v
+              return (
+                <div
+                  key={t.v}
+                  className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
+                    on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
+                  }`}
+                  onClick={() => setAccess(t.v)}
+                >
+                  <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+                    <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-sans text-[13px] font-semibold leading-normal">{t.label}</div>
+                    <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                      {t.desc}
+                    </div>
+                  </div>
+                  <span
+                    className={`flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] ${
+                      on ? 'border-(--brand)' : 'border-(--border-strong)'
+                    }`}
+                  >
+                    {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+
+          {uncovered && (
+            <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+              <Icon name="info" size={14} className="mt-[1px] flex-none" />
+              <span>
+                No GitHub App installation covers <span className="mono">{pickOwner}</span>&#32;— install (or extend)
+                the app on that account first.
+              </span>
+            </div>
+          )}
+          {!uncovered && probeNote && (
+            <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+              <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
+              <span>{probeNote}</span>
+            </div>
+          )}
+        </>
+      ),
+    gitlab: () =>
+      gl.error ? (
+        <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+          Couldn&rsquo;t load your GitLab projects — {gl.error}
+        </div>
+      ) : gl.loading ? (
+        <div className="mb-4">
+          <LoadingState size={20} padding={16} />
+        </div>
+      ) : glNoProjects ? (
+        <div className="mb-4">
+          <GitlabNoProjectsNotice
+            connected={gl.connected}
+            enabled={gl.enabled}
+            onConnect={() => void gl.connect()}
+            onSync={gl.reload}
+            syncing={gl.reloading}
+          />
+        </div>
+      ) : (
+        <>
+          <div className="mb-[18px]">
+            <GitlabProjectField
+              value={glPicked?.projectPath ?? ''}
+              icon="book-marked"
+              loading={false}
+              open={glPickOpen}
+              query={glQ}
+              onToggle={() => {
+                setGlQ('')
+                setGlPickOpen((value) => !value)
+              }}
+              onClose={() => setGlPickOpen(false)}
+              onQueryChange={setGlQ}
+              error={gl.provisionError ? `Couldn’t set up that project — ${gl.provisionError}` : undefined}
+            >
+              {glMatches.map((choice) => {
+                const taken = glTakenBy(choice.projectId)
+                if (taken !== null) {
+                  return (
+                    <div key={choice.projectId} className="fnohit">
+                      {choice.projectPath}
+                      {taken === 'workspace'
+                        ? ' is the agent’s workspace project'
+                        : ' is already authorized for this agent'}
+                    </div>
+                  )
+                }
+                return (
+                  <GitlabProjectOption
+                    key={choice.projectId}
+                    choice={choice}
+                    selected={glPick === choice.projectId}
+                    busy={gl.provisioning === choice.projectId}
+                    onSelect={() => void selectProject(choice)}
+                  />
+                )
+              })}
+              {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
+            </GitlabProjectField>
+          </div>
+
+          <div className="fldlbl mb-2">Access</div>
+          <div className="mb-4 flex flex-col gap-[9px]">
+            {GITLAB_TIERS.map((t) => {
+              const on = access === t.v
+              return (
+                <div
+                  key={t.v}
+                  className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
+                    on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
+                  }`}
+                  onClick={() => setAccess(t.v)}
+                >
+                  <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+                    <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-sans text-[13px] font-semibold leading-normal">{t.label}</div>
+                    <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                      {t.desc}
+                    </div>
+                  </div>
+                  <span
+                    className={`flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] ${
+                      on ? 'border-(--brand)' : 'border-(--border-strong)'
+                    }`}
+                  >
+                    {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )
   }
 
   return (
@@ -342,12 +711,8 @@ export default function AddAgentRepoModal({
             </div>
             <div className="mt-[1px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               {workspaceContext
-                ? provider === 'gitlab'
-                  ? 'authorize an additional project for '
-                  : 'authorize an additional repository for '
-                : provider === 'gitlab'
-                  ? 'authorize a GitLab project for '
-                  : 'authorize a GitHub repository for '}
+                ? `authorize an additional ${hostProjection.repoNoun} for `
+                : `authorize a ${hostProjection.label} ${hostProjection.repoNoun} for `}
               <span className="mono">{agentLabel(agent)}</span>
             </div>
           </div>
@@ -361,17 +726,7 @@ export default function AddAgentRepoModal({
             <div className="fld mb-[18px]">
               <span className="fldlbl">Code host</span>
               <div className="grid grid-cols-2 gap-[10px]">
-                {(
-                  [
-                    {
-                      v: 'github',
-                      label: 'GitHub',
-                      hint: 'Authorize a repository.',
-                      mark: <GithubMark color="var(--text-primary)" />
-                    },
-                    { v: 'gitlab', label: 'GitLab', hint: 'Authorize a project.', mark: <GitlabMark /> }
-                  ] as const
-                ).map((host) => (
+                {hostTiles.map((host) => (
                   <button
                     key={host.v}
                     type="button"
@@ -404,361 +759,13 @@ export default function AddAgentRepoModal({
               </div>
             </div>
           )}
-          {provider === 'gitlab' ? (
-            gl.error ? (
-              <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                Couldn&rsquo;t load your GitLab projects — {gl.error}
-              </div>
-            ) : gl.loading ? (
-              <div className="mb-4">
-                <LoadingState size={20} padding={16} />
-              </div>
-            ) : glNoProjects ? (
-              <div className="mb-4">
-                <GitlabNoProjectsNotice
-                  connected={gl.connected}
-                  enabled={gl.enabled}
-                  onConnect={() => void gl.connect()}
-                  onSync={gl.reload}
-                  syncing={gl.reloading}
-                />
-              </div>
-            ) : (
-              <>
-                <div className="mb-[18px]">
-                  <GitlabProjectField
-                    value={glPicked?.projectPath ?? ''}
-                    icon="book-marked"
-                    loading={false}
-                    open={glPickOpen}
-                    query={glQ}
-                    onToggle={() => {
-                      setGlQ('')
-                      setGlPickOpen((value) => !value)
-                    }}
-                    onClose={() => setGlPickOpen(false)}
-                    onQueryChange={setGlQ}
-                    error={gl.provisionError ? `Couldn’t set up that project — ${gl.provisionError}` : undefined}
-                  >
-                    {glMatches.map((choice) => {
-                      const taken = glTakenBy(choice.projectId)
-                      if (taken !== null) {
-                        return (
-                          <div key={choice.projectId} className="fnohit">
-                            {choice.projectPath}
-                            {taken === 'workspace'
-                              ? ' is the agent’s workspace project'
-                              : ' is already authorized for this agent'}
-                          </div>
-                        )
-                      }
-                      return (
-                        <GitlabProjectOption
-                          key={choice.projectId}
-                          choice={choice}
-                          selected={glPick === choice.projectId}
-                          busy={gl.provisioning === choice.projectId}
-                          onSelect={() => void selectProject(choice)}
-                        />
-                      )
-                    })}
-                    {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
-                  </GitlabProjectField>
-                </div>
-
-                <div className="fldlbl mb-2">Access</div>
-                <div className="mb-4 flex flex-col gap-[9px]">
-                  {GITLAB_TIERS.map((t) => {
-                    const on = access === t.v
-                    return (
-                      <div
-                        key={t.v}
-                        className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
-                          on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
-                        }`}
-                        onClick={() => setAccess(t.v)}
-                      >
-                        <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-                          <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="font-sans text-[13px] font-semibold leading-normal">{t.label}</div>
-                          <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                            {t.desc}
-                          </div>
-                        </div>
-                        <span
-                          className={`flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] ${
-                            on ? 'border-(--brand)' : 'border-(--border-strong)'
-                          }`}
-                        >
-                          {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </>
-            )
-          ) : gh === null ? (
-            <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              <Icon name="loader" size={15} className="flex-none animate-spin" />
-              Checking your GitHub setup…
-            </div>
-          ) : !gh.enabled ? (
-            <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-              <Icon name="info" size={15} className="mt-[1px] flex-none" />
-              <span>
-                The GitHub App isn&rsquo;t configured for this deployment. Ask a deployment owner to configure it before
-                authorizing repositories.
-              </span>
-            </div>
-          ) : gh.installations.length === 0 ? (
-            <div className="mb-4 rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px]">
-              <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
-                Connect GitHub to grant repos
-              </div>
-              <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                Install the AgentConnect GitHub app, then choose which repositories this agent can access.
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <Button size="sm" onClick={() => void openGhInstall()}>
-                  <span className="flex h-4 w-4 items-center justify-center">
-                    <GithubMark color="#fff" />
-                  </span>
-                  Install GitHub app
-                </Button>
-                <button type="button" className="lnk inline-flex items-center gap-[6px]" onClick={() => void syncGh()}>
-                  <Icon
-                    name={ghSyncing ? 'loader' : 'refresh-cw'}
-                    size={13}
-                    className={ghSyncing ? 'animate-spin' : undefined}
-                  />
-                  I&rsquo;ve installed it — sync
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="fld relative mb-[18px] min-w-0">
-                <span className="fldlbl">Repository</span>
-                <div
-                  className={fixedRepo ? 'inp min-w-0 cursor-default gap-2' : 'inp min-w-0 cursor-pointer gap-2'}
-                  onClick={() => {
-                    if (fixedRepo) return
-                    setQ('')
-                    setPickOpen((v) => !v)
-                  }}
-                >
-                  <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
-                    {pick ? (
-                      <>
-                        <Icon
-                          name={picked && !picked.private ? 'book-marked' : 'lock'}
-                          size={16}
-                          color="var(--text-tertiary)"
-                          className="flex-none"
-                        />
-                        <span
-                          className="min-w-0 flex-1 truncate font-mono text-[12.5px] font-medium leading-normal"
-                          title={pick}
-                        >
-                          {pick}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
-                          <GithubMark color="var(--text-secondary)" />
-                        </span>
-                        <span className="truncate text-(--text-tertiary)">
-                          {repos === null ? 'Loading repositories…' : 'Pick a repository'}
-                        </span>
-                      </>
-                    )}
-                  </span>
-                  {!fixedRepo && <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />}
-                </div>
-                {privateReposHidden ? (
-                  <GithubPrivateReposNotice profileHref={orgPath('/profile#sign-in-methods')} />
-                ) : null}
-                {!fixedRepo && pickOpen && (
-                  <>
-                    <div className="fscrim" onClick={() => setPickOpen(false)} />
-                    <div className="fmenu left-0 right-0 z-40 min-w-0 rounded-lg p-2 shadow-(--shadow-xl)">
-                      <input
-                        className="fsearch h-10 rounded-md px-3 font-sans text-[13px] font-medium leading-normal"
-                        value={q}
-                        onChange={(e) => setQ(e.target.value)}
-                        placeholder="Search or type owner/repo…"
-                        autoFocus
-                      />
-                      {reposError === 'failed' && (
-                        <div className="flex items-center gap-2 px-2 py-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                          <span className="min-w-0 flex-1">
-                            Couldn’t load repositories from GitHub — the list may be incomplete.
-                          </span>
-                          <button
-                            type="button"
-                            className="lnk flex-none text-[12px]"
-                            onClick={() => {
-                              invalidateGithubRepoRosterCache()
-                              setReposError(null)
-                              setPrivateReposHidden(false)
-                              setRepos(null)
-                              setReposNonce((n) => n + 1)
-                            }}
-                          >
-                            Retry
-                          </button>
-                        </div>
-                      )}
-                      {matches.map((r) => {
-                        const taken = isWorkspace(r.fullName) || isAuthorized(r.fullName)
-                        return (
-                          <button
-                            key={r.fullName}
-                            className={`fopt min-h-[46px] items-center gap-3 px-2 py-2 ${taken ? 'cursor-default opacity-55' : ''}`}
-                            disabled={taken}
-                            onClick={() => {
-                              setPick(r.fullName)
-                              setPickOpen(false)
-                            }}
-                          >
-                            <Icon
-                              name={r.private ? 'lock' : 'book-marked'}
-                              size={16}
-                              color="var(--text-tertiary)"
-                              className="flex-none"
-                            />
-                            <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
-                              <span
-                                className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)"
-                                title={r.fullName}
-                              >
-                                {r.fullName}
-                              </span>
-                              <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                                {isWorkspace(r.fullName)
-                                  ? 'The agent’s workspace — already fully covered'
-                                  : isAuthorized(r.fullName)
-                                    ? 'Already authorized for this agent'
-                                    : (r.description ?? 'No description')}
-                              </span>
-                            </span>
-                            {isWorkspace(r.fullName) ? (
-                              <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                                workspace
-                              </span>
-                            ) : isAuthorized(r.fullName) ? (
-                              <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                                added
-                              </span>
-                            ) : (
-                              pick.toLowerCase() === r.fullName.toLowerCase() && (
-                                <Icon name="check" size={17} color="var(--brand)" />
-                              )
-                            )}
-                          </button>
-                        )
-                      })}
-                      {typedRepo && !typedIsListed && !typedTaken && (
-                        <button
-                          key={`typed:${typedRepo}`}
-                          className="fopt min-h-[46px] items-center gap-3 px-2 py-2"
-                          onClick={() => {
-                            setPick(typedRepo)
-                            setPickOpen(false)
-                          }}
-                        >
-                          <Icon name="book-marked" size={16} color="var(--text-tertiary)" className="flex-none" />
-                          <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
-                            <span className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-                              {typedRepo}
-                            </span>
-                            <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                              Use this repository — must be covered by an installation
-                            </span>
-                          </span>
-                        </button>
-                      )}
-                      {typedRepo && typedTaken && (
-                        <div className="fnohit">
-                          {isWorkspace(typedRepo)
-                            ? `${typedRepo} is the agent’s workspace`
-                            : `${typedRepo} is already authorized`}
-                        </div>
-                      )}
-                      {repos !== null && matches.length === 0 && !typedRepo && !reposError && (
-                        <div className="fnohit">No repositories match &ldquo;{q}&rdquo;</div>
-                      )}
-                      {repos === null && (
-                        <div className="px-2 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                          Loading repositories…
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="fldlbl mb-2">Access</div>
-              <div className="mb-4 flex flex-col gap-[9px]">
-                {TIERS.map((t) => {
-                  const on = access === t.v
-                  return (
-                    <div
-                      key={t.v}
-                      className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
-                        on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
-                      }`}
-                      onClick={() => setAccess(t.v)}
-                    >
-                      <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-                        <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="font-sans text-[13px] font-semibold leading-normal">{t.label}</div>
-                        <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                          {t.desc}
-                        </div>
-                      </div>
-                      <span
-                        className={`flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] ${
-                          on ? 'border-(--brand)' : 'border-(--border-strong)'
-                        }`}
-                      >
-                        {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-
-              {uncovered && (
-                <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  <Icon name="info" size={14} className="mt-[1px] flex-none" />
-                  <span>
-                    No GitHub App installation covers <span className="mono">{pickOwner}</span>&#32;— install (or
-                    extend) the app on that account first.
-                  </span>
-                </div>
-              )}
-              {!uncovered && probeNote && (
-                <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                  <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
-                  <span>{probeNote}</span>
-                </div>
-              )}
-            </>
-          )}
+          {/* The picked host's own picker, selected through the table above. */}
+          {grantPicker[provider]()}
           {err && <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
         </div>
         <div className="modalfoot">
           <span className="flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-            {provider === 'gitlab'
-              ? 'Access applies only to this project and can be revoked at any time.'
-              : 'Access applies only to this repository and can be revoked at any time.'}
+            {`Access applies only to this ${hostProjection.repoNoun} and can be revoked at any time.`}
           </span>
           <Button variant="ghost" onClick={onClose}>
             Cancel
