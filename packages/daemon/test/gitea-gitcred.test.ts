@@ -391,24 +391,25 @@ describe('the grant echo (§9)', () => {
   })
 })
 
+/** A daemon whose only interesting configuration is the operator's origin policy. */
+async function daemonWithOrigins(origins: string[]): Promise<{ daemon: Daemon; root: string }> {
+  const root = mkdtempSync(join(tmpdir(), 'ac-gitea-admission-'))
+  writeFileSync(
+    join(root, 'config.json'),
+    JSON.stringify({
+      version: 1,
+      controlPlane: { enabled: false },
+      runtimes: { claude: { command: 'node', args: [] } },
+      security: { workspaceGitAllowedOrigins: origins }
+    })
+  )
+  const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root })
+  await daemon.start()
+  return { daemon, root }
+}
+
 describe('spec-admission origin refusal (§12)', () => {
   afterAll(() => configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS]))
-
-  async function daemonWithOrigins(origins: string[]): Promise<{ daemon: Daemon; root: string }> {
-    const root = mkdtempSync(join(tmpdir(), 'ac-gitea-admission-'))
-    writeFileSync(
-      join(root, 'config.json'),
-      JSON.stringify({
-        version: 1,
-        controlPlane: { enabled: false },
-        runtimes: { claude: { command: 'node', args: [] } },
-        security: { workspaceGitAllowedOrigins: origins }
-      })
-    )
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root })
-    await daemon.start()
-    return { daemon, root }
-  }
 
   const giteaSpec = (gitRepo: string, giteaHost?: string) =>
     ({
@@ -472,8 +473,16 @@ describe('spec-admission origin refusal (§12)', () => {
   })
 })
 
-describe('feature negotiation', () => {
-  it('names the one Gitea feature string the control plane and relay gate on', () => {
+describe('feature negotiation (§11)', () => {
+  it('advertises gitea-v1 to the control plane — the one bit placement, spec projection, and dispatch gate on', async () => {
     expect(GITEA_V1_FEATURE).toBe('gitea-v1')
+    const { daemon, root } = await daemonWithOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
+    try {
+      const features = (daemon as unknown as { registrationFeatures(): string[] }).registrationFeatures()
+      expect(features).toContain(GITEA_V1_FEATURE)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
