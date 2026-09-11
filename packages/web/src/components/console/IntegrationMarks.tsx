@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { GithubMark, GitlabMark, PlatformMark } from '@/components/marks'
+import { GiteaMark, GithubMark, GitlabMark, PlatformMark } from '@/components/marks'
 import type { HookKind } from '@/lib/api'
 
 // Total over the hook-kind vocabulary, so a new code host is given its own mark here
@@ -14,6 +14,11 @@ const HOOK_KIND_MARK: Record<HookKind, ReactNode> = {
   gitlab: (
     <span className="flex h-[13px] w-[13px] items-center justify-center">
       <GitlabMark fillPct={90} />
+    </span>
+  ),
+  gitea: (
+    <span className="flex h-[13px] w-[13px] items-center justify-center">
+      <GiteaMark fillPct={90} />
     </span>
   ),
   webhook: <PlatformMark platform="webhook" />

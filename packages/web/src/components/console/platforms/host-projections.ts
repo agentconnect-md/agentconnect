@@ -1,10 +1,10 @@
 // No 'use client' here: reached only from the console's client trees
 // (ModalProvider and the views), exactly like `registry.ts`.
 
-import { CODE_HOST_PROVIDERS, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { larkFeishuBrand, type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import type { BotDto } from '@/lib/api'
-import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
+import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
 import { platformLabel } from '@/lib/platform-labels'
 import { platformRegistry } from './registry'
 
@@ -62,8 +62,10 @@ export const BOT_PLATFORMS: readonly PlatformTile[] = platformTiles(platformRegi
  *  code host the deployment has not configured says so in its own pane. */
 export const PLATFORMS: readonly PlatformTile[] = [
   ...BOT_PLATFORMS,
-  // One tile per code host, named by the code-host projection rather than spelled again here.
-  ...CODE_HOST_PROVIDERS.map((provider) => ({ key: provider, label: CODE_HOST_PROJECTION[provider].label })),
+  // One tile per code host the console can actually open a pane for, named by the code-host
+  // projection rather than spelled again here. A provider the wire knows before its console surface
+  // exists is deliberately absent: a tile that opens nothing is worse than no tile.
+  ...PICKABLE_CODE_HOST_PROVIDERS.map((provider) => ({ key: provider, label: CODE_HOST_PROJECTION[provider].label })),
   // The generic trigger closes the row: chat platforms and code hosts are the named products.
   { key: 'webhook', label: 'Webhook' }
 ]
@@ -79,7 +81,8 @@ export function isCoreTriggerKind(key: string): boolean {
 /** What watching a code host does for the agent, in that host's own subject vocabulary. */
 const CODE_HOST_BLURB: Record<CodeHostProvider, string> = {
   github: 'React to issues & PRs',
-  gitlab: 'React to issues & MRs'
+  gitlab: 'React to issues & MRs',
+  gitea: 'React to issues & PRs'
 }
 
 /**
@@ -94,8 +97,9 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   discord: 'Reply in servers',
   feishu: 'Reply in groups & chats',
   linear: 'Work delegated issues',
-  // The code-host rows are total over the providers, so a new host cannot reach the picker unblurbed.
-  ...CODE_HOST_BLURB,
+  // One row per code host the picker offers, read from the table above — which stays total over the
+  // providers, so a host cannot reach the picker unblurbed.
+  ...Object.fromEntries(PICKABLE_CODE_HOST_PROVIDERS.map((provider) => [provider, CODE_HOST_BLURB[provider]])),
   webhook: 'Trigger by posting a URL'
 }
 

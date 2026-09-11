@@ -19,14 +19,18 @@ const CODE_HOST_FAMILY_PILL: Record<CodeHostProvider, (hook: HookDto) => string 
   gitlab: (h) => {
     const fam = gitlabHookFamily(h)
     return fam ? gitlabFamilyTile(fam)?.pill : undefined
-  }
+  },
+  // G6 gives Gitea its family tiles; until a gitea row can exist there is no pill to read.
+  gitea: () => undefined
 }
 
 // What removing one subscription leaves behind, in each host's own terms.
 const CODE_HOST_REMOVAL_NOTE: Record<CodeHostProvider, string> = {
   github: 'those GitHub events are ignored from now on. Past runs and their sessions stay.',
   gitlab:
-    'those GitLab events are ignored from now on. The project itself, its bot and its webhook are untouched. Past runs and their sessions stay.'
+    'those GitLab events are ignored from now on. The project itself, its bot and its webhook are untouched. Past runs and their sessions stay.',
+  gitea:
+    'those Gitea events are ignored from now on. The repository itself, its bot and its webhook are untouched. Past runs and their sessions stay.'
 }
 
 // Confirm-delete a trigger. The CP drops the row and the relay pool drops its

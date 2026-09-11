@@ -19,6 +19,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 vi.mock('@/components/marks', () => ({
   GithubMark: () => <span data-mark="github" />,
   GitlabMark: () => <span data-mark="gitlab" />,
+  GiteaMark: () => <span data-mark="gitea" />,
   PlatformMark: ({ platform }: { platform: string }) => <span data-mark={platform} />
 }))
 

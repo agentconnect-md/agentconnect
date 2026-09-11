@@ -151,7 +151,8 @@ export type FeishuRegion = LarkFeishuTarget
 // What a subscription on each code host does, in that host's own subject vocabulary.
 const CODE_HOST_SUBSCRIPTION_HINT: Record<CodeHostProvider, string> = {
   github: 'Matching events run the agent in a session and reply on the same PR, issue or commit thread.',
-  gitlab: 'Matching events run the agent in a session and reply on the same issue, merge request or push thread.'
+  gitlab: 'Matching events run the agent in a session and reply on the same issue, merge request or push thread.',
+  gitea: 'Matching events run the agent in a session and reply on the same issue, pull request or push thread.'
 }
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
@@ -1210,7 +1211,10 @@ export default function AddIntegrationModal({
       act: () => void submitGitlab(),
       enabled: !!glProject && !glAlreadyWatched && glProjectAuthorized && glSelectedFams.length > 0,
       hidden: false
-    }
+    },
+    // Gitea's pane arrives in G6 (gitea-integration.md §16), so there is nothing to submit and the
+    // footer stays hidden; the picker does not offer the tile that would reach it either.
+    gitea: { label: 'Connect', act: () => {}, enabled: false, hidden: true }
   }
   const footer =
     platform === 'webhook'

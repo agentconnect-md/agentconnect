@@ -15,11 +15,11 @@
 // so a nested open never tears down the caller.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { CODE_HOST_PROVIDERS, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon } from '@/components/ui'
-import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
+import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
 import { agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import {
@@ -291,25 +291,30 @@ export default function AddAgentRepoModal({
 
   // Each host's own footer gate and its own create payload — a grant is provider-qualified
   // (§8.1). Total, so a new host states both instead of submitting through GitHub's.
-  const grantSubmit: Record<CodeHostProvider, { ready: boolean; input: Parameters<typeof createAgentRepo>[1] }> = {
-    github: {
-      ready: !!pick && !isWorkspace(pick) && !isAuthorized(pick) && !uncovered && !probeDenies,
-      input: { repoFullName: pick, access }
-    },
-    gitlab: {
-      ready: !!glPick && glTakenBy(glPick) === null && gl.provisioning === null,
-      input: { provider: 'gitlab', projectId: glPick, access }
+  const grantSubmit: Record<CodeHostProvider, { ready: boolean; input: Parameters<typeof createAgentRepo>[1] | null }> =
+    {
+      github: {
+        ready: !!pick && !isWorkspace(pick) && !isAuthorized(pick) && !uncovered && !probeDenies,
+        input: { repoFullName: pick, access }
+      },
+      gitlab: {
+        ready: !!glPick && glTakenBy(glPick) === null && gl.provisioning === null,
+        input: { provider: 'gitlab', projectId: glPick, access }
+      },
+      // Gitea grants arrive with the repository catalog (gitea-integration.md G2): the create route
+      // admits no gitea arm, so this host has no payload at all and the tile is not offered.
+      gitea: { ready: false, input: null }
     }
-  }
   const canSubmit = grantSubmit[provider].ready
 
   const submit = async () => {
-    if (busyRef.current || !canSubmit) return
+    const input = grantSubmit[provider].input
+    if (busyRef.current || !canSubmit || !input) return
     busyRef.current = true
     setSaving(true)
     setErr(null)
     try {
-      const row = await createAgentRepo(agent.id, grantSubmit[provider].input)
+      const row = await createAgentRepo(agent.id, input)
       onCreated(row)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'GITHUB_IDENTITY_REQUIRED') {
@@ -333,7 +338,7 @@ export default function AddAgentRepoModal({
   // How the picked host is named and what it calls the object being authorized.
   const hostProjection = CODE_HOST_PROJECTION[provider]
   // One tile per code host — the offer's row set IS the provider axis, each tile worded by its projection.
-  const hostTiles = CODE_HOST_PROVIDERS.map((v) => ({
+  const hostTiles = PICKABLE_CODE_HOST_PROVIDERS.map((v) => ({
     v,
     label: CODE_HOST_PROJECTION[v].label,
     hint: `Authorize a ${CODE_HOST_PROJECTION[v].repoNoun}.`,
@@ -341,8 +346,15 @@ export default function AddAgentRepoModal({
   }))
 
   // Each host's own picker — GitHub's installation roster, GitLab's project list. Total over the
-  // providers, so a new code host brings its own pane instead of inheriting the first one's.
+  // providers, so a new code host brings its own pane instead of inheriting the first one's; one
+  // whose console surface does not exist yet says so rather than rendering another host's.
   const grantPicker: Record<CodeHostProvider, () => ReactNode> = {
+    gitea: () => (
+      <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+        <Icon name="info" size={15} className="mt-[1px] flex-none" />
+        <span>Gitea repositories cannot be authorized from the console yet.</span>
+      </div>
+    ),
     github: () =>
       gh === null ? (
         <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">

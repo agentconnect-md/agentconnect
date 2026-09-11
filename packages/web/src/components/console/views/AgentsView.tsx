@@ -20,7 +20,7 @@ import { amountToNumber } from '@/lib/amount'
 import { useConsoleData } from '@/lib/data-context'
 import { IntegrationMarks } from '@/components/console/IntegrationMarks'
 import { useModal } from '@/components/console/ModalProvider'
-import { AgentIconView, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentIconView, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Button, Icon } from '@/components/ui'
@@ -37,6 +37,7 @@ import { useOnboardingRedirect } from '@/lib/use-onboarding-redirect'
 const AGENT_HOOK_MARK: Record<HookKind, ReactNode> = {
   github: <GithubMark />,
   gitlab: <GitlabMark />,
+  gitea: <GiteaMark />,
   webhook: <Icon name="webhook" size={14} color="var(--text-secondary)" />
 }
 

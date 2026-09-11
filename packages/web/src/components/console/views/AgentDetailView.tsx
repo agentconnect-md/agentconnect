@@ -74,7 +74,7 @@ import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
-import { AgentMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentMark, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
@@ -171,13 +171,15 @@ interface CodeHostReviewSettingsDraft {
 // The review dialog's host plate on the inverse surface — each host keeps its own fill and color.
 const REVIEW_DIALOG_MARK: Record<CodeHostProvider, ReactNode> = {
   github: <GithubMark color="#fff" />,
-  gitlab: <GitlabMark fillPct={100} />
+  gitlab: <GitlabMark fillPct={100} />,
+  gitea: <GiteaMark color="#fff" fillPct={100} />
 }
 
 // What the dialog settles, in each host's vocabulary.
 const REVIEW_DIALOG_TITLE: Record<CodeHostProvider, string> = {
   github: 'PR review & Checks',
-  gitlab: 'MR review & run note'
+  gitlab: 'MR review & run note',
+  gitea: 'PR review & commit status'
 }
 
 export default function AgentDetailView() {
@@ -399,6 +401,8 @@ export default function AgentDetailView() {
     // Each host's PUT re-sends its own whole block; only the two effect axes move. Total over
     // the providers, so a new host writes through its own endpoint instead of GitHub's.
     const writers: Record<CodeHostProvider, (() => Promise<HookDto>) | null> = {
+      // G6 adds Gitea's hook routes; a null writer is how this table says a host has none.
+      gitea: null,
       github: hook.repoFullName
         ? () =>
             updateGithubHook(hook.id, {
@@ -453,6 +457,8 @@ export default function AgentDetailView() {
       setReviewSettingsDraft((current) => (current ? { ...current, reportingMode } : current))
     }
     const editors: Record<CodeHostProvider, () => ReactNode> = {
+      // Unreachable: the dialog opens from a hook row, and no gitea row can exist yet.
+      gitea: () => null,
       github: () => (
         <GithubReviewSettings
           value={draft}
