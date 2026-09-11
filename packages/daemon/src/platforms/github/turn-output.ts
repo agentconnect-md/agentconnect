@@ -42,19 +42,15 @@
  * state and passed in as one boolean — the surface never inspects hook context.
  */
 import type { GithubPublishedComment, PublishedHookOutput } from '@agentconnect.md/protocol'
+import type { CodeHostFinalPoster } from '../../codehost/turn-final.js'
 import type { GithubReplyCollector } from '../../github/poster.js'
-import type { GitlabPublishFailure } from '../../gitlab/poster.js'
 import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
 
 /** GitHub's per-turn state (§7.3). Held in the turn's final-surface slot, which
  *  core stores opaquely and never reads. */
 export interface GithubTurnState {
-  /** Publishes the one comment — structurally the GitHub poster or its GitLab twin (§14.1), tokened and attributed at publish time. */
-  poster: {
-    publish(finalBody?: string): Promise<GithubPublishedComment | PublishedHookOutput | undefined>
-    /** Normalized reason the one note is absent (GitLab §14.1); GitHub's poster reports none. */
-    readonly failure?: GitlabPublishFailure
-  }
+  /** Publishes the one comment: whichever code host's registered turn-final member owns this delivery (§14.1). */
+  poster: CodeHostFinalPoster
   /** Accumulates ACP updates and selects the single logical final answer. */
   collector: GithubReplyCollector
   /** Set when the runtime's explicit final chunk was withheld from the core

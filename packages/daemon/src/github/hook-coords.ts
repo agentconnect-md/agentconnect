@@ -19,6 +19,7 @@ import {
 import type { GithubReviewEffect, GithubReviewEvent, GithubReviewTarget, GithubReviewVerdict } from './review.js'
 import type { SessionWorktreeRemoval } from '../workspace/workspace-manager.js'
 import type { QueueEntry } from '../daemon/turn-types.js'
+import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import type { GitlabPublishFailure } from '../gitlab/poster.js'
 
 export function hookSnapshot(msg: RdMsgHook): HookConfigSnapshot | undefined {
@@ -64,30 +65,12 @@ export function foreignHookDispatch(report: HookReport, daemonId?: string): bool
   return report.dispatchDaemonId !== undefined && report.dispatchDaemonId !== daemonId
 }
 
-export interface GithubReplyTarget {
-  hookId: string
-  /** Provider discriminator: absent ⇒ github; 'gitlab' sets `repo` = numeric project id and `number` = the subject IID (§14.1). */
-  provider?: 'gitlab'
-  subjectKind?: 'issue' | 'merge_request'
-  repo: string
-  number: number
-  /** The review-comment delivery that triggered this turn (diagnostic identity). */
-  reviewCommentId?: string
-  /** The comment that FIRED this turn, as the acknowledgement reaction targets it. Absent ⇒
-   *  the subject itself fired, so the subject is what carries the reaction. Distinct from
-   *  `reviewThreadRootCommentId`, which names where the ANSWER goes: a reply lands on the
-   *  thread root, while the acknowledgement belongs on the exact comment a human wrote. */
-  triggerComment?: { kind: 'issue_comment' | 'review_comment' | 'note'; id: string }
-  /** Stable root of the GitHub inline-review thread; replies must target this id. */
-  reviewThreadRootCommentId?: string
-}
-
 export interface GithubReviewBatchItem {
   deliveryKey: string
   firedAt: string
   text: string
   /** The per-item reply target, present only where the provider publishes each item itself. */
-  reply?: GithubReplyTarget & { reviewThreadRootCommentId: string }
+  reply?: CodeHostReplyTarget & { reviewThreadRootCommentId: string }
   publishState?: 'not_started' | 'in_flight' | 'settled'
   publishedComment?: GithubPublishedComment
 }
@@ -143,7 +126,7 @@ export interface HookDispatchContext {
   github?: GithubHookMetadata
   /** GitLab twin of `github` — the trusted subject discriminator (§12.3). */
   gitlab?: GitlabHookMetadata
-  githubReply?: GithubReplyTarget
+  githubReply?: CodeHostReplyTarget
   githubReviewBatch?: GithubReviewBatch
   turnStartedAt?: string
   reviewAttemptId?: string
@@ -222,8 +205,6 @@ export function hookOutputFallbackAllowed(hook: HookDispatchContext | undefined)
   return githubFallbackAllowed(hook) && codeHostReviewFallbackAllowed(hook)
 }
 
-export type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
-
 const GITHUB_DELETED_HOOK_EVENTS = new Set([
   'issues:deleted',
   'pull_request:deleted',
@@ -233,27 +214,6 @@ const GITHUB_DELETED_HOOK_EVENTS = new Set([
 
 export function githubDeletedHookEvent(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean {
   return hook?.event !== undefined && GITHUB_DELETED_HOOK_EVENTS.has(hook.event)
-}
-
-/** Relay-authored lifecycle events that remove the isolated checkout without
- * opening a model turn. Pair the normalized event with trusted subject metadata
- * so an old or malformed frame cannot turn an ordinary hook into maintenance. */
-export function githubThreadWorktreeCleanup(
-  hook: Pick<HookDispatchContext, 'event' | 'github' | 'gitlab'> | undefined
-): GithubThreadWorktreeCleanup | undefined {
-  if (hook?.event === 'pull_request:merged' && hook.github?.subjectKind === 'pull_request') {
-    return 'pull_request_merged'
-  }
-  if (hook?.event === 'issues:closed' && hook.github?.subjectKind === 'issue') return 'issue_closed'
-  if (hook?.event === 'issues:deleted' && hook.github?.subjectKind === 'issue') return 'issue_deleted'
-  // The GitLab counterpart (gitlab-com-integration.md §12): merged MRs and
-  // closed issues retire the per-thread checkout, fenced on the SAME pairing of
-  // normalized event + trusted subject metadata.
-  if (hook?.event === 'merge_request:merged' && hook.gitlab?.target.kind === 'merge_request') {
-    return 'pull_request_merged'
-  }
-  if (hook?.event === 'issues:closed' && hook.gitlab?.target.kind === 'issue') return 'issue_closed'
-  return undefined
 }
 
 export type SessionWorktreeCleanupResult =

@@ -235,7 +235,7 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
-    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+    ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
       poster: { publish: vi.fn(async () => {}) },
       collector: new GithubReplyCollector()
     }))
@@ -300,7 +300,7 @@ describe('Daemon rd/msg hook fires', () => {
         supportsServerFeature: (feature: string) => features.includes(feature)
       }
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
-      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+      ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
         poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
         collector: new GithubReplyCollector()
       }))
@@ -402,7 +402,7 @@ describe('Daemon rd/msg hook fires', () => {
         supportsServerFeature: (feature: string) => features.includes(feature)
       }
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
-      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+      ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
         poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
         collector: new GithubReplyCollector()
       }))
@@ -437,7 +437,7 @@ describe('Daemon rd/msg hook fires', () => {
       await daemon.start()
       const cp = fakeCpClient()
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
-      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+      ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
         poster: { publish: vi.fn(async () => undefined), failure },
         collector: new GithubReplyCollector()
       }))
@@ -467,7 +467,7 @@ describe('Daemon rd/msg hook fires', () => {
       await daemon.start()
       const cp = fakeCpClient()
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
-      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+      ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
         poster: {
           publish: vi.fn(async () => (failure ? undefined : { provider: 'gitlab', kind: 'note', externalId: '9001' })),
           ...(failure ? { failure } : {})
@@ -532,7 +532,10 @@ describe('Daemon rd/msg hook fires', () => {
     const cp = fakeCpClient()
     ;(restarted as never as { cpClient: unknown }).cpClient = cp
     const poster = { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) }
-    ;(restarted as any).githubReviews.makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    ;(restarted as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
+      poster,
+      collector: new GithubReplyCollector()
+    }))
     const settled: Array<string | undefined> = []
     const realPersist = (restarted as any).persistHookState.bind(restarted)
     ;(restarted as any).persistHookState = async (entry: any, state: any, required: any) => {
@@ -594,15 +597,15 @@ describe('Daemon rd/msg hook fires', () => {
     const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
     const cp = fakeCpClient()
     ;(restarted as never as { cpClient: unknown }).cpClient = cp
-    const makeGithubReply = vi.fn(() => ({ poster: { publish: vi.fn() }, collector: new GithubReplyCollector() }))
-    ;(restarted as any).githubReviews.makeGithubReply = makeGithubReply
+    const makeCodeHostReply = vi.fn(() => ({ poster: { publish: vi.fn() }, collector: new GithubReplyCollector() }))
+    ;(restarted as any).githubReviews.makeCodeHostReply = makeCodeHostReply
 
     await restarted.start()
 
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     expect(cp.hookReports[0]).toMatchObject({ status: 'failed', reason: 'note_publish_failed:post_failed' })
     // A settled row builds no poster at all, so the reason can only have come from the durable record.
-    expect(makeGithubReply).not.toHaveBeenCalled()
+    expect(makeCodeHostReply).not.toHaveBeenCalled()
     await restarted.stop()
   })
 
@@ -613,7 +616,7 @@ describe('Daemon rd/msg hook fires', () => {
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
     const poster = { publish: vi.fn(async () => undefined) }
-    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
     const realPersist = (daemon as any).persistHookState.bind(daemon)
     ;(daemon as any).persistHookState = async (entry: any, state: any, required: any) => {
       if (state === 'in_flight') throw new Error('durable inbox row is missing')
@@ -638,7 +641,7 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
-    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+    ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
       poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
       collector: new GithubReplyCollector()
     }))
@@ -762,8 +765,8 @@ describe('Daemon rd/msg hook fires', () => {
     const poster = {
       publish: vi.fn(async () => ({ kind: 'review_comment' as const, commentId: '3566000000' }))
     }
-    const makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
-    ;(daemon as any).githubReviews.makeGithubReply = makeGithubReply
+    const makeCodeHostReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    ;(daemon as any).githubReviews.makeCodeHostReply = makeCodeHostReply
 
     const dispatchDaemonId = (daemon as any).cfg.daemonId as string
     const ack = await (daemon as any).handleRelayMsg(
@@ -813,11 +816,12 @@ describe('Daemon rd/msg hook fires', () => {
     expect(activeReviewAuthorities).toBe(0)
     expect(submitError?.message).toContain('only available during the active PR hook turn')
     expect(cp.authorizeGithubReview).not.toHaveBeenCalled()
-    expect(makeGithubReply).toHaveBeenCalledOnce()
-    expect(makeGithubReply).toHaveBeenCalledWith(
+    expect(makeCodeHostReply).toHaveBeenCalledOnce()
+    expect(makeCodeHostReply).toHaveBeenCalledWith(
       AGENT_ID,
       {
         hookId: HOOK_ID,
+        provider: 'github',
         repo: 'acme/infra',
         number: 42,
         reviewCommentId: '3565656411',
@@ -905,7 +909,7 @@ describe('Daemon rd/msg hook fires', () => {
           setStatus: vi.fn(async () => {})
         })
       }
-      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(
+      ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(
         (_agentId: string, ref: { reviewThreadRootCommentId?: string }) => ({
           collector: new GithubReplyCollector(),
           poster: {
@@ -1696,8 +1700,8 @@ describe('Daemon rd/msg hook fires', () => {
       let releasePublish!: () => void
       const publishBarrier = new Promise<void>((resolve) => (releasePublish = resolve))
       const poster = { publish: vi.fn(() => publishBarrier) }
-      const makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
-      ;(daemon as any).githubReviews.makeGithubReply = makeGithubReply
+      const makeCodeHostReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+      ;(daemon as any).githubReviews.makeCodeHostReply = makeCodeHostReply
 
       const msg = fire({
         sessionKey: `acme/infra#${number}`,
@@ -1719,9 +1723,9 @@ describe('Daemon rd/msg hook fires', () => {
       expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
 
       await vi.waitFor(() => expect(poster.publish).toHaveBeenCalledTimes(1), WAIT)
-      expect(makeGithubReply).toHaveBeenCalledWith(
+      expect(makeCodeHostReply).toHaveBeenCalledWith(
         AGENT_ID,
-        { hookId: HOOK_ID, repo: 'acme/infra', number },
+        { hookId: HOOK_ID, provider: 'github', repo: 'acme/infra', number },
         `acp-${event}`
       )
       // Headless GitHub turns have no useful live destination: the turn-end
@@ -1852,8 +1856,8 @@ describe('Daemon rd/msg hook fires', () => {
       const cp = fakeCpClient()
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
       const poster = { publish: vi.fn(async () => {}) }
-      const makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
-      ;(daemon as any).githubReviews.makeGithubReply = makeGithubReply
+      const makeCodeHostReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+      ;(daemon as any).githubReviews.makeCodeHostReply = makeCodeHostReply
       const hookState = vi.spyOn((daemon as any).store, 'updateInboxHookState')
 
       await (daemon as any).handleRelayMsg(
@@ -2226,7 +2230,10 @@ describe('Daemon rd/msg hook fires', () => {
       message: 'marker is not visible yet'
     })
     const poster = { publish: vi.fn(async () => {}) }
-    ;(restarted as any).githubReviews.makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    ;(restarted as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
+      poster,
+      collector: new GithubReplyCollector()
+    }))
 
     await restarted.start()
     await vi.waitFor(() => expect(hookReports).toHaveLength(1), WAIT)
@@ -2310,13 +2317,13 @@ describe('Daemon rd/msg hook fires', () => {
     const cp = fakeCpClient()
     ;(restarted as never as { cpClient: unknown }).cpClient = cp
     const poster = { publish: vi.fn(async () => {}) }
-    const makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
-    ;(restarted as any).githubReviews.makeGithubReply = makeGithubReply
+    const makeCodeHostReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    ;(restarted as any).githubReviews.makeCodeHostReply = makeCodeHostReply
 
     await restarted.start()
 
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
-    expect(makeGithubReply).toHaveBeenCalledWith(
+    expect(makeCodeHostReply).toHaveBeenCalledWith(
       AGENT_ID,
       {
         hookId: HOOK_ID,
@@ -2509,8 +2516,8 @@ describe('Daemon rd/msg hook fires', () => {
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
     // Stub the github poster so the turn-end publish resolves without a real mint.
     const poster = { publish: vi.fn(async () => {}) }
-    const makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
-    ;(daemon as any).githubReviews.makeGithubReply = makeGithubReply
+    const makeCodeHostReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    ;(daemon as any).githubReviews.makeCodeHostReply = makeCodeHostReply
 
     // 1) An `opened` fire creates the session for acme/infra#42.
     await (daemon as any).handleRelayMsg(ghFire('issues', 'opened', 'd-open'), () => {})
@@ -3026,7 +3033,7 @@ describe('Daemon rd/msg hook fires', () => {
     ;(daemon as any).cfg.limits.shutdownDrainMs = 0
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
-    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+    ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
       poster: { publish: vi.fn(async () => {}) },
       collector: new GithubReplyCollector()
     }))
@@ -3140,7 +3147,7 @@ describe('Daemon rd/msg hook fires', () => {
     const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: restartedHost.factory })
     const restartedCp = fakeCpClient()
     ;(restarted as never as { cpClient: unknown }).cpClient = restartedCp
-    ;(restarted as any).githubReviews.makeGithubReply = vi.fn(() => ({
+    ;(restarted as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
       poster: { publish: vi.fn(async () => {}) },
       collector: new GithubReplyCollector()
     }))
@@ -3190,7 +3197,7 @@ describe('Daemon rd/msg hook fires', () => {
     ;(daemon as any).cfg.limits.shutdownDrainMs = 0
     const cp = fakeCpClient()
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
-    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+    ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
       poster: { publish: vi.fn(async () => {}) },
       collector: new GithubReplyCollector()
     }))
@@ -3305,7 +3312,7 @@ describe('Daemon rd/msg hook fires', () => {
       postContext: vi.fn(async () => {}),
       setStatus: vi.fn(async () => {})
     })
-    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+    ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
       poster: { publish: vi.fn(async () => {}) },
       collector: new GithubReplyCollector()
     }))
@@ -3768,7 +3775,7 @@ describe('Daemon rd/msg hook fires', () => {
       await daemon.start()
       const cp = fakeCpClient()
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
-      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+      ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
         poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
         collector: new GithubReplyCollector()
       }))
