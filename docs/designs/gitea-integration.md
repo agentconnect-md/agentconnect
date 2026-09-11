@@ -613,7 +613,7 @@ Each step is one pull request, merged in order.
 
 - **G0 — Seam extraction.** §13, behavior-neutral, green on the existing
   GitHub and GitLab suites. Lands before any `gitea` string exists.
-- **G1 — Protocol and Setup Server.** _Landed (#PR_G1)._ `gitea` in
+- **G1 — Protocol and Setup Server.** _Landed (#2049)._ `gitea` in
   `CODE_HOST_PROVIDERS`, `gitea-v1`, frame members, `giteaHost`; the Setup Server
   entry, probe, and floor. `CODE_HOST_PROVIDERS` gaining the value is what forced
   an entry in every provider table on all four hosts, so the step also filled
