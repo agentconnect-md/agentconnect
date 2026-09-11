@@ -473,6 +473,24 @@ and guest-refreshed OAuth state survives API-key rotation. SRT imports the same
 native files without enabling this VM proxy. Native Qwen 0.23.3's OpenAI-compatible
 API path was verified with the SDK CA and a real ACP tool turn.
 
+Oh My Pi uses the same proxy for API keys in its native `agent.db`, honoring
+`PI_CODING_AGENT_DIR`. The existing credential-table extractor writes placeholders
+before inserting any row into the private database; API keys never enter its
+journal during seeding. Native OAuth and login metadata are preserved. Routing
+covers the audited built-in Anthropic, OpenAI, DeepSeek, Google, xAI, OpenRouter,
+Groq and Mistral endpoints. Unknown providers keep placeholders without injection.
+Custom model files are not part of the existing HOME seed; model-file-only keys,
+broker/command/environment credentials and OAuth protection remain outside this
+path. Native OMP 18.1.17 completed an ACP model/tool turn through this proxy.
+
+OMP resume checks a host-only copy of the private database and WAL, opened through
+directory/file descriptors without following guest symlinks. The original files
+are never rewritten, preserving OAuth refreshes and usage records. This check is
+bounded to 256 MiB combined. Retained plaintext or incompatible API records require
+a new session; existing data is retained. Key values for unchanged bindings rotate
+through the stopped-VM lifecycle; changed login identities or shared-key groups
+may require a new session. OAuth-only and SRT launches keep native seeding.
+
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
 existing private logins are preserved. Without a DeepSeek key, normal seeding is

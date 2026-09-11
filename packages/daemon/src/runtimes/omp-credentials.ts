@@ -22,7 +22,7 @@ function rowBytes(row: Record<string, SQLInputValue>): number {
   return Object.values(row).reduce<number>((total, value) => total + valueBytes(value), 0)
 }
 
-/** Query provider names only; expired or disabled logins remain discoverable for reauthentication. */
+// Query provider names only; expired or disabled logins remain discoverable for reauthentication.
 export function discoverOmpCredentialProviders(sourcePath: string): string[] {
   let source: DatabaseSync | undefined
   try {
@@ -53,11 +53,49 @@ export function discoverOmpCredentialProviders(sourcePath: string): string[] {
   }
 }
 
-/**
- * Copy only OMP's credential schema and rows into a fresh private database.
- * Reviewed against can1357/oh-my-pi b0d04e517335ada4e00ef8dc93aad9f4d1be8d21.
- */
-export function extractOmpCredentials(sourcePath: string, destinationPath: string): void {
+export interface OmpApiCredential {
+  id: number
+  provider: string
+  key: string
+}
+
+export function readOmpApiCredentials(sourcePath: string): OmpApiCredential[] {
+  let source: DatabaseSync | undefined
+  try {
+    const stat = lstatSync(sourcePath)
+    if (stat.isSymbolicLink()) return []
+    if (!stat.isFile()) throw new Error('invalid source')
+    source = new DatabaseSync(sourcePath, { readOnly: true })
+    source.exec('PRAGMA trusted_schema=OFF')
+    const credentials: OmpApiCredential[] = []
+    let bytes = 0
+    for (const row of source
+      .prepare("SELECT id, provider, data FROM auth_credentials WHERE credential_type = 'api_key'")
+      .iterate()) {
+      if (typeof row.id !== 'number' || typeof row.provider !== 'string' || typeof row.data !== 'string')
+        throw new Error('invalid credential')
+      bytes += Buffer.byteLength(row.data)
+      if (Buffer.byteLength(row.data) > MAX_ROW_BYTES || bytes > MAX_TOTAL_BYTES)
+        throw new Error('oversized credentials')
+      const data = JSON.parse(row.data) as { key?: unknown }
+      if (typeof data?.key === 'string' && data.key.trim())
+        credentials.push({ id: row.id, provider: row.provider, key: data.key })
+    }
+    return credentials
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw new Error('Cannot read the OMP API credential database')
+  } finally {
+    source?.close()
+  }
+}
+
+// Copy only native credential tables; projection runs before any row reaches the private database or journal.
+export function extractOmpCredentials(
+  sourcePath: string,
+  destinationPath: string,
+  project: (row: Record<string, SQLInputValue>) => Record<string, SQLInputValue> = (row) => row
+): void {
   if (!existsSync(sourcePath)) return
   if (existsSync(destinationPath)) {
     if (lstatSync(destinationPath).isSymbolicLink()) {
@@ -76,8 +114,7 @@ export function extractOmpCredentials(sourcePath: string, destinationPath: strin
   let sourceTransaction = false
   try {
     source = new DatabaseSync(sourcePath, { readOnly: true })
-    // Pin all allowlisted reads to one snapshot. This matters in WAL mode: without
-    // a source-side transaction, the two table reads can observe different commits.
+    // Keep both allowlisted tables on the same WAL snapshot.
     source.exec('BEGIN')
     sourceTransaction = true
     destination = new DatabaseSync(tempPath)
@@ -110,7 +147,8 @@ export function extractOmpCredentials(sourcePath: string, destinationPath: strin
         if (totalBytes > MAX_TOTAL_BYTES) {
           throw new Error(`OMP credential payload exceeds ${MAX_TOTAL_BYTES} bytes`)
         }
-        insert.run(...columns.map((column) => row[column] ?? null))
+        const projected = table === 'auth_credentials' ? project(row) : row
+        insert.run(...columns.map((column) => projected[column] ?? null))
       }
     }
 

@@ -11,6 +11,7 @@ import { prepareClaudeApiSecret, prepareCodexApiSecret } from './native-api-secr
 import { preparePiSecrets } from './pi-secrets.js'
 import { prepareGrokSecrets } from './grok-secrets.js'
 import { prepareQwenSecrets } from './qwen-secrets.js'
+import { prepareOmpSecrets } from './omp-secrets.js'
 
 export interface MicrosandboxSecret {
   env: string
@@ -40,7 +41,8 @@ const CREDENTIAL_PREPARERS = new Map<
   ['claude-acp', prepareClaudeApiSecret],
   ['codex-acp', prepareCodexApiSecret],
   ['grok-build', prepareGrokSecrets],
-  ['qwen-code', prepareQwenSecrets]
+  ['qwen-code', prepareQwenSecrets],
+  ['omp', prepareOmpSecrets]
 ])
 
 export function prepareMicrosandboxCredentials(
