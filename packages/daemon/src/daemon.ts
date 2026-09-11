@@ -1480,7 +1480,8 @@ export class Daemon {
       configPath: () => this.opts.configPath,
       upgradeInstaller: () => this.opts.upgradeInstaller,
       stop: () => this.stop(),
-      requestExit: (code) => this.requestExit(code)
+      requestExit: (code) => this.requestExit(code),
+      reportUpgradeFailed: (operationId, reason) => this.cpClient?.emitUpgradeFailed(operationId, reason)
     })
   }
 
@@ -17951,7 +17952,8 @@ export class Daemon {
         this.observedChannelsSync.retractChannels(integrationId, channelIds),
       runCronNow: (cronId) => this.runCronNow(cronId),
       runDrain: (drain, onProgress) => this.runDrain(drain, onProgress),
-      scheduleFleetExit: (kind, targetVersion) => this.fleetUpgrade.scheduleFleetExit(kind, targetVersion)
+      scheduleFleetExit: (kind, targetVersion, operationId) =>
+        this.fleetUpgrade.scheduleFleetExit(kind, targetVersion, operationId)
     }
   }
 

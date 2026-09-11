@@ -613,6 +613,17 @@ export class CpClient {
     }
   }
 
+  /** Report a live-delivered upgrade whose install failed (D→C `daemon/bootstrap/result`,
+   *  fire-and-forget). The daemon keeps running the current version, so nothing else would
+   *  settle the CP's lifecycle op and the console would read `upgrading` until its deadline.
+   *  No-op unless READY/DRAINING — an older CP answers `error{UNKNOWN_FRAME}`, ignored. */
+  emitUpgradeFailed(operationId: string, reason: string): void {
+    if (this.state !== 'READY' && this.state !== 'DRAINING') return
+    this.transport?.send(
+      encode(buildEnvelope('daemon/bootstrap/result', { operationId, status: 'failed', reason: reason.slice(0, 500) }))
+    )
+  }
+
   /**
    * Re-announce `RegisterReq.capabilities` when the daemon's computed set has
    * changed since this connection's register (D→C `capabilities/update` EVT,

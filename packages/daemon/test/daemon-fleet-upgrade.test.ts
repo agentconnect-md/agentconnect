@@ -48,4 +48,22 @@ describe('daemon fleet upgrade coordination', () => {
     outcome.restart()
     await vi.waitFor(() => expect(requestExit).toHaveBeenCalledTimes(1))
   })
+
+  it('reports a failed live install to the CP so its lifecycle op does not stay pending', async () => {
+    const upgradeInstaller = vi.fn(async () => false)
+    const daemon = new Daemon({ root: scaffold(), supervisor: 'cli', upgradeInstaller, requestExit: vi.fn() })
+    const emitUpgradeFailed = vi.fn()
+    ;(daemon as any).cpClient = { emitUpgradeFailed }
+    ;(daemon as any).stop = vi.fn(async () => {})
+
+    const ack = (daemon as any).cpConfigApply().applyDaemonUpgrade({
+      targetVersion: '9.9.9',
+      drainFirst: true,
+      operationId: 'op-1'
+    })
+    expect(ack).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(emitUpgradeFailed).toHaveBeenCalledWith('op-1', 'failed to install 9.9.9'))
+    // The daemon keeps running the current version — no exit was requested.
+    expect((daemon as any).stop).not.toHaveBeenCalled()
+  })
 })

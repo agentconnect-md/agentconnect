@@ -556,7 +556,7 @@ export function daemonRoutes(deps: HttpDeps) {
 
       const result =
         op === 'upgrade' && targetVersion
-          ? await deps.control.daemonUpgrade(id, { targetVersion, drainFirst: true })
+          ? await deps.control.daemonUpgrade(id, { targetVersion, drainFirst: true, operationId: opRow.id })
           : await deps.control.daemonRestart(id, { reason: 'console-initiated restart', drainFirst: true })
 
       // Definitely unsent (pre-dispatch NoConnection) → fail the op + 503.

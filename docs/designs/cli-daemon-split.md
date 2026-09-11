@@ -419,9 +419,13 @@ agentconnect upgrade --to <version> --root <root>
 
 This installs and activates the target without asking the service controller to
 restart the process that is currently issuing the command. If the CLI step
-fails, the daemon stays running and clears its in-flight lifecycle guard. If it
-succeeds, the daemon drains and exits with `RESERVED_RESTART_CODE`; its
-supervisor then launches the new `current` version.
+fails, the daemon stays running and clears its in-flight lifecycle guard, and
+reports `daemon/bootstrap/result{status:"failed"}` for the operation id the
+`daemon/upgrade` command carried — the daemon never re-registers after a failed
+install, so without that report the operation would stay pending (and read as
+in-flight) until its deadline. If it succeeds, the daemon drains and exits with
+`RESERVED_RESTART_CODE`; its supervisor then launches the new `current`
+version.
 
 Remote completion is determined by the later `READY` registration. Unlike a
 local `upgrade --restart`, the remote flow does not perform process-level

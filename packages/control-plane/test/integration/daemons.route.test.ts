@@ -777,11 +777,14 @@ describe('POST /daemons/:id/upgrade', () => {
       payload: { version: '0.5.0' }
     })
     expect(res.statusCode).toBe(202)
-    expect(calls).toEqual([{ method: 'upgrade', id: DAEMON, payload: { targetVersion: '0.5.0', drainFirst: true } }])
     // The 202 returns the opened op (with its id) so the console can track it.
     const opened = res.json() as { id: string; op: string; status: string; targetVersion: string | null }
     expect(opened).toMatchObject({ op: 'upgrade', status: 'pending', targetVersion: '0.5.0' })
     expect(opened.id).toBeTruthy()
+    // The op id rides along so a failed install can settle the op instead of stranding it pending.
+    expect(calls).toEqual([
+      { method: 'upgrade', id: DAEMON, payload: { targetVersion: '0.5.0', drainFirst: true, operationId: opened.id } }
+    ])
 
     const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as (DaemonDto & {
       lifecycleOp: LifecycleOp | null

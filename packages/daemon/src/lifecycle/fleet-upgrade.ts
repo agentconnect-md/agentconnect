@@ -20,6 +20,8 @@ export interface FleetUpgradeHost {
   upgradeInstaller: () => typeof runCliUpgrade | undefined
   stop: () => Promise<void>
   requestExit: (code: number) => void
+  /** Tell the CP a live-delivered upgrade failed to install, so it settles its lifecycle op now. */
+  reportUpgradeFailed?: (operationId: string, reason: string) => void
 }
 
 type FleetExitKind = 'restart' | 'upgrade'
@@ -80,7 +82,12 @@ export class FleetUpgradeCoordinator {
     return { accepted: true, root, ...(cliEntry ? { cliEntry } : {}), ...(willDrainUntil ? { willDrainUntil } : {}) }
   }
 
-  private startFleetUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
+  private startFleetUpgrade(
+    cliEntry: string,
+    targetVersion: string,
+    root: string,
+    operationId?: string
+  ): Promise<boolean> {
     const log = this.host.log()
     const installation = Promise.resolve()
       .then(() =>
@@ -95,6 +102,9 @@ export class FleetUpgradeCoordinator {
           log.error(`cp: upgrade to ${targetVersion} aborted — daemon continues on the current version`)
           this.lifecycleInFlight = false
           if (this.fleetUpgradeInFlight?.installation === installation) this.fleetUpgradeInFlight = undefined
+          // The daemon never re-registers after a failed install, so nothing else would settle
+          // the CP's op — it would read `upgrading` until its deadline expired.
+          if (operationId) this.host.reportUpgradeFailed?.(operationId, `failed to install ${targetVersion}`)
         }
         return ok
       })
@@ -117,11 +127,14 @@ export class FleetUpgradeCoordinator {
   }
 
   /** Admit immediately, then install before the existing drain-and-relaunch path. */
-  scheduleFleetExit(kind: FleetExitKind, targetVersion?: string): DaemonControlAck {
+  scheduleFleetExit(kind: FleetExitKind, targetVersion?: string, operationId?: string): DaemonControlAck {
     const admission = this.admitFleetExit(kind, targetVersion)
     if (!admission.accepted) return admission
     void (async () => {
-      if (kind === 'upgrade' && !(await this.startFleetUpgrade(admission.cliEntry!, targetVersion!, admission.root))) {
+      if (
+        kind === 'upgrade' &&
+        !(await this.startFleetUpgrade(admission.cliEntry!, targetVersion!, admission.root, operationId))
+      ) {
         return
       }
       this.finishFleetExit(kind)

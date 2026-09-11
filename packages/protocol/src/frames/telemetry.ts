@@ -399,7 +399,10 @@ export type DaemonRestart = z.infer<typeof DaemonRestart>
 /** Fleet: drain+exit for version bump — C→D REQ, protocol §8.3 / frame #28. */
 export const DaemonUpgrade = z.object({
   targetVersion: z.string(),
-  drainFirst: z.boolean().default(true)
+  drainFirst: z.boolean().default(true),
+  // The CP lifecycle op this command opened, so a failed install can be reported as
+  // `daemon/bootstrap/result{failed}` instead of leaving the op pending to its deadline.
+  operationId: z.string().optional()
 })
 export type DaemonUpgrade = z.infer<typeof DaemonUpgrade>
 
