@@ -12,6 +12,9 @@ export const PRIMARY_CHECKOUT_DIR = 'workspace'
 export const SECONDARY_ROOTS_DIR = 'repos'
 /** GitLab roots sit under one reserved owner keyed by numeric project id: `repos/_gitlab/<id>`. A GitHub login admits neither `_` nor a leading one, so no GitHub row can name this directory. */
 export const GITLAB_ROOTS_DIR = '_gitlab'
+/** Owner directories under `repos/` a provider reserves for its own id-keyed subtrees: a row whose
+ *  own text would place a subtree there is refused rather than allowed to collide with one. */
+export const RESERVED_SECONDARY_ROOT_DIRS: ReadonlySet<string> = new Set([GITLAB_ROOTS_DIR])
 /** Every root's per-session worktrees hang off this leaf of it — the agent root for the primary, the subtree for a secondary. */
 export const WORKTREES_DIR = 'worktrees'
 /** What a secondary root's subtree records about the checkout beside it. */
