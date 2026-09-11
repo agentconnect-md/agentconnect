@@ -1249,9 +1249,8 @@ Four rules the seam enforces:
   under the SDK's 600s default. An ask is human-paced, so the turn can die while it is open;
   the replayed round then hits the turn gate first and refuses, posting nothing.
 
-This section is the MECHANISM alone: it has no product call site of its own. The guesses the
-audit found are removed by the changes that follow, and the seam is proven end to end here by a
-test-only tool, so nothing in the shipped tool set changes behaviour with this piece landed.
+The mechanism landed with no product call site of its own; the guesses the audit found are
+removed from here on.
 
 Two of the obvious-looking candidates are not guesses at all. `shareFile` takes NO destination
 by design (§3 of [agent-authored-attachments.md](agent-authored-attachments.md)) — the model
@@ -1263,6 +1262,30 @@ shapes, not an inference.
 here whose effect is visible and irreversible, so putting any card in front of a human to steer
 it is a product question [product-conventions.md](../product-conventions.md) would have to
 admit first; it is filed separately, and the send path raises no card. Search scope stays open.
+
+The first class of ask is a READ that cannot pick a bot. `listKnownUsers` and `listChannels`'s
+observed-history fallback answered an agent with more than one bot on the platform with an empty
+list plus a note telling the model to re-call with an `integrationId` it had no way to obtain.
+They ask instead, over a trusted enum and behind one shared guard, `ambiguousIntegrations`: this
+session's own bot is the tiebreak, because the ids a read returns have to be reachable by the bot
+an unqualified `sendMessage` then picks — which is that same bot. So a same-platform multi-bot
+session asks nothing and reads its own bot's history (strictly better than the empty list it used
+to get), and the ask is left to the case that has no tiebreak at all: a cross-platform read where
+the agent has several bots on the target platform and none of them owns this conversation.
+
+Making that answer matter needed a prerequisite in the same change: `observedChannels`/
+`observedUsers` took only `(agentId, platform)`, so a named bot had nowhere to go — they now take
+an `integrationId`, and the daemon resolves it to that ONE bot's `transportScope`, which is what
+the session store's history has always been keyed by (a session that spanned several bots carries a
+`mixed:` scope and belongs to none of them). Three consequences worth stating: an explicitly passed
+`integrationId` now scopes the fallback too — the very repair the note asks for used to return the
+note again; `listChannels` reads a delivered answer BEFORE the live enumeration, because the
+replayed round would otherwise spend a second platform API call on a list the asking round already
+found empty, with the guard unchanged by the answer; and an answer lives only in the SDK's per-call
+state, so a later `tools/call` asks the same human again — accepted, and softened by reporting an
+empty human-disambiguated read as _that bot's_ empty history rather than as a platform-wide `[]`
+the model would want to retry. Where the ask cannot be made or is declined, both reads fall through
+to the exact suppressed result, note included.
 
 A third-party MCP server's own elicitation is a separate question and needs no work here: it
 already reaches our chat surfaces. Both harnesses we ship forward it onto the ACP wire, where

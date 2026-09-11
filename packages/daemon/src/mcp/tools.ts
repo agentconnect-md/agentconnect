@@ -367,8 +367,10 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
         'target one of the platforms this agent is connected to (defaults to the current one), and `integrationId` ' +
         'to choose a specific bot when the agent has several on that platform. Note: Telegram bots cannot enumerate ' +
         'their chats live, so there Telegram returns the chats this agent has already been active in (from history); ' +
-        'the result `source` is "live" or "observed" accordingly. The observed fallback is suppressed when the agent ' +
-        'has multiple bots on the platform (history is not attributable to one bot).',
+        'the result `source` is "live" or "observed" accordingly. That history belongs to one bot at a time: the bot ' +
+        '`integrationId` names, else the one that owns this conversation, else — a platform where this agent has ' +
+        'several bots and none of them owns this conversation — one a human is asked to choose; with no answer the ' +
+        'fallback is suppressed and the result carries a `note`.',
       inputSchema: obj({ platform, integrationId })
     },
     ...(offered('channelHistory')
@@ -400,8 +402,9 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
         'List the users this agent has already interacted with on a platform (from past DMs/messages), each with ' +
         'their id and name when known. Use this to find a user id to DM on a platform that has no directory to ' +
         'search (Telegram/Discord). Pass `platform` to target a connected platform (defaults to the current one). ' +
-        'Returns an empty list with a `note` when the agent has multiple bots on the platform, since observed history ' +
-        'is not tracked per bot.',
+        'That history belongs to one bot at a time: the bot that owns this conversation, else — a platform where ' +
+        'this agent has several bots and none of them owns this conversation — one a human is asked to choose; with ' +
+        'no answer the result is an empty list with a `note`.',
       inputSchema: obj({ platform })
     },
     {
