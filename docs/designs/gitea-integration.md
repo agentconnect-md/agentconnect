@@ -39,9 +39,12 @@ forwards to the owning daemon, and the daemon runs the agent.
    authentication and gives them no expiry, so the rotation loop of §7.4 has
    nothing to drive. The Console offers "replace token"; an authentication
    rejection is the only expiry signal.
-5. **Formal reviews use Gitea's atomic review call**, which is GitHub-shaped:
-   one request carries verdict, summary, and inline comments. The draft,
-   marker, and bulk-publish machinery of §15 is not ported.
+5. **Formal reviews use Gitea's review call**, which is GitHub-shaped: one
+   request carries verdict, summary, and inline comments. It is not atomic —
+   Gitea stages each inline comment into the caller's pending review and then
+   submits that review — so the publication lease and reconcile-before-create
+   discipline of §15 stay; only GitLab's draft-note and bulk-publish specifics
+   are not ported.
 6. **Run state is a commit status written by the Control Plane**, the Gitea
    counterpart of the GitHub Check writer, not the daemon-authored status note
    of §16. A commit status is body-free control metadata the Control Plane may
@@ -55,23 +58,23 @@ forwards to the owning daemon, and the daemon runs the agent.
 Only rows whose implementation differs are listed; every other row of the §4
 parity table holds with `gitlab` replaced by `gitea`.
 
-| Capability               | GitLab                                            | Gitea                                                                                  |
-| ------------------------ | ------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Browser connection       | OAuth authorization code + PKCE                   | Paste a bot user's personal access token                                               |
-| Bot identity             | One service account per agent per top-level group | One organization-level bot user; every agent shares it                                 |
-| Credential purposes      | `read`, `git_write`, `effect` tokens              | One token; the daemon still receives only short authorization leases                   |
-| Rotation                 | Automatic, create-before-revoke                   | Manual replacement in the Console                                                      |
-| Repository discovery     | OAuth project search                              | Repositories the bot can reach, filtered to `admin`                                    |
-| Webhook signature        | Standard Webhooks HMAC with timestamp             | `X-Gitea-Signature`, HMAC-SHA256 hex over the raw body, no timestamp                   |
-| Collaborator gate        | Developer or higher, live membership              | `write` or higher, live `collaborators/:user/permission` lookup                        |
-| Inline formal review     | Draft notes + bulk publish                        | One `POST /pulls/:index/reviews`; **single-line comments only**                        |
-| Request changes          | Needs a reviewer record; advisory on Free         | Native `REQUEST_CHANGES`, no precondition                                              |
-| Approve                  | Separate SHA-fenced approval call                 | Native `APPROVED` in the same call; **refused when the bot authored the pull request** |
-| Informational run state  | Daemon-authored status note                       | Control-Plane-written commit status                                                    |
-| Re-request               | Reviewer re-request, mention, Console re-run      | Same three; re-requesting the bot as reviewer is a plain `POST /requested_reviewers`   |
-| Loop prevention veto set | Every bound service-account user id               | The connection's single bot user id                                                    |
-| Read-only provider CLI   | `glab` wrapper                                    | None in v1; `tea` has no read-only mode and a generic `tea api` escape hatch           |
-| Lost-delivery recovery   | Provider retries only                             | Provider retries only; Gitea exposes no delivery-history or redelivery API             |
+| Capability               | GitLab                                            | Gitea                                                                                                     |
+| ------------------------ | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Browser connection       | OAuth authorization code + PKCE                   | Paste a bot user's personal access token                                                                  |
+| Bot identity             | One service account per agent per top-level group | One organization-level bot user; every agent shares it                                                    |
+| Credential purposes      | `read`, `git_write`, `effect` tokens              | One token; the daemon still receives only short authorization leases                                      |
+| Rotation                 | Automatic, create-before-revoke                   | Manual replacement in the Console                                                                         |
+| Repository discovery     | OAuth project search                              | Repositories the bot can reach, filtered to `admin`                                                       |
+| Webhook signature        | Standard Webhooks HMAC with timestamp             | `X-Gitea-Signature`, HMAC-SHA256 hex over the raw body, no timestamp                                      |
+| Collaborator gate        | Developer or higher, live membership              | `write` or higher, live `collaborators/:user/permission` lookup                                           |
+| Inline formal review     | Draft notes + bulk publish                        | One `POST /pulls/:index/reviews` that stages then submits a pending review; **single-line comments only** |
+| Request changes          | Needs a reviewer record; advisory on Free         | Native `REQUEST_CHANGES`, no precondition                                                                 |
+| Approve                  | Separate SHA-fenced approval call                 | Native `APPROVED` in the same call; **refused when the bot authored the pull request**                    |
+| Informational run state  | Daemon-authored status note                       | Control-Plane-written commit status                                                                       |
+| Re-request               | Reviewer re-request, mention, Console re-run      | Same three; re-requesting the bot as reviewer is a plain `POST /requested_reviewers`                      |
+| Loop prevention veto set | Every bound service-account user id               | The connection's single bot user id                                                                       |
+| Read-only provider CLI   | `glab` wrapper                                    | None in v1; `tea` has no read-only mode and a generic `tea api` escape hatch                              |
+| Lost-delivery recovery   | Provider retries only                             | Provider retries only; Gitea exposes no delivery-history or redelivery API                                |
 
 ## 3. Instance Axis and Version Floor
 
@@ -187,10 +190,12 @@ value `gitea`; nothing else about them changes. The GitLab-specific rows of
 | `GiteaConnectionSecret`  | connection relation only in normal reads                                                                                                      |
 | `GiteaWebhookSecret`     | binding relation only in normal reads                                                                                                         |
 
-There is no account, membership, credential, or review-publication table. The
-review-publication coordinator of §8.2 exists because GitLab's bulk publish
-cannot name an attempt; Gitea's atomic review call needs only the single-use
-operation ledger the code-host review seam already provides.
+There is no account, membership, or credential table, and no Gitea-specific
+review-publication table: the provider-neutral publication lease and
+single-use operation ledger of the code-host review seam serve Gitea as they
+serve GitLab, keyed `(repository, pull request, bot user)`. The lease is not
+optional here — with one bot user per organization every agent reviewing a
+pull request shares one pending review at the provider (§10.3).
 
 Binding states are `provisioning`, `ready`, `admin_degraded` (bot lost
 `admin`; runtime still works), `runtime_degraded` (token rejected), and
@@ -272,7 +277,7 @@ display, the connection's bot user id as the veto set, the signing key inline.
 | ---------------------------------- | ------------------------------------------------------------------------- |
 | `issues:opened` / `:edited` / …    | `issues` with the matching `action`                                       |
 | issue conversation comment         | `issue_comment`, `is_pull: false`, `action: created`                      |
-| pull-request conversation comment  | `issue_comment`, `is_pull: true`, `action: created`                       |
+| pull-request conversation comment  | `pull_request_comment`, `is_pull: true`, `action: created`                |
 | pull-request diff comment          | `pull_request_review_comment` (the review payload with `review.type` set) |
 | `merge_request:opened`             | `pull_request` `opened`                                                   |
 | `merge_request:synchronize`        | `pull_request_sync` `synchronized`                                        |
@@ -353,20 +358,45 @@ path template; no arbitrary path or body passes through.
 ### 10.3 Formal Pull-Request Reviews
 
 `submitCodeReview` keeps its argument schema and is routed to a Gitea adapter
-registered on the daemon's code-host review router. The adapter is shaped
-like the GitHub orchestrator, not the GitLab one:
+registered on the daemon's code-host review router.
 
-1. reserve the turn's single review attempt and obtain a code-host review
-   operation from the Control Plane (the provider-neutral ledger the seam
-   already has; the Gitea adapter simply does not need a publication lease);
-2. re-fetch the pull request and refuse a changed head;
-3. `POST /repos/:owner/:repo/pulls/:index/reviews` with `commit_id` set to the
+The review call looks atomic and is not. Gitea creates each inline comment
+of the request as a pending code comment attached to _the caller's pending
+review on that pull request_ — one per user and pull request, found or
+created — and only then submits that pending review with the summary and
+verdict. Two consequences follow for a shared bot identity. Concurrent
+attempts by two agents (or one agent's crash replay) stage comments into the
+same pending review, and whichever request submits first publishes both sets
+under its own summary and verdict. And a request that fails after staging
+leaves an unmarked pending review behind for the next attempt to absorb. The
+GitLab publication lease therefore stays, and the adapter is the GitLab
+adapter with the draft-note steps replaced:
+
+1. reserve the turn's single review attempt and acquire the seam's durable
+   publication lease for `(repository, pull request, bot user)`, receiving
+   its monotonic fence, then obtain the Control Plane's single-use review
+   operation for the exact hook, repository, head, event, and placement;
+2. reconcile: list the pull request's reviews and delete any pending review
+   authored by the bot user — under the lease it can only be an orphan of an
+   earlier attempt, and Gitea lets the author delete it — refusing to
+   proceed while one cannot be deleted;
+3. re-fetch the pull request and refuse a changed head;
+4. `POST /repos/:owner/:repo/pulls/:index/reviews` with `commit_id` set to the
    fenced head, `event` mapped `COMMENT → COMMENT`, `REQUEST_CHANGES →
-REQUEST_CHANGES`, `APPROVE → APPROVED`, the summary carrying a hidden
-   signed attempt marker, and inline comments mapped as below;
-4. on a timeout or ambiguous response, list the pull request's reviews, find
-   the one by the bot user with the attempt marker, and reconcile rather than
-   resubmit.
+REQUEST_CHANGES`, `APPROVE → APPROVED`, and a hidden signed
+   attempt-and-ordinal marker in the summary **and in every inline comment**,
+   so staged comments are attributable before the summary exists;
+5. on a timeout or ambiguous response, list the reviews again: a submitted
+   review by the bot carrying this attempt's marker is the outcome; a pending
+   review carrying this attempt's markers is a staged-but-unsubmitted
+   attempt, which is deleted and classified `not_submitted`; anything else is
+   an unknown effect that keeps the lease held for reconciliation rather than
+   releasing it; and
+6. release the lease only after a deterministic outcome is recorded.
+
+A preempted generation follows §15.1 unchanged: its head fence classifies it
+`not_submitted` and its pending review, if any, is deleted before the lease
+is released.
 
 Inline comments are single-line: `line` on `RIGHT` becomes `new_position`,
 `line` on `LEFT` becomes `old_position`, and a range collapses to its end
@@ -558,13 +588,18 @@ enforces.
 ## 17. Validation
 
 - Unit: signature verification, event-type keying (including the lossy
-  `X-Gitea-Event` collisions), session-key recompute, review mapping including
+  `X-Gitea-Event` collisions and the `pull_request_comment` versus
+  `issue_comment` split), session-key recompute, review mapping including
   the single-line collapse and the self-review downgrade, commit-status state
   mapping.
 - Integration: the connect checks (wrong scope, foreign bot, below-floor
   version), the provisioning saga with a fake Gitea API including the
   inactive-by-default webhook and the blocked-allowlist test delivery,
-  membership authorization, token replacement invalidating daemon caches.
+  membership authorization, token replacement invalidating daemon caches,
+  and review publication against a fake that models the pending review:
+  two agents contending for one pull request publish two distinct reviews,
+  a failure after staging leaves nothing for the next attempt to absorb, and
+  an ambiguous submit is reconciled by marker rather than resubmitted.
 - Fleet: a daemon and relay without `gitea-v1` never receive a Gitea spec,
   hook, or rerun; an old peer decoding a frame with a `gitea` member degrades
   per value.
