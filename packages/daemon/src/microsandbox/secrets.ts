@@ -8,6 +8,7 @@ import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES, parseDshCredentialDocument } from '../runtimes/runtime-seeded-credentials.js'
 import { prepareOpenCodeSecrets } from './opencode-secrets.js'
 import { prepareClaudeApiSecret, prepareCodexApiSecret } from './native-api-secrets.js'
+import { preparePiSecrets } from './pi-secrets.js'
 
 export interface MicrosandboxSecret {
   env: string
@@ -33,6 +34,7 @@ const CREDENTIAL_PREPARERS = new Map<
 >([
   ['dsh-acp', prepareDeepSeekSecret],
   ['opencode', prepareOpenCodeSecrets],
+  ['pi-acp', preparePiSecrets],
   ['claude-acp', prepareClaudeApiSecret],
   ['codex-acp', prepareCodexApiSecret]
 ])
