@@ -184,6 +184,9 @@ const text = () => container?.textContent ?? ''
 const buttonsNamed = (label: string) =>
   [...(container?.querySelectorAll('button') ?? [])].filter((b) => b.textContent === label)
 const buttonNamed = (label: string) => buttonsNamed(label)[0]
+// An options card refuses from its head, where the control is an icon named by its label alone.
+const declineButtons = () => [...(container?.querySelectorAll('button[aria-label="Decline without answering"]') ?? [])]
+const declineButton = () => declineButtons()[0] as HTMLButtonElement | undefined
 
 beforeEach(() => {
   wire.messages = []
@@ -216,7 +219,8 @@ describe('the agent’s elicitation card on the session page', () => {
     await render()
 
     expect(text()).toContain('Which branch should I cut from?')
-    for (const label of ['main', 'develop', 'Dismiss']) expect(buttonNamed(label)?.disabled).toBe(false)
+    for (const label of ['main', 'develop']) expect(buttonNamed(label)?.disabled).toBe(false)
+    expect(declineButton()?.disabled).toBe(false)
 
     await act(async () => {
       buttonNamed('develop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -225,9 +229,9 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(live.answered).toEqual([['session-1', 'agent-1', 'elicit-1', 'develop', 'conv-1']])
 
     await act(async () => {
-      buttonNamed('Dismiss')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      declineButton()?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    // Dismiss is an explicit null, never an absent value.
+    // The head's decline is an explicit null, never an absent value.
     expect(live.answered[1]).toEqual(['session-1', 'agent-1', 'elicit-1', null, 'conv-1'])
   })
 
@@ -858,7 +862,7 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(text()).toContain('Which branch should I cut from?')
     expect(text()).toContain('develop')
     expect(buttonNamed('main')).toBeUndefined()
-    expect(buttonNamed('Dismiss')).toBeUndefined()
+    expect(declineButton()).toBeUndefined()
     expect(live.answered).toEqual([])
   })
 
@@ -1041,7 +1045,7 @@ describe('a reload with a webchat card still pending', () => {
     await render()
 
     expect(buttonsNamed('main')).toHaveLength(1)
-    expect(buttonsNamed('Dismiss')).toHaveLength(1)
+    expect(declineButtons()).toHaveLength(1)
     expect(buttonNamed('main')?.disabled).toBe(false)
 
     await act(async () => {
@@ -1060,7 +1064,7 @@ describe('a reload with a webchat card still pending', () => {
 
     expect(text()).toContain('Which branch should I cut from?')
     expect(buttonsNamed('main')).toHaveLength(0)
-    expect(buttonsNamed('Dismiss')).toHaveLength(0)
+    expect(declineButtons()).toHaveLength(0)
     expect(live.answered).toEqual([])
   })
 })
