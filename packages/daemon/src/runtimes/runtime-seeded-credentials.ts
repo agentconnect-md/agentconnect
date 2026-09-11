@@ -49,6 +49,57 @@ export function grokConfigApiKeys(data: unknown, path: string[] = []): { path: s
   })
 }
 
+const QWEN_DEFAULT_KEYS: Record<string, string> = {
+  openai: 'OPENAI_API_KEY',
+  'openai-responses': 'OPENAI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  'vertex-ai': 'GOOGLE_API_KEY'
+}
+
+export function qwenSettingsApiKeys(data: unknown) {
+  const settings = record(data) ?? {}
+  const env = record(settings.env) ?? {}
+  const protocols = record(settings.providerProtocol) ?? {}
+  const providers = record(settings.modelProviders) ?? {}
+  const auth = record(record(settings.security)?.auth) ?? {}
+  const refs: { path: string[]; value: string; provider: string; endpoints: unknown[] }[] = []
+  for (const [provider, raw] of Object.entries(providers)) {
+    if (!Array.isArray(raw)) continue
+    const protocol = QWEN_DEFAULT_KEYS[provider] ? provider : String(protocols[provider] ?? '')
+    for (const entry of raw) {
+      const model = record(entry) ?? {}
+      const name = model.envKey ?? QWEN_DEFAULT_KEYS[protocol]
+      if (!nonempty(model.id) || !nonempty(name) || !nonempty(env[name])) continue
+      refs.push({
+        path: ['env', name],
+        value: env[name],
+        provider,
+        endpoints: QWEN_DEFAULT_KEYS[protocol] ? [model.baseUrl] : []
+      })
+    }
+  }
+  const selected = nonempty(auth.selectedType) ? auth.selectedType : ''
+  const defaultKey = QWEN_DEFAULT_KEYS[selected]
+  if (defaultKey && nonempty(env[defaultKey])) {
+    refs.push({ path: ['env', defaultKey], value: env[defaultKey], provider: selected, endpoints: [auth.baseUrl] })
+  }
+  if (nonempty(auth.apiKey)) {
+    const models = Object.entries(providers).flatMap(([provider, entries]) =>
+      (provider === selected || protocols[provider] === selected) && Array.isArray(entries) ? entries : []
+    )
+    refs.push({
+      path: ['security', 'auth', 'apiKey'],
+      value: auth.apiKey,
+      provider: selected,
+      endpoints: QWEN_DEFAULT_KEYS[selected]
+        ? [auth.baseUrl, ...models.filter((model) => !record(model)?.envKey).map((model) => record(model)?.baseUrl)]
+        : []
+    })
+  }
+  return refs
+}
+
 function oauth(value: Record<string, unknown>): boolean {
   return (
     typeof value.access === 'string' &&
@@ -177,20 +228,9 @@ function credentialsInFile(text: string, file: SeededCredentialFile): { present:
     return { present, providers: present ? ['github-copilot'] : [] }
   }
   if (file.format === 'qwen-settings') {
-    const stored = record(data) ?? {}
-    const env = record(stored.env) ?? {}
-    const providers = Object.entries(record(stored.modelProviders) ?? {}).flatMap(([provider, models]) =>
-      provider &&
-      Array.isArray(models) &&
-      models.some((entry) => {
-        const model = record(entry) ?? {}
-        return nonempty(model.id) && nonempty(model.envKey) && nonempty(env[model.envKey])
-      })
-        ? [provider]
-        : []
-    )
-    const auth = record(record(stored.security)?.auth) ?? {}
-    if (nonempty(auth.selectedType) && nonempty(auth.apiKey)) providers.push(auth.selectedType)
+    const providers = qwenSettingsApiKeys(data)
+      .map((ref) => ref.provider)
+      .filter(nonempty)
     return { present: providers.length > 0, providers: [...new Set(providers)] }
   }
   if (file.format === 'auggie') {
