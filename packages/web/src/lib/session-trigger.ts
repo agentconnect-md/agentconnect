@@ -4,6 +4,7 @@ import {
   isCodeHostProvider,
   type HookKind
 } from '@agentconnect.md/protocol/code-host'
+import { CODE_HOST_PROJECTION, codeHostRecord } from './code-hosts'
 import { isSelfSender } from './data'
 
 /**
@@ -19,17 +20,19 @@ export type SessionTriggerKind = 'agent' | 'person' | 'schedule' | HookKind
 /** Hook kinds in console display order — every code host first, the generic endpoint last. */
 export const HOOK_TRIGGER_KINDS = [...CODE_HOST_PROVIDERS, GENERIC_HOOK_KIND] as const
 
+// A code host is named by its own projection, never re-spelled per table, so the product
+// name has one authority on this surface too.
+const CODE_HOST_LABEL = codeHostRecord((provider) => CODE_HOST_PROJECTION[provider].label)
+
 /** Trigger filter-group heading per hook kind. Total: a new kind gets its own group. */
 export const HOOK_KIND_GROUP_LABEL: Record<HookKind, string> = {
-  github: 'GitHub',
-  gitlab: 'GitLab',
+  ...CODE_HOST_LABEL,
   webhook: 'Webhooks'
 }
 
 /** Display name for a hook source the daemon left unnamed. Total, so no code host reads as "Webhook". */
 export const HOOK_KIND_LABEL: Record<HookKind, string> = {
-  github: 'GitHub',
-  gitlab: 'GitLab',
+  ...CODE_HOST_LABEL,
   webhook: 'Webhook'
 }
 

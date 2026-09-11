@@ -134,6 +134,8 @@ import {
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
+import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import { CODE_HOST_PROJECTION, codeHostRecord } from '@/lib/code-hosts'
 
 type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools'
 const HOOK_REFRESH_MS = 30_000
@@ -161,9 +163,21 @@ function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 
 
 interface CodeHostReviewSettingsDraft {
   hookId: string
-  kind: 'github' | 'gitlab'
+  kind: CodeHostProvider
   reviewPolicy: HookReviewPolicy
   reportingMode: HookReportingMode
+}
+
+// The review dialog's host plate on the inverse surface — each host keeps its own fill and color.
+const REVIEW_DIALOG_MARK: Record<CodeHostProvider, ReactNode> = {
+  github: <GithubMark color="#fff" />,
+  gitlab: <GitlabMark fillPct={100} />
+}
+
+// What the dialog settles, in each host's vocabulary.
+const REVIEW_DIALOG_TITLE: Record<CodeHostProvider, string> = {
+  github: 'PR review & Checks',
+  gitlab: 'MR review & run note'
 }
 
 export default function AgentDetailView() {
@@ -253,8 +267,10 @@ export default function AgentDetailView() {
   // Each code host renders as ONE group with a row per watched repository or
   // project (design); webhooks stay flat rows.
   const webhookHooks = agentHooks.filter((h) => h.kind === 'webhook')
-  const githubHooks = agentHooks.filter((h) => h.kind === 'github')
-  const gitlabHooks = agentHooks.filter((h) => h.kind === 'gitlab')
+  // Each host's own rows, keyed by provider so a lookup replaces "the other one's" branch.
+  const codeHostHooks = codeHostRecord((provider) => agentHooks.filter((h) => h.kind === provider))
+  const githubHooks = codeHostHooks.github
+  const gitlabHooks = codeHostHooks.gitlab
   // One flat row per subscription still — the grouping is only the ORDER (a repo's rows adjacent) plus its add offer.
   const githubRows = orderedGithubHookRows(githubHooks)
   const gitlabRows = orderedGitlabHookRows(gitlabHooks)
@@ -329,9 +345,9 @@ export default function AgentDetailView() {
   const [reviewSettingsDraft, setReviewSettingsDraft] = useState<CodeHostReviewSettingsDraft | null>(null)
   const [reviewSettingsSaving, setReviewSettingsSaving] = useState(false)
   const [reviewSettingsError, setReviewSettingsError] = useState<string | null>(null)
-  const isGitlabReviewDraft = reviewSettingsDraft?.kind === 'gitlab'
+  const reviewSettingsProvider = reviewSettingsDraft?.kind ?? null
   const reviewSettingsHook = reviewSettingsDraft
-    ? (isGitlabReviewDraft ? gitlabHooks : githubHooks).find((hook) => hook.id === reviewSettingsDraft.hookId)
+    ? codeHostHooks[reviewSettingsDraft.kind].find((hook) => hook.id === reviewSettingsDraft.hookId)
     : undefined
   const reviewSettingsRepoAccess = effectiveRepoAccess({
     repoId: reviewSettingsHook?.repoId,
@@ -341,10 +357,11 @@ export default function AgentDetailView() {
   })
   const reviewSettingsInstallation = installationForRepo(reviewSettingsHook?.repoFullName, githubInstallations)
   const reviewSettingsNeededAccess = reviewSettingsDraft ? requiredRepoAccess(reviewSettingsDraft) : 'none'
-  // Only the github surface has a config-time blocker; GitLab's writer is the
-  // project bot, which carries no per-agent access tier to satisfy first.
+  // Only the github surface has a config-time blocker, named positively so no other
+  // host inherits it; GitLab's writer is the project bot, which carries no per-agent
+  // access tier to satisfy first.
   const reviewSettingsBlocked =
-    !isGitlabReviewDraft &&
+    reviewSettingsProvider === 'github' &&
     (!repoAccessSatisfies(reviewSettingsRepoAccess, reviewSettingsNeededAccess) ||
       (reviewSettingsDraft?.reviewPolicy !== undefined &&
         reviewSettingsDraft.reviewPolicy !== 'off' &&
@@ -354,10 +371,12 @@ export default function AgentDetailView() {
           !hasPullRequestsReadPermission(reviewSettingsInstallation))))
 
   const openReviewSettings = (hook: HookDto) => {
+    // Opened only from a code-host row, so the row's own kind IS the draft's — never a fallback host.
+    if (!isCodeHostProvider(hook.kind)) return
     setReviewSettingsError(null)
     setReviewSettingsDraft({
       hookId: hook.id,
-      kind: hook.kind === 'gitlab' ? 'gitlab' : 'github',
+      kind: hook.kind,
       reviewPolicy: hook.reviewPolicy,
       reportingMode: hook.reportingMode
     })
@@ -377,33 +396,35 @@ export default function AgentDetailView() {
     const hook = reviewSettingsHook
     const { reviewPolicy, reportingMode } = reviewSettingsDraft
     const common = { agentId, name: hook.name, enabled: hook.enabled, events: hook.events }
-    // Each host's PUT re-sends its own whole block; only the two effect axes move.
-    const save =
-      hook.kind === 'gitlab'
-        ? hook.repoId
-          ? () =>
-              updateGitlabHook(hook.id, {
-                ...common,
-                projectId: hook.repoId!,
-                commentFamilies: gitlabCommentFamilies(hook.commentFamilies),
-                mentionOnly: hook.mentionOnly,
-                reviewPolicy,
-                reportingMode
-              })
-          : null
-        : hook.repoFullName
-          ? () =>
-              updateGithubHook(hook.id, {
-                ...common,
-                repoFullName: hook.repoFullName!,
-                commentFamilies: githubCommentFamilies(hook.commentFamilies),
-                labelFilter: hook.labelFilter,
-                mentionOnly: hook.mentionOnly,
-                reviewPolicy,
-                reportingMode,
-                gateMode: 'informational'
-              })
-          : null
+    // Each host's PUT re-sends its own whole block; only the two effect axes move. Total over
+    // the providers, so a new host writes through its own endpoint instead of GitHub's.
+    const writers: Record<CodeHostProvider, (() => Promise<HookDto>) | null> = {
+      github: hook.repoFullName
+        ? () =>
+            updateGithubHook(hook.id, {
+              ...common,
+              repoFullName: hook.repoFullName!,
+              commentFamilies: githubCommentFamilies(hook.commentFamilies),
+              labelFilter: hook.labelFilter,
+              mentionOnly: hook.mentionOnly,
+              reviewPolicy,
+              reportingMode,
+              gateMode: 'informational'
+            })
+        : null,
+      gitlab: hook.repoId
+        ? () =>
+            updateGitlabHook(hook.id, {
+              ...common,
+              projectId: hook.repoId!,
+              commentFamilies: gitlabCommentFamilies(hook.commentFamilies),
+              mentionOnly: hook.mentionOnly,
+              reviewPolicy,
+              reportingMode
+            })
+        : null
+    }
+    const save = writers[reviewSettingsDraft.kind]
     if (!save) return
     setReviewSettingsSaving(true)
     setReviewSettingsError(null)
@@ -418,6 +439,40 @@ export default function AgentDetailView() {
     } finally {
       setReviewSettingsSaving(false)
     }
+  }
+
+  // One review editor per host, chosen by a total table — a new host brings its own pane instead
+  // of inheriting GitHub's. Both arms edit the same draft, so the two handlers are shared.
+  const reviewSettingsEditor = (draft: CodeHostReviewSettingsDraft): ReactNode => {
+    const onReviewPolicyChange = (reviewPolicy: HookReviewPolicy) => {
+      setReviewSettingsError(null)
+      setReviewSettingsDraft((current) => (current ? { ...current, reviewPolicy } : current))
+    }
+    const onReportingModeChange = (reportingMode: HookReportingMode) => {
+      setReviewSettingsError(null)
+      setReviewSettingsDraft((current) => (current ? { ...current, reportingMode } : current))
+    }
+    const editors: Record<CodeHostProvider, () => ReactNode> = {
+      github: () => (
+        <GithubReviewSettings
+          value={draft}
+          onReviewPolicyChange={onReviewPolicyChange}
+          onReportingModeChange={onReportingModeChange}
+          repoAccess={reviewSettingsRepoAccess}
+          installation={reviewSettingsInstallation}
+          defaultExpanded
+        />
+      ),
+      gitlab: () => (
+        <GitlabReviewSettings
+          value={draft}
+          onReviewPolicyChange={onReviewPolicyChange}
+          onReportingModeChange={onReportingModeChange}
+          defaultExpanded
+        />
+      )
+    }
+    return editors[draft.kind]()
   }
 
   // Edit one github subscription in place (PUT re-sends the whole block); the
@@ -617,13 +672,16 @@ export default function AgentDetailView() {
   const ws = da.workspace
   // Demo agents have no daemon to read git state from, so the workspace card's
   // live half comes straight from their static mock workspace instead.
+  const mockSource = workspaceSourceOf(ws)
+  // The projection is the single source of a host's display host and name; a Git-URL mock keeps
+  // GitHub's browse host, which is what these demo rows have always shown.
+  const mockHostProjection = CODE_HOST_PROJECTION[isCodeHostProvider(mockSource) ? mockSource : 'github']
   const mockWorkspaceHeader: WorkspaceHeaderInfo = isGitWorkspace(ws)
     ? {
         status: workspaceStatus(ws),
         ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
-        repoUrl: ws.repoUrl ?? `https://${workspaceSourceOf(ws) === 'gitlab' ? 'gitlab.com' : 'github.com'}/${ws.repo}`,
-        remoteLabel:
-          workspaceSourceOf(ws) === 'gitlab' ? 'GitLab' : workspaceSourceOf(ws) === 'github' ? 'GitHub' : 'remote'
+        repoUrl: ws.repoUrl ?? `https://${mockHostProjection.publicHost}/${ws.repo}`,
+        remoteLabel: isCodeHostProvider(mockSource) ? mockHostProjection.label : 'remote'
       }
     : { status: workspaceStatus(ws) }
   // Counts walk the whole mock tree (files are nested under folder children).
@@ -2281,7 +2339,7 @@ export default function AgentDetailView() {
             <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-[13px] desktop:px-5">
               <span className="flex h-8 w-8 flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
                 <span className="flex h-[17px] w-[17px] items-center justify-center">
-                  {isGitlabReviewDraft ? <GitlabMark fillPct={100} /> : <GithubMark color="#fff" />}
+                  {REVIEW_DIALOG_MARK[reviewSettingsDraft.kind]}
                 </span>
               </span>
               <div className="min-w-0 flex-1">
@@ -2289,7 +2347,7 @@ export default function AgentDetailView() {
                   id="code-host-review-settings-title"
                   className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
                 >
-                  {isGitlabReviewDraft ? 'MR review & run note' : 'PR review & Checks'}
+                  {REVIEW_DIALOG_TITLE[reviewSettingsDraft.kind]}
                 </div>
                 <div className="mono mt-[2px] truncate text-[11.5px] text-(--text-tertiary)">
                   {reviewSettingsHook.repoFullName ?? reviewSettingsHook.name}
@@ -2300,35 +2358,7 @@ export default function AgentDetailView() {
               </button>
             </div>
             <div className="overflow-y-auto px-4 py-4 desktop:px-5">
-              {isGitlabReviewDraft ? (
-                <GitlabReviewSettings
-                  value={reviewSettingsDraft}
-                  onReviewPolicyChange={(reviewPolicy) => {
-                    setReviewSettingsError(null)
-                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reviewPolicy } : draft))
-                  }}
-                  onReportingModeChange={(reportingMode) => {
-                    setReviewSettingsError(null)
-                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reportingMode } : draft))
-                  }}
-                  defaultExpanded
-                />
-              ) : (
-                <GithubReviewSettings
-                  value={reviewSettingsDraft}
-                  onReviewPolicyChange={(reviewPolicy) => {
-                    setReviewSettingsError(null)
-                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reviewPolicy } : draft))
-                  }}
-                  onReportingModeChange={(reportingMode) => {
-                    setReviewSettingsError(null)
-                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reportingMode } : draft))
-                  }}
-                  repoAccess={reviewSettingsRepoAccess}
-                  installation={reviewSettingsInstallation}
-                  defaultExpanded
-                />
-              )}
+              {reviewSettingsEditor(reviewSettingsDraft)}
               {reviewSettingsError && (
                 <div className="mt-3 flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                   <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />

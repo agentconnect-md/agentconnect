@@ -6,8 +6,10 @@
 // rejects edits that conflict with enabled GitHub review or Check actions.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
+import { GithubMark, LoadingState } from '@/components/marks'
+import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon } from '@/components/ui'
+import { codeHostRecord } from '@/lib/code-hosts'
 import { agentLabel, isPoolPlacementKind, workspaceSourceOf, type Agent } from '@/lib/data'
 import { sessionIsolationLabel } from '@/lib/session-isolation'
 import { useConsoleData } from '@/lib/data-context'
@@ -105,8 +107,10 @@ export default function EditWorkspaceModal({
   // (git-workspace-model.md §7) — no source is stored.
   const currentSource = workspaceSourceOf(agent.workspace)
   const gitWorkspace = agent.workspace.mode === 'git' ? agent.workspace : null
-  const githubWorkspace = currentSource === 'github' ? gitWorkspace : null
-  const gitlabWorkspace = currentSource === 'gitlab' ? gitWorkspace : null
+  // The workspace each host's own editor sees — the checkout when this is its tile, else nothing.
+  const codeHostWorkspace = codeHostRecord((provider) => (currentSource === provider ? gitWorkspace : null))
+  const githubWorkspace = codeHostWorkspace.github
+  const gitlabWorkspace = codeHostWorkspace.gitlab
   const giturlWorkspace = currentSource === 'giturl' ? gitWorkspace : null
   const isGithubApp = githubWorkspace?.provider === 'github'
   // An anonymous checkout mints nothing, so only a credentialed workspace can hold write.
@@ -967,7 +971,7 @@ export default function EditWorkspaceModal({
                     className="flex min-w-0 items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px]"
                   >
                     <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
-                      {repoAuthProvider(authorization) === 'gitlab' ? <GitlabMark /> : <GithubMark />}
+                      <CodeHostMark provider={repoAuthProvider(authorization)} />
                     </span>
                     <span
                       className="mono min-w-0 flex-1 truncate text-[12.5px] font-semibold text-(--text-primary)"

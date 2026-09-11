@@ -1,11 +1,33 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
 import { useState } from 'react'
+import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { useConsoleData } from '@/lib/data-context'
 import type { HookDto } from '@/lib/api'
+import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { githubFamilyTile, githubHookFamily } from '@/lib/github-events'
 import { gitlabFamilyTile, gitlabHookFamily } from '@/lib/gitlab-events'
 import { Button, Icon } from '@/components/ui'
+
+// The subject-family pill a code-host row is named by. Total, so a new host reads as its own
+// family instead of as an unnamed row.
+const CODE_HOST_FAMILY_PILL: Record<CodeHostProvider, (hook: HookDto) => string | undefined> = {
+  github: (h) => {
+    const fam = githubHookFamily(h)
+    return fam ? githubFamilyTile(fam)?.pill : undefined
+  },
+  gitlab: (h) => {
+    const fam = gitlabHookFamily(h)
+    return fam ? gitlabFamilyTile(fam)?.pill : undefined
+  }
+}
+
+// What removing one subscription leaves behind, in each host's own terms.
+const CODE_HOST_REMOVAL_NOTE: Record<CodeHostProvider, string> = {
+  github: 'those GitHub events are ignored from now on. Past runs and their sessions stay.',
+  gitlab:
+    'those GitLab events are ignored from now on. The project itself, its bot and its webhook are untouched. Past runs and their sessions stay.'
+}
 
 // Confirm-delete a trigger. The CP drops the row and the relay pool drops its
 // rule — a webhook's inbound URL stops accepting deliveries immediately (senders
@@ -22,21 +44,11 @@ export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | Hoo
   const repoNames = [...new Set(hooks.map((h) => h.repoFullName ?? h.name))]
   const group = Array.isArray(hook) && repoNames.length > 1
   // A code-host row covers ONE family, so name it: the repo's other families keep firing.
-  const familyOf = (h: HookDto) => {
-    if (h.kind === 'gitlab') {
-      const fam = gitlabHookFamily(h)
-      return fam ? gitlabFamilyTile(fam)?.pill : undefined
-    }
-    if (h.kind === 'github') {
-      const fam = githubHookFamily(h)
-      return fam ? githubFamilyTile(fam)?.pill : undefined
-    }
-    return undefined
-  }
+  const familyOf = (h: HookDto) => (isCodeHostProvider(h.kind) ? CODE_HOST_FAMILY_PILL[h.kind](h) : undefined)
   const first = hooks[0]!
-  const isGithub = first.kind === 'github'
-  const isGitlab = first.kind === 'gitlab'
-  const hostName = isGitlab ? 'GitLab' : 'GitHub'
+  const provider = isCodeHostProvider(first.kind) ? first.kind : null
+  // Only a code host's rows group, so the generic endpoint never reads this name.
+  const hostName = CODE_HOST_PROJECTION[provider ?? 'github'].label
   // Every family this confirm removes from the one repository it names.
   const familyList = [...new Set(hooks.map(familyOf).filter((pill): pill is string => !!pill))].join(', ')
   const subject = `${first.repoFullName ?? first.name}${familyList ? ` · ${familyList}` : ''}`
@@ -58,16 +70,14 @@ export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | Hoo
     <>
       <div className="modalhead">
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
-          <Icon name={isGithub || isGitlab ? 'folder-git-2' : 'webhook'} size={16} color="var(--status-error)" />
+          <Icon name={provider ? 'folder-git-2' : 'webhook'} size={16} color="var(--status-error)" />
         </span>
         <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">
           {group
             ? `Disconnect ${hostName}`
-            : isGithub
-              ? 'Remove repository'
-              : isGitlab
-                ? 'Remove project'
-                : 'Delete webhook'}
+            : provider
+              ? `Remove ${CODE_HOST_PROJECTION[provider].repoNoun}`
+              : 'Delete webhook'}
         </span>
         <button className="iconbtn" onClick={onClose}>
           <Icon name="x" size={16} />
@@ -81,16 +91,10 @@ export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | Hoo
               <span className="mono text-(--text-primary)">{repoNames.join(', ')}</span>) — {hostName} events stop
               triggering this agent. Past runs and their sessions stay.
             </>
-          ) : isGithub ? (
+          ) : provider ? (
             <>
-              <span className="mono text-(--text-primary)">{subject}</span>&#32;stops triggering this agent — those
-              GitHub events are ignored from now on. Past runs and their sessions stay.
-            </>
-          ) : isGitlab ? (
-            <>
-              <span className="mono text-(--text-primary)">{subject}</span>&#32;stops triggering this agent — those
-              GitLab events are ignored from now on. The project itself, its bot and its webhook are untouched. Past
-              runs and their sessions stay.
+              <span className="mono text-(--text-primary)">{subject}</span>&#32;stops triggering this agent —{' '}
+              {CODE_HOST_REMOVAL_NOTE[provider]}
             </>
           ) : (
             <>

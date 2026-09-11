@@ -11,6 +11,7 @@ import {
   type ReactNode
 } from 'react'
 import useSWR from 'swr'
+import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -146,6 +147,12 @@ import {
  */
 export type Platform = string
 export type FeishuRegion = LarkFeishuTarget
+
+// What a subscription on each code host does, in that host's own subject vocabulary.
+const CODE_HOST_SUBSCRIPTION_HINT: Record<CodeHostProvider, string> = {
+  github: 'Matching events run the agent in a session and reply on the same PR, issue or commit thread.',
+  gitlab: 'Matching events run the agent in a session and reply on the same issue, merge request or push thread.'
+}
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
 
@@ -1186,38 +1193,45 @@ export default function AddIntegrationModal({
   // whatever the active fragment published (`WizardHost.setFooter`), and the
   // fragment bakes its own busy label / disabled state into that publication.
   const identityHidden = identityView?.hidden === true
+  // Each code host subscribes through its own pane, so its footer is its own. Total over the
+  // providers, so a new host cannot inherit GitHub's submit.
+  const codeHostFooter: Record<
+    CodeHostProvider,
+    { label: string; act: () => void; enabled: boolean; hidden: boolean }
+  > = {
+    github: {
+      label: 'Connect',
+      act: () => void submitGithub(),
+      enabled: !!ghRepoPick && !ghRepoAlreadyWatched && ghSelectedFams.length > 0 && !ghReviewSettingsBlocked,
+      hidden: false
+    },
+    gitlab: {
+      label: 'Connect',
+      act: () => void submitGitlab(),
+      enabled: !!glProject && !glAlreadyWatched && glProjectAuthorized && glSelectedFams.length > 0,
+      hidden: false
+    }
+  }
   const footer =
     platform === 'webhook'
       ? createdHook
         ? { label: 'Done', act: onClose, enabled: true, hidden: false }
         : { label: 'Create webhook', act: () => void submitHook(), enabled: true, hidden: false }
-      : platform === 'github'
-        ? {
-            label: 'Connect',
-            act: () => void submitGithub(),
-            enabled: !!ghRepoPick && !ghRepoAlreadyWatched && ghSelectedFams.length > 0 && !ghReviewSettingsBlocked,
-            hidden: false
-          }
-        : platform === 'gitlab'
+      : isCodeHostProvider(platform)
+        ? codeHostFooter[platform]
+        : mode === 'existing'
           ? {
-              label: 'Connect',
-              act: () => void submitGitlab(),
-              enabled: !!glProject && !glAlreadyWatched && glProjectAuthorized && glSelectedFams.length > 0,
+              label: 'Connect & authorize',
+              act: () => void submitReuse(),
+              enabled: selectedBotId !== null,
               hidden: false
             }
-          : mode === 'existing'
-            ? {
-                label: 'Connect & authorize',
-                act: () => void submitReuse(),
-                enabled: selectedBotId !== null,
-                hidden: false
-              }
-            : {
-                label: footerView?.label ?? 'Connect & authorize',
-                act: () => footerRef.current?.onSubmit(),
-                enabled: footerView?.enabled === true,
-                hidden: footerView?.hidden === true
-              }
+          : {
+              label: footerView?.label ?? 'Connect & authorize',
+              act: () => footerRef.current?.onSubmit(),
+              enabled: footerView?.enabled === true,
+              hidden: footerView?.hidden === true
+            }
 
   return (
     <>
@@ -2097,11 +2111,9 @@ export default function AddIntegrationModal({
           <span>
             {platform === 'webhook'
               ? 'Each POST becomes a session, routed to this agent by the endpoint path. Retries are de-duplicated by the X-AC-Delivery-Key header (auto-assigned when absent).'
-              : platform === 'github'
-                ? 'Matching events run the agent in a session and reply on the same PR, issue or commit thread.'
-                : platform === 'gitlab'
-                  ? 'Matching events run the agent in a session and reply on the same issue, merge request or push thread.'
-                  : wizard?.inviteHint(region)}
+              : isCodeHostProvider(platform)
+                ? CODE_HOST_SUBSCRIPTION_HINT[platform]
+                : wizard?.inviteHint(region)}
           </span>
         </div>
         {shareToggleAvailable && !identityHidden && (

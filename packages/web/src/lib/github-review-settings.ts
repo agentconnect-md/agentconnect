@@ -3,6 +3,7 @@
 // The host-neutral half lives in `code-host-review-settings.ts`; what stays is GitHub's own
 // App-installation permissions and the per-repository access tier an effect is clamped against.
 
+import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import {
   codeHostReviewCapabilities,
   codeHostReviewSettingsFromCapabilities,
@@ -84,7 +85,7 @@ interface WorkspaceRepoMatchInput {
   repoFullName: string | null | undefined
   workspace: {
     mode: 'git' | 'scratch'
-    provider?: 'github' | 'gitlab'
+    provider?: CodeHostProvider
     repoId?: string
     repo?: string
   }
@@ -110,7 +111,7 @@ export function effectiveRepoAccess(input: {
   repoFullName: string | null | undefined
   workspace: {
     mode: 'git' | 'scratch'
-    provider?: 'github' | 'gitlab'
+    provider?: CodeHostProvider
     repoId?: string
     repo?: string
     gitAccess?: 'read' | 'write'
