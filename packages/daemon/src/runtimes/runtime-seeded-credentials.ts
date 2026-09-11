@@ -13,6 +13,7 @@ export interface SeededCredentialFile {
   path: string
   format:
     | 'grok'
+    | 'grok-config'
     | 'pi'
     | 'pi-models'
     | 'opencode'
@@ -38,6 +39,14 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function nonempty(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+export function grokConfigApiKeys(data: unknown, path: string[] = []): { path: string[]; value: string }[] {
+  return Object.entries(data && typeof data === 'object' ? data : {}).flatMap(([field, value]) => {
+    const next = [...path, field]
+    if (field === 'api_key' && nonempty(value)) return [{ path: next, value }]
+    return grokConfigApiKeys(value, next)
+  })
 }
 
 function oauth(value: Record<string, unknown>): boolean {
@@ -120,6 +129,14 @@ function hermesCredentialProviders(data: unknown): string[] {
 }
 
 function credentialsInFile(text: string, file: SeededCredentialFile): { present: boolean; providers: string[] } {
+  if (file.format === 'grok-config') {
+    const present = grokConfigApiKeys(parseToml(text)).some(
+      ({ path }) =>
+        (path.length === 3 && path[0] === 'model') ||
+        (path.length === 5 && path[0] === 'version_overrides' && path[2] === 'model')
+    )
+    return { present, providers: present ? ['xai'] : [] }
+  }
   if (file.format === 'devin') {
     const present = nonempty(parseToml(text).windsurf_api_key)
     return { present, providers: present ? ['devin'] : [] }

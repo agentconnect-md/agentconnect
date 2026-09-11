@@ -422,6 +422,25 @@ their existing behavior, including refreshed private OAuth state on resume.
 Pure OAuth launches do not enable secret injection. SRT authentication and tool
 policies are unchanged; it imports the native files without this VM proxy.
 
+Grok Build uses the same proxy for literal `model.<id>.api_key` values with an
+explicit HTTPS `base_url` in the host's `config.toml`. The shared state inventory
+honors `GROK_HOME` and `GROK_AUTH_PATH` and seeds only the native auth file plus
+`config.toml`, `managed_config.toml` and `requirements.toml`, excluding backups.
+Both discovery and VM projection inspect these files, including conditional TOML
+tables. Matching values and Bearer headers become placeholders; TOML dates,
+unrelated settings and refreshed guest OAuth state survive projection and resume.
+Repeated keys share a placeholder and their host-authorized destinations.
+
+Grok keys in cached `auth.json` API records, managed/requirements layers,
+version overrides or models without an explicit supported endpoint are hidden
+without authorizing injection. Inherited endpoints, interpolation, helpers and
+environment-only logins are not resolved. Those API configurations remain
+unavailable; there is no plaintext fallback. OAuth keeps its native behavior.
+Host system-wide `/etc/grok` files are not imported. Secrets stored only in
+arbitrary headers or extensions are outside discovery. Native Grok 1.0.25's
+per-model API path was verified with the SDK CA and a real ACP tool turn; its
+cached xAI API-login path still needs validation with a valid native login.
+
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
 existing private logins are preserved. Without a DeepSeek key, normal seeding is
