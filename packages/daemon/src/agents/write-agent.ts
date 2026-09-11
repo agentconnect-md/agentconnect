@@ -792,6 +792,9 @@ export function applySpecFields(
   // §24.4: absent means GitLab.com, so an absent value CLEARS a stale one rather than preserving it.
   if (spec.gitlabHost !== undefined) raw.gitlabHost = spec.gitlabHost
   else delete raw.gitlabHost
+  // The Gitea axis follows the same rule: absent means gitea.com (gitea-integration.md §11).
+  if (spec.giteaHost !== undefined) raw.giteaHost = spec.giteaHost
+  else delete raw.giteaHost
 
   // Output settings preserve sibling/future keys while applying CP-owned values.
   if (spec.outputMode !== undefined || spec.showFooter !== undefined || spec.showStatusBar !== undefined) {
@@ -877,21 +880,26 @@ export function applySpecFields(
       // The rename-stable identity rides the spec (§17.1); the grant consumer
       // verifies every echo against it.
       existing.gitlabProjectId = ws.projectId
+      delete existing.giteaRepoId
     } else if (ws.mode === 'git') {
       // The host-neutral arm (git-workspace-model.md §3): the credential union
       // is a near-identity map onto the internal marker pair, absent ⇒ anonymous.
-      if (ws.credential?.provider === 'gitlab') {
+      const credential = ws.credential
+      if (credential?.provider === 'gitlab') {
         existing.gitCredential = 'gitlab'
-        existing.gitlabProjectId = ws.credential.projectId
-      } else {
-        if (ws.credential?.provider === 'github') existing.gitCredential = 'github-app'
-        else delete existing.gitCredential
-        delete existing.gitlabProjectId
-      }
+        existing.gitlabProjectId = credential.projectId
+      } else if (credential?.provider === 'gitea') {
+        existing.gitCredential = 'gitea'
+        existing.giteaRepoId = credential.repoId
+      } else if (credential?.provider === 'github') existing.gitCredential = 'github-app'
+      else delete existing.gitCredential
+      if (credential?.provider !== 'gitlab') delete existing.gitlabProjectId
+      if (credential?.provider !== 'gitea') delete existing.giteaRepoId
     } else {
       if (ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
       else delete existing.gitCredential
       delete existing.gitlabProjectId
+      delete existing.giteaRepoId
     }
     // The CP is the authority on the additional-repository allowlist and always ships
     // the full set, so mirror it exactly — [] must replicate as a cleared list.

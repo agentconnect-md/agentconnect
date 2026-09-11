@@ -39,7 +39,12 @@ import type { GitPullSummary, GitRunner } from './git-runner.js'
 import { simpleGit, type SimpleGit } from 'simple-git'
 import { normalizeGitCloneUrl, type CodeHostProvider, type GitCommitIdentity } from '@agentconnect.md/protocol'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../cp/gitcred-server.js'
-import { codeHostCredentials, managedHostTable } from '../codehost/credentials.js'
+import {
+  codeHostCredentials,
+  managedHostTable,
+  specHostCodeHosts,
+  type CodeHostSpecHosts
+} from '../codehost/credentials.js'
 import {
   encodeManagedHostTable,
   gitlabManagedHost,
@@ -358,45 +363,80 @@ export interface ManagedCredentialScope {
    * cut the agent's ambient credentials with nothing to serve in their place.
    */
   gitlabRepoBearing?: boolean
+  /** The Gitea twins (gitea-integration.md §9, §13): the spec's instance, and whether a repo-bearing Gitea consumer rides beside the workspace. */
+  giteaHost?: string
+  giteaRepoBearing?: boolean
 }
 
-/** Anonymous and github-app operations both pin github.com; only a gitlab consumer moves the axis. */
+/** Anonymous and github-app operations both pin github.com; only a gitlab or gitea consumer moves the axis. */
 export const GITHUB_CREDENTIAL_SCOPE: ManagedCredentialScope = { host: GITHUB_MANAGED_HOST }
 
 export { GITHUB_MANAGED_HOST, gitlabManagedHost }
 export type { ManagedCredentialHost }
 
+/** The host-carrying spec fields a scope was resolved from — one axis per provider (gitea-integration.md §13). */
+function scopeSpecHosts(scope: Pick<ManagedCredentialScope, 'gitlabHost' | 'giteaHost'>): CodeHostSpecHosts {
+  return {
+    ...(scope.gitlabHost !== undefined ? { gitlabHost: scope.gitlabHost } : {}),
+    ...(scope.giteaHost !== undefined ? { giteaHost: scope.giteaHost } : {})
+  }
+}
+
+/** The instances a scope's clone-origin policy admits beside the operator's list, in provider order. */
+export function scopeCodeHosts(scope: ManagedCredentialScope | undefined): (string | undefined)[] {
+  return [scope?.gitlabHost, scope?.giteaHost]
+}
+
 /** The classifier table an injection carries: one entry per provider, the operation's own host included. */
 function scopeHostTable(scope: ManagedCredentialScope): ManagedCredentialHost[] {
-  const spec = scope.gitlabHost !== undefined ? { gitlabHost: scope.gitlabHost } : {}
-  return managedHostTable(spec).map((entry) => (entry.provider === scope.host.provider ? scope.host : entry))
+  return managedHostTable(scopeSpecHosts(scope)).map((entry) =>
+    entry.provider === scope.host.provider ? scope.host : entry
+  )
+}
+
+/** The Gitea axis of one scope: the spec's instance and whether a repo-bearing Gitea consumer rides on it. */
+export interface GiteaScopeAxis {
+  host?: string | undefined
+  repoBearing?: boolean | undefined
 }
 
 export function managedCredentialScope(
   provider: CodeHostProvider | undefined,
   gitlabHost?: string,
-  gitlabRepoBearing = false
+  gitlabRepoBearing = false,
+  gitea: GiteaScopeAxis = {}
 ): ManagedCredentialScope {
-  const host = codeHostCredentials(provider)?.managedHost({ gitlabHost }) ?? GITHUB_MANAGED_HOST
+  const spec = scopeSpecHosts({ gitlabHost, giteaHost: gitea.host })
+  const host = codeHostCredentials(provider)?.managedHost(spec) ?? GITHUB_MANAGED_HOST
   return {
     host,
-    ...(gitlabHost !== undefined ? { gitlabHost } : {}),
-    // A gitlab workspace is repo-bearing by construction; the flag only adds the other consumer. It
-    // names its provider because the field is the GitLab host axis itself (gitea-integration.md §13).
-    ...(gitlabRepoBearing || provider === 'gitlab' ? { gitlabRepoBearing: true } : {})
+    ...spec,
+    // A gitlab or gitea workspace is repo-bearing by construction; the flag only adds the other consumer.
+    // Each names its provider because the field is that provider's host axis itself (gitea-integration.md §13).
+    ...(gitlabRepoBearing || provider === 'gitlab' ? { gitlabRepoBearing: true } : {}),
+    ...(gitea.repoBearing || provider === 'gitea' ? { giteaRepoBearing: true } : {})
   }
 }
 
+/** Which spec-hosted providers a scope bears a repository on beside the workspace, by provider. */
+function repoBearingHosts(scope: ManagedCredentialScope): Partial<Record<CodeHostProvider, boolean | undefined>> {
+  return { gitlab: scope.gitlabRepoBearing, gitea: scope.giteaRepoBearing }
+}
+
 /**
- * The hosts the SESSION config pins the helper for: the operation's own host, plus the GitLab
- * instance when the spec carries a repo-bearing consumer that is not the workspace (§24.4). Only
+ * The hosts the SESSION config pins the helper for: the operation's own host, plus each spec-hosted
+ * instance the spec carries a repo-bearing consumer for that is not the workspace (§24.4). Only
  * the session channel widens — a daemon-run clone, fetch or push always knows its exact target.
  */
 function sessionCredentialBases(scope: ManagedCredentialScope): string[] {
   const bases = [scope.host.baseUrl]
-  if (scope.gitlabRepoBearing !== true || scope.host.provider === 'gitlab') return bases
-  const instance = gitlabManagedHost(scope.gitlabHost).baseUrl
-  if (instance !== scope.host.baseUrl) bases.push(instance)
+  const spec = scopeSpecHosts(scope)
+  const bearing = repoBearingHosts(scope)
+  for (const module of specHostCodeHosts()) {
+    if (module.provider === scope.host.provider || bearing[module.provider] !== true) continue
+    const instance = module.managedHost(spec).baseUrl
+    if (!bases.includes(instance)) bases.push(instance)
+  }
   return bases
 }
 

@@ -23,6 +23,7 @@ export const gitlabCredentials: CodeHostCredentialModule = {
   // A GitLab workspace's spec repository is already the project's address on its instance.
   managedRemoteUrl: (repository) => repository,
   liveCredentialPurposes: ['gitlab_hook_reply', 'gitlab_effect'],
+  workspaceRepoId: (workspace) => workspace.gitlabProjectId,
   placeSecondaryRoot: (row): SecondaryRootPlacement | undefined => {
     // `repos/_gitlab/<project id>` — the id, because a project path is namespaced to any depth and a rename moves it.
     const segments = row.repoFullName.split('/')

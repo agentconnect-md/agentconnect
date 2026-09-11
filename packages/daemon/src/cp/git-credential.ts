@@ -32,10 +32,12 @@
  * git once the hour runs out.
  */
 import {
+  GITEA_DEFAULT_BASE_URL,
   GITLAB_DEFAULT_BASE_URL,
   type CodeHostProvider,
   type GitCredCapability,
-  type GitCredGrant
+  type GitCredGrant,
+  type GitCredRequest
 } from '@agentconnect.md/protocol'
 import { isLiveCredentialPurpose, type QualifiedCodeHostProvider } from '../codehost/credentials.js'
 
@@ -75,6 +77,10 @@ const GITLAB_POST_KEY = (agentId: string, projectId: string): string => `postgla
 /** Cache key for the structured broker's effect lease (§14.2) — a third keyspace, per (agent, project). */
 const GITLAB_EFFECT_KEY = (agentId: string, projectId: string): string => `fxglab\u0000${agentId}\u0000${projectId}`
 
+/** The Gitea twins (gitea-integration.md §10.1, §10.2): one token serves both, but each lease keeps its own keyspace per (agent, repository). */
+const GITEA_POST_KEY = (agentId: string, repoId: string): string => `postgitea\u0000${agentId}\u0000${repoId}`
+const GITEA_EFFECT_KEY = (agentId: string, repoId: string): string => `fxgitea\u0000${agentId}\u0000${repoId}`
+
 export class GitCredUnavailableError extends Error {
   constructor(
     message: string,
@@ -105,7 +111,7 @@ export interface GitCredentialCacheDeps {
     reason?: 'clone' | 'fetch' | 'pull' | 'push' | 'helper'
     capabilities?: GitCredCapability[]
     repoFullName?: string
-    purpose?: 'github_hook_reply' | 'gitlab_hook_reply' | 'gitlab_effect'
+    purpose?: GitCredRequest['purpose']
     hookId?: string
     forceRefresh?: boolean
     provider?: CodeHostProvider
@@ -132,8 +138,23 @@ export interface GitCredentialCacheDeps {
    *  echoed host is verified against it exactly as provider and project id are — a mismatch means
    *  the credential authenticates against a different instance and is never served. */
   gitlabHostFor?: (agentId: string) => string | undefined
+  /** The Gitea twin (gitea-integration.md §9): `purpose: 'gitea_*'` is named only after the CP advertises
+   *  gitea-v1, and a gitea grant's echoed host is verified against the spec's instance, absent ⇒ gitea.com. */
+  giteaSupported?: () => boolean
+  giteaHostFor?: (agentId: string) => string | undefined
   /** Monotonic ms; injectable for tests. */
   monoNow?: () => number
+}
+
+/** The instance axis of each spec-hosted provider: which dep names the spec's host, and the value an absent one means. */
+interface InstanceAxis {
+  hostFor: 'gitlabHostFor' | 'giteaHostFor'
+  defaultHost: string
+}
+
+const INSTANCE_AXES: Partial<Record<string, InstanceAxis>> = {
+  gitlab: { hostFor: 'gitlabHostFor', defaultHost: GITLAB_DEFAULT_BASE_URL },
+  gitea: { hostFor: 'giteaHostFor', defaultHost: GITEA_DEFAULT_BASE_URL }
 }
 
 export class GitCredentialCache {
@@ -278,6 +299,57 @@ export class GitCredentialCache {
   /** Drop the cached broker effect lease after GitLab rejects it, so the single retry re-mints. */
   invalidateGitlabEffect(agentId: string, projectId: string, presentedToken?: string): void {
     this.dropCached(GITLAB_EFFECT_KEY(agentId, projectId), presentedToken)
+  }
+
+  /** The Gitea final poster's lease (gitea-integration.md §10.1): the connection token, gated CP-side by the enabled gitea hook. */
+  getGiteaPostToken(agentId: string, repoId: string, hookId: string): Promise<Entry> {
+    return this.getGiteaLease(GITEA_POST_KEY(agentId, repoId), agentId, repoId, 'gitea_hook_reply', hookId)
+  }
+
+  /** The Gitea broker's lease (§10.2): the same token, authorized by the workspace binding or the named enabled hook. */
+  getGiteaEffectToken(agentId: string, repoId: string, hookId?: string): Promise<Entry> {
+    return this.getGiteaLease(GITEA_EFFECT_KEY(agentId, repoId), agentId, repoId, 'gitea_effect', hookId)
+  }
+
+  private async getGiteaLease(
+    key: string,
+    agentId: string,
+    repoId: string,
+    purpose: 'gitea_hook_reply' | 'gitea_effect',
+    hookId: string | undefined
+  ): Promise<Entry> {
+    if (this.deps.providerV2Supported?.() !== true) {
+      throw new GitCredUnavailableError(
+        'the control plane is too old for gitea credentials (gitcred-provider-v2 not advertised)',
+        false
+      )
+    }
+    // A gitea purpose is a new enum value, frame-fatal to an older CP: ask only after gitea-v1.
+    if (this.deps.giteaSupported?.() !== true) {
+      throw new GitCredUnavailableError('the control plane does not support Gitea leases yet', false)
+    }
+    const forceRefresh = this.refreshPosts.has(key)
+    const entry = await this.getKeyed(key, agentId, {
+      agentId,
+      reason: 'helper',
+      provider: 'gitea',
+      externalRepoId: repoId,
+      purpose,
+      ...(hookId !== undefined ? { hookId } : {}),
+      ...(forceRefresh ? { forceRefresh: true } : {})
+    })
+    if (forceRefresh) this.refreshPosts.delete(key)
+    return entry
+  }
+
+  /** Drop the cached Gitea poster lease after Gitea rejects it. */
+  invalidateGiteaPost(agentId: string, repoId: string, presentedToken?: string): void {
+    this.dropCached(GITEA_POST_KEY(agentId, repoId), presentedToken)
+  }
+
+  /** Drop the cached Gitea broker lease after Gitea rejects it, so the single retry re-mints. */
+  invalidateGiteaEffect(agentId: string, repoId: string, presentedToken?: string): void {
+    this.dropCached(GITEA_EFFECT_KEY(agentId, repoId), presentedToken)
   }
 
   /** Evict one daemon-owned writer's cached token and force its next mint past the CP cache. */
@@ -431,13 +503,14 @@ export class GitCredentialCache {
         false
       )
     }
-    // …and the instance it authenticates against (§24.4); absent means GitLab.com on both sides.
-    if (payload.provider === 'gitlab') {
-      const expected = this.deps.gitlabHostFor?.(payload.agentId) ?? GITLAB_DEFAULT_BASE_URL
-      const echoed = grant.host ?? GITLAB_DEFAULT_BASE_URL
+    // …and the instance it authenticates against (§24.4, gitea-integration.md §9); absent means the axis default on both sides.
+    const axis = payload.provider !== undefined ? INSTANCE_AXES[payload.provider] : undefined
+    if (axis) {
+      const expected = this.deps[axis.hostFor]?.(payload.agentId) ?? axis.defaultHost
+      const echoed = grant.host ?? axis.defaultHost
       if (echoed !== expected) {
         throw new GitCredUnavailableError(
-          `control plane answered a credential for gitlab instance ${echoed} for an agent bound to ${expected}`,
+          `control plane answered a credential for ${payload.provider} instance ${echoed} for an agent bound to ${expected}`,
           false
         )
       }

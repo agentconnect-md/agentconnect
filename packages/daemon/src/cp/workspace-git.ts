@@ -63,6 +63,7 @@ import {
   gitCommitIdentityEnv,
   GITHUB_CREDENTIAL_SCOPE,
   pullWorkspaceRef,
+  scopeCodeHosts,
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
   type ManagedCredentialScope
@@ -274,11 +275,11 @@ export function createWorkspaceGit(
     return msg.split(root).join('<workspace>').trim()
   }
 
-  function safeExplicitOrigin(input: string, deploymentCodeHost?: string): string | undefined {
+  function safeExplicitOrigin(input: string, deploymentCodeHosts: (string | undefined)[]): string | undefined {
     const raw = input.trim()
     if (!/^(?:https|ssh):\/\//i.test(raw) && !/^[\w.-]+@[\w.-]+:/.test(raw)) return undefined
     try {
-      return authorizeWorkspaceGitUrl(raw, deploymentCodeHost)
+      return authorizeWorkspaceGitUrl(raw, ...deploymentCodeHosts)
     } catch {
       return undefined
     }
@@ -297,14 +298,17 @@ export function createWorkspaceGit(
     let expectedOrigin: string
     try {
       if (!target) throw new Error('workspace target is unavailable')
-      currentOrigin = safeExplicitOrigin(await git.raw(['remote', 'get-url', 'origin']), target.managed?.gitlabHost)
+      currentOrigin = safeExplicitOrigin(await git.raw(['remote', 'get-url', 'origin']), scopeCodeHosts(target.managed))
       // Canonicalization follows the remote's PROVIDER — each host's own address conventions, and a
       // managed remote additionally resolves through the host that issues its credential.
       const provider = target.remoteProvider
       // A managed target that names no provider is the pre-GitLab shape: the implicit host owns it.
       const host = target.githubApp ? codeHostCredentials(provider ?? IMPLICIT_CREDENTIAL_PROVIDER) : undefined
       const address = host !== undefined ? host.managedRemoteUrl(target.repo) : target.repo
-      expectedOrigin = authorizeWorkspaceGitUrl(canonicalWorkspaceGitUrl(address, provider), target.managed?.gitlabHost)
+      expectedOrigin = authorizeWorkspaceGitUrl(
+        canonicalWorkspaceGitUrl(address, provider),
+        ...scopeCodeHosts(target.managed)
+      )
     } catch {
       return undefined
     }
@@ -724,7 +728,7 @@ export function createWorkspaceGit(
         const upstreamRemote = upstream.includes('/') ? upstream.slice(0, upstream.indexOf('/')) : null
         const upstreamBranch = upstreamRemote ? upstream.slice(upstreamRemote.length + 1) : null
         const upstreamOrigin = upstreamRemote
-          ? await remoteUrl(git, upstreamRemote, authorized.managed?.gitlabHost)
+          ? await remoteUrl(git, upstreamRemote, scopeCodeHosts(authorized.managed))
           : null
         const upstreamIsDestination =
           upstreamOrigin !== null &&
@@ -985,11 +989,15 @@ async function pathExists(git: GitRunner, rel: string): Promise<boolean> {
 
 /** One remote's fetch URL, authorized through the same policy the origin goes through, or null
  *  when it does not exist or is not a URL this daemon may talk to. */
-async function remoteUrl(git: GitRunner, remote: string, deploymentCodeHost?: string): Promise<string | null> {
+async function remoteUrl(
+  git: GitRunner,
+  remote: string,
+  deploymentCodeHosts: (string | undefined)[]
+): Promise<string | null> {
   try {
     const raw = (await git.readBounded(['remote', 'get-url', remote], 4096)).out.toString('utf8').trim()
     if (raw === '') return null
-    return authorizeWorkspaceGitUrl(raw, deploymentCodeHost)
+    return authorizeWorkspaceGitUrl(raw, ...deploymentCodeHosts)
   } catch {
     return null
   }

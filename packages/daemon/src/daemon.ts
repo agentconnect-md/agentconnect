@@ -26,6 +26,7 @@ import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
+  GITEA_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
@@ -78,8 +79,8 @@ import { MICROSANDBOX_TUNNEL_PATHS } from './microsandbox/socket-bridge.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
 import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
-import { IMPLICIT_CREDENTIAL_PROVIDER } from './gitcred/managed-hosts.js'
-import { codeHostCredentials, credentialProviderOf } from './codehost/credentials.js'
+import { IMPLICIT_CREDENTIAL_PROVIDER, parseManagedBaseUrl, stripHostPathPrefix } from './gitcred/managed-hosts.js'
+import { codeHostCredentials, credentialProviderOf, type ManagedWorkspaceRepo } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
@@ -2118,7 +2119,9 @@ export class Daemon {
       providerV2Supported: () => this.cpClient?.supportsServerFeature?.('gitcred-provider-v2') ?? false,
       githubV2Supported: () => this.cpClient?.supportsServerFeature?.(GITCRED_GITHUB_V2_FEATURE) ?? false,
       gitlabEffectSupported: () => this.cpClient?.supportsServerFeature?.(GITLAB_EFFECT_V1_FEATURE) ?? false,
-      gitlabHostFor: (agentId) => this.agents.get(agentId)?.gitlabHost
+      gitlabHostFor: (agentId) => this.agents.get(agentId)?.gitlabHost,
+      giteaSupported: () => this.cpClient?.supportsServerFeature?.(GITEA_V1_FEATURE) ?? false,
+      giteaHostFor: (agentId) => this.agents.get(agentId)?.giteaHost
     })
     // §14.2: the broker holds the effect lease; the agent environment never sees the token.
     this.gitlabBroker = new GitlabBroker({
@@ -2178,7 +2181,7 @@ export class Daemon {
         return agent ? this.workspaces.managedCredentialProvider(agent) : undefined
       },
       // Only a host whose grants are numerically qualified carries a workspace id on the spec (§17.1).
-      workspaceRepoIdOf: (agentId: string) => this.gitlabWorkspaceProject(agentId),
+      workspaceRepoIdOf: (agentId: string) => this.managedWorkspaceRepo(agentId)?.repoId,
       // The §8.3 allowlist, matched case-insensitively on the repository path.
       qualifiedRepoOf: (agentId: string, repoFullName: string) => {
         const wanted = repoFullName.toLowerCase()
@@ -2208,7 +2211,7 @@ export class Daemon {
         // A provider named on the wire pre-warms under its own numeric identity (§17.1); the
         // implicit one keeps the v1 ask, which carries neither field.
         if (provider !== undefined && provider !== IMPLICIT_CREDENTIAL_PROVIDER) {
-          const externalRepoId = this.gitlabWorkspaceProject(agentId)
+          const externalRepoId = this.managedWorkspaceRepo(agentId)?.repoId
           await this.gitCreds.get(agentId, reason, {
             provider,
             ...(externalRepoId !== undefined ? { externalRepoId } : {})
@@ -3200,7 +3203,7 @@ export class Daemon {
         // private turn and fails closed everywhere else.
         tools = [...tools, ...GITHUB_REVIEW_TOOLS]
         // §14.2 broker: only a session with a GitLab target carries it, and the clamped lease still authorizes.
-        if (this.gitlabWorkspaceProject(agent.id) !== undefined) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
+        if (this.managedWorkspaceRepo(agent.id)?.provider === 'gitlab') tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
         // Replace the legacy managed descriptors with this provider's stable core
         // tools. An external plugin's raw MCP tools never enter the ACP session.
         tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
@@ -3852,7 +3855,11 @@ export class Daemon {
     const scope = managedCredentialScope(
       credentialProvider,
       agent.gitlabHost,
-      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
+      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent),
+      {
+        host: agent.giteaHost,
+        repoBearing: !excludeAgentToolCredentials && this.workspaces.repoBearing(agent, 'gitea')
+      }
     )
     const git =
       managedCredentials || agent.workspace.mode === 'git-repo'
@@ -4853,7 +4860,11 @@ export class Daemon {
     const managedScope = managedCredentialScope(
       credentialProvider,
       agent.gitlabHost,
-      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
+      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent),
+      {
+        host: agent.giteaHost,
+        repoBearing: !excludeAgentToolCredentials && this.workspaces.repoBearing(agent, 'gitea')
+      }
     )
     // The Git session policy runs for every configured repository, not only GitHub review:
     // repository hooks/fsmonitor stay disabled through the per-agent gitconfig the whole agent
@@ -8656,8 +8667,8 @@ export class Daemon {
   private codeHostEffectTarget(agentId: string, key: string): { projectId: string; hookId?: string } | undefined {
     const hook = this.activeTurnCodeHost.get(key)
     if (hook && hook.agentId === agentId) return { projectId: hook.projectId, hookId: hook.hookId }
-    const projectId = this.gitlabWorkspaceProject(agentId)
-    return projectId === undefined ? undefined : { projectId }
+    const workspace = this.managedWorkspaceRepo(agentId)
+    return workspace?.provider === 'gitlab' ? { projectId: workspace.repoId } : undefined
   }
 
   /** The instance every GitLab client on this turn addresses (§24.4). Resolved per turn off the
@@ -8666,11 +8677,20 @@ export class Daemon {
     return gitlabApiBaseUrl(this.agents.get(agentId)?.gitlabHost)
   }
 
-  /** The agent's managed GitLab workspace project from the REPLICATED SPEC — never a tool argument. */
-  private gitlabWorkspaceProject(agentId: string): string | undefined {
+  /** The agent's managed workspace repository from the REPLICATED SPEC — its provider, rename-stable id, and
+   *  current path measured from the instance root; never a tool argument, and undefined for a host that resolves by name. */
+  private managedWorkspaceRepo(agentId: string): ManagedWorkspaceRepo | undefined {
     const agent = this.agents.get(agentId)
-    if (!agent || this.workspaces.managedCredentialProvider(agent) !== 'gitlab') return undefined
-    return agent.workspace.mode === 'git-repo' ? agent.workspace.gitlabProjectId : undefined
+    const provider = agent ? this.workspaces.managedCredentialProvider(agent) : undefined
+    const host = codeHostCredentials(provider)
+    if (!agent || provider === undefined || !host || agent.workspace.mode !== 'git-repo') return undefined
+    const repoId = host.workspaceRepoId(agent.workspace)
+    if (repoId === undefined) return undefined
+    const instance = parseManagedBaseUrl(host.managedHost(this.workspaces.specHostsOf(agent)).baseUrl)
+    const label = agent.workspace.gitRepo ? gitRepoLabel(agent.workspace.gitRepo) : undefined
+    const stripped = instance && label !== undefined ? stripHostPathPrefix(label, instance.pathPrefix) : undefined
+    const repoPath = stripped !== undefined ? host.credentialRepoPath(stripped) : undefined
+    return { provider, repoId, ...(repoPath !== undefined ? { repoPath } : {}) }
   }
 
   /** Everything the GitHub hook-dispatch and formal-review seam reaches back for. */

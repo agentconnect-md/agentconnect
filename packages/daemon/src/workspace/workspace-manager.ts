@@ -49,6 +49,7 @@ import {
   GITHUB_CREDENTIAL_SCOPE,
   managedCredentialScope,
   originOnManagedHost,
+  scopeCodeHosts,
   type ManagedCredentialScope
 } from './git-injection.js'
 import { GitTransportError, LocalGitRunner, type GitRunner } from './git-runner.js'
@@ -384,22 +385,30 @@ export class WorkspaceManager {
   }
 
   /**
-   * Whether the spec carries a REPO-BEARING GitLab consumer (§24.4): a gitlab workspace, or an
-   * authorized gitlab additional repository. A hook is deliberately not one — it authorizes a turn,
-   * not a repository, so it must not take over the instance's credential path.
+   * Whether the spec carries a REPO-BEARING consumer of one spec-hosted provider (§24.4): that
+   * provider's workspace, or an authorized additional repository on it. A hook is deliberately not
+   * one — it authorizes a turn, not a repository, so it must not take over the instance's credential path.
    */
-  gitlabRepoBearing(agent: Agent): boolean {
-    if (this.managedCredentialProvider(agent) === 'gitlab') return true
-    return (agent.workspace.additionalRepos ?? []).some((row) => (row.provider ?? 'github') === 'gitlab')
+  repoBearing(agent: Agent, provider: CodeHostProvider): boolean {
+    if (this.managedCredentialProvider(agent) === provider) return true
+    return (agent.workspace.additionalRepos ?? []).some((row) => (row.provider ?? 'github') === provider)
   }
 
-  /** The credential scope this agent's primary workspace pins: its provider plus the spec's
-   *  GitLab instance (§24.4). Anonymous workspaces resolve to github.com, as they always did. */
+  gitlabRepoBearing(agent: Agent): boolean {
+    return this.repoBearing(agent, 'gitlab')
+  }
+
+  /** The credential scope this agent's primary workspace pins: its provider plus the spec's GitLab and
+   *  Gitea instances (§24.4, gitea-integration.md §9). Anonymous workspaces resolve to github.com, as they always did. */
   managedScopeOf(agent: Agent): ManagedCredentialScope {
     return managedCredentialScope(
       this.managedCredentialProvider(agent),
       agent.gitlabHost,
-      this.gitlabRepoBearing(agent)
+      this.gitlabRepoBearing(agent),
+      {
+        host: agent.giteaHost,
+        repoBearing: this.repoBearing(agent, 'gitea')
+      }
     )
   }
 
@@ -416,9 +425,12 @@ export class WorkspaceManager {
     return specHostCodeHosts().find((host) => originOnManagedHost(repository, host.managedHost(spec)))?.provider
   }
 
-  /** The host-carrying fields of this agent's replicated spec — one axis per provider (§24.4). */
-  private specHostsOf(agent: Agent): CodeHostSpecHosts {
-    return agent.gitlabHost !== undefined ? { gitlabHost: agent.gitlabHost } : {}
+  /** The host-carrying fields of this agent's replicated spec — one axis per provider (§24.4, gitea-integration.md §13). */
+  specHostsOf(agent: Agent): CodeHostSpecHosts {
+    return {
+      ...(agent.gitlabHost !== undefined ? { gitlabHost: agent.gitlabHost } : {}),
+      ...(agent.giteaHost !== undefined ? { giteaHost: agent.giteaHost } : {})
+    }
   }
 
   gitRepoOf(agent: Agent): string {
@@ -432,7 +444,7 @@ export class WorkspaceManager {
       host !== undefined && this.usesManagedCredential(agent)
         ? host.managedRemoteUrl(agent.workspace.gitRepo)
         : agent.workspace.gitRepo
-    return authorizeWorkspaceGitUrl(canonicalWorkspaceGitUrl(address, provider), agent.gitlabHost)
+    return authorizeWorkspaceGitUrl(canonicalWorkspaceGitUrl(address, provider), agent.gitlabHost, agent.giteaHost)
   }
 
   /** The agent's primary checkout as a root, in the coordinates of whichever filesystem holds it.
@@ -976,7 +988,7 @@ export class WorkspaceManager {
     const normalizedCurrent = normalizeGitUrl(current)
     let unsafeCurrent = redactGitUrlSecrets(current) !== normalizedCurrent
     try {
-      authorizeWorkspaceGitUrl(current, root.managed?.gitlabHost)
+      authorizeWorkspaceGitUrl(current, ...scopeCodeHosts(root.managed))
       if (!/^(?:https|ssh):\/\//i.test(current) && !/^[\w.-]+@[\w.-]+:/.test(current)) unsafeCurrent = true
     } catch {
       unsafeCurrent = true
