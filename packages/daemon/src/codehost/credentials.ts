@@ -72,29 +72,33 @@ export function codeHostCredentials(provider: string | undefined): CodeHostCrede
 }
 
 /** Every module, in the provider order the injected host table and its env encoding are written in. */
+const MODULE_LIST: readonly CodeHostCredentialModule[] = CODE_HOST_PROVIDERS.map((provider) => MODULES[provider])
+
 export function codeHostCredentialModules(): readonly CodeHostCredentialModule[] {
-  return CODE_HOST_PROVIDERS.map((provider) => MODULES[provider])
+  return MODULE_LIST
 }
 
 /** The host table one agent's git classifies against: one entry per provider, resolved from the spec (§24.4). */
 export function managedHostTable(spec: CodeHostSpecHosts): ManagedCredentialHost[] {
-  return codeHostCredentialModules().map((module) => module.managedHost(spec))
+  return MODULE_LIST.map((module) => module.managedHost(spec))
 }
 
 /** The provider a spec's `gitCredential` names, whatever the workspace mode; undefined ⇒ anonymous. */
 export function credentialProviderOf(gitCredential: string | undefined): CodeHostProvider | undefined {
   if (gitCredential === undefined) return undefined
-  return codeHostCredentialModules().find((module) => module.specGitCredential === gitCredential)?.provider
+  return MODULE_LIST.find((module) => module.specGitCredential === gitCredential)?.provider
 }
+
+const SPEC_HOST_MODULES: readonly CodeHostCredentialModule[] = MODULE_LIST.filter((module) => module.hostFromSpec)
 
 /** The hosts whose instance a spec carries — the only ones an anonymous remote can be attributed to. */
 export function specHostCodeHosts(): readonly CodeHostCredentialModule[] {
-  return codeHostCredentialModules().filter((module) => module.hostFromSpec)
+  return SPEC_HOST_MODULES
 }
 
 /** Every purpose whose credential is re-resolved live, so its refusal is never cached as durable. */
 const LIVE_CREDENTIAL_PURPOSES: ReadonlySet<string> = new Set(
-  codeHostCredentialModules().flatMap((module) => [...module.liveCredentialPurposes])
+  MODULE_LIST.flatMap((module) => [...module.liveCredentialPurposes])
 )
 
 /** True when a refusal of this purpose must not outlive the call that discovered it. */
