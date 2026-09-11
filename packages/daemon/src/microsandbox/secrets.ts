@@ -9,6 +9,7 @@ import { MAX_SEED_FILE_BYTES, parseDshCredentialDocument } from '../runtimes/run
 import { prepareOpenCodeSecrets } from './opencode-secrets.js'
 import { prepareClaudeApiSecret, prepareCodexApiSecret } from './native-api-secrets.js'
 import { preparePiSecrets } from './pi-secrets.js'
+import { prepareGrokSecrets } from './grok-secrets.js'
 
 export interface MicrosandboxSecret {
   env: string
@@ -36,7 +37,8 @@ const CREDENTIAL_PREPARERS = new Map<
   ['opencode', prepareOpenCodeSecrets],
   ['pi-acp', preparePiSecrets],
   ['claude-acp', prepareClaudeApiSecret],
-  ['codex-acp', prepareCodexApiSecret]
+  ['codex-acp', prepareCodexApiSecret],
+  ['grok-build', prepareGrokSecrets]
 ])
 
 export function prepareMicrosandboxCredentials(

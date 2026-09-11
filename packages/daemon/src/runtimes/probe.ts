@@ -392,7 +392,11 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
       undefined,
       [{ path: '', format: 'grok' }]
     ),
-    ...state(env.GROK_HOME || join(home(env), '.grok'), '.grok')
+    ...state(env.GROK_HOME || join(home(env), '.grok'), '.grok', [], undefined, [
+      { path: 'config.toml', format: 'grok-config' },
+      { path: 'managed_config.toml', format: 'grok-config' },
+      { path: 'requirements.toml', format: 'grok-config' }
+    ])
   ],
 
   // Moonshot Kimi CLI — ~/.kimi (legacy) or ~/.kimi-code (newer, honors $KIMI_CODE_HOME).
