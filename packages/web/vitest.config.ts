@@ -1,5 +1,6 @@
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vitest/config'
+import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js'
 
 export default defineConfig({
   oxc: { jsx: { runtime: 'automatic' } },
@@ -9,6 +10,7 @@ export default defineConfig({
     }
   },
   test: {
-    environment: 'node'
+    environment: 'node',
+    reporters: githubActionsReporters('web.md')
   }
 })
