@@ -37,14 +37,14 @@ import { dirname, join } from 'node:path'
 import { tlsTrustEnv } from '../config/tls-trust-env.js'
 import type { GitPullSummary, GitRunner } from './git-runner.js'
 import { simpleGit, type SimpleGit } from 'simple-git'
-import { normalizeGitCloneUrl, type GitCommitIdentity } from '@agentconnect.md/protocol'
+import { normalizeGitCloneUrl, type CodeHostProvider, type GitCommitIdentity } from '@agentconnect.md/protocol'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../cp/gitcred-server.js'
+import { codeHostCredentials, managedHostTable } from '../codehost/credentials.js'
 import {
   encodeManagedHostTable,
   gitlabManagedHost,
   GITCRED_HOSTS_ENV,
   GITHUB_MANAGED_HOST,
-  managedHostTableFor,
   parseManagedBaseUrl,
   stripHostPathPrefix,
   type ManagedCredentialHost
@@ -366,21 +366,23 @@ export const GITHUB_CREDENTIAL_SCOPE: ManagedCredentialScope = { host: GITHUB_MA
 export { GITHUB_MANAGED_HOST, gitlabManagedHost }
 export type { ManagedCredentialHost }
 
-/** The classifier table an injection carries: GitHub plus the one GitLab instance the scope names. */
+/** The classifier table an injection carries: one entry per provider, the operation's own host included. */
 function scopeHostTable(scope: ManagedCredentialScope): ManagedCredentialHost[] {
-  return managedHostTableFor(scope.gitlabHost ?? (scope.host.provider === 'gitlab' ? scope.host.baseUrl : undefined))
+  const spec = scope.gitlabHost !== undefined ? { gitlabHost: scope.gitlabHost } : {}
+  return managedHostTable(spec).map((entry) => (entry.provider === scope.host.provider ? scope.host : entry))
 }
 
 export function managedCredentialScope(
-  provider: 'github' | 'gitlab' | undefined,
+  provider: CodeHostProvider | undefined,
   gitlabHost?: string,
   gitlabRepoBearing = false
 ): ManagedCredentialScope {
-  const host = provider === 'gitlab' ? gitlabManagedHost(gitlabHost) : GITHUB_MANAGED_HOST
+  const host = codeHostCredentials(provider)?.managedHost({ gitlabHost }) ?? GITHUB_MANAGED_HOST
   return {
     host,
     ...(gitlabHost !== undefined ? { gitlabHost } : {}),
-    // A gitlab workspace is repo-bearing by construction; the flag only adds the other consumer.
+    // A gitlab workspace is repo-bearing by construction; the flag only adds the other consumer. It
+    // names its provider because the field is the GitLab host axis itself (gitea-integration.md §13).
     ...(gitlabRepoBearing || provider === 'gitlab' ? { gitlabRepoBearing: true } : {})
   }
 }
@@ -422,12 +424,11 @@ export function originOnManagedHost(input: string, host: ManagedCredentialHost):
   }
 }
 
-// GitLab 301s the suffix-less HTTPS probe and we refuse redirects, so a gitlab remote carries `.git`.
-export function canonicalWorkspaceGitUrl(repository: string, provider?: 'github' | 'gitlab'): string {
+/** A workspace remote under its own host's address conventions; an anonymous remote keeps the
+ *  normalized form, which is what every host that needs no suffix rule answers with. */
+export function canonicalWorkspaceGitUrl(repository: string, provider?: CodeHostProvider): string {
   const normalized = normalizeGitCloneUrl(repository)
-  if (provider !== 'gitlab') return normalized
-  if (!/^https:/i.test(normalized) || /\.git$/i.test(normalized)) return normalized
-  return `${normalized}.git`
+  return codeHostCredentials(provider)?.canonicalCloneUrl(normalized) ?? normalized
 }
 
 /**

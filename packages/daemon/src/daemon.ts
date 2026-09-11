@@ -78,6 +78,8 @@ import { MICROSANDBOX_TUNNEL_PATHS } from './microsandbox/socket-bridge.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
 import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
+import { IMPLICIT_CREDENTIAL_PROVIDER } from './gitcred/managed-hosts.js'
+import { codeHostCredentials, credentialProviderOf } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
@@ -2175,16 +2177,18 @@ export class Daemon {
         const agent = this.agents.get(agentId)
         return agent ? this.workspaces.managedCredentialProvider(agent) : undefined
       },
-      projectIdOf: (agentId: string) => {
-        const ws = this.agents.get(agentId)?.workspace
-        return ws?.mode === 'git-repo' ? ws.gitlabProjectId : undefined
-      },
-      // The §8.3 allowlist, matched case-insensitively on the project path.
-      gitlabProjectOf: (agentId: string, repoFullName: string) => {
+      // Only a host whose grants are numerically qualified carries a workspace id on the spec (§17.1).
+      workspaceRepoIdOf: (agentId: string) => this.gitlabWorkspaceProject(agentId),
+      // The §8.3 allowlist, matched case-insensitively on the repository path.
+      qualifiedRepoOf: (agentId: string, repoFullName: string) => {
         const wanted = repoFullName.toLowerCase()
-        return (this.agents.get(agentId)?.workspace.additionalRepos ?? []).find(
-          (row) => row.provider === 'gitlab' && row.repoFullName.toLowerCase() === wanted
-        )?.repoId
+        for (const row of this.agents.get(agentId)?.workspace.additionalRepos ?? []) {
+          if (row.repoFullName.toLowerCase() !== wanted) continue
+          const provider = codeHostCredentials(row.provider)?.provider
+          if (provider === undefined || provider === IMPLICIT_CREDENTIAL_PROVIDER) continue
+          return { provider, externalId: row.repoId }
+        }
+        return undefined
       }
     })
     const daemonCredentialTarget = daemonGitCredentialTarget({
@@ -2201,11 +2205,13 @@ export class Daemon {
       preWarm: async (agentId, reason) => {
         const agent = this.agents.get(agentId)
         const provider = agent ? this.workspaces.managedCredentialProvider(agent) : undefined
-        if (provider === 'gitlab') {
-          const projectId = agent?.workspace.mode === 'git-repo' ? agent.workspace.gitlabProjectId : undefined
+        // A provider named on the wire pre-warms under its own numeric identity (§17.1); the
+        // implicit one keeps the v1 ask, which carries neither field.
+        if (provider !== undefined && provider !== IMPLICIT_CREDENTIAL_PROVIDER) {
+          const externalRepoId = this.gitlabWorkspaceProject(agentId)
           await this.gitCreds.get(agentId, reason, {
-            provider: 'gitlab',
-            ...(projectId !== undefined ? { externalRepoId: projectId } : {})
+            provider,
+            ...(externalRepoId !== undefined ? { externalRepoId } : {})
           })
         } else await this.gitCreds.get(agentId, reason)
       }
@@ -3838,19 +3844,22 @@ export class Daemon {
     const runtime = runtimeEntry?.runtime
     if (!runtime) throw new Error(`runtime "${agent.runtime}" is not provided by the microsandbox image`)
     const placement = this.microsandboxPlacement(agent, cwd, key)
-    const github = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
-    const gitlab = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'gitlab'
+    // The provider whose managed credential this spec names; a dream host gets none at all.
+    const credentialProvider = excludeAgentToolCredentials
+      ? undefined
+      : credentialProviderOf(agent.workspace.gitCredential)
+    const managedCredentials = credentialProvider !== undefined
     const scope = managedCredentialScope(
-      gitlab ? 'gitlab' : github ? 'github' : undefined,
+      credentialProvider,
       agent.gitlabHost,
       !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
     )
     const git =
-      github || gitlab || agent.workspace.mode === 'git-repo'
+      managedCredentials || agent.workspace.mode === 'git-repo'
         ? sessionGitEnv(
             agent.id,
-            github || gitlab ? this.gitCommitIdentity : undefined,
-            github || gitlab ? scope : null
+            managedCredentials ? this.gitCommitIdentity : undefined,
+            managedCredentials ? scope : null
           )
         : undefined
     const launch = prepareMicrosandboxLaunch({
@@ -4831,13 +4840,18 @@ export class Daemon {
     const excludeAgentToolCredentials = opts.excludeAgentToolCredentials === true
     // A GitHub workspace uses this channel for its implicit repo; scratch uses
     // it only for explicitly authorized repos named by git/gh.
-    const githubAppCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
-    const gitlabCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'gitlab'
-    const managedCredentials = githubAppCredentials || gitlabCredentials
+    const credentialProvider = excludeAgentToolCredentials
+      ? undefined
+      : credentialProviderOf(agent.workspace.gitCredential)
+    const managedCredentials = credentialProvider !== undefined
+    // The two CLI wrappers are per-provider facts, not a seam member: `gh` and `glab` exist because
+    // those hosts ship one, and a third host shipping none adds no entry (gitea-integration.md §9).
+    const githubAppCredentials = credentialProvider === 'github'
+    const gitlabCredentials = credentialProvider === 'gitlab'
     // §24.4: the pinned host comes from the SPEC, and a repo-bearing GitLab consumer that is not
     // the workspace pins its instance beside it. A dream host gets no tool credentials at all.
     const managedScope = managedCredentialScope(
-      gitlabCredentials ? 'gitlab' : githubAppCredentials ? 'github' : undefined,
+      credentialProvider,
       agent.gitlabHost,
       !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
     )

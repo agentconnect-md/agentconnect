@@ -9,7 +9,18 @@
  * credential `path` that starts with that prefix, and a bare hostname could not strip it.
  */
 
-export type ManagedCredentialProvider = 'github' | 'gitlab'
+/**
+ * Wire form for the provider a table entry names: an OPEN string, like protocol's
+ * `CodeHostProviderString`. The table is INJECTED, so an entry for a provider this build knows
+ * nothing about must degrade per value rather than make the whole table undecodable; the daemon's
+ * code-host credential registry and the helper's parser table are where a provider is narrowed, and
+ * each fails closed on a name it does not carry. The narrowed union cannot live here: both ends of
+ * the channel share this leaf, and the in-sandbox bundle may import nothing but node builtins.
+ */
+export type ManagedCredentialProvider = string
+
+/** The provider every v1 credential request means implicitly — the only one never named on the wire. */
+export const IMPLICIT_CREDENTIAL_PROVIDER = 'github'
 
 /** One managed code host: the provider plus the normalized base URL its consumers address. */
 export interface ManagedCredentialHost {
@@ -21,7 +32,10 @@ export interface ManagedCredentialHost {
 /** The env name the table travels on, minted beside the capability and agent identity. */
 export const GITCRED_HOSTS_ENV = 'AC_GITCRED_HOSTS'
 
-export const GITHUB_MANAGED_HOST: ManagedCredentialHost = { provider: 'github', baseUrl: 'https://github.com' }
+export const GITHUB_MANAGED_HOST: ManagedCredentialHost = {
+  provider: IMPLICIT_CREDENTIAL_PROVIDER,
+  baseUrl: 'https://github.com'
+}
 
 /** The default value of the GitLab host axis (§24.1) — absent is GitLab.com, never a second mode. */
 export const GITLAB_COM_BASE_URL = 'https://gitlab.com'
@@ -38,13 +52,20 @@ function trimSurroundingSlashes(value: string): string {
   return trimTrailingSlashes(value.slice(start))
 }
 
-/** The GitLab instance a spec's GitLab consumers address; an absent host means GitLab.com (§24.1). */
-export function gitlabManagedHost(gitlabHost?: string): ManagedCredentialHost {
-  const trimmed = trimTrailingSlashes((gitlabHost ?? '').trim())
-  return { provider: 'gitlab', baseUrl: trimmed === '' ? GITLAB_COM_BASE_URL : trimmed }
+/** A spec-carried host as a base URL — trimmed, no trailing slash; undefined when the spec names none. */
+export function normalizeManagedBaseUrl(host?: string): string | undefined {
+  const trimmed = trimTrailingSlashes((host ?? '').trim())
+  return trimmed === '' ? undefined : trimmed
 }
 
-/** The table one agent's git classifies against: GitHub plus the one GitLab instance its spec names. */
+/** The GitLab instance a spec's GitLab consumers address; an absent host means GitLab.com (§24.1). */
+export function gitlabManagedHost(gitlabHost?: string): ManagedCredentialHost {
+  return { provider: 'gitlab', baseUrl: normalizeManagedBaseUrl(gitlabHost) ?? GITLAB_COM_BASE_URL }
+}
+
+/** The default table — GitHub plus the one GitLab instance a spec names — and what an absent or
+ *  unparseable env falls back to. An injected table is composed per provider by the daemon's
+ *  code-host credential registry, which this leaf cannot reach. */
 export function managedHostTableFor(gitlabHost?: string): ManagedCredentialHost[] {
   return [GITHUB_MANAGED_HOST, gitlabManagedHost(gitlabHost)]
 }
@@ -55,7 +76,9 @@ export function encodeManagedHostTable(hosts: readonly ManagedCredentialHost[]):
   return hosts.map((entry) => `${entry.provider}=${entry.baseUrl}`).join(' ')
 }
 
-/** Absent or unparseable ⇒ the default table, which is what a deployment on GitLab.com means. */
+/** Absent or unparseable ⇒ the default table, which is what a deployment on GitLab.com means. An
+ *  entry keeps whatever provider it names: the consumer that cannot place the name is the one that
+ *  refuses it, so a newer daemon's table never reads as a table of nothing. */
 export function decodeManagedHostTable(raw: string | undefined): ManagedCredentialHost[] {
   const entries: ManagedCredentialHost[] = []
   for (const token of (raw ?? '').split(/\s+/)) {
@@ -63,7 +86,6 @@ export function decodeManagedHostTable(raw: string | undefined): ManagedCredenti
     if (eq <= 0) continue
     const provider = token.slice(0, eq)
     const baseUrl = trimTrailingSlashes(token.slice(eq + 1))
-    if (provider !== 'github' && provider !== 'gitlab') continue
     if (parseManagedBaseUrl(baseUrl) === undefined) continue
     entries.push({ provider, baseUrl })
   }

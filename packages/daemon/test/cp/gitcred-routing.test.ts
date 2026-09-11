@@ -169,8 +169,10 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     // what leaves an exact checkout of an authorized project credential-less.
     const { sockPath, gets, capability } = await boot('example-group/example-project', {
       providerOf: () => 'gitlab',
-      gitlabProjectOf: (_agentId, repoFullName) =>
-        repoFullName === 'example-group/example-second' ? '4455668' : undefined
+      qualifiedRepoOf: (_agentId: string, repoFullName: string) =>
+        repoFullName === 'example-group/example-second'
+          ? ({ provider: 'gitlab', externalId: '4455668' } as const)
+          : undefined
     })
     const res = await roundtrip(sockPath, {
       op: 'get',
@@ -191,7 +193,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
   it('denies a gitlab project the replicated spec does not authorize', async () => {
     const { sockPath, gets, capability } = await boot(undefined, {
       providerOf: () => 'github',
-      gitlabProjectOf: () => undefined
+      qualifiedRepoOf: () => undefined
     })
     const res = await roundtrip(sockPath, {
       op: 'get',
@@ -223,8 +225,10 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     // GitLab token live until its TTL.
     const { sockPath, erases, capability } = await boot(undefined, {
       providerOf: () => 'github',
-      gitlabProjectOf: (_agentId, repoFullName) =>
-        repoFullName === 'example-group/example-second' ? '4455668' : undefined
+      qualifiedRepoOf: (_agentId: string, repoFullName: string) =>
+        repoFullName === 'example-group/example-second'
+          ? ({ provider: 'gitlab', externalId: '4455668' } as const)
+          : undefined
     })
     const res = await roundtrip(sockPath, {
       op: 'erase',

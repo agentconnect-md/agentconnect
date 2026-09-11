@@ -33,6 +33,9 @@ import { createRequire } from 'node:module'
 import { createServer, type Server, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { GitCredentialCache, GitCredUnavailableError, type CredPlane } from './git-credential.js'
+import type { CodeHostProvider } from '@agentconnect.md/protocol'
+import type { QualifiedCodeHostProvider } from '../codehost/credentials.js'
+import { IMPLICIT_CREDENTIAL_PROVIDER } from '../gitcred/managed-hosts.js'
 import { isWindowsNamedPipe, localIpcPath } from '../paths.js'
 
 // Declared in `gitcred/env.ts` and re-exported here, where every daemon-side caller already looks
@@ -65,8 +68,8 @@ interface GitCredIpcRequest {
   repoFullName?: string
   /** 'gh' ⇒ the widened GH_TOKEN capability set; absent/'git' ⇒ contents-only. */
   plane?: string
-  /** Host-derived hint from the helper ('gitlab' when git asked for gitlab.com).
-   *  ROUTING ONLY: the daemon's own replicated spec decides the real provider. */
+  /** Host-derived hint from the helper — the provider whose managed host git asked for, absent for
+   *  the implicit one. ROUTING ONLY: the daemon's own replicated spec decides the real provider. */
   provider?: string
 }
 
@@ -78,14 +81,17 @@ export interface GitCredServerDeps {
   workspaceRepoOf?: (agentId: string) => string | undefined
   /** The agent's managed credential provider from its REPLICATED SPEC — never
    *  the helper's claim (§13.2). Absent/undefined ⇒ github (the v1 behavior). */
-  providerOf?: (agentId: string) => 'github' | 'gitlab' | undefined
-  /** The gitlab workspace's numeric project id from the REPLICATED SPEC — the
+  providerOf?: (agentId: string) => CodeHostProvider | undefined
+  /** The workspace repository's own numeric id from the REPLICATED SPEC — the
    *  §17.1 request identity the grant echo is verified against. */
-  projectIdOf?: (agentId: string) => string | undefined
-  /** The numeric project id of a NAMED gitlab project the spec lists as an additional
-   *  authorization (§8.3), or undefined when the path is not one. Also from the
-   *  replicated spec, so a named project never introduces a provider the spec lacks. */
-  gitlabProjectOf?: (agentId: string, repoFullName: string) => string | undefined
+  workspaceRepoIdOf?: (agentId: string) => string | undefined
+  /** A NAMED repository the spec lists as an additional authorization (§8.3) on a host that must be
+   *  named on the wire, with its numeric id; undefined when the path is not one. Also from the
+   *  replicated spec, so a named repository never introduces a provider the spec lacks. */
+  qualifiedRepoOf?: (
+    agentId: string,
+    repoFullName: string
+  ) => { provider: QualifiedCodeHostProvider; externalId: string } | undefined
 }
 
 export class GitCredServer {
@@ -93,9 +99,9 @@ export class GitCredServer {
   private readonly capabilities = new Map<string, string>()
   private readonly log: GitCredServerDeps['log']
   private readonly workspaceRepoOf?: (agentId: string) => string | undefined
-  private readonly providerOf?: (agentId: string) => 'github' | 'gitlab' | undefined
-  private readonly projectIdOf?: (agentId: string) => string | undefined
-  private readonly gitlabProjectOf?: (agentId: string, repoFullName: string) => string | undefined
+  private readonly providerOf?: GitCredServerDeps['providerOf']
+  private readonly workspaceRepoIdOf?: GitCredServerDeps['workspaceRepoIdOf']
+  private readonly qualifiedRepoOf?: GitCredServerDeps['qualifiedRepoOf']
 
   constructor(
     private readonly cache: GitCredentialCache,
@@ -105,8 +111,8 @@ export class GitCredServer {
     this.log = deps.log
     if (deps.workspaceRepoOf) this.workspaceRepoOf = deps.workspaceRepoOf
     if (deps.providerOf) this.providerOf = deps.providerOf
-    if (deps.projectIdOf) this.projectIdOf = deps.projectIdOf
-    if (deps.gitlabProjectOf) this.gitlabProjectOf = deps.gitlabProjectOf
+    if (deps.workspaceRepoIdOf) this.workspaceRepoIdOf = deps.workspaceRepoIdOf
+    if (deps.qualifiedRepoOf) this.qualifiedRepoOf = deps.qualifiedRepoOf
   }
 
   async start(): Promise<void> {
@@ -202,27 +208,29 @@ export class GitCredServer {
     }
     // The SPEC decides the provider; a helper whose host hint disagrees is
     // asking for another host's credential and gets a clean denial (§13.2).
-    // A named project the spec lists as a gitlab additional authorization (§8.3) is
-    // the second spec-derived gitlab authority; the host hint only disambiguates
-    // between authorities the spec already carries, it never introduces one.
+    // A named repository the spec lists as an additional authorization on another host (§8.3) is the
+    // second spec-derived authority; the host hint only disambiguates between authorities the spec
+    // already carries, it never introduces one.
     //
-    // Resolved BEFORE the op split: erase has to reach the key get stored, and a
-    // gitlab additional project on a scratch or github workspace is keyed gitlab
-    // while the workspace alone says github. Deriving erase from the workspace
-    // would invalidate the wrong entry and leave the rejected token live to TTL.
-    const workspaceProvider = this.providerOf?.(req.agentId) ?? 'github'
-    const gitlabProject = repo !== undefined ? this.gitlabProjectOf?.(req.agentId, repo) : undefined
-    const provider: 'github' | 'gitlab' =
-      gitlabProject !== undefined && (req.provider === 'gitlab' || workspaceProvider === 'gitlab')
-        ? 'gitlab'
+    // Resolved BEFORE the op split: erase has to reach the key get stored, and an additional
+    // repository on another host rides a scratch or github workspace whose spec alone says github.
+    // Deriving erase from the workspace would invalidate the wrong entry and leave the rejected
+    // token live to TTL.
+    const workspaceProvider = this.providerOf?.(req.agentId) ?? IMPLICIT_CREDENTIAL_PROVIDER
+    const named = repo !== undefined ? this.qualifiedRepoOf?.(req.agentId, repo) : undefined
+    const provider: CodeHostProvider =
+      named !== undefined && (req.provider === named.provider || workspaceProvider === named.provider)
+        ? named.provider
         : workspaceProvider
+    // Only a provider that is not the implicit one is named on the wire (the empty cache-key segment).
+    const qualifier = provider === IMPLICIT_CREDENTIAL_PROVIDER ? {} : { provider }
     if (req.op === 'erase') {
       // Git presents the rejected credential — the provider revokes instantly on
       // uninstall/suspend/rotation, and this is how the daemon cache learns.
       this.cache.invalidate(req.agentId, req.password, {
         plane,
         ...(repo !== undefined ? { repo } : {}),
-        ...(provider === 'gitlab' ? { provider: 'gitlab' as const } : {})
+        ...qualifier
       })
       this.audit('erased', req.agentId, plane, repo)
       return reply({ ok: true })
@@ -239,19 +247,21 @@ export class GitCredServer {
       return reply({ ok: false, error: 'glab credentials require a managed GitLab workspace' })
     }
     try {
-      // §17.1: every gitlab ask names the rename-stable numeric identity so the
-      // consumer can reject a wrong-project grant echo — the workspace project for
-      // the repo-less ask, the authorized project for a named one. Without it a
-      // named project resolves to the workspace grant and the echo check rejects it.
-      const projectId =
-        provider !== 'gitlab'
-          ? undefined
-          : (gitlabProject ?? (repo === undefined ? this.projectIdOf?.(req.agentId) : undefined))
+      // §17.1: every qualified ask names the rename-stable numeric identity so the consumer can
+      // reject a wrong-repository grant echo — the authorized repository for a named ask, the
+      // workspace's own for the repo-less one. Without it a named repository resolves to the
+      // workspace grant and the echo check rejects it.
+      const externalId =
+        named?.provider === provider
+          ? named.externalId
+          : repo === undefined
+            ? this.workspaceRepoIdOf?.(req.agentId)
+            : undefined
       const cred = await this.cache.get(req.agentId, 'helper', {
         plane,
         ...(repo !== undefined ? { repo } : {}),
-        ...(provider === 'gitlab' ? { provider: 'gitlab' as const } : {}),
-        ...(projectId !== undefined ? { externalRepoId: projectId } : {}),
+        ...qualifier,
+        ...(externalId !== undefined ? { externalRepoId: externalId } : {}),
         // §13.3: the CLI wrapper is read-only BY DESIGN — a mutating glab
         // command never receives effect authority and fails at GitLab.
         ...(plane === 'glab' ? { requestedAccess: 'read' as const } : {})

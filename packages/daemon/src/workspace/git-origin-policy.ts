@@ -5,7 +5,7 @@ import {
   workspaceGitOriginOf,
   WORKSPACE_GIT_ANY_ORIGIN
 } from '@agentconnect.md/protocol'
-import { gitlabManagedHost } from '../gitcred/managed-hosts.js'
+import { normalizeManagedBaseUrl } from '../gitcred/managed-hosts.js'
 
 // One daemon runs per process. Keep the operator-owned policy beside the
 // functional workspace helpers, like git-injection's process-local state.
@@ -15,12 +15,12 @@ export function configureWorkspaceGitOrigins(origins: readonly string[]): void {
   allowedOrigins = origins.map(normalizeWorkspaceGitOrigin)
 }
 
-/** The origin form of a GitLab base URL, which may carry a path prefix (§24.1) an origin may not. */
-function codeHostOrigin(gitlabHost: string | undefined): string | undefined {
-  const host = gitlabHost?.trim()
+/** The origin form of a code host's base URL, which may carry a path prefix (§24.1) an origin may not. */
+function codeHostOrigin(codeHost: string | undefined): string | undefined {
+  const host = normalizeManagedBaseUrl(codeHost)
   if (!host) return undefined
   try {
-    const url = new URL(gitlabManagedHost(host).baseUrl)
+    const url = new URL(host)
     return normalizeWorkspaceGitOrigin(`${url.protocol}//${url.host}`)
   } catch {
     return undefined // not addressable as a clone origin; the caller's own boundary reports that

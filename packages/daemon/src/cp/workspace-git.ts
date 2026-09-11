@@ -36,7 +36,7 @@ import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import { join } from 'node:path'
 import {
-  normalizeGithubRepoUrl,
+  type CodeHostProvider,
   type GitCommitIdentity,
   type WorkspaceGitStatus,
   type WorkspaceGitDiffReq,
@@ -55,6 +55,8 @@ import {
   type WorkspaceGitMessageReq,
   type WorkspaceGitMessageResult
 } from '@agentconnect.md/protocol'
+import { codeHostCredentials } from '../codehost/credentials.js'
+import { IMPLICIT_CREDENTIAL_PROVIDER } from '../gitcred/managed-hosts.js'
 import {
   assertSafeWorkspaceGitConfig,
   canonicalWorkspaceGitUrl,
@@ -210,8 +212,8 @@ export interface WorkspaceGitTarget {
   githubApp: boolean
   /** The managed host this scope's credential channel pins, resolved from the spec (§24.4). */
   managed?: ManagedCredentialScope
-  /** Whose URL conventions this remote follows; absent ⇒ neither provider's (§24.4). */
-  remoteProvider?: 'github' | 'gitlab'
+  /** Whose URL conventions this remote follows; absent ⇒ no managed host's (§24.4). */
+  remoteProvider?: CodeHostProvider
 }
 
 export function createWorkspaceGit(
@@ -296,13 +298,13 @@ export function createWorkspaceGit(
     try {
       if (!target) throw new Error('workspace target is unavailable')
       currentOrigin = safeExplicitOrigin(await git.raw(['remote', 'get-url', 'origin']), target.managed?.gitlabHost)
-      // Canonicalization follows the remote's PROVIDER: only a gitlab project keeps its subgroups.
+      // Canonicalization follows the remote's PROVIDER — each host's own address conventions, and a
+      // managed remote additionally resolves through the host that issues its credential.
       const provider = target.remoteProvider
-      const github = target.githubApp && provider !== 'gitlab'
-      expectedOrigin = authorizeWorkspaceGitUrl(
-        canonicalWorkspaceGitUrl(github ? normalizeGithubRepoUrl(target.repo) : target.repo, provider),
-        target.managed?.gitlabHost
-      )
+      // A managed target that names no provider is the pre-GitLab shape: the implicit host owns it.
+      const host = target.githubApp ? codeHostCredentials(provider ?? IMPLICIT_CREDENTIAL_PROVIDER) : undefined
+      const address = host !== undefined ? host.managedRemoteUrl(target.repo) : target.repo
+      expectedOrigin = authorizeWorkspaceGitUrl(canonicalWorkspaceGitUrl(address, provider), target.managed?.gitlabHost)
     } catch {
       return undefined
     }

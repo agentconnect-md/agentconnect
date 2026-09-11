@@ -31,16 +31,19 @@
  * and an UNEXPIRED cached token keeps serving — CP downtime only breaks remote
  * git once the hour runs out.
  */
-import { GITLAB_DEFAULT_BASE_URL, type GitCredCapability, type GitCredGrant } from '@agentconnect.md/protocol'
+import {
+  GITLAB_DEFAULT_BASE_URL,
+  type CodeHostProvider,
+  type GitCredCapability,
+  type GitCredGrant
+} from '@agentconnect.md/protocol'
+import { isLiveCredentialPurpose, type QualifiedCodeHostProvider } from '../codehost/credentials.js'
 
 /** Hand out only while more than this remains (nests under the CP's 15min floor). */
 const HANDOUT_MIN_MS = 10 * 60 * 1000
 
 /** Repo-level denials are retried after this — the console-authorization lag. */
 const REPO_DENIAL_TTL_MS = 60 * 1000
-
-/** Daemon-owned GitLab writers: project-keyed, re-resolved live per call, so a refusal is never durable. */
-const GITLAB_EFFECT_PURPOSES = new Set(['gitlab_hook_reply', 'gitlab_effect'])
 
 /** The baseline scope set behind `GH_TOKEN` (P2.5 write-back): git contents plus the
  *  issue/PR scopes `gh issue comment` / `gh pr comment` need. The CP clamps
@@ -58,7 +61,7 @@ type CachePlane = CredPlane | 'gh-actions'
  *  (the GH_KEY precedent). GitHub is the EMPTY provider segment whether the request went out
  *  v1-shaped or github-qualified: one logical credential must stay one entry across a CP up- or
  *  downgrade, and the request shape is a wire negotiation, not part of the credential's identity. */
-const keyOf = (agentId: string, plane: CachePlane, repo?: string, provider?: 'gitlab'): string =>
+const keyOf = (agentId: string, plane: CachePlane, repo?: string, provider?: QualifiedCodeHostProvider): string =>
   `${plane}\u0000${agentId}\u0000${repo?.toLowerCase() ?? ''}\u0000${provider ?? ''}`
 
 /** Cache key for a repo-targeted COMMENT token (the GithubPoster's — issues/PR
@@ -105,7 +108,7 @@ export interface GitCredentialCacheDeps {
     purpose?: 'github_hook_reply' | 'gitlab_hook_reply' | 'gitlab_effect'
     hookId?: string
     forceRefresh?: boolean
-    provider?: 'github' | 'gitlab'
+    provider?: CodeHostProvider
     externalRepoId?: string
     requestedAccess?: 'read' | 'write'
   }) => Promise<GitCredGrant>
@@ -164,15 +167,16 @@ export class GitCredentialCache {
     opts: {
       plane?: CredPlane
       repo?: string
-      provider?: 'gitlab'
+      provider?: QualifiedCodeHostProvider
       externalRepoId?: string
       requestedAccess?: 'read' | 'write'
     } = {}
   ): Promise<Entry> {
     const plane = opts.plane ?? 'git'
-    if (opts.provider === 'gitlab' && this.deps.providerV2Supported?.() !== true) {
+    // §17.1: any provider but the implicit one may be named only after the CP advertises the field.
+    if (opts.provider !== undefined && this.deps.providerV2Supported?.() !== true) {
       throw new GitCredUnavailableError(
-        'the control plane is too old for gitlab credentials (gitcred-provider-v2 not advertised)',
+        `the control plane is too old for ${opts.provider} credentials (gitcred-provider-v2 not advertised)`,
         false
       )
     }
@@ -348,7 +352,7 @@ export class GitCredentialCache {
   invalidate(
     agentId: string,
     presentedPassword?: string,
-    opts: { plane?: CredPlane; repo?: string; provider?: 'gitlab' } = {}
+    opts: { plane?: CredPlane; repo?: string; provider?: QualifiedCodeHostProvider } = {}
   ): void {
     const plane = opts.plane ?? 'git'
     const cachePlane = plane === 'gh' && this.deps.actionsSupported?.() === true ? 'gh-actions' : plane
@@ -375,9 +379,9 @@ export class GitCredentialCache {
     } catch (e) {
       const code = (e as { code?: string }).code
       if (code === 'SCOPE_DENIED') {
-        // §14.1/§14.2: these leases are re-resolved live and hook/binding lifecycle changes never
-        // replicate an agent spec, so a refusal is never durable — the next turn asks the CP again.
-        if (payload.purpose !== undefined && GITLAB_EFFECT_PURPOSES.has(payload.purpose)) {
+        // §14.1/§14.2: a purpose its host re-resolves live — hook/binding lifecycle changes never
+        // replicate an agent spec, so a refusal is never durable and the next turn asks the CP again.
+        if (isLiveCredentialPurpose(payload.purpose)) {
           this.entries.delete(key)
           throw new GitCredUnavailableError((e as Error).message, false)
         }
