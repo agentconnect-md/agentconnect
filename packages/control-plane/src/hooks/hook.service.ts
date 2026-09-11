@@ -192,6 +192,11 @@ export class HookService {
         }
       }
     }
+    // gitea (gitea-integration.md §7): the compiled rule needs a connection, a binding and a
+    // webhook signing key, none of which exist before G2 — so a row of this kind never compiles and
+    // the pool converges on hook-remove. Explicit, because the github arm below is the fall-through
+    // and a gitea row reaching it would be broadcast as a GitHub rule.
+    if (hook.kind === 'gitea') return null
     // github (P2): the rule carries the org's VALID installation ids — the
     // relay's runtime attribution gate. Suspended/revoked installations are
     // excluded; an empty set means no event could ever prove attribution, so

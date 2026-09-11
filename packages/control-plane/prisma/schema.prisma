@@ -1732,6 +1732,7 @@ enum HookKind {
   webhook // generic inbound webhook (POST /webhooks/in/:token on the relay)
   github // GitHub event subscription (P2)
   gitlab // GitLab.com event subscription (gitlab-com-integration.md §8.3)
+  gitea // Gitea event subscription (gitea-integration.md §5)
 }
 
 enum HookSessionMode {

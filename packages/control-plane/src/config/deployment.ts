@@ -19,6 +19,7 @@ const MANAGED_KEYS = [
   'GITLAB_CLIENT_ID',
   'GITLAB_CLIENT_SECRET',
   'GITLAB_BASE_URL',
+  'GITEA_BASE_URL',
   'SLACK_PLATFORM_APP_ID',
   'SLACK_PLATFORM_CLIENT_ID',
   'SLACK_PLATFORM_CLIENT_SECRET',
@@ -66,6 +67,12 @@ export function applyDeploymentEnvironment(
     set('GITLAB_CLIENT_ID', values.gitlab.clientId)
     set('GITLAB_CLIENT_SECRET', secrets['gitlab.clientSecret'])
     set('GITLAB_BASE_URL', values.gitlab.baseUrl)
+  }
+
+  // Gitea carries the instance address alone (gitea-integration.md §3); a document with no gitea
+  // entry leaves the axis unset, which means gitea.com.
+  if (values.gitea) {
+    set('GITEA_BASE_URL', values.gitea.baseUrl)
   }
 
   if (values.slack) {

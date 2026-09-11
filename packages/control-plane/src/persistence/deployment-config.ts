@@ -15,6 +15,7 @@ import { z } from 'zod'
 import type { SecretCipher } from '../secrets/cipher.js'
 import { DEPLOYMENT_SCOPE } from '../secrets/scope.js'
 import { GITLAB_DEFAULT_BASE_URL, normalizeGitlabBaseUrl } from '../gitlab/config.js'
+import { GITEA_DEFAULT_BASE_URL, normalizeGiteaBaseUrl } from '../gitea/config.js'
 
 export const DEPLOYMENT_CONFIG_SCHEMA_VERSION = 1 as const
 
@@ -132,6 +133,29 @@ const GitlabBaseUrlSchema = z
     }
   })
 
+const GiteaBaseUrlSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .superRefine((value, ctx) => {
+    try {
+      normalizeGiteaBaseUrl(value)
+    } catch (error) {
+      ctx.addIssue({ code: 'custom', message: (error as Error).message })
+    }
+  })
+
+/** Gitea's whole deployment entry (gitea-integration.md §3): the instance address and nothing
+ *  else. There is no application to register and no secret to seal — an organization's bot token
+ *  is per-organization state, not deployment configuration. */
+const GiteaInstanceSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    // Absent or null means gitea.com — the default value of the axis, not a separate mode.
+    baseUrl: GiteaBaseUrlSchema.nullable().optional()
+  })
+)
+
 const GitlabAppSchema = z.preprocess(
   withoutProviderUrlSnapshot,
   z.strictObject({
@@ -167,6 +191,7 @@ export const DeploymentConfigValuesV1Schema = z
     auth: AuthSchema,
     github: GithubAppSchema.nullable(),
     gitlab: GitlabAppSchema.nullable().optional(),
+    gitea: GiteaInstanceSchema.nullable().optional(),
     slack: SlackAppSchema.nullable(),
     linear: LinearAppSchema.nullable().optional(),
     /** Regional Login Apps used as the tenant anchor for Bot App admission. */
@@ -399,6 +424,31 @@ export class DeploymentConfigGitlabBaseUrlLockedError extends Error {
     )
     this.name = 'DeploymentConfigGitlabBaseUrlLockedError'
   }
+}
+
+/** The named reason a Gitea base-URL change is refused (gitea-integration.md §3). */
+export const GITEA_BASE_URL_LOCKED_REASON = 'gitea_base_url_locked' as const
+
+/** The GitLab lock's twin, and for the same reason: no Gitea row carries instance provenance, so
+ *  retargeting would send one host's token and host-relative numeric ids to another. */
+export class DeploymentConfigGiteaBaseUrlLockedError extends Error {
+  readonly code = GITEA_BASE_URL_LOCKED_REASON
+
+  constructor(
+    readonly currentBaseUrl: string,
+    readonly requestedBaseUrl: string
+  ) {
+    super(
+      `the Gitea instance base URL is locked while Gitea state exists (${currentBaseUrl} → ${requestedBaseUrl}); disconnect every Gitea repository first`
+    )
+    this.name = 'DeploymentConfigGiteaBaseUrlLockedError'
+  }
+}
+
+/** The instance a document's Gitea entry selects; absent means gitea.com (§3). */
+export function effectiveGiteaBaseUrl(values: DeploymentConfigValuesV1): string {
+  const configured = values.gitea?.baseUrl
+  return configured ? normalizeGiteaBaseUrl(configured) : GITEA_DEFAULT_BASE_URL
 }
 
 /** The instance a document's GitLab entry selects; absent means GitLab.com (§24.1). */

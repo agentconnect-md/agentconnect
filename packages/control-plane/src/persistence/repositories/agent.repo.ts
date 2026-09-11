@@ -228,7 +228,10 @@ const CREDENTIAL_OF: Record<CodeHostProvider, (a: Agent) => AgentWorkspaceCreden
     a.installationId !== null
       ? { provider: 'github', installationId: a.installationId, access: a.gitAccess }
       : undefined,
-  gitlab: (a) => (a.workspaceRepoId !== null ? { provider: 'gitlab', access: a.gitAccess } : undefined)
+  gitlab: (a) => (a.workspaceRepoId !== null ? { provider: 'gitlab', access: a.gitAccess } : undefined),
+  // G2 adds the Gitea catalog and the persisted credential this would read; until then the column
+  // can never name this host, so the entry answers anonymous rather than inventing a credential.
+  gitea: () => undefined
 }
 
 function credentialOf(a: Agent): AgentWorkspaceCredential | undefined {

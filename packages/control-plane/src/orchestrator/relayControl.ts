@@ -14,6 +14,7 @@
  * action must not report success for a frame that merely reached a socket.
  */
 import type {
+  CodeHostProvider,
   RcHookAssign,
   RcHookRerun,
   RcHookRerunRefusal,
@@ -23,9 +24,28 @@ import type {
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
-import { codeHostHookRuleOf, GITLAB_RERUN_V1_FEATURE, RcHookRerunResult } from '@agentconnect.md/protocol'
+import {
+  codeHostHookMetadataOf,
+  codeHostHookRuleOf,
+  GITEA_V1_FEATURE,
+  GITLAB_RERUN_V1_FEATURE,
+  RcHookRerunResult
+} from '@agentconnect.md/protocol'
 import { advertises } from '../domain/daemon-features.js'
 import { codeHostProviders } from '../codehost/registry.js'
+
+/**
+ * The bit a relay must advertise to DECODE one provider's `rc/hook-rerun`, or null when this
+ * provider has no rerun frame at all. Total over the providers, so a third host says which of the
+ * two it is instead of inheriting GitLab's bit: GitHub reruns ride its own native Check action,
+ * `gitlab-rerun-v1` is strictly newer than `gitlab-com-v1` (whose holder cannot decode the frame),
+ * and the Gitea slice ships with the frame, so its one string covers it (gitea-integration.md §10.4).
+ */
+const RERUN_DECODE_FEATURE: Readonly<Record<CodeHostProvider, string | null>> = {
+  github: null,
+  gitlab: GITLAB_RERUN_V1_FEATURE,
+  gitea: GITEA_V1_FEATURE
+}
 
 /** What one Console rerun attempt achieved across the eligible relay pool. */
 export type RelayRerunOutcome =
@@ -96,11 +116,13 @@ export class RelayControlSender {
    * eligible peer was ever asked.
    */
   async hookRerun(rerun: RcHookRerun): Promise<RelayRerunOutcome> {
-    // The rerun frame is GitLab's own surface (§16.1), so its instance bit is that entry's.
-    const required = [
-      GITLAB_RERUN_V1_FEATURE,
-      ...codeHostProviders.gitlab.features.requiredForInstance(rerun.gitlab.host)
-    ]
+    // The frame carries exactly one provider member; which bit a relay must advertise to DECODE it
+    // is that provider's, and an unreadable frame has no eligible relay at all.
+    const member = codeHostHookMetadataOf(rerun)
+    const decodes = member ? RERUN_DECODE_FEATURE[member.provider] : null
+    if (!member || decodes === null) return { kind: 'unreachable' }
+    const host = 'host' in member.metadata ? member.metadata.host : undefined
+    const required = [decodes, ...codeHostProviders[member.provider].features.requiredForInstance(host)]
     for (const ch of this.relays.all()) {
       if (!advertises(ch.features, required) || typeof ch.request !== 'function') continue
       let result: RcHookRerunResult

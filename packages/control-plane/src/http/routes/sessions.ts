@@ -253,7 +253,12 @@ function sessionIntegration(s: HookSessionRow, hook: HookSessionMetadata | undef
 /** Display name for a hook source with no name of its own. TOTAL over the hook-kind
  *  vocabulary, so a new code host cannot inherit the generic "Webhook" label the way
  *  GitLab did — adding one to the shared union fails this file's type-check first. */
-const HOOK_KIND_LABEL: Record<HookKind, string> = { webhook: 'Webhook', github: 'GitHub', gitlab: 'GitLab' }
+const HOOK_KIND_LABEL: Record<HookKind, string> = {
+  webhook: 'Webhook',
+  github: 'GitHub',
+  gitlab: 'GitLab',
+  gitea: 'Gitea'
+}
 
 /** A channel id is only unique within its platform, so the label cache keys on both.
  *  The space is safe: no platform conversation id we store contains one. */

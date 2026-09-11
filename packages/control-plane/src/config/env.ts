@@ -208,6 +208,12 @@ const CoreConfigShape = {
   // The instance the OAuth application above is registered on. One axis, not a
   // mode: absent means https://gitlab.com. Set without the pair ⇒ fail fast.
   GITLAB_BASE_URL: z.string().optional(),
+  // ── Gitea instance (gitea-integration.md §3, §12) ──
+  // The one deployment-wide Gitea value: the instance every organization's bot token
+  // authenticates against. One axis, not a mode — absent means https://gitea.com. There is no
+  // client pair to pair it with, because Gitea registers no application. Plain env is the
+  // no-document fallback; the typed deployment document overlays it.
+  GITEA_BASE_URL: z.string().optional(),
   // ── Logto Management API (identity metadata + Profile social sign-in methods) ──
   // The ONE deliberate Logto coupling: it resolves GitHub identity metadata for
   // repo authorization and manages the signed-in user's own social identities.
@@ -251,7 +257,7 @@ const CoreConfigShape = {
   // in the same change, so the catalog never offers a connector the product now owns.
   OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
     .string()
-    .default('github,gitlab,linear,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot'),
+    .default('github,gitlab,gitea,linear,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot'),
   // ── in-cluster Kubernetes access — opt-in by running a daemon pool ──
   // THE switch for the cluster surface, and the only access knob: turning it on asserts this
   // control plane runs inside the cluster, so the pod's ServiceAccount is the credential and a

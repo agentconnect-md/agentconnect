@@ -40,6 +40,12 @@
       "import": "./dist/gitlab/config.js",
       "default": "./dist/gitlab/config.js"
     },
+    "./gitea-config": {
+      "development": "./src/gitea/config.ts",
+      "types": "./dist/gitea/config.d.ts",
+      "import": "./dist/gitea/config.js",
+      "default": "./dist/gitea/config.js"
+    },
     "./slack-config-api": {
       "development": "./src/http/slack-config-api.ts",
       "types": "./dist/http/slack-config-api.d.ts",

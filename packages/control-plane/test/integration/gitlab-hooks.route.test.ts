@@ -896,8 +896,8 @@ describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', 
     expect(frame.hookId).toBe(hookId)
     expect(frame.agentId).toBe(h.agentId)
     expect(frame.deliveryKey).toBe(body.deliveryKey)
-    expect(frame.gitlab.projectId).toBe(PROJECT.toString())
-    expect(frame.gitlab.target).toMatchObject({ kind: 'merge_request', iid: MR_IID, headSha: CURRENT_HEAD })
+    expect(frame.gitlab!.projectId).toBe(PROJECT.toString())
+    expect(frame.gitlab!.target).toMatchObject({ kind: 'merge_request', iid: MR_IID, headSha: CURRENT_HEAD })
     // The fence the relay re-checks against its own compiled rule.
     const row = (await h.hookRepo.get(OrgId(DEFAULT_ORG_ID), HookId(hookId)))!
     expect(frame.configRevision).toBe(row.configRevision.toString())
@@ -917,7 +917,7 @@ describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', 
     expect((second.json() as { headSha: string }).headSha).toBe('f00d'.repeat(10))
     const frames = reruns(glab.requests)
     expect(frames).toHaveLength(2)
-    expect(frames.map((frame) => (frame.gitlab.target as { headSha?: string }).headSha)).toEqual([
+    expect(frames.map((frame) => (frame.gitlab!.target as { headSha?: string }).headSha)).toEqual([
       CURRENT_HEAD,
       'f00d'.repeat(10)
     ])
@@ -934,7 +934,7 @@ describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', 
     expect(open.statusCode).toBe(200)
     expect((open.json() as { headSha: string | null; event: string }).headSha).toBeNull()
     expect((open.json() as { event: string }).event).toBe('issues:rerun')
-    expect(reruns(glab.requests)[0]!.gitlab.target).toEqual({ kind: 'issue', iid: 7 })
+    expect(reruns(glab.requests)[0]!.gitlab!.target).toEqual({ kind: 'issue', iid: 7 })
 
     const closed = await rerun(h.a, hookId, { kind: 'issue', iid: 8 })
     expect(closed.statusCode).toBe(409)
@@ -1047,7 +1047,7 @@ describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', 
     h.a.relayReg.remove(legacy.ch.relayId, legacy.ch)
     h.a.relayReg.add(modern.ch)
     expect((await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })).statusCode).toBe(200)
-    expect(reruns(modern.requests).at(-1)!.gitlab.host).toBe(SELF_MANAGED)
+    expect(reruns(modern.requests).at(-1)!.gitlab!.host).toBe(SELF_MANAGED)
   })
 
   it('treats a relay that only advertises gitlab-com-v1 as no relay at all (§17.3)', async () => {

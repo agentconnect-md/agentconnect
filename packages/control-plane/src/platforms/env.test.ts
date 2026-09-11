@@ -14,6 +14,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
+import { CODE_HOST_PROVIDERS } from '@agentconnect.md/protocol'
 import { AppConfigSchema, loadConfig } from '../config/env.js'
 import { CP_PLATFORM_ENV_SCHEMAS, composeCpPlatformEnv } from './env.js'
 import { buildCpPlatformRegistry } from './registry.js'
@@ -35,6 +36,7 @@ const EXPECTED_KEYS = [
   'DATABASE_URL',
   'FEISHU_PLATFORM_APP_ID',
   'FEISHU_PLATFORM_APP_SECRET',
+  'GITEA_BASE_URL',
   'GITHUB_APP_CLIENT_ID',
   'GITHUB_APP_ID',
   'GITHUB_APP_PRIVATE_KEY_B64',
@@ -114,6 +116,29 @@ const MINIMAL_ENV = {
 describe('composed AppConfigSchema', () => {
   it('accepts exactly the supported deployment keys', () => {
     expect(Object.keys(AppConfigSchema.shape).sort()).toEqual([...EXPECTED_KEYS].sort())
+  })
+
+  it('blocks every native integration in the connector catalog by default', () => {
+    // The convention the key's own comment states: a native integration adds its upstream service
+    // id to this default in the same change, so the catalog never offers a connector the product
+    // owns. Pinned as a set, because the order in the string is not the contract.
+    const blocklist = loadConfig(MINIMAL_ENV).OPEN_CONNECTOR_PROVIDER_BLOCKLIST.split(',')
+    expect(new Set(blocklist)).toEqual(
+      new Set([
+        'github',
+        'gitlab',
+        'gitea',
+        'linear',
+        'slack',
+        'telegram',
+        'discord',
+        'discordbot',
+        'feishu',
+        'feishu_app_bot',
+        'feishu_custom_bot'
+      ])
+    )
+    for (const provider of CODE_HOST_PROVIDERS) expect(blocklist, provider).toContain(provider)
   })
 
   it('keeps each platform key parsing as its provider declared it', () => {

@@ -9,6 +9,7 @@
  * fast — and a base URL without the pair is a configuration error too.
  */
 import { GITLAB_DEFAULT_BASE_URL } from '@agentconnect.md/protocol'
+import { normalizeCodeHostBaseUrl } from '../codehost/base-url.js'
 import type { AppConfig } from '../config/env.js'
 
 // The default value of the host axis: an unset base URL means GitLab.com (§24.1). It is
@@ -20,24 +21,11 @@ export const GITLAB_OAUTH_CALLBACK_PATH = '/v1/gitlab/oauth/callback'
 /** The begin hop that stamps the browser-binding cookie before redirecting to GitLab. */
 export const GITLAB_OAUTH_BEGIN_PATH = '/v1/gitlab/oauth/begin'
 
-/** The one normalization of the host axis (§24.1); downstream sees only its
- *  result. HTTPS, no userinfo/query/fragment, lower-cased host, explicit
- *  non-default port kept, no trailing slash, and a path prefix preserved —
- *  a relative URL root is a first-class install shape. */
+/** The one normalization of the host axis (§24.1); downstream sees only its result. The rules
+ *  are the instance axis itself rather than GitLab's, so they live in `codehost/base-url.ts` and
+ *  every self-hosted code host reads the same ones. */
 export function normalizeGitlabBaseUrl(raw: string): string {
-  const trimmed = raw.trim()
-  let url: URL
-  try {
-    url = new URL(trimmed)
-  } catch {
-    throw new Error('gitlab base url must be an absolute URL')
-  }
-  if (url.protocol !== 'https:') throw new Error('gitlab base url must use https')
-  if (url.username !== '' || url.password !== '') throw new Error('gitlab base url must not carry userinfo')
-  if (url.search !== '') throw new Error('gitlab base url must not carry a query')
-  if (url.hash !== '') throw new Error('gitlab base url must not carry a fragment')
-  // `url.host` already lower-cases the host and drops the default 443 port.
-  return `https://${url.host}${url.pathname.replace(/\/+$/, '')}`
+  return normalizeCodeHostBaseUrl(raw, 'gitlab')
 }
 
 export interface GitlabAppConfig {
