@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Fingerprint of a runtime image's inputs for build.yaml: the shim payload digest its build exported (tree-digest.mjs
-# over the helper stage's /out) plus a recipe digest over the Dockerfile and the build inputs the leg passes it. The
-# recipe covers what the payload cannot — the bases' digest pins and the final stages' instructions — so any Dockerfile
-# edit rebuilds, which is the safe side.
+# Fingerprint the shim payload separately from the Dockerfile, application assets and explicit build inputs.
 #
 # Usage: runtime-image-fingerprint.sh <payload digest file> <dockerfile> <target> <platforms> <build args> <build contexts>
 # Stdout (GITHUB_OUTPUT-ready): shim=<digest>, recipe=<digest>, and a multi-line `labels` carrying both as OCI labels.
@@ -24,8 +21,10 @@ if ! [[ "$shim" =~ ^sha256:[0-9a-f]{64}$ ]]; then
   echo "::error::${DIGEST_FILE} holds no payload digest: '${shim}'" >&2
   exit 1
 fi
+assets="$(node "$(dirname "$0")/tree-digest.mjs" "$(dirname "$DOCKERFILE")/runtime-sandbox")"
 recipe="sha256:$({
   cat "$DOCKERFILE"
+  printf '\n%s\n' "$assets"
   printf '\n%s\n%s\n%s\n%s\n' "$TARGET" "$PLATFORMS" "$BUILD_ARGS" "$BUILD_CONTEXTS"
 } | sha256)"
 
