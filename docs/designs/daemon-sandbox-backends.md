@@ -318,18 +318,32 @@ OpenCode uses the same proxy and lifecycle for `type: api` records in its native
 own placeholder and allowed HTTPS hosts; providers sharing a key share one
 placeholder with their combined authorized hosts. Routing comes from standard host OpenCode
 config and `OPENCODE_CONFIG_CONTENT`, then provider defaults or OpenCode's cached model
-catalog. Unknown destinations require an explicit host `provider.options.baseURL`;
+catalog. Unknown or unsupported destinations keep placeholders but receive no
+proxy key injection; other providers can still start and authenticate. Configure
+a supported HTTPS host `provider.options.baseURL` to enable that provider. There
+is no fallback to mounting its real API key. An absent or unusable catalog only
+affects providers that need that catalog, not providers with known defaults;
 guest workspace configuration cannot authorize a new destination. Standard
 providers do not require a warm model cache. Copies of the protected keys in
-seeded OpenCode config files are replaced too; the host files are unchanged.
+seeded OpenCode credential values, Bearer headers, and JSON environment config are
+replaced too, without replacing matching substrings in paths or unrelated text.
+The host files are unchanged.
 This path protects keys discovered in native `auth.json`; it does not discover
 additional keys stored only in other configuration sources.
+`OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` paths are not imported or used for proxy
+routing; use the standard host config locations or `OPENCODE_CONFIG_CONTENT`.
+Symlinked host files are skipped, matching native HOME seeding. Credential import
+uses the registered `opencode` state profile, not command-name matching for custom
+runtime IDs.
 
-OpenCode OAuth records remain unchanged in the mounted private credential file
+OpenCode OAuth and `wellknown` records remain unchanged in the mounted private credential file
 and are readable by the guest. Guest-refreshed OAuth records survive subsequent
 preparation. OAuth-only launches retain the existing seeding path, without proxy
 secrets or additional credential shielding. This change does not add an OAuth
 proxy or refresh coordinator.
+API records for providers configured only inside the guest retain their native local login
+behavior on resume; they are not host-managed proxy credentials. Blank or malformed
+API keys are not selected for protection and do not prevent preparing other records.
 
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and

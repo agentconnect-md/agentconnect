@@ -75,13 +75,19 @@ describe('prepareMicrosandboxLaunch', () => {
       const auth = {
         opencode: { type: 'api', key: 'fixture-zen-key', metadata: { duplicate: 'fixture-zen-key' } },
         deepseek: { type: 'api', key: 'fixture-deepseek-key' },
-        openai: oauth
+        openai: oauth,
+        blank: { type: 'api', key: '' },
+        malformed: { type: 'api', key: null },
+        wellknown: { type: 'wellknown', key: 'fixture-key-name', token: 'fixture-token' }
       }
       const { opts, source } = openCodeFixture(auth)
       const launch = prepareMicrosandboxLaunch(opts)
       const path = join(launch.runtimeHome!, '.local', 'share', 'opencode', 'auth.json')
       const privateAuth = JSON.parse(readFileSync(path, 'utf8'))
       expect(privateAuth.openai).toEqual(oauth)
+      expect(privateAuth.blank).toEqual(auth.blank)
+      expect(privateAuth.malformed).toEqual(auth.malformed)
+      expect(privateAuth.wellknown).toEqual(auth.wellknown)
       expect(privateAuth.opencode.key).toMatch(/^msb-secret-OPENCODE_API_/)
       expect(privateAuth.deepseek.key).not.toBe(privateAuth.opencode.key)
       expect(launch.microsandbox.secrets!.map(({ host }) => host)).toEqual([['api.deepseek.com'], ['opencode.ai']])
@@ -91,6 +97,7 @@ describe('prepareMicrosandboxLaunch', () => {
       }
       expect(JSON.parse(readFileSync(source, 'utf8'))).toEqual(auth)
       privateAuth.openai.access = 'fixture-refreshed-access'
+      privateAuth.guest = { type: 'api', key: 'fixture-guest-login' }
       writeFileSync(path, JSON.stringify(privateAuth))
       writeFileSync(source, JSON.stringify({ ...auth, opencode: { type: 'api', key: 'fixture-rotated-key' } }))
       const resumed = prepareMicrosandboxLaunch(opts)
@@ -112,38 +119,80 @@ describe('prepareMicrosandboxLaunch', () => {
     )
   })
 
-  it.skipIf(process.platform !== 'linux')('preserves every authorized host when OpenCode providers share a key', () => {
-    const key = 'fixture-shared-"key\\value'
-    const { opts } = openCodeFixture({ east: { type: 'api', key }, west: { type: 'api', key } })
-    const config = {
-      provider: {
-        east: { options: { baseURL: 'https://east.example.test/v1', apiKey: key } },
-        west: { options: { baseURL: 'https://west.example.test/v1', apiKey: key } }
-      }
-    }
-    const source = join(opts.hostHome, '.config', 'opencode', 'opencode.json')
-    mkdirSync(dirname(source), { recursive: true })
-    writeFileSync(source, JSON.stringify(config))
+  it('does not import host OpenCode credentials for a custom runtime id', () => {
+    const { opts } = openCodeFixture({
+      opencode: { type: 'api', key: 'fixture-key' },
+      openai: { type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: 1 }
+    })
     const launch = prepareMicrosandboxLaunch({
       ...opts,
-      explicitEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config), MODEL_TOKEN: key }
+      runtimeId: 'custom-opencode',
+      runtime: { command: 'opencode', args: ['acp'], env: [] }
     })
-    expect(launch.microsandbox.secrets).toHaveLength(1)
-    const secret = launch.microsandbox.secrets![0]!
-    expect(secret.host).toEqual(['east.example.test', 'west.example.test'])
-    const auth = JSON.parse(readFileSync(join(launch.runtimeHome!, '.local', 'share', 'opencode', 'auth.json'), 'utf8'))
-    const privateConfig = JSON.parse(
-      readFileSync(join(launch.runtimeHome!, '.config', 'opencode', 'opencode.json'), 'utf8')
-    )
-    const envConfig = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT!)
-    for (const provider of ['east', 'west']) {
-      expect(auth[provider].key).toBe(secret.placeholder)
-      expect(privateConfig.provider[provider].options.apiKey).toBe(secret.placeholder)
-      expect(envConfig.provider[provider].options.apiKey).toBe(secret.placeholder)
+    expect(launch.microsandbox.secrets).toBeUndefined()
+    expect(existsSync(join(launch.runtimeHome!, '.local', 'share', 'opencode', 'auth.json'))).toBe(false)
+  })
+
+  it.skipIf(process.platform !== 'linux').each(['fixture-shared-"key\\value', 'local'])(
+    'preserves shared-key routing and unrelated text for %j',
+    (key) => {
+      const { opts } = openCodeFixture({ east: { type: 'api', key }, west: { type: 'api', key } })
+      const config = {
+        instructions: ['./local-rules.md'],
+        provider: {
+          east: { options: { baseURL: 'https://east.example.test/v1', apiKey: key } },
+          west: { options: { baseURL: 'https://west.example.test/v1', apiKey: key } }
+        }
+      }
+      const source = join(opts.hostHome, '.config', 'opencode', 'opencode.json')
+      mkdirSync(dirname(source), { recursive: true })
+      writeFileSync(source, JSON.stringify(config))
+      const launch = prepareMicrosandboxLaunch({
+        ...opts,
+        explicitEnv: {
+          OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+          MODEL_TOKEN: key,
+          AUTH_HEADER: `Bearer ${key}`,
+          INSTRUCTIONS: 'keep local files'
+        }
+      })
+      expect(launch.microsandbox.secrets).toHaveLength(1)
+      const secret = launch.microsandbox.secrets![0]!
+      expect(secret.host).toEqual(['east.example.test', 'west.example.test'])
+      const auth = JSON.parse(
+        readFileSync(join(launch.runtimeHome!, '.local', 'share', 'opencode', 'auth.json'), 'utf8')
+      )
+      const privateConfig = JSON.parse(
+        readFileSync(join(launch.runtimeHome!, '.config', 'opencode', 'opencode.json'), 'utf8')
+      )
+      const envConfig = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT!)
+      for (const provider of ['east', 'west']) {
+        expect(auth[provider].key).toBe(secret.placeholder)
+        expect(privateConfig.provider[provider].options.apiKey).toBe(secret.placeholder)
+        expect(envConfig.provider[provider].options.apiKey).toBe(secret.placeholder)
+      }
+      expect(launch.env.MODEL_TOKEN).toBe(secret.placeholder)
+      expect(launch.env.AUTH_HEADER).toBe(`Bearer ${secret.placeholder}`)
+      expect(launch.env.INSTRUCTIONS).toBe('keep local files')
+      expect(launch.env.XDG_DATA_HOME).toBe(join(launch.runtimeHome!, '.local', 'share'))
+      expect(privateConfig.instructions).toEqual(config.instructions)
+      expect(envConfig.instructions).toEqual(config.instructions)
+      expect(secret.readValue()).toBe(key)
+      expect(JSON.parse(readFileSync(source, 'utf8'))).toEqual(config)
     }
-    expect(launch.env.MODEL_TOKEN).toBe(secret.placeholder)
-    expect(secret.readValue()).toBe(key)
-    expect(JSON.parse(readFileSync(source, 'utf8'))).toEqual(config)
+  )
+
+  it.skipIf(process.platform !== 'linux')('skips symlinked host OpenCode configuration like native seeding', () => {
+    const { opts } = openCodeFixture({ opencode: { type: 'api', key: 'fixture-key' } })
+    const target = join(opts.hostHome, 'managed-config.json')
+    writeFileSync(target, 'invalid unused configuration')
+    const config = join(opts.hostHome, '.config', 'opencode', 'opencode.json')
+    mkdirSync(dirname(config), { recursive: true })
+    symlinkSync(target, config)
+    const launch = prepareMicrosandboxLaunch(opts)
+    expect(launch.microsandbox.secrets![0]!.host).toEqual(['opencode.ai'])
+    expect(existsSync(join(launch.runtimeHome!, '.config', 'opencode', 'opencode.json'))).toBe(false)
+    expect(readFileSync(target, 'utf8')).toBe('invalid unused configuration')
   })
 
   it.skipIf(process.platform !== 'linux')(
@@ -175,12 +224,16 @@ describe('prepareMicrosandboxLaunch', () => {
     'uses the OpenCode catalog for additional providers and preserves SRT seeding',
     () => {
       const key = 'fixture-catalog-provider-key'
-      const { opts } = openCodeFixture({ catalog: { type: 'api', key } })
+      const { opts } = openCodeFixture({
+        catalog: { type: 'api', key },
+        deepseek: { type: 'api', key: 'fixture-independent-key' }
+      })
       const catalog = join(opts.hostHome, '.cache', 'opencode', 'models.json')
       mkdirSync(dirname(catalog), { recursive: true })
       writeFileSync(
         catalog,
         JSON.stringify({
+          deepseek: { api: 'https://different.example.test/v1' },
           catalog: {
             api: 'https://api.example.test/v1',
             models: { alternate: { provider: { api: 'https://alternate.example.test/v1' } } }
@@ -189,6 +242,7 @@ describe('prepareMicrosandboxLaunch', () => {
       )
       const launch = prepareMicrosandboxLaunch(opts)
       expect(launch.microsandbox.secrets![0]!.host).toEqual(['alternate.example.test', 'api.example.test'])
+      expect(launch.microsandbox.secrets![1]!.host).toEqual(['api.deepseek.com'])
       const srtScope = join(opts.root, 'srt')
       const srtCwd = join(srtScope, 'workspace')
       mkdirSync(srtCwd, { recursive: true })
@@ -204,17 +258,38 @@ describe('prepareMicrosandboxLaunch', () => {
     }
   )
 
-  it('refuses unresolved or non-HTTPS OpenCode endpoints without including API keys in errors', () => {
-    const { opts } = openCodeFixture({ custom: { type: 'api', key: 'fixture-secret-not-in-error' } })
-    for (const baseURL of [undefined, 'http://gateway.example.test/v1']) {
-      expect(() =>
-        prepareMicrosandboxLaunch({
-          ...opts,
-          explicitEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { custom: { options: { baseURL } } } }) }
+  it.skipIf(process.platform !== 'linux').each([undefined, 'http://localhost:11434/v1'])(
+    'keeps an unroutable OpenCode key hidden without blocking other providers: %j',
+    (baseURL) => {
+      const key = 'fixture-unroutable-key'
+      for (const withSupported of [true, false]) {
+        const { opts } = openCodeFixture({
+          custom: { type: 'api', key },
+          ...(withSupported ? { opencode: { type: 'api', key: 'fixture-supported-key' } } : {})
         })
-      ).toThrow('OpenCode launch refused')
+        const cache = join(opts.hostHome, '.cache', 'opencode', 'models.json')
+        mkdirSync(dirname(cache), { recursive: true })
+        writeFileSync(cache, 'broken cache')
+        const launch = prepareMicrosandboxLaunch({
+          ...opts,
+          explicitEnv: {
+            MODEL_TOKEN: key,
+            OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { custom: { options: { baseURL, apiKey: key } } } })
+          }
+        })
+        expect(launch.microsandbox.secrets).toHaveLength(withSupported ? 1 : 0)
+        if (withSupported) expect(launch.microsandbox.secrets![0]!.host).toEqual(['opencode.ai'])
+        else expect(launch.env.NODE_EXTRA_CA_CERTS).toBeUndefined()
+        const auth = JSON.parse(
+          readFileSync(join(launch.runtimeHome!, '.local', 'share', 'opencode', 'auth.json'), 'utf8')
+        )
+        expect(auth.custom.key).toMatch(/^msb-secret-OPENCODE_API_/)
+        expect(launch.env.MODEL_TOKEN).toBe(auth.custom.key)
+        expect(JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT!).provider.custom.options.apiKey).toBe(auth.custom.key)
+        expect(JSON.stringify(launch)).not.toContain(key)
+      }
     }
-  })
+  )
 
   it.skipIf(process.platform !== 'linux').each(['legacy', 'versioned', 'dotenv'])(
     'protects %s DeepSeek keys while preserving other private provider credentials',

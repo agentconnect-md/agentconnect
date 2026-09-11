@@ -18,10 +18,19 @@ export interface MicrosandboxSecret {
 
 export interface MicrosandboxCredentials {
   secrets: MicrosandboxSecret[]
+  replacements: ReadonlyMap<string, string>
   sources: string[]
   seedExclusions: string[]
   preparePrivateHome: (home: string) => void
 }
+
+const CREDENTIAL_PREPARERS = new Map<
+  string,
+  (hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>) => MicrosandboxCredentials | undefined
+>([
+  ['dsh-acp', prepareDeepSeekSecret],
+  ['opencode', prepareOpenCodeSecrets]
+])
 
 export function prepareMicrosandboxCredentials(
   runtimeId: string,
@@ -29,19 +38,11 @@ export function prepareMicrosandboxCredentials(
   hostEnv: NodeJS.ProcessEnv,
   explicitEnv: Record<string, string> = {}
 ): MicrosandboxCredentials | undefined {
-  return (
-    prepareDeepSeekSecret(runtimeId, runtime, hostEnv, explicitEnv) ??
-    prepareOpenCodeSecrets(runtimeId, runtime, hostEnv, explicitEnv)
-  )
+  const id = isDeepSeekRuntime(runtimeId, runtime) ? 'dsh-acp' : runtimeId
+  return CREDENTIAL_PREPARERS.get(id)?.(hostEnv, explicitEnv)
 }
 
-export function prepareDeepSeekSecret(
-  runtimeId: string,
-  runtime: RuntimeDef | undefined,
-  hostEnv: NodeJS.ProcessEnv,
-  explicitEnv: Record<string, string> = {}
-) {
-  if (!isDeepSeekRuntime(runtimeId, runtime)) return undefined
+function prepareDeepSeekSecret(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string> = {}) {
   const env = 'DEEPSEEK_API_KEY'
   const files = runtimeStateLocations('dsh-acp', hostEnv).flatMap((location) =>
     (location.credentialFiles ?? []).map((file) => ({
@@ -69,12 +70,12 @@ export function prepareDeepSeekSecret(
   }
   const value = key?.trim()
   if (!value) return undefined
-  const secret: MicrosandboxSecret = {
+  const secret = {
     env,
     placeholder: 'msb-secret-DEEPSEEK_API_KEY',
     host: 'api.deepseek.com',
     readValue: () => value
-  }
+  } satisfies MicrosandboxSecret
   try {
     const endpoint = new URL(baseUrl ?? 'https://api.deepseek.com')
     if (
@@ -90,6 +91,7 @@ export function prepareDeepSeekSecret(
   }
   return {
     secrets: [secret],
+    replacements: new Map([[value, secret.placeholder]]),
     sources: files.map((file) => file.source),
     seedExclusions: [...new Set(files.map((file) => file.destination))],
     preparePrivateHome(home: string) {

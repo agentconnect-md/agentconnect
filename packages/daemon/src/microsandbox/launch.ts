@@ -27,6 +27,7 @@ import { SESSIONS_DIR } from '../workspace/session-layout.js'
 import { MICROSANDBOX_SOCKET_BRIDGES, MICROSANDBOX_TUNNEL_PATHS } from './socket-bridge.js'
 import { OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT } from './overlay.js'
 import { prepareMicrosandboxCredentials, type MicrosandboxSecret } from './secrets.js'
+import { replaceEnvironmentSecrets } from './secret-values.js'
 
 const IMAGE_PATH = '/opt/agentconnect/pathbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 const HOST_IPC_ENV = [
@@ -114,7 +115,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
   const credentials = prepareSharedRuntimeCredentials({ runtimeId: opts.runtimeId, runtime: opts.runtime, hostEnv })
   const protectedCredentials = prepareMicrosandboxCredentials(opts.runtimeId, opts.runtime, hostEnv, opts.explicitEnv)
   if (
-    protectedCredentials &&
+    protectedCredentials?.secrets.length &&
     [...TLS_TRUST_ENV, 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'].some((name) =>
       (opts.explicitEnv?.[name] ?? hostEnv[name])?.trim()
     )
@@ -196,15 +197,14 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
 
   const env = { ...runtimeHomeEnvironment(opts.runtimeId, runtimeHome, opts.explicitEnv, hostEnv), ...credentials?.env }
   if (protectedCredentials) {
+    replaceEnvironmentSecrets(env, protectedCredentials.replacements)
     for (const secret of protectedCredentials.secrets) {
-      for (const [name, value] of Object.entries(env))
-        env[name] = value
-          .replaceAll(secret.readValue(), secret.placeholder)
-          .replaceAll(JSON.stringify(secret.readValue()).slice(1, -1), secret.placeholder)
       env[secret.env] = secret.placeholder
     }
-    env.NODE_EXTRA_CA_CERTS = '/.msb/tls/ca.pem'
-    env.SSL_CERT_FILE = env.REQUESTS_CA_BUNDLE = env.CURL_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt'
+    if (protectedCredentials.secrets.length) {
+      env.NODE_EXTRA_CA_CERTS = '/.msb/tls/ca.pem'
+      env.SSL_CERT_FILE = env.REQUESTS_CA_BUNDLE = env.CURL_CA_BUNDLE = '/etc/ssl/certs/ca-certificates.crt'
+    }
   }
   for (const name of HOST_IPC_ENV) delete env[name]
   // Drop ambient Docker client settings, but keep explicit guest config, including materialized registry config.
