@@ -108,6 +108,8 @@ function makeRoutable(daemon: Daemon): void {
 function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
   const manager = {
     driverFor: vi.fn(() => ({})),
+    prepareEnvironment: vi.fn(async () => {}),
+    refreshEnvironment: vi.fn(async () => {}),
     environmentIds: vi.fn(async () => environments),
     suspend: vi.fn(async () => {}),
     suspendIdle: vi.fn(async () => {}),
