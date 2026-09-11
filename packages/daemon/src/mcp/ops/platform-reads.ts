@@ -4,12 +4,14 @@ import { platformLabel } from '../../platforms/read-ports.js'
 import type { McpContentResult, MessageGateway, SessionContext } from './context.js'
 import {
   ambiguousIntegrations,
+  askOnlyWithChannel,
+  askWhichIntegration,
   integrationsOnPlatform,
   MULTI_INTEGRATION_NOTE,
   resolveGatewayForPlatform,
   type GatewayDeps
 } from './gateway.js'
-import { askHost, type AskDeps } from '../ask.js'
+import type { AskDeps } from '../ask.js'
 import { optionalBoundedInt, optionalString, parseArgs, requiredString } from './args.js'
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
@@ -63,7 +65,7 @@ export const READ_ATTACHMENT_ARGS = z.object({
   mimeType: optionalString('mimeType')
 })
 
-/** The platform-neutral read deps: live gateways plus the history-backed fallbacks for platforms whose bot API cannot enumerate chats or users. */
+/** The platform-neutral read deps: live gateways plus the history-backed fallbacks for platforms whose bot API cannot enumerate chats or users. `AskDeps` is restated rather than inherited by accident: these reads ask on their OWN (`historyBot`), not only through the resolver. */
 export interface PlatformReadDeps extends GatewayDeps, AskDeps {
   /** Conversation targets this agent has been triggered in on a platform, from local session history; backs the `listChannels` fallback for platforms whose bot API can't enumerate chats (Telegram), and absent ⇒ no fallback (the empty live list stands). `integrationId` scopes the answer to ONE physical bot's history; omitted ⇒ the agent's only bot on the platform, and nothing at all when it has several. */
   observedChannels?: (
@@ -101,19 +103,6 @@ function guessMimeFromUrl(url: string): string | undefined {
   return ext ? map[ext] : undefined
 }
 
-/** The two reads that answer from observed session history, each asking under its own key so two of them in one turn never consume each other's answer. */
-type HistoryRead = 'listChannels' | 'listKnownUsers'
-
-/** The ask key of a history-backed read. */
-function historyAskKey(tool: HistoryRead): string {
-  return `${tool}.integrationId`
-}
-
-/** Whether the host has ALREADY answered this read's ask — read before any gateway work, because the answering round must not spend a second platform API call the asking round already spent. */
-function hasHistoryAnswer(deps: PlatformReadDeps, tool: HistoryRead): boolean {
-  return deps.ask?.answer(historyAskKey(tool)) !== undefined
-}
-
 /** Whose observed history a read may see. */
 interface HistoryBot {
   /** The bot to read; undefined ⇒ the agent's only bot on the platform, which the daemon resolves. */
@@ -122,12 +111,12 @@ interface HistoryBot {
   chosen?: string
 }
 
-/** #1965 Gap A: which bot's history a history-backed read sees. The guard is {@link ambiguousIntegrations}: this session's own bot answers "whose history", and it is the bot an unqualified `sendMessage` resolves to, so the ids this read returns stay reachable. Genuinely ambiguous (several bots on the target platform, none of them this session's) ⇒ ask the agent's own host over that trusted enum; undefined ⇒ the ask cannot be made, was declined, or named an id we never offered, and the caller falls through to the suppressed result. */
+/** #1965 Gap A: which bot's history a history-backed read sees. The guard is {@link ambiguousIntegrations}: this session's own bot answers "whose history", and it is the bot an unqualified `sendMessage` resolves to, so the ids this read returns stay reachable. Genuinely ambiguous (several bots on the target platform, none of them this session's) ⇒ ask the agent's own host over that trusted enum, under the SAME key `resolveGatewayForPlatform` asks with, so a read that resolved a gateway first reuses that answer instead of asking twice. Undefined ⇒ the ask cannot be made, was declined, or named an id we never offered, and the caller falls through to the suppressed result. */
 function historyBot(
   ctx: SessionContext,
   deps: PlatformReadDeps,
   platform: string,
-  tool: HistoryRead
+  purpose: string
 ): HistoryBot | undefined {
   const ambiguous = ambiguousIntegrations(ctx, platform)
   // Nothing to guess: this session's own bot on the platform, else the agent's only one there.
@@ -135,25 +124,13 @@ function historyBot(
     const own = integrationsOnPlatform(ctx, platform).find((i) => i.id === ctx.integrationId)
     return { ...(own ? { integrationId: own.id } : {}) }
   }
-  const ids = ambiguous.map((i) => i.id)
-  const label = platformLabel(platform)
-  const asked = askHost(deps.ask, historyAskKey(tool), {
-    message: `This agent has ${ids.length} ${label} integrations and none of them owns this conversation. Whose observed history should \`${tool}\` read?`,
-    fields: {
-      integrationId: {
-        kind: 'choice',
-        title: `${label} integration`,
-        description: 'The bot whose history is read; a chat reached via one bot is not reachable by another.',
-        options: ids.map((id) => ({ value: id }))
-      }
-    },
-    required: ['integrationId']
-  })
-  if (asked.state !== 'answered') return undefined
-  const chosen = asked.content.integrationId
-  // The answer comes from the host, so it is untrusted input: only an OFFERED id is accepted.
-  if (typeof chosen !== 'string' || !ids.includes(chosen)) return undefined
-  return { integrationId: chosen, chosen }
+  const chosen = askWhichIntegration(
+    deps,
+    platform,
+    ambiguous.map((i) => i.id),
+    purpose
+  )
+  return chosen ? { integrationId: chosen, chosen } : undefined
 }
 
 /** A read a human disambiguated came back empty: name whose history was empty, so the model reports that instead of re-calling the tool and putting the same question in front of the same human again (answers live in the SDK's per-call state, so a fresh call always asks afresh). */
@@ -172,7 +149,7 @@ export async function listKnownUsers(
 ): Promise<unknown> {
   const platform = parseArgs(LIST_KNOWN_USERS_ARGS, args).platform ?? ctx.platform
   if (integrationsOnPlatform(ctx, platform).length === 0) throw new Error(`this agent has no ${platform} integration`)
-  const bot = historyBot(ctx, deps, platform, 'listKnownUsers')
+  const bot = historyBot(ctx, deps, platform, 'list the users it has seen')
   // No answer to be had: today's exact result, note included.
   if (!bot) return { platform, users: [], note: MULTI_INTEGRATION_NOTE }
   const users = (await deps.observedUsers?.(ctx.agentId, platform, bot.integrationId)) ?? []
@@ -188,32 +165,25 @@ export async function listChannels(
 ): Promise<unknown> {
   const parsed = parseArgs(LIST_CHANNELS_ARGS, args)
   const platform = parsed.platform ?? ctx.platform
-  const mustAsk = ambiguousIntegrations(ctx, platform).length > 0
   const suppressed = { platform, channels: [], source: 'observed', note: MULTI_INTEGRATION_NOTE }
-  const observedResult = async (bot: HistoryBot, ranLive: boolean) => {
+  const observedResult = async (bot: HistoryBot) => {
     const channels = (await deps.observedChannels?.(ctx.agentId, platform, bot.integrationId)) ?? []
     const note = bot.chosen !== undefined && channels.length === 0 ? emptyHistoryNote(platform, bot.chosen) : undefined
-    return {
-      platform,
-      channels,
-      // Where the returned list came from: an empty fallback leaves the (equally empty) live answer standing, and the answering round below never ran one.
-      source: channels.length > 0 || !ranLive ? 'observed' : 'live',
-      ...(note ? { note } : {})
-    }
+    // Where the returned list came from: an empty fallback leaves the (equally empty) live answer standing.
+    return { platform, channels, source: channels.length > 0 ? 'observed' : 'live', ...(note ? { note } : {}) }
   }
-  // THE REPLAY RULE, positionally: the answering round reads its answer here and never reaches the live enumeration below — a platform API call the asking round already spent, on a platform whose bot API cannot enumerate chats at all, so it would return the same [].
-  if (mustAsk && !parsed.integrationId && hasHistoryAnswer(deps, 'listChannels')) {
-    const bot = historyBot(ctx, deps, platform, 'listChannels')
-    return bot ? await observedResult(bot, false) : suppressed
-  }
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  // THE REPLAY RULE, positionally: the ask is now inside `resolveGatewayForPlatform`, BEFORE this live enumeration — so the asking round spends no platform call, the answering round spends exactly one, and it spends it on the bot the human named rather than on whichever candidate came first.
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'list channels'
+  })
   const live = await gw.listChannels()
   // A platform whose bot API can't enumerate chats (Telegram) returns []; fall back to the chats this agent has actually been active in, from local session history.
   if (live.length > 0) return { platform, channels: live, source: 'live' }
   // The fallback is ONE physical bot's history: a named integration IS that bot (what the suppression note asks for), otherwise this session's own bot, otherwise the host's answer.
-  if (parsed.integrationId) return await observedResult({ integrationId: parsed.integrationId }, true)
-  const bot = historyBot(ctx, deps, platform, 'listChannels')
-  return bot ? await observedResult(bot, true) : suppressed
+  if (parsed.integrationId) return await observedResult({ integrationId: parsed.integrationId })
+  const bot = historyBot(ctx, deps, platform, 'list the chats it has been active in')
+  return bot ? await observedResult(bot) : suppressed
 }
 
 export async function listChannelMembers(
@@ -223,9 +193,14 @@ export async function listChannelMembers(
 ): Promise<unknown> {
   const parsed = parseArgs(LIST_CHANNEL_MEMBERS_ARGS, args)
   const platform = parsed.platform ?? ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
-  // The current channel only defaults in for a same-platform read; a different
-  // platform has no meaningful "current channel", so `channel` is required there.
+  const { gw, sameConvo } = resolveGatewayForPlatform(
+    ctx,
+    deps,
+    platform,
+    parsed.integrationId,
+    askOnlyWithChannel(parsed.channel, 'list the members of this channel')
+  )
+  // The current channel only defaults in for a same-platform read; a different platform has no meaningful "current channel", so `channel` is required there.
   const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
   if (!channel)
     throw new Error(`channel is required to list members on ${platform} (a different platform than this session)`)
@@ -239,7 +214,10 @@ export async function getUserProfile(
 ): Promise<unknown> {
   const parsed = parseArgs(GET_USER_PROFILE_ARGS, args)
   const platform = parsed.platform ?? ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'read this user profile'
+  })
   return { platform, ...(await gw.getUserProfile(parsed.user)) }
 }
 
@@ -301,7 +279,13 @@ export async function getThreadHistory(
 ): Promise<unknown> {
   const parsed = parseArgs(GET_THREAD_HISTORY_ARGS, args)
   const platform = ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw, sameConvo } = resolveGatewayForPlatform(
+    ctx,
+    deps,
+    platform,
+    parsed.integrationId,
+    askOnlyWithChannel(parsed.channel, 'read this thread')
+  )
   const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
   if (!channel) throw new Error(`channel is required to read a thread on ${platform} (another bot than this session's)`)
   if (!gw.getThreadReplies)
