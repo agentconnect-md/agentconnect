@@ -4,9 +4,11 @@
  * logic over faked repos: no DB, no I/O.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { HookService, type HookAgentReads } from './hook.service.js'
+import { HookService, type GiteaHookCompileSources, type HookAgentReads } from './hook.service.js'
 import type {
   AgentRecord,
+  GiteaConnectionRecord,
+  GiteaRepositoryBindingRecord,
   GithubInstallationRecord,
   GitlabAgentAccountRecord,
   GitlabProjectBindingRecord,
@@ -124,6 +126,12 @@ function make(
     pause?: boolean | null
     gitlabBinding?: Partial<GitlabProjectBindingRecord> | null
     gitlabAccounts?: GitlabAgentAccountRecord[]
+    /** The gitea compile sources (gitea-integration.md §7); null ⇒ the binding read answers nothing. */
+    gitea?: {
+      binding?: Partial<GiteaRepositoryBindingRecord> | null
+      connection?: Partial<GiteaConnectionRecord> | null
+      keys?: { current: string; next: string | null } | null
+    }
   } = {}
 ) {
   const agents: HookAgentReads = {
@@ -168,10 +176,56 @@ function make(
       undefined,
       gitlabBindings,
       gitlabWebhookSecrets,
-      gitlabAccounts
+      gitlabAccounts,
+      undefined,
+      undefined,
+      opts.gitea ? giteaSources(opts.gitea) : undefined
     ),
     assigns,
     removes
+  }
+}
+
+/** A ready gitea binding, its connected bot, and the sealed keys — the gitea-compile sources (§7). */
+function giteaSources(opts: NonNullable<Parameters<typeof make>[0]['gitea']>): GiteaHookCompileSources {
+  const binding: GiteaRepositoryBindingRecord = {
+    id: 'gitea-binding-1',
+    orgId: 'org',
+    connectionId: 'gitea-connection-1',
+    repoId: 556677n,
+    repoPath: 'example-org/example-repo',
+    cloneUrl: 'https://gitea.com/example-org/example-repo.git',
+    defaultBranch: 'main',
+    webhookId: 21n,
+    desiredEventsHash: null,
+    lastVerifiedDeliveryAt: null,
+    convergeOwedAt: null,
+    state: 'ready',
+    stateReason: null,
+    createdAt: new Date(),
+    ...opts.binding
+  }
+  const connection: GiteaConnectionRecord = {
+    id: 'gitea-connection-1',
+    orgId: 'org',
+    createdByUserId: null,
+    botUserId: 9042n,
+    botUsername: 'example-bot',
+    botDisplayName: 'Example Bot',
+    credentialEpoch: 1n,
+    instanceVersion: '1.27.3',
+    state: 'connected',
+    lastVerifiedAt: null,
+    createdAt: new Date(),
+    ...opts.connection
+  }
+  return {
+    bindings: { byRepo: vi.fn(async () => (opts.binding === null ? null : binding)) },
+    connections: { get: vi.fn(async () => (opts.connection === null ? null : connection)) },
+    webhookSecrets: {
+      get: vi.fn(async () => (opts.keys === null ? null : (opts.keys ?? { current: 'a'.repeat(64), next: null })))
+    },
+    host: 'https://gitea.example.test'
   }
 }
 
@@ -414,5 +468,46 @@ describe('HookService.compile — gitlab', () => {
       gitlabAccounts: [account('11111111-2222-3333-4444-555555555555', 9043n)]
     })
     expect(await foreign.svc.compile(hook({ ...GITLAB_HOOK }))).toBeNull()
+  })
+})
+
+const GITEA_HOOK: Partial<HookRecord> = {
+  kind: 'gitea',
+  repoId: 556677n,
+  repoFullName: 'example-org/example-repo',
+  events: ['merge_request:*'],
+  commentFamilies: ['merge_request']
+}
+
+describe('HookService.compile — gitea (gitea-integration.md §7)', () => {
+  it('carries the repository, the bot as the veto set, the signing keys and the host inline', async () => {
+    const { svc } = make({ gitea: { keys: { current: 'a'.repeat(64), next: 'b'.repeat(64) } } })
+    const rule = await svc.compile(hook(GITEA_HOOK))
+    expect(rule?.kind).toBe('gitea')
+    expect(rule?.gitea).toEqual({
+      repoId: '556677',
+      repoPath: 'example-org/example-repo',
+      sessionKeyPrefix: 'gitea:556677',
+      events: ['merge_request:*'],
+      // The stored merge_request scope is the pull_request SUBJECT on the wire.
+      commentFamilies: ['pull_request'],
+      mentionOnly: false,
+      agentName: 'review-agent',
+      botUserId: '9042',
+      botUsername: 'example-bot',
+      signingKey: 'a'.repeat(64),
+      nextSigningKey: 'b'.repeat(64),
+      host: 'https://gitea.example.test'
+    })
+  })
+
+  it('leaves the pool without a binding, a webhook, a key, or a live connection, and never falls through to github', async () => {
+    expect(await make({ gitea: { binding: null } }).svc.compile(hook(GITEA_HOOK))).toBeNull()
+    expect(await make({ gitea: { binding: { webhookId: null } } }).svc.compile(hook(GITEA_HOOK))).toBeNull()
+    expect(await make({ gitea: { binding: { state: 'cleanup_pending' } } }).svc.compile(hook(GITEA_HOOK))).toBeNull()
+    expect(await make({ gitea: { keys: null } }).svc.compile(hook(GITEA_HOOK))).toBeNull()
+    expect(await make({ gitea: { connection: { state: 'disconnecting' } } }).svc.compile(hook(GITEA_HOOK))).toBeNull()
+    // No gitea sources wired at all: the row compiles to nothing rather than to a GitHub rule.
+    expect(await make({ installations: [installation('1')] }).svc.compile(hook(GITEA_HOOK))).toBeNull()
   })
 })
