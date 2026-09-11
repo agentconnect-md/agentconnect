@@ -12,9 +12,10 @@
  * creates the row. ACK is sent only after the durable run and its R2a
  * projection converge, allowing the daemon to release the report outbox body.
  */
-import { isFrame } from '@agentconnect.md/protocol'
+import { codeHostHookMetadataOf, isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, HookId } from '../../domain/ids.js'
 import { reportedNoteState } from '../../codehost/note-projection.service.js'
+import { githubHookRunSubject } from '../../github/hook-run-subject.js'
 import { githubProjectionIntent } from '../../github/projection-intent.js'
 import { hookRuntimeProjectionState } from '../../github/projection-state.js'
 import { frameOrgId } from './frame-org.js'
@@ -30,7 +31,12 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not in the organization this frame acts in', false)
     return
   }
-  const projectionIntent = githubProjectionIntent(p.event, p.github, p.reviewPolicy)
+  const host = codeHostHookMetadataOf(p)
+  const projectionIntent = githubProjectionIntent(
+    p.event,
+    host?.provider === 'github' ? host.metadata : undefined,
+    p.reviewPolicy
+  )
   const projectionDesiredState =
     p.reviewResult?.state === 'submitted'
       ? p.reviewResult.event === 'REQUEST_CHANGES' || p.reviewResult.verdict === 'fail'
@@ -57,20 +63,7 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
       ...(p.reportingMode !== undefined ? { reportingModeSnapshot: p.reportingMode } : {}),
       ...(p.gateMode !== undefined ? { gateModeSnapshot: p.gateMode } : {}),
       projectionIntent,
-      ...(p.github
-        ? {
-            repoId: BigInt(p.github.repoId),
-            repoFullName: p.github.repoFullName,
-            sourceInstallationId: BigInt(p.github.sourceInstallationId),
-            subjectKind: p.github.subjectKind,
-            ...(p.github.pullNumber !== undefined ? { pullNumber: p.github.pullNumber } : {}),
-            ...(p.github.headSha ? { headSha: p.github.headSha } : {}),
-            ...(p.github.baseSha ? { baseSha: p.github.baseSha } : {}),
-            ...(p.github.reportSha ? { reportSha: p.github.reportSha } : {}),
-            ...(p.github.isDraft !== undefined ? { isDraft: p.github.isDraft } : {}),
-            ...(p.github.baseChanged !== undefined ? { baseChanged: p.github.baseChanged } : {})
-          }
-        : {}),
+      ...githubHookRunSubject(host),
       ...(p.durationMs !== undefined ? { durationMs: p.durationMs } : {}),
       ...(p.sessionId ? { sessionId: p.sessionId } : {}),
       ...(p.reason ? { reason: p.reason } : {}),
@@ -107,7 +100,7 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
     await deps.githubRunCoordinator?.afterReport(HookId(p.hookId), p.deliveryKey)
     // §16 terminal edge. Only a gitlab hook projects a note; the desired generation is recorded
     // before the ACK so a daemon that retries its report cannot outrun the ledger.
-    if (p.gitlab && hook.kind === 'gitlab') {
+    if (host?.provider === 'gitlab' && hook.kind === host.provider) {
       await deps.codeHostNoteProjection?.afterReport({
         hookId: p.hookId,
         agentId: p.agentId,
@@ -116,7 +109,7 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
         state: reportedNoteState(p.status, p.reason),
         reason: p.reason ?? null,
         ...(p.sessionId ? { sessionId: p.sessionId } : {}),
-        gitlab: p.gitlab,
+        gitlab: host.metadata,
         snapshot: p,
         at: completedAt
       })

@@ -1,5 +1,5 @@
 /** `hook/start` metadata barrier: persist before the accepted turn is prompted. */
-import { isFrame } from '@agentconnect.md/protocol'
+import { codeHostHookMetadataOf, isFrame } from '@agentconnect.md/protocol'
 import { DaemonId, HookId } from '../../domain/ids.js'
 import { CodeHostReviewBrokerError } from '../../codehost/review-lease.service.js'
 import { GithubReviewBrokerError } from '../../github/review-broker.service.js'
@@ -13,15 +13,15 @@ export const handleHookStart: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'organization is required', false)
     return
   }
-  // The provider one-of routes the barrier (§17.2): the GitLab arm records the started head on the
-  // accepted run and opens the §16 projection's `running` edge, with no GitHub review broker in it.
-  if (frame.payload.gitlab) {
+  // The provider member routes the barrier (§17.2): the GitLab arm records the started head and opens the §16 `running` edge, with no GitHub review broker in it.
+  const host = codeHostHookMetadataOf(frame.payload)
+  if (host?.provider === 'gitlab') {
     if (!deps.codeHostReviewBroker) {
       conn.sendError(frame.id, 'SCOPE_DENIED', 'code-host reviews are not enabled on this control plane', false)
       return
     }
     const hook = await deps.hook.get(orgId, HookId(frame.payload.hookId))
-    if (!hook || hook.kind !== 'gitlab') {
+    if (!hook || hook.kind !== host.provider) {
       conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not a gitlab hook in this organization', false)
       return
     }
@@ -36,7 +36,7 @@ export const handleHookStart: Handler = async (frame, conn, deps) => {
         orgId,
         state: 'running',
         ...(frame.payload.sessionId ? { sessionId: frame.payload.sessionId } : {}),
-        gitlab: frame.payload.gitlab,
+        gitlab: host.metadata,
         snapshot: frame.payload,
         at: new Date(deps.clock.now())
       })

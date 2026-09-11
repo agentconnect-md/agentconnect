@@ -19,6 +19,7 @@ import type { WebSocketServer } from 'ws'
 import {
   DUTY_GRANT_MEMBERS_MAX,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  codeHostHookMetadataOf,
   WORKSPACE_SESSION_READ_FEATURE
 } from '@agentconnect.md/protocol'
 
@@ -52,6 +53,7 @@ import { SessionPullRequestLinkService } from './github/session-pull-request-lin
 import { SessionPullRequestFeedbackService } from './github/session-pull-request-feedback.service.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
 import { CodeHostNoteProjectionService } from './codehost/note-projection.service.js'
+import { githubHookRunSubject } from './github/hook-run-subject.js'
 import { githubProjectionIntent } from './github/projection-intent.js'
 import { HookRedeliveryReconciler } from './orchestrator/hookRedeliveryReconciler.js'
 import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-identity.js'
@@ -2111,7 +2113,9 @@ export function buildContainer(
     onRunReport: async (report) => {
       const firedAt = new Date(report.firedAt)
       if (Number.isNaN(firedAt.getTime())) return
-      const projectionIntent = githubProjectionIntent(report.event, report.github, report.reviewPolicy)
+      const host = codeHostHookMetadataOf(report)
+      const github = host?.provider === 'github' ? host.metadata : undefined
+      const projectionIntent = githubProjectionIntent(report.event, github, report.reviewPolicy)
       const delivery = await repos.hook.recordDeliveryResult(HookId(report.hookId), {
         deliveryKey: report.deliveryKey,
         firedAt,
@@ -2128,32 +2132,14 @@ export function buildContainer(
         ...(report.reportingMode !== undefined ? { reportingModeSnapshot: report.reportingMode } : {}),
         ...(report.gateMode !== undefined ? { gateModeSnapshot: report.gateMode } : {}),
         projectionIntent,
-        ...(report.github
-          ? {
-              repoId: BigInt(report.github.repoId),
-              repoFullName: report.github.repoFullName,
-              sourceInstallationId: BigInt(report.github.sourceInstallationId),
-              subjectKind: report.github.subjectKind,
-              ...(report.github.pullNumber !== undefined ? { pullNumber: report.github.pullNumber } : {}),
-              ...(report.github.headSha ? { headSha: report.github.headSha } : {}),
-              ...(report.github.baseSha ? { baseSha: report.github.baseSha } : {}),
-              ...(report.github.reportSha ? { reportSha: report.github.reportSha } : {}),
-              ...(report.github.isDraft !== undefined ? { isDraft: report.github.isDraft } : {}),
-              ...(report.github.baseChanged !== undefined ? { baseChanged: report.github.baseChanged } : {})
-            }
-          : {}),
+        ...githubHookRunSubject(host),
         ...(report.event ? { event: report.event } : {}),
         ...(report.reason ? { reason: report.reason } : {})
       })
       if (delivery.accepted && report.status === 'accepted') {
-        if (report.github && delivery.newlyObserved) {
+        if (github && delivery.newlyObserved) {
           void repos.hook
-            .refreshGithubRepoFullName(
-              HookId(report.hookId),
-              BigInt(report.github.repoId),
-              report.github.repoFullName,
-              firedAt
-            )
+            .refreshGithubRepoFullName(HookId(report.hookId), BigInt(github.repoId), github.repoFullName, firedAt)
             .then(({ hooks, agentIds }) =>
               Promise.all([
                 ...hooks.map((hook) => hookService.broadcast(hook)),
@@ -2194,10 +2180,10 @@ export function buildContainer(
       // §16 delivery-stage edge: an accepted gitlab MR fire opens `queued`, a delivery failure
       // reads `skipped`. Fire-and-forget like the Check convergence above — the desired generation
       // is durable, so a lost projection edge is repaired by the next one.
-      if (delivery.accepted && codeHostNoteProjection && report.gitlab) {
+      if (delivery.accepted && codeHostNoteProjection && host?.provider === 'gitlab') {
         void (async () => {
           const hook = await repos.hook.getUnscoped(HookId(report.hookId))
-          if (hook?.kind !== 'gitlab') return
+          if (hook?.kind !== host.provider) return
           const edge = {
             hookId: report.hookId,
             agentId: report.agentId,
@@ -2205,7 +2191,7 @@ export function buildContainer(
             orgId: hook.orgId,
             state: 'queued' as const,
             reason: report.reason ?? null,
-            gitlab: report.gitlab,
+            gitlab: host.metadata,
             snapshot: report,
             at: firedAt
           }

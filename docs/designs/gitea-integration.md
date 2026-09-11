@@ -476,9 +476,12 @@ rerun frame with a `gitea` member.
   hosts a compile-time event.
 - The gitcred purpose enum gains `gitea_hook_reply` and `gitea_effect`; the
   membership-authorization request gains the sender username beside the id.
-- Hook, relay, and review frames gain `gitea` members through the
-  discriminated-union shape §13 introduces, never as a third optional
-  sibling.
+- Hook and relay frames gain a `gitea` optional member beside `github` and
+  `gitlab`. The wire keeps one optional member per provider, so an older peer
+  keeps decoding today's frames and the new member reaches only a peer that
+  negotiated `gitea-v1`; what every consumer reads is the decode-time view §13
+  derives from those members, so the new member also adds its arm there. The
+  review frames already carry an open provider string and gain no member.
 
 ## 12. Console, REST, and Setup Server
 
@@ -514,9 +517,15 @@ tolerable with two providers become three-way `switch`es in core code — the
 shape the platform-module design forbids. The first change of the sequence
 is a behavior-neutral refactor of exactly these:
 
-1. **Hook, relay, and review frames** carry `github` and `gitlab` as optional
-   siblings with a mutual-exclusion refinement; they become one provider-keyed
-   discriminated member.
+1. **Hook and relay frames** keep `github` and `gitlab` as optional wire
+   siblings — an older peer must keep decoding today's frames, and a new member
+   is only ever sent to a peer that negotiated its feature — and the protocol
+   derives one provider-keyed discriminated view from them at decode time:
+   `codeHostHookMetadataOf` over the metadata frames, `codeHostHookRuleOf` over
+   the compiled rule, and `pickCodeHostHookMembers` for a frame that only
+   forwards the members. Every consumer reads the view, and the one-of
+   refinements count the same arms. A third provider adds one optional wire
+   member and one normalization arm.
 2. **The daemon's managed-host table** is a closed `'github' | 'gitlab'` union
    with a hand-written decoder; it becomes an open provider string with a
    per-provider path parser registered beside the credential adapter.

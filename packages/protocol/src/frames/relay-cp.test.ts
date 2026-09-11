@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  codeHostHookRuleOf,
   ELICIT_FORM_INPUT_ACTION,
   elicitFormBlockId,
   elicitFormBlockIndex,
@@ -1123,5 +1124,59 @@ describe('relay↔CP wire — union separation (§8 standalone frame union)', ()
     for (const t of RELAY_CP_FRAME_TYPES) expect(isRelayCpFrameType(t)).toBe(true)
     expect(isRelayCpFrameType('auth')).toBe(false)
     expect(isRelayCpFrameType('rd/msg')).toBe(false)
+  })
+})
+
+describe('code-host rule view (gitea-integration.md §13)', () => {
+  const base = {
+    hookId: '88888888-8888-4888-8888-888888888888',
+    agentId: AGENT_ID,
+    daemonId: DAEMON_ID,
+    sessionMode: 'perThread' as const
+  }
+
+  it('keys a compiled rule by its kind and repository', () => {
+    const github = RcHookAssign.parse({
+      ...base,
+      kind: 'github',
+      github: {
+        repoId: '123456789',
+        repoFullName: 'acme/infra',
+        events: ['issues:opened'],
+        labelFilter: [],
+        mentionOnly: false,
+        installationIds: ['7']
+      }
+    })
+    expect(codeHostHookRuleOf(github)).toEqual({
+      provider: 'github',
+      repo: { provider: 'github', externalId: '123456789', path: 'acme/infra' },
+      rule: github.github
+    })
+    const gitlab = RcHookAssign.parse({
+      ...base,
+      kind: 'gitlab',
+      gitlab: {
+        projectId: '4210',
+        projectPath: 'example-group/example-project',
+        sessionKeyPrefix: 'gitlab:4210',
+        events: ['merge_request:*'],
+        mentionOnly: false,
+        serviceAccountUserId: '99',
+        serviceAccountUsername: 'agentconnect-p4210',
+        signingToken: 'whsec_example'
+      }
+    })
+    expect(codeHostHookRuleOf(gitlab)).toEqual({
+      provider: 'gitlab',
+      repo: { provider: 'gitlab', externalId: '4210', path: 'example-group/example-project' },
+      rule: gitlab.gitlab
+    })
+  })
+
+  it('has nothing to read on the generic kind or a kind missing its member', () => {
+    const webhook = RcHookAssign.parse({ ...base, kind: 'webhook', webhook: { urlToken: 't'.repeat(32) } })
+    expect(codeHostHookRuleOf(webhook)).toBeUndefined()
+    expect(codeHostHookRuleOf({ kind: 'gitlab' })).toBeUndefined()
   })
 })

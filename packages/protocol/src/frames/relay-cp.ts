@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { frameSchema } from '../envelope.js'
-import { HOOK_KINDS } from '../code-host.js'
+import { HOOK_KINDS, type CodeHostProvider, type CodeHostRepoRef } from '../code-host.js'
 import { ErrorFrame } from './error.js'
 import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
@@ -316,6 +316,50 @@ export type RcGithubRerequestResult = z.infer<typeof RcGithubRerequestResult>
 
 // ── hooks (webhook-triggers-and-github-events.md; pool-wide broadcast) ──────
 
+/** The github member of a compiled rule (P2). */
+export const RcGithubHookRule = z.object({
+  repoId: z.string(), // GitHub numeric repo id (BigInt as string) — the match key
+  repoFullName: z.string(), // display/logs only; never matched on
+  // Immutable per-thread session namespace; optional for a CP that predates rename-stable affinity.
+  sessionKeyPrefix: z.string().min(1).optional(),
+  events: z.array(z.string()), // 'issues:opened' / 'pull_request:*' / …
+  labelFilter: z.array(z.string()),
+  // Scopes GitHub's shared issue_comment event to the console-selected thread families; absent or empty keeps the legacy repo-wide meaning.
+  commentFamilies: z.array(z.enum(['issues', 'pull_request'])).optional(),
+  // P3 summon mode: authored text must @-mention this agent or the App; thread events still pass the live maintainer gate.
+  mentionOnly: z.boolean(),
+  // The broadcast handle: `@<appSlug>` keeps every matching rule in the repo fan-out (compiled from GITHUB_APP_SLUG).
+  appSlug: z.string().optional(),
+  // The targeted handle: `@<agentName>` keeps only this agent's rules; optional for a CP that predates targeted mentions.
+  agentName: z.string().optional(),
+  // The org's valid installation ids (BigInt as string): an event fires only if payload.installation.id is in the set.
+  installationIds: z.array(z.string())
+})
+export type RcGithubHookRule = z.infer<typeof RcGithubHookRule>
+
+/** The gitlab member of a compiled rule (gitlab-com-integration.md §11.3); it carries the signing token inline, so the rule is NEVER logged. */
+export const RcGitlabHookRule = z.object({
+  projectId: z.string().regex(/^[1-9]\d*$/), // numeric project id — the match key
+  projectPath: z.string().min(1), // display/logs only; never matched on
+  sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitlab:<projectId>
+  events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
+  // Removed feature, accepted and ignored for one release: an older relay still REQUIRES it, so the CP sends an empty array.
+  labelFilter: z.array(z.string()).optional(),
+  commentFamilies: z.array(z.enum(['issues', 'merge_request'])).optional(),
+  mentionOnly: z.boolean(),
+  agentName: z.string().optional(),
+  // The binding's runtime identity: loop prevention (§12.1) and the mention/reviewer targets.
+  serviceAccountUserId: z.string().regex(/^[1-9]\d*$/),
+  serviceAccountUsername: z.string().min(1),
+  // §12.1 veto set: every managed account bound to the project; additive optional (§17.3), a rule without it vetoes only the account above.
+  boundServiceAccountUserIds: z.array(z.string().regex(/^[1-9]\d*$/)).optional(),
+  // whsec_ Standard Webhooks signing key for §11.2 verification.
+  signingToken: z.string().min(1),
+  // The instance this rule addresses (§24.4), copied opaquely onto forwarded metadata as the turn-time host fence; absent means GitLab.com.
+  host: z.string().optional()
+})
+export type RcGitlabHookRule = z.infer<typeof RcGitlabHookRule>
+
 // C→R EVT — one enabled hook's compiled rule, broadcast to the WHOLE pool
 // (webhook-type ingress is pool-served, shared-bot-relay.md §5). Upsert
 // semantics: the CP re-sends the full frame on hook create/update/enable, on
@@ -344,66 +388,9 @@ export const RcHookAssign = z
       })
       .optional(),
     // kind=github (P2) — required for that kind
-    github: z
-      .object({
-        repoId: z.string(), // GitHub numeric repo id (BigInt as string) — the match key
-        repoFullName: z.string(), // display/logs only; never matched on
-        // Immutable per-thread session namespace. Optional for rolling
-        // compatibility with a CP that predates rename-stable affinity.
-        sessionKeyPrefix: z.string().min(1).optional(),
-        events: z.array(z.string()), // 'issues:opened' / 'pull_request:*' / …
-        labelFilter: z.array(z.string()),
-        // Optional disambiguator for GitHub's shared issue_comment event. Absent
-        // or empty preserves the legacy/API repo-wide meaning; a new CP stamps
-        // the console-selected thread families so the relay can isolate replies.
-        commentFamilies: z.array(z.enum(['issues', 'pull_request'])).optional(),
-        // P3 summon mode: every event's authored text must @-mention either
-        // this agent or the App. Thread events always pass the live maintainer
-        // gate in addition to this flag.
-        mentionOnly: z.boolean(),
-        // The App slug is the broadcast handle: `@<appSlug>` keeps every
-        // matching rule in the repo fan-out. Compiled from the CP's
-        // GITHUB_APP_SLUG (per-org Apps would move it per rule, open question 3).
-        appSlug: z.string().optional(),
-        // The immutable agent slug is the targeted handle: `@<agentName>` keeps
-        // only this agent's matching rules. Optional for rolling compatibility
-        // with a CP that predates targeted GitHub mentions.
-        agentName: z.string().optional(),
-        // The org's valid installation ids (BigInt as string) — the runtime
-        // attribution gate: an event fires only if payload.installation.id ∈ set.
-        installationIds: z.array(z.string())
-      })
-      .optional(),
-    // kind=gitlab (gitlab-com-integration.md §11.3) — required for that kind.
-    // The signing token rides inline exactly as the generic webhook's HMAC
-    // secret does; the rule is NEVER logged.
-    gitlab: z
-      .object({
-        projectId: z.string().regex(/^[1-9]\d*$/), // numeric project id — the match key
-        projectPath: z.string().min(1), // display/logs only; never matched on
-        sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitlab:<projectId>
-        events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
-        // Removed feature, accepted and ignored for one release: a relay predating
-        // this one still REQUIRES the member, so the CP keeps sending an empty array.
-        labelFilter: z.array(z.string()).optional(),
-        commentFamilies: z.array(z.enum(['issues', 'merge_request'])).optional(),
-        mentionOnly: z.boolean(),
-        agentName: z.string().optional(),
-        // The binding's runtime identity: loop prevention (§12.1) and the
-        // mention/reviewer targets.
-        serviceAccountUserId: z.string().regex(/^[1-9]\d*$/),
-        serviceAccountUsername: z.string().min(1),
-        // §12.1 veto set: every managed account bound to the project, including the one above.
-        // Additive optional (§17.3) — a rule without it vetoes only the account it names.
-        boundServiceAccountUserIds: z.array(z.string().regex(/^[1-9]\d*$/)).optional(),
-        // whsec_ Standard Webhooks signing key for §11.2 verification.
-        signingToken: z.string().min(1),
-        // The instance this rule addresses (§24.4). The relay treats it as opaque data and
-        // copies it onto the trusted metadata it forwards, where it is the turn-time fence
-        // against the session's spec-carried host. Absent means GitLab.com.
-        host: z.string().optional()
-      })
-      .optional()
+    github: RcGithubHookRule.optional(),
+    // kind=gitlab (gitlab-com-integration.md §11.3) — required for that kind
+    gitlab: RcGitlabHookRule.optional()
   })
   .superRefine((rule, ctx) => {
     if (rule.dispatchDaemonId !== undefined && rule.dispatchDaemonId !== rule.daemonId) {
@@ -415,6 +402,32 @@ export const RcHookAssign = z
     }
   })
 export type RcHookAssign = z.infer<typeof RcHookAssign>
+
+/** The rule member each provider's kind carries; a provider missing here fails to compile below. */
+interface CodeHostHookRuleByProvider {
+  github: RcGithubHookRule
+  gitlab: RcGitlabHookRule
+}
+
+/** Decode-time view of a compiled code-host rule (gitea-integration.md §13): `kind` names the provider whose member carries the rule, plus the rename-stable repo key. */
+export type CodeHostHookRule<P extends CodeHostProvider = CodeHostProvider> = {
+  [K in P]: { provider: K; repo: Required<CodeHostRepoRef>; rule: CodeHostHookRuleByProvider[K] }
+}[P]
+
+/** The code-host rule a compiled rule carries; undefined for the generic kind or a kind missing its member. */
+export function codeHostHookRuleOf(
+  rule: Pick<RcHookAssign, 'kind' | 'github' | 'gitlab'>
+): CodeHostHookRule | undefined {
+  if (rule.kind === 'github' && rule.github) {
+    const { repoId: externalId, repoFullName: path } = rule.github
+    return { provider: 'github', repo: { provider: 'github', externalId, path }, rule: rule.github }
+  }
+  if (rule.kind === 'gitlab' && rule.gitlab) {
+    const { projectId: externalId, projectPath: path } = rule.gitlab
+    return { provider: 'gitlab', repo: { provider: 'gitlab', externalId, path }, rule: rule.gitlab }
+  }
+  return undefined
+}
 
 // C→R EVT — drop one rule (hook disabled / deleted / agent unplaced).
 export const RcHookRemove = z.object({
