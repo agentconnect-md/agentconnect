@@ -103,6 +103,8 @@ model Org {
   gitlabConnections         GitlabConnection[]
   gitlabProjectBindings     GitlabProjectBinding[]
   gitlabAgentAccounts       GitlabAgentAccount[]
+  giteaConnections          GiteaConnection[]
+  giteaRepositoryBindings   GiteaRepositoryBinding[]
   slackUserConfigs          SlackUserConfig[]
   linearTokens              LinearToken[]
   inviteLink                OrgInviteLink?
@@ -167,6 +169,7 @@ model User {
   modifiedHooks                    HookDef[]                  @relation("HookModifiedBy")
   createdRepoAuths                 AgentRepoAuthorization[]   @relation("AgentRepoAuthCreatedBy")
   gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
+  giteaConnections                 GiteaConnection[]          @relation("GiteaConnectionCreatedBy")
   slackConfigs                     SlackUserConfig[]
   createdInviteLinks               OrgInviteLink[]            @relation("OrgInviteLinkCreatedBy")
   inviteRedemptions                OrgInviteRedemption[]
@@ -3052,6 +3055,94 @@ model GitlabInstanceState {
   updatedAt  DateTime @updatedAt @db.Timestamptz(6)
 
   @@map("gitlab_instance_state")
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Gitea integration (gitea-integration.md §4, §5) — one organization-level bot
+// user whose personal access token is the whole identity. Metadata here; the
+// sealed token lives ONLY in its side-table, read through the secret store.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// One organization's Gitea bot connection (§4.1). `botUserId` is deployment-globally unique: a bot
+/// serving two organizations would merge their veto sets and catalogs, so the same user can bind
+/// once per deployment. `state` is TEXT with the app-layer closed set:
+/// connected | token_rejected | disconnecting.
+model GiteaConnection {
+  id              String    @id @default(uuid()) @db.Uuid
+  orgId           String
+  createdByUserId String? // the AgentConnect user who pasted the token; null after user deletion
+  botUserId       BigInt // numeric Gitea user id of the bot — the stable identity
+  botUsername     String // display + the HTTPS basic-auth username; refreshed on verification
+  botDisplayName  String?
+  credentialEpoch BigInt    @default(1) // purge fence: bumped on every token replacement
+  instanceVersion String? // what `GET /api/v1/version` last reported through this connection
+  state           String
+  lastVerifiedAt  DateTime? @db.Timestamptz(6) // the last successful connect/replace check
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+
+  org       Org                      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User?                    @relation("GiteaConnectionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  secret    GiteaConnectionSecret?
+  bindings  GiteaRepositoryBinding[]
+
+  @@unique([botUserId])
+  @@index([orgId])
+  @@map("gitea_connection")
+}
+
+/// Sealed bot token, 1:1 with GiteaConnection (BotSecret discipline): list/DTO queries never join it.
+model GiteaConnectionSecret {
+  connectionId String @id @db.Uuid
+  token        String // stored SecretCipher representation
+
+  connection GiteaConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@map("gitea_connection_secret")
+}
+
+/// One managed Gitea repository (§5, §6): the org-scoped binding that owns the managed webhook.
+/// `state` is TEXT with the app-layer closed set: provisioning | ready | admin_degraded |
+/// runtime_degraded | cleanup_pending; `stateReason` names token_rejected, admin_lost,
+/// webhook_unverified and the other repair categories.
+model GiteaRepositoryBinding {
+  id                     String    @id @default(uuid()) @db.Uuid
+  orgId                  String
+  connectionId           String    @db.Uuid // the bot that administers and serves it
+  repoId                 BigInt // numeric Gitea repository id — the match key
+  repoPath               String // current owner/repo — display only, refreshed by the saga
+  cloneUrl               String? // the provider's own clone_url, never composed
+  defaultBranch          String?
+  webhookId              BigInt? // the one AgentConnect-managed repository webhook (§7)
+  desiredEventsHash      String? // the subscription union the webhook was last converged to
+  lastVerifiedDeliveryAt DateTime? @db.Timestamptz(6) // the relay last verified a delivery for this repository
+  convergeOwedAt         DateTime? @db.Timestamptz(6) // a contended pass still owes convergence (§10.2)
+  state                  String
+  stateReason            String?
+  createdAt              DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
+
+  org           Org                 @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection    GiteaConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  webhookSecret GiteaWebhookSecret?
+
+  @@unique([orgId, repoId])
+  @@index([orgId])
+  @@index([connectionId])
+  @@index([convergeOwedAt])
+  @@map("gitea_repository_binding")
+}
+
+/// Sealed webhook signing keys, 1:1 with the binding (§7): the current key and, mid-rotation, the
+/// successor both relays verify under. Relay-only material: compiled into rules, never sent to a daemon.
+model GiteaWebhookSecret {
+  bindingId      String  @id @db.Uuid
+  signingKey     String // stored SecretCipher representation of the hex key
+  nextSigningKey String? // the successor during rotation, promoted after one verified delivery
+
+  binding GiteaRepositoryBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@map("gitea_webhook_secret")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
