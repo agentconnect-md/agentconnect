@@ -359,6 +359,24 @@ describe('RelayCpClient', () => {
     expect(poke.payload).toEqual({ installationId: '1234567', action: 'created' })
   })
 
+  it('emitCodeHostDelivery reports a verified delivery when READY, drops it otherwise', async () => {
+    const { client, transport } = makeClient()
+    const observed = {
+      provider: 'gitea',
+      repoExternalId: '7701234',
+      deliveryKey: '11111111-2222-4333-8444-555555555555',
+      receivedAt: '2026-09-12T00:00:00.000Z',
+      verifiedWith: 'next' as const
+    }
+    // Not READY yet — dropped (safe: the binding stays unverified until the next delivery).
+    client.emitCodeHostDelivery(observed)
+    expect(transport.sent).toHaveLength(0)
+
+    await handshakeToReady(client, transport)
+    client.emitCodeHostDelivery(observed)
+    expect(transport.lastReq('rc/codehost-delivery')!.payload).toEqual(observed)
+  })
+
   it('persists PR feedback only after the CP advertises the compatible receiver', async () => {
     const { client, transport } = makeClient()
     client.start()

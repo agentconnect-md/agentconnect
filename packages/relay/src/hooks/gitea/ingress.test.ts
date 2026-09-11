@@ -5,6 +5,7 @@ import { FakeClock } from '@agentconnect.md/connection'
 import {
   GITEA_V1_FEATURE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
   type RcHookRerun,
@@ -214,6 +215,8 @@ interface Harness {
   clock: FakeClock
   sent: RdMsg[]
   reports: RcRunReport[]
+  /** Every `rc/codehost-delivery` the ingress emitted — one per verified delivery, matched or not. */
+  observed: RcCodeHostDelivery[]
   authzRequests: RcCodeHostMembershipAuthz[]
   authzResult: boolean | ((request: RcCodeHostMembershipAuthz) => boolean | Promise<boolean>)
   ack: RdAck
@@ -225,9 +228,10 @@ interface Harness {
 
 function makeHarness(): Harness {
   const clock = new FakeClock()
-  const h: Partial<Harness> & Pick<Harness, 'sent' | 'reports' | 'authzRequests'> = {
+  const h: Partial<Harness> & Pick<Harness, 'sent' | 'reports' | 'observed' | 'authzRequests'> = {
     sent: [],
     reports: [],
+    observed: [],
     authzRequests: [],
     authzResult: true,
     ack: { msgId: 'x', accepted: true },
@@ -254,6 +258,7 @@ function makeHarness(): Harness {
       }
     }),
     report: (r: RcRunReport) => h.reports.push(r),
+    observe: (observed: RcCodeHostDelivery) => h.observed.push(observed),
     authorizeMembership: async (request: RcCodeHostMembershipAuthz) => {
       h.authzRequests.push(request)
       return typeof h.authzResult === 'function' ? h.authzResult(request) : h.authzResult!
@@ -386,6 +391,32 @@ describe('gitea ingress', () => {
     await flush()
     // Either key verifies the delivery for EVERY rule on the repository, so nothing is dropped.
     expect(h.sent.map((m) => (m as RdMsgHook).hookId).sort()).toEqual([HOOK, HOOK_B].sort())
+  })
+
+  it('verifies under a rule’s successor key and reports every verified delivery, matched or not (§6, §7)', async () => {
+    h.table.upsert(rule({}, { nextSigningKey: NEXT_KEY }))
+    // The managed webhook's test delivery is a push no rule matches: verified, reported, not dispatched.
+    expect((await post(h, pushPayload(), { eventType: 'push' })).statusCode).toBe(202)
+    expect(h.observed).toEqual([
+      {
+        provider: 'gitea',
+        repoExternalId: String(REPO),
+        deliveryKey: DELIVERY,
+        receivedAt: expect.any(String),
+        verifiedWith: 'current'
+      }
+    ])
+    // A delivery signed under the successor verifies too, and says which key the CP may promote.
+    expect(
+      (await post(h, issuePayload(), { eventType: 'issues', signingKey: NEXT_KEY, delivery: 'delivery-next' }))
+        .statusCode
+    ).toBe(202)
+    expect(h.observed.at(-1)).toMatchObject({ deliveryKey: 'delivery-next', verifiedWith: 'next' })
+    await flush()
+    expect(h.sent).toHaveLength(1)
+    // Nothing unverified is ever reported.
+    expect((await post(h, issuePayload(), { eventType: 'issues', signingKey: 'c'.repeat(64) })).statusCode).toBe(404)
+    expect(h.observed).toHaveLength(2)
   })
 
   it('keys on X-Gitea-Event-Type, never the lossy X-Gitea-Event', async () => {

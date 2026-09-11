@@ -44,6 +44,7 @@ import {
   type RcHookRerun,
   type RcHookRerunResult,
   type RcRunReport,
+  type RcCodeHostDelivery,
   type RcGithubInstallation,
   type RcPullRequestFeedback,
   type RcSetChannelAgent,
@@ -356,6 +357,19 @@ export class RelayCpClient {
       if (this.state !== 'READY' || !this.transport) return
       this.transport.send(JSON.stringify(buildRelayCpFrame('rc/run-report', this.pendingRunReports.shift()!)))
     }
+  }
+
+  /**
+   * Emit one verified-delivery observation (`rc/codehost-delivery`, fire-and-forget). A drop is
+   * safe: the binding stays `webhook_unverified` until the next delivery, and a rotation's
+   * promotion waits for the next delivery verified under the successor.
+   */
+  emitCodeHostDelivery(observed: RcCodeHostDelivery): void {
+    if (this.state !== 'READY' || !this.transport) {
+      this.deps.log.warn(`relay: dropping rc/codehost-delivery ${observed.deliveryKey} (link ${this.state})`)
+      return
+    }
+    this.transport.send(JSON.stringify(buildRelayCpFrame('rc/codehost-delivery', observed)))
   }
 
   /**

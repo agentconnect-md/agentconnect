@@ -24,6 +24,7 @@ import type { Clock } from '@agentconnect.md/connection'
 import {
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   type GiteaHookMetadata,
+  type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
   type RcHookRerun,
@@ -59,6 +60,8 @@ export interface GiteaIngressDeps {
   daemons: () => Pick<RelayDaemonServer, 'get'> | undefined
   /** Emit one delivery-stage `rc/run-report` EVT to the CP (fire-and-forget). */
   report: (report: RcRunReport) => void
+  /** Emit one `rc/codehost-delivery` EVT per verified delivery (§6 step 4, §7 promotion; fire-and-forget). */
+  observe?: (observed: RcCodeHostDelivery) => void
   /** §8 live effective-membership gate — metadata only, resolved by the CP. */
   authorizeMembership: (request: RcCodeHostMembershipAuthz) => Promise<boolean>
   /** Dedicated upstream-call budget, shared by every hook on one repository. */
@@ -66,6 +69,18 @@ export interface GiteaIngressDeps {
   limiter: HookRateLimiter
   clock: Clock
   log: Logger
+}
+
+/** Which signing key of any rule on the repository verifies the body; null when none does. */
+function verifiedGiteaKey(rules: readonly RcHookAssign[], raw: Buffer, signature: string): 'current' | 'next' | null {
+  for (const rule of rules) {
+    if (!rule.gitea) continue
+    if (verifyHexHmacSha256(rule.gitea.signingKey, raw, signature)) return 'current'
+    if (rule.gitea.nextSigningKey !== undefined && verifyHexHmacSha256(rule.gitea.nextSigningKey, raw, signature)) {
+      return 'next'
+    }
+  }
+  return null
 }
 
 function headerString(value: string | string[] | undefined): string | undefined {
@@ -104,13 +119,23 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       const deliveryHeader = headerString(req.headers['x-gitea-delivery'])
       const signature = headerString(req.headers['x-gitea-signature'])
       if (!deliveryHeader || !signature) return notFound(reply)
-      // `X-Gitea-Signature` is bare hex HMAC-SHA256 over the exact raw body (§16); accepting any
-      // rule's key is what keeps a mid-rotation table holding current AND next lossless (§7).
-      const verified = rules.some((rule) => rule.gitea && verifyHexHmacSha256(rule.gitea.signingKey, raw, signature))
-      if (!verified) return notFound(reply)
+      // `X-Gitea-Signature` is bare hex HMAC-SHA256 over the exact raw body (§16). Mid-rotation a
+      // rule carries the successor beside the current key, and either verifies (§7); which one did
+      // is what the CP promotes on.
+      const verifiedWith = verifiedGiteaKey(rules, raw, signature)
+      if (!verifiedWith) return notFound(reply)
 
       const deliveryKey = deliveryHeader.slice(0, 200)
       const firedAt = new Date(deps.clock.now()).toISOString()
+      // Every verified delivery is reported, matched or not: the managed webhook's test delivery
+      // is exactly one no rule ever matches, and it is what proves the relay is reachable (§6).
+      deps.observe?.({
+        provider: 'gitea',
+        repoExternalId: String(repoId),
+        deliveryKey,
+        receivedAt: firedAt,
+        verifiedWith
+      })
       // Never `X-Gitea-Event`: it collapses the sync and reviewer-request types into
       // `pull_request`, and names a review `pull_request_comment` — a timeline comment's type (§7).
       const eventType = headerString(req.headers['x-gitea-event-type'])

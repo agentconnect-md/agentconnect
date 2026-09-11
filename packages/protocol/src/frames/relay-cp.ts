@@ -385,8 +385,8 @@ export const RcGiteaHookRule = z.object({
   repoPath: z.string().min(1), // display/logs only; never matched on
   sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitea:<repoId>
   events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
-  // The same product vocabulary the events use: a pull request is the `merge_request` family (§8).
-  commentFamilies: z.array(z.enum(['issues', 'merge_request'])).optional(),
+  // The comment SUBJECT vocabulary (`is_pull`), not the event family: the CP maps a stored `merge_request` scope here.
+  commentFamilies: z.array(z.enum(['issues', 'pull_request'])).optional(),
   mentionOnly: z.boolean(),
   agentName: z.string().optional(),
   // The connection's single bot user: the §8 veto set and the mention/reviewer target. Gitea's

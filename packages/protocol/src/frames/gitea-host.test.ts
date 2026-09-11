@@ -166,14 +166,14 @@ describe('the webhook secret overlap and the delivery observation (§6, §7)', (
   it('carries the successor signing key beside the current one mid-rotation', () => {
     const rotating = RcHookAssign.parse({
       ...hookRule,
-      gitea: { ...hookRule.gitea, nextSigningKey: 'b'.repeat(64), commentFamilies: ['merge_request'] }
+      gitea: { ...hookRule.gitea, nextSigningKey: 'b'.repeat(64), commentFamilies: ['pull_request'] }
     })
     expect(rotating.gitea?.nextSigningKey).toBe('b'.repeat(64))
-    expect(rotating.gitea?.commentFamilies).toEqual(['merge_request'])
+    expect(rotating.gitea?.commentFamilies).toEqual(['pull_request'])
     expect(RcHookAssign.parse(hookRule).gitea?.nextSigningKey).toBeUndefined()
-    // The comment scope speaks the same product vocabulary the events do.
+    // The comment scope names the subject (`is_pull`), never the event family the CP stores it under.
     expect(
-      RcHookAssign.safeParse({ ...hookRule, gitea: { ...hookRule.gitea, commentFamilies: ['pull_request'] } }).success
+      RcHookAssign.safeParse({ ...hookRule, gitea: { ...hookRule.gitea, commentFamilies: ['merge_request'] } }).success
     ).toBe(false)
   })
 
