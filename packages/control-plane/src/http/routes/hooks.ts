@@ -11,7 +11,7 @@
  * echoed EXACTLY ONCE in the create response and never retrievable after.
  */
 import { randomBytes, randomUUID } from 'node:crypto'
-import { gitRepoLabel, type CodeHostProvider } from '@agentconnect.md/protocol'
+import { gitRepoLabel, isCodeHostHookKind, type CodeHostProvider } from '@agentconnect.md/protocol'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -35,6 +35,7 @@ import { toDbPlatform, type DbPlatform } from '../../persistence/platform.js'
 import { AgentWorkspaceIntegrationConflict } from '../../persistence/errors.js'
 import { isCanonicalGithubAddress } from '../../domain/git-host.js'
 import { hookFamilyShapeError, hookSiblingShapeError, type HookFamily } from '../../hooks/hook-family.js'
+import { codeHostsOf } from '../../codehost/registry.js'
 import { Tag } from '../plugins/openapi.js'
 import {
   CreateHookBody,
@@ -120,6 +121,7 @@ function toDto(h: HookRecord, publicRelayUrl?: string): HookDtoT {
 export function hookRoutes(deps: HttpDeps) {
   return async function hookRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    const codeHosts = codeHostsOf(deps)
 
     // A hook is reachable iff its OWNING AGENT is viewable (no per-hook visibility;
     // the agent is the access boundary, like an Integration). Cross-org ids, an
@@ -202,16 +204,14 @@ export function hookRoutes(deps: HttpDeps) {
       return { ok: true, result: done.result }
     }
 
-    // gitlab-kind writes also (re)converge the project (§11.1): the saga
-    // recomputes the desired event union, gives the hook's agent its own §7.2
-    // account and membership, and its onConverged rebroadcasts the compiled
-    // rules. Fire-and-forget; the saga itself outwaits a peer's lease.
-    const convergeGitlabWebhook = (orgId: OrgId, projectId: bigint | null): void => {
-      const gitlab = deps.gitlab
-      if (!gitlab || projectId === null) return
-      void gitlab.provisioner
-        .convergeProject(orgId, projectId)
-        .catch((err) => app.log.warn({ projectId: projectId.toString(), err }, 'gitlab webhook converge failed'))
+    // A code-host write also re-converges the managed ingress its host owns: what
+    // that means is the provider's (a no-op where the webhook is deployment-wide).
+    // Fire-and-forget; a host's own saga outwaits a peer's lease.
+    const convergeManagedRepository = (kind: HookRecord['kind'], orgId: OrgId, repoId: bigint | null): void => {
+      if (!isCodeHostHookKind(kind)) return
+      codeHosts[kind].hooks.convergeManagedRepository(deps, orgId, repoId, (err) =>
+        app.log.warn({ projectId: repoId?.toString(), err }, `${kind} webhook converge failed`)
+      )
     }
 
     // The repository repeats the workspace-access invariant under its shared
@@ -236,7 +236,7 @@ export function hookRoutes(deps: HttpDeps) {
     // family, comments are scoped to it, and only a change-proposal family may
     // carry the review/reporting axes. Runs before any upstream call.
     const familyShapeError = (body: {
-      kind: 'github' | 'gitlab'
+      kind: CodeHostProvider
       family: HookFamily
       events: string[]
       commentFamilies?: string[]
@@ -349,7 +349,7 @@ export function hookRoutes(deps: HttpDeps) {
       repoId: bigint,
       repoFullName: string
     ): Promise<WatchRepoAuthz> => {
-      const subject = provider === 'gitlab' ? 'project' : 'repository'
+      const subject = codeHosts[provider].repositorySubject
       const denied = {
         ok: false,
         status: 409,
@@ -532,15 +532,17 @@ export function hookRoutes(deps: HttpDeps) {
             message: 'targetIntegrationId is not an integration of this agent'
           })
         }
+        // Each host's own effect axes, with its inert default for an axis it has no
+        // surface for. Resolved up front: the per-kind arms below run inside closures,
+        // where the body's own narrowing no longer holds.
+        const effects = req.body.kind === 'webhook' ? null : codeHosts[req.body.kind].hooks.effects(req.body)
         if (req.body.kind !== 'webhook') {
           const shapeError = familyShapeError({
             kind: req.body.kind,
             family: req.body.family,
             events: req.body.events,
             commentFamilies: req.body.commentFamilies,
-            reviewPolicy: req.body.reviewPolicy,
-            reportingMode: req.body.reportingMode,
-            gateMode: req.body.kind === 'github' ? req.body.gateMode : 'informational'
+            ...effects!
           })
           if (shapeError) {
             return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: shapeError })
@@ -591,10 +593,7 @@ export function hookRoutes(deps: HttpDeps) {
                   // ALREADY be the workspace or an explicit additional authorization.
                   const authz = await watchRepoAuthorized(agent, 'gitlab', projectId, binding.projectPath)
                   if (!authz.ok) return authz
-                  const effectError = validateGitlabEffects(binding, {
-                    reviewPolicy: req.body.kind === 'gitlab' ? req.body.reviewPolicy : 'off',
-                    reportingMode: req.body.kind === 'gitlab' ? req.body.reportingMode : 'off'
-                  })
+                  const effectError = validateGitlabEffects(binding, effects!)
                   if (effectError) return { ok: false as const, ...effectError }
                   return {
                     // gitlab is perThread by definition, like github (§12.3).
@@ -625,11 +624,7 @@ export function hookRoutes(deps: HttpDeps) {
                   }
                   const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
                   if (!authz.ok) return authz
-                  const configError = await validateGithubEffects(agent, repo.repoId, repo.repoFullName, {
-                    reviewPolicy: req.body.kind === 'github' ? req.body.reviewPolicy : 'off',
-                    reportingMode: req.body.kind === 'github' ? req.body.reportingMode : 'off',
-                    gateMode: req.body.kind === 'github' ? req.body.gateMode : 'informational'
-                  })
+                  const configError = await validateGithubEffects(agent, repo.repoId, repo.repoFullName, effects!)
                   if (configError) {
                     return { ok: false as const, ...configError }
                   }
@@ -728,7 +723,7 @@ export function hookRoutes(deps: HttpDeps) {
         // Re-read so hmacConfigured reflects the secret written above.
         const fresh = (await deps.repos.hook.get(orgId, hookId)) ?? hook
         converge(fresh)
-        if (fresh.kind === 'gitlab') convergeGitlabWebhook(orgId, fresh.repoId)
+        convergeManagedRepository(fresh.kind, orgId, fresh.repoId)
         return { ...toDto(fresh, deps.config.PUBLIC_RELAY_URL), hmacSecret }
       }
     )
@@ -1081,13 +1076,11 @@ export function hookRoutes(deps: HttpDeps) {
         // dropping its host first would have a delivery in that window refused.
         const retargetedFrom = existing.agentId && existing.agentId !== agent.id ? existing.agentId : null
         converge(hook, retargetedFrom ? () => replicateUpsert(orgOf(req), retargetedFrom) : undefined)
-        if (hook.kind === 'gitlab') {
-          convergeGitlabWebhook(orgOf(req), hook.repoId)
-          // A retarget moved this hook off `existing.repoId`: the source
-          // binding's union shrank too, so converge BOTH distinct projects.
-          if (existing.repoId !== null && existing.repoId !== hook.repoId) {
-            convergeGitlabWebhook(orgOf(req), existing.repoId)
-          }
+        convergeManagedRepository(hook.kind, orgOf(req), hook.repoId)
+        // A retarget moved this hook off `existing.repoId`: the source binding's
+        // union shrank too, so converge BOTH distinct repositories.
+        if (existing.repoId !== null && existing.repoId !== hook.repoId) {
+          convergeManagedRepository(hook.kind, orgOf(req), existing.repoId)
         }
         return toDto(hook, deps.config.PUBLIC_RELAY_URL)
       }
@@ -1129,7 +1122,7 @@ export function hookRoutes(deps: HttpDeps) {
         // Losing: no rule can fire any more, so dropping the host now cannot orphan a
         // delivery that still quotes it.
         await replicateUpsert(orgOf(req), existing.agentId)
-        if (existing.kind === 'gitlab') convergeGitlabWebhook(orgOf(req), existing.repoId)
+        convergeManagedRepository(existing.kind, orgOf(req), existing.repoId)
         return reply.code(204).send(null)
       }
     )
