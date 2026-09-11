@@ -491,6 +491,20 @@ a new session; existing data is retained. Key values for unchanged bindings rota
 through the stopped-VM lifecycle; changed login identities or shared-key groups
 may require a new session. OAuth-only and SRT launches keep native seeding.
 
+Amp uses the same proxy for nonempty `apiKey@<service URL>` entries in its native
+`secrets.json`, including `XDG_DATA_HOME` relocation. The record's HTTPS host
+authorizes header injection; changing guest settings cannot authorize another
+destination. HTTP, custom ports, URL userinfo and malformed addresses retain
+placeholders without injection. Shared keys share a binding across their allowed
+hosts. Native JSONC settings, including `AMP_SETTINGS_FILE`, are projected into
+the private HOME with matching key values replaced. Unrelated credential records
+and guest-only logins retain native behavior; stopped-VM rotation preserves them.
+This covers native Amp CLI file login, not the adapter's separate
+`amp-acp/credentials.json` setup file, environment-only credentials, or arbitrary
+workspace configuration. SRT keeps native authentication. Amp ACP 0.9.0 and the
+native CLI were checked with synthetic credentials; an authenticated model/tool
+turn remains a release acceptance task.
+
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
 existing private logins are preserved. Without a DeepSeek key, normal seeding is

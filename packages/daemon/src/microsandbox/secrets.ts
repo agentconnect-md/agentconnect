@@ -12,6 +12,7 @@ import { preparePiSecrets } from './pi-secrets.js'
 import { prepareGrokSecrets } from './grok-secrets.js'
 import { prepareQwenSecrets } from './qwen-secrets.js'
 import { prepareOmpSecrets } from './omp-secrets.js'
+import { prepareAmpSecrets } from './amp-secrets.js'
 
 export interface MicrosandboxSecret {
   env: string
@@ -42,7 +43,8 @@ const CREDENTIAL_PREPARERS = new Map<
   ['codex-acp', prepareCodexApiSecret],
   ['grok-build', prepareGrokSecrets],
   ['qwen-code', prepareQwenSecrets],
-  ['omp', prepareOmpSecrets]
+  ['omp', prepareOmpSecrets],
+  ['amp-acp', prepareAmpSecrets]
 ])
 
 export function prepareMicrosandboxCredentials(
