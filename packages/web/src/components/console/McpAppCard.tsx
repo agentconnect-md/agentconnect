@@ -15,12 +15,12 @@
  * against its own record of the card rather than against anything the frame said.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { McpAppRpc } from '@agentconnect.md/protocol'
 import {
   MCP_APPS_PROTOCOL_VERSION,
   MCP_APP_CONTEXT_MAX_CHARS,
-  MCP_APP_MESSAGE_MAX_CHARS,
-  type McpAppRpc
-} from '@agentconnect.md/protocol'
+  MCP_APP_MESSAGE_MAX_CHARS
+} from '@agentconnect.md/protocol/mcp-app'
 import { Icon } from '@/components/ui'
 import type { SessionStep } from '@/lib/data'
 import {

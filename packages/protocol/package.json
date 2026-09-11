@@ -29,6 +29,12 @@
       "import": "./dist/slack-app-manifest.js",
       "default": "./dist/slack-app-manifest.js"
     },
+    "./mcp-app": {
+      "development": "./src/mcp-app.ts",
+      "types": "./dist/mcp-app.d.ts",
+      "import": "./dist/mcp-app.js",
+      "default": "./dist/mcp-app.js"
+    },
     "./package.json": "./package.json",
     "./runtime-command": {
       "development": "./src/frames/runtime-command.ts",

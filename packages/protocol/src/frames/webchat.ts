@@ -1,4 +1,8 @@
 import { z } from 'zod'
+import { MCP_APP_CONTEXT_MAX_CHARS } from '../mcp-app.js'
+
+// The MCP Apps constants live in the `./mcp-app` leaf so the console can value-import them; the barrel still re-exports them.
+export * from '../mcp-app.js'
 
 // webchat's content plane is the RELAY, not the daemon↔CP control WS:
 // a browser dials the relay pool with a CP-minted token and the relay bridges the
@@ -332,25 +336,6 @@ export type McpAppCard = z.infer<typeof McpAppCard>
  *  session that no longer exists (§8). */
 export const McpAppOutcome = z.enum(['closed', 'superseded', 'expired'])
 export type McpAppOutcome = z.infer<typeof McpAppOutcome>
-
-/**
- * The MCP Apps extension version this host implements, sent as `protocolVersion` in the
- * `ui/initialize` result and as the host's own version beside it.
- *
- * Stated rather than derived: the official SDK's `App.connect()` validates the initialize result
- * and rejects one without it, so a view built on the SDK never finishes initializing if this is
- * missing or wrong. SEP-1865 Final, 2026-01-26.
- */
-export const MCP_APPS_PROTOCOL_VERSION = '2026-01-26'
-
-/** The most text one `ui/message` may carry into the conversation, matching the wire field's own
- *  bound so a decoded content-block list is clamped before it is refused. */
-export const MCP_APP_MESSAGE_MAX_CHARS = 4000
-
-/** The most model context one app may hold (`ui/update-model-context`). An app's context is a
- *  note for the next turn, not a store: the session carries it, and the reader who opened the
- *  frame is the one it speaks for. */
-export const MCP_APP_CONTEXT_MAX_CHARS = 4000
 
 /**
  * What a view may ASK THE DAEMON for — the four host methods of SEP-1865 that cannot be served
