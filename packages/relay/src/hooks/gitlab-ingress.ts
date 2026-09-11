@@ -461,7 +461,7 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
       }
       const projectId = payload.project?.id ?? payload.project_id
       if (projectId === undefined || !Number.isSafeInteger(projectId)) return notFound(reply)
-      const rules = deps.table.getByGitlabProject(String(projectId))
+      const rules = deps.table.getByCodeHostRepo('gitlab', String(projectId))
       if (rules.length === 0) return notFound(reply)
 
       const webhookId = headerString(req.headers['webhook-id'])
