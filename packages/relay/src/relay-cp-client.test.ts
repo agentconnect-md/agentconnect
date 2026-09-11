@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
+  GITEA_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
@@ -200,7 +201,8 @@ describe('RelayCpClient', () => {
         GITLAB_COM_V1_FEATURE,
         GITLAB_RERUN_V1_FEATURE,
         GITLAB_INSTANCE_V1_FEATURE,
-        PULL_REQUEST_FEEDBACK_FEATURE
+        PULL_REQUEST_FEEDBACK_FEATURE,
+        GITEA_V1_FEATURE
       ]
     })
 
