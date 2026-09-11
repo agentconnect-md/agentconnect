@@ -35,6 +35,7 @@ import type { SessionVisibilityPushService } from '../orchestrator/visibilityPus
 import type { DutyAgentBundle, RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
 import type { GitlabGitcredService } from '../gitlab/gitcred.service.js'
+import type { GiteaGitcredService } from '../gitea/gitcred.service.js'
 import type { LinearTokenService } from '../platforms/linear/token-service.js'
 import type { CodeHostReviewBrokerService } from '../codehost/review-lease.service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
@@ -159,6 +160,8 @@ export interface DaemonWsDeps {
   github?: GithubService
   /** gitcred v2 GitLab grants (§13.1); absent ⇒ gitlab workspaces disabled. */
   gitlabGitcred?: GitlabGitcredService
+  /** gitcred v2 Gitea grants (gitea-integration.md §4.2, §9); absent ⇒ gitea workspaces disabled. */
+  giteaGitcred?: GiteaGitcredService
   /** Linear workspace token custody (linear-integration.md §7.3) — the one seam the `linearcred`
    *  broker calls; absent ⇒ `linearcred/request` answers SCOPE_DENIED. */
   linearTokens?: Pick<LinearTokenService, 'accessToken'>
