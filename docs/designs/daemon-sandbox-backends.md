@@ -256,6 +256,32 @@ using that VM until its last session retires. Resource and mount changes still
 require environment recreation. Image
 digest resolution and in-place disk migration remain proposed.
 
+Workspace filesystem operations and skill publication use the same persistent
+Node shim and WebSocket protocol as Kubernetes. The local driver carries that
+WebSocket over agentd's TCP stream to guest loopback; it does not publish a host
+port or add a forwarding process. Git and ACP continue to use direct SDK exec.
+The shim starts once per running VM and does not prevent idle suspension. Each
+request holds the VM until it finishes, and a resumed VM gets a new binding
+generation and identity token.
+
+The daemon stages its bundled shim and audited skills CLI in root-owned `/run`
+files on startup, including when the VM retains an older runtime image. This
+updates preparation code without replacing the session's image or disks. Skill
+source acquisition and the authoritative journal remain on the daemon; workspace
+inspection, installation, verification, and cleanup execute inside the VM. A
+legacy daemon-owned skill receipt can seed the new journal after its original
+host-side recovery completes under the workspace lock. The journal is keyed by
+the host directory's canonical path and storage identity, so replacing a VM
+preserves ownership while replacing its workspace revokes it. Console file and
+skill reads use this same
+guest filesystem view: virtiofs symlinks and executable modes are not interpreted
+through their host-side representation.
+
+Retired-root sweeps skip cold VMs; explicit Console reads may resume them. If
+optional microsandbox initialization fails, host file inspection remains
+available while VM launches remain refused. The shared Kubernetes skill receipt
+size limits and duty-authority requirements also apply to microsandbox.
+
 Kubernetes mode retains `K8sDriver`, its resource configuration, and image rollout.
 An explicitly configured local microsandbox backend
 with `--k8s` is rejected as conflicting configuration; an omitted/default local

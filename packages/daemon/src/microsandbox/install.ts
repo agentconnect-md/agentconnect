@@ -15,6 +15,7 @@ export async function installMicrosandbox(opts: {
   config: Config['sandbox']['microsandbox']
   sockets: { mcp: string; gitcred: string }
   log: Logger
+  nextShimGeneration?: (subject: string) => Promise<number>
 }): Promise<MicrosandboxManager> {
   if (process.platform !== 'linux') throw new Error('microsandbox currently requires a Linux host with KVM')
   const config = MicrosandboxConfigSchema.parse(opts.config ?? {})

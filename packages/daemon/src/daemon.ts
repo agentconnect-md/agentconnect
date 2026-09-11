@@ -59,12 +59,19 @@ import {
   WEBCHAT_IMAGE_MAX_BYTES
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import { installMicrosandbox } from './microsandbox/install.js'
 import { microsandboxRuntimeHome, prepareMicrosandboxLaunch } from './microsandbox/launch.js'
 import type { MicrosandboxManager, MicrosandboxEnvironment } from './microsandbox/driver.js'
 import { microsandboxGitRunner } from './microsandbox/git.js'
-import { createMicrosandboxWorkspaceMutations } from './microsandbox/files.js'
+import { ShimWorkspaceFs } from './shim/workspace-fs-channel.js'
+import { ShimWorkspaceFiles } from './shim/workspace-files-channel.js'
+import { ClusterSkillClient } from './shim/skill-client.js'
+import type { ShimRequester } from './shim/channels.js'
+import type { ClusterSkillLedger } from './store/cluster-skill-ledger.js'
+import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
+import { microsandboxSkillTarget } from './microsandbox/shim.js'
 import { MICROSANDBOX_TUNNEL_PATHS } from './microsandbox/socket-bridge.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
@@ -166,6 +173,7 @@ import {
   agentSandboxSubject,
   sandboxSubjectFor,
   sandboxSubjectSessionLeaf,
+  sandboxSubjectAgentId,
   sessionSandboxSubject,
   type SandboxSubject
 } from './k8s/sandbox-identity.js'
@@ -395,7 +403,12 @@ import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
 import { assembleRuntimeLaunch } from './launch/assemble.js'
-import { resolveTrustedExecutable, normalizeSandboxMounts, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
+import {
+  contains,
+  resolveTrustedExecutable,
+  normalizeSandboxMounts,
+  trustedRuntimeReadRoots
+} from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient } from './cp/client.js'
@@ -1185,6 +1198,10 @@ export class Daemon {
   private microsandbox?: MicrosandboxManager
   private microsandboxTable?: K8sRuntimeTable
   private microsandboxFailure?: string
+  private readonly localSkillAuthorities = new Map<
+    string,
+    Promise<{ groupId: string; term: string; daemonId: string }>
+  >()
   private microsandboxCatalog?: ResolvedRuntimeCatalog
   private localRuntimeCatalog?: ResolvedRuntimeCatalog
   // The resolved catalog the probed table is projected onto; it supplies command/args, which the
@@ -1938,33 +1955,24 @@ export class Daemon {
         return {
           fs: new MicrosandboxWorkspaceFs(
             (path) => {
-              const manager = this.microsandbox
-              const environment = manager?.environment(this.microsandboxPlacement(agent, path).id)
-              const mounted = environment?.mounts.some(
-                (mount) =>
-                  mount.mode === 'writable' &&
-                  mount.source === mount.target &&
-                  (path === mount.target || path.startsWith(`${mount.target}${sep}`))
-              )
-              return manager && environment && mounted
-                ? createMicrosandboxWorkspaceMutations({
-                    workspaceRoot: environment.workspaceRoot,
-                    execute: (command, args, options) => manager.exec(environment, command, args, options)
-                  })
+              const environment = this.microsandboxWorkspaceEnvironment(agent, path)
+              return environment
+                ? new ShimWorkspaceFs(this.microsandboxRequester(environment), environment.workspaceRoot)
                 : undefined
             },
             async (path) => {
               const manager = this.microsandbox
-              const environment = manager?.environment(this.microsandboxPlacement(agent, path).id)
-              if (
-                !manager ||
-                !environment?.mounts.some(
-                  (mount) => mount.mode === 'writable' && mount.source === path && mount.target === path
-                )
-              ) {
-                return false
-              }
-              await manager.suspend(environment.id)
+              const placement = this.microsandboxPlacement(agent, path)
+              const environment = manager?.environment(placement.id)
+              const mountRoot = environment
+                ? environment.mounts.some(
+                    (mount) => mount.mode === 'writable' && mount.source === path && mount.target === path
+                  )
+                : placement.trustedSessionDir === path ||
+                  agent.workspace.path === path ||
+                  this.workspaces.trustedWorkspaceWriteRoots(agent).includes(path)
+              if (!manager || !mountRoot) return false
+              await manager.suspend(placement.id)
               return true
             }
           )
@@ -1976,7 +1984,8 @@ export class Daemon {
           root,
           config: cfg.sandbox.microsandbox,
           sockets: { mcp: mcpSocketPath(root), gitcred: gitcredSocketPath(root) },
-          log: this.log
+          log: this.log,
+          nextShimGeneration: (subject) => this.store.nextSandboxGeneration(subject)
         })
         this.microsandboxTable = await this.microsandbox.prepare()
         this.log.info('sandbox: microsandbox image and VM startup verified')
@@ -3858,6 +3867,61 @@ export class Daemon {
     })
   }
 
+  private microsandboxWorkspaceEnvironment(agent: LoadedAgent, path: string): MicrosandboxEnvironment | undefined {
+    if (!this.microsandbox) return undefined
+    const placement = this.microsandboxPlacement(agent, path)
+    const existing = this.microsandbox?.environment(placement.id)
+    const mounted = (environment: MicrosandboxEnvironment) =>
+      environment.mounts.some(
+        (mount) => mount.mode === 'writable' && mount.source === mount.target && contains(mount.target, path)
+      )
+    if (existing) return mounted(existing) ? existing : undefined
+    const roots = placement.trustedSessionDir
+      ? [placement.trustedSessionDir]
+      : [agent.workspace.path, ...this.workspaces.trustedWorkspaceWriteRoots(agent)]
+    if (!roots.some((root) => contains(root, path) && existsSync(root))) return undefined
+    const { environment } = this.microsandboxContext(agent, placement.trustedSessionDir ?? agent.workspace.path)
+    return mounted(environment) ? environment : undefined
+  }
+
+  private microsandboxRequester(environment: MicrosandboxEnvironment): ShimRequester & { agentId: string } {
+    return {
+      agentId: sandboxSubjectAgentId(environment.id),
+      request: (capability, payload, options) =>
+        this.microsandbox!.withShim(environment, (shim) => shim.session.request(capability, payload, options))
+    }
+  }
+
+  private workspaceFilesFor(agentId: string) {
+    const cluster = this.k8sPlane?.workspaceFilesFor(agentId)
+    if (cluster) return cluster
+    const agent = this.agents.get(agentId)
+    if (!agent || !this.usesMicrosandbox(agent) || !this.microsandbox) return undefined
+    return new ShimWorkspaceFiles({
+      request: (capability, payload, options) => {
+        const root = (payload as { root: string }).root
+        const environment = this.microsandboxWorkspaceEnvironment(agent, root)
+        if (!environment) throw new Error('workspace is not mounted in its microsandbox')
+        return this.microsandboxRequester(environment).request(capability, payload, options)
+      }
+    })
+  }
+
+  private async withWorkspaceSkillTarget<T>(
+    agentId: string,
+    cwd: string,
+    read: (target: { client: ClusterSkillClient; workspaceIncarnation: string }) => Promise<T>
+  ): Promise<T | undefined> {
+    const client = this.k8sPlane?.skillClientFor?.(agentId)
+    const workspaceIncarnation = this.k8sPlane?.workspaceIncarnationFor?.(agentId)
+    if (this.k8sPlane) return client && workspaceIncarnation ? read({ client, workspaceIncarnation }) : undefined
+    const agent = this.agents.get(agentId)
+    if (!agent || !this.usesMicrosandbox(agent)) return undefined
+    const environment = this.microsandboxWorkspaceEnvironment(agent, cwd)
+    if (!environment) return undefined
+    return this.microsandbox!.withShim(environment, async (shim) => read(await microsandboxSkillTarget(shim, cwd)))
+  }
+
   /** Where a memory home is reached from: this member's sandbox plane (under `--k8s`) and its CP connection. */
   private memoryHomeDeps(): MemoryHomeDeps {
     return { sandbox: this.k8sPlane, cp: this.cpClient, log: this.log }
@@ -4186,6 +4250,9 @@ export class Daemon {
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
     const opts = {
+      ...(this.usesMicrosandbox(agent)
+        ? { installSkills: (value: Agent, cwd: string) => this.reconcileMicrosandboxSkills(value, cwd) }
+        : {}),
       managedSkills: (value: Agent) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null,
@@ -4214,7 +4281,75 @@ export class Daemon {
 
   private async reconcileClusterSkills(agent: Agent, pod: SandboxSubject): Promise<void> {
     const plane = this.k8sPlane
-    const client = plane?.skillClientFor?.(pod)
+    const workspaceIncarnation = plane?.workspaceIncarnationFor?.(pod)
+    const shimGeneration = plane?.shimGenerationFor?.(pod)
+    await this.reconcileSandboxSkills(agent, {
+      client: plane?.skillClientFor?.(pod),
+      workspaceIncarnation,
+      shimGeneration,
+      isLaunchCurrent: () =>
+        plane?.workspaceIncarnationFor?.(pod) === workspaceIncarnation &&
+        plane?.shimGenerationFor?.(pod) === shimGeneration
+    })
+  }
+
+  private async reconcileMicrosandboxSkills(agent: Agent, cwd: string): Promise<string[]> {
+    const loaded = this.agents.get(agent.id)
+    if (!loaded) throw new Error('skill preparation agent is unavailable')
+    const { environment } = this.microsandboxContext(loaded, cwd)
+    return this.microsandbox!.withShim(environment, async (shim) => {
+      const owner = this.microsandbox!.environment(environment.id)
+      const authority = this.duties.dutyForAgent(agent.id)
+      let localAuthority: { groupId: string; term: string; daemonId: string } | undefined
+      if (!authority && !this.dutyCoordinator.dutyEnforced()) {
+        let pending = this.localSkillAuthorities.get(agent.id)
+        if (!pending) {
+          pending = (async () => {
+            const groupId = `local:${createHash('sha256').update(agent.id).digest('hex')}`
+            const localFence = {
+              groupId,
+              term: String(await this.store.nextSandboxGeneration(groupId)),
+              daemonId: randomUUID()
+            }
+            if (!(await this.store.projectDutyWriteFence(localFence)))
+              throw new Error('local skill publication authority was lost')
+            return localFence
+          })()
+          this.localSkillAuthorities.set(agent.id, pending)
+          void pending.catch(() => {
+            if (this.localSkillAuthorities.get(agent.id) === pending) this.localSkillAuthorities.delete(agent.id)
+          })
+        }
+        localAuthority = await pending
+      }
+      const { client, workspaceIncarnation } = await microsandboxSkillTarget(shim, cwd)
+      const initialLedger = (await this.store.clusterSkillLedger(agent.id, workspaceIncarnation))
+        ? undefined
+        : await legacySandboxSkillLedger(agent.id, cwd, join(this.root, 'skill-installs'))
+      const ledger = await this.reconcileSandboxSkills(agent, {
+        client,
+        workspaceIncarnation,
+        initialLedger,
+        shimGeneration: shim.session.generation,
+        isLaunchCurrent: () => this.microsandbox?.environment(environment.id) === owner && shim.session.isAttached(),
+        localAuthority
+      })
+      return [...(ledger?.roots.map((root) => root.path) ?? []), '.agentconnect/cluster-skill-state']
+    })
+  }
+
+  private async reconcileSandboxSkills(
+    agent: Agent,
+    peer: {
+      client?: ClusterSkillClient
+      workspaceIncarnation?: string
+      shimGeneration?: number
+      isLaunchCurrent: () => boolean
+      localAuthority?: { groupId: string; term: string; daemonId: string }
+      initialLedger?: ClusterSkillLedger
+    }
+  ): Promise<ClusterSkillLedger | undefined> {
+    const { client, workspaceIncarnation, shimGeneration } = peer
     const agentDir = (agent as { dir?: string }).dir
     const dreamed = agentDir
       ? await acceptedDreamSkillSources({ dir: agentDir }).catch((error: unknown) => {
@@ -4222,22 +4357,21 @@ export class Daemon {
           return []
         })
       : []
-    const workspaceIncarnation = plane?.workspaceIncarnationFor?.(pod)
-    const shimGeneration = plane?.shimGenerationFor?.(pod)
-    const duty = this.duties.dutyForAgent(agent.id)
-    const daemonId = this.cfg.daemonId
+    const duty = this.duties.dutyForAgent(agent.id) ?? peer.localAuthority
+    const daemonId = peer.localAuthority?.daemonId ?? this.cfg.daemonId
     const skillsAgentId = this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId
     const desiredSources = agent.skills.length + agent.managedSkills.length + dreamed.length
-    if (!plane || !workspaceIncarnation) {
+    if (!workspaceIncarnation) {
       if (!client && desiredSources === 0) return
       throw new Error('cluster skill preparation authority is unavailable')
     }
     const prior = await this.store.clusterSkillLedger(agent.id, workspaceIncarnation)
+    const priorLedger = prior?.ledger ?? peer.initialLedger
     const supportRequired = clusterSkillSupportRequired({
       configuredSources: agent.skills.length,
       managedBindings: agent.managedSkills.length,
       acceptedDreamSources: dreamed.length,
-      priorRoots: prior?.ledger.roots.length ?? 0
+      priorRoots: priorLedger?.roots.length ?? 0
     })
     if (!client) {
       if (supportRequired) throw new Error('cluster runtime lacks skill installation support')
@@ -4286,7 +4420,7 @@ export class Daemon {
         retainedAfterTracking(
           currentGitResolutions(
             configuredGitSources.map(({ entry }) => entry),
-            prior?.ledger.gitResolutions ?? []
+            priorLedger?.gitResolutions ?? []
           ),
           trackedCommits
         ).map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
@@ -4365,7 +4499,7 @@ export class Daemon {
         configuredGitSources.map(({ entry }) => entry),
         [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
       )
-      await new ClusterSkillCoordinator(this.store).reconcile({
+      return await new ClusterSkillCoordinator(this.store).reconcile({
         authority: {
           groupId: duty.groupId,
           term: duty.term,
@@ -4378,9 +4512,8 @@ export class Daemon {
         sources,
         gitResolutions,
         client,
-        isLaunchCurrent: () =>
-          plane.workspaceIncarnationFor?.(pod) === workspaceIncarnation &&
-          plane.shimGenerationFor?.(pod) === shimGeneration
+        initialLedger: peer.initialLedger,
+        isLaunchCurrent: peer.isLaunchCurrent
       })
     } finally {
       await rm(scratch, { recursive: true, force: true })
@@ -16655,6 +16788,12 @@ export class Daemon {
       // bound is skipped: retiring a root is never worth waking a suspended pod, and the next pass
       // that finds one bound sweeps it.
       if (this.workspaces.sandboxMode && this.workspaces.sandboxMountFor(agent.id) === undefined) continue
+      // Retiring old roots must not create or wake an idle VM merely to inspect its workspace.
+      if (
+        this.usesMicrosandbox(agent) &&
+        !this.microsandbox?.environment(this.microsandboxPlacement(agent, agent.workspace.path).id)
+      )
+        continue
       const pending = await this.withSandboxVolume(agent.id, () => this.workspaces.retiredSecondaryRoots(agent)).catch(
         (err: unknown) => {
           failures.push((err as Error).message)
@@ -18082,6 +18221,15 @@ export class Daemon {
       agents: () => this.agents,
       workspaces: () => this.workspaces,
       k8sPlane: () => this.k8sPlane,
+      workspaceFilesFor: (id) => this.workspaceFilesFor(id),
+      workspaceSkillLedger: (id, cwd) =>
+        this.withWorkspaceSkillTarget(
+          id,
+          cwd,
+          async ({ workspaceIncarnation }) => (await this.store.clusterSkillLedger(id, workspaceIncarnation))?.ledger
+        ),
+      verifyWorkspaceSkills: (id, roots, cwd) =>
+        this.withWorkspaceSkillTarget(id, cwd, async ({ client }) => (await client.verify(roots)).intact),
       memory: () => this.memory,
       dreamRunner: () => this.dreamRunner(),
       runtimeCommands: () => this.runtimeCommands,

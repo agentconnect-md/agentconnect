@@ -33,7 +33,7 @@ export async function openExecStream(
   sandbox: Sandbox,
   command: string,
   args: string[],
-  options: Pick<MicrosandboxExecuteOptions, 'cwd' | 'env' | 'inheritEnv'> = {}
+  options: Pick<MicrosandboxExecuteOptions, 'cwd' | 'env' | 'inheritEnv'> & { user?: string } = {}
 ) {
   const { decode, encode } = await import('cborg')
   const message = (type: string, payload: unknown) =>
@@ -55,7 +55,7 @@ export async function openExecStream(
         args: replaceEnv ? ['-i', '--', ...entries, command, ...args] : args,
         env: replaceEnv ? [] : entries,
         cwd: options.cwd ?? config.runtime.workdir ?? '/',
-        user: config.runtime.user ?? null,
+        user: options.user ?? config.runtime.user ?? null,
         tty: false
       })
     )

@@ -16,6 +16,7 @@ import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
 import { MICROSANDBOX_SOCKET_BRIDGE_COMMAND, MICROSANDBOX_SOCKET_BRIDGE_ARGS } from './socket-bridge.js'
 import { overlayMounts, OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT, prepareOverlayMounts } from './overlay.js'
 import type { MicrosandboxSecret } from './secrets.js'
+import { startMicrosandboxShim, type MicrosandboxShim } from './shim.js'
 import {
   MICROSANDBOX_NODE,
   openExecStream,
@@ -62,6 +63,7 @@ export interface MicrosandboxManagerOptions {
   msbCommand: { command: string; args: string[] }
   log?: Logger
   sockets: { mcp: string; gitcred: string }
+  nextShimGeneration?: (subject: string) => Promise<number>
 }
 
 interface EnvironmentState {
@@ -74,6 +76,7 @@ interface EnvironmentState {
   processes: Set<MicrosandboxProcess>
   pending: Set<Promise<void>>
   lastUsed: number
+  shim?: Promise<MicrosandboxShim>
 }
 
 interface Binding {
@@ -115,6 +118,41 @@ export class MicrosandboxManager {
 
   driverFor(environment: MicrosandboxEnvironment): SpawnDriver {
     return { launch: (request) => this.launch(environment, request) }
+  }
+
+  async withShim<T>(environment: MicrosandboxEnvironment, work: (shim: MicrosandboxShim) => Promise<T>): Promise<T> {
+    const { state, release } = this.acquire(environment)
+    let resolve!: () => void
+    const pending = new Promise<void>((done) => {
+      resolve = done
+    })
+    state.pending.add(pending)
+    try {
+      state.shim ??= (async () => {
+        const sandbox = await state.sandbox
+        if (!this.options.nextShimGeneration) throw new Error('microsandbox shim generation allocator is unavailable')
+        return startMicrosandboxShim({
+          sdk: this.options.sdk,
+          sandbox,
+          subject: environment.id,
+          agentId: environment.id.split('/')[0]!,
+          workspaceRoot: environment.workspaceRoot,
+          generation: await this.options.nextShimGeneration(environment.id),
+          failed: () => this.stopFailedEnvironment(environment.id),
+          log: this.options.log
+        })
+      })()
+      const shim = await state.shim
+      if (this.closed || state.closing || state.failed) throw new Error('microsandbox environment is stopping')
+      return await work(shim)
+    } catch (error) {
+      if (state.shim) void state.shim.catch(() => this.stopFailedEnvironment(environment.id))
+      throw error
+    } finally {
+      state.pending.delete(pending)
+      resolve()
+      release()
+    }
   }
 
   async exec(
@@ -745,6 +783,11 @@ export class MicrosandboxManager {
           await Promise.all([...state.processes].map((process) => process.stop(STOP_TIMEOUT_MS)))
         }
         const binding = await this.readBinding(id)
+        if (state?.shim)
+          await state.shim.then(
+            (shim) => shim.stop(),
+            () => {}
+          )
         const handle = await this.find(this.name(id))
         if (handle) {
           if (!binding || handle.id !== binding.sandboxId)

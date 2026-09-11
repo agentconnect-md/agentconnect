@@ -57,6 +57,7 @@ export class ClusterSkillCoordinator {
     sources: ClusterSkillSnapshotSource[]
     gitResolutions?: NonNullable<ClusterSkillLedger['gitResolutions']>
     client: ClusterSkillClient
+    initialLedger?: ClusterSkillLedger
     isLaunchCurrent?: () => boolean
   }): Promise<ClusterSkillLedger> {
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
@@ -78,7 +79,8 @@ export class ClusterSkillCoordinator {
           sourceId: source.sourceId,
           path: file.path.replaceAll('\\', '/'),
           size: file.size,
-          sha256: file.sha256.replace(/^sha256:/, '')
+          sha256: file.sha256.replace(/^sha256:/, ''),
+          ...(input.client.fileModes ? { executable: (file.mode & 0o111) !== 0 } : {})
         })
       }
     }
@@ -118,7 +120,8 @@ export class ClusterSkillCoordinator {
         operationId: authority.operationId,
         handle,
         authority: { ...input.authority, shimGeneration: input.shimGeneration },
-        priorRoots: begun.priorLedger.roots,
+        priorRoots:
+          begun.priorRevision === 0 ? (input.initialLedger ?? begun.priorLedger).roots : begun.priorLedger.roots,
         replayKey: begun.replayKey,
         allowDesiredAdoption: false,
         sources: sources.map((source) => ({

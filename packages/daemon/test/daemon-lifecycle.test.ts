@@ -170,6 +170,89 @@ function pendingFor(daemon: Daemon, acpSessionId: string): any {
 }
 
 describe('Daemon session lifecycle (#118)', () => {
+  it.each(['from-scratch', 'git-repo'])('reopens a suspended primary %s workspace through its VM', async (mode) => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      const agent = d.agents.get('bot-a')
+      agent.workspace.mode = mode
+      mkdirSync(agent.workspace.path, { recursive: true })
+      const environment = {
+        id: 'bot-a/primary',
+        workspaceRoot: agent.dir,
+        mounts: [{ source: agent.workspace.path, target: agent.workspace.path, mode: 'writable' }]
+      }
+      d.microsandbox = { environment: () => undefined, stopAll: async () => {} }
+      const context = vi.spyOn(d, 'microsandboxContext').mockReturnValue({ environment })
+      expect(d.workspaces.trustedWorkspaceWriteRoots(agent)).not.toContain(agent.workspace.path)
+      expect(d.microsandboxWorkspaceEnvironment(agent, agent.workspace.path)).toBe(environment)
+      expect(context).toHaveBeenCalledExactlyOnceWith(agent, agent.workspace.path)
+      expect(d.microsandboxWorkspaceEnvironment(agent, join(agent.dir, 'unmounted'))).toBeUndefined()
+      d.microsandbox = undefined
+      expect(d.microsandboxWorkspaceEnvironment(agent, agent.workspace.path)).toBeUndefined()
+      expect(d.workspaceFilesFor(agent.id)).toBeUndefined()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it.each([false, true])('sweeps retired microsandbox roots only with a warm VM (warm: %s)', async (warm) => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      d.cfg.sandbox.backend = 'microsandbox'
+      const agent = d.agents.get('bot-a')
+      agent.runInSandbox = true
+      const environment = { id: 'bot-a/agent' }
+      d.microsandbox = {
+        environment: (id: string) => (warm && id === environment.id ? environment : undefined),
+        stopAll: async () => {}
+      }
+      const list = vi.spyOn(d.workspaces, 'retiredSecondaryRoots').mockResolvedValue([])
+      await d.sweepRetiredWorkspaceRoots()
+      if (warm) expect(list).toHaveBeenCalledExactlyOnceWith(agent)
+      else expect(list).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('retries microsandbox skill authority after a transient store failure', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      const agent = d.agents.get('bot-a')
+      mkdirSync(agent.workspace.path, { recursive: true })
+      const environment = { id: 'bot-a/agent' }
+      d.microsandbox = {
+        environment: () => environment,
+        stopAll: async () => {},
+        withShim: async (_environment: unknown, run: (shim: unknown) => Promise<unknown>) =>
+          run({
+            session: { hasCapability: () => true, generation: 1, isAttached: () => true }
+          })
+      }
+      vi.spyOn(d, 'microsandboxContext').mockReturnValue({ environment })
+      vi.spyOn(d.store, 'clusterSkillLedger').mockResolvedValue({ revision: 1, ledger: { roots: [] } })
+      const prepare = vi.spyOn(d, 'reconcileSandboxSkills').mockResolvedValue({ roots: [] })
+      const fence = vi
+        .spyOn(d.store, 'projectDutyWriteFence')
+        .mockRejectedValueOnce(new Error('store busy'))
+        .mockResolvedValue(true)
+      await expect(d.reconcileMicrosandboxSkills(agent, agent.workspace.path)).rejects.toThrow('store busy')
+      await expect(d.reconcileMicrosandboxSkills(agent, agent.workspace.path)).resolves.toEqual([
+        '.agentconnect/cluster-skill-state'
+      ])
+      expect(fence).toHaveBeenCalledTimes(2)
+      expect(prepare).toHaveBeenCalledOnce()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it.each([true, false])('installs a host runtime only for local execution (runInSandbox=%s)', async (runInSandbox) => {
     const root = scaffold()
     const host = quietHost()

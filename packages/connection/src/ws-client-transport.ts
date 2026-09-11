@@ -87,6 +87,7 @@ export interface DialOpts {
   handshakeTimeoutMs?: number
   selfPingMs?: number
   idleMs?: number
+  createConnection?: WebSocket.ClientOptions['createConnection']
 }
 
 export class ClientTransport implements Transport {
@@ -116,14 +117,24 @@ export class ClientTransport implements Transport {
     return new Promise<Transport>((resolve, reject) => {
       const ws = new WebSocket(wsUrl, [opts.subprotocol], {
         maxPayload: MAX_FRAME_BYTES,
-        handshakeTimeout: opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
+        ...(opts.createConnection ? { createConnection: opts.createConnection } : {})
       })
+      // Own the deadline: custom Duplex connections need not implement socket timeouts.
+      const timer = setTimeout(() => {
+        reject(new Error('WebSocket opening handshake timed out'))
+        ws.terminate()
+      }, opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS)
       const onPreOpenError = (err: Error): void => {
-        ws.removeAllListeners()
+        clearTimeout(timer)
         reject(err)
       }
+      ws.once('close', () => {
+        clearTimeout(timer)
+        reject(new Error('WebSocket closed before opening'))
+      })
       ws.once('error', onPreOpenError)
       ws.once('open', () => {
+        clearTimeout(timer)
         ws.removeListener('error', onPreOpenError)
         // Post-open socket errors (ETIMEDOUT on a half-open connection after the
         // peer dies without a FIN, an oversized frame, a mid-stream reset) MUST

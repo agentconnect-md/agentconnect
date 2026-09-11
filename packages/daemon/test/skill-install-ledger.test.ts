@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { detectSandbox } from '../src/acp/sandbox.js'
+import { legacySandboxSkillLedger } from '../src/skills/sandbox-skill-ledger.js'
 import {
   MAX_SKILL_LEDGER_BYTES,
   readSkillLedger,
@@ -105,12 +106,8 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
 
   it('recovers a durable journal before the first apply without creating a missing harness parent', async () => {
     const location = await writeApplying([operation('.runtime/skills/never-started')])
-    const applying = await readSkillLedger(location)
-
-    const recovered = await recover(location, applying!)
-
-    expect(recovered.phase).toBe('ready')
-    expect(recovered.owned).toEqual([])
+    expect(await legacySandboxSkillLedger('a1', cwd, stateDir)).toEqual({ roots: [], gitResolutions: [] })
+    expect((await readSkillLedger(location))?.phase).toBe('ready')
     expect(existsSync(join(cwd, '.runtime'))).toBe(false)
   })
 
@@ -469,13 +466,24 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     expect(await readFile(join(outside, 'skills/fixture/SKILL.md'), 'utf8')).toBe(BODY)
   })
 
-  it('reinstalls a recorded bundle the checkout no longer holds', async () => {
+  it.each([false, true])('reinstalls a missing recorded bundle (trusted coordinator: %s)', async (trusted) => {
     const first = await reconcile('v1')
     expect(first.installed).toEqual([BUNDLE])
 
     // A resumed session clone whose bundles vanished from disk while the ledger naming them stays.
     await rm(join(cwd, '.claude'), { recursive: true, force: true })
-    const second = await reconcile('v1')
+    const second = trusted
+      ? await reconcileSkillBundles({
+          cwd,
+          stateDir,
+          agentId: 'a1',
+          runtime: 'claude',
+          cliVersion: '1.5.21',
+          fingerprint: 'v1',
+          candidates: [{ ...oneFileReceipt(BUNDLE), sourceDir }],
+          trustedPrior: first.owned
+        })
+      : await reconcile('v1')
 
     expect(second.installed).toEqual([BUNDLE])
     expect(second.conflicts).toEqual([])

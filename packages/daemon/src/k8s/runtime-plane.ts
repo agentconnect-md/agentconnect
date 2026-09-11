@@ -28,7 +28,7 @@ import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimMemoryFs } from '../shim/memory-fs-channel.js'
 import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'
 import type { WorkspaceFiles } from '../workspace/workspace-files.js'
-import type { WorkspaceFs, WorkspacePlacement } from '../workspace/workspace-fs.js'
+import { RoutedWorkspaceFs, type WorkspacePlacement } from '../workspace/workspace-fs.js'
 import { sessionDirIn } from '../workspace/session-layout.js'
 import type { MemoryFs } from '../memory/fs.js'
 import { DEFAULT_SHIM_LISTEN_PORT, DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
@@ -518,46 +518,7 @@ export function shimEndpoint(podIp: string, port: number): string {
   return `ws://${host}:${port}`
 }
 
-// A `WorkspaceFs` over several pods: every operation names a path, and the path names the pod (§11); `rename` must stay within one.
-export class RoutedWorkspaceFs implements WorkspaceFs {
-  constructor(private readonly route: (path: string) => Promise<WorkspaceFs>) {}
-
-  async stat(path: string): ReturnType<WorkspaceFs['stat']> {
-    return await (await this.route(path)).stat(path)
-  }
-
-  async readdir(path: string): Promise<string[]> {
-    return await (await this.route(path)).readdir(path)
-  }
-
-  async mkdir(path: string, mode?: number): Promise<void> {
-    return await (await this.route(path)).mkdir(path, mode)
-  }
-
-  async readFile(path: string): Promise<string | undefined> {
-    return await (await this.route(path)).readFile(path)
-  }
-
-  async readFileBytes(path: string, maxBytes: number): ReturnType<WorkspaceFs['readFileBytes']> {
-    return await (await this.route(path)).readFileBytes(path, maxBytes)
-  }
-
-  async writeFile(path: string, content: string, options?: { mode?: number }): Promise<void> {
-    return await (await this.route(path)).writeFile(path, content, options)
-  }
-
-  async rename(from: string, to: string): Promise<void> {
-    return await (await this.route(from)).rename(from, to)
-  }
-
-  async rmdir(path: string): Promise<boolean> {
-    return await (await this.route(path)).rmdir(path)
-  }
-
-  async rmTree(path: string): Promise<void> {
-    return await (await this.route(path)).rmTree(path)
-  }
-}
+export { RoutedWorkspaceFs } from '../workspace/workspace-fs.js'
 
 // The console's file port over several pods: each call names its root, and the root names the pod (§11).
 export class RoutedWorkspaceFiles implements WorkspaceFiles {

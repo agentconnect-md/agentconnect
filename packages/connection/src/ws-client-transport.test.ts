@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { WebSocketServer } from 'ws'
-import type { AddressInfo } from 'node:net'
+import type { AddressInfo, Socket } from 'node:net'
+import { Duplex } from 'node:stream'
 import { ClientTransport, armRxWatchdog, type WatchdogSocket } from './ws-client-transport.js'
 
 // ── armRxWatchdog — the half-open detector (injected timers, no real sockets) ──
@@ -128,6 +129,24 @@ async function startServer(
 }
 
 describe('ClientTransport.dial', () => {
+  it('times out and destroys a silent custom connection without socket timeout support', async () => {
+    const socket = new Duplex({
+      read() {},
+      write(_chunk, _encoding, done) {
+        done()
+      }
+    })
+    await expect(
+      ClientTransport.dial('ws://127.0.0.1', {
+        subprotocol: 'test.sub.v1',
+        path: '/ws',
+        handshakeTimeoutMs: 30,
+        createConnection: () => socket as Socket
+      })
+    ).rejects.toThrow('handshake timed out')
+    expect(socket.destroyed).toBe(true)
+  })
+
   it('dials with the given subprotocol/path and round-trips a message', async () => {
     // Echo on client send — avoids racing the server's greeting against the
     // client's onMessage registration (which only exists after dial resolves).

@@ -430,6 +430,8 @@ async function reconcileSkillBundlesLocked(
     if (options.trustedPrior) {
       const owned: OwnedSkillBundle[] = []
       for (const receipt of options.trustedPrior) {
+        // Missing content confers no mutation rights and can be installed again as a new bundle.
+        if (!(await destinationOccupied(options.cwd, receipt.relativeRoot))) continue
         const found = await bundleIdentity(join(options.cwd, ...receipt.relativeRoot.split('/')), receipt)
         if (!found) throw safety(`durable skill receipt does not match ${receipt.relativeRoot}`)
         owned.push({ ...receipt, identity: found })

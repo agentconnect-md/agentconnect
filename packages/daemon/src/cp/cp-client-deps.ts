@@ -45,6 +45,7 @@ import { DAEMON_VERSION } from '../version.js'
 import type { Logger } from '../log.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { LocalStore, SessionRecord } from '../store/local-store.js'
+import type { ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 import type { SessionMetadataOutbox } from '../store/session-metadata-outbox.js'
 import type { WebchatMcpRevocations } from '../webchat/mcp-revocations.js'
 import type { WorkspaceManager } from '../workspace/workspace-manager.js'
@@ -145,6 +146,9 @@ export interface CpClientSeamHost {
   agents(): ReadonlyMap<string, LoadedAgent>
   workspaces(): WorkspaceManager
   k8sPlane(): K8sRuntimePlane | undefined
+  workspaceFilesFor: K8sRuntimePlane['workspaceFilesFor']
+  workspaceSkillLedger: NonNullable<Parameters<typeof createLocalSkillsReader>[4]>
+  verifyWorkspaceSkills: (id: string, roots: ClusterSkillLedger['roots'], cwd: string) => Promise<boolean[] | undefined>
   memory(): AgentMemoryAdminResolver & MemoryProvider
   dreamRunner(): DreamRunner
   runtimeCommands(): RuntimeCommandsCache
@@ -349,7 +353,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       host.workspaces(),
       workspaceScope.location,
       (id, write) => host.withWorkspaceFileWrite(id, write),
-      (id) => host.k8sPlane()?.workspaceFilesFor(id)
+      (id) => host.workspaceFilesFor(id)
     ),
     workspaceGit: {
       status: (id, sessionId, repo) => workspaceGit.status(id, sessionId, repo),
@@ -430,13 +434,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // console lists are the ones the agent's harness loads, and those are in the pod.
       async (id) => (await workspaceScope.location(id))?.root,
       join(host.daemonRoot(), 'skill-installs'),
-      (id) => host.k8sPlane()?.workspaceFilesFor(id),
-      async (id) => {
-        const incarnation = host.k8sPlane()?.workspaceIncarnationFor?.(id)
-        return incarnation ? (await host.store().clusterSkillLedger(id, incarnation))?.ledger : undefined
-      },
-      async (id, roots) =>
-        (await host.k8sPlane()?.skillClientFor?.(id)?.verify(roots))?.intact ?? roots.map(() => false)
+      (id) => host.workspaceFilesFor(id),
+      (id, cwd) => host.workspaceSkillLedger(id, cwd),
+      async (id, roots, cwd) => (await host.verifyWorkspaceSkills(id, roots, cwd)) ?? roots.map(() => false)
     ),
     runtimeCommandsReader: createRuntimeCommandsReader(host.runtimeCommands(), (id) => host.agents().has(id)),
     // webchat is no longer a CP control-WS integration (milestone A4) — it rides the

@@ -48,7 +48,8 @@ export const ClusterSkillFileSchema = z
     sourceId: z.string().min(1).max(160),
     path: RelativeSkillPathSchema,
     size: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILE_BYTES),
-    sha256: Sha256Schema
+    sha256: Sha256Schema,
+    executable: z.boolean().optional()
   })
   .strict()
 

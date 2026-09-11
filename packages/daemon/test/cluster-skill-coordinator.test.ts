@@ -12,6 +12,49 @@ import { ClusterSkillClient } from '../src/shim/skill-client.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS } from '../src/skills/skill-source-snapshot.js'
 
 describe('cluster skill coordinator', () => {
+  it.each([0, 1])(
+    'uses a legacy receipt only before the first sandbox ledger commit (revision %i)',
+    async (revision) => {
+      const legacy = {
+        path: '.agents/skills/old',
+        sourceId: 'legacy:old',
+        sourceKind: 'agent' as const,
+        digest: createHash('sha256').update(JSON.stringify([])).digest('hex'),
+        files: []
+      }
+      const store: ClusterSkillJournalStore = {
+        beginClusterSkillReconcile: async () => ({
+          ok: true,
+          operationId: '11111111-1111-4111-8111-111111111111',
+          replayKey: 'a'.repeat(64),
+          priorRevision: revision,
+          priorLedger: { roots: [] },
+          resumed: false
+        }),
+        authorizeClusterSkillMutation: async () => true,
+        commitClusterSkillReconcile: async () => ({ ok: true, revision: revision + 1 })
+      }
+      let priorRoots: unknown
+      const client = new ClusterSkillClient({
+        request: async (_capability, payload) => {
+          const request = payload as { op: string; priorRoots?: unknown }
+          if (request.op === 'begin') return { handle: 'opaque-handle-1234' }
+          priorRoots = request.priorRoots
+          return { roots: [], conflicts: [] }
+        }
+      })
+      await new ClusterSkillCoordinator(store).reconcile({
+        authority: { groupId: 'g', term: '1', daemonId: 'd', agentId: 'a', workspaceIncarnation: 'claim' },
+        skillsAgentId: 'codex',
+        shimGeneration: 1,
+        sources: [],
+        client,
+        initialLedger: { roots: [legacy] }
+      })
+      expect(priorRoots).toEqual(revision === 0 ? [legacy] : [])
+    }
+  )
+
   it('requires a capable image for accepted Dream state and durable cleanup, but not an empty agent', () => {
     expect(
       clusterSkillSupportRequired({ configuredSources: 0, managedBindings: 0, acceptedDreamSources: 0, priorRoots: 0 })
@@ -30,6 +73,7 @@ describe('cluster skill coordinator', () => {
         const sourceDir = join(root, kind)
         await mkdir(sourceDir)
         await writeFile(join(sourceDir, 'SKILL.md'), `---\nname: ${kind}\ndescription: fixture\n---\n# ${kind}\n`)
+        await writeFile(join(sourceDir, 'run.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
         return {
           sourceId: `${kind === 'agent' ? 'z' : kind === 'managed' ? 'm' : 'a'}:${kind}`,
           sourceKind: kind as 'agent' | 'managed' | 'dream',
@@ -66,7 +110,14 @@ describe('cluster skill coordinator', () => {
       async request(_capability: unknown, payload: unknown) {
         const request = payload as Record<string, unknown>
         events.push(String(request.op))
-        if (request.op === 'begin') return { handle: 'opaque-handle-1234' }
+        if (request.op === 'begin') {
+          const files = request.files as Array<{ path: string; executable?: boolean }>
+          if (process.platform !== 'win32') {
+            expect(files.filter((file) => file.path === 'run.sh').every((file) => file.executable)).toBe(true)
+            expect(files.filter((file) => file.path === 'SKILL.md').every((file) => !file.executable)).toBe(true)
+          }
+          return { handle: 'opaque-handle-1234' }
+        }
         if (request.op === 'upload') {
           const data = Buffer.from(String(request.data), 'base64')
           return { received: Number(request.offset) + data.length, complete: request.final }
@@ -90,7 +141,7 @@ describe('cluster skill coordinator', () => {
       skillsAgentId: 'codex',
       shimGeneration: 7,
       sources,
-      client: new ClusterSkillClient(requester)
+      client: new ClusterSkillClient(requester, true, true)
     })
     expect(ledger.roots).toHaveLength(3)
     expect(events[0]).toBe('begin-journal')
