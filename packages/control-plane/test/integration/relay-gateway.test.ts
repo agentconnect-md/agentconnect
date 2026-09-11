@@ -908,7 +908,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       GITHUB_APP_PRIVATE_KEY_B64: Buffer.from(privateKey.export({ type: 'pkcs8', format: 'pem' }) as string).toString(
         'base64'
       ),
-      GITHUB_APP_SLUG: 'agentconnect-test'
+      GITHUB_APP_SLUG: 'example-deployment'
     }
 
     /** GET /app/installations/{id} stub — the only call the doorbell pull makes. */

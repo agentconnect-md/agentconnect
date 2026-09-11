@@ -430,7 +430,7 @@ export function buildHttpApp(
     relayControl,
     placementResolver,
     githubInstallationRepo,
-    'agentconnect-test',
+    'example-deployment',
     undefined,
     depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
     depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined,

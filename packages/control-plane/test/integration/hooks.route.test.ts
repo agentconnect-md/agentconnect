@@ -306,7 +306,7 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       return new GithubService({
         cfg: {
           appId: 1,
-          slug: 'agentconnect-test',
+          slug: 'example-deployment',
           jwtIssuer: '1',
           privateKey
         },
