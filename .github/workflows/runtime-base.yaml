@@ -1,9 +1,6 @@
 name: Build runtime bases
 
 on:
-  push:
-    branches: [codex/runtime-image-layers]
-    paths: [.github/workflows/runtime-base.yaml]
   workflow_dispatch:
     inputs:
       tag:
