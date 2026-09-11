@@ -28,6 +28,7 @@ import {
   type RdAgentMsgAck,
   type RdChatEvent,
   type RdWebchatPost,
+  GITEA_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE
 } from '@agentconnect.md/protocol'
@@ -53,7 +54,9 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   // The relay gates gitlab rd/msg dispatch on this capability.
   GITLAB_COM_V1_FEATURE,
   // §24.4: and gates a SELF-MANAGED gitlab delivery on this one, per delivery attempt.
-  GITLAB_INSTANCE_V1_FEATURE
+  GITLAB_INSTANCE_V1_FEATURE,
+  // gitea-integration.md §11: the relay gates every gitea rd/msg dispatch on this one, gitea.com and self-hosted alike.
+  GITEA_V1_FEATURE
 ]
 
 export type RelayClientState = 'CONNECTING' | 'HELLO' | 'READY' | 'CLOSED' | 'DEGRADED'

@@ -26,6 +26,7 @@ import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
+  GITEA_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
@@ -78,8 +79,8 @@ import { MICROSANDBOX_TUNNEL_PATHS } from './microsandbox/socket-bridge.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
 import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
-import { IMPLICIT_CREDENTIAL_PROVIDER } from './gitcred/managed-hosts.js'
-import { codeHostCredentials, credentialProviderOf } from './codehost/credentials.js'
+import { IMPLICIT_CREDENTIAL_PROVIDER, parseManagedBaseUrl, stripHostPathPrefix } from './gitcred/managed-hosts.js'
+import { codeHostCredentials, credentialProviderOf, type ManagedWorkspaceRepo } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
@@ -161,6 +162,9 @@ import type { MemoryAccessDecision, MemoryWriteAsk, MemoryWriteVerdict } from '.
 import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
+import { GiteaBroker } from './gitea/broker.js'
+import { giteaApiBaseUrl } from './gitea/api-base.js'
+import type { CodeHostEffectBroker, CodeHostEffectTarget } from './codehost/broker.js'
 import { CodeHostNoteProjector } from './gitlab/note-projection.js'
 import {
   CONFIG_FILE_CONVENTIONS,
@@ -565,7 +569,8 @@ import type {
   TaskList,
   TaskListReq,
   McpAppRpc,
-  McpAppRpcResult
+  McpAppRpcResult,
+  CodeHostProvider
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { isBuiltinSystemToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
@@ -840,8 +845,8 @@ export class Daemon {
   /** Lazily-built dream-job engine (docs/designs/memory-dreaming.md §4). */
   private dreamRunnerInstance?: DreamRunner
   private gitCreds!: GitCredentialCache
-  /** §14.2 structured mutation broker — allowlisted GitLab effects run under a daemon-held lease. */
-  private gitlabBroker?: GitlabBroker
+  /** §14.2 structured mutation brokers by provider — allowlisted effects run under a daemon-held lease; a host without one fails closed. */
+  private readonly codeHostBrokers = new Map<CodeHostProvider, CodeHostEffectBroker>()
   /** §16 run projection — the only writer of the service-account status note for a merge-request head. */
   private noteProjector!: CodeHostNoteProjector
   /** Public commit attribution selected by the CP deployment's GitHub App. */
@@ -2118,10 +2123,12 @@ export class Daemon {
       providerV2Supported: () => this.cpClient?.supportsServerFeature?.('gitcred-provider-v2') ?? false,
       githubV2Supported: () => this.cpClient?.supportsServerFeature?.(GITCRED_GITHUB_V2_FEATURE) ?? false,
       gitlabEffectSupported: () => this.cpClient?.supportsServerFeature?.(GITLAB_EFFECT_V1_FEATURE) ?? false,
-      gitlabHostFor: (agentId) => this.agents.get(agentId)?.gitlabHost
+      gitlabHostFor: (agentId) => this.agents.get(agentId)?.gitlabHost,
+      giteaSupported: () => this.cpClient?.supportsServerFeature?.(GITEA_V1_FEATURE) ?? false,
+      giteaHostFor: (agentId) => this.agents.get(agentId)?.giteaHost
     })
-    // §14.2: the broker holds the effect lease; the agent environment never sees the token.
-    this.gitlabBroker = new GitlabBroker({
+    // §14.2: each broker holds its host's effect lease; the agent environment never sees the token.
+    const gitlabBroker = new GitlabBroker({
       apiBaseUrl: (target) => this.gitlabApiBase(target.agentId),
       lease: async (target) => {
         const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId)
@@ -2129,6 +2136,29 @@ export class Daemon {
       },
       invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token)
     })
+    this.codeHostBrokers.set('gitlab', {
+      execute: (target, op) =>
+        gitlabBroker.execute(
+          {
+            agentId: target.agentId,
+            projectId: target.repoId,
+            ...(target.hookId !== undefined ? { hookId: target.hookId } : {}),
+            sessionKey: target.sessionKey
+          },
+          op
+        )
+    })
+    this.codeHostBrokers.set(
+      'gitea',
+      new GiteaBroker({
+        apiBaseUrl: (target) => this.giteaApiBase(target.agentId),
+        lease: async (target) => {
+          const entry = await this.gitCreds.getGiteaEffectToken(target.agentId, target.repoId, target.hookId)
+          return { token: entry.token, access: entry.access }
+        },
+        invalidateLease: (target, token) => this.gitCreds.invalidateGiteaEffect(target.agentId, target.repoId, token)
+      })
+    )
     // §16: the same hook-authorized effect lease, on a writer the model never sees or influences.
     this.noteProjector = new CodeHostNoteProjector({
       daemonId: () => this.cfg.daemonId,
@@ -2178,7 +2208,7 @@ export class Daemon {
         return agent ? this.workspaces.managedCredentialProvider(agent) : undefined
       },
       // Only a host whose grants are numerically qualified carries a workspace id on the spec (§17.1).
-      workspaceRepoIdOf: (agentId: string) => this.gitlabWorkspaceProject(agentId),
+      workspaceRepoIdOf: (agentId: string) => this.managedWorkspaceRepo(agentId)?.repoId,
       // The §8.3 allowlist, matched case-insensitively on the repository path.
       qualifiedRepoOf: (agentId: string, repoFullName: string) => {
         const wanted = repoFullName.toLowerCase()
@@ -2208,7 +2238,7 @@ export class Daemon {
         // A provider named on the wire pre-warms under its own numeric identity (§17.1); the
         // implicit one keeps the v1 ask, which carries neither field.
         if (provider !== undefined && provider !== IMPLICIT_CREDENTIAL_PROVIDER) {
-          const externalRepoId = this.gitlabWorkspaceProject(agentId)
+          const externalRepoId = this.managedWorkspaceRepo(agentId)?.repoId
           await this.gitCreds.get(agentId, reason, {
             provider,
             ...(externalRepoId !== undefined ? { externalRepoId } : {})
@@ -3199,8 +3229,9 @@ export class Daemon {
         // outlive many hook deliveries. The call resolves the CURRENT daemon-
         // private turn and fails closed everywhere else.
         tools = [...tools, ...GITHUB_REVIEW_TOOLS]
-        // §14.2 broker: only a session with a GitLab target carries it, and the clamped lease still authorizes.
-        if (this.gitlabWorkspaceProject(agent.id) !== undefined) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
+        // §14.2 brokers: only a session on a repository whose host registered one carries the tools, and the clamped lease still authorizes.
+        const managedRepo = this.managedWorkspaceRepo(agent.id)
+        if (managedRepo && this.codeHostBrokers.has(managedRepo.provider)) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
         // Replace the legacy managed descriptors with this provider's stable core
         // tools. An external plugin's raw MCP tools never enter the ACP session.
         tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
@@ -3852,7 +3883,11 @@ export class Daemon {
     const scope = managedCredentialScope(
       credentialProvider,
       agent.gitlabHost,
-      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
+      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent),
+      {
+        host: agent.giteaHost,
+        repoBearing: !excludeAgentToolCredentials && this.workspaces.repoBearing(agent, 'gitea')
+      }
     )
     const git =
       managedCredentials || agent.workspace.mode === 'git-repo'
@@ -4853,7 +4888,11 @@ export class Daemon {
     const managedScope = managedCredentialScope(
       credentialProvider,
       agent.gitlabHost,
-      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
+      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent),
+      {
+        host: agent.giteaHost,
+        repoBearing: !excludeAgentToolCredentials && this.workspaces.repoBearing(agent, 'gitea')
+      }
     )
     // The Git session policy runs for every configured repository, not only GitHub review:
     // repository hooks/fsmonitor stay disabled through the per-agent gitconfig the whole agent
@@ -5214,6 +5253,9 @@ export class Daemon {
       GITLAB_COM_V1_FEATURE,
       // §24.4: the instance is resolved from the spec, not assumed; no self-managed work without this.
       GITLAB_INSTANCE_V1_FEATURE,
+      // gitea-integration.md §11: the complete Gitea slice — credentials, normalization, poster, broker,
+      // admission. The CP withholds gitea specs, hook assignments, and reruns until this is advertised.
+      GITEA_V1_FEATURE,
       // §16: this daemon renders and updates the run-projection note. The CP leaves the desired
       // generation pending rather than opening a second provider egress path without this bit.
       CODEHOST_NOTE_PROJECTION_V1_FEATURE,
@@ -8642,22 +8684,28 @@ export class Daemon {
     return !this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agentId)
   }
 
-  /** §14.2: resolve this turn's trusted GitLab target, then run exactly one allowlisted operation. */
+  /** §14.2: resolve this turn's trusted repository, then run exactly one allowlisted operation on its host's broker. */
   private async runCodeHostEffect(req: CodeHostEffectReq): Promise<unknown> {
-    const broker = this.gitlabBroker
-    if (!broker) throw new Error('code-host effects are unavailable on this daemon')
     const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
     const target = this.codeHostEffectTarget(req.agentId, key)
-    if (!target) throw new Error('this session has no GitLab project to act on')
+    if (!target) throw new Error('this session has no code-host repository to act on')
+    const broker = this.codeHostBrokers.get(target.provider)
+    if (!broker) throw new Error(`code-host effects are unavailable for ${target.provider} on this daemon`)
     return await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, req.operation)
   }
 
-  /** The hook-dispatched turn's trusted project first (§13.1), else the agent's GitLab workspace project. */
-  private codeHostEffectTarget(agentId: string, key: string): { projectId: string; hookId?: string } | undefined {
+  /** The hook-dispatched turn's trusted repository first (§13.1), else the agent's managed workspace repository. */
+  private codeHostEffectTarget(
+    agentId: string,
+    key: string
+  ): Omit<CodeHostEffectTarget, 'agentId' | 'sessionKey'> | undefined {
     const hook = this.activeTurnCodeHost.get(key)
-    if (hook && hook.agentId === agentId) return { projectId: hook.projectId, hookId: hook.hookId }
-    const projectId = this.gitlabWorkspaceProject(agentId)
-    return projectId === undefined ? undefined : { projectId }
+    if (hook && hook.agentId === agentId) {
+      const { agentId: _owner, ...target } = hook
+      return target
+    }
+    const workspace = this.managedWorkspaceRepo(agentId)
+    return workspace === undefined ? undefined : workspace
   }
 
   /** The instance every GitLab client on this turn addresses (§24.4). Resolved per turn off the
@@ -8666,11 +8714,25 @@ export class Daemon {
     return gitlabApiBaseUrl(this.agents.get(agentId)?.gitlabHost)
   }
 
-  /** The agent's managed GitLab workspace project from the REPLICATED SPEC — never a tool argument. */
-  private gitlabWorkspaceProject(agentId: string): string | undefined {
+  /** The Gitea twin (gitea-integration.md §11): the instance the agent's spec names, resolved per turn. */
+  private giteaApiBase(agentId: string): string {
+    return giteaApiBaseUrl(this.agents.get(agentId)?.giteaHost)
+  }
+
+  /** The agent's managed workspace repository from the REPLICATED SPEC — its provider, rename-stable id, and
+   *  current path measured from the instance root; never a tool argument, and undefined for a host that resolves by name. */
+  private managedWorkspaceRepo(agentId: string): ManagedWorkspaceRepo | undefined {
     const agent = this.agents.get(agentId)
-    if (!agent || this.workspaces.managedCredentialProvider(agent) !== 'gitlab') return undefined
-    return agent.workspace.mode === 'git-repo' ? agent.workspace.gitlabProjectId : undefined
+    const provider = agent ? this.workspaces.managedCredentialProvider(agent) : undefined
+    const host = codeHostCredentials(provider)
+    if (!agent || provider === undefined || !host || agent.workspace.mode !== 'git-repo') return undefined
+    const repoId = host.workspaceRepoId(agent.workspace)
+    if (repoId === undefined) return undefined
+    const instance = parseManagedBaseUrl(host.managedHost(this.workspaces.specHostsOf(agent)).baseUrl)
+    const label = agent.workspace.gitRepo ? gitRepoLabel(agent.workspace.gitRepo) : undefined
+    const stripped = instance && label !== undefined ? stripHostPathPrefix(label, instance.pathPrefix) : undefined
+    const repoPath = stripped !== undefined ? host.credentialRepoPath(stripped) : undefined
+    return { provider, repoId, ...(repoPath !== undefined ? { repoPath } : {}) }
   }
 
   /** Everything the GitHub hook-dispatch and formal-review seam reaches back for. */
@@ -8732,6 +8794,8 @@ export class Daemon {
       getGitlabPostToken: (agentId, projectId, hookId) => this.gitCreds.getGitlabPostToken(agentId, projectId, hookId),
       invalidateGitlabPost: (agentId, projectId, token) =>
         this.gitCreds.invalidateGitlabPost(agentId, projectId, token),
+      getGiteaPostToken: (agentId, repoId, hookId) => this.gitCreds.getGiteaPostToken(agentId, repoId, hookId),
+      invalidateGiteaPost: (agentId, repoId, token) => this.gitCreds.invalidateGiteaPost(agentId, repoId, token),
       invalidatePost: (agentId, repo, presentedToken) => this.gitCreds.invalidatePost(agentId, repo, presentedToken),
       paused: (agentId) => this.paused(agentId),
       draining: (agentId) => this.draining || this.drainingAgents.has(agentId),
@@ -12165,12 +12229,17 @@ export class Daemon {
       headless: entry.msg.headless === true,
       synthetic: isSyntheticA2aChannel(plan.channel)
     })
-    // §14.2: a hook-dispatched turn pins the broker to the delivery's own signature-verified project.
+    // §14.2: a hook-dispatched turn pins its host's broker to the delivery's own signature-verified repository.
     const hookContext = entry.hookContext
     const hookHost = hookContext && codeHostHookMetadataOf(hookContext)
-    if (hookContext && hookHost?.provider === 'gitlab') {
-      const target = { agentId, projectId: hookHost.repo.externalId, hookId: hookContext.hookId }
-      this.activeTurnCodeHost.set(key, target)
+    if (hookContext && hookHost && this.codeHostBrokers.has(hookHost.provider)) {
+      this.activeTurnCodeHost.set(key, {
+        agentId,
+        provider: hookHost.provider,
+        repoId: hookHost.repo.externalId,
+        ...(hookHost.repo.path !== undefined ? { repoPath: hookHost.repo.path } : {}),
+        hookId: hookContext.hookId
+      })
     }
     const activeGithub = await this.githubReviews.prepareGithubTurn(entry, sessionId).catch((err) => {
       this.log.warn(`github review: turn setup failed (${formatErr(err)})`)
@@ -14557,8 +14626,11 @@ export class Daemon {
    *  reservation of agent-authored-attachments.md §5. */
   private shareBudgetByTurn = new Map<string, number>()
 
-  /** The hook-dispatched turn's trusted GitLab project by sessionKey — the §14.2 broker target, never model input. */
-  private activeTurnCodeHost = new Map<string, { agentId: string; projectId: string; hookId: string }>()
+  /** The hook-dispatched turn's trusted repository by sessionKey — the §14.2 broker target, never model input. */
+  private activeTurnCodeHost = new Map<
+    string,
+    Omit<CodeHostEffectTarget, 'sessionKey' | 'hookId'> & { hookId: string }
+  >()
 
   /**
    * Post a chronological boundary message SERIALIZED on the turn's apply chain, returning

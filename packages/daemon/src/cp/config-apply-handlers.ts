@@ -346,14 +346,16 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
  * the agent. An operator who set `workspaceGitAllowedOrigins: []` turned remote workspaces off, and
  * nothing adopts past that.
  */
-function gitlabOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
+function codeHostOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
   // Keyed on the credential axis, not the wire arm: the host-neutral `git` arm
   // carries the same managed-GitLab binding the legacy `gitlab` arm did.
   const workspace = spec.workspace
   const gitlabBacked =
     workspace?.mode === 'gitlab' || (workspace?.mode === 'git' && workspace.credential?.provider === 'gitlab')
-  if (!gitlabBacked) return undefined
-  const origin = unauthorizedWorkspaceGitOrigin(workspace.gitRepo, spec.gitlabHost)
+  // The Gitea twin rides the `git` arm only (gitea-integration.md §12), against its own instance axis.
+  const giteaBacked = workspace?.mode === 'git' && workspace.credential?.provider === 'gitea'
+  if (!gitlabBacked && !giteaBacked) return undefined
+  const origin = unauthorizedWorkspaceGitOrigin(workspace.gitRepo, gitlabBacked ? spec.gitlabHost : spec.giteaHost)
   return origin === undefined
     ? undefined
     : `workspace refused: ${origin} is neither this deployment's code host nor in security.workspaceGitAllowedOrigins on this daemon`
@@ -362,7 +364,7 @@ function gitlabOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
 export function applyAgentUpsert(host: ConfigApplyHost, { agentId, spec }: AgentUpsert): Promise<Ack> {
   return host.queueAgentLifecycle(agentId, async () => {
     if (host.moveStagedAgents().has(agentId)) return { ok: false, reason: 'agent is staged for a move' }
-    const originRefusal = gitlabOriginRefusal(spec)
+    const originRefusal = codeHostOriginRefusal(spec)
     if (originRefusal !== undefined) {
       host.log().warn(`cp: agent "${agentId}" ${originRefusal}`)
       return { ok: false, reason: originRefusal }

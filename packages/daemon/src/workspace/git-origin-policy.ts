@@ -28,10 +28,11 @@ function codeHostOrigin(codeHost: string | undefined): string | undefined {
 }
 
 /**
- * The operator's list plus the code host THIS agent's spec names. Deployment configuration, not
- * tenant input — the same value that already decides which host the daemon hands this agent's git
- * credential to, so refusing to clone it protected nothing and made every self-managed install
- * restate an address the control plane had already sent.
+ * The operator's list plus the code hosts THIS agent's spec names — one per spec-hosted provider
+ * (§24.4, gitea-integration.md §3). Deployment configuration, not tenant input — the same values
+ * that already decide which host the daemon hands this agent's git credential to, so refusing to
+ * clone one protected nothing and made every self-managed install restate an address the control
+ * plane had already sent.
  *
  * Derived per call from the spec in hand rather than remembered: a daemon installs specs through
  * four paths (live upsert, the register/ok snapshot, activate, a move), and a policy carried in
@@ -40,26 +41,32 @@ function codeHostOrigin(codeHost: string | undefined): string | undefined {
  * An explicit empty list is a decision about this daemon — no remote Git workspaces at all — and
  * nothing widens past it.
  */
-function effectiveOrigins(deploymentCodeHost?: string): readonly string[] {
+function effectiveOrigins(deploymentCodeHosts: readonly (string | undefined)[]): readonly string[] {
   if (allowedOrigins.length === 0) return allowedOrigins
-  const origin = codeHostOrigin(deploymentCodeHost)
-  if (!origin || allowedOrigins.includes(origin)) return allowedOrigins
-  return [...allowedOrigins, origin]
+  let origins = allowedOrigins
+  for (const codeHost of deploymentCodeHosts) {
+    const origin = codeHostOrigin(codeHost)
+    if (origin && !origins.includes(origin)) origins = [...origins, origin]
+  }
+  return origins
 }
 
 /** Final daemon boundary for every tenant-selected workspace network target. */
-export function authorizeWorkspaceGitUrl(input: string, deploymentCodeHost?: string): string {
-  return normalizeAllowedWorkspaceGitUrl(input, effectiveOrigins(deploymentCodeHost))
+export function authorizeWorkspaceGitUrl(input: string, ...deploymentCodeHosts: (string | undefined)[]): string {
+  return normalizeAllowedWorkspaceGitUrl(input, effectiveOrigins(deploymentCodeHosts))
 }
 
 /**
  * The origin a workspace repository needs but this daemon's policy excludes; undefined when the
- * policy admits it (§24.4). The policy is the operator's list plus the deployment's own code host,
- * so what this reports is a repository somewhere neither of them names.
+ * policy admits it (§24.4). The policy is the operator's list plus the deployment's own code hosts,
+ * so what this reports is a repository somewhere none of them names.
  */
-export function unauthorizedWorkspaceGitOrigin(repository: string, deploymentCodeHost?: string): string | undefined {
+export function unauthorizedWorkspaceGitOrigin(
+  repository: string,
+  ...deploymentCodeHosts: (string | undefined)[]
+): string | undefined {
   try {
-    authorizeWorkspaceGitUrl(repository, deploymentCodeHost)
+    authorizeWorkspaceGitUrl(repository, ...deploymentCodeHosts)
     return undefined
   } catch {
     try {

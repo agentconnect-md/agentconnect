@@ -19,11 +19,14 @@
  */
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import { replyTargetProvider, type CodeHostReplyTarget } from './reply-target.js'
-import { giteaNotImplemented } from '../gitea/not-implemented.js'
+import { giteaAck } from '../gitea/ack.js'
 
 /** Bounded because it races a prompt that is already starting; an unreachable host must
  *  never hold a turn open, and a late reaction is worthless anyway. */
 const ACK_TIMEOUT_MS = 5_000
+
+/** Enough of an error body to recognize a documented refusal; never the whole thing. */
+const MAX_REJECTION_BODY_CHARS = 512
 
 export interface CodeHostAckDeps {
   /** The same repo-targeted mint the turn's poster uses; reactions need no wider grant. */
@@ -35,9 +38,13 @@ export interface CodeHostAckDeps {
 }
 
 /** One provider's acknowledgement request. */
-interface CodeHostAckAdapter {
+export interface CodeHostAckAdapter {
   readonly provider: CodeHostProvider
+  /** Whether this instance offers the reaction at all, read once per REST root; absent ⇒ always. */
+  permits?(apiBaseUrl: string, token: string, fetchImpl: typeof fetch, signal: AbortSignal): Promise<boolean>
   request(target: CodeHostReplyTarget, token: string, apiBaseUrl: string): { url: string; init: RequestInit }
+  /** A rejection this host documents as "no reaction" rather than a fault — nothing to warn about. */
+  declined?(status: number, body: string, apiBaseUrl: string): boolean
 }
 
 const githubAck: CodeHostAckAdapter = {
@@ -88,18 +95,6 @@ const gitlabAck: CodeHostAckAdapter = {
   }
 }
 
-/**
- * Gitea's acknowledgement is G4's (gitea-integration.md §10.1): the reaction is only placed after
- * reading the instance's allowed-reaction list once per connection, so there is a request to build
- * and a 403 to read as "no reaction" rather than as a credential fault. Until then the adapter
- * refuses — caught below like any other failure, so the turn loses a signal and nothing else. It is
- * unreachable anyway: a reply target is what selects an adapter, and Gitea produces none yet.
- */
-const giteaAck: CodeHostAckAdapter = {
-  provider: 'gitea',
-  request: () => giteaNotImplemented('turn-start reactions')
-}
-
 /** Adding a code host is adding one entry; the record over the provider union makes a missing one a compile error. */
 const ACKS: { readonly [P in CodeHostProvider]: CodeHostAckAdapter } = {
   github: githubAck,
@@ -118,15 +113,27 @@ export async function acknowledgeCodeHostTrigger(target: CodeHostReplyTarget, de
   const adapter = ACKS[replyTargetProvider(target)]
   const doFetch = deps.fetchImpl ?? fetch
   try {
-    const { url, init } = adapter.request(target, await deps.token(), deps.apiBaseUrl())
-    const res = await doFetch(url, { ...init, signal: AbortSignal.timeout(ACK_TIMEOUT_MS) })
-    // The body is never read; drain it so the socket is released rather than parked.
-    try {
-      await res.body?.cancel()
-    } catch {
-      // Best-effort resource cleanup only.
+    const token = await deps.token()
+    const apiBaseUrl = deps.apiBaseUrl()
+    // A host that does not offer the reaction gets none: a configuration fact, not a failure to warn about.
+    if (adapter.permits && !(await adapter.permits(apiBaseUrl, token, doFetch, AbortSignal.timeout(ACK_TIMEOUT_MS)))) {
+      return
     }
-    if (!res.ok) deps.log.warn(`${adapter.provider} ack: reaction rejected (HTTP ${res.status})`)
+    const { url, init } = adapter.request(target, token, apiBaseUrl)
+    const res = await doFetch(url, { ...init, signal: AbortSignal.timeout(ACK_TIMEOUT_MS) })
+    if (res.ok || !adapter.declined) {
+      // The body is never read; drain it so the socket is released rather than parked.
+      try {
+        await res.body?.cancel()
+      } catch {
+        // Best-effort resource cleanup only.
+      }
+      if (!res.ok) deps.log.warn(`${adapter.provider} ack: reaction rejected (HTTP ${res.status})`)
+      return
+    }
+    const body = await res.text().catch(() => '')
+    if (adapter.declined(res.status, body.slice(0, MAX_REJECTION_BODY_CHARS), apiBaseUrl)) return
+    deps.log.warn(`${adapter.provider} ack: reaction rejected (HTTP ${res.status})`)
   } catch (err) {
     deps.log.warn(`${adapter.provider} ack: reaction failed (${err instanceof Error ? err.message : String(err)})`)
   }

@@ -30,10 +30,13 @@ export function repoFromPath(p: string): string | undefined {
   return `${owner}/${repo}`.toLowerCase()
 }
 
-/** Keyed by the table's OPEN provider string: a host this side cannot parse is never ours. */
+/** Keyed by the table's OPEN provider string: a host this side cannot parse is never ours. Gitea has
+ *  no subgroups, so its `owner/repo` grammar is GitHub's, measured from the instance root the host
+ *  match already stripped (gitea-integration.md §9). */
 const PARSERS: Record<string, CredentialRepoPathParser> = {
   github: repoFromPath,
-  gitlab: projectFromPath
+  gitlab: projectFromPath,
+  gitea: repoFromPath
 }
 
 /** The grammar this provider's credential paths follow; undefined ⇒ a provider this build knows nothing about. */

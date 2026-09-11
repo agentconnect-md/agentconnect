@@ -22,6 +22,8 @@ export const githubCredentials: CodeHostCredentialModule = {
   managedRemoteUrl: (repository) => normalizeGithubRepoUrl(repository),
   // An App installation token is re-minted per repository, so a scope denial is the repo-level one.
   liveCredentialPurposes: [],
+  // The GitHub arm still resolves by name (§17.1), so the spec carries no numeric workspace identity.
+  workspaceRepoId: () => undefined,
   placeSecondaryRoot: (row): SecondaryRootPlacement | undefined => {
     // `repos/<owner>/<repo>`; undefined when its text is not two plain segments, which would place the subtree by that text.
     const [owner, repo, ...rest] = row.repoFullName.split('/')
