@@ -9,6 +9,9 @@ import {
   type ReplyToSessionReq,
   type SessionStatusReq
 } from '../src/mcp/ops.js'
+import { AskRequired } from '../src/mcp/ops.js'
+import type { AskAnswer } from '../src/mcp/ask.js'
+import { MULTI_INTEGRATION_NOTE } from '../src/mcp/ops/gateway.js'
 import type { MemoryProvider } from '../src/memory/provider.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 import { EPHEMERAL_RESULT_MARKER } from '../src/session/ephemeral-results.js'
@@ -972,7 +975,7 @@ describe('executeTool: read tools', () => {
     )
   })
 
-  it('is integration-aware with two bots on one platform: reads route by integrationId, ambiguous history is suppressed', async () => {
+  it("is integration-aware with two bots on one platform: reads route by integrationId, history follows the session's own bot", async () => {
     // Agent has TWO Slack bots; the session was triggered by int-a.
     const gwA = fakeGateway({ listChannels: vi.fn(async () => [{ id: 'CA' }]) })
     const gwB = fakeGateway({
@@ -1001,18 +1004,16 @@ describe('executeTool: read tools', () => {
       name: 'from-B'
     })
 
-    // History-backed paths can't attribute to one bot → suppressed with a note; the
-    // observed callbacks are never queried.
+    // A history-backed path belongs to ONE bot, and this session's own is the trusted tiebreak
+    // (#1965 — `ambiguousIntegrations`), so it is read and nothing is asked.
     const gwEmpty = fakeGateway({ listChannels: vi.fn(async () => []) })
     const d2: OpsDeps = { ...d, gatewayFor: () => gwEmpty }
     const chans = (await executeTool(twoBots, 'listChannels', {}, d2)) as Record<string, unknown>
-    expect(chans).toMatchObject({ channels: [], source: 'observed' })
-    expect(chans.note).toMatch(/multiple integrations/i)
+    expect(chans).toEqual({ platform: 'slack', channels: [{ id: 'C_HIST' }], source: 'observed' })
     const kus = (await executeTool(twoBots, 'listKnownUsers', {}, d2)) as Record<string, unknown>
-    expect(kus).toMatchObject({ users: [] })
-    expect(kus.note).toMatch(/multiple integrations/i)
-    expect(observedChannels).not.toHaveBeenCalled()
-    expect(observedUsers).not.toHaveBeenCalled()
+    expect(kus).toEqual({ platform: 'slack', users: [{ id: 'U_HIST' }] })
+    expect(observedChannels).toHaveBeenCalledWith('bot-a', 'slack', 'int-a')
+    expect(observedUsers).toHaveBeenCalledWith('bot-a', 'slack', 'int-a')
   })
 
   it('throws on missing live connection', async () => {
@@ -2405,5 +2406,181 @@ describe('executeTool: searchPublicMessages', () => {
     await expect(executeTool(ctx, 'searchPublicMessages', { query: 'q' }, d)).rejects.toThrow(
       /message search is unavailable/
     )
+  })
+})
+
+// #1965 Gap A: the two history-backed reads answered an agent with more than one bot on the platform with an empty list plus a note naming an `integrationId` the model had no way to obtain. They ask the agent's own host instead, behind `ambiguousIntegrations`, and keep that exact result when they cannot ask.
+describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () => {
+  // A Slack session whose agent ALSO has two Telegram bots: neither owns this conversation, so
+  // "whose history?" has no trusted tiebreak — the one case the ask exists for.
+  const crossPlatform: SessionContext = {
+    ...ctx,
+    integrations: [
+      { id: 'int-1', platform: 'slack' },
+      { id: 'tg-a', platform: 'telegram' },
+      { id: 'tg-b', platform: 'telegram' }
+    ]
+  }
+  const tg = { platform: 'telegram' }
+  const observed = { channels: [{ id: '-100', name: 'team chat' }], users: [{ id: '55', name: '@bob' }] }
+  /** The per-call port `McpControlServer` builds: this round's answers and nothing else. */
+  const port = (answers: Record<string, AskAnswer> = {}) => ({ answer: (key: string) => answers[key] })
+  const accept = (id: string) => ({ action: 'accept' as const, content: { integrationId: id } })
+
+  /** A Telegram gateway that cannot enumerate its chats (the platform that drives this fallback). */
+  function readDeps(over: Partial<OpsDeps> = {}) {
+    const gw = fakeGateway({ listChannels: vi.fn(async () => []) })
+    const observedChannels = vi.fn(async () => observed.channels)
+    const observedUsers = vi.fn(async () => observed.users)
+    const d: OpsDeps = {
+      ...makeDeps({ gatewayFor: () => gw, now: () => 0 }),
+      observedChannels,
+      observedUsers,
+      ...over
+    }
+    return { gw, observedChannels, observedUsers, d }
+  }
+
+  it('asks which bot instead of suppressing the answer, and reads no history on that round', async () => {
+    const { observedUsers, d } = readDeps({ ask: port() })
+    const err = await executeTool(crossPlatform, 'listKnownUsers', tg, d).then(
+      () => undefined,
+      (e: unknown) => e
+    )
+    expect(err).toBeInstanceOf(AskRequired)
+    const ask = (err as AskRequired).ask
+    expect(ask.key).toBe('listKnownUsers.integrationId')
+    // The enum is the trusted session snapshot, never tool input; no ROOT key beyond the three.
+    expect(ask.requestedSchema).toEqual({
+      type: 'object',
+      properties: {
+        integrationId: {
+          type: 'string',
+          title: 'Telegram integration',
+          description: 'The bot whose history is read; a chat reached via one bot is not reachable by another.',
+          enum: ['tg-a', 'tg-b']
+        }
+      },
+      required: ['integrationId']
+    })
+    expect(observedUsers).not.toHaveBeenCalled()
+  })
+
+  it("reads the chosen bot's history on the round that carries the answer", async () => {
+    const { observedUsers, d } = readDeps({ ask: port({ 'listKnownUsers.integrationId': accept('tg-b') }) })
+    expect(await executeTool(crossPlatform, 'listKnownUsers', tg, d)).toEqual({
+      platform: 'telegram',
+      users: observed.users
+    })
+    // The prerequisite this PR carries: without the third argument the answer would be inert.
+    expect(observedUsers).toHaveBeenCalledWith('bot-a', 'telegram', 'tg-b')
+  })
+
+  // An old in-sandbox bridge declares no ask support, so `deps.ask` is absent there (image skew is the normal case); same fall-through for a decline and for an answer we never offered.
+  it.each([
+    ['no ask port at all', undefined],
+    ['a decline', port({ 'listKnownUsers.integrationId': { action: 'decline' } })],
+    ['a cancel', port({ 'listKnownUsers.integrationId': { action: 'cancel' } })],
+    ['an answer naming a bot we never offered', port({ 'listKnownUsers.integrationId': accept('tg-z') })]
+  ])("keeps today's exact suppressed result on %s", async (_label, ask) => {
+    const { observedUsers, d } = readDeps(ask ? { ask } : {})
+    expect(await executeTool(crossPlatform, 'listKnownUsers', tg, d)).toEqual({
+      platform: 'telegram',
+      users: [],
+      note: MULTI_INTEGRATION_NOTE
+    })
+    expect(observedUsers).not.toHaveBeenCalled()
+  })
+
+  // A human answered and that bot simply has no history: say so, or the model reads a bare `[]` as a mis-specified call, re-calls the tool, and a second identical card reaches the same human.
+  it("reports an empty human-chosen read as that bot's own empty history", async () => {
+    const { d } = readDeps({
+      ask: port({ 'listKnownUsers.integrationId': accept('tg-b') }),
+      observedUsers: async () => []
+    })
+    const res = (await executeTool(crossPlatform, 'listKnownUsers', tg, d)) as Record<string, unknown>
+    expect(res).toMatchObject({ platform: 'telegram', users: [] })
+    expect(res.note).toMatch(/`tg-b` Telegram bot has no observed history/)
+    expect(res.note).not.toBe(MULTI_INTEGRATION_NOTE)
+  })
+
+  // THE REPLAY RULE: the answer arrives on a fresh tool call that re-runs the whole handler, and `listChannels` enumerates live BEFORE it can know the list is empty — so the answering round must read its answer first and skip that platform API call.
+  it('spends exactly one live enumeration across the asking and the answering round', async () => {
+    const answers: Record<string, AskAnswer> = {}
+    const { gw, observedChannels, d } = readDeps({ ask: { answer: (key: string) => answers[key] } })
+
+    await expect(executeTool(crossPlatform, 'listChannels', tg, d)).rejects.toBeInstanceOf(AskRequired)
+    expect(gw.listChannels).toHaveBeenCalledTimes(1)
+    expect(observedChannels).not.toHaveBeenCalled()
+
+    answers['listChannels.integrationId'] = accept('tg-b')
+    expect(await executeTool(crossPlatform, 'listChannels', tg, d)).toEqual({
+      platform: 'telegram',
+      channels: observed.channels,
+      source: 'observed'
+    })
+    expect(gw.listChannels).toHaveBeenCalledTimes(1)
+    expect(observedChannels).toHaveBeenCalledWith('bot-a', 'telegram', 'tg-b')
+  })
+
+  // The suppression note asks for exactly this, and until now re-calling with one still got the note: the observed fallback ignored `integrationId` entirely.
+  it('takes an explicit integrationId as the answer and never asks', async () => {
+    const { gw, observedChannels, d } = readDeps({ ask: port() })
+    const res = (await executeTool(crossPlatform, 'listChannels', { ...tg, integrationId: 'tg-b' }, d)) as Record<
+      string,
+      unknown
+    >
+    expect(res).toEqual({ platform: 'telegram', channels: observed.channels, source: 'observed' })
+    expect(res).not.toHaveProperty('note')
+    expect(observedChannels).toHaveBeenCalledWith('bot-a', 'telegram', 'tg-b')
+    expect(gw.listChannels).toHaveBeenCalledTimes(1)
+  })
+
+  // The shared guard (`ambiguousIntegrations`): this session's own bot answers
+  // "whose history", and it is the bot an unqualified `sendMessage` resolves to, so its ids stay reachable.
+  it("never asks when this session's own bot is one of the candidates", async () => {
+    const sameBot = { ...crossPlatform, platform: 'telegram', integrationId: 'tg-a' }
+    const { observedUsers, d } = readDeps({ ask: port() })
+    expect(await executeTool(sameBot, 'listKnownUsers', {}, d)).toEqual({
+      platform: 'telegram',
+      users: observed.users
+    })
+    expect(observedUsers).toHaveBeenCalledWith('bot-a', 'telegram', 'tg-a')
+  })
+
+  it('never asks when the live enumeration answers, or when the agent has one bot there', async () => {
+    const live = fakeGateway({ listChannels: vi.fn(async () => [{ id: 'C1' }]) })
+    const { d } = readDeps({ ask: port(), gatewayFor: () => live })
+    expect(await executeTool(crossPlatform, 'listChannels', tg, d)).toEqual({
+      platform: 'telegram',
+      channels: [{ id: 'C1' }],
+      source: 'live'
+    })
+
+    const oneBot = {
+      ...crossPlatform,
+      integrations: [
+        { id: 'int-1', platform: 'slack' },
+        { id: 'tg-a', platform: 'telegram' }
+      ]
+    }
+    const solo = readDeps({ ask: port() })
+    expect(await executeTool(oneBot, 'listKnownUsers', tg, solo.d)).toEqual({
+      platform: 'telegram',
+      users: observed.users
+    })
+    expect(solo.observedUsers).toHaveBeenCalledWith('bot-a', 'telegram', undefined)
+  })
+
+  // The ask is human-paced, so the turn can die while the card is open: the answering round meets the turn gate first and refuses, the documented outcome rather than a read of stale history.
+  it('lets the turn gate refuse the answering round', async () => {
+    const { observedUsers, d } = readDeps({
+      ask: port({ 'listKnownUsers.integrationId': accept('tg-b') }),
+      canRun: () => false
+    })
+    await expect(executeTool(crossPlatform, 'listKnownUsers', tg, d)).rejects.toThrow(
+      /this agent turn has been stopped/
+    )
+    expect(observedUsers).not.toHaveBeenCalled()
   })
 })

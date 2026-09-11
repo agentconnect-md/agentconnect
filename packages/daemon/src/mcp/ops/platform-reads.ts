@@ -3,16 +3,18 @@ import type { PlatformThreadMessage } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
 import type { McpContentResult, MessageGateway, SessionContext } from './context.js'
 import {
+  ambiguousIntegrations,
   integrationsOnPlatform,
   MULTI_INTEGRATION_NOTE,
   resolveGatewayForPlatform,
   type GatewayDeps
 } from './gateway.js'
+import { askHost, type AskDeps } from '../ask.js'
 import { optionalBoundedInt, optionalString, parseArgs, requiredString } from './args.js'
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
-/** `listKnownUsers` arguments — history-backed, so no `integrationId` (history is not per-bot). */
+/** `listKnownUsers` arguments — history-backed, so the bot comes from the session or the ask below, never from tool input. */
 export const LIST_KNOWN_USERS_ARGS = z.object({ platform: optionalString('platform') })
 
 /** `listChannels` arguments. */
@@ -61,17 +63,20 @@ export const READ_ATTACHMENT_ARGS = z.object({
   mimeType: optionalString('mimeType')
 })
 
-/** The platform-neutral read deps: live gateways plus the history-backed fallbacks for
- *  platforms whose bot API cannot enumerate chats or users. */
-export interface PlatformReadDeps extends GatewayDeps {
-  /** Conversation targets this agent has been triggered in on a platform, from local
-   *  session history. Backs the `listChannels` fallback for platforms whose bot API
-   *  can't enumerate chats (Telegram). Absent ⇒ no fallback (empty live list stands). */
-  observedChannels?: (agentId: string, platform: string) => Promise<{ id: string; name?: string }[]>
-  /** Users this agent has been triggered by on a platform, from local session history.
-   *  Backs `listKnownUsers` so an agent can find a user id to DM where there is no
-   *  user directory to search. */
-  observedUsers?: (agentId: string, platform: string) => Promise<{ id: string; name?: string }[]>
+/** The platform-neutral read deps: live gateways plus the history-backed fallbacks for platforms whose bot API cannot enumerate chats or users. */
+export interface PlatformReadDeps extends GatewayDeps, AskDeps {
+  /** Conversation targets this agent has been triggered in on a platform, from local session history; backs the `listChannels` fallback for platforms whose bot API can't enumerate chats (Telegram), and absent ⇒ no fallback (the empty live list stands). `integrationId` scopes the answer to ONE physical bot's history; omitted ⇒ the agent's only bot on the platform, and nothing at all when it has several. */
+  observedChannels?: (
+    agentId: string,
+    platform: string,
+    integrationId?: string
+  ) => Promise<{ id: string; name?: string }[]>
+  /** Users this agent has been triggered by on a platform, from local session history; backs `listKnownUsers` so an agent can find a user id to DM where there is no user directory to search. `integrationId` scopes it to one bot, as above. */
+  observedUsers?: (
+    agentId: string,
+    platform: string,
+    integrationId?: string
+  ) => Promise<{ id: string; name?: string }[]>
   /** Byte cap for `read*File` downloads (defaults to 8 MiB). */
   maxAttachmentBytes?: number
 }
@@ -96,17 +101,70 @@ function guessMimeFromUrl(url: string): string | undefined {
   return ext ? map[ext] : undefined
 }
 
-// Known-users discovery is history-backed (no live gateway needed) — a memory of who
-// has messaged this agent on a platform, for platforms with no user directory to search
-// (Telegram/Discord). Handled before gateway resolution so it works even if that
-// platform's connection is momentarily down. The local session store is keyed by
-// agent+platform, NOT by integration, so when the agent has MORE THAN ONE bot on the
-// platform the pooled history can't be attributed to a specific bot (and a Telegram/
-// Discord chat reached via bot A is not reachable by bot B). Suppress the ambiguous
-// result rather than return ids that may belong to another bot; a specific target is
-// still reachable via getUserProfile(integrationId) once known.
-// ponytail: single-integration attribution; add a per-integration `sessions.integrationId`
-// column if multi-bot-per-platform discovery ever needs the observed history scoped.
+/** The two reads that answer from observed session history, each asking under its own key so two of them in one turn never consume each other's answer. */
+type HistoryRead = 'listChannels' | 'listKnownUsers'
+
+/** The ask key of a history-backed read. */
+function historyAskKey(tool: HistoryRead): string {
+  return `${tool}.integrationId`
+}
+
+/** Whether the host has ALREADY answered this read's ask — read before any gateway work, because the answering round must not spend a second platform API call the asking round already spent. */
+function hasHistoryAnswer(deps: PlatformReadDeps, tool: HistoryRead): boolean {
+  return deps.ask?.answer(historyAskKey(tool)) !== undefined
+}
+
+/** Whose observed history a read may see. */
+interface HistoryBot {
+  /** The bot to read; undefined ⇒ the agent's only bot on the platform, which the daemon resolves. */
+  integrationId?: string
+  /** Set only when a HUMAN named it, so an empty result can say whose history was empty instead of inviting the same card again. */
+  chosen?: string
+}
+
+/** #1965 Gap A: which bot's history a history-backed read sees. The guard is {@link ambiguousIntegrations}: this session's own bot answers "whose history", and it is the bot an unqualified `sendMessage` resolves to, so the ids this read returns stay reachable. Genuinely ambiguous (several bots on the target platform, none of them this session's) ⇒ ask the agent's own host over that trusted enum; undefined ⇒ the ask cannot be made, was declined, or named an id we never offered, and the caller falls through to the suppressed result. */
+function historyBot(
+  ctx: SessionContext,
+  deps: PlatformReadDeps,
+  platform: string,
+  tool: HistoryRead
+): HistoryBot | undefined {
+  const ambiguous = ambiguousIntegrations(ctx, platform)
+  // Nothing to guess: this session's own bot on the platform, else the agent's only one there.
+  if (ambiguous.length === 0) {
+    const own = integrationsOnPlatform(ctx, platform).find((i) => i.id === ctx.integrationId)
+    return { ...(own ? { integrationId: own.id } : {}) }
+  }
+  const ids = ambiguous.map((i) => i.id)
+  const label = platformLabel(platform)
+  const asked = askHost(deps.ask, historyAskKey(tool), {
+    message: `This agent has ${ids.length} ${label} integrations and none of them owns this conversation. Whose observed history should \`${tool}\` read?`,
+    fields: {
+      integrationId: {
+        kind: 'choice',
+        title: `${label} integration`,
+        description: 'The bot whose history is read; a chat reached via one bot is not reachable by another.',
+        options: ids.map((id) => ({ value: id }))
+      }
+    },
+    required: ['integrationId']
+  })
+  if (asked.state !== 'answered') return undefined
+  const chosen = asked.content.integrationId
+  // The answer comes from the host, so it is untrusted input: only an OFFERED id is accepted.
+  if (typeof chosen !== 'string' || !ids.includes(chosen)) return undefined
+  return { integrationId: chosen, chosen }
+}
+
+/** A read a human disambiguated came back empty: name whose history was empty, so the model reports that instead of re-calling the tool and putting the same question in front of the same human again (answers live in the SDK's per-call state, so a fresh call always asks afresh). */
+function emptyHistoryNote(platform: string, integrationId: string): string {
+  return (
+    `The \`${integrationId}\` ${platformLabel(platform)} bot has no observed history. That is this bot's answer ` +
+    'and not a platform-wide one, and re-calling this tool asks the human the same question again.'
+  )
+}
+
+// Known-users discovery is history-backed (no live gateway needed, so it works even if that platform's connection is momentarily down) — a memory of who has messaged this agent, for platforms with no user directory to search (Telegram/Discord). What a caller gets is ONE physical bot's history: a chat reached via bot A is not reachable by bot B, so the bot is this session's own where that is one of them, and otherwise the read asks its own host (#1965 Gap A) instead of returning ids that may belong to another. Replay-safe by POSITION: nothing above the ask but argument parsing.
 export async function listKnownUsers(
   ctx: SessionContext,
   args: Record<string, unknown>,
@@ -114,16 +172,15 @@ export async function listKnownUsers(
 ): Promise<unknown> {
   const platform = parseArgs(LIST_KNOWN_USERS_ARGS, args).platform ?? ctx.platform
   if (integrationsOnPlatform(ctx, platform).length === 0) throw new Error(`this agent has no ${platform} integration`)
-  if (integrationsOnPlatform(ctx, platform).length > 1) return { platform, users: [], note: MULTI_INTEGRATION_NOTE }
-  return { platform, users: (await deps.observedUsers?.(ctx.agentId, platform)) ?? [] }
+  const bot = historyBot(ctx, deps, platform, 'listKnownUsers')
+  // No answer to be had: today's exact result, note included.
+  if (!bot) return { platform, users: [], note: MULTI_INTEGRATION_NOTE }
+  const users = (await deps.observedUsers?.(ctx.agentId, platform, bot.integrationId)) ?? []
+  const note = bot.chosen !== undefined && users.length === 0 ? emptyHistoryNote(platform, bot.chosen) : undefined
+  return { platform, users, ...(note ? { note } : {}) }
 }
 
-// Platform-neutral READ tools. Like the send path, they route by a `platform`
-// argument (defaulting to the current session's platform) to ANY platform the agent
-// is connected to — so an agent handling a Telegram chat can discover Slack channel /
-// user ids to cross-post. Resolved BEFORE the session-gateway gate so the target need
-// not be the integration that triggered this session. SECURITY: the candidate set comes
-// from the trusted session snapshot, never tool input.
+// Platform-neutral READ tools: like the send path they route by a `platform` argument (defaulting to the current session's) to ANY platform the agent is connected to, so an agent handling a Telegram chat can discover Slack channel/user ids to cross-post — resolved BEFORE the session-gateway gate so the target need not be the integration that triggered this session. SECURITY: the candidate set comes from the trusted session snapshot, never tool input.
 export async function listChannels(
   ctx: SessionContext,
   args: Record<string, unknown>,
@@ -131,17 +188,32 @@ export async function listChannels(
 ): Promise<unknown> {
   const parsed = parseArgs(LIST_CHANNELS_ARGS, args)
   const platform = parsed.platform ?? ctx.platform
+  const mustAsk = ambiguousIntegrations(ctx, platform).length > 0
+  const suppressed = { platform, channels: [], source: 'observed', note: MULTI_INTEGRATION_NOTE }
+  const observedResult = async (bot: HistoryBot, ranLive: boolean) => {
+    const channels = (await deps.observedChannels?.(ctx.agentId, platform, bot.integrationId)) ?? []
+    const note = bot.chosen !== undefined && channels.length === 0 ? emptyHistoryNote(platform, bot.chosen) : undefined
+    return {
+      platform,
+      channels,
+      // Where the returned list came from: an empty fallback leaves the (equally empty) live answer standing, and the answering round below never ran one.
+      source: channels.length > 0 || !ranLive ? 'observed' : 'live',
+      ...(note ? { note } : {})
+    }
+  }
+  // THE REPLAY RULE, positionally: the answering round reads its answer here and never reaches the live enumeration below — a platform API call the asking round already spent, on a platform whose bot API cannot enumerate chats at all, so it would return the same [].
+  if (mustAsk && !parsed.integrationId && hasHistoryAnswer(deps, 'listChannels')) {
+    const bot = historyBot(ctx, deps, platform, 'listChannels')
+    return bot ? await observedResult(bot, false) : suppressed
+  }
   const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   const live = await gw.listChannels()
-  // A platform whose bot API can't enumerate chats (Telegram) returns []; fall back to
-  // the chats this agent has actually been active in, from local session history.
+  // A platform whose bot API can't enumerate chats (Telegram) returns []; fall back to the chats this agent has actually been active in, from local session history.
   if (live.length > 0) return { platform, channels: live, source: 'live' }
-  // The observed fallback is agent+platform-scoped, not per-integration: suppress it
-  // when the agent has multiple bots on this platform (see listKnownUsers note).
-  if (integrationsOnPlatform(ctx, platform).length > 1)
-    return { platform, channels: [], source: 'observed', note: MULTI_INTEGRATION_NOTE }
-  const observed = (await deps.observedChannels?.(ctx.agentId, platform)) ?? []
-  return { platform, channels: observed, source: observed.length > 0 ? 'observed' : 'live' }
+  // The fallback is ONE physical bot's history: a named integration IS that bot (what the suppression note asks for), otherwise this session's own bot, otherwise the host's answer.
+  if (parsed.integrationId) return await observedResult({ integrationId: parsed.integrationId }, true)
+  const bot = historyBot(ctx, deps, platform, 'listChannels')
+  return bot ? await observedResult(bot, true) : suppressed
 }
 
 export async function listChannelMembers(

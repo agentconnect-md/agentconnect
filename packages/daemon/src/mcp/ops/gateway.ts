@@ -6,13 +6,11 @@ export interface GatewayDeps {
   gatewayFor: (integrationId: string) => MessageGateway | undefined
 }
 
-/** Returned by the history-backed tools when the agent has multiple bots on the target
- *  platform: the local store pools history by agent+platform, so ids can't be attributed
- *  to one bot, and a chat reached via one bot is not reachable by another. */
+/** Returned by the history-backed reads when the agent has several bots on the target platform, NONE of them this session's, and the host could not be asked which one to read: observed history belongs to one bot at a time, and a chat reached via one bot is not reachable by another. */
 export const MULTI_INTEGRATION_NOTE =
-  'This agent has multiple integrations on this platform; observed history is not tracked per bot, ' +
-  'so it is suppressed to avoid returning ids that belong to another bot. Pass a specific `integrationId` to ' +
-  'listChannels/listChannelMembers/getUserProfile to query a known target on a chosen bot.'
+  'This agent has multiple integrations on this platform and none of them owns this conversation, so the bot whose ' +
+  'observed history to read could not be determined; it is suppressed rather than returning ids another bot cannot ' +
+  'reach. Pass a specific `integrationId` to listChannels/listChannelMembers/getUserProfile to scope the read to one bot.'
 
 /** The agent's own integrations from the trusted session snapshot (never tool input),
  *  falling back to the session's single integration in minimal contexts. */
@@ -24,10 +22,16 @@ export function knownIntegrations(ctx: SessionContext): { id: string; platform: 
       : []
 }
 
-/** The agent's own integrations on one platform (0, 1, or many). >1 means a read
- *  tool can't attribute agent+platform-scoped history to a specific bot. */
+/** The agent's own integrations on one platform (0, 1, or many). */
 export function integrationsOnPlatform(ctx: SessionContext, platform: string): { id: string; platform: string }[] {
   return knownIntegrations(ctx).filter((i) => i.platform === platform)
+}
+
+/** The integrations {@link resolveGatewayForPlatform} would silently pick the FIRST of: two or more of the agent's own bots on the target platform, none of them this session's. Empty when nothing is guessed — at most one candidate, or the session's own integration qualifies. THE shared guard for "which bot?": this session's own bot is the trusted tiebreak, and it is the bot an unqualified `sendMessage` resolves to, so the ids a history-backed read returns stay reachable. */
+export function ambiguousIntegrations(ctx: SessionContext, platform: string): { id: string; platform: string }[] {
+  const candidates = integrationsOnPlatform(ctx, platform)
+  if (candidates.length < 2) return []
+  return candidates.some((i) => i.id === ctx.integrationId) ? [] : candidates
 }
 
 /**
