@@ -24,12 +24,13 @@ export const GITEA_EVENT_PULL_REQUEST_SYNC = 'pull_request_sync'
 export const GITEA_EVENT_PULL_REQUEST_REVIEW_REQUEST = 'pull_request_review_request'
 export const GITEA_EVENT_PUSH = 'push'
 
-/** The three review event types (§16): one delivery per review submission, verdict in the type. */
-const GITEA_REVIEW_EVENT_ACTIONS: Readonly<Record<string, string>> = {
-  pull_request_review_comment: 'review:commented',
-  pull_request_review_approved: 'review:approved',
-  pull_request_review_rejected: 'review:changes_requested'
-}
+/** The three review event types (§16): one delivery per review submission, verdict in the type. A
+ *  Map, not an object: the key is a request header, which must never reach Object.prototype. */
+const GITEA_REVIEW_EVENT_ACTIONS = new Map<string, string>([
+  ['pull_request_review_comment', 'review:commented'],
+  ['pull_request_review_approved', 'review:approved'],
+  ['pull_request_review_rejected', 'review:changes_requested']
+])
 
 interface GiteaUserRef {
   id?: number
@@ -228,7 +229,7 @@ export function normalizeGiteaEvent(eventType: string, payload: GiteaPayload): G
         : {})
     }
   }
-  const reviewAction = GITEA_REVIEW_EVENT_ACTIONS[eventType]
+  const reviewAction = GITEA_REVIEW_EVENT_ACTIONS.get(eventType)
   if (reviewAction !== undefined) {
     const pull = payload.pull_request
     const index = positiveIndex(pull?.number)
