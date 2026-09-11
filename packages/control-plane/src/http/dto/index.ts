@@ -387,6 +387,7 @@ export const AgentWorkspaceCredentialDto = z.discriminatedUnion('provider', [
     projectId: z.string() // rename-stable numeric project id (workspaceRepoId)
   })
 ])
+export type AgentWorkspaceCredentialDtoT = z.infer<typeof AgentWorkspaceCredentialDto>
 
 /** Where the agent runs (inline; path is daemon-generated). Mirrors the domain
  *  AgentWorkspace (git-workspace-model.md §5). Reused as the response shape inside

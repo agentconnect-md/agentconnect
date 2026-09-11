@@ -74,6 +74,7 @@ import type { LogtoIdentityService } from '../github/logto-identity.js'
 import type { HookService } from '../hooks/hook.service.js'
 import type { DaemonRegistry, DaemonAuth, ApiKeyAdmin, DaemonLiveness, ClusterWorkloadIdentity } from '../ports.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
+import type { CodeHostProviderRegistry } from '../codehost/provider.js'
 import type { DaemonReleaseResolver } from '../registry/daemonRelease.js'
 import type { WebchatTokenService } from '../registry/webchatToken.js'
 import type { OrgInviteLinkService } from '../registry/orgInviteLinkService.js'
@@ -296,6 +297,18 @@ export interface HttpDeps {
    * late (a provider is built FROM this very bundle).
    */
   platforms: CpPlatformRegistry
+  /**
+   * The §6.5 code-host provider registry — the one authority for a per-host
+   * decision a route used to take with `kind === 'gitlab' ? … : …`: the hook
+   * effect axes of a kind, the managed-ingress convergence a write owes, the
+   * additional-repository grant upgrade, workspace provenance and its DTO
+   * projection, and §17.3/§24.4 feature negotiation. Reading it here (never a
+   * per-host field on this bundle) is what keeps a new host out of core files.
+   *
+   * Optional only so a focused harness may omit it: an entry is stateless, so
+   * `codeHostsOf` falls back to the very record the composition root publishes.
+   */
+  codeHosts?: CodeHostProviderRegistry
   /** The ONE assembler of CP→daemon AgentSpecs (owns secret loading + icon bases) —
    *  every spec emission (upsert replicate, icon refresh, move activation) uses it. */
   agentSpecs: AgentSpecAssembler

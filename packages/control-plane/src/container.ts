@@ -237,6 +237,7 @@ import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/disc
 import { createDiscordBotProfileSyncer } from './http/discord-bot-profile.js'
 import type { CpPlatformRegistry } from './platforms/provider.js'
 import { buildCpPlatformRegistry } from './platforms/registry.js'
+import { codeHostProviders } from './codehost/registry.js'
 import { botIdentityProjector } from './platforms/bot-identity.js'
 import { buildPendingInstallReapers, platformBackgroundLoops } from './platforms/lifecycle.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
@@ -1473,6 +1474,9 @@ export function buildContainer(
     // registry cannot exist before this object does. Every reader runs at
     // Fastify `ready()` time or later, by which point it has been assigned.
     platforms,
+    // The §6.5 code-host provider set, published here so routes take their
+    // per-host decisions through the bundle (gitea-integration.md §13.5).
+    codeHosts: codeHostProviders,
     repos: {
       agent: repos.agent,
       assignment: repos.assignment,
