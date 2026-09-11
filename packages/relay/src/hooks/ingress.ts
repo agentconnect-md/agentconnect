@@ -23,13 +23,20 @@ import { isDeepStrictEqual } from 'node:util'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
+  codeHostHookMetadataOf,
+  codeHostHookRuleOf,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   isSelfManagedGitlabHost,
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   hookSubjectSessionKey,
+  pickCodeHostHookMembers,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
+  type CodeHostHookMetadata,
+  type CodeHostHookRule,
+  type CodeHostProvider,
+  type GithubHookMetadata,
   type RcHookAssign,
   type RcRunReport,
   type RdMsgHook
@@ -61,17 +68,47 @@ export interface HookIngressDeps {
   log: Logger
 }
 
-function requiresGithubThreadWorktreeCleanup(msg: RdMsgHook): boolean {
-  if (msg.event === 'pull_request:merged' && msg.github?.subjectKind === 'pull_request') {
-    return true
-  }
-  if (msg.event === 'issues:closed' && msg.github?.subjectKind === 'issue') {
-    return true
-  }
-  if (msg.event === 'issues:deleted' && msg.github?.subjectKind === 'issue') {
-    return true
-  }
-  return false
+/** Relay-authored maintenance commands (§12): an older daemon would run them as model prompts. */
+function requiresGithubThreadWorktreeCleanup(event: string | undefined, github: GithubHookMetadata): boolean {
+  return (
+    (event === 'pull_request:merged' && github.subjectKind === 'pull_request') ||
+    (event === 'issues:closed' && github.subjectKind === 'issue') ||
+    (event === 'issues:deleted' && github.subjectKind === 'issue')
+  )
+}
+
+/** Daemon features a host's delivery needs before dispatch; the relay fails closed rather than let an older daemon run maintenance as a prompt or mis-scope a thread (§12.3, §24.4). */
+const REQUIRED_DAEMON_FEATURES: {
+  readonly [P in CodeHostProvider]: (host: CodeHostHookMetadata<P>, event: string | undefined) => readonly string[]
+} = {
+  github: (host, event) =>
+    requiresGithubThreadWorktreeCleanup(event, host.metadata) ? [RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2] : [],
+  gitlab: (host) => [
+    GITLAB_COM_V1_FEATURE,
+    ...(isSelfManagedGitlabHost(host.metadata.host) ? [GITLAB_INSTANCE_V1_FEATURE] : [])
+  ]
+}
+
+/** The one generic hop over the provider key: the union-keyed index cannot narrow the pair itself. */
+function requiredDaemonFeatures<P extends CodeHostProvider>(
+  host: CodeHostHookMetadata<P>,
+  event: string | undefined
+): readonly string[] {
+  return REQUIRED_DAEMON_FEATURES[host.provider](host, event)
+}
+
+/** A rule with its display-only fields removed, so a rename refresh cannot revoke an otherwise identical retry; a GitLab project path still counts as authority today. */
+const RETRY_AUTHORITY: { readonly [P in CodeHostProvider]: (host: CodeHostHookRule<P>) => unknown } = {
+  github: ({ rule }) => ({
+    ...rule,
+    repoFullName: undefined,
+    sessionKeyPrefix: rule.sessionKeyPrefix ?? rule.repoFullName
+  }),
+  gitlab: ({ rule }) => rule
+}
+
+function retryAuthorityMember<P extends CodeHostProvider>(host: CodeHostHookRule<P>): unknown {
+  return RETRY_AUTHORITY[host.provider](host)
 }
 
 /** The relay-computed session-affinity key (design decision 7; webhook kind). */
@@ -114,19 +151,12 @@ function retryRuleIsAuthorized(captured: RcHookAssign, current: RcHookAssign): b
     delete capturedAuthority[field]
     delete currentAuthority[field]
   }
-  // The canonical repository name is display metadata discovered from signed
-  // deliveries. A rename refresh must not revoke an otherwise identical retry.
-  if (captured.kind === 'github' && current.kind === 'github') {
-    capturedAuthority.github = {
-      ...captured.github,
-      repoFullName: undefined,
-      sessionKeyPrefix: captured.github?.sessionKeyPrefix ?? captured.github?.repoFullName
-    }
-    currentAuthority.github = {
-      ...current.github,
-      repoFullName: undefined,
-      sessionKeyPrefix: current.github?.sessionKeyPrefix ?? current.github?.repoFullName
-    }
+  for (const [authority, rule] of [
+    [capturedAuthority, captured],
+    [currentAuthority, current]
+  ] as const) {
+    const host = codeHostHookRuleOf(rule)
+    if (host) authority[host.provider] = retryAuthorityMember(host)
   }
   return isDeepStrictEqual(capturedAuthority, currentAuthority)
 }
@@ -158,8 +188,7 @@ function reportBase(rule: RcHookAssign, msg: RdMsgHook): Omit<RcRunReport, 'stat
     daemonId: rule.daemonId,
     ...hookSnapshotForDelivery(rule),
     ...(msg.event ? { event: msg.event } : {}),
-    ...(msg.github ? { github: msg.github } : {}),
-    ...(msg.gitlab ? { gitlab: msg.gitlab } : {})
+    ...pickCodeHostHookMembers(msg)
   }
 }
 
@@ -199,27 +228,10 @@ export async function dispatchHookFire(
         return
       }
 
-      // These event names are relay-authored maintenance commands. An older
-      // daemon would run them as model prompts, so fail closed until the target
-      // explicitly advertises maintenance-only handling.
-      if (requiresGithubThreadWorktreeCleanup(dispatchMsg) && !conn.supports(RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2)) {
-        deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
-        resolve()
-        return
-      }
-      // A GitLab turn's session-key/normalization contract is the daemon's
-      // gitlab-com-v1 capability (§12.3): an older daemon would fall back to
-      // generic parsing and mis-scope the thread, so fail closed instead.
-      if (dispatchMsg.gitlab && !conn.supports(GITLAB_COM_V1_FEATURE)) {
-        deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
-        resolve()
-        return
-      }
-      // §24.4, the same shape one bit newer: a self-managed host needs a daemon that
-      // resolves the host from its spec rather than assuming GitLab.com. Fenced HERE, on the
-      // live connection, because a daemon's advertisement changes under a standing rule —
-      // and re-read on every retry attempt, so a rollout heals without a convergence pass.
-      if (isSelfManagedGitlabHost(dispatchMsg.gitlab?.host) && !conn.supports(GITLAB_INSTANCE_V1_FEATURE)) {
+      // Fenced on the live connection and re-read on every attempt: an advertisement changes under a standing rule, and a rollout heals without a convergence pass.
+      const host = codeHostHookMetadataOf(dispatchMsg)
+      const required = host ? requiredDaemonFeatures(host, dispatchMsg.event) : []
+      if (required.some((feature) => !conn.supports(feature))) {
         deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
         resolve()
         return
