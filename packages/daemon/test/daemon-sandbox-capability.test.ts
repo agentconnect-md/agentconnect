@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { RegisterReq } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 
 const AGENT_ID = 'bot-a'
@@ -81,6 +82,36 @@ describe('the sandbox a daemon reports', () => {
     })
     expect(report.features).toContain('sandbox')
     expect(report.unavailable).toBeUndefined()
+  })
+
+  it('publishes a bounded summary, so a huge failure cannot strand the whole daemon', async () => {
+    // `msb pull` may hand back a megabyte of stderr; the register frame caps this field, and a
+    // rejected registration would take down the daemon's unsandboxed agents too.
+    const stderr = `boom ${'x'.repeat(4000)}`
+    const report = await sandboxReport((daemon) => {
+      daemon.cfg.sandbox.backend = 'microsandbox'
+      daemon.microsandbox = undefined
+      daemon.microsandboxFailure = `Error: ${stderr}\n    at Object.run (/opt/daemon/dist/index.js:1:1)`
+    })
+    expect(report.unavailable!.length).toBeLessThanOrEqual(500)
+    expect(report.unavailable).toContain('boom')
+    expect(report.unavailable!.endsWith('…')).toBe(true)
+    // Stack frames are log material, not console material.
+    expect(report.unavailable).not.toContain('at Object.run')
+
+    const decoded = RegisterReq.safeParse({
+      host: 'example-host',
+      capabilities: {
+        platforms: [],
+        runtimes: [],
+        acp: true,
+        features: report.features,
+        sandboxUnavailable: report.unavailable
+      },
+      maxAgents: 1,
+      localState: { assignments: [], crons: [], leases: [] }
+    })
+    expect(decoded.success).toBe(true)
   })
 
   it('claims nothing on a host whose SRT backend has no mechanism', async () => {

@@ -557,7 +557,7 @@ import type {
   TaskList,
   TaskListReq
 } from '@agentconnect.md/protocol'
-import { formatErr, startFailureDetail } from './daemon/text.js'
+import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { isBuiltinSystemToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
 import { buildTurnPlan, type TurnPlan } from './daemon/turn-plan.js'
 import { turnEvaluationReporter, type TurnEvaluationReporter } from './daemon/turn-evaluation.js'
@@ -5098,7 +5098,8 @@ export class Daemon {
   /** Why a configured sandbox cannot be used right now — the text the console shows instead of "no sandbox here". */
   private sandboxUnavailableReason(): string | undefined {
     if (this.cfg.sandbox.backend !== 'microsandbox' || this.microsandbox) return undefined
-    return this.microsandboxFailure ?? 'microsandbox is not initialized'
+    // Bounded before publishing: the log keeps the whole failure, while an over-long optional diagnostic would fail the register schema and strand the daemon.
+    return boundedDiagnostic(this.microsandboxFailure ?? '') || 'microsandbox is not initialized'
   }
 
   private registrationFeatures(): string[] {
