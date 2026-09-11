@@ -15,14 +15,21 @@ import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import {
   type AgentSkillEntry,
+  type CodeHostProvider,
   gitRepoLabel,
   normalizeGitCloneUrl,
-  normalizeGithubRepoUrl,
   normalizeGitUrl,
   normalizeRepoSubdir,
-  redactGitUrlSecrets
+  redactGitUrlSecrets,
+  isCodeHostProvider
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
+import {
+  codeHostCredentials,
+  credentialProviderOf,
+  specHostCodeHosts,
+  type CodeHostSpecHosts
+} from '../codehost/credentials.js'
 import { formatErr } from '../daemon/text.js'
 import { makeLogger } from '../log.js'
 import { installSkills, type LocalSkillSource } from '../skills/install-skills.js'
@@ -40,7 +47,6 @@ import {
   workspaceGitRemoteTarget,
   writeRepoHelperConfig,
   GITHUB_CREDENTIAL_SCOPE,
-  gitlabManagedHost,
   managedCredentialScope,
   originOnManagedHost,
   type ManagedCredentialScope
@@ -49,9 +55,6 @@ import { GitTransportError, LocalGitRunner, type GitRunner } from './git-runner.
 import { localWorkspaceFs, type WorkspaceFs, type WorkspacePlacement } from './workspace-fs.js'
 import { githubSubmoduleRepo, gitmoduleRepos } from './gitmodules.js'
 import {
-  GITLAB_ROOTS_DIR,
-  gitlabSubtreeName,
-  isRepoSegment,
   PRIMARY_CHECKOUT_DIR,
   secondaryRootsDirIn,
   secondarySubtreesIn,
@@ -137,8 +140,8 @@ export type SessionRootLocator = Pick<WorkspaceRoot, 'path' | 'worktreesPath' | 
 export interface SecondaryWorkspaceRoot extends WorkspaceRoot {
   repoFullName: string
   subtreeName: string
-  /** The host that numbers `repoId` — the two number theirs independently (gitlab-com-integration.md §8.1). */
-  provider: 'github' | 'gitlab'
+  /** The host that numbers `repoId` — each numbers its own independently (gitlab-com-integration.md §8.1). */
+  provider: CodeHostProvider
   /** The host's numeric repository or project id — the identity a rename cannot change. */
   repoId: string
   /** Empty until `prepareSecondaryRoot` resolves the remote's default; nothing may clone before that. */
@@ -181,7 +184,7 @@ export type ClusterSessionScope = Pick<PrepareSessionWorkspaceRequest, 'isolatio
 /** What a secondary root's `.materialization.json` records about the checkout beside it. */
 interface SecondaryMaterialization {
   /** Absent in a marker written before GitLab roots existed, which means github. */
-  provider: 'github' | 'gitlab'
+  provider: CodeHostProvider
   repoId: string
   repoFullName: string
   branch: string
@@ -366,11 +369,9 @@ export class WorkspaceManager {
   }
 
   /** Which managed credential backs this workspace's remote git; undefined ⇒ anonymous. */
-  managedCredentialProvider(agent: Agent): 'github' | 'gitlab' | undefined {
+  managedCredentialProvider(agent: Agent): CodeHostProvider | undefined {
     if (agent.workspace.mode !== 'git-repo') return undefined
-    if (agent.workspace.gitCredential === 'github-app') return 'github'
-    if (agent.workspace.gitCredential === 'gitlab') return 'gitlab'
-    return undefined
+    return credentialProviderOf(agent.workspace.gitCredential)
   }
 
   usesManagedCredential(agent: Agent): boolean {
@@ -408,23 +409,30 @@ export class WorkspaceManager {
    * the deployment's GitLab instance (§24.4) — a public clone from that instance still needs
    * GitLab's `.git` suffix rule, and checking is not the same as sniffing a host out of the URL.
    */
-  remoteProviderOf(agent: Agent, repository: string): 'github' | 'gitlab' | undefined {
+  remoteProviderOf(agent: Agent, repository: string): CodeHostProvider | undefined {
     const managed = this.managedCredentialProvider(agent)
     if (managed !== undefined) return managed
-    return originOnManagedHost(repository, gitlabManagedHost(agent.gitlabHost)) ? 'gitlab' : undefined
+    const spec = this.specHostsOf(agent)
+    return specHostCodeHosts().find((host) => originOnManagedHost(repository, host.managedHost(spec)))?.provider
+  }
+
+  /** The host-carrying fields of this agent's replicated spec — one axis per provider (§24.4). */
+  private specHostsOf(agent: Agent): CodeHostSpecHosts {
+    return agent.gitlabHost !== undefined ? { gitlabHost: agent.gitlabHost } : {}
   }
 
   gitRepoOf(agent: Agent): string {
     if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) {
       throw new Error(`workspace clone: agent "${agent.id}" has git-repo mode but no gitRepo configured`)
     }
-    return authorizeWorkspaceGitUrl(
-      canonicalWorkspaceGitUrl(
-        this.usesGithubApp(agent) ? normalizeGithubRepoUrl(agent.workspace.gitRepo) : agent.workspace.gitRepo,
-        this.remoteProviderOf(agent, agent.workspace.gitRepo)
-      ),
-      agent.gitlabHost
-    )
+    const provider = this.remoteProviderOf(agent, agent.workspace.gitRepo)
+    const host = codeHostCredentials(provider)
+    // A MANAGED remote follows its own host's address conventions; an anonymous one is taken as given.
+    const address =
+      host !== undefined && this.usesManagedCredential(agent)
+        ? host.managedRemoteUrl(agent.workspace.gitRepo)
+        : agent.workspace.gitRepo
+    return authorizeWorkspaceGitUrl(canonicalWorkspaceGitUrl(address, provider), agent.gitlabHost)
   }
 
   /** The agent's primary checkout as a root, in the coordinates of whichever filesystem holds it.
@@ -485,8 +493,10 @@ export class WorkspaceManager {
     const parent = this.secondaryRootsDirAt(agent, mount)
     const roots: SecondaryWorkspaceRoot[] = []
     for (const row of agent.workspace.additionalRepos ?? []) {
-      const placed = (row.provider ?? 'github') === 'gitlab' ? this.gitlabRootRow(row) : this.githubRootRow(row)
-      if (placed === undefined) {
+      const host = codeHostCredentials(row.provider ?? 'github')
+      const placed = host?.placeSecondaryRoot(row)
+      if (host === undefined || placed === undefined) {
+        // No module for the row's host, or a name its module cannot place: fail closed per row.
         workspaceLog.warn(
           `workspace: agent "${agent.id}" additional repository "${row.repoFullName}" (${row.provider ?? 'github'}) is not a placeable name — skipping it`
         )
@@ -499,18 +509,12 @@ export class WorkspaceManager {
           repoId: row.repoId,
           // Rows exist only for App-covered repositories, so credentials ride the same helper a managed
           // primary does; the branch is the remote's default, resolved at materialization.
-          cloneUrl:
-            placed.provider === 'gitlab'
-              ? this.gitlabCloneUrl(agent, placed.repoFullName)
-              : this.githubCloneUrl(placed.repoFullName),
+          cloneUrl: host.secondaryCloneUrl(placed.repoFullName, this.specHostsOf(agent)),
           branch: '',
           path: join(base, 'checkout'),
           worktreesPath: join(base, 'worktrees'),
           githubApp: true,
-          managed:
-            placed.provider === 'gitlab'
-              ? managedCredentialScope('gitlab', agent.gitlabHost, true)
-              : GITHUB_CREDENTIAL_SCOPE
+          managed: host.secondaryCredentialScope(this.specHostsOf(agent))
         })
       } catch (err) {
         workspaceLog.warn(
@@ -519,35 +523,6 @@ export class WorkspaceManager {
       }
     }
     return roots.sort((a, b) => (a.repoFullName < b.repoFullName ? -1 : a.repoFullName > b.repoFullName ? 1 : 0))
-  }
-
-  /** A GitHub row placed at `repos/<owner>/<repo>`; undefined when its text is not two plain segments, which would place the subtree by that text. */
-  private githubRootRow(row: {
-    repoFullName: string
-  }): Pick<SecondaryWorkspaceRoot, 'provider' | 'repoFullName' | 'subtreeName'> | undefined {
-    const [owner, repo, ...rest] = row.repoFullName.split('/')
-    if (rest.length > 0 || !isRepoSegment(owner) || !isRepoSegment(repo) || owner === GITLAB_ROOTS_DIR) return undefined
-    return { provider: 'github', repoFullName: `${owner}/${repo}`, subtreeName: `${owner}/${repo}` }
-  }
-
-  /** A GitLab row placed at `repos/_gitlab/<project id>` — the id, because a project path is namespaced to any depth and a rename moves it. */
-  private gitlabRootRow(row: {
-    repoFullName: string
-    repoId: string
-  }): Pick<SecondaryWorkspaceRoot, 'provider' | 'repoFullName' | 'subtreeName'> | undefined {
-    const segments = row.repoFullName.split('/')
-    if (!/^[1-9]\d*$/.test(row.repoId) || segments.length < 2 || !segments.every(isRepoSegment)) return undefined
-    return { provider: 'gitlab', repoFullName: segments.join('/'), subtreeName: gitlabSubtreeName(row.repoId) }
-  }
-
-  private githubCloneUrl(repoFullName: string): string {
-    return authorizeWorkspaceGitUrl(normalizeGithubRepoUrl(`https://github.com/${repoFullName}`))
-  }
-
-  /** The project on the spec's own instance (§24.4), under GitLab's `.git` rule — the same address a gitlab primary resolves to. */
-  private gitlabCloneUrl(agent: Agent, repoFullName: string): string {
-    const instance = gitlabManagedHost(agent.gitlabHost).baseUrl
-    return authorizeWorkspaceGitUrl(canonicalWorkspaceGitUrl(`${instance}/${repoFullName}`, 'gitlab'), agent.gitlabHost)
   }
 
   /**
@@ -2997,7 +2972,7 @@ function parseSecondaryMaterialization(text: string | undefined): SecondaryMater
     if (typeof value.repoId !== 'string' || !value.repoId) return undefined
     if (typeof value.branch !== 'string' || !value.branch) return undefined
     if (typeof value.repoFullName !== 'string' || !value.repoFullName) return undefined
-    if (value.provider !== undefined && value.provider !== 'github' && value.provider !== 'gitlab') return undefined
+    if (value.provider !== undefined && !isCodeHostProvider(value.provider)) return undefined
     return {
       provider: value.provider ?? 'github',
       repoId: value.repoId,
@@ -3010,7 +2985,7 @@ function parseSecondaryMaterialization(text: string | undefined): SecondaryMater
 }
 
 /** The identity a root is compared to an attestation by: the numeric id under the host that issued it. */
-function repoIdentity(entry: { provider: 'github' | 'gitlab'; repoId: string }): string {
+function repoIdentity(entry: { provider: CodeHostProvider; repoId: string }): string {
   return `${entry.provider}:${entry.repoId}`
 }
 
