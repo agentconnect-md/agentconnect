@@ -13,6 +13,7 @@ import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-run
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { SinkRelPathSchema } from '../shim/file-sink.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
+import { assertKvmAvailable } from './kvm.js'
 import { MICROSANDBOX_SOCKET_BRIDGE_COMMAND, MICROSANDBOX_SOCKET_BRIDGE_ARGS } from './socket-bridge.js'
 import { overlayMounts, OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT, prepareOverlayMounts } from './overlay.js'
 import type { MicrosandboxSecret } from './secrets.js'
@@ -60,6 +61,8 @@ export interface MicrosandboxManagerOptions {
     'Sandbox' | 'SandboxNotFoundError' | 'AgentClient' | 'Volume' | 'VolumeNotFoundError' | 'InvalidConfigError'
   >
   msbCommand: { command: string; args: string[] }
+  // Overridden by tests; the real check opens this host's /dev/kvm.
+  kvmPreflight?: () => void
   log?: Logger
   sockets: { mcp: string; gitcred: string }
 }
@@ -292,6 +295,8 @@ export class MicrosandboxManager {
   }
 
   private async probe(): Promise<K8sRuntimeTable> {
+    // Without this, an unreachable /dev/kvm surfaces only as the guest's SIGABRT, minutes after an image pull.
+    ;(this.options.kvmPreflight ?? assertKvmAvailable)()
     const bindings = join(this.options.root, 'microsandbox', 'bindings')
     await mkdir(bindings, { recursive: true, mode: 0o700 })
     for (const id of await this.persistedIds()) {

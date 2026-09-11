@@ -346,6 +346,7 @@ async function fixture() {
     config: { image: 'test-image', cpus: 2, memoryMiB: 2048, diskGiB: 10 },
     sdk: fake.sdk,
     msbCommand: { command: process.execPath, args: ['-e', ''] },
+    kvmPreflight: () => {},
     sockets: { mcp: '/host/mcp.sock', gitcred: '/host/gitcred.sock' }
   }
   const manager = new MicrosandboxManager(options)
