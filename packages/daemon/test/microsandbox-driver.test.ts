@@ -55,6 +55,7 @@ function fakeSdk() {
   class SandboxNotFoundError extends Error {}
   class VolumeNotFoundError extends Error {}
   class InvalidConfigError extends Error {}
+  class ImageInUseError extends Error {}
   const volumes = new Map<string, { attached: boolean }>()
   const removeVolume = vi.fn(async (name: string) => {
     const volume = volumes.get(name)
@@ -66,6 +67,18 @@ function fakeSdk() {
   const created: FakeSandbox[] = []
   const processes: FakeExec[] = []
   let onRun: ((process: FakeExec) => void | Promise<void>) | undefined
+  const images = new Map<string, number | null>([['test-image', 4_194_304]])
+  const imageCache = {
+    list: vi.fn(async () => [...images].map(([reference, sizeBytes]) => ({ reference, sizeBytes }))),
+    remove: vi.fn(async (reference: string) => {
+      if (!images.has(reference)) throw new Error(`image not found: ${reference}`)
+      // The cache refuses an image any sandbox still boots from, stopped ones included.
+      for (const sandbox of sandboxes.values()) {
+        if (sandbox.spec.image === reference) throw new ImageInUseError('image in use by sandbox(es): 1')
+      }
+      images.delete(reference)
+    })
+  }
 
   class FakeSandbox {
     readonly id = `vm-${created.length}`
@@ -161,7 +174,9 @@ function fakeSdk() {
     SandboxNotFoundError,
     VolumeNotFoundError,
     InvalidConfigError,
+    ImageInUseError,
     Volume: { remove: removeVolume },
+    Image: imageCache,
     AgentClient: {
       async connectSandbox(name: string) {
         const sandbox = sandboxes.get(name)!
@@ -325,7 +340,16 @@ function fakeSdk() {
     created,
     processes,
     volumes,
+    images,
+    imageCache,
     removeVolume,
+    /** A VM this daemon does not know about: one an operator created, or one an interrupted start left behind. */
+    leak: (name: string, image: string) => {
+      const sandbox = new FakeSandbox(name)
+      sandbox.spec.image = image
+      sandboxes.set(name, sandbox)
+      return sandbox
+    },
     runWith: (callback: (process: FakeExec) => void | Promise<void>) => {
       onRun = callback
     }
@@ -765,6 +789,65 @@ describe('microsandbox process and VM ownership', () => {
       await restarted.discard(env.id)
     }
     expect(created).toHaveLength(2)
+  })
+
+  it('collects a retired release image and keeps the configured one before any VM boots', async () => {
+    const { options, images, imageCache } = await fixture()
+    images.set('previous-image', 3_145_728)
+    await expect(new MicrosandboxManager(options).prepare()).resolves.toBeDefined()
+    expect(imageCache.remove).toHaveBeenCalledExactlyOnceWith('previous-image')
+    expect([...images.keys()]).toEqual(['test-image'])
+  })
+
+  it('keeps the image of a retained VM until its environment is discarded', async () => {
+    const { manager, options, environment, request, images } = await fixture()
+    await (await manager.driverFor(environment).launch(request)).stop(0)
+    await manager.stopAll()
+    images.set('next-image', null)
+    const upgraded = { ...options, config: { ...options.config, image: 'next-image' } }
+    await new MicrosandboxManager(upgraded).prepare()
+    expect([...images.keys()]).toEqual(['test-image', 'next-image'])
+    await new MicrosandboxManager(upgraded).discard(environment.id)
+    await new MicrosandboxManager(upgraded).prepare()
+    expect([...images.keys()]).toEqual(['next-image'])
+  })
+
+  it('keeps an image a sandbox outside this daemon still boots from', async () => {
+    const { options, images, imageCache, leak } = await fixture()
+    images.set('shared-image', null)
+    leak('sandbox-outside-this-daemon', 'shared-image')
+    await expect(new MicrosandboxManager(options).prepare()).resolves.toBeDefined()
+    expect(imageCache.remove).toHaveBeenCalledExactlyOnceWith('shared-image')
+    expect([...images.keys()]).toEqual(['test-image', 'shared-image'])
+  })
+
+  it('reclaims the preparation VM an interrupted start left behind and frees its image', async () => {
+    const { options, images, created, leak } = await fixture()
+    await new MicrosandboxManager(options).prepare()
+    const probe = created[created.length - 1]!
+    expect(probe.destroy).toHaveBeenCalledOnce()
+    images.set('previous-image', null)
+    const abandoned = leak(probe.name, 'previous-image')
+    await expect(new MicrosandboxManager(options).prepare()).resolves.toBeDefined()
+    expect(abandoned.destroy).toHaveBeenCalledOnce()
+    expect([...images.keys()]).toEqual(['test-image'])
+  })
+
+  it('reclaims the preparation disk a start left behind after its VM was destroyed', async () => {
+    const { options, created, volumes } = await fixture()
+    await new MicrosandboxManager(options).prepare()
+    const probe = created[created.length - 1]!.name
+    // A start that exits between destroying the VM and removing its disk leaves the disk under a fixed name.
+    volumes.set(`${probe}-docker`, { attached: false })
+    await expect(new MicrosandboxManager(options).prepare()).resolves.toBeDefined()
+    expect(volumes.has(`${probe}-docker`)).toBe(false)
+  })
+
+  it('starts when the image cache cannot be read', async () => {
+    const { options, imageCache } = await fixture()
+    imageCache.list.mockRejectedValueOnce(new Error('image cache is locked'))
+    await expect(new MicrosandboxManager(options).prepare()).resolves.toBeDefined()
+    expect(imageCache.remove).not.toHaveBeenCalled()
   })
 
   it.each([false, true])('resumes with relocated support mounts (legacy guest helper=%s)', async (withGuestHelper) => {

@@ -226,9 +226,9 @@ composition point. Do not add speculative backend branches throughout ACP.
 The current microsandbox integration supports Linux with usable KVM. Startup
 installs the pinned `microsandbox@0.6.17` package through the daemon's RuntimeStore,
 preserving its native platform package, and gives it a daemon-owned state home.
-It prepares the image, boots a temporary VM, validates the runtime table, and
-checks stop/start before admitting VM launches. Checking `/dev/kvm` alone would
-not establish availability. With `requireSandbox=true`, an unavailable backend
+It collects the cached images it no longer needs, prepares the image, boots a
+temporary VM, validates the runtime table, and checks stop/start before admitting
+VM launches. Checking `/dev/kvm` alone would not establish availability. With `requireSandbox=true`, an unavailable backend
 refuses startup. Otherwise the daemon can still serve unsandboxed agents, but a
 requested microsandbox launch fails explicitly, with no fallback to SRT or a host
 process. Existing optional-SRT fallback semantics are unchanged. The standalone
@@ -255,6 +255,19 @@ retention removes them. Sessions created in a legacy shared agent VM continue
 using that VM until its last session retires. Resource and mount changes still
 require environment recreation. Image
 digest resolution and in-place disk migration remain proposed.
+
+Because each release pins its own image, an upgraded daemon would otherwise leave
+the previous release's image cached forever. Startup therefore collects the image
+cache before it pulls, keeping the configured image and every image a persisted
+binding still records, which a retained VM validates when it starts, and removing
+the rest one reference at a time. Whole-cache pruning is not used: it removes any
+image no sandbox has booted, which includes the image a daemon just pulled and
+has not started a session on. A removal the backend refuses because a sandbox
+still boots from that image is kept and logged, and a cache that cannot be read
+is logged without failing startup, so collection never costs availability. The
+temporary preparation VM has a stable name and is reclaimed before it is
+recreated; a start interrupted before its teardown would otherwise leave a VM
+behind that pins a retired image.
 
 Workspace filesystem operations and skill publication use the same persistent
 Node shim and WebSocket protocol as Kubernetes. The local driver carries that

@@ -8,6 +8,7 @@ import { z } from 'zod'
 import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-driver.js'
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
+import { formatErr } from '../daemon/text.js'
 import { gitcredShimPath } from '../cp/gitcred-server.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
@@ -59,7 +60,14 @@ export interface MicrosandboxManagerOptions {
   config: { image: string; cpus: number; memoryMiB: number; diskGiB: number }
   sdk: Pick<
     typeof import('microsandbox'),
-    'Sandbox' | 'SandboxNotFoundError' | 'AgentClient' | 'Volume' | 'VolumeNotFoundError' | 'InvalidConfigError'
+    | 'Sandbox'
+    | 'SandboxNotFoundError'
+    | 'AgentClient'
+    | 'Volume'
+    | 'VolumeNotFoundError'
+    | 'InvalidConfigError'
+    | 'Image'
+    | 'ImageInUseError'
   >
   msbCommand: { command: string; args: string[] }
   // Overridden by tests; the real check opens this host's /dev/kvm.
@@ -347,8 +355,11 @@ export class MicrosandboxManager {
     ;(this.options.kvmPreflight ?? assertKvmAvailable)()
     const bindings = join(this.options.root, 'microsandbox', 'bindings')
     await mkdir(bindings, { recursive: true, mode: 0o700 })
+    const keep = new Set([this.options.config.image])
     for (const id of await this.persistedIds()) {
       const binding = await this.readBinding(id)
+      // A retained VM boots from the image it was created with, so that image is not garbage.
+      if (binding) keep.add(SpecImageSchema.parse(JSON.parse(binding.spec)).config.image)
       const handle = await this.find(this.name(id))
       if (handle) {
         if (handle.id !== binding?.sandboxId) throw new Error('microsandbox persisted environment identity changed')
@@ -357,8 +368,11 @@ export class MicrosandboxManager {
         }
       }
     }
+    const name = this.name('probe')
+    await this.reclaimPreparation(name)
+    // Free the retired releases before the pull, so a tight disk is not asked to hold both.
+    await this.collectImages(keep)
     await this.prepareImage()
-    const name = `${this.name('probe')}-${randomUUID().slice(0, 8)}`
     let sandbox = await this.serializeStart(() => this.builder(name, []).create())
     try {
       const output = await sandbox.exec(MICROSANDBOX_NODE, [
@@ -380,6 +394,39 @@ export class MicrosandboxManager {
       await (await this.options.sdk.Sandbox.get(name)).destroy({ timeoutMs: STOP_TIMEOUT_MS })
       await sandbox.detach()
       await this.removeVolume(`${name}-docker`)
+    }
+  }
+
+  /** A daemon killed mid-preparation leaves this VM behind, and with it a pin on the image it booted. */
+  private async reclaimPreparation(name: string): Promise<void> {
+    const existing = await this.find(name)
+    if (existing) {
+      this.options.log?.warn('microsandbox: removing the preparation VM an earlier start left behind')
+      await existing.destroy({ timeoutMs: STOP_TIMEOUT_MS })
+    }
+    // The disk outlives a VM destroyed just before cleanup, and this name is fixed, so creation would collide.
+    await this.removeVolume(`${name}-docker`)
+  }
+
+  /** Release the images of retired releases; msb refuses one a sandbox still boots from, which is the last word. */
+  private async collectImages(keep: ReadonlySet<string>): Promise<void> {
+    const images = await this.options.sdk.Image.list().catch((error: unknown) => {
+      this.options.log?.warn(`microsandbox: could not read the image cache — ${formatErr(error)}`)
+      return []
+    })
+    for (const image of images) {
+      if (keep.has(image.reference)) continue
+      try {
+        await this.options.sdk.Image.remove(image.reference)
+        const size = image.sizeBytes === null ? '' : ` (${(image.sizeBytes / 1024 ** 2).toFixed(0)} MiB)`
+        this.options.log?.info(`microsandbox: removed the unused image ${image.reference}${size}`)
+      } catch (error) {
+        if (error instanceof this.options.sdk.ImageInUseError) {
+          this.options.log?.warn(`microsandbox: kept image ${image.reference}, a sandbox outside this daemon uses it`)
+          continue
+        }
+        this.options.log?.warn(`microsandbox: could not remove image ${image.reference} — ${formatErr(error)}`)
+      }
     }
   }
 
