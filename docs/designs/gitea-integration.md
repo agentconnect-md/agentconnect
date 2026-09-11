@@ -401,15 +401,22 @@ pending review, so a request that timed out at the client may still be
 running and would publish whatever pending comments exist at the moment it
 submits — including a later attempt's, under the old summary and verdict.
 Deleting the pending review does not cancel that request, so deletion is
-never a basis for release. `ambiguous_locked` therefore holds the lease
-indefinitely and suppresses the ordinary fallback; it clears only when a
-later reconciliation pass finds the marked review submitted, or when an
-operator explicitly releases it from the Console after confirming in Gitea
-that no submission appeared — at which point the orphan pending review is
-deleted under the still-held lease and only then is the lease returned. The
-step-2 reconcile likewise deletes only pending reviews whose markers belong
-to attempts already recorded as settled; it never runs while a lease is held
-`ambiguous_locked`, because the lease is what stops it.
+never a basis for release, and neither is any observation of absence: an
+operator looking at Gitea and seeing no submission has exactly the
+information the automated lookup had. `ambiguous_locked` therefore holds
+the lease indefinitely and suppresses the ordinary fallback, and it clears
+on one condition only — a later reconciliation pass finds the marked review
+submitted. There is no operator force-unlock, matching §15.1: Gitea exposes
+nothing that proves an outstanding request can no longer execute. The
+honest consequence is that a request Gitea genuinely lost mid-flight leaves
+this bot's formal reviews on that pull request blocked until a marked
+submission appears; the Console shows the lock with the pull request and
+attempt so a human can review by hand, ordinary comments and commit
+statuses on the pull request are unaffected, and per-agent identities (§14)
+would confine the block to one agent. The step-2 reconcile likewise deletes
+only pending reviews whose markers belong to attempts already recorded as
+settled; it never runs while a lease is held `ambiguous_locked`, because
+the lease is what stops it.
 
 A preempted generation follows §15.1 with the same restriction: before
 `request_started` its head fence classifies it `not_submitted` and the lease
