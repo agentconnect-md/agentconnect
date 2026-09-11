@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
+import { CODE_HOST_PROVIDERS, type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { GithubMark, GitlabMark } from '@/components/marks'
+import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon, Toggle } from '@/components/ui'
+import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import type { RepoAccess } from '@/lib/api'
@@ -10,7 +13,8 @@ import type { RepoAccess } from '@/lib/api'
 // The TILE the user types through, not what is stored (git-workspace-model.md §7):
 // every repo tile produces the same `{ mode: 'git', gitRepo }` payload, and the
 // displayed tile of an existing workspace is derived from host + credential.
-export type WorkspaceMode = 'scratch' | 'github' | 'gitlab' | 'giturl'
+// One tile per code host, so a new host is a tile rather than an edit here.
+export type WorkspaceMode = 'scratch' | CodeHostProvider | 'giturl'
 export type WorkspaceRepoAccess = 'read' | 'write'
 type RepositoryMenuStyle = { left: number; top: number; width: number; maxHeight: number }
 
@@ -41,18 +45,13 @@ const WORKSPACE_MODE_OPTIONS: {
     mark: (selected) =>
       workspaceModeMark(<Icon name="sparkles" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
   },
-  {
-    value: 'github',
-    label: 'GitHub',
-    hint: 'Clone a repo on a branch.',
-    mark: () => workspaceModeMark(<GithubMark color="var(--text-primary)" fillPct={100} />)
-  },
-  {
-    value: 'gitlab',
-    label: 'GitLab',
-    hint: 'Clone a project on a branch.',
-    mark: () => workspaceModeMark(<GitlabMark fillPct={100} />)
-  },
+  // One tile per code host, named and worded by its own projection.
+  ...CODE_HOST_PROVIDERS.map((provider) => ({
+    value: provider,
+    label: CODE_HOST_PROJECTION[provider].label,
+    hint: `Clone a ${CODE_HOST_PROJECTION[provider].repoNounShort} on a branch.`,
+    mark: () => workspaceModeMark(<CodeHostMark provider={provider} color="var(--text-primary)" fillPct={100} />)
+  })),
   {
     value: 'giturl',
     label: 'Git URL',

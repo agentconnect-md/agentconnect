@@ -17,6 +17,7 @@ import type {
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
 import type { HookKind } from '@agentconnect.md/protocol'
+import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { hookKindFromIntegration, hookSourceLabel } from '@/lib/session-trigger'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
@@ -5734,7 +5735,7 @@ export type RepoAccess = 'read' | 'comment' | 'write'
 export interface AgentRepoAuthDto {
   id: string
   /** Which host numbers `repoId`. Absent on an older CP, where every grant is GitHub. */
-  provider?: 'github' | 'gitlab'
+  provider?: CodeHostProvider
   repoId?: string // rename-proof numeric repository/project id (absent on an older CP)
   repoFullName: string // owner/repo as GitHub cases it, or the GitLab project path (refreshed on rename)
   access: RepoAccess
@@ -5743,7 +5744,7 @@ export interface AgentRepoAuthDto {
 }
 
 /** Which host a grant row names — an older CP omits the field and means GitHub. */
-export function repoAuthProvider(row: AgentRepoAuthDto): 'github' | 'gitlab' {
+export function repoAuthProvider(row: AgentRepoAuthDto): CodeHostProvider {
   return row.provider ?? 'github'
 }
 

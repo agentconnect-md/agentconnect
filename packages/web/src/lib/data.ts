@@ -3,7 +3,14 @@
 
 import type { AgentIcon } from '@/lib/agent-icon'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
-import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol/code-host'
+import {
+  CODE_HOST_PROVIDERS,
+  isCodeHostHookKind,
+  isCodeHostProvider,
+  type CodeHostProvider,
+  type HookKind
+} from '@agentconnect.md/protocol/code-host'
+import { CODE_HOST_PROJECTION } from './code-hosts'
 import type { DaemonLifecyclePhase, McpAppCsp, McpAppDimensions, McpAppOutcome } from '@agentconnect.md/protocol'
 import type {
   DaemonSessionRetention,
@@ -435,7 +442,7 @@ export interface GitWorkspace {
   mode: 'git'
   worktree?: boolean
   /** Who vouches for the repository (persisted credential); absent ⇒ anonymous clone. */
-  provider?: 'github' | 'gitlab'
+  provider?: CodeHostProvider
   /** Rename-proof numeric repository/project id, when the credential carries one. */
   repoId?: string
   gitAccess?: 'read' | 'write'
@@ -466,15 +473,15 @@ export type Workspace = GitWorkspace | ScratchWorkspace
 // Which provider tile a workspace displays as (§7) — DERIVED from host + credential,
 // never stored: a provider names its tile; anonymous on a managed host shows that
 // tile with a public badge; anonymous anywhere else is the Git URL tile.
-export type WorkspaceSource = 'scratch' | 'github' | 'gitlab' | 'giturl'
+export type WorkspaceSource = 'scratch' | CodeHostProvider | 'giturl'
 
 export function workspaceSourceOf(
   ws: Pick<Workspace, 'mode'> & Partial<Pick<GitWorkspace, 'provider' | 'gitRepo'>>
 ): WorkspaceSource {
   if (ws.mode === 'scratch') return 'scratch'
-  if (ws.provider === 'github' || ws.provider === 'gitlab') return ws.provider
+  if (isCodeHostProvider(ws.provider)) return ws.provider
   const host = ws.gitRepo !== undefined ? gitRepoHostname(ws.gitRepo) : undefined
-  if (host === 'github.com') return 'github'
+  if (host === CODE_HOST_PROJECTION.github.publicHost) return 'github'
   // Same host+port+prefix semantics as the CP classifier; gitlab.com only as fallback.
   if (ws.gitRepo !== undefined && managedGitlabRepoPath(ws.gitRepo) !== null) return 'gitlab'
   // Bare `owner/repo` shorthand (legacy rows) is GitHub-only sugar.
@@ -2388,8 +2395,10 @@ export const MEMBERS: Member[] = [
 export function platName(p: string): string {
   const x = (p || '').toLowerCase()
   if (x.includes('sched')) return 'Schedule'
-  if (x.includes('github')) return 'GitHub'
-  if (x.includes('gitlab')) return 'GitLab'
+  // Each code host, named by its own projection — the id carries the provider, so no host needs its own arm.
+  for (const provider of CODE_HOST_PROVIDERS) {
+    if (x.includes(provider)) return CODE_HOST_PROJECTION[provider].label
+  }
   if (x.includes('dream')) return 'Memory dream'
   if (x.includes('hook')) return 'Webhook'
   // 'playground' (live sandbox) and 'webchat' (its persisted CP session) are the same
