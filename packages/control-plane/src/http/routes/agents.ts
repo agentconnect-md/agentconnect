@@ -252,16 +252,19 @@ function iconBasesOf(deps: HttpDeps): IconUrlBases {
 interface SandboxPolicy {
   supported: boolean
   required: boolean
+  /** Why a supported sandbox cannot be provided right now; null when it can. */
+  unavailable: string | null
 }
 
-const UNAVAILABLE_SANDBOX: SandboxPolicy = { supported: false, required: false }
+const NO_SANDBOX: SandboxPolicy = { supported: false, required: false, unavailable: null }
 
 function sandboxPolicyOf(daemon: DaemonView | null): SandboxPolicy {
-  if (!daemon) return UNAVAILABLE_SANDBOX
+  if (!daemon) return NO_SANDBOX
   const required = daemon.capabilities.features.includes('sandbox-required')
   return {
     supported: required || daemon.capabilities.features.includes('sandbox'),
-    required
+    required,
+    unavailable: daemon.capabilities.sandboxUnavailable ?? null
   }
 }
 
@@ -388,6 +391,7 @@ function toDto(
     runInSandbox: a.runInSandbox,
     sandboxSupported: placementView.sandbox.supported,
     sandboxRequired: placementView.sandbox.required,
+    sandboxUnavailable: placementView.sandbox.unavailable,
     hookKinds
   }
 }
@@ -399,7 +403,7 @@ interface PlacementView {
   ready: boolean
 }
 
-const NO_PLACEMENT: PlacementView = { daemonName: null, sandbox: UNAVAILABLE_SANDBOX, ready: false }
+const NO_PLACEMENT: PlacementView = { daemonName: null, sandbox: NO_SANDBOX, ready: false }
 
 function placementViewOf(deps: HttpDeps, daemon: DaemonView | null): PlacementView {
   const live = daemon ? deps.liveness.get(daemon.daemonId) : undefined

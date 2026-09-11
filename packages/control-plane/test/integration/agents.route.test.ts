@@ -208,6 +208,50 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(disable.json()).toMatchObject({ message: 'Run in sandbox is required by this daemon' })
   })
 
+  it('keeps Run in sandbox on a daemon whose sandbox is down, and reports why', async () => {
+    const app = build()
+    const downId = randomUUID()
+    const reason = 'microsandbox requires KVM, but this daemon cannot open /dev/kvm'
+    await seedDaemon(prisma, downId, {
+      capabilities: {
+        platforms: [],
+        runtimes: ['claude'],
+        acp: true,
+        features: ['sandbox'],
+        sandboxUnavailable: reason
+      }
+    })
+
+    // Supported, because such a daemon refuses the session rather than running it unconfined; reading the outage as "no sandbox" used to store false.
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'sandbox-down', runtime: 'claude', daemonId: downId, runInSandbox: true }
+    })
+    expect(created.statusCode).toBe(201)
+    expect(created.json()).toMatchObject({
+      runInSandbox: true,
+      sandboxSupported: true,
+      sandboxRequired: false,
+      sandboxUnavailable: reason
+    })
+
+    // …and turning it ON there is a real request the operator gets to make, not a 409.
+    const off = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: { name: 'sandbox-down-off', runtime: 'claude', daemonId: downId }
+    })
+    expect(off.statusCode).toBe(201)
+    const enable = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${(off.json() as { id: string }).id}`,
+      payload: { runInSandbox: true }
+    })
+    expect(enable.statusCode).toBe(200)
+    expect(enable.json()).toMatchObject({ runInSandbox: true, sandboxUnavailable: reason })
+  })
+
   it('PUT /agents/:id/call-policy stores selected peer agents and clears the list for all', async () => {
     const app = build()
     const targetId = randomUUID()

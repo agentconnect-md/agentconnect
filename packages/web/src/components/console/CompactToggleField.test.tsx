@@ -61,4 +61,33 @@ describe('CompactToggleField', () => {
 
     expect(html).toContain('Run in sandbox')
   })
+
+  it('tells a BROKEN sandbox apart from a missing one, and keeps the setting editable', () => {
+    // The machine has a sandbox it cannot provide, so "uses its normal environment" would say the opposite of what happens.
+    const html = renderToStaticMarkup(
+      <SandboxField
+        checked
+        supported
+        required={false}
+        unavailable="microsandbox requires KVM, but this daemon cannot open /dev/kvm"
+        onChange={() => undefined}
+      />
+    )
+
+    expect(html).toContain('aria-label="Run in sandbox: Unavailable"')
+    expect(html).toContain('sessions that need one are refused rather than run unconfined')
+    expect(html).toContain('cannot open /dev/kvm')
+    expect(html).not.toContain('uses its normal environment')
+    // Supported, so the operator can still turn the setting off deliberately.
+    expect(html).not.toContain('aria-label="Run in sandbox: Unavailable" disabled=""')
+  })
+
+  it('keeps saying "Unavailable" plainly when the machine has no sandbox at all', () => {
+    const html = renderToStaticMarkup(
+      <SandboxField checked={false} supported={false} required={false} onChange={() => undefined} />
+    )
+
+    expect(html).toContain('Sandboxing is not available for the current selection')
+    expect(html).not.toContain('refused rather than run unconfined')
+  })
 })

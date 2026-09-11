@@ -143,11 +143,15 @@ export default function DaemonDetailView() {
       }
     ]
   })
-  const sandboxUnavailable = runtimeEnvironment === 'sandbox' && !sandboxSupported
+  // A daemon whose configured sandbox is down reports the capability AND the reason: both mean no sandbox runtimes.
+  const sandboxDownReason = daemon.caps.sandboxUnavailable
+  const sandboxUnavailable = runtimeEnvironment === 'sandbox' && (!sandboxSupported || !!sandboxDownReason)
   const runtimes: FleetRuntime[] = sandboxUnavailable ? [] : unionRuntimes([{ ...daemon, runtimeModels }])
-  const runtimeEmpty = sandboxUnavailable
-    ? 'Sandbox is unavailable on this daemon.'
-    : 'No runtimes reported by this daemon.'
+  const runtimeEmpty = sandboxDownReason
+    ? `Sandbox is unavailable on this daemon. ${sandboxDownReason}`
+    : sandboxUnavailable
+      ? 'Sandbox is unavailable on this daemon.'
+      : 'No runtimes reported by this daemon.'
   const runtimeModeControl = sandboxRequired ? (
     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">Sandbox</span>
   ) : (

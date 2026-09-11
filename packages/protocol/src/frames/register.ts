@@ -31,7 +31,9 @@ export const RegisterReq = z.object({
     platforms: z.array(Platform), // D3 adapters present
     runtimes: z.array(z.string()), // e.g. ["claude","codex"]
     acp: z.boolean(), // can this daemon host ACP sessions (D6)?
-    features: z.array(z.string()).default([]) // e.g. ["cli-wrapper-fallback","worktree-iso"]
+    features: z.array(z.string()).default([]), // e.g. ["cli-wrapper-fallback","worktree-iso"]
+    // Why a configured sandbox is unusable right now; `features` keeps `sandbox`, since such a daemon refuses a launch rather than running it unconfined.
+    sandboxUnavailable: z.string().max(2000).optional()
   }),
   maxAgents: z.number().int(), // concurrency ceiling for placement (C3)
   localState: z.object({

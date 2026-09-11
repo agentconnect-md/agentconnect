@@ -32,6 +32,17 @@ export function startFailureDetail(err: unknown, max = 240): string {
   return redacted.length > max ? `${redacted.slice(0, max - 1)}…` : redacted
 }
 
+/** One bounded single-line summary of a diagnostic that has to fit a wire schema; the full text belongs in the log. */
+export function boundedDiagnostic(text: string, max = 500): string {
+  const body = text
+    .split('\n')
+    .filter((line) => !/^\s+at\s/.test(line))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return body.length > max ? `${body.slice(0, max - 1)}…` : body
+}
+
 export function formatErrWithCauses(err: unknown): string {
   const parts: string[] = []
   const seen = new Set<unknown>()

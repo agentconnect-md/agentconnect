@@ -353,6 +353,7 @@ export interface AgentDto {
   runInSandbox: boolean // #642: persisted per-agent Run in sandbox preference
   sandboxSupported: boolean // #642: whether the placed daemon can provide an OS sandbox
   sandboxRequired: boolean // #642: whether daemon policy forces the effective value on
+  sandboxUnavailable: string | null // why a sandbox the daemon HAS cannot be provided right now
   hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
 }
 
@@ -1951,6 +1952,7 @@ export function agentFromDto(d: AgentDto): Agent {
     runInSandbox: d.runInSandbox ?? false,
     sandboxSupported: d.sandboxSupported ?? false,
     sandboxRequired: d.sandboxRequired ?? false,
+    sandboxUnavailable: d.sandboxUnavailable ?? null,
     hookKinds: d.hookKinds ?? [],
     integrations: [],
     workspace: ws

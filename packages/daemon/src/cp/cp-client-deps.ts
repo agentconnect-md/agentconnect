@@ -94,6 +94,8 @@ export interface CpClientConnectionHost {
 export interface CpClientRegistrationHost {
   registrationPlatforms(): string[]
   registrationFeatures(): string[]
+  /** Set only when a configured sandbox is unusable; the CP keeps the `sandbox` capability either way. */
+  sandboxUnavailable(): string | undefined
   admittedRuntimeIds(): string[]
   reportedRuntimeIds(): string[]
   /** Registry id -> human-facing runtime name. */
@@ -246,15 +248,19 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     generation: process.env[POD_TEMPLATE_HASH_ENV]?.trim() || undefined,
     heartbeatDefaultMs: host.heartbeatDefaultMs(),
     maxAgents: host.maxAgents(),
-    capabilities: () => ({
-      platforms: host.registrationPlatforms(),
-      // Report the human-facing tool name (e.g. "Claude Agent"), not the
-      // registry id ("claude-acp"); fall back to the id for user-defined or
-      // unnamed runtimes.
-      runtimes: host.admittedRuntimeIds().map((id) => host.runtimeNames()[id] ?? id),
-      acp: true,
-      features: host.registrationFeatures()
-    }),
+    capabilities: () => {
+      const sandboxUnavailable = host.sandboxUnavailable()
+      return {
+        platforms: host.registrationPlatforms(),
+        // Report the human-facing tool name (e.g. "Claude Agent"), not the
+        // registry id ("claude-acp"); fall back to the id for user-defined or
+        // unnamed runtimes.
+        runtimes: host.admittedRuntimeIds().map((id) => host.runtimeNames()[id] ?? id),
+        acp: true,
+        features: host.registrationFeatures(),
+        ...(sandboxUnavailable ? { sandboxUnavailable } : {})
+      }
+    },
     // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on
     // each register. Keyed by the registry id (the launch key), so the console can
     // offer a runtime whose value round-trips back to `this.runtimes[agent.runtime]`

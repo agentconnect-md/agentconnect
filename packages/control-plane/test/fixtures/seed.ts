@@ -26,7 +26,13 @@ export async function seedDaemon(
   opts: {
     sessionEpoch?: bigint
     maxAgents?: number
-    capabilities?: { platforms: string[]; runtimes: string[]; acp: boolean; features: string[] }
+    capabilities?: {
+      platforms: string[]
+      runtimes: string[]
+      acp: boolean
+      features: string[]
+      sandboxUnavailable?: string
+    }
     visibility?: 'org' | 'restricted'
     sharedWith?: string[]
     createdByUserId?: string

@@ -186,6 +186,7 @@ export default function EditAgentModal({
   // #642: the placed daemon reports whether sandboxing is available or mandatory.
   const [sandboxSupported, setSandboxSupported] = useState(agent.sandboxSupported)
   const [sandboxRequired, setSandboxRequired] = useState(agent.sandboxRequired)
+  const [sandboxUnavailable, setSandboxUnavailable] = useState(agent.sandboxUnavailable ?? null)
   const [repairPlacement, setRepairPlacement] = useState(false)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -252,6 +253,7 @@ export default function EditAgentModal({
         initialRunInSandbox.current = dto.runInSandbox ?? false
         setSandboxSupported(dto.sandboxSupported ?? false)
         setSandboxRequired(dto.sandboxRequired ?? false)
+        setSandboxUnavailable(dto.sandboxUnavailable ?? null)
         const fresh: SharingValue = { visibility: dto.visibility, sharedWith: dto.sharedWith }
         setSharing(fresh)
         initialSharing.current = fresh
@@ -378,6 +380,7 @@ export default function EditAgentModal({
   const selectedSandboxSupported = daemonChanged
     ? selectedSandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
     : sandboxSupported
+  const selectedSandboxUnavailable = daemonChanged ? (daemon?.caps.sandboxUnavailable ?? null) : sandboxUnavailable
   const effectiveRunInSandbox = selectedSandboxRequired || (selectedSandboxSupported && runInSandbox)
   const poolServing = daemons.some((candidate) => candidate.pool && moveReady(candidate))
   const daemonOptions: DaemonSelectOption[] = [
@@ -949,6 +952,7 @@ export default function EditAgentModal({
                   checked={effectiveRunInSandbox}
                   supported={selectedSandboxSupported}
                   required={selectedSandboxRequired}
+                  unavailable={selectedSandboxUnavailable}
                   disabled={placementRequested}
                   disabledDetail="Save the computer change before adjusting sandboxing."
                   clusterPlacement={daemonId === POOL_PLACEMENT}
