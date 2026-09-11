@@ -304,7 +304,7 @@ export function prepareRuntimeHome(
       assertNoDestinationSymlink(home, credentialDestination)
       seedLocation(home, join(location.source, file.path), credentialDestination, excluded)
     }
-    if (runtimeId === 'omp') {
+    if (runtimeId === 'omp' && !excluded.has(join(destination, 'agent.db'))) {
       extractOmpCredentials(join(location.source, 'agent.db'), join(destination, 'agent.db'))
     }
   }
