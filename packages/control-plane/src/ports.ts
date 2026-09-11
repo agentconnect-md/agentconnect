@@ -178,6 +178,8 @@ export interface DaemonCapabilities {
   runtimes: string[]
   acp: boolean
   features: string[]
+  /** Why a sandbox this daemon HAS cannot be provided right now; absent when it can. */
+  sandboxUnavailable?: string
 }
 
 /** Last reported `Heartbeat.load`. */

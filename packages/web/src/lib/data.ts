@@ -615,6 +615,8 @@ export interface Agent {
   sandboxSupported: boolean
   /** #642: whether daemon policy forces the effective value on and locks the toggle. */
   sandboxRequired: boolean
+  /** Why the placed daemon cannot provide the sandbox it HAS; supported stays true, since it refuses the session rather than running it unconfined. */
+  sandboxUnavailable?: string | null
   integrations: Integration[]
   /** Distinct kinds of enabled inbound triggers (hooks) — list-view marks. */
   hookKinds?: HookKind[]
@@ -2175,6 +2177,8 @@ export interface DaemonCaps {
   runtimes: string[]
   acp: boolean
   features: string[]
+  /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, since it refuses such a session rather than running it unconfined. */
+  sandboxUnavailable?: string
 }
 
 /** One daemon-configured MCP server (protocol `FactsMcpServer`) — name +

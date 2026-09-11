@@ -16,6 +16,7 @@ export function SandboxField({
   checked,
   supported,
   required,
+  unavailable,
   disabled,
   disabledDetail,
   clusterPlacement = false,
@@ -24,6 +25,8 @@ export function SandboxField({
   checked: boolean
   supported: boolean
   required: boolean
+  /** Why a sandbox the computer HAS cannot be provided right now — a different answer from having none. */
+  unavailable?: string | null
   disabled?: boolean
   disabledDetail?: string
   /** The selected placement is the cluster/pool, whose isolation is the pod, not this toggle. */
@@ -31,16 +34,20 @@ export function SandboxField({
   onChange: (checked: boolean) => void
 }) {
   if (clusterPlacement) return null
-  const status = required ? 'Required' : !supported ? 'Unavailable' : checked ? 'On' : 'Off'
-  const detail = required
-    ? 'Sandboxing is required on the selected computer. The runtime uses a private HOME and is confined to its workspace.'
-    : !supported
-      ? 'Sandboxing is not available for the current selection, so the runtime uses its normal environment.'
-      : disabled && disabledDetail
-        ? disabledDetail
-        : checked
-          ? 'The runtime runs in an OS sandbox with a private HOME and is confined to its workspace.'
-          : 'The runtime uses the selected computer environment without OS sandbox isolation.'
+  // A broken sandbox is not a missing one: the setting stands, and sessions are refused until it is fixed.
+  const down = supported && !!unavailable
+  const status = down ? 'Unavailable' : required ? 'Required' : !supported ? 'Unavailable' : checked ? 'On' : 'Off'
+  const detail = down
+    ? `The selected computer cannot provide its sandbox right now, so sessions that need one are refused rather than run unconfined. ${unavailable}`
+    : required
+      ? 'Sandboxing is required on the selected computer. The runtime uses a private HOME and is confined to its workspace.'
+      : !supported
+        ? 'Sandboxing is not available for the current selection, so the runtime uses its normal environment.'
+        : disabled && disabledDetail
+          ? disabledDetail
+          : checked
+            ? 'The runtime runs in an OS sandbox with a private HOME and is confined to its workspace.'
+            : 'The runtime uses the selected computer environment without OS sandbox isolation.'
 
   return (
     <CompactToggleField

@@ -28,7 +28,15 @@ import type { Clock } from '../domain/clock.js'
 function normCapabilities(raw: unknown): DaemonCapabilities {
   const c = (raw ?? {}) as Record<string, unknown>
   const arr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
-  return { platforms: arr(c.platforms), runtimes: arr(c.runtimes), acp: c.acp === true, features: arr(c.features) }
+  return {
+    platforms: arr(c.platforms),
+    runtimes: arr(c.runtimes),
+    acp: c.acp === true,
+    features: arr(c.features),
+    ...(typeof c.sandboxUnavailable === 'string' && c.sandboxUnavailable
+      ? { sandboxUnavailable: c.sandboxUnavailable }
+      : {})
+  }
 }
 
 /** Coerce the stored `load` JSON (null before the first heartbeat) into the typed shape. */

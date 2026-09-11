@@ -323,6 +323,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   ]
   const sandboxRequired = daemon?.caps.features.includes('sandbox-required') ?? false
   const sandboxSupported = sandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
+  const sandboxUnavailable = daemon?.caps.sandboxUnavailable ?? null
   const effectiveRunInSandbox = sandboxRequired || (sandboxSupported && runInSandbox)
   // The pool advertises no `sandbox` capability, so its pod — not the triple above — is what encloses a session there.
   const isolationLabel = sessionIsolationLabel({
@@ -1031,6 +1032,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                 checked={effectiveRunInSandbox}
                 supported={sandboxSupported}
                 required={sandboxRequired}
+                unavailable={sandboxUnavailable}
                 clusterPlacement={placement?.kind === 'pool'}
                 onChange={setRunInSandbox}
               />

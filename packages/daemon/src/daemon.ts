@@ -5095,6 +5095,12 @@ export class Daemon {
     return platformIds()
   }
 
+  /** Why a configured sandbox cannot be used right now — the text the console shows instead of "no sandbox here". */
+  private sandboxUnavailableReason(): string | undefined {
+    if (this.cfg.sandbox.backend !== 'microsandbox' || this.microsandbox) return undefined
+    return this.microsandboxFailure ?? 'microsandbox is not initialized'
+  }
+
   private registrationFeatures(): string[] {
     return [
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
@@ -5112,7 +5118,8 @@ export class Daemon {
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
-      ...((this.cfg.sandbox.backend === 'microsandbox' ? this.microsandbox : this.sandboxMechanism) ? ['sandbox'] : []),
+      // A failed microsandbox still HAS a sandbox: it refuses each launch rather than running it unconfined, and `sandboxUnavailable` says why.
+      ...(this.cfg.sandbox.backend === 'microsandbox' || this.sandboxMechanism ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       MEMORY_ENTRIES_V1_FEATURE,
@@ -18183,6 +18190,7 @@ export class Daemon {
       resolveInitialRegistry,
       registrationPlatforms: () => this.registrationPlatforms(),
       registrationFeatures: () => this.registrationFeatures(),
+      sandboxUnavailable: () => this.sandboxUnavailableReason(),
       admittedRuntimeIds: () => this.admittedRuntimeIds(),
       reportedRuntimeIds: () => this.reportedRuntimeIds(),
       runtimeNames: () => this.runtimeFacts.runtimeNames(),

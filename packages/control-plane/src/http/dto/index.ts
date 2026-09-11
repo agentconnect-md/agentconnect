@@ -92,7 +92,9 @@ export const DaemonCapabilitiesDto = z.object({
   platforms: z.array(z.string()),
   runtimes: z.array(z.string()),
   acp: z.boolean(),
-  features: z.array(z.string())
+  features: z.array(z.string()),
+  /** Why a sandbox this daemon HAS is unusable right now; `features` still lists `sandbox`, because it refuses launches rather than running them unconfined. */
+  sandboxUnavailable: z.string().optional()
 })
 export const DaemonLoadDto = z.object({ cpu: z.number(), mem: z.number(), agents: z.number() })
 
@@ -850,6 +852,8 @@ export const AgentDto = z.object({
   sandboxSupported: z.boolean(),
   // #642: daemon policy forces the effective value true and makes it immutable.
   sandboxRequired: z.boolean(),
+  // Why the placed daemon cannot provide the sandbox it HAS; supported stays true, because such a session is refused, not run unconfined.
+  sandboxUnavailable: z.string().nullable(),
   // Distinct kinds of ENABLED inbound triggers on this agent — one mark per kind in the
   // list's integrations cell, without an org-wide hook list existing anywhere.
   hookKinds: z.array(z.enum(HOOK_KINDS))
