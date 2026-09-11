@@ -2,10 +2,10 @@ import { CODE_HOST_PROVIDERS, type CodeHostProvider } from '@agentconnect.md/pro
 
 /**
  * The console's HOST PROJECTION over the code-host axis — what a provider is
- * CALLED, where its hosted instance lives, and the word it uses for a
- * repository. Code hosts are not platform modules (`platforms/host-projections.ts`
- * §2 of the integration-plugin design), so the chassis projects them itself, and
- * this table is the one place it does.
+ * CALLED, where its hosted instance lives, and the word it uses for a repository.
+ * Code hosts are deliberately not platform modules
+ * (integration-plugin-architecture.md §2), so the chassis projects them itself,
+ * the way `platforms/host-projections.ts` projects the platform axis.
  *
  * Total by type: a new provider in `CODE_HOST_PROVIDERS` stops every
  * `Record<CodeHostProvider, …>` below from compiling until it is given an entry,
