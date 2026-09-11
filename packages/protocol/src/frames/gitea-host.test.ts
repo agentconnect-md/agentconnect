@@ -69,7 +69,7 @@ describe('AgentSpec.giteaHost and the gitea credential arm', () => {
   it('round-trips a self-hosted instance beside a gitea-vouched git workspace', () => {
     const parsed = AgentSpec.parse({ name: 'a', workspace: giteaCredentialWorkspace, giteaHost: SELF_HOSTED })
     expect(parsed.giteaHost).toBe(SELF_HOSTED)
-    expect(parsed.workspace?.credential).toEqual({ provider: 'gitea', repoId: '556677' })
+    expect(parsed.workspace).toMatchObject({ mode: 'git', credential: { provider: 'gitea', repoId: '556677' } })
   })
 
   it('decodes an absent host as gitea.com and keeps the GitLab axis independent', () => {
