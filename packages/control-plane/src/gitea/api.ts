@@ -159,10 +159,14 @@ export async function giteaPagedGet<T>(path: string, opts: PagedOpts): Promise<T
     const batch = (await res.json()) as T[]
     if (!Array.isArray(batch)) throw new GiteaApiError('gitea listing is not an array', 0, 'INTERNAL', false)
     rows.push(...batch)
-    const total = res.headers.get('x-total-count')
-    const complete = total !== null && /^\d+$/.test(total) && rows.length >= Number(total)
-    const next = nextPageOfLink(res.headers.get('link'))
-    if (batch.length === 0 || complete || next === null) return rows
+    if (batch.length === 0) return rows
+    const totalHeader = res.headers.get('x-total-count')
+    const total = totalHeader !== null && /^\d+$/.test(totalHeader) ? Number(totalHeader) : null
+    if (total !== null && rows.length >= total) return rows
+    const linked = nextPageOfLink(res.headers.get('link'))
+    // A listing may advertise a total but no Link (the webhooks): an unreached total keeps going; with neither, a short page ends.
+    const next = linked ?? (total !== null ? page + 1 : batch.length < opts.pageSize ? null : page + 1)
+    if (next === null) return rows
     // A header that does not advance would spin or silently truncate: refuse.
     if (next <= page) throw new GiteaApiError('gitea pagination did not advance', 0, 'INTERNAL', true)
     page = next
@@ -173,6 +177,18 @@ export async function giteaPagedGet<T>(path: string, opts: PagedOpts): Promise<T
 /** One page of one row: the cheapest read that exercises a listing's scope category (§4.1 scope verification). */
 export async function giteaProbeListing(token: string, path: string, client: GiteaApiClient): Promise<void> {
   await giteaRequest<unknown[]>(`${path}?page=1&limit=1`, { token, client })
+}
+
+/** Prove a write scope with no side effect (§4.1): Gitea checks the scope before the repository resolves, so a write against a nonexistent one answers the scope 403 or the 404. */
+export async function giteaProbeWriteScope(token: string, path: string, client: GiteaApiClient): Promise<void> {
+  try {
+    await giteaRequest<unknown>(path, { method: 'POST', token, body: {}, client })
+  } catch (e) {
+    if (e instanceof GiteaApiError && (e.code === 'NOT_FOUND' || e.code === 'VALIDATION' || e.code === 'FORBIDDEN')) {
+      return
+    }
+    throw e
+  }
 }
 
 /** The instance's paging ceiling (`GET /settings/api`); the Gitea default when it cannot be read. */
@@ -369,20 +385,18 @@ export interface GiteaWebhookSpec {
   events: readonly string[]
 }
 
-function hookBody(spec: GiteaWebhookSpec) {
-  // `active: true` is explicit because the API default is inactive (§7); no branch filter.
-  return {
-    type: 'gitea',
-    config: { url: spec.url, content_type: 'json', secret: spec.secret },
-    events: [...spec.events],
-    active: true
-  }
+/** What an edit may change (§7): `editHook` rebuilds the subscription from `events` and never touches the secret. */
+export interface GiteaWebhookEdit {
+  url: string
+  events: readonly string[]
+  active: boolean
 }
 
 function hooksPath(owner: string, repo: string): string {
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/hooks`
 }
 
+/** Create the managed webhook: the secret is set HERE and only here (§7). `active: true` is explicit because the API default is inactive. */
 export async function giteaCreateWebhook(
   token: string,
   owner: string,
@@ -390,40 +404,32 @@ export async function giteaCreateWebhook(
   spec: GiteaWebhookSpec,
   client: GiteaApiClient
 ): Promise<GiteaWebhook> {
-  return giteaRequest<GiteaWebhook>(hooksPath(owner, repo), { method: 'POST', token, body: hookBody(spec), client })
+  return giteaRequest<GiteaWebhook>(hooksPath(owner, repo), {
+    method: 'POST',
+    token,
+    body: {
+      type: 'gitea',
+      config: { url: spec.url, content_type: 'json', secret: spec.secret },
+      events: [...spec.events],
+      active: true
+    },
+    client
+  })
 }
 
-/** `PATCH` of the whole spec — the events, the URL and the signing secret together. */
+/** `PATCH` of what an edit can change: `events` always (the provider rebuilds the subscription from it), the secret never (`editHook` ignores it, hence §7's replacement). */
 export async function giteaUpdateWebhook(
   token: string,
   owner: string,
   repo: string,
   webhookId: bigint,
-  spec: GiteaWebhookSpec,
-  client: GiteaApiClient
-): Promise<GiteaWebhook> {
-  const { type: _type, ...patch } = hookBody(spec)
-  return giteaRequest<GiteaWebhook>(`${hooksPath(owner, repo)}/${webhookId}`, {
-    method: 'PATCH',
-    token,
-    body: patch,
-    client
-  })
-}
-
-/** `PATCH` of the signing secret alone — the rotation step of §7. */
-export async function giteaUpdateWebhookSecret(
-  token: string,
-  owner: string,
-  repo: string,
-  webhookId: bigint,
-  secret: string,
+  edit: GiteaWebhookEdit,
   client: GiteaApiClient
 ): Promise<GiteaWebhook> {
   return giteaRequest<GiteaWebhook>(`${hooksPath(owner, repo)}/${webhookId}`, {
     method: 'PATCH',
     token,
-    body: { config: { secret } },
+    body: { config: { url: edit.url, content_type: 'json' }, events: [...edit.events], active: edit.active },
     client
   })
 }

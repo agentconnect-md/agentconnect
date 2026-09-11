@@ -72,14 +72,18 @@ describe('POST /gitea/connections (§4.1)', () => {
       requiredScopes: ['read:user', 'write:repository', 'write:issue', 'read:organization']
     })
     expect(JSON.stringify(body)).not.toContain(TOKEN)
-    // The four checks ran with the token: the user read, the floor, and the two scope probes.
+    // The checks ran with the token: the user read, the floor, the two read probes, and the two write probes against a repository that does not exist.
     const urls = a.seam.fake.requests.map((r) => `${r.method} ${r.url.replace('https://gitea.com/api/v1', '')}`)
-    expect(urls).toEqual([
+    expect(urls.slice(0, 4)).toEqual([
       'GET /user',
       'GET /version',
       'GET /user/repos?page=1&limit=1',
       'GET /user/orgs?page=1&limit=1'
     ])
+    expect(urls[4]).toMatch(/^POST \/repos\/example-bot\/agentconnect-scope-probe-[0-9a-f]{12}\/hooks$/)
+    expect(urls[5]).toMatch(/^POST \/repos\/example-bot\/agentconnect-scope-probe-[0-9a-f]{12}\/issues\/1\/reactions$/)
+    expect(urls).toHaveLength(6)
+    expect(a.seam.fake.hooks.size).toBe(0)
     expect(a.seam.fake.requests.filter((r) => r.url.endsWith('/user')).every((r) => r.token === TOKEN)).toBe(true)
     // Sealed beside the row (the test cipher is the identity), never on the row itself.
     const row = await prisma.giteaConnection.findFirstOrThrow({ where: { orgId: DEFAULT_ORG_ID } })
@@ -91,7 +95,7 @@ describe('POST /gitea/connections (§4.1)', () => {
   })
 
   it('refuses a rejected token and a token missing a required scope, storing nothing', async () => {
-    const a = app({ fake: { scopes: ['user', 'repository'] } })
+    const a = app({ fake: { scopes: { user: 'read', repository: 'write', issue: 'write' } } })
     const rejected = await a.app.inject({ method: 'POST', url: `${ORG}/gitea/connections`, payload: { token: 'nope' } })
     expect(rejected.statusCode).toBe(400)
     expect(rejected.json()).toMatchObject({ code: 'token_rejected' })
@@ -103,6 +107,46 @@ describe('POST /gitea/connections (§4.1)', () => {
       message: expect.stringContaining('read:organization')
     })
     expect(await prisma.giteaConnection.count()).toBe(0)
+  })
+
+  it('refuses a token that can read everything but write nothing, naming the write scope it lacks', async () => {
+    // Every read probe passes; only a write-method request tells a read-only token apart (§4.1).
+    const readOnly = app({
+      fake: { scopes: { user: 'read', repository: 'read', organization: 'read', issue: 'read' } }
+    })
+    const res = await readOnly.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitea/connections`,
+      payload: { token: TOKEN }
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ code: 'missing_scope', message: expect.stringContaining('write:repository') })
+    expect(await prisma.giteaConnection.count()).toBe(0)
+    await readOnly.close()
+    // A token that can administer repositories but not comment is refused for the reply it could never post.
+    const noIssue = app({
+      fake: { scopes: { user: 'read', repository: 'write', organization: 'read', issue: 'read' } }
+    })
+    const issue = await noIssue.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitea/connections`,
+      payload: { token: TOKEN }
+    })
+    expect(issue.statusCode).toBe(400)
+    expect(issue.json()).toMatchObject({ code: 'missing_scope', message: expect.stringContaining('write:issue') })
+    // Replacing a working connection with such a token is refused the same way.
+    await noIssue.close()
+    const a = app()
+    const { id } = await connect(a)
+    a.seam.fake.opts.scopes = { user: 'read', repository: 'read', organization: 'read', issue: 'read' }
+    const replaced = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/gitea/connections/${id}/token`,
+      payload: { token: TOKEN }
+    })
+    expect(replaced.statusCode).toBe(400)
+    expect(replaced.json()).toMatchObject({ code: 'missing_scope' })
+    expect((await prisma.giteaConnection.findUniqueOrThrow({ where: { id } })).credentialEpoch).toBe(1n)
   })
 
   it('refuses an instance below the 1.23 floor, a fork included', async () => {

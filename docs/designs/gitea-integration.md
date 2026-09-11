@@ -123,12 +123,17 @@ personal access token. Before anything is stored the Control Plane:
 The required token scopes are `read:user`, `write:repository`, `write:issue`,
 and `read:organization` — confirmed sufficient and minimal by §16's scope
 probe; the Console shows the list beside the input and the connect step
-verifies each by a probe read it will need anyway (the user read, a repository
-listing, an organization listing). A token without `write:issue` cannot comment
-and is refused at connect time rather than at the first turn. The organization
-scope is not optional: `GET /orgs/:org/repos`, which the picker needs, is
-organization-scoped rather than repository-scoped, and `GET /user/orgs`
-requires the user and organization scopes together.
+verifies each by a probe it will need anyway (the user read, a repository
+listing, an organization listing). The read probes cannot tell a read-only
+token apart, because Gitea takes the level from the method, so the two write
+scopes are proven by a write-method request against a repository that does not
+exist under the bot's own login: the scope check runs on the route group before
+the repository resolves, so a missing scope answers the scope 403 and a present
+one the repository's 404, and nothing is ever written. A token without
+`write:issue` cannot comment and is refused at connect time rather than at the
+first turn. The organization scope is not optional: `GET /orgs/:org/repos`,
+which the picker needs, is organization-scoped rather than repository-scoped,
+and `GET /user/orgs` requires the user and organization scopes together.
 
 One organization holds at most one active connection in v1. A second bot
 would be a per-agent identity, which is deliberately later work (§14).
@@ -287,12 +292,22 @@ into `pull_request`, and names an inline review comment
 `pull_request_comment`, which is also the exact type of an ordinary
 pull-request comment.
 
-**Rotation.** Generate and seal the next key, distribute both to eligible
-relays, `PATCH` the webhook's `config.secret`, observe one verified delivery
-under the next key, promote. Identical to §7.4's receiver-side overlap. The
-compiled rule carries the successor as `nextSigningKey` beside `signingKey`,
-either verifies at the relay, and its `rc/codehost-delivery` says which one
-did — the `next` answer is what promotes.
+**Rotation.** A webhook's secret is set at creation only: `editHook` never
+assigns `config.secret`, and it rebuilds the subscription from the request's
+`events` (an omission leaves the hook subscribed to nothing), so an edit can
+neither re-key a webhook nor be sent without its full event list. The key is
+therefore rotated by replacing the webhook: generate and seal the next key,
+create a successor webhook under it with the full event union, distribute both
+keys to eligible relays, deactivate the old webhook (its in-flight deliveries
+still verify under the current key while only the successor receives new
+events), fire a test delivery at the successor, and once the relay observes one
+delivery verified under the next key, delete the old webhook and promote. The
+receiver-side overlap is §7.4's; the sender-side one is the pair of webhooks.
+The compiled rule carries the successor as `nextSigningKey` beside
+`signingKey`, either verifies at the relay, and its `rc/codehost-delivery` says
+which one did — the `next` answer is what promotes. The same rule covers a
+crash-left webhook at the managed URL: it cannot be re-keyed, so it is retired
+and replaced by one whose key this deployment sealed.
 
 **Compiled rule.** The `rc/hook-assign` rule gains a `gitea` member shaped
 like the `gitlab` one: numeric repository id as match key, current path for

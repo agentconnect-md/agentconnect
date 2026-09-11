@@ -3114,6 +3114,7 @@ model GiteaRepositoryBinding {
   cloneUrl               String? // the provider's own clone_url, never composed
   defaultBranch          String?
   webhookId              BigInt? // the one AgentConnect-managed repository webhook (§7)
+  nextWebhookId          BigInt? // the rotation successor, live beside the old one until a delivery verifies under its key (§7)
   desiredEventsHash      String? // the subscription union the webhook was last converged to
   lastVerifiedDeliveryAt DateTime? @db.Timestamptz(6) // the relay last verified a delivery for this repository
   convergeOwedAt         DateTime? @db.Timestamptz(6) // a contended pass still owes convergence (§10.2)

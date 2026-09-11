@@ -197,6 +197,7 @@ function giteaSources(opts: NonNullable<NonNullable<Parameters<typeof make>[0]>[
     cloneUrl: 'https://gitea.com/example-org/example-repo.git',
     defaultBranch: 'main',
     webhookId: 21n,
+    nextWebhookId: null,
     desiredEventsHash: null,
     lastVerifiedDeliveryAt: null,
     convergeOwedAt: null,

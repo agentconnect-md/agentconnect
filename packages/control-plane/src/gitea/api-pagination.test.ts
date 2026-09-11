@@ -54,6 +54,17 @@ describe('GiteaApiClient', () => {
     expect(calls.map((call) => new URL(call.url).search)).toEqual(['?page=1&limit=2', '?page=2&limit=2'])
   })
 
+  it('keeps advancing while an advertised total is unreached even without a Link (the webhook listing)', async () => {
+    const { api, calls } = client((url) => {
+      const page = Number(new URL(url).searchParams.get('page'))
+      const rows = page === 1 ? [{ id: 1 }, { id: 2 }] : [{ id: 3 }]
+      return Response.json(rows, { headers: { 'x-total-count': '3' } })
+    })
+    const rows = await giteaPagedGet<{ id: number }>('/repos/o/r/hooks', { token: 't', client: api, pageSize: 2 })
+    expect(rows.map((row) => row.id)).toEqual([1, 2, 3])
+    expect(calls).toHaveLength(2)
+  })
+
   it('stops on an empty page or a missing Link, and refuses a Link that does not advance', async () => {
     const single = client(() => Response.json([{ id: 1 }]))
     expect(await giteaPagedGet('/user/orgs', { token: 't', client: single.api, pageSize: 50 })).toEqual([{ id: 1 }])

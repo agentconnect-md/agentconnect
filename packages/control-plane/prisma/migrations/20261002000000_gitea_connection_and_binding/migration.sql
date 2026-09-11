@@ -44,6 +44,7 @@ CREATE TABLE "gitea_repository_binding" (
     "cloneUrl" TEXT,
     "defaultBranch" TEXT,
     "webhookId" BIGINT,
+    "nextWebhookId" BIGINT,
     "desiredEventsHash" TEXT,
     "lastVerifiedDeliveryAt" TIMESTAMPTZ(6),
     "convergeOwedAt" TIMESTAMPTZ(6),
@@ -78,14 +79,15 @@ ALTER TABLE "gitea_webhook_secret" ADD CONSTRAINT "gitea_webhook_secret_bindingI
 -- external cleanup still needs, and without ever releasing by time.
 CREATE OR REPLACE FUNCTION gitea_binding_claim_guard() RETURNS trigger AS $$
 BEGIN
-    IF OLD."webhookId" IS NOT NULL THEN
+    IF OLD."webhookId" IS NOT NULL OR OLD."nextWebhookId" IS NOT NULL THEN
         UPDATE "code_host_repository_claim"
            SET "bindingRef" = NULL,
                "state" = 'cleanup_pending',
                "tombstone" = jsonb_build_object(
                    'repoId', OLD."repoId"::text,
                    'repoPath', OLD."repoPath",
-                   'webhookId', OLD."webhookId"::text
+                   'webhookId', OLD."webhookId"::text,
+                   'nextWebhookId', OLD."nextWebhookId"::text
                )
          WHERE "provider" = 'gitea' AND "externalId" = OLD."repoId" AND "bindingRef" = OLD."id";
     ELSE

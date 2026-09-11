@@ -27,8 +27,8 @@ export interface FakeGiteaOptions {
   bot?: { id: number; login: string; full_name?: string }
   /** The one token the fake accepts; anything else answers 401. */
   token?: string
-  /** Scope categories the token carries; a probe of a missing one answers the scope 403. */
-  scopes?: Array<'user' | 'repository' | 'organization'>
+  /** The token's scope level per category (§16: read for GET, write for the mutating methods); absent ⇒ none. */
+  scopes?: Partial<Record<GiteaScopeCategory, 'read' | 'write'>>
   repositories?: FakeGiteaRepo[]
   /** Organizations the bot belongs to; their repositories are the ones whose owner is the org. */
   organizations?: string[]
@@ -41,6 +41,16 @@ export interface FakeGiteaOptions {
   maxResponseItems?: number
   /** Runs when a test delivery is fired — the place a test lets the relay "observe" it (§6 step 4). */
   onTestDelivery?: (hookId: number) => Promise<void> | void
+}
+
+export type GiteaScopeCategory = 'user' | 'repository' | 'organization' | 'issue'
+
+/** A token narrowed to exactly the four scopes of §4.1. */
+export const FULL_SCOPES: Record<GiteaScopeCategory, 'read' | 'write'> = {
+  user: 'read',
+  repository: 'write',
+  organization: 'read',
+  issue: 'write'
 }
 
 export interface FakeGiteaHook {
@@ -86,13 +96,13 @@ function pageOf(url: string): { page: number; limit: number } {
   return { page: Number(params.get('page') ?? '1'), limit: Number(params.get('limit') ?? '30') }
 }
 
-/** Gitea-shaped paging: one `limit` slice, `X-Total-Count`, and a `Link` with rel="next" while more remain. */
-function page<T>(url: string, rows: readonly T[], limitCap: number): Response {
+/** Gitea-shaped paging: one `limit` slice, `X-Total-Count`, and — where the upstream listing sets one — a `Link` with rel="next". */
+function page<T>(url: string, rows: readonly T[], limitCap: number, withLink = true): Response {
   const { page: index, limit: asked } = pageOf(url)
   const limit = Math.min(asked, limitCap)
   const slice = rows.slice((index - 1) * limit, index * limit)
   const headers: Record<string, string> = { 'x-total-count': String(rows.length) }
-  if (index * limit < rows.length) {
+  if (withLink && index * limit < rows.length) {
     const next = new URL(url)
     next.searchParams.set('page', String(index + 1))
     headers.link = `<${next.toString()}>; rel="next"`
@@ -122,7 +132,7 @@ export class FakeGitea {
       version: options.version ?? '1.27.3',
       bot: options.bot ?? { id: 9042, login: 'example-bot', full_name: 'Example Bot' },
       token: options.token ?? 'gitea-token-1',
-      scopes: options.scopes ?? ['user', 'repository', 'organization'],
+      scopes: options.scopes ?? FULL_SCOPES,
       repositories: options.repositories ?? [
         { id: 556677, full_name: 'example-org/example-repo', default_branch: 'main', private: false, admin: true }
       ],
@@ -184,12 +194,25 @@ export class FakeGitea {
     return [...stored]
   }
 
-  private scopeRefusal(category: 'user' | 'repository' | 'organization'): Response | null {
-    if (this.opts.scopes.includes(category)) return null
+  /** §16: the level comes from the method, the category from the route group, and the check runs before anything resolves. */
+  private scopeRefusal(category: GiteaScopeCategory, method: string): Response | null {
+    const level = method === 'GET' ? 'read' : 'write'
+    const held = this.opts.scopes[category]
+    if (held === 'write' || (held === 'read' && level === 'read')) return null
     return Response.json(
-      { message: `token does not have at least one of required scope(s), required=[read:${category}]` },
+      { message: `token does not have at least one of required scope(s), required=[${level}:${category}]` },
       { status: 403 }
     )
+  }
+
+  /** The route group's category (§16): the second `/repos` group is the issue one. */
+  private categoryOf(route: string): GiteaScopeCategory | null {
+    if (route === '/user' || route.startsWith('/users/')) return 'user'
+    if (route === '/user/repos' || route.startsWith('/repositories/')) return 'repository'
+    if (route === '/user/orgs' || route.startsWith('/orgs/')) return 'organization'
+    if (/^\/repos\/[^/]+\/[^/]+\/issues(?:\/|$)/.test(route)) return 'issue'
+    if (route.startsWith('/repos/')) return 'repository'
+    return null
   }
 
   fetch(): FetchLike {
@@ -224,10 +247,19 @@ export class FakeGitea {
         return Response.json(this.repoJson(repo))
       }
       if (token !== this.token) return Response.json({ message: 'token is required' }, { status: 401 })
-
-      if (route === '/user') {
-        return this.scopeRefusal('user') ?? Response.json({ ...this.opts.bot, username: this.opts.bot.login })
+      // The scope gate precedes every handler, existence checks included (§16).
+      const category = this.categoryOf(route)
+      if (category !== null) {
+        const refused = this.scopeRefusal(category, method)
+        if (refused) return refused
       }
+      if (route === '/user/orgs') {
+        // `GET /user/orgs` needs the user AND organization scopes together (§16).
+        const refused = this.scopeRefusal('user', method)
+        if (refused) return refused
+      }
+
+      if (route === '/user') return Response.json({ ...this.opts.bot, username: this.opts.bot.login })
       const userByLogin = /^\/users\/([^/]+)$/.exec(route)
       if (userByLogin) {
         const login = decodeURIComponent(userByLogin[1]!)
@@ -237,8 +269,6 @@ export class FakeGitea {
         return Response.json({ id, login, username: login })
       }
       if (route === '/user/repos') {
-        const refused = this.scopeRefusal('repository')
-        if (refused) return refused
         const own = this.repositories.filter((repo) => !this.opts.organizations.includes(repo.full_name.split('/')[0]!))
         return page(
           url,
@@ -247,8 +277,6 @@ export class FakeGitea {
         )
       }
       if (route === '/user/orgs') {
-        const refused = this.scopeRefusal('user') ?? this.scopeRefusal('organization')
-        if (refused) return refused
         return page(
           url,
           this.opts.organizations.map((name, index) => ({ id: 100 + index, name, username: name })),
@@ -257,8 +285,6 @@ export class FakeGitea {
       }
       const orgRepos = /^\/orgs\/([^/]+)\/repos$/.exec(route)
       if (orgRepos) {
-        const refused = this.scopeRefusal('organization')
-        if (refused) return refused
         const org = decodeURIComponent(orgRepos[1]!)
         const rows = this.repositories.filter((repo) => repo.full_name.split('/')[0] === org)
         return page(
@@ -295,6 +321,14 @@ export class FakeGitea {
         return Response.json({ permission: answer, role_name: answer, user: { id, login, username: login } })
       }
 
+      // The issue-scoped writes the connect step probes against a nonexistent repository (§4.1).
+      const issueRoute = /^\/repos\/([^/]+)\/([^/]+)\/issues\//.exec(route)
+      if (issueRoute) {
+        const repo = this.repositories.find((candidate) => candidate.full_name === `${issueRoute[1]}/${issueRoute[2]}`)
+        if (!repo) return Response.json({ message: "The target couldn't be found." }, { status: 404 })
+        return Response.json({ message: 'issue does not exist' }, { status: 404 })
+      }
+
       const hooks = /^\/repos\/([^/]+)\/([^/]+)\/hooks(?:\/(\d+)(\/tests)?)?$/.exec(route)
       if (hooks) {
         const repo = this.repositories.find((candidate) => candidate.full_name === `${hooks[1]}/${hooks[2]}`)
@@ -304,11 +338,13 @@ export class FakeGitea {
           return Response.json({ message: 'user does not have access' }, { status: 403 })
         const hookId = hooks[3] !== undefined ? Number(hooks[3]) : undefined
         if (hookId === undefined && method === 'GET') {
+          // Upstream `ListHooks` sets X-Total-Count but no Link header.
           const rows = [...this.hooks.entries()].filter(([, hook]) => hook.repoId === repo.id)
           return page(
             url,
             rows.map(([id, hook]) => this.hookJson(id, hook)),
-            this.opts.maxResponseItems
+            this.opts.maxResponseItems,
+            false
           )
         }
         if (hookId === undefined && method === 'POST') {
@@ -338,12 +374,12 @@ export class FakeGitea {
         }
         if (method === 'GET') return Response.json(this.hookJson(hookId, hook))
         if (method === 'PATCH') {
+          // Upstream `editHook`: url and content_type honored, the secret NEVER assigned, the subscription rebuilt from `events` (omitted ⇒ none).
           const payload = body()
           const config = (payload.config ?? {}) as Record<string, unknown>
           if (typeof config.url === 'string') hook.url = config.url
-          if (typeof config.secret === 'string') hook.secret = config.secret
           if (typeof config.content_type === 'string') hook.content_type = config.content_type
-          if (payload.events !== undefined) hook.events = this.storedEvents(payload.events)
+          hook.events = this.storedEvents(payload.events)
           if (typeof payload.active === 'boolean') hook.active = payload.active
           return Response.json(this.hookJson(hookId, hook))
         }

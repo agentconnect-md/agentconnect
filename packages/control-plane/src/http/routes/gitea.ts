@@ -451,7 +451,7 @@ export function giteaRoutes(deps: HttpDeps) {
           tags: [Tag.Gitea],
           summary: 'Rotate a managed Gitea webhook’s signing secret',
           description:
-            'Seals a successor key, distributes both keys to the relays, and patches the webhook’s secret (§7). The successor is promoted once the relay verifies one delivery under it; until then both keys verify.',
+            'A webhook’s secret is set at creation only, so the key is rotated by replacing the webhook (§7): a successor is created under a sealed successor key with the full subscription, both keys reach the relays, the old webhook is deactivated and a test delivery is fired at the successor. The old webhook is deleted and the key promoted once the relay verifies one delivery under the successor — `promoted` reports whether that already happened.',
           operationId: 'rotateGiteaWebhookSecret',
           params: IdParam,
           response: { 200: GiteaWebhookRotationDto, 403: ErrorDto, 404: ErrorDto }
@@ -463,7 +463,7 @@ export function giteaRoutes(deps: HttpDeps) {
         if (!(await deps.repos.giteaRepositoryBinding.get(orgId, req.params.id)))
           return notFound(reply, 'gitea repository')
         const outcome = await gitea.provisioner.rotateWebhookSecret(orgId, req.params.id)
-        return { rotated: outcome.rotated, reason: outcome.reason ?? null }
+        return { rotated: outcome.rotated, promoted: outcome.promoted ?? false, reason: outcome.reason ?? null }
       }
     )
 

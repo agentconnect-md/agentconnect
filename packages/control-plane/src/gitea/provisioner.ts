@@ -30,7 +30,6 @@ import {
   giteaRepositoryById,
   giteaTestWebhook,
   giteaUpdateWebhook,
-  giteaUpdateWebhookSecret,
   giteaVersion,
   giteaWebhook,
   isGiteaAuthRejection,
@@ -65,6 +64,9 @@ export class GiteaClaimFenceLost extends Error {
     this.name = 'GiteaClaimFenceLost'
   }
 }
+
+type RotationOutcome = { rotated: boolean; promoted?: boolean; reason?: string }
+type RotationSuccessor = { token: string; successorId: bigint }
 
 export type ProvisionOutcome =
   | { state: 'ready'; reason: string | null }
@@ -364,35 +366,49 @@ export class GiteaProvisioner {
       const events = await this.deps.desiredWebhookEvents(orgId, binding.repoId)
       const want = events ? giteaWebhookEventsHash(events) : 'none'
       if (applied === want) break
-      const fresh = (await this.deps.bindings.get(orgId, binding.id)) ?? binding
+      let fresh = (await this.deps.bindings.get(orgId, binding.id)) ?? binding
       if (!(await this.renewLease(orgId, fresh, owner))) return { state: 'admin_degraded', reason: 'claim_fence_lost' }
       const hooks = await giteaListWebhooks(token, path.owner, path.repo, api, pageSize)
-      const recordedExists = fresh.webhookId !== null && hooks.some((hook) => BigInt(hook.id) === fresh.webhookId)
-      if (!recordedExists && fresh.webhookId !== null) {
-        // Gone at the provider: forget it, so the converge re-adopts by exact URL or creates.
-        await this.deps.bindings.update(orgId, binding.id, {
-          webhookId: null,
-          desiredEventsHash: null,
-          lastVerifiedDeliveryAt: null
-        })
+      const present = (id: bigint | null): boolean => id !== null && hooks.some((hook) => BigInt(hook.id) === id)
+      // Local ids are never proof: one gone at the provider is forgotten before anything is written to it.
+      if (fresh.nextWebhookId !== null && !present(fresh.nextWebhookId)) {
+        // The rotation successor is gone: the rotation is abandoned and the old key stays current.
+        const keys = await this.deps.webhookSecrets.get(orgId, binding.id)
+        if (keys?.next) await this.deps.webhookSecrets.put(orgId, binding.id, { current: keys.current, next: null })
+        fresh = (await this.deps.bindings.update(orgId, binding.id, { nextWebhookId: null })) ?? fresh
+      }
+      if (fresh.webhookId !== null && !present(fresh.webhookId)) {
+        if (fresh.nextWebhookId !== null) {
+          // The old webhook went while its successor lives: the successor is simply promoted.
+          await this.promoteKeys(fresh)
+          fresh = (await this.deps.bindings.get(orgId, binding.id)) ?? fresh
+        } else {
+          fresh =
+            (await this.deps.bindings.update(orgId, binding.id, {
+              webhookId: null,
+              desiredEventsHash: null,
+              lastVerifiedDeliveryAt: null
+            })) ?? fresh
+        }
       }
       if (events) {
-        const effective = recordedExists ? fresh : { ...fresh, webhookId: null, lastVerifiedDeliveryAt: null }
-        const outcome = await this.convergeWebhook(orgId, effective, token, path, events, owner, hooks)
+        const outcome = await this.convergeWebhook(orgId, fresh, token, path, events, owner, hooks)
         if ('degraded' in outcome) return outcome.degraded
         verified = outcome.verified
       } else {
-        // No enabled hook wants ingress: the managed webhook — recorded id AND any crash-left hook at our exact URL — goes.
+        // No enabled hook wants ingress: every managed webhook — both recorded ids AND any crash-left hook at our exact URL — goes.
         const url = this.managedUrl()
         for (const hook of hooks) {
+          const id = BigInt(hook.id)
           const ours =
-            (recordedExists && BigInt(hook.id) === fresh.webhookId) || (url !== undefined && hook.config?.url === url)
+            id === fresh.webhookId || id === fresh.nextWebhookId || (url !== undefined && hook.config?.url === url)
           if (!ours) continue
-          await giteaDeleteWebhook(token, path.owner, path.repo, BigInt(hook.id), api).catch(swallow404)
+          await giteaDeleteWebhook(token, path.owner, path.repo, id, api).catch(swallow404)
         }
         await this.deps.webhookSecrets.delete(orgId, binding.id)
         await this.deps.bindings.update(orgId, binding.id, {
           webhookId: null,
+          nextWebhookId: null,
           desiredEventsHash: null,
           lastVerifiedDeliveryAt: null
         })
@@ -426,39 +442,37 @@ export class GiteaProvisioner {
       keys = { current: randomBytes(32).toString('hex'), next: null }
       await this.deps.webhookSecrets.put(orgId, binding.id, keys)
     }
-    // Mid-rotation the provider already holds the successor; the PATCH below must not reinstate the old key.
-    const secret = keys.next ?? keys.current
-    const spec = { url, secret, events }
-    let fresh = binding.webhookId === null
+    // Mid-rotation the successor is the live webhook; the old one waits inactive until a verified delivery retires it (§7).
+    const live = binding.nextWebhookId ?? binding.webhookId
+    const fresh = live === null
     let webhookId: bigint
     let stored: GiteaWebhook
-    if (fresh) {
-      // Crash-left create reconciliation: a hook at OUR exact managed URL is ours — re-key it in place.
-      const existing = hooks.find((hook) => hook.config?.url === url)
-      if (existing) {
-        webhookId = BigInt(existing.id)
-        stored = await giteaUpdateWebhook(token, path.owner, path.repo, webhookId, spec, api)
-      } else {
-        stored = await giteaCreateWebhook(token, path.owner, path.repo, spec, api)
-        webhookId = BigInt(stored.id)
+    if (live === null) {
+      // A crash-left hook at OUR exact URL cannot be re-keyed (the secret is set at creation only): retire it and create afresh.
+      for (const stray of hooks) {
+        if (stray.config?.url !== url) continue
+        await giteaDeleteWebhook(token, path.owner, path.repo, BigInt(stray.id), api).catch(swallow404)
       }
+      stored = await giteaCreateWebhook(token, path.owner, path.repo, { url, secret: keys.current, events }, api)
+      webhookId = BigInt(stored.id)
     } else {
-      webhookId = binding.webhookId!
-      stored = await giteaUpdateWebhook(token, path.owner, path.repo, webhookId, spec, api)
-      fresh = false
+      webhookId = live
+      stored = await giteaUpdateWebhook(token, path.owner, path.repo, webhookId, { url, events, active: true }, api)
     }
     // §7: Gitea answers 201 for a name it does not know and drops it, so the stored events are read back by subset.
     const readBack = (await giteaWebhook(token, path.owner, path.repo, webhookId, api)) ?? stored
     const missing = giteaWebhookEventsMissing(events, readBack.events ?? [])
     if (missing.length > 0) {
       this.deps.log?.warn({ bindingId: binding.id, missing }, 'gitea stored fewer webhook events than asked')
-      await this.deps.bindings.update(orgId, binding.id, { webhookId, desiredEventsHash: null })
+      await this.deps.bindings.update(orgId, binding.id, {
+        ...(fresh ? { webhookId } : {}),
+        desiredEventsHash: null
+      })
       return { degraded: { state: 'admin_degraded', reason: WEBHOOK_EVENTS_UNSUPPORTED_REASON } }
     }
     await this.deps.bindings.update(orgId, binding.id, {
-      webhookId,
-      desiredEventsHash: giteaWebhookEventsHash(events),
-      ...(fresh ? { lastVerifiedDeliveryAt: null } : {})
+      ...(fresh ? { webhookId, lastVerifiedDeliveryAt: null } : {}),
+      desiredEventsHash: giteaWebhookEventsHash(events)
     })
     if (!fresh) return { verified: binding.lastVerifiedDeliveryAt !== null }
     // §6 step 4: the relay can only verify a delivery under a rule it holds, so the rules go out first.
@@ -488,11 +502,8 @@ export class GiteaProvisioner {
     }
   }
 
-  /**
-   * §7 rotation: seal the successor, distribute both keys to the relays, then PATCH the webhook's
-   * secret. Promotion happens when the relay reports a delivery verified under the successor.
-   */
-  async rotateWebhookSecret(orgId: string, bindingId: string): Promise<{ rotated: boolean; reason?: string }> {
+  /** §7 rotation: an edit cannot re-key a webhook, so a successor under the next key replaces it once a delivery verifies under that key. */
+  async rotateWebhookSecret(orgId: string, bindingId: string): Promise<RotationOutcome> {
     const binding = await this.deps.bindings.get(orgId, bindingId)
     if (!binding) return { rotated: false, reason: 'binding_missing' }
     if (binding.state === 'cleanup_pending' || binding.webhookId === null) {
@@ -500,12 +511,32 @@ export class GiteaProvisioner {
     }
     const path = splitGiteaRepoPath(binding.repoPath)
     if (!path) return { rotated: false, reason: 'repository_path_unreadable' }
+    const url = this.managedUrl()
+    if (!url) return { rotated: false, reason: 'relay_url_unconfigured' }
+    const successor = await this.installSuccessor(orgId, binding, path, url)
+    if (!('token' in successor)) return successor
+    // Fired with the lease released: the relay's observation promotes under that same lease.
+    try {
+      await giteaTestWebhook(successor.token, path.owner, path.repo, successor.successorId, this.deps.api)
+    } catch (e) {
+      return this.rotationFailed(orgId, binding, e)
+    }
+    return { rotated: true, promoted: await this.awaitPromotion(orgId, bindingId) }
+  }
+
+  /** Under the binding lease: seal the next key, create the successor webhook, distribute both keys, deactivate the old webhook. */
+  private async installSuccessor(
+    orgId: string,
+    binding: GiteaRepositoryBindingRecord,
+    path: { owner: string; repo: string },
+    url: string
+  ): Promise<RotationSuccessor | RotationOutcome> {
     const owner = randomBytes(9).toString('base64url')
     const nowMs = this.deps.clock.now()
     if (
       !(await this.deps.bindings.markProviderMutationStarted(
         orgId,
-        bindingId,
+        binding.id,
         binding.repoId,
         owner,
         new Date(nowMs + PROVISION_LEASE_MS),
@@ -514,33 +545,73 @@ export class GiteaProvisioner {
     ) {
       return { rotated: false, reason: 'provisioning_or_cleanup_in_progress' }
     }
+    const { api } = this.deps
     try {
       const token = await this.deps.tokens.withToken(orgId, binding.connectionId)
-      const keys = await this.deps.webhookSecrets.get(orgId, bindingId)
+      const keys = await this.deps.webhookSecrets.get(orgId, binding.id)
       if (!keys) return { rotated: false, reason: 'signing_key_missing' }
-      // A rotation already in flight keeps its successor: the relays hold it, so the PATCH is repeated, not replaced.
-      const next = keys.next ?? randomBytes(32).toString('hex')
-      await this.deps.webhookSecrets.put(orgId, bindingId, { current: keys.current, next })
-      await this.rebroadcast(orgId, binding.repoId)
-      await giteaUpdateWebhookSecret(token, path.owner, path.repo, binding.webhookId, next, this.deps.api)
-      return { rotated: true }
-    } catch (e) {
-      if (isGiteaAuthRejection(e)) {
-        await this.deps.tokens.onAuthRejected(orgId, binding.connectionId)
-        return { rotated: false, reason: TOKEN_REJECTED_REASON }
+      const events = await this.deps.desiredWebhookEvents(orgId, binding.repoId)
+      if (!events) return { rotated: false, reason: 'no_managed_webhook' }
+      // A rotation already in flight keeps its successor, which the relays already hold; the test is simply repeated.
+      if (
+        binding.nextWebhookId !== null &&
+        (await giteaWebhook(token, path.owner, path.repo, binding.nextWebhookId, api))
+      ) {
+        return { token, successorId: binding.nextWebhookId }
       }
-      const reason = e instanceof GiteaApiError ? `gitea_${e.status || 'unreachable'}` : 'rotation_failed'
-      this.deps.log?.warn({ bindingId, reason }, 'gitea webhook secret rotation failed')
-      return { rotated: false, reason }
+      const next = randomBytes(32).toString('hex')
+      await this.deps.webhookSecrets.put(orgId, binding.id, { current: keys.current, next })
+      const created = await giteaCreateWebhook(token, path.owner, path.repo, { url, secret: next, events }, api)
+      const successorId = BigInt(created.id)
+      const readBack = (await giteaWebhook(token, path.owner, path.repo, successorId, api)) ?? created
+      if (giteaWebhookEventsMissing(events, readBack.events ?? []).length > 0) {
+        // A successor that lost subscriptions must not replace a working webhook: undo the whole step.
+        await giteaDeleteWebhook(token, path.owner, path.repo, successorId, api).catch(swallow404)
+        await this.deps.webhookSecrets.put(orgId, binding.id, { current: keys.current, next: null })
+        return { rotated: false, reason: WEBHOOK_EVENTS_UNSUPPORTED_REASON }
+      }
+      await this.deps.bindings.update(orgId, binding.id, { nextWebhookId: successorId })
+      // Both keys reach the relays before anything is delivered under the successor.
+      await this.rebroadcast(orgId, binding.repoId)
+      // From here on only the successor receives live events; the old webhook's in-flight deliveries still verify.
+      if (binding.webhookId !== null) {
+        await giteaUpdateWebhook(token, path.owner, path.repo, binding.webhookId, { url, events, active: false }, api)
+      }
+      return { token, successorId }
+    } catch (e) {
+      return this.rotationFailed(orgId, binding, e)
     } finally {
-      await this.deps.bindings.endProviderMutation(orgId, bindingId, binding.repoId, owner).catch(() => {})
+      await this.deps.bindings.endProviderMutation(orgId, binding.id, binding.repoId, owner).catch(() => {})
     }
   }
 
-  /**
-   * The relay observed one signature-verified delivery (§6 step 4, §7): mark the binding verified,
-   * clear the unverified warning, and promote a rotated key once a delivery verified under it.
-   */
+  /** A rotation failure leaves whatever overlap exists standing; the next attempt resumes from the recorded successor. */
+  private async rotationFailed(
+    orgId: string,
+    binding: GiteaRepositoryBindingRecord,
+    e: unknown
+  ): Promise<RotationOutcome> {
+    if (isGiteaAuthRejection(e)) {
+      await this.deps.tokens.onAuthRejected(orgId, binding.connectionId)
+      return { rotated: false, reason: TOKEN_REJECTED_REASON }
+    }
+    const reason = e instanceof GiteaApiError ? `gitea_${e.status || 'unreachable'}` : 'rotation_failed'
+    this.deps.log?.warn({ bindingId: binding.id, reason }, 'gitea webhook secret rotation failed')
+    return { rotated: false, reason }
+  }
+
+  /** Poll for the successor's promotion within the bounded wait; false leaves the overlap standing. */
+  private async awaitPromotion(orgId: string, bindingId: string): Promise<boolean> {
+    const deadline = this.deps.clock.now() + (this.deps.testDeliveryWaitMs ?? DEFAULT_TEST_DELIVERY_WAIT_MS)
+    for (;;) {
+      const current = await this.deps.bindings.get(orgId, bindingId)
+      if (!current || current.nextWebhookId === null) return true
+      if (this.deps.clock.now() >= deadline) return false
+      await new Promise<void>((resolve) => this.deps.clock.setTimeout(() => resolve(), TEST_DELIVERY_POLL_MS))
+    }
+  }
+
+  /** The relay observed one verified delivery (§6 step 4, §7): mark the binding verified, clear the warning, promote a successor it verified under. */
   async observeDelivery(input: {
     repoId: bigint
     at: Date
@@ -552,12 +623,15 @@ export class GiteaProvisioner {
     if (next.stateReason !== binding.stateReason) {
       await this.deps.bindings.update(binding.orgId, binding.id, { stateReason: next.stateReason })
     }
-    if (input.verifiedWith === 'next') await this.promoteSigningKey(binding)
+    if (input.verifiedWith === 'next') await this.promoteSuccessor(binding)
     return (await this.deps.bindings.get(binding.orgId, binding.id)) ?? binding
   }
 
-  /** Promote the successor under the binding lease; a busy lease defers to the next delivery under it. */
-  private async promoteSigningKey(binding: GiteaRepositoryBindingRecord): Promise<void> {
+  /** Retire the old webhook and promote the successor under the binding lease; a busy lease defers to the next delivery. */
+  private async promoteSuccessor(binding: GiteaRepositoryBindingRecord): Promise<void> {
+    if (binding.nextWebhookId === null) return
+    const path = splitGiteaRepoPath(binding.repoPath)
+    if (!path) return
     const owner = randomBytes(9).toString('base64url')
     const nowMs = this.deps.clock.now()
     if (
@@ -573,13 +647,29 @@ export class GiteaProvisioner {
       return
     }
     try {
-      const keys = await this.deps.webhookSecrets.get(binding.orgId, binding.id)
-      if (!keys?.next) return
-      await this.deps.webhookSecrets.put(binding.orgId, binding.id, { current: keys.next, next: null })
-      await this.rebroadcast(binding.orgId, binding.repoId)
+      const token = await this.deps.tokens.withToken(binding.orgId, binding.connectionId)
+      if (binding.webhookId !== null) {
+        await giteaDeleteWebhook(token, path.owner, path.repo, binding.webhookId, this.deps.api).catch(swallow404)
+      }
+      await this.promoteKeys(binding)
+    } catch (e) {
+      // The overlap stands; the next delivery verified under the successor retries the retirement.
+      if (isGiteaAuthRejection(e)) await this.deps.tokens.onAuthRejected(binding.orgId, binding.connectionId)
+      this.deps.log?.warn({ bindingId: binding.id }, 'gitea webhook successor promotion deferred')
     } finally {
       await this.deps.bindings.endProviderMutation(binding.orgId, binding.id, binding.repoId, owner).catch(() => {})
     }
+  }
+
+  /** The local half of a promotion: the successor becomes THE webhook and its key the current one. */
+  private async promoteKeys(binding: GiteaRepositoryBindingRecord): Promise<void> {
+    const keys = await this.deps.webhookSecrets.get(binding.orgId, binding.id)
+    if (keys?.next) await this.deps.webhookSecrets.put(binding.orgId, binding.id, { current: keys.next, next: null })
+    await this.deps.bindings.update(binding.orgId, binding.id, {
+      webhookId: binding.nextWebhookId,
+      nextWebhookId: null
+    })
+    await this.rebroadcast(binding.orgId, binding.repoId)
   }
 
   /**
@@ -598,7 +688,7 @@ export class GiteaProvisioner {
     await this.rebroadcast(orgId, binding.repoId)
     const path = splitGiteaRepoPath(binding.repoPath)
     // A webhook the path cannot address cannot be deleted: park rather than release the claim over it.
-    if (!path && binding.webhookId !== null) {
+    if (!path && (binding.webhookId !== null || binding.nextWebhookId !== null)) {
       await this.deps.bindings.update(orgId, bindingId, {
         state: 'cleanup_pending',
         stateReason: 'repository_path_unreadable'
@@ -609,9 +699,10 @@ export class GiteaProvisioner {
       const token = await this.deps.tokens.withToken(orgId, binding.connectionId)
       if (path) {
         const { api } = this.deps
-        if (binding.webhookId !== null) {
-          await giteaDeleteWebhook(token, path.owner, path.repo, binding.webhookId, api).catch(swallow404)
-        } else {
+        for (const id of [binding.webhookId, binding.nextWebhookId]) {
+          if (id !== null) await giteaDeleteWebhook(token, path.owner, path.repo, id, api).catch(swallow404)
+        }
+        if (binding.webhookId === null && binding.nextWebhookId === null) {
           const url = this.managedUrl()
           if (url) {
             const pageSize = await giteaPageSize(api)

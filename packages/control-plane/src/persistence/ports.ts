@@ -3868,6 +3868,8 @@ export interface GiteaRepositoryBindingRecord {
   cloneUrl: string | null
   defaultBranch: string | null
   webhookId: bigint | null
+  /** The rotation successor (§7): live beside the old webhook until a delivery verifies under its key. */
+  nextWebhookId: bigint | null
   desiredEventsHash: string | null
   /** When the relay last verified a delivery for this repository (§6 step 4). */
   lastVerifiedDeliveryAt: Date | null
@@ -3903,6 +3905,7 @@ export interface GiteaRepositoryBindingRepo {
       cloneUrl: string | null
       defaultBranch: string | null
       webhookId: bigint | null
+      nextWebhookId: bigint | null
       desiredEventsHash: string | null
       lastVerifiedDeliveryAt: Date | null
       convergeOwedAt: Date | null
@@ -3928,6 +3931,7 @@ export interface GiteaRepositoryBindingRepo {
   ): Promise<boolean>
   endProviderMutation(orgId: string, bindingId: string, repoId: bigint, owner: string): Promise<void>
   renewProviderLease(orgId: string, bindingId: string, repoId: bigint, owner: string, until: Date): Promise<boolean>
+  /** Cleanup entry, exclusive with a live lease (false while held): flips the attached claim AND the binding to `cleanup_pending` in one transaction. */
   beginCleanup(orgId: string, bindingId: string, repoId: bigint, now: Date): Promise<boolean>
   removeWithClaim(orgId: string, bindingId: string, repoId: bigint): Promise<boolean>
 }

@@ -41,11 +41,14 @@ async function harness(
   extra: { relayObserves?: boolean; testDeliveryWaitMs?: number } = {}
 ) {
   const rebroadcasts: bigint[] = []
-  /** The relay's observation, simulated at the moment the fake fires the test delivery (§6 step 4). */
-  const observe = async (): Promise<void> => {
-    await provisioner.observeDelivery({ repoId: REPO, at: new Date(clock.now()), verifiedWith: 'current' })
+  /** The relay's observation at the moment the fake fires a test delivery (§6 step 4); one at the rotation successor verifies under its key (§7). */
+  const observe = async (hookId: number): Promise<void> => {
+    const current = await bindings.byRepo(DEFAULT_ORG_ID, REPO)
+    const verifiedWith =
+      current?.nextWebhookId !== null && current?.nextWebhookId === BigInt(hookId) ? 'next' : 'current'
+    await provisioner.observeDelivery({ repoId: REPO, at: new Date(clock.now()), verifiedWith })
   }
-  const fake = new FakeGitea({ ...(extra.relayObserves ? { onTestDelivery: () => observe() } : {}), ...options })
+  const fake = new FakeGitea({ ...(extra.relayObserves ? { onTestDelivery: (id) => observe(id) } : {}), ...options })
   const connections = new PgGiteaConnectionRepo(prisma)
   const bindings = new PgGiteaRepositoryBindingRepo(prisma)
   const webhookSecrets = new PgGiteaWebhookSecretStore(prisma, cipher)
@@ -73,6 +76,8 @@ async function harness(
     testDeliveryWaitMs: extra.testDeliveryWaitMs ?? 300
   })
   const connection = await connectionService.connect(DEFAULT_ORG_ID, fake.token)
+  // The connect step's own probes (§4.1) are not what these suites inspect.
+  fake.requests.length = 0
   const binding = await bindings.createWithClaim({
     orgId: DEFAULT_ORG_ID,
     connectionId: connection.id,
@@ -180,15 +185,55 @@ describe('GiteaProvisioner (§6) — the managed webhook', () => {
     })
   })
 
-  it('adopts a crash-left hook at the exact managed URL instead of creating a duplicate', async () => {
+  it('retires a crash-left hook at the exact managed URL and replaces it with one whose key it sealed', async () => {
     const h = await harness({}, EVENTS)
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
-    const hookId = [...h.fake.hooks.keys()][0]!
-    // The create landed but the id was never recorded.
+    const strayId = [...h.fake.hooks.keys()][0]!
+    // The create landed but the id was never recorded — and a secret can never be re-keyed in place.
     await h.bindings.update(DEFAULT_ORG_ID, h.binding.id, { webhookId: null, desiredEventsHash: null })
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
     expect(h.fake.hooks.size).toBe(1)
-    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId).toBe(BigInt(hookId))
+    const recorded = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId
+    expect(recorded).not.toBe(BigInt(strayId))
+    expect(h.fake.hooks.get(Number(recorded))!.secret).toBe(
+      (await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id))!.current
+    )
+  })
+
+  it('reconciles with the events always sent and never a secret: the provider rebuilds subscriptions and ignores re-keys', async () => {
+    const h = await harness({}, EVENTS)
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const hook = [...h.fake.hooks.values()][0]!
+    const secret = hook.secret
+    // A repair PATCHes the live webhook: the subscription survives, the secret is untouched.
+    h.fake.requests.length = 0
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'ready',
+      reason: 'webhook_unverified'
+    })
+    const patch = h.fake.requests.find((r) => r.method === 'PATCH')
+    expect(patch?.body).toMatchObject({ events: expect.arrayContaining(EVENTS), active: true })
+    expect(JSON.stringify(patch?.body)).not.toContain('secret')
+    expect(hook.secret).toBe(secret)
+    for (const event of EVENTS) expect(hook.events).toContain(event)
+  })
+
+  it('lists every page of the webhooks even though the listing carries no Link header', async () => {
+    const h = await harness({ maxResponseItems: 2 }, EVENTS)
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const managed = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
+    // Three unrelated hooks sort before ours on the listing, pushing the managed one onto the LAST page.
+    for (let i = 0; i < 3; i++) {
+      const stray = { ...h.fake.hooks.get(Number(managed))!, url: `https://elsewhere.example.test/${i}` }
+      h.fake.hooks.set(6000 + i, stray)
+    }
+    h.fake.hooks = new Map([...h.fake.hooks.entries()].sort(([a], [b]) => a - b))
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    // Still ours, still one: the recorded id was found on page two rather than forgotten and re-created.
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId).toBe(managed)
+    expect(
+      [...h.fake.hooks.values()].filter((hook) => hook.url === 'https://relay.example.test/webhooks/gitea')
+    ).toHaveLength(1)
   })
 })
 
@@ -278,37 +323,154 @@ describe('GiteaProvisioner (§4.3, §4.4) — degraded states', () => {
   })
 })
 
-describe('GiteaProvisioner (§7) — signing-key rotation', () => {
-  it('seals a successor, distributes both keys, patches the hook, and promotes on a delivery verified under it', async () => {
+describe('GiteaProvisioner (§7) — signing-key rotation by successor webhook', () => {
+  it('creates a successor under the new key, deactivates the old hook, and holds the overlap until a delivery verifies under the successor', async () => {
     const h = await harness()
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const oldId = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
     const before = (await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id))!
     h.rebroadcasts.length = 0
-    expect(await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)).toEqual({ rotated: true })
+    h.fake.requests.length = 0
+    h.fake.tests.length = 0
+    // No relay observes the successor's test delivery: the overlap stands.
+    expect(await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      rotated: true,
+      promoted: false
+    })
     const overlap = (await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id))!
     expect(overlap.current).toBe(before.current)
     expect(overlap.next).toMatch(/^[0-9a-f]{64}$/)
-    // The relays learned both keys before the provider switched.
+    const row = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(row.webhookId).toBe(oldId)
+    expect(row.nextWebhookId).not.toBeNull()
+    const successorId = Number(row.nextWebhookId)
+    // Two webhooks live: the successor active under the new key with the FULL subscription, the old one inactive.
+    expect(h.fake.hooks.size).toBe(2)
+    const successor = h.fake.hooks.get(successorId)!
+    expect(successor).toMatchObject({ secret: overlap.next, active: true })
+    for (const event of EVENTS) expect(successor.events).toContain(event)
+    const old = h.fake.hooks.get(Number(oldId))!
+    expect(old).toMatchObject({ secret: before.current, active: false })
+    for (const event of EVENTS) expect(old.events).toContain(event)
+    // Order: the relays learned both keys before the old hook was deactivated and the successor tested.
     expect(h.rebroadcasts).toEqual([REPO])
-    const hook = [...h.fake.hooks.values()][0]!
-    expect(hook.secret).toBe(overlap.next)
-    const patch = h.fake.requests.filter((r) => r.method === 'PATCH').at(-1)
-    expect(patch?.body).toEqual({ config: { secret: overlap.next } })
-    // A delivery under the current key promotes nothing; one under the successor does.
+    const kinds = h.fake.requests
+      .filter((r) => r.method !== 'GET')
+      .map((r) => `${r.method} ${r.url.split('/hooks')[1] ?? ''}`)
+    expect(kinds).toEqual(['POST ', `PATCH /${oldId}`, `POST /${successorId}/tests`])
+    expect(h.fake.tests).toEqual([successorId])
+    // Nothing was ever PATCHed with a secret.
+    expect(
+      h.fake.requests.every((r) => !JSON.stringify(r.body ?? {}).includes('"secret"') || r.method === 'POST')
+    ).toBe(true)
+
+    // A delivery under the current key promotes nothing; one under the successor retires the old hook.
     await h.provisioner.observeDelivery({ repoId: REPO, at: new Date(clock.now()), verifiedWith: 'current' })
     expect(await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id)).toEqual(overlap)
+    expect(h.fake.hooks.size).toBe(2)
     await h.provisioner.observeDelivery({ repoId: REPO, at: new Date(clock.now()), verifiedWith: 'next' })
     expect(await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id)).toEqual({ current: overlap.next, next: null })
+    expect(h.fake.hooks.size).toBe(1)
+    expect(h.fake.hooks.get(successorId)).toBeDefined()
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({
+      webhookId: BigInt(successorId),
+      nextWebhookId: null
+    })
     expect(h.rebroadcasts).toEqual([REPO, REPO])
-    // A reconcile mid-rotation never reinstates the old key at the provider.
-    expect(await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)).toEqual({ rotated: true })
+    // A later repair reconciles the promoted webhook and creates nothing.
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
-    const during = (await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id))!
-    expect([...h.fake.hooks.values()][0]!.secret).toBe(during.next)
+    expect(h.fake.hooks.size).toBe(1)
+  })
+
+  it('promotes inside the rotation when the relay observes the successor test delivery', async () => {
+    const h = await harness({}, EVENTS, { relayObserves: true })
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const oldId = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
+    const before = (await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      rotated: true,
+      promoted: true
+    })
+    const after = (await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(after.next).toBeNull()
+    expect(after.current).not.toBe(before.current)
+    expect(h.fake.hooks.size).toBe(1)
+    const promotedId = [...h.fake.hooks.keys()][0]!
+    const promoted = h.fake.hooks.get(promotedId)!
+    expect(promotedId).not.toBe(Number(oldId))
+    expect(promoted).toMatchObject({ secret: after.current, active: true })
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({
+      webhookId: BigInt(promotedId),
+      nextWebhookId: null
+    })
+  })
+
+  it('a repair mid-overlap keeps the successor live and the old hook inactive; a vanished successor abandons the rotation', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)
+    const row = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'ready',
+      reason: 'webhook_unverified'
+    })
+    expect(h.fake.hooks.get(Number(row.nextWebhookId))!.active).toBe(true)
+    expect(h.fake.hooks.get(Number(row.webhookId))!.active).toBe(false)
+    // The successor is deleted at the provider: the old key stays current and the old hook comes back.
+    h.fake.hooks.delete(Number(row.nextWebhookId))
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({
+      webhookId: row.webhookId,
+      nextWebhookId: null
+    })
+    expect((await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id))!.next).toBeNull()
+    expect(h.fake.hooks.get(Number(row.webhookId))!.active).toBe(true)
+  })
+
+  it('refuses to replace a working webhook with a successor that lost subscriptions', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const before = (await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id))!
+    h.fake.opts.dropEvents = ['pull_request_review']
+    expect(await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      rotated: false,
+      reason: 'webhook_events_unsupported'
+    })
+    expect(h.fake.hooks.size).toBe(1)
+    expect(await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id)).toEqual(before)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.nextWebhookId).toBeNull()
   })
 })
 
 describe('GiteaProvisioner (§6) — unbind', () => {
+  it('parks the binding with its claim in ONE transaction before any provider call', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, REPO, new Date(clock.now()))).toBe(true)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('cleanup_pending')
+    const claim = await prisma.codeHostRepositoryClaim.findUniqueOrThrow({
+      where: { provider_externalId: { provider: 'gitea', externalId: REPO } }
+    })
+    expect(claim.state).toBe('cleanup_pending')
+    // The same flip without an attached claim (an already-tombstoned one).
+    await prisma.codeHostRepositoryClaim.update({ where: { id: claim.id }, data: { bindingRef: null } })
+    await h.bindings.update(DEFAULT_ORG_ID, h.binding.id, { state: 'ready' })
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, REPO, new Date(clock.now()))).toBe(true)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('cleanup_pending')
+    // A live lease refuses, and the binding is left exactly as it was.
+    await h.bindings.update(DEFAULT_ORG_ID, h.binding.id, { state: 'ready' })
+    await prisma.codeHostRepositoryClaim.update({
+      where: { id: claim.id },
+      data: { bindingRef: h.binding.id, state: 'active' }
+    })
+    const until = new Date(clock.now() + 60_000)
+    expect(
+      await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, REPO, 'peer', until, new Date())
+    ).toBe(true)
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, REPO, new Date(clock.now()))).toBe(false)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('ready')
+  })
+
   it('deletes the managed webhook by its recorded id and releases the claim with the local rows', async () => {
     const h = await harness()
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
@@ -327,6 +489,8 @@ describe('GiteaProvisioner (§6) — unbind', () => {
       removed: false,
       reason: 'token_rejected'
     })
+    // Rules and grants stopped when the claim flipped, not when the DELETE failed.
+    expect(h.rebroadcasts.at(-1)).toBe(REPO)
     expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toMatchObject({
       state: 'cleanup_pending',
       stateReason: 'token_rejected'

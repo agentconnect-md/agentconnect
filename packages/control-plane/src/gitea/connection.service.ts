@@ -5,6 +5,7 @@
  * connection and every servable binding it administers. The token is sealed at rest and leaves
  * this service only as the value a caller presents to Gitea — never in a log or an error.
  */
+import { randomBytes } from 'node:crypto'
 import type { Clock } from '../domain/clock.js'
 import { OrgId } from '../domain/ids.js'
 import { GiteaBotAlreadyBound, GiteaConnectionExists } from '../persistence/errors.js'
@@ -22,6 +23,7 @@ import {
   GiteaApiError,
   giteaCurrentUser,
   giteaProbeListing,
+  giteaProbeWriteScope,
   giteaVersion,
   isGiteaAuthRejection,
   type GiteaApiClient
@@ -108,10 +110,13 @@ export class GiteaConnectionService {
         GITEA_VERSION_UNSUPPORTED_REASON
       )
     }
-    // The scope probes are the reads the picker needs anyway (§4.1): a repository listing for
-    // `repository`, an organization listing for `organization` (and `user`, which both require).
-    await this.probe(token, '/user/repos', 'write:repository')
+    // The read probes are the picker's own reads (§4.1): the repository listing, then the organization listing (which needs `user` too).
+    await this.probe(token, '/user/repos', 'read:repository')
     await this.probe(token, '/user/orgs', 'read:organization')
+    // The write probes: a write against a repository that does not exist under the bot's login answers the scope 403 before the 404, so nothing is written (§4.1).
+    const probeRepo = `${encodeURIComponent(user.login)}/agentconnect-scope-probe-${randomBytes(6).toString('hex')}`
+    await this.probeWrite(token, `/repos/${probeRepo}/hooks`, 'write:repository')
+    await this.probeWrite(token, `/repos/${probeRepo}/issues/1/reactions`, 'write:issue')
     return {
       botUserId: BigInt(user.id),
       botUsername: user.login,
@@ -126,6 +131,18 @@ export class GiteaConnectionService {
       await giteaProbeListing(token, path, this.deps.api)
     } catch (e) {
       if (isGiteaAuthRejection(e) || (e instanceof GiteaApiError && e.code === 'FORBIDDEN')) {
+        throw new GiteaConnectDenied(`the token lacks the ${scope} scope`, 400, 'missing_scope')
+      }
+      if (e instanceof GiteaApiError) throw upstream(e)
+      throw e
+    }
+  }
+
+  private async probeWrite(token: string, path: string, scope: string): Promise<void> {
+    try {
+      await giteaProbeWriteScope(token, path, this.deps.api)
+    } catch (e) {
+      if (isGiteaAuthRejection(e)) {
         throw new GiteaConnectDenied(`the token lacks the ${scope} scope`, 400, 'missing_scope')
       }
       if (e instanceof GiteaApiError) throw upstream(e)

@@ -201,6 +201,7 @@ function toBindingRecord(r: GiteaRepositoryBinding): GiteaRepositoryBindingRecor
     cloneUrl: r.cloneUrl,
     defaultBranch: r.defaultBranch,
     webhookId: r.webhookId,
+    nextWebhookId: r.nextWebhookId,
     desiredEventsHash: r.desiredEventsHash,
     lastVerifiedDeliveryAt: r.lastVerifiedDeliveryAt,
     convergeOwedAt: r.convergeOwedAt,
@@ -307,6 +308,7 @@ export class PgGiteaRepositoryBindingRepo implements GiteaRepositoryBindingRepo 
       cloneUrl: string | null
       defaultBranch: string | null
       webhookId: bigint | null
+      nextWebhookId: bigint | null
       desiredEventsHash: string | null
       lastVerifiedDeliveryAt: Date | null
       convergeOwedAt: Date | null
@@ -407,17 +409,16 @@ export class PgGiteaRepositoryBindingRepo implements GiteaRepositoryBindingRepo 
   }
 
   async beginCleanup(orgId: string, bindingId: string, repoId: bigint, now: Date): Promise<boolean> {
+    // The binding leaves the servable states in the SAME transaction as its claim: nothing compiles, issues or authorizes past here.
+    const parked = { state: 'cleanup_pending', convergeOwedAt: null }
     const attached = await this.prisma.codeHostRepositoryClaim.count({
       where: { provider: 'gitea', externalId: repoId, orgId, bindingRef: bindingId }
     })
     if (attached === 0) {
-      await this.prisma.giteaRepositoryBinding.updateMany({
-        where: { id: bindingId, orgId },
-        data: { convergeOwedAt: null }
-      })
+      await this.prisma.giteaRepositoryBinding.updateMany({ where: { id: bindingId, orgId }, data: parked })
       return true
     }
-    // The claim flip and the convergence discharge are ONE transaction; a live lease refuses.
+    // A live lease refuses: cleanup must wait, so there is no window between a fence check and its write.
     return this.prisma.$transaction(async (tx) => {
       const res = await tx.codeHostRepositoryClaim.updateMany({
         where: {
@@ -430,7 +431,7 @@ export class PgGiteaRepositoryBindingRepo implements GiteaRepositoryBindingRepo 
         data: { state: 'cleanup_pending', opOwner: null, opLeaseUntil: null }
       })
       if (res.count !== 1) return false
-      await tx.giteaRepositoryBinding.updateMany({ where: { id: bindingId, orgId }, data: { convergeOwedAt: null } })
+      await tx.giteaRepositoryBinding.updateMany({ where: { id: bindingId, orgId }, data: parked })
       return true
     })
   }

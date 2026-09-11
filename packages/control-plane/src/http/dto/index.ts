@@ -2053,9 +2053,10 @@ export const CreateGiteaRepositoryBody = z.object({
   repoId: z.string().regex(/^[1-9]\d*$/) // numeric id as a string; the server re-fetches and validates
 })
 
-/** The rotation outcome (§7): the successor is live on both sides until a verified delivery promotes it. */
+/** The rotation outcome (§7): `promoted` says whether the relay already verified a delivery under the successor's key and retired the old webhook. */
 export const GiteaWebhookRotationDto = z.object({
   rotated: z.boolean(),
+  promoted: z.boolean(),
   reason: z.string().nullable()
 })
 
