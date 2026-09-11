@@ -63,10 +63,11 @@ spec:
     spec:
       # The only credential an agent gets is the audience-scoped projection below.
       automountServiceAccountToken: false
-      {{- with $.Values.imagePullSecrets }}
-      # The same install-wide pull secrets every chart-rendered pod carries: these pods are
-      # created by the agent-sandbox controller from this template, so an install pulling
-      # from a private mirror needs them here or the first sandbox stops in ImagePullBackOff.
+      {{- with $runtime.imagePullSecrets }}
+      # The SANDBOX pull secrets, deliberately not `.Values.imagePullSecrets`: the controller
+      # creates these pods in `sandboxNamespace`, and the kubelet resolves a pull secret in the
+      # pod's own namespace, so the install-wide value would name a Secret that is not there.
+      # Empty by default — the runtime-sandbox image is public.
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}

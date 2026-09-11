@@ -74,7 +74,10 @@ image:
   pullPolicy: Always
 
 # Registry pull secrets, referenced BY NAME — the chart never holds the credential
-# itself (same rule as `secrets` below). Applied to every pod this chart renders.
+# itself (same rule as `secrets` below). Applied to every pod this chart renders into the
+# RELEASE namespace. Agent sandbox pods are NOT among them — the agent-sandbox controller
+# creates those in `daemonPool.sandboxNamespace`, and a pull secret resolves in the pod's own
+# namespace — so they have their own `daemonPool.runtime.imagePullSecrets`.
 #
 # The first-party images (control-plane, web, relay, daemon, mem0*) are PUBLIC, so the
 # default empty list is enough for them. An image you host privately is not: an anonymous
@@ -327,6 +330,20 @@ daemonPool:
     # full reference outright; empty ⇒ `<image.registry>/runtime-sandbox:<tag>`.
     tag: ''
     image: ''
+    # Pull secrets for the sandbox pods ONLY, separate from the install-wide `imagePullSecrets`
+    # on purpose: these pods are created by the agent-sandbox controller in `sandboxNamespace`,
+    # and a pull secret is resolved in the pod's OWN namespace. The install-wide value names a
+    # Secret in the release namespace, so referencing it here would only log
+    # FailedToRetrieveImagePullSecret on every sandbox.
+    #
+    # Empty is right whenever the runtime-sandbox image is publicly readable, which is the
+    # default. Set it only when that image is private, and create the dockerconfigjson Secret in
+    # `sandboxNamespace` yourself — the chart names it and never holds the credential. Same
+    # shape as the install-wide value:
+    #
+    #   imagePullSecrets:
+    #     - name: <pull-secret-name>
+    imagePullSecrets: []
     # Pre-warmed spares held ready in the warm pool. Each spare is a STANDING COST — a running
     # sandbox pod and one bound workspace PVC apiece, held whether or not anybody claims it — and
     # what it buys is narrow: only the FIRST mint for a new agent gets a warm sandbox instead of a
