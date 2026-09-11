@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync, rmSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { decodeFrames, encodeFrame, type IpcRequest, type IpcResponse } from './ipc.js'
+import { AskRequired, type AskAnswer, type AskPort } from './ask.js'
 import { executeTool, type OpsDeps, type SessionContext } from './ops.js'
 import { boundWrittenTopics } from './ops/memory.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
@@ -12,6 +13,11 @@ import { isWindowsNamedPipe } from '../paths.js'
 export interface McpControlDeps extends OpsDeps {
   socketPath: string
   log?: Logger
+}
+
+/** The per-call ask port: the host's answers from an earlier round, and nothing else — the daemon never initiates toward the bridge. */
+function askPortFor(answers: Record<string, AskAnswer> | undefined): AskPort {
+  return { answer: (key) => answers?.[key] }
 }
 
 /**
@@ -109,14 +115,25 @@ export class McpControlServer {
     }
     const ctx = this.sessions.get(req.token)
     if (!ctx) return reply({ id: req.id, ok: false, error: 'unknown or expired session token' })
+    // THE structural guard for #1965: a tool can only mint an ask through this port, and the port exists only when THIS request declared a form-capable host — so an old in-sandbox bridge, which sends no `ask`, can never receive a marker it would JSON.stringify straight to the model.
+    const askPort = req.op === 'callTool' && req.ask?.form === true ? askPortFor(req.askAnswers) : undefined
     try {
       if (req.op === 'listTools') {
         reply({ id: req.id, ok: true, result: { tools: ctx.tools as ToolDescriptor[] } })
         return
       }
-      const result = await executeTool(ctx, req.name, req.args ?? {}, this.deps)
+      // Deps, NOT a SessionContext spread: `mcp/ops/memory.ts` keys its provenance ledger by the context IDENTITY from the sessions map, so a per-call copy would orphan it.
+      const deps = askPort ? { ...this.deps, ask: askPort } : this.deps
+      const result = await executeTool(ctx, req.name, req.args ?? {}, deps)
       reply({ id: req.id, ok: true, result })
     } catch (err) {
+      if (err instanceof AskRequired) {
+        if (!askPort) {
+          this.deps.log?.error(`mcp: ${req.op === 'callTool' ? req.name : req.op} asked with no ask port`)
+          return reply({ id: req.id, ok: false, error: 'this tool cannot ask on this connection' })
+        }
+        return reply({ id: req.id, ok: true, result: { mcpAsk: err.ask } })
+      }
       reply({ id: req.id, ok: false, error: (err as Error).message })
     }
   }

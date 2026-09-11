@@ -1,4 +1,5 @@
 import type { Tool } from '@modelcontextprotocol/server'
+import type { AskAnswer, AskModes, AskWire } from './ask.js'
 
 /**
  * Tiny newline-delimited JSON-RPC-ish protocol spoken over the daemon's MCP
@@ -19,6 +20,11 @@ export interface IpcCallToolReq {
   op: 'callTool'
   name: string
   args: Record<string, unknown>
+  /** What the agent's own MCP host can render (#1965), read from its `initialize` capabilities.
+   *  Absent ⇒ this connection cannot ask, so no tool is handed an ask port at all. */
+  ask?: AskModes
+  /** The host's answers to an earlier round of THIS tool call, keyed by ask key. */
+  askAnswers?: Record<string, AskAnswer>
 }
 
 export type IpcRequest = IpcListToolsReq | IpcCallToolReq
@@ -36,6 +42,19 @@ export type IpcPrivateRequest = IpcAttachReq | IpcRequest
 
 export interface IpcListToolsResult {
   tools: Tool[]
+}
+
+/** A `callTool` that answered with a QUESTION instead of a result (#1965). The bridge
+ *  recognizes this marker and re-issues the call once the host has answered. */
+export interface IpcAskRequiredResult {
+  mcpAsk: AskWire
+}
+
+/** Whether a tool result is the ask marker rather than a real result. */
+export function isAskRequiredResult(result: unknown): result is IpcAskRequiredResult {
+  if (result === null || typeof result !== 'object') return false
+  const ask = (result as { mcpAsk?: unknown }).mcpAsk
+  return ask !== null && typeof ask === 'object' && typeof (ask as { key?: unknown }).key === 'string'
 }
 
 export interface IpcResponse {
