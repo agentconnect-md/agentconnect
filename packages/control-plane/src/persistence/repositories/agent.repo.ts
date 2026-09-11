@@ -3,7 +3,12 @@
  */
 import { Prisma } from '../../generated/prisma/client.js'
 import type { Agent, PrismaClient, User } from '../../generated/prisma/client.js'
-import { AgentMemoryBinding, redactGitUrlSecrets } from '@agentconnect.md/protocol'
+import {
+  AgentMemoryBinding,
+  isCodeHostProvider,
+  redactGitUrlSecrets,
+  type CodeHostProvider
+} from '@agentconnect.md/protocol'
 import type { PrismaLike } from '../prisma.js'
 import type {
   AgentCallPolicy,
@@ -215,18 +220,22 @@ async function settlePresetPlacement(tx: Prisma.TransactionClient, agentId: stri
   })
 }
 
+// Each host also needs the column holding the identity that makes its credential
+// mintable — the github provenance-hint installation, the gitlab rename-stable
+// project id. A row missing it reads as anonymous rather than minting against nothing.
+const CREDENTIAL_OF: Record<CodeHostProvider, (a: Agent) => AgentWorkspaceCredential | undefined> = {
+  github: (a) =>
+    a.installationId !== null
+      ? { provider: 'github', installationId: a.installationId, access: a.gitAccess }
+      : undefined,
+  gitlab: (a) => (a.workspaceRepoId !== null ? { provider: 'gitlab', access: a.gitAccess } : undefined)
+}
+
 function credentialOf(a: Agent): AgentWorkspaceCredential | undefined {
-  // Provider is the explicit column (git-workspace-model.md §4); each arm also
-  // needs the identity that makes its credential mintable — the github
-  // provenance-hint installation, the gitlab rename-stable project id. A legacy
-  // row missing either reads as anonymous rather than minting against nothing.
-  if (a.gitCredentialProvider === 'github' && a.installationId !== null) {
-    return { provider: 'github', installationId: a.installationId, access: a.gitAccess }
-  }
-  if (a.gitCredentialProvider === 'gitlab' && a.workspaceRepoId !== null) {
-    return { provider: 'gitlab', access: a.gitAccess }
-  }
-  return undefined
+  // Provider is the explicit column (git-workspace-model.md §4); a value no host
+  // claims reads as anonymous, never as another host's credential.
+  const provider = a.gitCredentialProvider
+  return provider !== null && isCodeHostProvider(provider) ? CREDENTIAL_OF[provider](a) : undefined
 }
 
 function workspaceOf(a: Agent): AgentWorkspace {

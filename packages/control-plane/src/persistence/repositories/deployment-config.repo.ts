@@ -6,6 +6,7 @@
  * Replacement locks one deployment-global advisory key and commits the typed
  * JSON document, monotonic revision, and secret patch in one transaction.
  */
+import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { withTx } from '../prisma.js'
@@ -75,19 +76,32 @@ function toRuntime(row: RuntimeRow): StoredDeploymentConfigRuntime {
   }
 }
 
-/** Does any GitLab state still bind this deployment to its instance (§24.1)? A
- *  `disconnected` connection is credential-free history and does not; a binding
- *  (`cleanup_pending` included), an account, a hook, or a claim carrying a
- *  tombstone or an unfinished cleanup obligation does. */
-async function gitlabStateExists(tx: Prisma.TransactionClient): Promise<boolean> {
-  const [connections, bindings, accounts, hooks, claims] = await Promise.all([
-    tx.gitlabConnection.count({ where: { NOT: { state: 'disconnected' } } }),
-    tx.gitlabProjectBinding.count(),
-    tx.gitlabAgentAccount.count(),
-    tx.hookDef.count({ where: { kind: 'gitlab' } }),
-    tx.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })
-  ])
-  return connections + bindings + accounts + hooks + claims > 0
+/**
+ * Does any of one host's state still bind this deployment to its instance (§24.1)?
+ * Keyed by provider here rather than in the code-host provider registry: the count
+ * is a statement about Prisma models, which are persistence's knowledge.
+ */
+const CODE_HOST_STATE_EXISTS: Record<CodeHostProvider, (tx: Prisma.TransactionClient) => Promise<boolean>> = {
+  // A GitHub App addresses github.com only: the deployment has no instance axis
+  // for this host, so no state of its can pin one.
+  github: async () => false,
+  // A `disconnected` connection is credential-free history and does not bind; a
+  // binding (`cleanup_pending` included), an account, a hook, or a claim carrying
+  // a tombstone or an unfinished cleanup obligation does.
+  gitlab: async (tx) => {
+    const [connections, bindings, accounts, hooks, claims] = await Promise.all([
+      tx.gitlabConnection.count({ where: { NOT: { state: 'disconnected' } } }),
+      tx.gitlabProjectBinding.count(),
+      tx.gitlabAgentAccount.count(),
+      tx.hookDef.count({ where: { kind: 'gitlab' } }),
+      tx.codeHostRepositoryClaim.count({ where: { provider: 'gitlab' } })
+    ])
+    return connections + bindings + accounts + hooks + claims > 0
+  }
+}
+
+function codeHostStateExists(tx: Prisma.TransactionClient, provider: CodeHostProvider): Promise<boolean> {
+  return CODE_HOST_STATE_EXISTS[provider](tx)
 }
 
 export class PgDeploymentConfigRepository implements DeploymentConfigPersistence {
@@ -142,7 +156,7 @@ export class PgDeploymentConfigRepository implements DeploymentConfigPersistence
       // which for the first persisted document is the environment fallback.
       const previousBaseUrl = previousValues ? effectiveGitlabBaseUrl(previousValues) : this.envGitlabBaseUrl
       const nextBaseUrl = effectiveGitlabBaseUrl(input.values)
-      if (previousBaseUrl !== nextBaseUrl && (await gitlabStateExists(tx))) {
+      if (previousBaseUrl !== nextBaseUrl && (await codeHostStateExists(tx, 'gitlab'))) {
         throw new DeploymentConfigGitlabBaseUrlLockedError(previousBaseUrl, nextBaseUrl)
       }
       const refreshKeys = previousValues ? deploymentSecretsRequiringRefresh(previousValues, input.values) : []

@@ -8,7 +8,9 @@
  * (agent, kind, repo, family) uniqueness owns the duplicate rule.
  */
 
-/** Every subject family the two code hosts between them subscribe to. */
+import type { CodeHostProvider } from '@agentconnect.md/protocol'
+
+/** Every subject family the code hosts between them subscribe to. */
 export type HookFamily = 'issues' | 'pull_request' | 'merge_request' | 'push' | 'deployment'
 
 /** The families a row of each kind may declare. */
@@ -45,7 +47,7 @@ export function familyOfEventPattern(pattern: string): HookFamily | null {
 }
 
 /** Whether one stored pattern belongs on a row of this kind and family. */
-export function eventPatternFitsFamily(kind: 'github' | 'gitlab', family: HookFamily, pattern: string): boolean {
+export function eventPatternFitsFamily(kind: CodeHostProvider, family: HookFamily, pattern: string): boolean {
   const prefix = pattern.split(':', 1)[0]
   if (prefix === 'issue_comment') {
     return kind === 'github' && (family === 'issues' || family === 'pull_request')
@@ -63,7 +65,7 @@ export function hasSharedCommentPattern(events: readonly string[]): boolean {
 
 /** The per-row subscription block a write proposes. */
 export interface HookFamilyShape {
-  kind: 'github' | 'gitlab'
+  kind: CodeHostProvider
   family: HookFamily
   events: readonly string[]
   commentFamilies: readonly string[]

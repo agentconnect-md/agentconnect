@@ -3,28 +3,30 @@
  *
  * The daemon reads CP-authored frames tolerantly, but tolerance covers unknown
  * KEYS only — a new union arm or enum value inside `register/ok` or
- * `agent/upsert` makes the whole frame undecodable on a pre-GitLab daemon,
- * killing its GitHub work too. So the CP must never project a GitLab-shaped
- * spec (or place such an agent) onto a daemon that has not advertised
- * `gitlab-com-v1`. This module is the one predicate every projection and
- * placement site asks; it lands before any GitLab-shaped value can exist, so
- * the first one to exist is born gated.
+ * `agent/upsert` makes the whole frame undecodable on a peer that predates it,
+ * killing its work for every other host too. So the CP must never project a
+ * spec shaped by a host (or place such an agent) onto a daemon that has not
+ * advertised that host's feature. This module is the one predicate every
+ * projection and placement site asks; which features a host needs, and which
+ * field carries its instance axis, are that host's registry entry's answers
+ * (`codehost/provider.ts`).
  *
- * §24.4 adds a second axis on the same predicate: when the deployment's GitLab
- * host is not GitLab.com, the same values additionally require
- * `gitlab-instance-v1`, so a daemon that cannot carry a host per agent never
- * sees self-managed work and cannot fall back to GitLab.com for it.
+ * §24.4 adds a second axis on the same predicate: when the deployment's instance
+ * is not the host's default, the same values additionally require the per-agent
+ * host bit, so a daemon that cannot carry a host per agent never sees
+ * self-managed work and cannot fall back to the default instance for it.
  */
 import {
-  GITLAB_COM_V1_FEATURE,
-  GITLAB_INSTANCE_V1_FEATURE,
+  CODE_HOST_PROVIDERS,
   WORKSPACE_GIT_V1_FEATURE,
   isSelfManagedGitlabHost,
   type AgentSpec
 } from '@agentconnect.md/protocol'
+import type { CodeHostProviderRegistry } from '../codehost/provider.js'
+import { codeHostProviders } from '../codehost/registry.js'
 
 // Structural on purpose: the predicate reads the workspace discriminant + credential
-// axis, the assembled additional-repository list, and the assembled host axis — so
+// axis, the assembled additional-repository list, and the assembled host axes — so
 // DOMAIN records and WIRE AgentSpec bundles both fit. The sender-level activation gate
 // checks the exact spec it is about to transmit, which is the only place the
 // grant and hook sources are visible: neither lives on the agent row.
@@ -37,18 +39,6 @@ type WorkspaceShapedAgent = {
   gitlabHost?: string
 }
 
-/** The §24.4 addition ALONE — for a gate that must not start requiring §17.3's bit as well.
- *  The hook's dispatch-target daemon is one: it was never gated on `gitlab-com-v1`, and
- *  widening it here would change GitLab.com fleets. */
-export function requiredGitlabInstanceFeatures(host: string | undefined): readonly string[] {
-  return isSelfManagedGitlabHost(host) ? [GITLAB_INSTANCE_V1_FEATURE] : []
-}
-
-/** Features a peer must advertise before a GitLab-shaped value on `host` can decode there. */
-export function requiredGitlabFeatures(host: string | undefined): readonly string[] {
-  return [GITLAB_COM_V1_FEATURE, ...requiredGitlabInstanceFeatures(host)]
-}
-
 export { isSelfManagedGitlabHost }
 
 /** Fail-closed: unknown/absent advertised features support only feature-free values. */
@@ -58,25 +48,36 @@ export function advertises(advertisedFeatures: readonly string[] | undefined, re
   return required.every((feature) => advertised.has(feature))
 }
 
+/** Whether any of this agent's workspace, grants, or legacy wire mode is vouched by `provider`. */
+function consumes(agent: WorkspaceShapedAgent, provider: string): boolean {
+  return (
+    agent.workspace?.mode === provider ||
+    agent.workspace?.credential?.provider === provider ||
+    (agent.workspace?.additionalRepos ?? []).some((repo) => repo.provider === provider)
+  )
+}
+
 /** Features a daemon must advertise before this agent's spec can decode there. */
-export function requiredDaemonFeatures(agent: WorkspaceShapedAgent): readonly string[] {
-  // Three sources, not one. A gitlab-vouched workspace (git-workspace-model.md §2:
-  // `credential.provider === 'gitlab'`, or the legacy wire arm's mode) is
-  // frame-fatal on a pre-GitLab daemon; a gitlab ADDITIONAL repository is quieter
-  // and worse — the old schema strips the unknown `provider` key, so a two-segment
-  // project path reads as an `owner/repo` GitHub entry and would be cloned from
-  // github.com. Comparisons stay strings so a new host lights the gate up without
-  // touching this file again.
-  const gitlab =
-    agent.workspace?.mode === 'gitlab' ||
-    agent.workspace?.credential?.provider === 'gitlab' ||
-    (agent.workspace?.additionalRepos ?? []).some((repo) => repo.provider === 'gitlab')
-  const features = gitlab ? [GITLAB_COM_V1_FEATURE] : []
-  // §24.4: GitLab-shaped is any spec carrying a non-default host, whichever consumer
-  // put it there — an enabled hook alone qualifies, and that consumer is invisible in
-  // the workspace above. A default (or absent) host gates nothing, so GitLab.com fleets
-  // stay exactly as they are.
-  if (isSelfManagedGitlabHost(agent.gitlabHost)) features.push(GITLAB_INSTANCE_V1_FEATURE)
+export function requiredDaemonFeatures(
+  agent: WorkspaceShapedAgent,
+  codeHosts: CodeHostProviderRegistry = codeHostProviders
+): readonly string[] {
+  const features: string[] = []
+  for (const provider of CODE_HOST_PROVIDERS) {
+    const host = codeHosts[provider].features
+    // Three sources of a consumer, not one. A vouched workspace (git-workspace-model.md
+    // §2: `credential.provider`, or the legacy wire arm's mode) is frame-fatal on a peer
+    // that predates the host; an ADDITIONAL repository of its is quieter and worse — the
+    // old schema strips the unknown `provider` key, so a two-segment project path reads
+    // as an `owner/repo` GitHub entry and would be cloned from github.com.
+    //
+    // §24.4: a spec carrying a non-default instance is host-shaped whichever consumer put
+    // it there — an enabled hook alone qualifies, and that consumer is invisible in the
+    // workspace above. A default (or absent) instance gates nothing, so default-instance
+    // fleets stay exactly as they are.
+    const instance = host.specHost(agent)
+    features.push(...(consumes(agent, provider) ? host.required(instance) : host.requiredForInstance(instance)))
+  }
   return features
 }
 
@@ -94,7 +95,8 @@ export function daemonSupportsAgent(
 // agent/upsert, agent/activate, duty/fetch — because the peer is only known there.
 export function encodeSpecWorkspaceForPeer<S extends Pick<AgentSpec, 'workspace'>>(
   spec: S,
-  advertisedFeatures: readonly string[] | undefined
+  advertisedFeatures: readonly string[] | undefined,
+  codeHosts: CodeHostProviderRegistry = codeHostProviders
 ): S {
   const workspace = spec.workspace
   if (workspace?.mode !== 'git' || advertises(advertisedFeatures, [WORKSPACE_GIT_V1_FEATURE])) return spec
@@ -105,15 +107,10 @@ export function encodeSpecWorkspaceForPeer<S extends Pick<AgentSpec, 'workspace'
     ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
     additionalRepos: workspace.additionalRepos
   }
-  // The legacy `github` arm's gitRepo is deliberately host-agnostic, so an
-  // anonymous workspace on any host rides it exactly as it always did.
-  const legacy: AgentSpec['workspace'] =
-    workspace.credential?.provider === 'gitlab'
-      ? { mode: 'gitlab', ...shared, projectId: workspace.credential.projectId }
-      : {
-          mode: 'github',
-          ...shared,
-          ...(workspace.credential?.provider === 'github' ? { gitCredential: 'github-app' as const } : {})
-        }
+  const credential = workspace.credential
+  const hostArm = credential ? codeHosts[credential.provider].workspace.legacySpecArm(shared, credential) : null
+  // The legacy `github` arm is deliberately host-agnostic, so an anonymous
+  // workspace on any host rides it exactly as it always did.
+  const legacy: AgentSpec['workspace'] = hostArm ?? { mode: 'github', ...shared }
   return { ...spec, workspace: legacy }
 }

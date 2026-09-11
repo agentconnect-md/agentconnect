@@ -17,7 +17,7 @@
  * runs the same inline account/membership ensure the workspace and hook arms run,
  * and revoking converges the membership away.
  */
-import { gitRepoLabel } from '@agentconnect.md/protocol'
+import { gitRepoLabel, type CodeHostProvider } from '@agentconnect.md/protocol'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -38,6 +38,7 @@ import { AgentId, OrgId } from '../../domain/ids.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
+import { codeHostsOf } from '../../codehost/registry.js'
 import { Tag } from '../plugins/openapi.js'
 import { isCanonicalGithubAddress } from '../../domain/git-host.js'
 import {
@@ -65,6 +66,7 @@ function toDto(r: AgentRepoAuthorizationRecord): AgentRepoAuthDtoT {
 export function agentRepoRoutes(deps: HttpDeps) {
   return async function agentRepoRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    const codeHosts = codeHostsOf(deps)
 
     // Same no-oracle rule as `GET /agents/:agentId/hooks`: cross-org, unknown,
     // and not-viewable agents all read 404.
@@ -126,15 +128,14 @@ export function agentRepoRoutes(deps: HttpDeps) {
       })
     }
 
-    // Authorization changed who consumes the project, so the §7.2 accounts and
-    // memberships must reconverge — the same kick a gitlab workspace or hook write
-    // does. Fire-and-forget: the saga outwaits a peer's lease on its own.
-    const convergeGitlabProject = (orgId: string, projectId: bigint): void => {
-      const gitlab = deps.gitlab
-      if (!gitlab) return
-      void gitlab.provisioner
-        .convergeProject(OrgId(orgId), projectId)
-        .catch((err) => app.log.warn({ err, projectId: projectId.toString() }, 'gitlab authorization converge failed'))
+    // Authorization changed who consumes the repository, so whatever the host binds
+    // per consumer must reconverge — the same kick a workspace or hook write does
+    // (a no-op where the host binds nothing). Fire-and-forget: a host's own saga
+    // outwaits a peer's lease.
+    const convergeManagedRepository = (provider: CodeHostProvider, orgId: string, repoId: bigint): void => {
+      codeHosts[provider].hooks.convergeManagedRepository(deps, OrgId(orgId), repoId, (err) =>
+        app.log.warn({ err, projectId: repoId.toString() }, `${provider} authorization converge failed`)
+      )
     }
 
     /** The gitlab arm of `POST /agents/:agentId/repos` (§8.3). */
@@ -197,7 +198,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
       } catch (err) {
         // The grant rolled back, so the membership just bound belongs to an agent
         // that does not consume the project: converge it away.
-        convergeGitlabProject(orgId, projectId)
+        convergeManagedRepository('gitlab', orgId, projectId)
         throw err
       }
       if (!applied.ok) return conflict(gitlabAccountUnavailableMessage(applied.reason))
@@ -215,58 +216,6 @@ export function agentRepoRoutes(deps: HttpDeps) {
         .catch(() => {})
       await replicateUpsert(agent)
       return toDto(row)
-    }
-
-    /** The gitlab arm of `PATCH /agents/:agentId/repos/:repoAuthId`: raising the tier
-     *  raises the account's project role, so it re-runs the same ensure the grant took. */
-    const upgradeGitlabAuthorization = async (
-      req: FastifyRequest,
-      reply: FastifyReply,
-      agent: AgentRecord,
-      row: AgentRepoAuthorizationRecord,
-      access: RepoAccess
-    ): Promise<AgentRepoAuthDtoT | undefined> => {
-      const conflict = (message: string): undefined => {
-        void reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
-      }
-      const gitlab = deps.gitlab
-      if (!gitlab) return conflict('GitLab is not configured on this deployment')
-      const orgId = orgOf(req)
-      const binding = await deps.repos.gitlabProjectBinding.byProject(orgId, row.repoId)
-      if (!binding || binding.state === 'cleanup_pending') {
-        return conflict('the project is not a managed GitLab project in this organization')
-      }
-      const applied = await gitlab.provisioner.provisionAgentAccount(
-        orgId,
-        row.repoId,
-        { agentId: agent.id, accessLevel: gitlabAuthorizationAccessLevel(access) },
-        // Access-only: the row's path is converged by the same lease's fact sync.
-        () => deps.repos.agentRepoAuth.updateAccess(row.id, access)
-      )
-      if (!applied.ok) return conflict(gitlabAccountUnavailableMessage(applied.reason))
-      const updated = applied.result
-      if (!updated) {
-        void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
-        return undefined
-      }
-      void deps.repos.audit
-        .append({
-          kind: 'agent_repo_change',
-          orgId,
-          agentId: agent.id,
-          ...(req.principal ? { actorUserId: req.principal.userId } : {}),
-          frameType: 'gitcred/grant',
-          message: `gitlab project ${updated.repoFullName} authorization upgraded (${row.access} → ${updated.access})`,
-          details: {
-            repoAuthId: updated.id,
-            provider: 'gitlab',
-            repoFullName: updated.repoFullName,
-            previousAccess: row.access,
-            access: updated.access
-          }
-        })
-        .catch(() => {})
-      return toDto(updated)
     }
 
     r.get(
@@ -496,67 +445,18 @@ export function agentRepoRoutes(deps: HttpDeps) {
           })
         }
         if (req.body.access === row.access) return toDto(row)
-        if (row.provider === 'gitlab') return upgradeGitlabAuthorization(req, reply, agent, row, req.body.access)
-
-        const [owner, repo] = row.repoFullName.split('/')
-        const installation = owner
-          ? await deps.repos.githubInstallation.liveByOrgAndAccount(OrgId(orgOf(req)), owner)
-          : null
-        if (!owner || !repo || !installation || installation.suspendedAt) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'repository is not covered by a live GitHub App installation'
-          })
-        }
-        try {
-          if (deps.githubUserAuthz) {
-            await deps.githubUserAuthz.assertAccess(
-              req.principal!.userId,
-              installation,
-              owner,
-              repo,
-              req.body.access === 'write' ? 'write' : 'read'
-            )
-          }
-          const updated = await deps.repos.agentRepoAuth.updateAccess(row.id, req.body.access)
-          if (!updated) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'authorization not found' })
-          }
-          void deps.repos.audit
-            .append({
-              kind: 'agent_repo_change',
-              orgId: orgOf(req),
-              agentId: agent.id,
-              ...(req.principal ? { actorUserId: req.principal.userId } : {}),
-              frameType: 'gitcred/grant',
-              message: `repo ${updated.repoFullName} authorization upgraded (${row.access} → ${updated.access})`,
-              details: {
-                repoAuthId: updated.id,
-                repoFullName: updated.repoFullName,
-                previousAccess: row.access,
-                access: updated.access
-              }
-            })
-            .catch(() => {})
-          return toDto(updated)
-        } catch (e) {
-          if (e instanceof UserAuthzDeniedError) {
-            return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: e.message, code: e.code })
-          }
-          if (e instanceof GithubApiError) {
-            const status = e.code === 'RATE_LIMITED' ? 429 : 502
-            return reply.code(status).send({
-              error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',
-              statusCode: status,
-              message: `github: ${e.message}`
-            })
-          }
-          if (e instanceof LogtoApiError) {
-            return reply.code(502).send({ error: 'Bad Gateway', statusCode: 502, message: e.message })
-          }
-          throw e
-        }
+        // What raising a tier means is the host's: a re-checked GitHub permission,
+        // or a raised project role on the grant's own §7.2 account.
+        return codeHosts[row.provider].upgradeRepoAuthorization({
+          deps,
+          req,
+          reply,
+          orgId: orgOf(req),
+          agent,
+          row,
+          access: req.body.access,
+          toDto
+        })
       }
     )
 
@@ -633,7 +533,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           .catch(() => {})
         // Revoked authorization ⇒ the agent is no longer a consumer, so the §7.2
         // membership must go — and with nothing left in its root, the account retires.
-        if (row.provider === 'gitlab' && !redundantWorkspaceGrant) convergeGitlabProject(orgOf(req), row.repoId)
+        if (!redundantWorkspaceGrant) convergeManagedRepository(row.provider, orgOf(req), row.repoId)
         await replicateUpsert(agent)
         return reply.code(204).send(null)
       }

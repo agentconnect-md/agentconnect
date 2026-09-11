@@ -10,10 +10,9 @@ import {
   daemonSupportsAgent,
   encodeSpecWorkspaceForPeer,
   isSelfManagedGitlabHost,
-  requiredDaemonFeatures,
-  requiredGitlabFeatures,
-  requiredGitlabInstanceFeatures
+  requiredDaemonFeatures
 } from './daemon-features.js'
+import { codeHostProviders } from '../codehost/registry.js'
 import type { AgentRecord } from '../persistence/ports.js'
 
 const SELF_MANAGED = 'https://gitlab.example.test'
@@ -76,12 +75,13 @@ describe('§17.3 snapshot projection gate predicate', () => {
   it('keeps the two host-keyed feature lists apart', () => {
     // The hook's dispatch target was never gated on gitlab-com-v1, so §24.4 must not
     // start requiring it there.
-    expect(requiredGitlabInstanceFeatures(SELF_MANAGED)).toEqual([GITLAB_INSTANCE_V1_FEATURE])
-    expect(requiredGitlabInstanceFeatures(GITLAB_DEFAULT_BASE_URL)).toEqual([])
-    expect(requiredGitlabInstanceFeatures(undefined)).toEqual([])
-    expect(requiredGitlabFeatures(SELF_MANAGED)).toEqual([GITLAB_COM_V1_FEATURE, GITLAB_INSTANCE_V1_FEATURE])
-    expect(requiredGitlabFeatures(GITLAB_DEFAULT_BASE_URL)).toEqual([GITLAB_COM_V1_FEATURE])
-    expect(requiredGitlabFeatures(undefined)).toEqual([GITLAB_COM_V1_FEATURE])
+    const gitlab = codeHostProviders.gitlab.features
+    expect(gitlab.requiredForInstance(SELF_MANAGED)).toEqual([GITLAB_INSTANCE_V1_FEATURE])
+    expect(gitlab.requiredForInstance(GITLAB_DEFAULT_BASE_URL)).toEqual([])
+    expect(gitlab.requiredForInstance(undefined)).toEqual([])
+    expect(gitlab.required(SELF_MANAGED)).toEqual([GITLAB_COM_V1_FEATURE, GITLAB_INSTANCE_V1_FEATURE])
+    expect(gitlab.required(GITLAB_DEFAULT_BASE_URL)).toEqual([GITLAB_COM_V1_FEATURE])
+    expect(gitlab.required(undefined)).toEqual([GITLAB_COM_V1_FEATURE])
     expect(isSelfManagedGitlabHost(SELF_MANAGED)).toBe(true)
     expect(isSelfManagedGitlabHost(GITLAB_DEFAULT_BASE_URL)).toBe(false)
     expect(isSelfManagedGitlabHost(undefined)).toBe(false)

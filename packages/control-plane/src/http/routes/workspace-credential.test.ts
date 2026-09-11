@@ -9,6 +9,7 @@ import type { GithubInstallationRecord } from '../../persistence/ports.js'
 import type { PublicRepoLookup } from '../../github/public-repo.js'
 import { deriveWorkspaceCredential, WorkspaceCredentialRefused } from './workspace-credential.js'
 import { gitlabManagedProjectPath } from '../../domain/git-host.js'
+import { codeHostProviders } from '../../codehost/registry.js'
 
 const ORG = 'org-1'
 const ACTOR = 'user-1'
@@ -43,6 +44,8 @@ type Parts = {
 function makeDeps(parts: Parts = {}) {
   const calls = { upserts: [] as Array<Record<string, unknown>>, publicLookups: 0, assertions: [] as string[] }
   const deps = {
+    // The per-host arms are registry entries; this suite stubs what they read.
+    codeHosts: codeHostProviders,
     github: {
       repoRefFor: async () => parts.repoRef ?? null
     },

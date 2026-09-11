@@ -17,7 +17,7 @@
  * The grant payload carries the token MATERIAL — never log it.
  */
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
-import { isFrame } from '@agentconnect.md/protocol'
+import { isCodeHostProvider, isFrame } from '@agentconnect.md/protocol'
 import { AgentId, HookId } from '../../domain/ids.js'
 import { GitCredDeniedError } from '../../github/service.js'
 import { frameOrgId } from './frame-org.js'
@@ -60,8 +60,8 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     requestedAccess
   } = frame.payload
 
-  // v2 provider fail-per-value (§17.1): only gitlab has a non-GitHub arm here.
-  if (provider !== undefined && provider !== 'github' && provider !== 'gitlab') {
+  // v2 provider fail-per-value (§17.1): an open wire string, checked against the host set.
+  if (provider !== undefined && !isCodeHostProvider(provider)) {
     conn.sendError(frame.id, 'SCOPE_DENIED', `unknown git credential provider ${provider}`, false)
     return
   }

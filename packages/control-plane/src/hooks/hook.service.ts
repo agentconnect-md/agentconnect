@@ -17,7 +17,8 @@
  * NEVER log.
  */
 import { codeHostHookRuleOf, type RcHookAssign } from '@agentconnect.md/protocol'
-import { advertises, requiredGitlabFeatures } from '../domain/daemon-features.js'
+import { advertises } from '../domain/daemon-features.js'
+import { codeHostProviders } from '../codehost/registry.js'
 import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
@@ -283,7 +284,8 @@ export class HookService {
         const rule = await this.compile(hook)
         // The §17.3/§24.4 negotiation gate, per channel (mirrors RelayControlSender).
         const host = rule && codeHostHookRuleOf(rule)
-        if (host?.provider === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(host.rule.host))) continue
+        const features = host && codeHostProviders[host.provider].features
+        if (features && !advertises(ch.features, features.required(features.ruleHost(host)))) continue
         if (rule) ch.send('rc/hook-assign', rule)
       } catch (err) {
         this.log?.warn({ hookId: hook.id, err }, 'hook replay: compile/send failed — skipped')

@@ -83,7 +83,8 @@ import {
 } from './workspace-credential.js'
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
-import { advertises, requiredGitlabFeatures } from '../../domain/daemon-features.js'
+import { advertises } from '../../domain/daemon-features.js'
+import { codeHostProviders, codeHostsOf } from '../../codehost/registry.js'
 import {
   dutyEligibility,
   onSet,
@@ -297,23 +298,17 @@ function workspaceToDto(workspace: AgentWorkspace, workspaceRepoId?: bigint): Ag
   if (workspace.mode === 'scratch') return { mode: 'scratch' }
   // The DTO mirrors PERSISTED provenance (git-workspace-model.md §5) — never a live
   // re-derivation. installationId stays server-side; the credential names the provider.
+  const credential = workspace.credential
+    ? codeHostProviders[workspace.credential.provider].workspace.toDto(workspace.credential, workspaceRepoId)
+    : null
   return {
     mode: 'git',
     worktree: workspace.isolation === 'session',
     gitRepo: workspace.gitRepo,
     ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
     ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
-    ...(workspace.credential?.provider === 'github'
-      ? { credential: { provider: 'github' as const, access: workspace.credential.access } }
-      : workspace.credential?.provider === 'gitlab'
-        ? {
-            credential: {
-              provider: 'gitlab' as const,
-              access: workspace.credential.access,
-              projectId: (workspaceRepoId ?? 0n).toString()
-            }
-          }
-        : {})
+    // The vouching host owns its own read shape; an anonymous workspace has none.
+    ...(credential ? { credential } : {})
   }
 }
 
@@ -914,6 +909,7 @@ function memoryAdminFailure(err: unknown): {
 export function agentRoutes(deps: HttpDeps) {
   return async function agentRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
+    const codeHosts = codeHostsOf(deps)
 
     // Fetch an agent AND verify it belongs to the caller's active org AND is visible
     // to them — a cross-org id OR a restricted agent they can't see both read as
@@ -1818,15 +1814,19 @@ export function agentRoutes(deps: HttpDeps) {
           // §17.3/§24.4: a DIRECT placement must advertise the features NOW — the
           // delivery/reconcile gates would otherwise strand a 201'd agent
           // assigned to a daemon that can never materialize it.
-          if (derived.kind === 'gitlab' && req.body.daemonId !== undefined) {
+          const vouching = derived.kind === 'anonymous' ? null : codeHosts[derived.kind]
+          const vouchingFeatures = vouching ? vouching.features.required(vouching.features.deploymentHost(deps)) : []
+          if (vouching && vouchingFeatures.length > 0 && req.body.daemonId !== undefined) {
             const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
-            if (!advertises(daemon?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
-              return conflict('the selected daemon does not support GitLab workspaces yet — upgrade it first')
+            if (!advertises(daemon?.capabilities.features, vouchingFeatures)) {
+              return conflict(
+                `the selected daemon does not support ${vouching.displayName} workspaces yet — upgrade it first`
+              )
             }
           }
           // The derivation's canonical address and default branch — never the
           // caller's clone host/path — are the authority for a credentialed workspace.
-          const built = workspaceFromDerived(derived, {
+          const built = workspaceFromDerived(codeHosts, derived, {
             isolation: ws.worktree === false ? 'shared' : 'session',
             ...(ws.gitBranch !== undefined ? { gitBranch: ws.gitBranch } : {}),
             ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {})
@@ -2639,22 +2639,26 @@ export function agentRoutes(deps: HttpDeps) {
               if (e instanceof WorkspaceCredentialRefused) return conflict(e.message)
               throw e // provider/identity errors map in the shared catch below
             }
-            // §17.3: the daemon that will re-activate a gitlab-vouched workspace must
+            // §17.3: the daemon that will re-activate a host-vouched workspace must
             // decode its credential — direct placement or a pool/duty incumbent alike
             // (the earlier check only proves workspace-edit-v2).
-            if (derived.kind === 'gitlab') {
+            const vouching = derived.kind === 'anonymous' ? null : codeHosts[derived.kind]
+            const vouchingFeatures = vouching ? vouching.features.required(vouching.features.deploymentHost(deps)) : []
+            if (vouching && vouchingFeatures.length > 0) {
               const servingId = (await deps.placementResolver.servingDaemon(existing)) ?? existing.daemonId
               if (servingId) {
                 const serving = await deps.registry.getAvailable(existing.orgId, servingId)
-                if (!advertises(serving?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
-                  return conflict('the serving daemon does not support GitLab workspaces yet — upgrade it first')
+                if (!advertises(serving?.capabilities.features, vouchingFeatures)) {
+                  return conflict(
+                    `the serving daemon does not support ${vouching.displayName} workspaces yet — upgrade it first`
+                  )
                 }
               }
             }
             const worktree =
               req.body.worktree ??
               (existing.workspace.mode !== 'scratch' ? existing.workspace.isolation === 'session' : true)
-            const built = workspaceFromDerived(derived, {
+            const built = workspaceFromDerived(codeHosts, derived, {
               isolation: worktree ? 'session' : 'shared',
               ...(req.body.gitBranch !== undefined ? { gitBranch: req.body.gitBranch } : {}),
               ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {})

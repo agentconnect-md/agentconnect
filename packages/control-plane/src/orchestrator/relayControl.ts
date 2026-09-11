@@ -24,7 +24,8 @@ import type {
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
 import { codeHostHookRuleOf, GITLAB_RERUN_V1_FEATURE, RcHookRerunResult } from '@agentconnect.md/protocol'
-import { advertises, requiredGitlabFeatures, requiredGitlabInstanceFeatures } from '../domain/daemon-features.js'
+import { advertises } from '../domain/daemon-features.js'
+import { codeHostProviders } from '../codehost/registry.js'
 
 /** What one Console rerun attempt achieved across the eligible relay pool. */
 export type RelayRerunOutcome =
@@ -60,7 +61,9 @@ export class RelayControlSender {
   hookAssign(rule: RcHookAssign): void {
     const host = codeHostHookRuleOf(rule)
     this.broadcast((ch) => {
-      if (host?.provider === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(host.rule.host))) return
+      if (!host) return ch.send('rc/hook-assign', rule)
+      const features = codeHostProviders[host.provider].features
+      if (!advertises(ch.features, features.required(features.ruleHost(host)))) return
       ch.send('rc/hook-assign', rule)
     })
   }
@@ -93,7 +96,11 @@ export class RelayControlSender {
    * eligible peer was ever asked.
    */
   async hookRerun(rerun: RcHookRerun): Promise<RelayRerunOutcome> {
-    const required = [GITLAB_RERUN_V1_FEATURE, ...requiredGitlabInstanceFeatures(rerun.gitlab.host)]
+    // The rerun frame is GitLab's own surface (§16.1), so its instance bit is that entry's.
+    const required = [
+      GITLAB_RERUN_V1_FEATURE,
+      ...codeHostProviders.gitlab.features.requiredForInstance(rerun.gitlab.host)
+    ]
     for (const ch of this.relays.all()) {
       if (!advertises(ch.features, required) || typeof ch.request !== 'function') continue
       let result: RcHookRerunResult
