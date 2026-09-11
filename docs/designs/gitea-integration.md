@@ -315,15 +315,18 @@ A review delivery is lossy in a way the diff-comment trigger has to absorb
 path, line, hunk, body, or even the review id — so the trigger prompt is built
 by listing the pull request's reviews and reading
 `GET /pulls/:index/reviews/:id/comments` for the review the delivery
-describes. Correlation uses what the delivery does carry: a candidate is a
-review whose `user.id` equals `sender.id`, whose `commit_id` equals the
-delivery's `commit_id`, whose `state` matches the event type (`COMMENT`,
-`APPROVED`, or `REQUEST_CHANGES`), and whose `body` equals `review.content`.
+describes. Correlation uses what the delivery does populate: a candidate is a
+review whose `user.id` equals `sender.id`, whose `state` matches the event
+type (`COMMENT`, `APPROVED`, or `REQUEST_CHANGES`), and whose `body` equals
+`review.content`. The delivery's top-level `commit_id` is never assigned for
+review events and arrives as an empty string (§16), so it is not compared;
+the current `pull_request.head.sha` may narrow several candidates to those
+whose review `commit_id` matches it, but never excludes the last one.
 Exactly one candidate is the review. Several — the same person submitting
-twice on one head with identical summaries before the first delivery is
-processed — cannot be told apart by the delivery, and "newest" would pair one
-summary with another review's comments, so the turn reads the inline comments
-of every candidate, labeled by review id; the pull-request batching of §8
+twice with identical summaries before the first delivery is processed —
+cannot be told apart by the delivery, and "newest" would pair one summary
+with another review's comments, so the turn reads the inline comments of
+every candidate, labeled by review id; the pull-request batching of §8
 merges the deliveries into one turn anyway. No candidate is a summary-only
 trigger that says so in the prompt, never a failed lookup. The same event type
 arrives for a summary-only comment review, which carries no inline comments
@@ -740,10 +743,14 @@ review:             {"type": "pull_request_review_comment", "content": "review b
 `requested_reviewer`, `review`, and `sender`; no path, line, diff hunk, comment
 body, comment id, or review id appears anywhere in it. A consumer that needs the
 inline content must list the pull request's reviews, correlate on `user.id`,
-`commit_id`, `state`, and `body` against the delivery's `sender.id`,
-`commit_id`, event type, and `review.content` (§8 states the rule and its
-ambiguity fallback), and read `GET /pulls/:index/reviews/:id/comments`, which
-returns `path`, `position`, `diff_hunk`, and `body`. `requested_reviewer` on a
+`state`, and `body` against the delivery's `sender.id`, event type, and
+`review.content` (§8 states the rule and its ambiguity fallback), and read
+`GET /pulls/:index/reviews/:id/comments`, which returns `path`, `position`,
+`diff_hunk`, and `body`. The delivery's top-level `commit_id` is present but
+empty on every review event: `webhookNotifier.PullRequestReview` never
+assigns `PullRequestPayload.CommitID`, and the captured review delivery
+carried `"commit_id": ""` beside a populated `pull_request.head.sha`, so a
+correlation that compares it would match nothing. `requested_reviewer` on a
 review delivery is the review's author, not a requested reviewer.
 `review.type` always repeats the event type, and the verdict variants are
 `pull_request_review_approved` and `pull_request_review_rejected`
