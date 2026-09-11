@@ -6,7 +6,7 @@ ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-
 ARG AGENT_BROWSER_VERSION=0.37.1
 ARG CLAUDE_ACP_VERSION=0.76.0
 ARG CODEX_ACP_VERSION=1.11.0-agentconnect.1
-ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.30
+ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.31
 
 # Release builds install applications over stable system bases, then add daemon-versioned helpers.
 
@@ -79,10 +79,10 @@ RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
 
 # Other native harness downloads are independent of Antigravity and agent-browser.
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS full-native-runtimes
-ARG OMP_VERSION=17.0.5
-ARG OMP_SHA256_AMD64=319d08ab8e5fb80c73f734907d5f47aa8bbd4ea31f7a19bacf8611c5aba26c31
-ARG DEVIN_VERSION=3000.6.14
-ARG DEVIN_SHA256_AMD64=28cf64c1df9f58ccd063fb7e6fd6e9391073c585b733449371485e1ef8a3e6db
+ARG OMP_VERSION=18.1.17
+ARG OMP_SHA256_AMD64=040c254ddeb30f6d592be67d1469dc67fcac14e933fa04dbf690f42820ffd820
+ARG DEVIN_VERSION=3000.10.21
+ARG DEVIN_SHA256_AMD64=7cac6f5739ba3a3e5542f3b7fa07ed902d6dfb96ca22e4c63ae84c03bb7db47c
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \
@@ -122,13 +122,13 @@ RUN --mount=type=bind,source=docker/runtime-sandbox/install-core-harnesses.sh,ta
 
 ARG CLINE_VERSION=3.0.61
 ARG PI_ACP_VERSION=0.0.33
-ARG PI_VERSION=0.80.6
-ARG OPENCODE_VERSION=1.17.18
-ARG QWEN_CODE_VERSION=0.23.1
+ARG PI_VERSION=0.85.1
+ARG OPENCODE_VERSION=1.18.30
+ARG QWEN_CODE_VERSION=0.23.3
 ARG COPILOT_VERSION=1.0.83
-ARG GROK_VERSION=1.0.24
-ARG QODER_VERSION=1.1.14
-ARG QODER_CN_VERSION=1.1.2
+ARG GROK_VERSION=1.0.25
+ARG QODER_VERSION=1.1.49
+ARG QODER_CN_VERSION=1.1.49
 # pi-acp delegates to the separately installed pi CLI; all launches use local executables.
 RUN export HOME=/root \
   && npm install --global --no-fund --no-audit \
