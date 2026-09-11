@@ -108,6 +108,8 @@ function makeRoutable(daemon: Daemon): void {
 function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
   const manager = {
     driverFor: vi.fn(() => ({})),
+    prepareEnvironment: vi.fn(async () => {}),
+    refreshEnvironment: vi.fn(async () => {}),
     environmentIds: vi.fn(async () => environments),
     suspend: vi.fn(async () => {}),
     suspendIdle: vi.fn(async () => {}),
@@ -432,6 +434,9 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
       await (daemon as any).stopHost('bot-a')
       const environments = ['bot-a/agent']
       const manager = useMicrosandbox(daemon, environments)
+      vi.spyOn(daemon as any, 'microsandboxContext').mockReturnValue({
+        environment: { id: 'bot-a/agent', mounts: [], workspaceRoot: '/workspace' }
+      })
       await (daemon as any).hydrateMicrosandboxSessions()
       await (daemon as any).dispatch('bot-a', dm('300', 'resume', 'T1'), 'int-a')
       expect((daemon as any).hosts.get(agentHostKey('bot-a'))).toBe(hosts[1])

@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
+import { createHash } from 'node:crypto'
 import { decode, encode } from 'cborg'
 import type { ExecEvent, ModifyOptions } from 'microsandbox'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -68,7 +69,13 @@ function fakeSdk() {
   const processes: FakeExec[] = []
   let onRun: ((process: FakeExec) => void | Promise<void>) | undefined
   const images = new Map<string, number | null>([['test-image', 4_194_304]])
+  const imageDigests = new Map<string, string>()
   const imageCache = {
+    get: vi.fn(async (reference: string) => ({
+      manifestDigest: imageDigests.get(reference) ?? `sha256:${createHash('sha256').update(reference).digest('hex')}`,
+      os: 'linux',
+      architecture: 'amd64'
+    })),
     list: vi.fn(async () => [...images].map(([reference, sizeBytes]) => ({ reference, sizeBytes }))),
     remove: vi.fn(async (reference: string) => {
       if (!images.has(reference)) throw new Error(`image not found: ${reference}`)
@@ -86,6 +93,7 @@ function fakeSdk() {
     readonly processes: FakeExec[] = []
     readonly spec = {
       image: 'test-image',
+      labels: {} as Record<string, string>,
       env: [{ key: 'PATH', value: '/image/bin' }],
       secrets: {} as Record<string, { value: string; placeholder: string; host: string[] }>,
       runtime: { workdir: '/image', user: 'agent' }
@@ -141,6 +149,17 @@ function fakeSdk() {
     readonly exec = vi.fn(async (command: string, args: string[]) => {
       expect(command).toBe(MICROSANDBOX_NODE)
       expect(args[0]).toBe('-e')
+      if (args[1]!.includes('/proc/self/mountinfo')) {
+        const requested = JSON.parse(args[2]!) as MicrosandboxEnvironment['mounts']
+        const success = requested.every(
+          (mount) =>
+            mount.mode === 'overlay' ||
+            this.mounts.some(
+              (actual) => actual.target === mount.target && actual.readonly === (mount.mode === 'readonly')
+            )
+        )
+        return { success, code: success ? 0 : 1, stdout: (): string => '', stderr: (): string => 'mount mismatch' }
+      }
       let stdout = ''
       const python = vi.fn((_command: string, _args: string[]) => {})
       runInNewContext(args[1]!, {
@@ -229,10 +248,15 @@ function fakeSdk() {
         const volumeNames: string[] = []
         const mounts: FakeSandbox['mounts'] = []
         const secrets: FakeSandbox['spec']['secrets'] = {}
+        const labels: Record<string, string> = {}
         let image = 'test-image'
         const builder = {
           image(value: string) {
             image = value
+            return builder
+          },
+          label(key: string, value: string) {
+            labels[key] = value
             return builder
           },
           rootDisk() {
@@ -326,6 +350,7 @@ function fakeSdk() {
             const sandbox = new FakeSandbox(name, volumeNames, mounts)
             sandbox.spec.image = image
             sandbox.spec.secrets = secrets
+            sandbox.spec.labels = labels
             created.push(sandbox)
             sandboxes.set(name, sandbox)
             return sandbox
@@ -341,6 +366,7 @@ function fakeSdk() {
     processes,
     volumes,
     images,
+    imageDigests,
     imageCache,
     removeVolume,
     /** A VM this daemon does not know about: one an operator created, or one an interrupted start left behind. */
@@ -476,32 +502,31 @@ describe('microsandbox process and VM ownership', () => {
     }
   )
 
-  it.each([false, true])(
-    'retains VM data when its credential configuration changes (protected=%s)',
-    async (protectedVm) => {
-      const { manager, options, environment, request, created, volumes } = await fixture()
-      const env = {
-        ...environment,
-        secrets: [
-          {
-            env: 'DEEPSEEK_API_KEY',
-            placeholder: 'fixture-placeholder',
-            host: 'api.deepseek.com',
-            readValue: () => 'fixture-key'
-          }
-        ]
-      }
-      await (await manager.driverFor(protectedVm ? env : environment).launch(request)).stop(0)
-      await manager.stopAll()
-      const resumed = new MicrosandboxManager(options)
-      await expect(resumed.driverFor(protectedVm ? environment : env).launch(request)).rejects.toThrow(
-        'start a new session'
-      )
-      expect(created[0]!.status).toBe('stopped')
-      expect(volumes.size).toBe(1)
-      await resumed.discard(environment.id)
+  it.each([false, true])('replaces the VM when its credential scope changes (protected=%s)', async (protectedVm) => {
+    const { manager, options, environment, request, created, volumes } = await fixture()
+    const env = {
+      ...environment,
+      secrets: [
+        {
+          env: 'DEEPSEEK_API_KEY',
+          placeholder: 'fixture-placeholder',
+          host: 'api.deepseek.com',
+          readValue: () => 'fixture-key'
+        }
+      ]
     }
-  )
+    await (await manager.driverFor(protectedVm ? env : environment).launch(request)).stop(0)
+    await manager.stopAll()
+    const resumed = new MicrosandboxManager(options)
+    await (await resumed.driverFor(protectedVm ? environment : env).launch(request)).stop(0)
+    expect(created).toHaveLength(2)
+    expect(created[0]!.destroy).toHaveBeenCalledOnce()
+    expect(created[1]!.spec.secrets).toEqual(
+      protectedVm ? {} : expect.objectContaining({ DEEPSEEK_API_KEY: expect.anything() })
+    )
+    expect(volumes.size).toBe(1)
+    await resumed.discard(environment.id)
+  })
 
   it('shares read-only bases while retaining and cleaning up each session overlay disk', async () => {
     const { manager, options, environment, request, created, volumes, removeVolume } = await fixture()
@@ -759,36 +784,74 @@ describe('microsandbox process and VM ownership', () => {
     await manager.discard(environment.id)
   })
 
-  it('pins retained VM images while new environments use the configured image', async () => {
-    const { manager, options, environment, request, created } = await fixture()
-    await (await manager.driverFor(environment).launch(request)).stop(0)
+  it('reuses an alias with the same platform digest and refreshes a changed image without ACP', async () => {
+    const { manager, options, environment, created, imageDigests, imageCache, processes } = await fixture()
+    await manager.prepareEnvironment(environment)
     await manager.stopAll()
+    const identity = await imageCache.get('test-image')
+    imageDigests.set('next-image', identity.manifestDigest)
     const upgraded = { ...options, config: { ...options.config, image: 'next-image' } }
-    await expect(
-      new MicrosandboxManager({ ...upgraded, config: { ...upgraded.config, cpus: 4 } })
-        .driverFor(environment)
-        .launch(request)
-    ).rejects.toThrow('changed persisted configuration')
     const resumed = new MicrosandboxManager(upgraded)
-    await expect(
-      resumed
-        .driverFor({ ...environment, mounts: [{ source: '/extra', target: '/extra', mode: 'readonly' }] })
-        .launch(request)
-    ).rejects.toThrow('changed persisted configuration')
-    await (await resumed.driverFor(environment).launch(request)).stop(0)
+    await resumed.refreshEnvironment(environment)
     expect(created).toHaveLength(1)
-    expect(created[0]!.spec.image).toBe('test-image')
-    expect(created[0]!.destroy).not.toHaveBeenCalled()
-    const next = { ...environment, id: 'agent/new-session' }
-    await (await resumed.driverFor(next).launch(request)).stop(0)
-    expect(created[1]!.spec.image).toBe('next-image')
+    expect(created[0]!.status).toBe('stopped')
+    await resumed.prepareEnvironment(environment)
+    expect(created).toHaveLength(1)
     await resumed.stopAll()
-    const restarted = new MicrosandboxManager({ ...upgraded, config: { ...upgraded.config, image: 'later-image' } })
-    for (const env of [environment, next]) {
-      await (await restarted.driverFor(env).launch(request)).stop(0)
-      await restarted.discard(env.id)
-    }
+
+    imageDigests.set('next-image', 'sha256:changed')
+    const changed = new MicrosandboxManager(upgraded)
+    await changed.refreshEnvironment(environment)
     expect(created).toHaveLength(2)
+    expect(created[0]!.destroy).toHaveBeenCalledOnce()
+    expect(created[1]!.spec.image).toBe('next-image')
+    expect(processes).toHaveLength(0)
+    await changed.stopAll()
+    const restarted = new MicrosandboxManager(upgraded)
+    await restarted.prepareEnvironment(environment)
+    expect(created).toHaveLength(2)
+    await restarted.discard(environment.id)
+  })
+
+  it('refreshes a reused tag when its recorded digest changes', async () => {
+    const { manager, options, environment, created, imageDigests } = await fixture()
+    await manager.prepareEnvironment(environment)
+    await manager.stopAll()
+    imageDigests.set('test-image', 'sha256:new-content')
+    const restarted = new MicrosandboxManager(options)
+    await restarted.refreshEnvironment(environment)
+    expect(created).toHaveLength(2)
+    expect(created[0]!.destroy).toHaveBeenCalledOnce()
+    await restarted.discard(environment.id)
+  })
+
+  it('waits for VM preparation during shutdown without launching ACP', async () => {
+    const { manager, environment, created, processes } = await fixture()
+    let enter!: () => void
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve
+    })
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const start = (manager as any).startBridge.bind(manager)
+    vi.spyOn(manager as any, 'startBridge').mockImplementation(async (...args) => {
+      enter()
+      await blocked
+      await start(...args)
+    })
+    const preparation = manager.prepareEnvironment(environment)
+    await entered
+    const stopped = vi.fn()
+    const stopping = manager.stopAll().then(stopped)
+    await Promise.resolve()
+    expect(stopped).not.toHaveBeenCalled()
+    release()
+    await Promise.all([preparation, stopping])
+    expect(created[0]!.status).toBe('stopped')
+    expect(processes).toHaveLength(0)
+    await manager.discard(environment.id)
   })
 
   it('collects a retired release image and keeps the configured one before any VM boots', async () => {
@@ -850,52 +913,94 @@ describe('microsandbox process and VM ownership', () => {
     expect(imageCache.remove).not.toHaveBeenCalled()
   })
 
-  it.each([false, true])('resumes with relocated support mounts (legacy guest helper=%s)', async (withGuestHelper) => {
-    const { manager, options, environment: original, request, created } = await fixture()
-    const environment = { ...original, mounts: microsandboxSupportMounts(options.root) }
-    const helpers = join(options.root, 'microsandbox', 'helpers')
-    await mkdir(helpers, { recursive: true })
-    const legacyGit = join(helpers, 'git-credential')
-    await writeFile(legacyGit, await readFile(environment.mounts[0]!.source))
-    const helper = join(helpers, 'guest.js')
-    await writeFile(helper, 'export {}')
-    const legacy: MicrosandboxEnvironment = {
+  it('keeps active executions and replaces idle VMs when mounts change', async () => {
+    const { manager, options, environment, request, created, processes } = await fixture()
+    const workspace = join(options.root, 'workspace')
+    await mkdir(workspace)
+    await writeFile(join(workspace, 'uncommitted.txt'), 'keep')
+    const original: MicrosandboxEnvironment = {
       ...environment,
-      mounts: [
-        { ...environment.mounts[0]!, source: await realpath(legacyGit) },
-        ...(withGuestHelper
-          ? [{ source: await realpath(helper), target: '/opt/agentconnect-local/guest.js', mode: 'readonly' as const }]
-          : [])
-      ]
+      mounts: [{ source: workspace, target: '/workspace', mode: 'writable' }]
     }
-    const runtime = await manager.driverFor(environment).launch(request)
-    await runtime.stop(0)
-    await manager.stopAll()
-    // Simulate a binding written before host SDK state mounts were forbidden.
-    const bindings = join(options.root, 'microsandbox', 'bindings')
-    const path = join(bindings, (await readdir(bindings))[0]!)
-    const binding = JSON.parse(await readFile(path, 'utf8'))
-    binding.spec = (manager as any).spec(legacy)
-    await writeFile(path, JSON.stringify(binding))
-    const resumed = new MicrosandboxManager({
-      ...options,
-      config: { ...options.config, image: 'next-image' }
-    })
-    await expect(
-      resumed
-        .driverFor({
-          ...environment,
-          mounts: [{ source: '/workspace-other', target: '/workspace-other', mode: 'writable' }]
-        })
-        .launch(request)
-    ).rejects.toThrow('changed persisted configuration')
-    const changed = new MicrosandboxManager({ ...options, config: { ...options.config, cpus: 4 } })
-    await expect(changed.driverFor(environment).launch(request)).rejects.toThrow('changed persisted configuration')
-    const restored = await resumed.driverFor(environment).launch(request)
-    expect(created).toHaveLength(1)
+    const runtime = await manager.driverFor(original).launch(request)
+    const desired: MicrosandboxEnvironment = {
+      ...original,
+      mounts: [...original.mounts, { source: '/store', target: '/store', mode: 'writable' }]
+    }
+    await expect(manager.prepareEnvironment(desired)).rejects.toThrow('configuration changed while active')
     expect(created[0]!.destroy).not.toHaveBeenCalled()
-    await restored.stop(0)
-    await resumed.discard(environment.id)
+    await runtime.stop(0)
+    await Promise.all([manager.prepareEnvironment(desired), manager.prepareEnvironment(desired)])
+    expect(created).toHaveLength(2)
+    expect(created[0]!.destroy).toHaveBeenCalledOnce()
+    expect(created[1]!.mounts).toContainEqual({ source: workspace, target: '/workspace', readonly: false })
+    expect(await readFile(join(workspace, 'uncommitted.txt'), 'utf8')).toBe('keep')
+    expect(processes).toHaveLength(1)
+    await manager.discard(environment.id)
+    expect(await readFile(join(workspace, 'uncommitted.txt'), 'utf8')).toBe('keep')
+  })
+
+  it('preserves the old binding when replacement validation fails and permits a later retry', async () => {
+    const { manager, options, environment, created, volumes } = await fixture()
+    await manager.prepareEnvironment(environment)
+    await manager.stopAll()
+    const next = { ...options, config: { ...options.config, cpus: 4 } }
+    const build = options.sdk.Sandbox.builder.bind(options.sdk.Sandbox)
+    const intercept = vi.spyOn(options.sdk.Sandbox, 'builder').mockImplementation((name) => {
+      const builder = build(name)
+      const create = builder.create.bind(builder)
+      builder.create = async () => {
+        const sandbox = await create()
+        vi.mocked(sandbox.exec).mockRejectedValueOnce(new Error('mount check failed'))
+        return sandbox
+      }
+      return builder
+    })
+    const failed = new MicrosandboxManager(next)
+    await expect(failed.prepareEnvironment(environment)).rejects.toThrow('mount check failed')
+    expect(created[0]!.destroy).not.toHaveBeenCalled()
+    expect(created[1]!.destroy).toHaveBeenCalledOnce()
+    expect(volumes.size).toBe(1)
+    intercept.mockRestore()
+    const restored = new MicrosandboxManager(options)
+    await restored.prepareEnvironment(environment)
+    expect(created).toHaveLength(2)
+    await restored.stopAll()
+    const retry = new MicrosandboxManager(next)
+    await retry.prepareEnvironment(environment)
+    expect(created).toHaveLength(3)
+    expect(created[0]!.destroy).toHaveBeenCalledOnce()
+    await retry.discard(environment.id)
+  })
+
+  it('recovers an abandoned candidate before retrying and retains ownership across cleanup failures', async () => {
+    const { manager, options, environment, created, volumes } = await fixture()
+    await manager.prepareEnvironment(environment)
+    await manager.stopAll()
+    const token = 'a'.repeat(32)
+    const directory = join(options.root, 'microsandbox', 'bindings')
+    const path = join(directory, (await readdir(directory))[0]!)
+    const binding = JSON.parse(await readFile(path, 'utf8'))
+    const candidate = await options.sdk.Sandbox.builder(created[0]!.name + '-' + token)
+      .label('io.agentconnect.vm-replacement', token)
+      .create()
+    await candidate.stopWithTimeout(0)
+    await candidate.detach()
+    await writeFile(path, JSON.stringify({ ...binding, replacement: token }))
+    created[0]!.destroy.mockRejectedValueOnce(new Error('old VM busy'))
+    const upgraded = { ...options, config: { ...options.config, cpus: 4 } }
+    const resumed = new MicrosandboxManager(upgraded)
+    await resumed.prepareEnvironment(environment)
+    expect(created[1]!.destroy).toHaveBeenCalledOnce()
+    expect(JSON.parse(await readFile(path, 'utf8')).retired).toHaveLength(1)
+    await resumed.stopAll()
+    const restarted = new MicrosandboxManager(upgraded)
+    await restarted.prepareEnvironment(environment)
+    expect(created).toHaveLength(3)
+    expect(created[0]!.destroy).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(await readFile(path, 'utf8')).retired).toBeUndefined()
+    expect(volumes.size).toBe(1)
+    await restarted.discard(environment.id)
   })
 
   it('retries a failed VM lookup without retaining a rejected launch', async () => {

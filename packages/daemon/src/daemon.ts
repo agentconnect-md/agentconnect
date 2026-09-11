@@ -3738,13 +3738,7 @@ export class Daemon {
     this.memoryHomeMigrations.reconcile()
   }
 
-  /**
-   * Fire-and-forget eager clone of a git-repo workspace so the checkout is warm
-   * before the first message. Deliberately NOT awaited: reconcile must not block on
-   * the network (design §4.3), and `prepareWorkspace` is the authoritative clone
-   * (awaited + hard-fail) at session start — so a prefetch failure here is only
-   * logged and harmlessly retried then. No-op for from-scratch / already-cloned.
-   */
+  // Prefetch checkouts and refresh retained VMs without blocking reconcile; session preparation retries failures.
   private prefetchClone(agent: LoadedAgent): void {
     if (this.preparingWorkspaces.has(agent.id)) return
     if (this.draining || this.drainingAgents.has(agent.id) || this.safetyDrainingAgents.has(agent.id)) return
@@ -4290,6 +4284,11 @@ export class Daemon {
       )
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
+    if (!request && this.microsandbox && this.usesMicrosandbox(agent)) {
+      const loaded = this.agents.get(agent.id)
+      if (loaded)
+        await this.microsandbox.prepareEnvironment(this.microsandboxContext(loaded, agent.workspace.path).environment)
+    }
     const opts = {
       ...(this.usesMicrosandbox(agent)
         ? { installSkills: (value: Agent, cwd: string) => this.reconcileMicrosandboxSkills(value, cwd) }
@@ -4579,11 +4578,15 @@ export class Daemon {
     })
   }
 
-  private runAgentWorkspacePrefetch(agent: Agent): Promise<void> {
-    // A cluster workspace materializes on the pod's volume at session time; a local prefetch
-    // would clone the repository onto this daemon's own disk instead.
-    if (this.k8sPlane) return Promise.resolve()
-    return this.workspaces.prefetchWorkspace(agent)
+  private async runAgentWorkspacePrefetch(agent: Agent): Promise<void> {
+    // Cluster workspaces materialize on the pod's volume at session time.
+    if (this.k8sPlane) return
+    await this.workspaces.prefetchWorkspace(agent)
+    if (this.microsandbox && this.usesMicrosandbox(agent)) {
+      const loaded = this.agents.get(agent.id)
+      if (loaded)
+        await this.microsandbox.refreshEnvironment(this.microsandboxContext(loaded, agent.workspace.path).environment)
+    }
   }
 
   private workspacePreparationAuthority(agent: Agent): string {
