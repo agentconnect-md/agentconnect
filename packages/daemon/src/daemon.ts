@@ -2744,19 +2744,14 @@ export class Daemon {
       // The footer a session tool appends to text it publishes as the agent (Linear comments):
       // the SAME identity the turn's response carries, resolved from the trusted session context.
       sessionToolAttributionFor: (ctx) => this.sessionToolAttribution(ctx),
-      // History-backed discovery for platforms whose bot API can't enumerate chats/users
-      // (Telegram): only the sole current physical bot's scoped history is reachable.
-      observedChannels: async (agentId, platform) => {
-        const integrations = this.agents.get(agentId)?.integrations.filter((i) => i.platform === platform) ?? []
-        return integrations.length === 1
-          ? await this.store.observedChannels(agentId, platform, this.transportScopeForIntegration(integrations[0]!))
-          : []
+      // History-backed discovery for platforms whose bot API can't enumerate chats/users (Telegram): one physical bot's scoped history, the one the read named (#1965) or the agent's only bot on the platform.
+      observedChannels: async (agentId, platform, integrationId) => {
+        const scope = this.observedHistoryScope(agentId, platform, integrationId)
+        return scope ? await this.store.observedChannels(agentId, platform, scope) : []
       },
-      observedUsers: async (agentId, platform) => {
-        const integrations = this.agents.get(agentId)?.integrations.filter((i) => i.platform === platform) ?? []
-        return integrations.length === 1
-          ? await this.store.observedUsers(agentId, platform, this.transportScopeForIntegration(integrations[0]!))
-          : []
+      observedUsers: async (agentId, platform, integrationId) => {
+        const scope = this.observedHistoryScope(agentId, platform, integrationId)
+        return scope ? await this.store.observedUsers(agentId, platform, scope) : []
       },
       // Collaboration Arena §6: evaluation-registry tool dispatch. Resolution
       // is by exact name; a tool invisible to the caller is indistinguishable
@@ -15033,6 +15028,17 @@ export class Daemon {
       if (int) return int
     }
     return undefined
+  }
+
+  /** The transport scope whose observed session history a history-backed MCP read may see: the integration the read named (#1965 — an explicit `integrationId`, the conversation's own bot, or the host's answer), else the agent's only bot on the platform, and undefined when nothing is attributable to one physical bot (the read then returns []). Re-checked against the agent's OWN integrations, so a stale session snapshot cannot widen it; a session that spanned several bots carries a `mixed:` scope and belongs to none of them. */
+  private observedHistoryScope(agentId: string, platform: string, integrationId?: string): string | undefined {
+    const integrations = this.agents.get(agentId)?.integrations.filter((i) => i.platform === platform) ?? []
+    const chosen = integrationId
+      ? integrations.find((i) => i.id === integrationId)
+      : integrations.length === 1
+        ? integrations[0]
+        : undefined
+    return chosen ? this.transportScopeForIntegration(chosen) : undefined
   }
 
   /** Stable opaque identity for one physical platform connection. Integrations
