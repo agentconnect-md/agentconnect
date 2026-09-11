@@ -100,6 +100,25 @@ export function gitlabDeploymentPut(
   })
 }
 
+export interface GiteaDeploymentInstance {
+  /** The instance base URL (gitea-integration.md §3); null or omitted means gitea.com. */
+  baseUrl?: string | null
+}
+
+/** Null clears the entry. Gitea registers no application, so the instance address is the whole
+ *  entry and nothing here is a secret (§3). */
+export function giteaDeploymentPut(
+  current: CurrentDeploymentConfig,
+  instance: GiteaDeploymentInstance | null
+): DeploymentConfigPut {
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      gitea: instance ? { baseUrl: instance.baseUrl ?? null } : null
+    }
+  })
+}
+
 export interface LogtoGithubConnectorCredentials {
   appId: string
   slug: string
