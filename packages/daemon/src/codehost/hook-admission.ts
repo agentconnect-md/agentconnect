@@ -9,7 +9,7 @@
  * (GitHub check-run rerun semantics, GitLab's headless note identity) stay inside
  * the implementing module.
  */
-import type { CodeHostProvider } from '@agentconnect.md/protocol'
+import { codeHostHookMetadataOf, type CodeHostProvider } from '@agentconnect.md/protocol'
 import type { GithubReviewBatch, GithubReviewBatchItem, HookDispatchContext } from '../github/hook-coords.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { QueueEntry } from '../daemon/turn-types.js'
@@ -53,8 +53,6 @@ export interface RevisionAdmissionPlan {
 /** One code host's admission behavior behind the seam. */
 export interface CodeHostHookAdmission {
   readonly provider: CodeHostProvider
-  /** True when this delivery's trusted discriminator names THIS provider. */
-  claims(hook: CodeHostCoordinatedHook | undefined): boolean
   /** Stable identity of the change-request lane this delivery belongs to, or undefined. */
   reviewSubjectLane(hook: CodeHostCoordinatedHook | undefined, coords: CodeHostHookCoordinates): string | undefined
   /** The generation stream this delivery contests, or undefined when it opens none. */
@@ -81,12 +79,16 @@ export interface CodeHostHookAdmission {
   readonly batchPublishesItems: boolean
 }
 
-/** Registration order is resolution order; adding a code host is adding one entry. */
-const ADMISSIONS: readonly CodeHostHookAdmission[] = [githubHookAdmission, gitlabHookAdmission]
+/** Adding a code host is adding one entry; the record over the provider union makes a missing one a compile error. */
+const ADMISSIONS: { readonly [P in CodeHostProvider]: CodeHostHookAdmission } = {
+  github: githubHookAdmission,
+  gitlab: gitlabHookAdmission
+}
 
-/** The module owning one delivery, resolved off the frame's discriminated provider member. */
+/** The module owning one delivery, resolved off the frame's trusted provider member. */
 export function hookAdmissionFor(hook: CodeHostCoordinatedHook | undefined): CodeHostHookAdmission | undefined {
-  return ADMISSIONS.find((admission) => admission.claims(hook))
+  const host = hook && codeHostHookMetadataOf(hook)
+  return host && ADMISSIONS[host.provider]
 }
 
 export function hookCoordinates(

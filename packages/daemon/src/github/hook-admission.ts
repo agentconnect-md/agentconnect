@@ -116,7 +116,6 @@ function renderGithubReviewBatchPrompt(batch: GithubReviewBatch): string {
 
 export const githubHookAdmission: CodeHostHookAdmission = {
   provider: 'github',
-  claims: (hook) => hook?.github !== undefined,
   reviewSubjectLane: pullRequestLane,
   revisionStream: pullRevisionStream,
   rerunsCurrentRevision: (hook: Pick<HookDispatchContext, 'event'> | undefined) =>

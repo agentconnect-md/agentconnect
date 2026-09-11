@@ -92,7 +92,6 @@ function renderGitlabNoteBatchPrompt(batch: GithubReviewBatch): string {
 
 export const gitlabHookAdmission: CodeHostHookAdmission = {
   provider: 'gitlab',
-  claims: (hook) => hook?.gitlab !== undefined,
   reviewSubjectLane: mergeRequestLane,
   revisionStream: mergeRequestRevisionStream,
   rerunsCurrentRevision: (hook: Pick<HookDispatchContext, 'event'> | undefined) =>

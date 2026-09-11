@@ -10,6 +10,8 @@ import {
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
+  codeHostHookMetadataOf,
+  pickCodeHostHookMembers,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   encodeSharedSlackStatusTarget,
@@ -10165,10 +10167,8 @@ export class Daemon {
       deliveryKey: hook.deliveryKey,
       ...(hook.snapshot ?? {}),
       ...(hook.event ? { event: hook.event } : {}),
-      ...(hook.github ? { github: hook.github } : {}),
-      // The §16 terminal edge is keyed on this subject: without it the note never leaves its
-      // last non-terminal state, because nothing else re-dispatches the projection.
-      ...(hook.gitlab ? { gitlab: hook.gitlab } : {}),
+      // The trusted member rides along: a code host's terminal edge (§16) is keyed on this subject.
+      ...pickCodeHostHookMembers(hook),
       status,
       durationMs: Number.isFinite(start) ? Math.max(0, this.clock.now() - start) : 0,
       ...extra,
@@ -12153,8 +12153,9 @@ export class Daemon {
     })
     // §14.2: a hook-dispatched turn pins the broker to the delivery's own signature-verified project.
     const hookContext = entry.hookContext
-    if (hookContext?.gitlab) {
-      const target = { agentId, projectId: hookContext.gitlab.projectId, hookId: hookContext.hookId }
+    const hookHost = hookContext && codeHostHookMetadataOf(hookContext)
+    if (hookContext && hookHost?.provider === 'gitlab') {
+      const target = { agentId, projectId: hookHost.repo.externalId, hookId: hookContext.hookId }
       this.activeTurnCodeHost.set(key, target)
     }
     const activeGithub = await this.githubReviews.prepareGithubTurn(entry, sessionId).catch((err) => {
@@ -12196,9 +12197,9 @@ export class Daemon {
     hook: HookDispatchContext | undefined,
     sessionId: string
   ): Promise<'started' | 'legacy' | 'failed'> {
-    const gitlab = hook?.gitlab
+    const host = hook && codeHostHookMetadataOf(hook)
     const snapshot = hook?.snapshot
-    if (!hook || !gitlab || !snapshot) return 'legacy'
+    if (!hook || host?.provider !== 'gitlab' || !snapshot) return 'legacy'
     const client = this.cpClient
     // An older CP cannot route the gitlab member of the one-of, so the send waits on its bit.
     if (!client || client.supportsServerFeature?.(CODEHOST_NOTE_PROJECTION_V1_FEATURE) !== true) return 'legacy'
@@ -12210,7 +12211,7 @@ export class Daemon {
       deliveryKey: hook.deliveryKey,
       sessionId,
       ...(hook.event ? { event: hook.event } : {}),
-      gitlab,
+      ...pickCodeHostHookMembers(hook),
       ...snapshot
     }
     const orgId = this.cpAgents?.orgForAgent(hook.agentId) ?? this.cpCollab.orgForAgent(hook.agentId)
