@@ -2,10 +2,10 @@
  * The normalized event vocabulary a Gitea delivery arrives with (gitea-integration.md §8), in one
  * place so admission, lifecycle pairing, and the prompt agree on it.
  *
- * Lifecycle deliveries carry the product families GitLab's ingress established (`merge_request:*`,
- * `issues:*`, `push`); comment-family deliveries keep Gitea's own event type — the relay keys every
- * decision on `X-Gitea-Event-Type`, and only that type separates a pull-request comment from an
- * issue comment or a review submission.
+ * The relay normalizes to GitLab's provider-neutral names (`merge_request:*`, `issues:*`, `note:created`,
+ * `push`, the maintenance pair) and adds the one family GitLab lacks: a review submission arrives as
+ * `review:commented`, `review:approved`, or `review:changes_requested`, its verdict the only thing the
+ * delivery carries beyond the summary. The envelope's `context.event` is the family, `context.action` the rest.
  */
 
 /** Deliveries that establish a new pull-request head. */
@@ -30,22 +30,18 @@ export const GITEA_PULL_REVIEW_GENERATION_EVENTS: ReadonlySet<string> = new Set(
 export const GITEA_PULL_MERGED_EVENT = 'merge_request:merged'
 export const GITEA_ISSUE_CLOSED_EVENT = 'issues:closed'
 
-/** Comment-family event types, by `X-Gitea-Event-Type`: a review submission is one delivery per submission (§8, §16). */
-export const GITEA_COMMENT_EVENT_TYPES: ReadonlySet<string> = new Set([
-  'issue_comment',
-  'pull_request_comment',
-  'pull_request_review_comment',
-  'pull_request_review_approved',
-  'pull_request_review_rejected'
+/** Comment-family deliveries on a subject: a person writing a comment, or submitting a review (one delivery per submission, §16). */
+export const GITEA_COMMENT_EVENTS: ReadonlySet<string> = new Set([
+  'note:created',
+  'review:commented',
+  'review:approved',
+  'review:changes_requested'
 ])
 
-/** The event type of a normalized `type:action` event. */
-export function giteaEventType(event: string | undefined): string | undefined {
-  return event?.split(':', 1)[0]
-}
+/** The envelope families those deliveries carry in `context.event`, whose excerpt IS what the person said. */
+export const GITEA_COMMENT_FAMILIES: readonly string[] = ['note', 'review']
 
 /** True when this delivery is a person writing a comment or submitting a review on the subject. */
 export function isGiteaCommentEvent(event: string | undefined): boolean {
-  const type = giteaEventType(event)
-  return type !== undefined && GITEA_COMMENT_EVENT_TYPES.has(type)
+  return event !== undefined && GITEA_COMMENT_EVENTS.has(event)
 }

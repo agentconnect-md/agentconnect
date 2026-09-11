@@ -15,16 +15,16 @@ import { giteaRepoPath, giteaRequest, type GiteaApiClient } from './api.js'
 
 export type GiteaReviewState = 'COMMENT' | 'APPROVED' | 'REQUEST_CHANGES'
 
-/** The review delivery's event type (`X-Gitea-Event-Type`) and the submitted state it names (§8). */
-const REVIEW_EVENT_STATES: Readonly<Record<string, GiteaReviewState>> = {
-  pull_request_review_comment: 'COMMENT',
-  pull_request_review_approved: 'APPROVED',
-  pull_request_review_rejected: 'REQUEST_CHANGES'
-}
+/** The normalized review event (§8) and the submitted state it names — a Map, since the key arrives off the wire. */
+const REVIEW_EVENT_STATES: ReadonlyMap<string, GiteaReviewState> = new Map([
+  ['review:commented', 'COMMENT'],
+  ['review:approved', 'APPROVED'],
+  ['review:changes_requested', 'REQUEST_CHANGES']
+])
 
-/** The review state a delivery's event type names, or undefined when the delivery is not a review submission. */
-export function giteaReviewEventState(eventType: string | undefined): GiteaReviewState | undefined {
-  return eventType !== undefined ? REVIEW_EVENT_STATES[eventType] : undefined
+/** The review state a normalized event names, or undefined when the delivery is not a review submission. */
+export function giteaReviewEventState(event: string | undefined): GiteaReviewState | undefined {
+  return event !== undefined ? REVIEW_EVENT_STATES.get(event) : undefined
 }
 
 export interface GiteaReviewDelivery {

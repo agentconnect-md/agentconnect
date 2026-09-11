@@ -174,16 +174,13 @@ describe('gitea hook normalization (§8)', () => {
     expect(pr.initialSessionTitle).toBe(`PR ${PATH}#12: tighten retry`)
     expect(hookAnchorText(pull())).toContain(`merge_request:opened — ${PATH}#12 — tighten retry`)
     // A comment IS what the person said, whichever Gitea comment family delivered it.
-    for (const event of ['issue_comment', 'pull_request_comment', 'pull_request_review_comment']) {
+    for (const [event, action] of [
+      ['note', 'created'],
+      ['review', 'commented']
+    ]) {
       const comment = fire({
-        context: {
-          source: 'gitea',
-          event,
-          action: 'created',
-          number: 42,
-          truncated: false,
-          bodyExcerpt: 'can you retry?'
-        }
+        event: `${event}:${action}`,
+        context: { source: 'gitea', event, action, number: 42, truncated: false, bodyExcerpt: 'can you retry?' }
       })
       expect(hookDisplayText(comment)).toBe('can you retry?')
     }
@@ -249,12 +246,12 @@ describe('gitea hook normalization (§8)', () => {
 describe('a review delivery (§8): the summary rides the wire, the inline comments are fetched', () => {
   const reviewFire = (extra: Partial<RdMsgHook['context']> = {}): RdMsgHook =>
     pull({
-      event: 'pull_request_review_comment:reviewed',
+      event: 'review:commented',
       reviewPolicy: 'full',
       context: {
         source: 'gitea',
-        event: 'pull_request_review_comment',
-        action: 'reviewed',
+        event: 'review',
+        action: 'commented',
         number: 12,
         senderLogin: 'alice',
         title: 'tighten retry',
@@ -293,7 +290,7 @@ describe('a review delivery (§8): the summary rides the wire, the inline commen
       }
     }
     const text = buildHookText(reviewFire(), supplement)
-    expect(text).toContain(`Gitea pull_request_review_comment:reviewed — ${PATH}#12`)
+    expect(text).toContain(`Gitea review:commented — ${PATH}#12`)
     expect(text.indexOf('looks mostly fine')).toBeLessThan(text.indexOf('Inline comments of review 987 (2):'))
     expect(text).toContain('[comment 5] src/a.ts · new line 12')
     expect(text).toContain('```diff\n@@ -1 +1 @@\n-a\n+b\n```\nrename this')

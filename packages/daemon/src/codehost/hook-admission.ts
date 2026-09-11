@@ -31,7 +31,10 @@ export interface CodeHostHookCoordinates {
 }
 
 /** The trusted identity an admission decision may read — never model-visible text. */
-export type CodeHostCoordinatedHook = Pick<HookDispatchContext, 'hookId' | 'agentId' | 'event' | 'github' | 'gitlab'>
+export type CodeHostCoordinatedHook = Pick<
+  HookDispatchContext,
+  'hookId' | 'agentId' | 'event' | 'github' | 'gitlab' | 'gitea'
+>
 
 /** One lane's contest for the next generation; a re-run is `pinned` to its exact provider revision. */
 export interface CodeHostRevisionStream {

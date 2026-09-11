@@ -8752,6 +8752,8 @@ export class Daemon {
       getGitlabPostToken: (agentId, projectId, hookId) => this.gitCreds.getGitlabPostToken(agentId, projectId, hookId),
       invalidateGitlabPost: (agentId, projectId, token) =>
         this.gitCreds.invalidateGitlabPost(agentId, projectId, token),
+      getGiteaPostToken: (agentId, repoId, hookId) => this.gitCreds.getGiteaPostToken(agentId, repoId, hookId),
+      invalidateGiteaPost: (agentId, repoId, token) => this.gitCreds.invalidateGiteaPost(agentId, repoId, token),
       invalidatePost: (agentId, repo, presentedToken) => this.gitCreds.invalidatePost(agentId, repo, presentedToken),
       paused: (agentId) => this.paused(agentId),
       draining: (agentId) => this.draining || this.drainingAgents.has(agentId),

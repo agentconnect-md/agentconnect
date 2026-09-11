@@ -38,7 +38,7 @@ import {
   type RdMsgHook,
   type UserTurnBody
 } from '@agentconnect.md/protocol'
-import { GITEA_COMMENT_EVENT_TYPES, GITEA_PULL_REVIEW_GENERATION_EVENTS } from '../gitea/events.js'
+import { GITEA_COMMENT_FAMILIES, GITEA_PULL_REVIEW_GENERATION_EVENTS } from '../gitea/events.js'
 import type { GiteaReviewCorrelation } from '../gitea/review-correlation.js'
 import { githubSourceThreadUrl } from './github-source-link.js'
 import type { NormalizedMessage } from './normalized.js'
@@ -942,7 +942,7 @@ const COMMENT_EVENTS = new Set([
   'pull_request_review_comment',
   'pull_request_review',
   'note',
-  ...GITEA_COMMENT_EVENT_TYPES
+  ...GITEA_COMMENT_FAMILIES
 ])
 
 /** `opened` → `Opened`, the console's verb for an event action; unknown actions keep the raw pair. */

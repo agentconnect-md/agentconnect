@@ -15,8 +15,10 @@ export interface CodeHostReplyTarget {
   provider: CodeHostProvider
   /** GitLab names its subject (§14.1); GitHub reads the kind off its own trusted metadata. */
   subjectKind?: 'issue' | 'merge_request'
-  /** GitHub: `owner/repo`. GitLab: the numeric project id — both are what the effect lease is scoped to. */
+  /** GitHub: `owner/repo`. GitLab and Gitea: the numeric project/repository id — all are what the effect lease is scoped to. */
   repo: string
+  /** Gitea: the current `owner/repo` its REST paths address, from trusted metadata; `repo` stays the numeric lease scope. */
+  repoPath?: string
   /** GitHub: the issue/pull-request number. GitLab: the subject IID. */
   number: number
   /** The review-comment delivery that triggered this turn (diagnostic identity). */

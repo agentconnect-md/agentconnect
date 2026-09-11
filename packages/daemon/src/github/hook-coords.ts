@@ -7,6 +7,7 @@ import {
   type HookReviewEvent,
   type HookReviewVerdict,
   type GithubHookMetadata,
+  type GiteaHookMetadata,
   type GitlabHookMetadata,
   type GithubPublishedComment,
   type PublishedHookOutput,
@@ -126,6 +127,8 @@ export interface HookDispatchContext {
   github?: GithubHookMetadata
   /** GitLab twin of `github` — the trusted subject discriminator (§12.3). */
   gitlab?: GitlabHookMetadata
+  /** Gitea twin (gitea-integration.md §8). */
+  gitea?: GiteaHookMetadata
   githubReply?: CodeHostReplyTarget
   githubReviewBatch?: GithubReviewBatch
   turnStartedAt?: string

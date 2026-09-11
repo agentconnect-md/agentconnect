@@ -13,6 +13,7 @@ import { WireError } from '@agentconnect.md/connection'
 import {
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
+  pickCodeHostHookMembers,
   type GithubHookMetadata,
   type HookReviewResult,
   type RdAck,
@@ -54,6 +55,7 @@ import { acknowledgeCodeHostTrigger } from '../codehost/ack.js'
 import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
 import {
   codeHostHostFence,
+  codeHostPromptSupplement,
   codeHostReplyTarget,
   codeHostThreadWorktreeCleanup,
   turnFinalFor,
@@ -91,6 +93,9 @@ export interface GithubReviewHost {
   /** §14.1 effect lease: the binding's effect PAT gated by the enabled gitlab hook. */
   getGitlabPostToken(agentId: string, projectId: string, hookId: string): Promise<{ token: string }>
   invalidateGitlabPost(agentId: string, projectId: string, presentedToken?: string): void
+  /** The Gitea twin (gitea-integration.md §10.1): the connection token gated by the enabled gitea hook. */
+  getGiteaPostToken(agentId: string, repoId: string, hookId: string): Promise<{ token: string }>
+  invalidateGiteaPost(agentId: string, repoId: string, presentedToken?: string): void
   invalidatePost(agentId: string, repo: string, presentedToken?: string): void
   paused(agentId: string): boolean
   draining(agentId: string): boolean
@@ -173,6 +178,9 @@ export class GithubReviewOrchestrator {
     invalidateGitlabPost: (agentId, projectId, presented) =>
       this.host.invalidateGitlabPost(agentId, projectId, presented),
     gitlabHostFor: (agentId) => this.agents.get(agentId)?.gitlabHost,
+    getGiteaPostToken: (agentId, repoId, hookId) => this.host.getGiteaPostToken(agentId, repoId, hookId),
+    invalidateGiteaPost: (agentId, repoId, presented) => this.host.invalidateGiteaPost(agentId, repoId, presented),
+    giteaHostFor: (agentId) => this.agents.get(agentId)?.giteaHost,
     log: { warn: (message: string) => this.log.warn(message) }
   }
 
@@ -262,7 +270,8 @@ export class GithubReviewOrchestrator {
     const deleted = githubDeletedHookEvent(msg)
     // A lifecycle cleanup always addresses the stable GitHub thread session,
     // never an optional IM anchor configured for ordinary hook output.
-    const nmsg = buildHookMessage(cleanup || deleted ? { ...msg, target: undefined } : msg, randomUUID())
+    const supplement = cleanup || deleted ? undefined : await codeHostPromptSupplement(msg, this.turnFinalHost)
+    const nmsg = buildHookMessage(cleanup || deleted ? { ...msg, target: undefined } : msg, randomUUID(), supplement)
     const snapshot = hookSnapshot(msg)
     const hookContext: HookDispatchContext = {
       hookId: msg.hookId,
@@ -271,8 +280,7 @@ export class GithubReviewOrchestrator {
       firedAt: msg.firedAt,
       ...(msg.event ? { event: msg.event } : {}),
       ...(snapshot ? { snapshot } : {}),
-      ...(msg.github ? { github: msg.github } : {}),
-      ...(msg.gitlab ? { gitlab: msg.gitlab } : {})
+      ...pickCodeHostHookMembers(msg)
     }
     if (cleanup || deleted) {
       const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)

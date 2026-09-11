@@ -55,11 +55,12 @@ const delivery: GiteaReviewDelivery = {
 }
 
 describe('giteaReviewEventState', () => {
-  it('maps the three review event types to the submitted state, and nothing else', () => {
-    expect(giteaReviewEventState('pull_request_review_comment')).toBe('COMMENT')
-    expect(giteaReviewEventState('pull_request_review_approved')).toBe('APPROVED')
-    expect(giteaReviewEventState('pull_request_review_rejected')).toBe('REQUEST_CHANGES')
-    expect(giteaReviewEventState('pull_request_comment')).toBeUndefined()
+  it('maps the three normalized review events to the submitted state, and nothing else', () => {
+    expect(giteaReviewEventState('review:commented')).toBe('COMMENT')
+    expect(giteaReviewEventState('review:approved')).toBe('APPROVED')
+    expect(giteaReviewEventState('review:changes_requested')).toBe('REQUEST_CHANGES')
+    expect(giteaReviewEventState('note:created')).toBeUndefined()
+    expect(giteaReviewEventState('constructor')).toBeUndefined()
     expect(giteaReviewEventState(undefined)).toBeUndefined()
   })
 })
