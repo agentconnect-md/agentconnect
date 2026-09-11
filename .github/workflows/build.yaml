@@ -391,6 +391,10 @@ jobs:
           outputs: type=cacheonly
           build-args: ${{ matrix.build_args }}
           build-contexts: ${{ matrix.build_contexts }}
+          cache-from: |
+            type=registry,ref=${{ matrix.cache_ref }}
+            type=registry,ref=${{ matrix.cache_ref }}-verify
+            type=registry,ref=${{ matrix.cache_ref }}-shim
           cache-to: type=registry,ref=${{ matrix.cache_ref }}-${{ steps.decision.outputs.unchanged == 'true' && 'shim' || 'verify' }},mode=max,compression=gzip,compression-level=1
 
       # Publish the verified runtime from the same builder; service and daemon cache exports retain their existing path.
