@@ -304,9 +304,8 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
-      # Runtime legs first build only the shim stages — from the same registry cache the full build uses, so an
-      # unchanged shim costs about a minute and never pulls the base — and export the payload digest computed inside.
-      - name: Digest the runtime payload
+      # Build the shim and hash its output; the same builder retains these layers for verification and publication.
+      - name: Build shim and calculate its content hash
         if: matrix.component != ''
         uses: docker/build-push-action@v7
         with:
@@ -317,8 +316,10 @@ jobs:
           build-args: ${{ matrix.build_args }}
           build-contexts: ${{ matrix.build_contexts }}
           outputs: type=local,dest=${{ runner.temp }}/payload-digest
-          cache-from: type=registry,ref=${{ matrix.cache_ref }}
-          cache-to: type=registry,ref=${{ matrix.cache_ref }},mode=max
+          cache-from: |
+            type=registry,ref=${{ matrix.cache_ref }}
+            type=registry,ref=${{ matrix.cache_ref }}-verify
+            type=registry,ref=${{ matrix.cache_ref }}-shim
 
       - name: Fingerprint the runtime image inputs
         if: matrix.component != ''
@@ -361,8 +362,8 @@ jobs:
           done <<< "$BUILD_ARGS"
           node scripts/verify-runtime-image.mjs "$@"
 
-      # Verify applications, runtime tables and real shim sessions inside the build, retaining a separate verification cache.
-      - name: Verify the runtime sandbox image inside the build
+      # Build applications and run the runtime-table, shim-session and filesystem checks before publication.
+      - name: Build and verify runtime applications
         if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         uses: docker/build-push-action@v7
         with:
@@ -376,15 +377,23 @@ jobs:
           cache-from: |
             type=registry,ref=${{ matrix.cache_ref }}
             type=registry,ref=${{ matrix.cache_ref }}-verify
-          cache-to: type=registry,ref=${{ matrix.cache_ref }}-verify,mode=max
+            type=registry,ref=${{ matrix.cache_ref }}-shim
 
-      # A target-specific registry cache keeps all intermediate builder layers
-      # (`mode=max`) without consuming the GitHub Actions cache quota.
-      #
-      # Service and runtime images push straight from the builder. A runtime leg reaches this only once both checks
-      # above have passed, and the verify build left every layer of the image in the builder, so this exports the
-      # verified image rather than rebuilding it. The daemon image loads instead: its checks run `docker run` against
-      # the loaded image, and the Push step at the end publishes it from cache.
+      # Export once per runtime leg; a shim-only cache must never replace the complete verification graph.
+      - name: Save runtime build cache
+        if: matrix.component != ''
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ steps.decision.outputs.unchanged == 'true' && 'runtime-payload-digest-export' || format('{0}-verify', matrix.build_target) }}
+          platforms: ${{ matrix.platforms }}
+          outputs: type=cacheonly
+          build-args: ${{ matrix.build_args }}
+          build-contexts: ${{ matrix.build_contexts }}
+          cache-to: type=registry,ref=${{ matrix.cache_ref }}-${{ steps.decision.outputs.unchanged == 'true' && 'shim' || 'verify' }},mode=max,compression=gzip,compression-level=1
+
+      # Publish the verified runtime from the same builder; service and daemon cache exports retain their existing path.
       - name: Build
         if: steps.decision.outputs.unchanged != 'true'
         uses: docker/build-push-action@v7
@@ -402,7 +411,7 @@ jobs:
             ${{ matrix.labels }}
             ${{ steps.fingerprint.outputs.labels }}
           cache-from: type=registry,ref=${{ matrix.cache_ref }}
-          cache-to: type=registry,ref=${{ matrix.cache_ref }},mode=max
+          cache-to: ${{ matrix.component == '' && format('type=registry,ref={0},mode=max', matrix.cache_ref) || '' }}
 
       - name: Resolve the built image reference
         if: matrix.verify == 'daemon'
