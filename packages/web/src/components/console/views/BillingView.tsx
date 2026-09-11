@@ -38,7 +38,7 @@ import {
 } from '@/lib/billing-activity'
 import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
-import { fetchAgents, fetchGatewayAttribution } from '@/lib/api'
+import { fetchAgents } from '@/lib/api'
 import { agentLabel, type Agent } from '@/lib/data'
 import { sumAmounts } from '@/lib/amount'
 import { useOrgs } from '@/lib/org-context'
@@ -69,23 +69,15 @@ export interface TxAgentChip {
 // What a usage row may say about who spent the money.
 //
 // The AMOUNTS come from the billing service's own split — the only thing that knows how one
-// charge divides — and the PERMISSION to attach a name to one comes from the CP's viewer-scoped
-// `/usage` projection for that charge's period. They are different questions and neither source
-// can answer the other's.
+// charge divides — and the PERMISSION to attach a name to one is Agent visibility alone: the
+// viewer's own roster, the same list the Agents page shows them. The Session predicate does not
+// apply here (`session-visibility.md` §5): the ledger already publishes every charge's amount to
+// every member, so what naming discloses is only WHICH visible agent spent it.
 //
-// The gate is per-agent MEMBERSHIP in the projection, the same intersection (Agent visibility ∩
-// Session predicate) under which the Analytics page already names that agent to this viewer for
-// this window. A named agent's per-charge amount may therefore include spend the projection
-// withholds — an agent with $1 readable and $99 private is named for a charge covering the $99.
-// That is the deliberate billing exception recorded in `session-visibility.md` §5: a stricter
-// period-completeness gate was tried and blanked every org with any private session. What §5
-// still forbids holds: an agent in NO readable session stays id-less, and everything withheld
-// folds into ONE rollup — no count, no partition.
-//
-// `agentById` supplies the name and icon; an id it cannot resolve is not named either.
+// An id the roster cannot resolve — a restricted agent, or one since deleted — is never named,
+// and everything withheld folds into ONE rollup: no id, no count, no partition.
 export function rowAttribution(
   parts: BillingDebitAgent[] | null | undefined,
-  projection: ReadonlySet<string> | undefined,
   agentById: Map<string, Agent>
 ): TxAgentChip[] {
   if (!parts?.length) return []
@@ -94,9 +86,8 @@ export function rowAttribution(
   for (const part of parts) {
     const value = Number(part.amount)
     if (!Number.isFinite(value) || value === 0) continue
-    // Every clause fails CLOSED: no projection (unloaded or errored), an agent outside it, or
-    // an id the roster cannot resolve.
-    const agent = projection?.has(part.agentId) ? agentById.get(part.agentId) : undefined
+    // Fails CLOSED: an id the roster cannot resolve (unloaded, errored, or restricted) is withheld.
+    const agent = agentById.get(part.agentId)
     // The id never enters a chip it cannot name — `key` included, so it cannot leak through a
     // prop that ends up serialized.
     if (agent) named.push({ chip: { key: part.agentId, agent, amount: part.amount }, value })
@@ -106,13 +97,6 @@ export function rowAttribution(
   const chips = named.map(({ chip }) => chip)
   if (withheld.length) chips.push({ key: 'withheld', amount: sumAmounts(withheld) })
   return chips
-}
-
-// A debit's `period` is a UTC calendar month (`YYYY-MM`); these are its half-open window.
-const periodStart = (period: string) => `${period}-01T00:00:00.000Z`
-const nextPeriod = (period: string) => {
-  const [y, m] = period.split('-').map(Number) as [number, number]
-  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
 }
 
 // The Transactions filter, the same Usage / Top-ups split the Activity chart offers — plus
@@ -662,6 +646,9 @@ export default function BillingView() {
     () => (agentsError ? new Map<string, Agent>() : new Map((agents ?? []).map((a) => [a.id, a]))),
     [agents, agentsError]
   )
+  // Unloaded is not the same as empty: a pending roster must render NO chip rather than the
+  // fail-closed rollup, which would tell the reader they lack access and then take it back.
+  const rosterPending = agents === undefined && !agentsError
   const orgId = activeOrg?.id ?? null
   const router = useRouter()
   const pathname = usePathname()
@@ -792,23 +779,6 @@ export default function BillingView() {
   // under a pill that says Usage — a wrong answer is worse than a narrower one.
   const txItems = sideType ? loaded.filter((t) => t.type === sideType) : loaded
   const nextCursor = mine ? mine.nextCursor : (transactions.data?.nextCursor ?? null)
-
-  // Where a usage row's attribution comes from: the CP's viewer-scoped `/usage` projection,
-  // one read per period on screen. Per PERIOD and never unioned across them — spend a viewer
-  // may attribute in one month says nothing about another. Fail closed on error.
-  const periods = [...new Set(txItems.filter((t) => t.type === 'debit').map((t) => t.period))].sort()
-  const attribution = useSWR<Map<string, Set<string>>>(
-    orgId && periods.length ? consoleKeys.billingAttribution(orgId, periods.join(',')) : null,
-    async ([, , , joined]) => {
-      const wanted = (joined as string).split(',')
-      const reads = await Promise.all(
-        wanted.map((p) => fetchGatewayAttribution(periodStart(p), periodStart(nextPeriod(p)), orgId!))
-      )
-      return new Map(wanted.map((p, i) => [p, reads[i]!]))
-    }
-  )
-  const attributionIn = (period: string): ReadonlySet<string> | undefined =>
-    attribution.error ? undefined : attribution.data?.get(period)
 
   // Deep-link landing for a console that does not offer billing: the rail hides
   // the entry, so anyone here typed the URL or followed an old bookmark. Gated on
@@ -1085,19 +1055,14 @@ export default function BillingView() {
                         >
                           {credit ? t.kind : 'usage'}
                         </span>
-                        {/* Who the charge is attributed to. An agent is named only when BOTH
-                            visibility predicates clear; everything else is one id-less rollup
-                            with a default avatar. See `agentSplit` and billing-api.ts. */}
+                        {/* Who the charge is attributed to. An agent is named only when it is in
+                            the viewer's roster; everything else is one id-less rollup with a
+                            default avatar. See `rowAttribution` and billing-api.ts. */}
                         {!credit &&
                           (() => {
-                            // Nothing at all while the projection is in flight. Rendering the
-                            // fail-closed answer first would tell the reader they have no access
-                            // to an agent, then take it back a second later — a wrong statement,
-                            // not a slow one. Fail closed applies to a MISSING answer, not a
-                            // pending one.
-                            const split = attribution.isLoading
-                              ? []
-                              : rowAttribution(t.agents, attributionIn(t.period), agentById)
+                            // Nothing at all while the roster is in flight: fail closed applies
+                            // to a MISSING answer, not a pending one.
+                            const split = rosterPending ? [] : rowAttribution(t.agents, agentById)
                             // The description column shares the row with the amount, so the
                             // NAMED chips are capped. The rollup is appended after the cap: it
                             // is the one chip that must never be hidden behind a `+N`.

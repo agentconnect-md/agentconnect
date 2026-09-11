@@ -59,13 +59,12 @@ export interface BillingAccount {
 // The debit arm's `agents` is the billing service's per-agent split of a charge — the real
 // per-ROW amounts, which is why it is mirrored: nothing else knows how one charge divides.
 //
-// It is NOT self-authorizing. The service holds no Agent or Session visibility, so its ids and
-// its amounts are both the ORG's, and rendering one as-is is the discovery
+// It is NOT self-authorizing. The service holds no Agent visibility, so its ids and its amounts
+// are both the ORG's, and rendering one as-is is the discovery
 // `docs/designs/authorization-policy.md` §4 forbids. The row may put an agent's name beside one
-// of these amounts only when that agent is in the CP's viewer-scoped `/usage` projection for the
-// charge's period (`fetchGatewayAttribution`) — the billing exception in
-// `session-visibility.md` §5. Ids outside it fold into one id-less rollup per charge. The gate
-// lives in `rowAttribution` in BillingView; nothing else may read this field.
+// of these amounts only when that agent is in the viewer's own roster (`fetchAgents`) — the
+// billing exception in `session-visibility.md` §5. Ids outside it fold into one id-less rollup
+// per charge. The gate lives in `rowAttribution` in BillingView; nothing else may read this field.
 export interface BillingCredit {
   type: 'credit'
   id: string

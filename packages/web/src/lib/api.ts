@@ -3660,25 +3660,6 @@ export function usageWindow(range: UsageRange, now: Date = new Date()): { from: 
   return { from: from.toISOString(), to: to.toISOString() }
 }
 
-// The agents this viewer may see gateway spend attributed to, for one explicit window.
-//
-// `/usage` intersects Agent visibility with the request-time Session predicate, so an id in its
-// `agents` list is one the Analytics page ALREADY names to this viewer for this window — that
-// membership is the billing ledger's naming gate. Per the billing exception in
-// `session-visibility.md` §5, a named agent's per-charge amount may include spend the projection
-// itself withholds; accepted there deliberately, so do not "fix" it back to a period-completeness
-// gate — that shape blanked every org with any private session (#1498 follow-up). An id absent
-// from the list stays id-less on every billing row.
-//
-// `source=gateway` because that is the ingress a billing charge settles from (see the route's
-// own note): unscoped, a readable DAEMON session could qualify an agent whose gateway spend is
-// entirely private.
-export async function fetchGatewayAttribution(from: string, to: string, orgId?: string): Promise<Set<string>> {
-  const query = new URLSearchParams({ from, to, source: 'gateway' })
-  const usage = await apiGet<UsageDto>(`${orgBase(orgId)}/usage?${query.toString()}`)
-  return new Set(usage.agents.map((a) => a.agentId))
-}
-
 export async function fetchUsage(range: UsageRange, orgId?: string, source?: UsageSource): Promise<UsageDto> {
   // Send the viewer's tz offset so the CP buckets the spend series to local
   // day/hour (getTimezoneOffset ⇒ UTC − local; stable per client, not in the key).

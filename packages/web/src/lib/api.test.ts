@@ -11,7 +11,6 @@ import {
   deleteMemoryRecord,
   deleteOrgIcon,
   fetchAllGithubRepos,
-  fetchGatewayAttribution,
   fetchConversations,
   fetchConversationByKey,
   fetchSessionFacets,
@@ -142,53 +141,6 @@ describe('session profile identity hints', () => {
 
     await expect(fetchMySessionIdentity('lark')).resolves.toEqual({ linked: true })
     await expect(fetchMySessionIdentity('feishu')).resolves.toEqual({ linked: false })
-  })
-})
-
-describe('fetchGatewayAttribution', () => {
-  afterEach(() => {
-    setApiOrgId(null)
-    vi.unstubAllGlobals()
-  })
-
-  const usage = (extra: Record<string, unknown>) => {
-    const calls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        calls.push(url)
-        return new Response(
-          JSON.stringify({
-            from: 'x',
-            to: 'y',
-            totals: { sessions: 0, totalTokens: 0, costAmount: '0', costCurrency: null },
-            agents: [{ agentId: 'agt_1', costAmount: '1' }],
-            models: [],
-            sources: [],
-            series: { bucket: 'day', points: [] },
-            ...extra
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
-      })
-    )
-    return calls
-  }
-
-  it('scopes the read to the gateway ingress a charge settles from', async () => {
-    const calls = usage({})
-    await fetchGatewayAttribution('2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', 'org-1')
-    expect(calls[0]).toContain('source=gateway')
-  })
-
-  it('returns projection MEMBERSHIP, unaffected by a withheld residual', async () => {
-    // The billing exception (`session-visibility.md` §5): an id in `/usage.agents` is one
-    // Analytics already names to this viewer, and that alone gates naming on the ledger —
-    // a period-completeness gate was tried and blanked every org with one private session.
-    const window = ['2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', 'org-1'] as const
-
-    usage({ unattributed: { sessions: 2, totalTokens: 40, costAmount: '99' } })
-    expect(await fetchGatewayAttribution(...window)).toEqual(new Set(['agt_1']))
   })
 })
 
