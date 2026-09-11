@@ -758,15 +758,11 @@ export class WorkspaceManager {
     await fs.writeFile(marker, JSON.stringify({ repoFullName }, null, 2) + '\n', { mode: 0o600 })
   }
 
-  /**
-   * Materialize the agent's secondary roots and remember the ones a session may be handed.
-   *
-   * Lazy per decision 7: this runs at session start, and a root that cannot be prepared is omitted
-   * from THIS session rather than failing it. Decision 11 is applied in the same pass — a root that
-   * is already a submodule of an earlier one is neither prepared nor listed, so the model never sees
-   * the same repository twice at two different revisions.
-   */
-  async prepareSecondaryRoots(agent: Agent): Promise<SecondaryWorkspaceRoot[]> {
+  // Prepare available secondary roots lazily, omitting failures and repositories already present as submodules.
+  async prepareSecondaryRoots(
+    agent: Agent,
+    pull = agent.workspace.pullOnNewSession
+  ): Promise<SecondaryWorkspaceRoot[]> {
     const roots = this.secondaryRootsFor(agent)
     if (roots.length === 0) {
       this.readyRoots.delete(agent.id)
@@ -785,7 +781,7 @@ export class WorkspaceManager {
         )
         continue
       }
-      const prepared = await this.prepareSecondaryRoot(agent, root)
+      const prepared = await this.prepareSecondaryRoot(agent, root, pull)
       if (!prepared) continue
       for (const repo of await this.submoduleReposOf(agent.id, root.path)) submodules.add(repo)
       ready.push(prepared)
@@ -804,11 +800,15 @@ export class WorkspaceManager {
   }
 
   /** One secondary root's clone-or-converge, single-flighted per root like the primary's clone. */
-  async prepareSecondaryRoot(agent: Agent, root: SecondaryWorkspaceRoot): Promise<SecondaryWorkspaceRoot | undefined> {
+  async prepareSecondaryRoot(
+    agent: Agent,
+    root: SecondaryWorkspaceRoot,
+    pull = agent.workspace.pullOnNewSession
+  ): Promise<SecondaryWorkspaceRoot | undefined> {
     const key = this.cloneKey(agent.id, root.path)
     const inflight = this.secondaryInFlight.get(key)
     if (inflight) return await inflight
-    const started = this.materializeSecondaryRoot(agent, root).finally(() => {
+    const started = this.materializeSecondaryRoot(agent, root, pull).finally(() => {
       this.secondaryInFlight.delete(key)
     })
     this.secondaryInFlight.set(key, started)
@@ -817,7 +817,8 @@ export class WorkspaceManager {
 
   private async materializeSecondaryRoot(
     agent: Agent,
-    root: SecondaryWorkspaceRoot
+    root: SecondaryWorkspaceRoot,
+    pull: boolean
   ): Promise<SecondaryWorkspaceRoot | undefined> {
     const fs = this.fsFor(agent.id)
     const subtree = dirname(root.path)
@@ -825,15 +826,12 @@ export class WorkspaceManager {
     try {
       await fs.mkdir(subtree, 0o700)
       if ((await fs.stat(join(root.path, '.git'))) === 'missing') {
-        // The branch is not projected by the CP, so the remote's own HEAD decides it — resolved
-        // BEFORE the clone, because `--branch` is how the clone records it.
+        // The CP does not project the default branch; resolve remote HEAD before cloning with --branch.
         const branch = await this.resolveRemoteDefaultBranch(agent.id, root)
         const staged = `${root.path}.clone-${randomUUID()}`
         try {
           await this.cloneRootAt(agent.id, { ...root, branch }, staged)
-          // Attest first, publish last. A crash in between leaves a marker with no checkout, which
-          // the next session simply re-clones; the other order is what strands a checkout that no
-          // later session can attribute, and this code never deletes one to recover.
+          // Attest before publishing so a crash leaves a retryable marker, never an unattributable checkout.
           await fs.writeFile(
             marker,
             JSON.stringify(
@@ -850,10 +848,7 @@ export class WorkspaceManager {
         }
         return { ...root, path: this.canonicalWorkspacePath(agent.id, root.path), branch }
       }
-      // Identity is the numeric repo id, so a retired root whose owner/repo was later reused by a
-      // DIFFERENT repository is refused rather than adopted — and nothing on disk is touched
-      // (decision 12: retirement, never deletion). An origin URL cannot stand in for that id: it
-      // names the slug, which is exactly what a reuse keeps. No attestation ⇒ no root.
+      // Only the numeric repository id attests identity; refuse reused slugs without touching their old checkout.
       const recorded = parseSecondaryMaterialization(await fs.readFile(marker))
       if (recorded === undefined || !attestsRoot(recorded, root)) {
         workspaceLog.warn(
@@ -865,11 +860,10 @@ export class WorkspaceManager {
       const resolved = { ...root, branch: recorded.branch }
       await this.convergeOriginInPlaceFor(agent.id, resolved, root.path)
       await writeRepoHelperConfig(this.runnerFor(agent.id, root.path), agent.id, root.managed).catch(() => undefined)
-      if (agent.workspace.pullOnNewSession) await this.pullRoot(agent.id, resolved, root.path)
+      if (pull) await this.pullRoot(agent.id, resolved, root.path)
       return { ...resolved, path: this.canonicalWorkspacePath(agent.id, root.path) }
     } catch (err) {
-      // Degradation stays local to the root (decision 7): the session starts without it and the next
-      // one retries. Never throw out of session start over an additional repository.
+      // An unavailable reference root is omitted from this session and retried on the next preparation.
       workspaceLog.warn(
         `workspace: additional repository ${root.repoFullName} is unavailable to agent "${agent.id}" (${formatErr(err)})`
       )
@@ -1180,18 +1174,24 @@ export class WorkspaceManager {
   }
 
   async prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptions = {}): Promise<string> {
-    const acpCwd = await this.preparePrimaryRoot(agent)
-    // Every session goes through here, so this is where the secondary roots become available — and
-    // where a root that has left the set stops being handed out (decision 12).
-    await this.prepareSecondaryRoots(agent)
-    return this.withSkills(agent, acpCwd, opts)
+    const root = await this.prepareWorkspaceRoots(agent)
+    if (agent.workspace.mode === 'from-scratch') return this.withSkills(agent, root, opts)
+    const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
+    return this.withSkills(agent, this.resolveAcpCwd(root, agentDir), opts)
   }
 
-  /** The primary checkout and the ACP cwd it resolves to — clone or converge+pull, as today. */
-  private async preparePrimaryRoot(agent: Agent): Promise<string> {
+  // Shared checkouts retain identity, submodule discovery and Console reads even when a session clones independently.
+  private async prepareWorkspaceRoots(agent: Agent, pull = agent.workspace.pullOnNewSession): Promise<string> {
+    const root = await this.preparePrimaryRoot(agent, pull)
+    await this.prepareSecondaryRoots(agent, pull)
+    return root
+  }
+
+  // Prepare the shared root; only the eventual session cwd must contain the configured agentDir.
+  private async preparePrimaryRoot(agent: Agent, pull: boolean): Promise<string> {
     const cwd = agent.workspace.path
     // Fail unsafe config before using either a fresh or existing checkout.
-    const agentDir = agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
+    if (agent.workspace.mode === 'git-repo') normalizeRepoSubdir(agent.workspace.agentDir)
     const root = agent.workspace.mode === 'git-repo' ? this.primaryRoot(agent) : undefined
     mkdirSync(cwd, { recursive: true })
 
@@ -1200,32 +1200,24 @@ export class WorkspaceManager {
       return cwd
     }
 
-    // git-repo, first session: no checkout yet → clone. Unlike pull, a clone has no
-    // on-disk fallback, so on failure we THROW (the session creation fails + the error
-    // surfaces) rather than silently proceeding with an empty dir (design §4.3).
+    // A first clone has no on-disk fallback, so failure must abort preparation.
     if (!existsSync(join(cwd, '.git'))) {
       await this.cloneRootAt(agent.id, root, root.path)
-      return this.resolveAcpCwd(cwd, agentDir)
+      return cwd
     }
 
-    // git-repo, existing checkout: the repo-local helper pin may carry a previous
-    // agent generation's id (agent deleted + recreated under the same name adopts
-    // the surviving checkout) — re-pin so agent-run git presents a live identity
-    // even where the env channel doesn't reach. Best-effort: a locked .git/config
-    // must not block the session; the session-env channel still covers this run.
+    // Re-pin adopted checkouts to the current agent; the session env remains available if the config is locked.
     if (root.githubApp) {
-      // The CP follows repository renames by numeric repo id. Repoint the existing
-      // checkout instead of treating that canonical URL refresh as a new workspace.
+      // Follow the CP's canonical repository rename without replacing the checkout.
       await this.convergeWorkspaceOrigin(agent, cwd)
       await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id, root.managed).catch(() => undefined)
     } else {
-      // Historical anonymous checkouts may still have credential-bearing or
-      // disallowed origins even after their CP row has been sanitized.
+      // Historical anonymous checkouts can retain unsafe origins after their CP row has been sanitized.
       await this.convergeWorkspaceOrigin(agent, cwd)
     }
 
-    if (agent.workspace.pullOnNewSession) await this.pullRoot(agent.id, root, cwd)
-    return this.resolveAcpCwd(cwd, agentDir)
+    if (pull) await this.pullRoot(agent.id, root, cwd)
+    return cwd
   }
 
   /** The agent's worktrees parent, wherever its workspace lives. Total by construction — a
@@ -1863,17 +1855,19 @@ export class WorkspaceManager {
       await this.forgetSessionCwdRoots(agent, id)
       return await this.prepareGithubRevisionOnlyWorkspace(agent, ...this.revisionOnlySessionTarget(agent, request))
     }
-    // Resolved before anything is materialized: a review naming a repository this agent has no root
-    // for must leave no worktree behind for the caller's revision-only fallback to step around.
+    // Reject unauthorized review roots before materializing anything that could obstruct revision-only fallback.
     const reviewRoot = this.reviewedSecondaryRoot(agent, request)
-    const primary = await this.prepareWorkspace(agent, opts)
-    // A session that already stands in a reviewed root keeps standing there. The request that
-    // re-prepares it after a host eviction or a daemon restart carries no review at all — and, for a
-    // scratch workspace, reports `shared` isolation — so this is resolved BEFORE either shortcut: the
-    // attestation on disk, not this process's memory, is what holds the working directory still.
+    // Resolve the durable reviewed cwd before shared shortcuts: scratch resumes can carry neither review nor isolation.
     const cwdRoot = reviewRoot ?? (await this.resumedReviewedRoot(agent, request))
+    const isolated = request.isolation === 'session' || cwdRoot !== undefined
+    const confined = isolated && this.confinedSessionTier(agent, request.sessionKey, request.confined)
+    const primary = await this.prepareWorkspaceRoots(agent, !confined && agent.workspace.pullOnNewSession)
     if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, opts)
-    if (request.isolation === 'shared') return primary
+    const agentDir = agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
+    if (request.isolation === 'shared') {
+      const cwd = agent.workspace.mode === 'git-repo' ? this.resolveAcpCwd(primary, agentDir) : primary
+      return this.withSkills(agent, cwd, opts)
+    }
 
     // Scratch keeps its original cwd while its secondary roots receive per-session directories.
     const cwd = await this.prepareSessionRoots(
@@ -1885,8 +1879,7 @@ export class WorkspaceManager {
       this.referenceRootsOf(agent),
       request
     )
-    if (agent.workspace.mode !== 'git-repo') return cwd
-    const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
+    if (agent.workspace.mode === 'from-scratch') return this.withSkills(agent, cwd, opts)
     return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
   }
 
@@ -1905,26 +1898,19 @@ export class WorkspaceManager {
     return agentDir === undefined ? root : join(root, ...agentDir.split('/'))
   }
 
-  /**
-   * A review whose subject is a secondary root: that root's exact worktree is the session's cwd, and
-   * the primary plus the remaining secondaries ride along at their default branches (decisions 5/6).
-   *
-   * The root is materialized HERE even when it is a submodule of another one (decision 11): such a
-   * root is withheld from ordinary sessions as an additional directory, but a review of its own pull
-   * request still gets the exact checkout every authorized repository is promised.
-   */
+  // A reviewed secondary owns the cwd at its exact revision, including submodules normally withheld from references.
   private async prepareReviewedRootWorkspace(
     agent: Agent,
     root: SecondaryWorkspaceRoot,
     request: PrepareSessionWorkspaceRequest,
     opts: PrepareWorkspaceOptions
   ): Promise<string> {
-    // Preparation already materialized every root it hands out; only a root it WITHHELD — a submodule
-    // root, or one it skipped — is materialized here, so an ordinary session's converge/pull is not
-    // repeated and decision 11 still owes this repository an exact checkout of its own pull request.
+    // Reuse prepared roots; materialize a withheld submodule only when its own review needs it.
+    const pull =
+      !this.confinedSessionTier(agent, request.sessionKey, request.confined) && agent.workspace.pullOnNewSession
     const prepared =
       this.sessionSecondaryRoots(agent).find((entry) => repoKey(entry.subtreeName) === repoKey(root.subtreeName)) ??
-      (await this.prepareSecondaryRoot(agent, root))
+      (await this.prepareSecondaryRoot(agent, root, pull))
     if (!prepared) {
       throw new Error(`github review checkout of ${root.repoFullName} is unavailable to agent "${agent.id}"`)
     }
@@ -2108,6 +2094,8 @@ export class WorkspaceManager {
       const staged = `${cwd}.clone-${randomUUID()}`
       try {
         await this.cloneSessionRootAt(agent.id, root, staged)
+        await this.prepareSessionCloneCheckout(agent.id, root, staged, request, false)
+        // Publish only after checkout succeeds, so a failed no-checkout clone cannot be resumed as ready.
         await fs.rename(staged, cwd)
       } catch (err) {
         await fs.rmTree(staged)
@@ -2115,33 +2103,46 @@ export class WorkspaceManager {
         await fs.rmdir(canonicalSessionDir).catch(() => false)
         throw new Error(`session clone of ${root.cloneUrl} failed: ${formatErr(err)}`, { cause: err })
       }
-    } else if (root.githubApp) {
-      // A resumed clone gets what a resumed primary gets: the canonical origin and a live helper pin.
-      await this.convergeOriginInPlaceFor(agent.id, root, cwd)
-      await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id, root.managed).catch(() => undefined)
+    } else {
+      if (root.githubApp) {
+        // A resumed clone gets the canonical origin and a live helper pin.
+        await this.convergeOriginInPlaceFor(agent.id, root, cwd)
+        await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id, root.managed).catch(() => undefined)
+      }
+      await this.prepareSessionCloneCheckout(agent.id, root, cwd, request, true)
     }
+    // Reclaim only an empty legacy worktree stub; never remove a session's work.
+    if (root.worktreesPath) await fs.rmdir(join(root.worktreesPath, id)).catch(() => false)
+    return cwd
+  }
+
+  // A fresh clone checks out its final target once; a resumed ordinary session keeps its work.
+  private async prepareSessionCloneCheckout(
+    agentId: string,
+    root: WorkspaceRoot,
+    cwd: string,
+    request: PrepareSessionWorkspaceRequest,
+    attached: boolean
+  ): Promise<void> {
+    const id = this.sessionWorktreeId(request.sessionKey)
     // Into the clone, never the primary: the refs, and the exact-HEAD proof, are this session's alone.
     const review = request.review
-      ? await this.fetchReviewRevisionIn(agent.id, { ...root, path: cwd, worktreesPath: '' }, id, request.review, true)
+      ? await this.fetchReviewRevisionIn(agentId, { ...root, path: cwd, worktreesPath: '' }, id, request.review, true)
       : undefined
     const target = review?.checkout ?? `refs/remotes/origin/${root.branch}`
     // Unsafe executable config gates the checkout itself, as it gates a worktree's creation.
-    await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, cwd))
+    await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, cwd))
     if (!attached) {
-      await this.checkoutSessionBranch(agent.id, root, cwd, target, request.initiatedBy)
+      await this.checkoutSessionBranch(agentId, root, cwd, target, request.initiatedBy)
     } else if (review) {
       // Tracked files alone follow the revision, as on the worktree tier: the session keeps its untracked and ignored intermediates across deliveries.
-      await this.runnerFor(agent.id, cwd)
-        .withEnv(this.sessionCloneGitEnv(agent.id, root))
+      await this.runnerFor(agentId, cwd)
+        .withEnv(this.sessionCloneGitEnv(agentId, root))
         .raw(['reset', '--hard', target])
     }
-    if (review && (await this.revParse(agent.id, cwd, 'HEAD')).toLowerCase() !== review.checkout) {
+    if (review && (await this.revParse(agentId, cwd, 'HEAD')).toLowerCase() !== review.checkout) {
       throw new Error('github review clone HEAD does not match the verified revision')
     }
-    // A stub this session left in the worktree parent is neither a worktree nor absent: reclaim it in ONE
-    // operation, which refuses anything that is not provably empty and so can never take a session's work.
-    if (root.worktreesPath) await fs.rmdir(join(root.worktreesPath, id)).catch(() => false)
-    return cwd
   }
 
   // A blobless partial clone of one root for a session (§11) — whole history, file contents on demand — straight from the remote through the daemon's credential path like a primary's first clone: never a hardlink of the primary (a session with write on its own `.git` could reach the shared inodes), never `--shared`; a remote that refuses the filter answers with a full clone, and a clone that fails fails the session.
@@ -2149,7 +2150,13 @@ export class WorkspaceManager {
     if (root.githubApp) await preWarmGitCred(agentId, 'clone')
     // Run in the target's parent, which names the pod that owns it: a runner with no cwd is the agent pod's.
     const git = this.runnerFor(agentId, dirname(cwd)).withEnv(this.sessionCloneGitEnv(agentId, root))
-    await git.clone(root.cloneUrl, cwd, ['--filter=blob:none', '--branch', root.branch, '--single-branch'])
+    await git.clone(root.cloneUrl, cwd, [
+      '--filter=blob:none',
+      '--no-checkout',
+      '--branch',
+      root.branch,
+      '--single-branch'
+    ])
     if (root.githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId, root.managed)
   }
 
@@ -2380,7 +2387,7 @@ export class WorkspaceManager {
       )
     }
     const reviewRoot = this.reviewedSecondaryRoot(agent, request)
-    await this.prepareSecondaryRoots(agent)
+    await this.prepareSecondaryRoots(agent, false)
     const cwdRoot = reviewRoot ?? (await this.resumedReviewedRoot(agent, request))
     if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, {})
     const cwd = await this.prepareSessionRoots(

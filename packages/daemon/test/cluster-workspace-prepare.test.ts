@@ -834,16 +834,23 @@ describe('per-session clones on the session pod (git-workspace-model §11)', () 
     // Staged beside its target and run from the session directory — the path that names the session's pod.
     expect(clone).toMatchObject({ cwd: sessionDirOf('sess-1') })
     expect(clone!.args[2]).toMatch(new RegExp(`^${cwd}\\.clone-`))
-    expect(clone!.args).toEqual(expect.arrayContaining(['--filter=blob:none', '--branch', 'main', '--single-branch']))
+    expect(clone!.args).toEqual(
+      expect.arrayContaining(['--filter=blob:none', '--no-checkout', '--branch', 'main', '--single-branch'])
+    )
+    const staged = clone!.args[2]
     // Put on its own branch at the remote's tip, in the clone, out of subcommands the sandbox admits; the checkout is the parent of nothing.
     const draw = calls.find((call) => call.args[0] === 'branch')
-    expect(draw).toMatchObject({ cwd })
+    expect(draw).toMatchObject({ cwd: staged })
     expect(draw!.args.slice(0, 2)).toEqual(['branch', '--no-track'])
     expect(draw!.args.at(-1)).toBe('refs/remotes/origin/main')
-    expect(calls.some((call) => call.cwd === cwd && call.args[0] === 'symbolic-ref' && call.args[1] === 'HEAD')).toBe(
+    expect(
+      calls.some((call) => call.cwd === staged && call.args[0] === 'symbolic-ref' && call.args[1] === 'HEAD')
+    ).toBe(true)
+    expect(calls.some((call) => call.cwd === staged && call.args[0] === 'reset' && call.args[1] === '--hard')).toBe(
       true
     )
-    expect(calls.some((call) => call.cwd === cwd && call.args[0] === 'reset' && call.args[1] === '--hard')).toBe(true)
+    expect(await pod.stat(`${cwd}/.git`)).toBe('dir')
+    expect(await pod.stat(staged!)).toBe('missing')
     expect(calls.some((call) => call.args[0] === 'worktree')).toBe(false)
     expect(await pod.stat(WORKTREES)).toBe('missing')
     // Nothing about it names the daemon's own bookkeeping directory, and nothing landed on this disk.
@@ -889,7 +896,7 @@ describe('per-session clones on the session pod (git-workspace-model §11)', () 
 
     // Into the clone's own object store, never the checkout's.
     const fetch = calls.find((call) => call.args[0] === 'fetch')
-    expect(fetch).toMatchObject({ cwd })
+    expect(fetch).toMatchObject({ cwd: calls.find((call) => call.args[0] === 'clone')!.args[2] })
     expect(fetch!.args).toContain(`+refs/pull/7/head:refs/agentconnect/reviews/${id}/head`)
     // The exact head is the start point, and HEAD is re-verified against it once the branch is drawn there.
     expect(calls.find((call) => call.args[0] === 'branch')!.args.at(-1)).toBe(head)
@@ -1094,8 +1101,10 @@ describe('secondary roots on the pod volume', () => {
     ])
 
     checkoutExists = true
+    calls.length = 0
     const isolated = { sessionKey: 'sess-2', isolation: 'session' as const, initiatedBy: 'alice' }
     const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, isolated)
+    expect(calls.some((call) => call.args[0] === 'pull')).toBe(false)
     expect(cwd).toBe(sessionCloneOf('sess-2'))
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, isolated)).toEqual([
       sessionCloneOf('sess-2', 'acme/infra'),
@@ -1161,9 +1170,10 @@ describe('secondary roots on the pod volume', () => {
     expect(cwd).toBe(sessionCloneOf('sess-review', 'acme/infra'))
     // The reviewed refs were fetched into the session's OWN clone of the secondary, not the shared checkout.
     const fetch = calls.find((call) => call.args[0] === 'fetch')
-    expect(fetch).toMatchObject({ cwd })
+    const staged = calls.find((call) => call.args[0] === 'clone' && call.args[2]?.startsWith(`${cwd}.clone-`))!.args[2]
+    expect(fetch).toMatchObject({ cwd: staged })
     expect(fetch!.args).toContain(`+refs/pull/9/head:refs/agentconnect/reviews/${id}/head`)
-    expect(calls.find((call) => call.args[0] === 'branch' && call.cwd === cwd)!.args.at(-1)).toBe(head)
+    expect(calls.find((call) => call.args[0] === 'branch' && call.cwd === staged)!.args.at(-1)).toBe(head)
     // The primary rides along at its default branch, and the attestation holds the cwd across a
     // restart — a later hand-out that carries no review resolves the same working directory.
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([

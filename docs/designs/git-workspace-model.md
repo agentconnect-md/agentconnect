@@ -284,9 +284,9 @@ per-session sandbox policy need.
 
 ### The clone
 
-`git clone --filter=blob:none` — a blobless partial clone from the remote,
+`git clone --filter=blob:none --no-checkout` — a blobless partial clone from the remote,
 through the daemon's own credential path, exactly like the first clone of a
-primary today. It checks out the tip and carries the **whole** commit history
+primary today. It carries the **whole** commit history
 (messages, authors, trees); old file contents are fetched lazily on `blame`,
 `show` or `diff` of a past revision, which needs the session's read-tier fetch
 credential. Measured on a ~1,500-commit repository: ~4 s and 17 MB against 12 MB
@@ -310,8 +310,18 @@ Layout, one directory per session, removed whole at retirement:
 ```
 
 The primary checkout keeps its roles for `shared` isolation, the console's
-workspace views and `pullOnNewSession`; for confined sessions it is no longer
-the parent of anything.
+workspace views and unconfined worktrees; for confined sessions it is no longer
+the parent of anything. Confined session preparation retains shared checkout
+initialization, identity checks and submodule discovery, but does not pull those
+checkouts even with `pullOnNewSession` enabled. Shared sessions and unconfined
+worktrees still honor that setting. Skills are reconciled only in the final
+session working directory.
+
+A fresh session clone creates its generated branch at the default tip or verified
+review revision, then materializes that tree once with `reset --hard`. The clone
+stays in a staging directory until checkout and revision verification succeed;
+only then is it renamed to the session's final path. A failed checkout is cleaned
+up, so resume cannot mistake an unmaterialized clone for a ready workspace.
 
 Session preparation runs at most two independent repository roots concurrently,
 including the working-directory root. Reference roots keep their default branches
