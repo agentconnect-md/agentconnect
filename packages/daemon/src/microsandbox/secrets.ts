@@ -6,22 +6,43 @@ import { isDeepSeekRuntime } from '../runtimes/model-provider-config.js'
 import { runtimeStateLocations } from '../runtimes/probe.js'
 import { projectRuntimeHomeSeedFile } from '../runtimes/runtime-home.js'
 import { MAX_SEED_FILE_BYTES, parseDshCredentialDocument } from '../runtimes/runtime-seeded-credentials.js'
+import { prepareOpenCodeSecrets } from './opencode-secrets.js'
 
 export interface MicrosandboxSecret {
   env: string
   placeholder: string
-  host: string
+  host: string | string[]
   // The value stays host-side and cannot enter serialized launch metadata.
   readValue: () => string
 }
 
-export function prepareDeepSeekSecret(
+export interface MicrosandboxCredentials {
+  secrets: MicrosandboxSecret[]
+  replacements: ReadonlyMap<string, string>
+  sources: string[]
+  seedExclusions: string[]
+  preparePrivateHome: (home: string) => void
+}
+
+const CREDENTIAL_PREPARERS = new Map<
+  string,
+  (hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string>) => MicrosandboxCredentials | undefined
+>([
+  ['dsh-acp', prepareDeepSeekSecret],
+  ['opencode', prepareOpenCodeSecrets]
+])
+
+export function prepareMicrosandboxCredentials(
   runtimeId: string,
   runtime: RuntimeDef | undefined,
   hostEnv: NodeJS.ProcessEnv,
   explicitEnv: Record<string, string> = {}
-) {
-  if (!isDeepSeekRuntime(runtimeId, runtime)) return undefined
+): MicrosandboxCredentials | undefined {
+  const id = isDeepSeekRuntime(runtimeId, runtime) ? 'dsh-acp' : runtimeId
+  return CREDENTIAL_PREPARERS.get(id)?.(hostEnv, explicitEnv)
+}
+
+function prepareDeepSeekSecret(hostEnv: NodeJS.ProcessEnv, explicitEnv: Record<string, string> = {}) {
   const env = 'DEEPSEEK_API_KEY'
   const files = runtimeStateLocations('dsh-acp', hostEnv).flatMap((location) =>
     (location.credentialFiles ?? []).map((file) => ({
@@ -49,12 +70,12 @@ export function prepareDeepSeekSecret(
   }
   const value = key?.trim()
   if (!value) return undefined
-  const secret: MicrosandboxSecret = {
+  const secret = {
     env,
     placeholder: 'msb-secret-DEEPSEEK_API_KEY',
     host: 'api.deepseek.com',
     readValue: () => value
-  }
+  } satisfies MicrosandboxSecret
   try {
     const endpoint = new URL(baseUrl ?? 'https://api.deepseek.com')
     if (
@@ -69,7 +90,8 @@ export function prepareDeepSeekSecret(
     throw new Error('DeepSeek launch refused: credential protection requires https://api.deepseek.com')
   }
   return {
-    secret,
+    secrets: [secret],
+    replacements: new Map([[value, secret.placeholder]]),
     sources: files.map((file) => file.source),
     seedExclusions: [...new Set(files.map((file) => file.destination))],
     preparePrivateHome(home: string) {

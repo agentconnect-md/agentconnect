@@ -74,7 +74,7 @@ function fakeSdk() {
     readonly spec = {
       image: 'test-image',
       env: [{ key: 'PATH', value: '/image/bin' }],
-      secrets: {} as Record<string, { value: string; placeholder: string; host: string }>,
+      secrets: {} as Record<string, { value: string; placeholder: string; host: string[] }>,
       runtime: { workdir: '/image', user: 'agent' }
     }
     readonly stopWithTimeout = vi.fn(async () => {
@@ -243,7 +243,7 @@ function fakeSdk() {
           },
           secret(configure: (entry: any) => unknown) {
             let name = ''
-            const data = { value: '', placeholder: '', host: '' }
+            const data = { value: '', placeholder: '', host: [] as string[] }
             const entry = {
               env(value: string) {
                 name = value
@@ -258,7 +258,7 @@ function fakeSdk() {
                 return entry
               },
               allowHost(value: string) {
-                data.host = value
+                data.host.push(value)
                 return entry
               },
               injectBasicAuth(value: boolean) {
@@ -393,42 +393,46 @@ describe('microsandbox process and VM ownership', () => {
     await manager.stopAll()
   })
 
-  it('keeps secrets out of bindings and execs, and rotates them when the retained VM resumes', async () => {
-    const { manager, options, environment, request, created, processes } = await fixture()
-    let key = 'fixture-first-key'
-    const secret = {
-      env: 'DEEPSEEK_API_KEY',
-      placeholder: 'fixture-placeholder',
-      host: 'api.deepseek.com',
-      readValue: () => key
+  it.each(['api.deepseek.com', ['api.example.test', 'alternate.example.test']])(
+    'keeps secrets scoped to %j and rotates them when the retained VM resumes',
+    async (host) => {
+      const { manager, options, environment, request, created, processes } = await fixture()
+      let key = 'fixture-first-key'
+      const secret = {
+        env: 'DEEPSEEK_API_KEY',
+        placeholder: 'fixture-placeholder',
+        host,
+        readValue: () => key
+      }
+      const env = { ...environment, secrets: [secret] }
+      const launch = {
+        ...request,
+        env: { DEEPSEEK_API_KEY: secret.placeholder, NODE_EXTRA_CA_CERTS: '/.msb/tls/ca.pem' }
+      }
+      await (await manager.driverFor(env).launch(launch)).stop(0)
+      expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
+      expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.host).toEqual([host].flat())
+      expect(JSON.stringify(processes[0]!.request)).not.toContain(key)
+      expect(JSON.stringify(processes[0]!.request)).toContain('NODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem')
+      const directory = join(options.root, 'microsandbox', 'bindings')
+      const path = join(directory, (await readdir(directory))[0]!)
+      expect(await readFile(path, 'utf8')).not.toContain(key)
+      await manager.stopAll()
+      key = 'fixture-rotated-key'
+      const resumed = new MicrosandboxManager(options)
+      await (await resumed.driverFor(env).launch(launch)).stop(0)
+      expect(created).toHaveLength(1)
+      expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
+      expect(await readFile(path, 'utf8')).not.toContain(key)
+      await resumed.stopAll()
+      created[0]!.modify.mockResolvedValueOnce({ applied: false, changes: [], conflicts: [] } as never)
+      const restarted = new MicrosandboxManager(options)
+      await (await restarted.driverFor(env).launch(launch)).stop(0)
+      expect(created).toHaveLength(1)
+      expect(created[0]!.status).toBe('running')
+      await restarted.discard(env.id)
     }
-    const env = { ...environment, secrets: [secret] }
-    const launch = {
-      ...request,
-      env: { DEEPSEEK_API_KEY: secret.placeholder, NODE_EXTRA_CA_CERTS: '/.msb/tls/ca.pem' }
-    }
-    await (await manager.driverFor(env).launch(launch)).stop(0)
-    expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
-    expect(JSON.stringify(processes[0]!.request)).not.toContain(key)
-    expect(JSON.stringify(processes[0]!.request)).toContain('NODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem')
-    const directory = join(options.root, 'microsandbox', 'bindings')
-    const path = join(directory, (await readdir(directory))[0]!)
-    expect(await readFile(path, 'utf8')).not.toContain(key)
-    await manager.stopAll()
-    key = 'fixture-rotated-key'
-    const resumed = new MicrosandboxManager(options)
-    await (await resumed.driverFor(env).launch(launch)).stop(0)
-    expect(created).toHaveLength(1)
-    expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
-    expect(await readFile(path, 'utf8')).not.toContain(key)
-    await resumed.stopAll()
-    created[0]!.modify.mockResolvedValueOnce({ applied: false, changes: [], conflicts: [] } as never)
-    const restarted = new MicrosandboxManager(options)
-    await (await restarted.driverFor(env).launch(launch)).stop(0)
-    expect(created).toHaveLength(1)
-    expect(created[0]!.status).toBe('running')
-    await restarted.discard(env.id)
-  })
+  )
 
   it.each([false, true])(
     'retains VM data when its credential configuration changes (protected=%s)',
