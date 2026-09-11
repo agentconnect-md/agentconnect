@@ -110,6 +110,7 @@ the picture it draws.
 - [organization-knowledge.md](designs/organization-knowledge.md) — Organization knowledge bundles and dream suggestions.
 - [shared-skills.md](designs/shared-skills.md) — One isolated `skills` CLI for git and local skill sources.
 - [centralized-tool-management.md](designs/centralized-tool-management.md) — Centralized tool management: the relay-data-plane MCP proxy.
+- [mcp-elicitation.md](designs/mcp-elicitation.md) — Elicitation on the MCP wire: which bridge tools could ask, and why we need no MCP client to render a third-party server's ask.
 
 ### Runtimes and fleet
 
