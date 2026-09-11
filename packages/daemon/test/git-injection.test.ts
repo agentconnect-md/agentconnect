@@ -131,6 +131,7 @@ describe('gitEnvBase', () => {
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['core.fsmonitor', 'false'])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['core.sparseCheckout', 'false'])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['core.sparseCheckoutCone', 'false'])
+    expect(configPairs(workspaceGitEnvBase())).toContainEqual(['checkout.workers', '2'])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['credential.helper', ''])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['fetch.bundleURI', ''])
     expect(configPairs(workspaceGitEnvBase())).toContainEqual(['transfer.bundleURI', 'false'])

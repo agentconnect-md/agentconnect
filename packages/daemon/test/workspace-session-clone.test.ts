@@ -12,7 +12,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '../src/agents/agent-schema.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { createWorkspaceScope } from '../src/cp/workspace-scope.js'
@@ -373,6 +373,92 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       await workspaces.additionalWorkspaceDirectories(agent, cwd, { sessionKey: KEY, isolation: 'session' })
     ).toEqual([realpathSync(infra)])
   })
+
+  it.each([false, true])(
+    'prepares two roots concurrently and drains them before returning (primary fails: %s)',
+    async (failPrimary) => {
+      const agent = agentFixture({
+        additionalRepos: [
+          { repoFullName: 'acme/lib-a', repoId: '41' },
+          { repoFullName: 'acme/lib-b', repoId: '42' }
+        ]
+      })
+      serveAll(agent)
+      const gate = () => {
+        let resolve!: () => void
+        const promise = new Promise<void>((done) => {
+          resolve = done
+        })
+        return { promise, resolve }
+      }
+      const started = Array.from({ length: 3 }, gate)
+      const release = Array.from({ length: 3 }, gate)
+      const primaryFinished = gate()
+      const clone = SeamRunner.prototype.clone
+      let active = 0
+      let peak = 0
+      const seen: number[] = []
+      const spy = vi.spyOn(SeamRunner.prototype, 'clone').mockImplementation(async function (
+        this: SeamRunner,
+        repo,
+        target,
+        options
+      ) {
+        if (!target.startsWith(leafOf(agent))) return await clone.call(this, repo, target, options)
+        const index = repo === PRIMARY_URL ? 0 : repo.includes('/lib-a') ? 1 : 2
+        seen.push(index)
+        active += 1
+        peak = Math.max(peak, active)
+        started[index]!.resolve()
+        try {
+          await release[index]!.promise
+          if (index === 0 && failPrimary) throw new Error('primary clone unavailable')
+          await clone.call(this, repo, target, options)
+        } finally {
+          active -= 1
+          if (index === 0) primaryFinished.resolve()
+        }
+      })
+      let settled = false
+      const prepared = workspaces.prepareSessionWorkspace(agent, confined()).then(
+        (cwd) => ({ cwd, error: undefined }),
+        (error: unknown) => ({ cwd: undefined, error })
+      )
+      void prepared.then(() => {
+        settled = true
+      })
+      try {
+        await Promise.all([started[0]!.promise, started[1]!.promise])
+        expect(seen).toEqual([0, 1])
+        expect(active).toBe(2)
+        release[1]!.resolve()
+        await started[2]!.promise
+        expect(active).toBe(2)
+        release[0]!.resolve()
+        await primaryFinished.promise
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(settled).toBe(false)
+        release[2]!.resolve()
+        const result = await prepared
+        if (failPrimary) {
+          expect(result.error).toBeInstanceOf(Error)
+          expect((result.error as Error).message).toContain('primary clone unavailable')
+        } else {
+          expect(result.error).toBeUndefined()
+          expect(readFileSync(join(result.cwd!, 'README.md'), 'utf8')).toBe('seed\n')
+        }
+        for (const repo of ['lib-a', 'lib-b']) {
+          expect(readFileSync(join(leafOf(agent), 'repos', 'acme', repo, 'README.md'), 'utf8')).toBe('seed\n')
+        }
+        expect(peak).toBe(2)
+        expect(active).toBe(0)
+      } finally {
+        for (const gate of release) gate.resolve()
+        await prepared
+        spy.mockRestore()
+      }
+    }
+  )
 
   it('fetches a review into the clone, verifies HEAD exactly, and leaves no ref in the primary', async () => {
     const agent = agentFixture()
