@@ -18,7 +18,7 @@ import type { PlatformCanvasEdit } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
 import { EPHEMERAL_RESULT_NOTE } from '../../session/ephemeral-results.js'
 import type { SessionContext } from './context.js'
-import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
+import { askOnlyWithChannel, resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
 import { optionalBoolean, optionalBoundedInt, optionalString, parseArgs, requiredEnum, requiredString } from './args.js'
 
 /** Slack's own bounds on a scheduled send, and the only ones any platform states. */
@@ -164,7 +164,13 @@ function resolveTarget(
   what: string
 ) {
   const platform = ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw, sameConvo } = resolveGatewayForPlatform(
+    ctx,
+    deps,
+    platform,
+    parsed.integrationId,
+    askOnlyWithChannel(parsed.channel, what)
+  )
   const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
   if (!channel) throw new Error(`channel is required to ${what} on ${platform} (another bot than this session's)`)
   return { platform, gw, channel }
@@ -222,7 +228,13 @@ export async function listBookmarks(
 ): Promise<unknown> {
   const parsed = parseArgs(LIST_BOOKMARKS_ARGS, args)
   const platform = ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw, sameConvo } = resolveGatewayForPlatform(
+    ctx,
+    deps,
+    platform,
+    parsed.integrationId,
+    askOnlyWithChannel(parsed.channel, 'list the bookmarks of this channel')
+  )
   if (!gw.listBookmarks) throw unsupported(platform, 'bookmarks')
   const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
   return { platform, channel, bookmarks: await gw.listBookmarks(channel) }
@@ -235,7 +247,13 @@ export async function addBookmark(
 ): Promise<unknown> {
   const parsed = parseArgs(ADD_BOOKMARK_ARGS, args)
   const platform = ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw, sameConvo } = resolveGatewayForPlatform(
+    ctx,
+    deps,
+    platform,
+    parsed.integrationId,
+    askOnlyWithChannel(parsed.channel, 'add this bookmark')
+  )
   if (!gw.addBookmark) throw unsupported(platform, 'bookmarks')
   const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
   const bookmark = await gw.addBookmark(channel, {
@@ -253,7 +271,13 @@ export async function removeBookmark(
 ): Promise<unknown> {
   const parsed = parseArgs(REMOVE_BOOKMARK_ARGS, args)
   const platform = ctx.platform
-  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw, sameConvo } = resolveGatewayForPlatform(
+    ctx,
+    deps,
+    platform,
+    parsed.integrationId,
+    askOnlyWithChannel(parsed.channel, 'remove this bookmark')
+  )
   if (!gw.removeBookmark) throw unsupported(platform, 'bookmarks')
   const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
   await gw.removeBookmark(channel, parsed.bookmarkId)
@@ -267,7 +291,10 @@ export async function readList(
 ): Promise<unknown> {
   const parsed = parseArgs(READ_LIST_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'read this list'
+  })
   if (!gw.readList) throw unsupported(platform, 'lists')
   const page = await gw.readList(parsed.listId, {
     ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
@@ -283,7 +310,10 @@ export async function addListItem(
 ): Promise<unknown> {
   const parsed = parseArgs(ADD_LIST_ITEM_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'add this list item'
+  })
   if (!gw.addListItem) throw unsupported(platform, 'lists')
   return { platform, listId: parsed.listId, item: await gw.addListItem(parsed.listId, parsed.fields) }
 }
@@ -295,7 +325,10 @@ export async function updateListItem(
 ): Promise<unknown> {
   const parsed = parseArgs(UPDATE_LIST_ITEM_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'update this list item'
+  })
   if (!gw.updateListItem) throw unsupported(platform, 'lists')
   await gw.updateListItem(parsed.listId, parsed.itemId, parsed.fields)
   return { platform, listId: parsed.listId, itemId: parsed.itemId, updated: true }
@@ -361,7 +394,10 @@ export async function createConversation(
 ): Promise<unknown> {
   const parsed = parseArgs(CREATE_CONVERSATION_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'create this conversation'
+  })
   if (!gw.createConversation) throw unsupported(platform, 'creating conversations')
   const users = parsed.users ?? []
   if (!parsed.name && users.length === 0) throw new Error('pass `name` to create a channel, or `users` to open a DM')
@@ -402,7 +438,10 @@ export async function createCanvas(
 ): Promise<unknown> {
   const parsed = parseArgs(CREATE_CANVAS_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'create this canvas'
+  })
   if (!gw.createCanvas) throw unsupported(platform, 'canvases')
   return { platform, canvas: await gw.createCanvas(parsed.title, parsed.markdown, parsed.channel) }
 }
@@ -414,7 +453,10 @@ export async function readCanvas(
 ): Promise<unknown> {
   const parsed = parseArgs(READ_CANVAS_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'read this canvas'
+  })
   if (!gw.readCanvas) throw unsupported(platform, 'canvases')
   return { platform, canvas: await gw.readCanvas(parsed.canvasId) }
 }
@@ -426,7 +468,10 @@ export async function updateCanvas(
 ): Promise<unknown> {
   const parsed = parseArgs(UPDATE_CANVAS_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'update this canvas'
+  })
   if (!gw.updateCanvas) throw unsupported(platform, 'canvases')
   // Reject here rather than at the provider: an anchored edit with no section, or a
   // content edit with no body, is a mistake the agent can fix from the message.
