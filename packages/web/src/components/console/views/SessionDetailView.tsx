@@ -1082,6 +1082,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   const [drafts, setDrafts] = useState<Record<string, string>>(() => formDrafts(fields))
   const [picks, setPicks] = useState<Record<string, string[]>>(() => formPicks(fields))
   const [others, setOthers] = useState<Record<string, boolean>>(() => formOthers(fields))
+  // Minimizing is a UI fold, never an answer: the ask stays live and open, just out of the way.
+  const [minimized, setMinimized] = useState(false)
   const elicit = step.elicit
   const multi = elicit?.multi
   const consentUrl = elicit?.url
@@ -1116,6 +1118,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   const preamble = step.text.slice(headLine.length).trim()
   // A body that is nothing but answers reads a Dismiss beside them as one more answer, so an options card refuses from its head; other shapes have an action row where a refusal beside Submit reads right.
   const cornerDismiss = !settled && !fields && !typed && !consentUrl
+  const canMinimize = !settled
   const counter =
     rows && !settled
       ? `${rows.filter((f) => rowAnswered(f, companionOf(fields!, f), drafts, picks)).length}/${rows.length} answered`
@@ -1141,331 +1144,351 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
             {step.time}
           </span>
         )}
-        {cornerDismiss && (
-          <button
-            type="button"
-            className={`iconbtn -my-[2px] -mr-[4px] h-[22px] w-[22px] flex-none ${step.time ? '' : 'ml-auto'}`}
-            disabled={!onAnswer}
-            aria-label="Decline without answering"
-            title="Decline without answering"
-            onClick={() => onAnswer?.(null)}
-          >
-            <Icon name="x" size={12} color="var(--text-tertiary)" />
-          </button>
+        {(canMinimize || cornerDismiss) && (
+          <span className={`-my-[2px] -mr-[4px] flex flex-none items-center gap-[2px] ${step.time ? '' : 'ml-auto'}`}>
+            {canMinimize && (
+              <button
+                type="button"
+                className="iconbtn h-[22px] w-[22px]"
+                aria-expanded={!minimized}
+                aria-label={minimized ? 'Expand question' : 'Minimize question'}
+                title={minimized ? 'Expand question' : 'Minimize question'}
+                onClick={() => setMinimized((v) => !v)}
+              >
+                <Icon name={minimized ? 'chevron-right' : 'chevron-down'} size={12} color="var(--text-tertiary)" />
+              </button>
+            )}
+            {cornerDismiss && (
+              <button
+                type="button"
+                className="iconbtn h-[22px] w-[22px]"
+                disabled={!onAnswer}
+                aria-label="Decline without answering"
+                title="Decline without answering"
+                onClick={() => onAnswer?.(null)}
+              >
+                <Icon name="x" size={12} color="var(--text-tertiary)" />
+              </button>
+            )}
+          </span>
         )}
       </div>
-      <div className="min-w-0 border-t border-(--border-subtle) px-[14px] py-[11px]">
-        {preamble && !settled ? (
-          <span className="mb-[11px] block min-w-0 whitespace-pre-wrap font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-            {preamble}
-          </span>
-        ) : null}
-        {settled ? (
-          <span className="inline-flex min-w-0 items-center gap-[7px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-            <Icon name={settled.icon} size={13} color={settled.color} />
-            <span className="min-w-0 truncate">{settled.label(elicit.answerLabel)}</span>
-          </span>
-        ) : consent && consentUrl ? (
-          // URL mode. The full URL is shown for examination and NOTHING here touches it: no
-          // favicon, no preview, no title lookup, no prefetch hint. Opening is the reader's own
-          // click on a plain anchor into a new tab — never an iframe or an in-app webview — so
-          // neither the console nor the model can observe the page or what is typed there.
-          // That click is also the consent the ACP request resolves on.
-          <div className="flex w-full min-w-0 flex-col gap-[11px]">
-            <div className="min-w-0 rounded-sm border border-(--border-subtle) bg-(--surface-app) px-[11px] py-[9px] font-mono text-[12.5px] leading-[1.5] break-all">
-              <span className="text-(--text-tertiary)">{consent.scheme}</span>
-              <span className="font-medium text-(--text-primary)">{consent.host}</span>
-              <span className="text-(--text-tertiary)">{consent.rest}</span>
-            </div>
-            {consent.warnings.map((w) => (
-              <span
-                key={w}
-                className="inline-flex min-w-0 items-start gap-[6px] rounded-sm border border-(--border-subtle) bg-(--amber-50) px-[10px] py-[7px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-primary)"
-              >
-                <span className="mt-[2px] flex-none">
-                  <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
-                </span>
-                <span className="min-w-0">{w}</span>
-              </span>
-            ))}
-            <div className={ELICIT_ACTIONS}>
-              {onAnswer ? (
-                <a
-                  className="dsbtn dsbtn-primary xs no-underline"
-                  href={consentUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => onAnswer(consentUrl)}
+      {/* Minimized folds the card to its head line alone — the ask is untouched, only hidden. */}
+      {/* A card that settles while folded unfolds itself: the outcome is the one row left to read. */}
+      {(!minimized || settled) && (
+        <div className="min-w-0 border-t border-(--border-subtle) px-[14px] py-[11px]">
+          {preamble && !settled ? (
+            <span className="mb-[11px] block min-w-0 whitespace-pre-wrap font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+              {preamble}
+            </span>
+          ) : null}
+          {settled ? (
+            <span className="inline-flex min-w-0 items-center gap-[7px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
+              <Icon name={settled.icon} size={13} color={settled.color} />
+              <span className="min-w-0 truncate">{settled.label(elicit.answerLabel)}</span>
+            </span>
+          ) : consent && consentUrl ? (
+            // URL mode. The full URL is shown for examination and NOTHING here touches it: no
+            // favicon, no preview, no title lookup, no prefetch hint. Opening is the reader's own
+            // click on a plain anchor into a new tab — never an iframe or an in-app webview — so
+            // neither the console nor the model can observe the page or what is typed there.
+            // That click is also the consent the ACP request resolves on.
+            <div className="flex w-full min-w-0 flex-col gap-[11px]">
+              <div className="min-w-0 rounded-sm border border-(--border-subtle) bg-(--surface-app) px-[11px] py-[9px] font-mono text-[12.5px] leading-[1.5] break-all">
+                <span className="text-(--text-tertiary)">{consent.scheme}</span>
+                <span className="font-medium text-(--text-primary)">{consent.host}</span>
+                <span className="text-(--text-tertiary)">{consent.rest}</span>
+              </div>
+              {consent.warnings.map((w) => (
+                <span
+                  key={w}
+                  className="inline-flex min-w-0 items-start gap-[6px] rounded-sm border border-(--border-subtle) bg-(--amber-50) px-[10px] py-[7px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-primary)"
                 >
-                  Open link
-                </a>
-              ) : (
-                <span className="dsbtn dsbtn-primary xs cursor-default opacity-55">Open link</span>
-              )}
-              <button
-                type="button"
-                className={ELICIT_CHIP}
-                disabled={!onAnswer}
-                onClick={() => onAnswer?.(null)}
-                title="Refuse without opening"
-              >
-                Decline
-              </button>
-              <span className={`ml-auto ${ELICIT_HINT}`}>Opens in a new tab</span>
-            </div>
-          </div>
-        ) : fields && rows ? (
-          <div className="flex w-full min-w-0 flex-col">
-            {rows.map((f, fi) => {
-              const companion = companionOf(fields, f)
-              const reason = rowInvalidReason(f, companion, drafts, picks)
-              const hint =
-                f.kind === 'multi-enum' ? selectionHint(f.multi?.minItems ?? 0, f.multi?.maxItems) : undefined
-              const list = asList(f.options)
-              return (
-                <div
-                  key={f.propName}
-                  className={
-                    fi > 0
-                      ? 'grid min-w-0 grid-cols-[22px_minmax(0,1fr)] gap-x-[10px] gap-y-[7px] border-t border-(--border-subtle) py-[11px]'
-                      : 'grid min-w-0 grid-cols-[22px_minmax(0,1fr)] gap-x-[10px] gap-y-[7px] pb-[11px]'
-                  }
-                >
-                  <span className="mt-[1px] font-mono text-[11.5px] font-normal leading-normal text-(--text-disabled)">
-                    {String(fi + 1).padStart(2, '0')}
+                  <span className="mt-[2px] flex-none">
+                    <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
                   </span>
-                  <div className="flex min-w-0 flex-col gap-[7px]">
-                    <div className="flex min-w-0 flex-wrap items-baseline gap-x-[8px] gap-y-[2px]">
-                      <span className="min-w-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                        {f.label}
-                      </span>
-                      {f.description ? (
-                        <span className="min-w-0 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-                          {f.description}
-                        </span>
-                      ) : null}
-                      <span
-                        className={
-                          f.required
-                            ? 'ml-auto flex-none font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)'
-                            : 'ml-auto flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-disabled)'
-                        }
-                      >
-                        {f.required ? 'required' : 'optional'}
-                      </span>
-                    </div>
-                    {f.kind === 'text' || f.kind === 'number' ? (
-                      <input
-                        className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
-                        type={f.kind === 'number' ? 'number' : 'text'}
-                        value={drafts[f.propName] ?? ''}
-                        disabled={!onAnswer}
-                        aria-label={f.label}
-                        {...(f.number?.minimum !== undefined ? { min: f.number.minimum } : {})}
-                        {...(f.number?.maximum !== undefined ? { max: f.number.maximum } : {})}
-                        {...(f.number?.integer ? { step: 1 } : {})}
-                        {...(f.text?.maxLength !== undefined ? { maxLength: f.text.maxLength } : {})}
-                        onChange={(e) => setDrafts((prev) => ({ ...prev, [f.propName]: e.target.value }))}
-                      />
-                    ) : (
-                      <div
-                        className={
-                          list
-                            ? 'flex min-w-0 flex-col gap-[6px] desktop:max-w-[520px]'
-                            : 'flex min-w-0 flex-wrap items-center gap-[6px]'
-                        }
-                      >
-                        {f.options.map((option) => {
-                          const held = picks[f.propName] ?? []
-                          const on = held.includes(option.value)
-                          // At the cap, an unpicked option stops taking a tap — an answer the
-                          // card would have to refuse must not look available.
-                          const cap = f.kind === 'multi-enum' ? f.multi?.maxItems : undefined
-                          const capped = !on && cap !== undefined && held.length >= cap
-                          return (
-                            <ElicitOption
-                              key={option.value}
-                              label={option.label}
-                              on={on}
-                              list={list}
-                              mono={option.label === option.value}
-                              staged
-                              multi={f.kind === 'multi-enum'}
-                              disabled={!onAnswer || capped}
-                              onPick={() =>
-                                setPicks((prev) => {
-                                  const was = prev[f.propName] ?? []
-                                  if (was.includes(option.value))
-                                    return { ...prev, [f.propName]: was.filter((v) => v !== option.value) }
-                                  // One choice replaces the last for a single-pick field; a
-                                  // multi-select adds to the set.
-                                  return {
-                                    ...prev,
-                                    [f.propName]: f.kind === 'multi-enum' ? [...was, option.value] : [option.value]
-                                  }
-                                })
-                              }
-                            />
-                          )
-                        })}
-                        {companion ? (
-                          <ElicitOption
-                            label="Other…"
-                            on={!!others[f.propName]}
-                            list={list}
-                            soft
-                            staged={list}
-                            disabled={!onAnswer}
-                            onPick={() => toggleOther(f, companion)}
-                          />
-                        ) : null}
-                      </div>
-                    )}
-                    {companion && (f.kind === 'text' || f.kind === 'number' || others[f.propName]) ? (
-                      <input
-                        className={`${ELICIT_INPUT} ${list ? 'desktop:max-w-[340px]' : 'font-mono desktop:max-w-[260px]'}`}
-                        type="text"
-                        autoFocus={!!others[f.propName]}
-                        value={drafts[companion.propName] ?? ''}
-                        disabled={!onAnswer}
-                        aria-label={`${f.label} — ${companion.label}`}
-                        placeholder={companion.label}
-                        {...(companion.text?.maxLength !== undefined ? { maxLength: companion.text.maxLength } : {})}
-                        onChange={(e) => setDrafts((prev) => ({ ...prev, [companion.propName]: e.target.value }))}
-                      />
-                    ) : null}
-                    {reason ? (
-                      <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
-                        <span className="mt-[2px] flex-none">
-                          <Icon name="triangle-alert" size={12} color="var(--brand)" />
-                        </span>
-                        <span className="min-w-0">{reason}</span>
-                      </span>
-                    ) : hint ? (
-                      <span className={ELICIT_HINT}>{hint}</span>
-                    ) : null}
-                  </div>
-                </div>
-              )
-            })}
-            <div className={ELICIT_ACTIONS}>
-              <button
-                type="button"
-                className="dsbtn dsbtn-primary xs"
-                disabled={!onAnswer || rows.some((f) => !!rowInvalidReason(f, companionOf(fields, f), drafts, picks))}
-                onClick={() => onAnswer?.(formAnswer(fields, drafts, picks))}
-              >
-                Submit answers
-              </button>
-              <button
-                type="button"
-                className={ELICIT_CHIP}
-                disabled={!onAnswer}
-                onClick={() => onAnswer?.(null)}
-                title="Dismiss without answering"
-              >
-                Dismiss
-              </button>
-              <span className={`ml-auto ${ELICIT_HINT}`}>Optional answers left blank are not sent</span>
-            </div>
-          </div>
-        ) : typed ? (
-          <div className="flex w-full min-w-0 flex-col gap-[9px]">
-            <input
-              className={`${ELICIT_INPUT} desktop:max-w-[380px]`}
-              type={elicit.number ? 'number' : 'text'}
-              value={draft}
-              disabled={!onAnswer}
-              aria-label="Your answer"
-              {...(elicit.number?.minimum !== undefined ? { min: elicit.number.minimum } : {})}
-              {...(elicit.number?.maximum !== undefined ? { max: elicit.number.maximum } : {})}
-              {...(elicit.number?.integer ? { step: 1 } : {})}
-              {...(elicit.text?.maxLength !== undefined ? { maxLength: elicit.text.maxLength } : {})}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && onAnswer && !invalid) onAnswer(elicit.number ? Number(draft) : draft)
-              }}
-            />
-            {invalid && (
-              <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
-                <span className="mt-[2px] flex-none">
-                  <Icon name="triangle-alert" size={12} color="var(--brand)" />
+                  <span className="min-w-0">{w}</span>
                 </span>
-                <span className="min-w-0">{invalid}</span>
-              </span>
-            )}
-            <div className={ELICIT_ACTIONS}>
-              <button
-                type="button"
-                className="dsbtn dsbtn-primary xs"
-                disabled={!onAnswer || !!invalid}
-                onClick={() => onAnswer?.(elicit.number ? Number(draft) : draft)}
-              >
-                Submit
-              </button>
-              <button
-                type="button"
-                className={ELICIT_CHIP}
-                disabled={!onAnswer}
-                onClick={() => onAnswer?.(null)}
-                title="Dismiss without answering"
-              >
-                Dismiss
-              </button>
-              <span className={`ml-auto ${ELICIT_HINT}`}>Enter submits</span>
+              ))}
+              <div className={ELICIT_ACTIONS}>
+                {onAnswer ? (
+                  <a
+                    className="dsbtn dsbtn-primary xs no-underline"
+                    href={consentUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => onAnswer(consentUrl)}
+                  >
+                    Open link
+                  </a>
+                ) : (
+                  <span className="dsbtn dsbtn-primary xs cursor-default opacity-55">Open link</span>
+                )}
+                <button
+                  type="button"
+                  className={ELICIT_CHIP}
+                  disabled={!onAnswer}
+                  onClick={() => onAnswer?.(null)}
+                  title="Refuse without opening"
+                >
+                  Decline
+                </button>
+                <span className={`ml-auto ${ELICIT_HINT}`}>Opens in a new tab</span>
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className="flex w-full min-w-0 flex-col gap-[10px]">
-            <div
-              className={
-                asList(elicit.options)
-                  ? 'flex min-w-0 flex-col gap-[6px] desktop:max-w-[520px]'
-                  : 'flex min-w-0 flex-wrap items-center gap-[6px]'
-              }
-            >
-              {elicit.options.map((option) => {
-                const on = picked.includes(option.value)
-                // At the cap, the options still unpicked stop taking a tap — an answer the card
-                // would have to refuse should not look available in the first place.
-                const capped = !!multi && !on && max !== undefined && picked.length >= max
+          ) : fields && rows ? (
+            <div className="flex w-full min-w-0 flex-col">
+              {rows.map((f, fi) => {
+                const companion = companionOf(fields, f)
+                const reason = rowInvalidReason(f, companion, drafts, picks)
+                const hint =
+                  f.kind === 'multi-enum' ? selectionHint(f.multi?.minItems ?? 0, f.multi?.maxItems) : undefined
+                const list = asList(f.options)
                 return (
-                  <ElicitOption
-                    key={option.value}
-                    label={option.label}
-                    on={on}
-                    list={asList(elicit.options)}
-                    mono={option.label === option.value}
-                    // A single-choice card answers on the tap, so it holds nothing an
-                    // indicator could report; a multi-select does.
-                    {...(multi ? { staged: true, multi: true } : {})}
-                    disabled={!onAnswer || capped}
-                    onPick={() =>
-                      multi
-                        ? setPicked((prev) => (on ? prev.filter((v) => v !== option.value) : [...prev, option.value]))
-                        : onAnswer?.(option.value)
+                  <div
+                    key={f.propName}
+                    className={
+                      fi > 0
+                        ? 'grid min-w-0 grid-cols-[22px_minmax(0,1fr)] gap-x-[10px] gap-y-[7px] border-t border-(--border-subtle) py-[11px]'
+                        : 'grid min-w-0 grid-cols-[22px_minmax(0,1fr)] gap-x-[10px] gap-y-[7px] pb-[11px]'
                     }
-                  />
+                  >
+                    <span className="mt-[1px] font-mono text-[11.5px] font-normal leading-normal text-(--text-disabled)">
+                      {String(fi + 1).padStart(2, '0')}
+                    </span>
+                    <div className="flex min-w-0 flex-col gap-[7px]">
+                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-[8px] gap-y-[2px]">
+                        <span className="min-w-0 font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                          {f.label}
+                        </span>
+                        {f.description ? (
+                          <span className="min-w-0 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
+                            {f.description}
+                          </span>
+                        ) : null}
+                        <span
+                          className={
+                            f.required
+                              ? 'ml-auto flex-none font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)'
+                              : 'ml-auto flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-disabled)'
+                          }
+                        >
+                          {f.required ? 'required' : 'optional'}
+                        </span>
+                      </div>
+                      {f.kind === 'text' || f.kind === 'number' ? (
+                        <input
+                          className={`${ELICIT_INPUT} desktop:max-w-[320px]`}
+                          type={f.kind === 'number' ? 'number' : 'text'}
+                          value={drafts[f.propName] ?? ''}
+                          disabled={!onAnswer}
+                          aria-label={f.label}
+                          {...(f.number?.minimum !== undefined ? { min: f.number.minimum } : {})}
+                          {...(f.number?.maximum !== undefined ? { max: f.number.maximum } : {})}
+                          {...(f.number?.integer ? { step: 1 } : {})}
+                          {...(f.text?.maxLength !== undefined ? { maxLength: f.text.maxLength } : {})}
+                          onChange={(e) => setDrafts((prev) => ({ ...prev, [f.propName]: e.target.value }))}
+                        />
+                      ) : (
+                        <div
+                          className={
+                            list
+                              ? 'flex min-w-0 flex-col gap-[6px] desktop:max-w-[520px]'
+                              : 'flex min-w-0 flex-wrap items-center gap-[6px]'
+                          }
+                        >
+                          {f.options.map((option) => {
+                            const held = picks[f.propName] ?? []
+                            const on = held.includes(option.value)
+                            // At the cap, an unpicked option stops taking a tap — an answer the
+                            // card would have to refuse must not look available.
+                            const cap = f.kind === 'multi-enum' ? f.multi?.maxItems : undefined
+                            const capped = !on && cap !== undefined && held.length >= cap
+                            return (
+                              <ElicitOption
+                                key={option.value}
+                                label={option.label}
+                                on={on}
+                                list={list}
+                                mono={option.label === option.value}
+                                staged
+                                multi={f.kind === 'multi-enum'}
+                                disabled={!onAnswer || capped}
+                                onPick={() =>
+                                  setPicks((prev) => {
+                                    const was = prev[f.propName] ?? []
+                                    if (was.includes(option.value))
+                                      return { ...prev, [f.propName]: was.filter((v) => v !== option.value) }
+                                    // One choice replaces the last for a single-pick field; a
+                                    // multi-select adds to the set.
+                                    return {
+                                      ...prev,
+                                      [f.propName]: f.kind === 'multi-enum' ? [...was, option.value] : [option.value]
+                                    }
+                                  })
+                                }
+                              />
+                            )
+                          })}
+                          {companion ? (
+                            <ElicitOption
+                              label="Other…"
+                              on={!!others[f.propName]}
+                              list={list}
+                              soft
+                              staged={list}
+                              disabled={!onAnswer}
+                              onPick={() => toggleOther(f, companion)}
+                            />
+                          ) : null}
+                        </div>
+                      )}
+                      {companion && (f.kind === 'text' || f.kind === 'number' || others[f.propName]) ? (
+                        <input
+                          className={`${ELICIT_INPUT} ${list ? 'desktop:max-w-[340px]' : 'font-mono desktop:max-w-[260px]'}`}
+                          type="text"
+                          autoFocus={!!others[f.propName]}
+                          value={drafts[companion.propName] ?? ''}
+                          disabled={!onAnswer}
+                          aria-label={`${f.label} — ${companion.label}`}
+                          placeholder={companion.label}
+                          {...(companion.text?.maxLength !== undefined ? { maxLength: companion.text.maxLength } : {})}
+                          onChange={(e) => setDrafts((prev) => ({ ...prev, [companion.propName]: e.target.value }))}
+                        />
+                      ) : null}
+                      {reason ? (
+                        <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
+                          <span className="mt-[2px] flex-none">
+                            <Icon name="triangle-alert" size={12} color="var(--brand)" />
+                          </span>
+                          <span className="min-w-0">{reason}</span>
+                        </span>
+                      ) : hint ? (
+                        <span className={ELICIT_HINT}>{hint}</span>
+                      ) : null}
+                    </div>
+                  </div>
                 )
               })}
-            </div>
-            {multi && <span className={ELICIT_HINT}>{selectionHint(min, max)}</span>}
-            {/* Only a multi-select has anything to submit — a single-choice card answers on the tap. */}
-            {multi && (
               <div className={ELICIT_ACTIONS}>
                 <button
                   type="button"
                   className="dsbtn dsbtn-primary xs"
-                  disabled={!onAnswer || !complete}
-                  onClick={() => onAnswer?.(picked)}
+                  disabled={!onAnswer || rows.some((f) => !!rowInvalidReason(f, companionOf(fields, f), drafts, picks))}
+                  onClick={() => onAnswer?.(formAnswer(fields, drafts, picks))}
                 >
-                  Confirm
+                  Submit answers
                 </button>
+                <button
+                  type="button"
+                  className={ELICIT_CHIP}
+                  disabled={!onAnswer}
+                  onClick={() => onAnswer?.(null)}
+                  title="Dismiss without answering"
+                >
+                  Dismiss
+                </button>
+                <span className={`ml-auto ${ELICIT_HINT}`}>Optional answers left blank are not sent</span>
               </div>
-            )}
-          </div>
-        )}
-      </div>
+            </div>
+          ) : typed ? (
+            <div className="flex w-full min-w-0 flex-col gap-[9px]">
+              <input
+                className={`${ELICIT_INPUT} desktop:max-w-[380px]`}
+                type={elicit.number ? 'number' : 'text'}
+                value={draft}
+                disabled={!onAnswer}
+                aria-label="Your answer"
+                {...(elicit.number?.minimum !== undefined ? { min: elicit.number.minimum } : {})}
+                {...(elicit.number?.maximum !== undefined ? { max: elicit.number.maximum } : {})}
+                {...(elicit.number?.integer ? { step: 1 } : {})}
+                {...(elicit.text?.maxLength !== undefined ? { maxLength: elicit.text.maxLength } : {})}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && onAnswer && !invalid) onAnswer(elicit.number ? Number(draft) : draft)
+                }}
+              />
+              {invalid && (
+                <span className="inline-flex min-w-0 items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--brand-soft-text)">
+                  <span className="mt-[2px] flex-none">
+                    <Icon name="triangle-alert" size={12} color="var(--brand)" />
+                  </span>
+                  <span className="min-w-0">{invalid}</span>
+                </span>
+              )}
+              <div className={ELICIT_ACTIONS}>
+                <button
+                  type="button"
+                  className="dsbtn dsbtn-primary xs"
+                  disabled={!onAnswer || !!invalid}
+                  onClick={() => onAnswer?.(elicit.number ? Number(draft) : draft)}
+                >
+                  Submit
+                </button>
+                <button
+                  type="button"
+                  className={ELICIT_CHIP}
+                  disabled={!onAnswer}
+                  onClick={() => onAnswer?.(null)}
+                  title="Dismiss without answering"
+                >
+                  Dismiss
+                </button>
+                <span className={`ml-auto ${ELICIT_HINT}`}>Enter submits</span>
+              </div>
+            </div>
+          ) : (
+            <div className="flex w-full min-w-0 flex-col gap-[10px]">
+              <div
+                className={
+                  asList(elicit.options)
+                    ? 'flex min-w-0 flex-col gap-[6px] desktop:max-w-[520px]'
+                    : 'flex min-w-0 flex-wrap items-center gap-[6px]'
+                }
+              >
+                {elicit.options.map((option) => {
+                  const on = picked.includes(option.value)
+                  // At the cap, the options still unpicked stop taking a tap — an answer the card
+                  // would have to refuse should not look available in the first place.
+                  const capped = !!multi && !on && max !== undefined && picked.length >= max
+                  return (
+                    <ElicitOption
+                      key={option.value}
+                      label={option.label}
+                      on={on}
+                      list={asList(elicit.options)}
+                      mono={option.label === option.value}
+                      // A single-choice card answers on the tap, so it holds nothing an
+                      // indicator could report; a multi-select does.
+                      {...(multi ? { staged: true, multi: true } : {})}
+                      disabled={!onAnswer || capped}
+                      onPick={() =>
+                        multi
+                          ? setPicked((prev) => (on ? prev.filter((v) => v !== option.value) : [...prev, option.value]))
+                          : onAnswer?.(option.value)
+                      }
+                    />
+                  )
+                })}
+              </div>
+              {multi && <span className={ELICIT_HINT}>{selectionHint(min, max)}</span>}
+              {/* Only a multi-select has anything to submit — a single-choice card answers on the tap. */}
+              {multi && (
+                <div className={ELICIT_ACTIONS}>
+                  <button
+                    type="button"
+                    className="dsbtn dsbtn-primary xs"
+                    disabled={!onAnswer || !complete}
+                    onClick={() => onAnswer?.(picked)}
+                  >
+                    Confirm
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

@@ -186,6 +186,10 @@ const buttonsNamed = (label: string) =>
 const buttonNamed = (label: string) => buttonsNamed(label)[0]
 // An options card refuses from its head, where the control is an icon named by its label alone.
 const declineButtons = () => [...(container?.querySelectorAll('button[aria-label="Decline without answering"]') ?? [])]
+const minimizeButton = () =>
+  container?.querySelector('button[aria-label="Minimize question"]') as HTMLButtonElement | undefined
+const expandButton = () =>
+  container?.querySelector('button[aria-label="Expand question"]') as HTMLButtonElement | undefined
 const declineButton = () => declineButtons()[0] as HTMLButtonElement | undefined
 
 beforeEach(() => {
@@ -233,6 +237,23 @@ describe('the agent’s elicitation card on the session page', () => {
     })
     // The head's decline is an explicit null, never an absent value.
     expect(live.answered[1]).toEqual(['session-1', 'agent-1', 'elicit-1', null, 'conv-1'])
+  })
+
+  it('folds to its head line and back without answering', async () => {
+    await render()
+
+    await act(async () => {
+      minimizeButton()?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    // Minimizing hides the answers, and the question itself stays put — nothing was sent.
+    expect(text()).toContain('Which branch should I cut from?')
+    expect(buttonNamed('main')).toBeUndefined()
+    expect(live.answered).toEqual([])
+
+    await act(async () => {
+      expandButton()?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(buttonNamed('main')?.disabled).toBe(false)
   })
 
   it('asks where it asked — after the words that set the question up, not above them', async () => {
@@ -864,6 +885,21 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(buttonNamed('main')).toBeUndefined()
     expect(declineButton()).toBeUndefined()
     expect(live.answered).toEqual([])
+  })
+
+  it('unfolds a minimized card when its question settles, so the outcome is never hidden', async () => {
+    await render()
+    await act(async () => {
+      minimizeButton()?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(buttonNamed('main')).toBeUndefined()
+
+    // The same request settles in place — answered elsewhere, or cancelled with the turn.
+    live.steps = [{ ...CARD, elicit: { ...CARD.elicit, outcome: 'accepted', answerLabel: 'develop' } }]
+    await render()
+
+    expect(text()).toContain('develop')
+    expect(buttonNamed('main')).toBeUndefined()
   })
 
   it('names a turn-end cancellation rather than showing a card nobody can answer', async () => {
