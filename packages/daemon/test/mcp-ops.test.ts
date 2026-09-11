@@ -11,7 +11,7 @@ import {
 } from '../src/mcp/ops.js'
 import { AskRequired } from '../src/mcp/ops.js'
 import type { AskAnswer } from '../src/mcp/ask.js'
-import { MULTI_INTEGRATION_NOTE } from '../src/mcp/ops/gateway.js'
+import { MULTI_INTEGRATION_NOTE, resolveGatewayForPlatform } from '../src/mcp/ops/gateway.js'
 import type { MemoryProvider } from '../src/memory/provider.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 import { EPHEMERAL_RESULT_MARKER } from '../src/session/ephemeral-results.js'
@@ -1005,7 +1005,7 @@ describe('executeTool: read tools', () => {
     })
 
     // A history-backed path belongs to ONE bot, and this session's own is the trusted tiebreak
-    // (#1965 — `ambiguousIntegrations`), so it is read and nothing is asked.
+    // (#1965 — the same guard `sendMessage` uses), so it is read and nothing is asked.
     const gwEmpty = fakeGateway({ listChannels: vi.fn(async () => []) })
     const d2: OpsDeps = { ...d, gatewayFor: () => gwEmpty }
     const chans = (await executeTool(twoBots, 'listChannels', {}, d2)) as Record<string, unknown>
@@ -2414,7 +2414,25 @@ describe('executeTool: searchPublicMessages', () => {
   })
 })
 
-// #1965 Gap A: the two history-backed reads answered an agent with more than one bot on the platform with an empty list plus a note naming an `integrationId` the model had no way to obtain. They ask the agent's own host instead, behind `ambiguousIntegrations`, and keep that exact result when they cannot ask.
+/** The ONE ask key "which of your bots on this platform?" travels under, shared by the gateway resolver and the history-backed reads so a tool that does both asks once. */
+const ASK_KEY = 'integrationId.telegram'
+
+/** The exact wire schema that key carries: a titled enum over the trusted session snapshot, and NO root key beyond the three codex's deny-unknown-fields re-parse accepts. */
+const ASK_SCHEMA = {
+  type: 'object',
+  properties: {
+    integrationId: {
+      type: 'string',
+      title: 'Telegram integration',
+      description:
+        'The bot this call acts as; a chat reached via one bot is not reachable by another, and neither is its observed history.',
+      enum: ['tg-a', 'tg-b']
+    }
+  },
+  required: ['integrationId']
+}
+
+// #1965 Gap A: the two history-backed reads answered an agent with more than one bot on the platform with an empty list plus a note naming an `integrationId` the model had no way to obtain. They ask the agent's own host instead, behind the same guard the send path uses, and keep that exact result when they cannot ask.
 describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () => {
   // A Slack session whose agent ALSO has two Telegram bots: neither owns this conversation, so
   // "whose history?" has no trusted tiebreak — the one case the ask exists for.
@@ -2454,25 +2472,14 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
     )
     expect(err).toBeInstanceOf(AskRequired)
     const ask = (err as AskRequired).ask
-    expect(ask.key).toBe('listKnownUsers.integrationId')
+    expect(ask.key).toBe(ASK_KEY)
     // The enum is the trusted session snapshot, never tool input; no ROOT key beyond the three.
-    expect(ask.requestedSchema).toEqual({
-      type: 'object',
-      properties: {
-        integrationId: {
-          type: 'string',
-          title: 'Telegram integration',
-          description: 'The bot whose history is read; a chat reached via one bot is not reachable by another.',
-          enum: ['tg-a', 'tg-b']
-        }
-      },
-      required: ['integrationId']
-    })
+    expect(ask.requestedSchema).toEqual(ASK_SCHEMA)
     expect(observedUsers).not.toHaveBeenCalled()
   })
 
   it("reads the chosen bot's history on the round that carries the answer", async () => {
-    const { observedUsers, d } = readDeps({ ask: port({ 'listKnownUsers.integrationId': accept('tg-b') }) })
+    const { observedUsers, d } = readDeps({ ask: port({ [ASK_KEY]: accept('tg-b') }) })
     expect(await executeTool(crossPlatform, 'listKnownUsers', tg, d)).toEqual({
       platform: 'telegram',
       integrationId: 'tg-b',
@@ -2485,9 +2492,9 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
   // An old in-sandbox bridge declares no ask support, so `deps.ask` is absent there (image skew is the normal case); same fall-through for a decline and for an answer we never offered.
   it.each([
     ['no ask port at all', undefined],
-    ['a decline', port({ 'listKnownUsers.integrationId': { action: 'decline' } })],
-    ['a cancel', port({ 'listKnownUsers.integrationId': { action: 'cancel' } })],
-    ['an answer naming a bot we never offered', port({ 'listKnownUsers.integrationId': accept('tg-z') })]
+    ['a decline', port({ [ASK_KEY]: { action: 'decline' } })],
+    ['a cancel', port({ [ASK_KEY]: { action: 'cancel' } })],
+    ['an answer naming a bot we never offered', port({ [ASK_KEY]: accept('tg-z') })]
   ])("keeps today's exact suppressed result on %s", async (_label, ask) => {
     const { observedUsers, d } = readDeps(ask ? { ask } : {})
     expect(await executeTool(crossPlatform, 'listKnownUsers', tg, d)).toEqual({
@@ -2501,7 +2508,7 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
   // A human answered and that bot simply has no history: say so, or the model reads a bare `[]` as a mis-specified call, re-calls the tool, and a second identical card reaches the same human.
   it("reports an empty human-chosen read as that bot's own empty history", async () => {
     const { d } = readDeps({
-      ask: port({ 'listKnownUsers.integrationId': accept('tg-b') }),
+      ask: port({ [ASK_KEY]: accept('tg-b') }),
       observedUsers: async () => []
     })
     const res = (await executeTool(crossPlatform, 'listKnownUsers', tg, d)) as Record<string, unknown>
@@ -2510,16 +2517,16 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
     expect(res.note).not.toBe(MULTI_INTEGRATION_NOTE)
   })
 
-  // THE REPLAY RULE: the answer arrives on a fresh tool call that re-runs the whole handler, and `listChannels` enumerates live BEFORE it can know the list is empty — so the answering round must read its answer first and skip that platform API call.
+  // THE REPLAY RULE: the answer arrives on a fresh tool call that re-runs the whole handler. The ask now sits in `resolveGatewayForPlatform`, ABOVE the live enumeration, so the asking round spends no platform call at all and the answering round spends exactly one — on the bot the human named.
   it('spends exactly one live enumeration across the asking and the answering round', async () => {
     const answers: Record<string, AskAnswer> = {}
     const { gw, observedChannels, d } = readDeps({ ask: { answer: (key: string) => answers[key] } })
 
     await expect(executeTool(crossPlatform, 'listChannels', tg, d)).rejects.toBeInstanceOf(AskRequired)
-    expect(gw.listChannels).toHaveBeenCalledTimes(1)
+    expect(gw.listChannels).not.toHaveBeenCalled()
     expect(observedChannels).not.toHaveBeenCalled()
 
-    answers['listChannels.integrationId'] = accept('tg-b')
+    answers[ASK_KEY] = accept('tg-b')
     expect(await executeTool(crossPlatform, 'listChannels', tg, d)).toEqual({
       platform: 'telegram',
       integrationId: 'tg-b',
@@ -2548,8 +2555,8 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
     expect(gw.listChannels).toHaveBeenCalledTimes(1)
   })
 
-  // The shared guard (`ambiguousIntegrations`): this session's own bot answers
-  // "whose history", and it is the bot an unqualified `sendMessage` resolves to, so its ids stay reachable.
+  // The SAME guard the send path uses (`ambiguousIntegrations`): this session's own bot answers
+  // "whose history" too, and it is the bot whose ids an unqualified `sendMessage` can reach.
   it("never asks when this session's own bot is one of the candidates", async () => {
     const sameBot = { ...crossPlatform, platform: 'telegram', integrationId: 'tg-a' }
     const { observedUsers, d } = readDeps({ ask: port() })
@@ -2561,15 +2568,8 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
     expect(observedUsers).toHaveBeenCalledWith('bot-a', 'telegram', 'tg-a')
   })
 
-  it('never asks when the live enumeration answers, or when the agent has one bot there', async () => {
-    const live = fakeGateway({ listChannels: vi.fn(async () => [{ id: 'C1' }]) })
-    const { d } = readDeps({ ask: port(), gatewayFor: () => live })
-    expect(await executeTool(crossPlatform, 'listChannels', tg, d)).toEqual({
-      platform: 'telegram',
-      channels: [{ id: 'C1' }],
-      source: 'live'
-    })
-
+  // The live enumeration is no longer exempt: it used to run on whichever candidate came first, so the ask is now made before it (see the cross-platform block below) — but a single bot on the platform is still no question at all.
+  it('never asks when the agent has one bot on the target platform', async () => {
     const oneBot = {
       ...crossPlatform,
       integrations: [
@@ -2590,7 +2590,7 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
     const gwA = fakeGateway({ listChannels: vi.fn(async () => []) })
     const gwB = fakeGateway({ listChannels: vi.fn(async () => []) })
     const { d } = readDeps({
-      ask: port({ 'listChannels.integrationId': accept('tg-b') }),
+      ask: port({ [ASK_KEY]: accept('tg-b') }),
       gatewayFor: (id: string) => (id === 'tg-b' ? gwB : gwA)
     })
     const res = (await executeTool(crossPlatform, 'listChannels', tg, d)) as Record<string, unknown>
@@ -2610,12 +2610,412 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
   // The ask is human-paced, so the turn can die while the card is open: the answering round meets the turn gate first and refuses, the documented outcome rather than a read of stale history.
   it('lets the turn gate refuse the answering round', async () => {
     const { observedUsers, d } = readDeps({
-      ask: port({ 'listKnownUsers.integrationId': accept('tg-b') }),
+      ask: port({ [ASK_KEY]: accept('tg-b') }),
       canRun: () => false
     })
     await expect(executeTool(crossPlatform, 'listKnownUsers', tg, d)).rejects.toThrow(
       /this agent turn has been stopped/
     )
     expect(observedUsers).not.toHaveBeenCalled()
+  })
+})
+
+// #1965 Gap A: `resolveGatewayForPlatform` ended in `candidates[0]`. For a SAME-platform call the first arm keeps the session put, which is right; for a genuine CROSS-platform call the fallback picked whichever of the agent's bots came first, silently — the audit's only silent wrong answer. It asks the agent's own host instead, and the ~16 call sites are untouched because the ask travels as the `AskRequired` sentinel `McpControlServer` already catches centrally.
+describe('executeTool: a cross-platform call asks which bot to act as (#1965 Gap A)', () => {
+  // A Slack session whose agent also has TWO Telegram bots: neither owns this conversation.
+  const crossPlatform: SessionContext = {
+    ...ctx,
+    integrations: [
+      { id: 'int-1', platform: 'slack' },
+      { id: 'tg-a', platform: 'telegram' },
+      { id: 'tg-b', platform: 'telegram' }
+    ]
+  }
+  const tg = { platform: 'telegram' }
+  /** The per-call port `McpControlServer` builds: this round's answers and nothing else. */
+  const port = (answers: Record<string, AskAnswer> = {}) => ({ answer: (key: string) => answers[key] })
+  const accept = (id: string) => ({ action: 'accept' as const, content: { integrationId: id } })
+
+  /** Two live Telegram bots that answer differently, so which one was picked is visible in the result. */
+  function botDeps(over: Partial<OpsDeps> = {}) {
+    // `listBookmarks` is declared so the facet check below the resolver is not what refuses.
+    const gwA = fakeGateway({
+      getUserProfile: vi.fn(async (u) => ({ id: u, name: 'from-a' })),
+      listBookmarks: vi.fn(async () => [])
+    })
+    const gwB = fakeGateway({
+      getUserProfile: vi.fn(async (u) => ({ id: u, name: 'from-b' })),
+      listBookmarks: vi.fn(async () => [])
+    })
+    const d: OpsDeps = { ...makeDeps({ gatewayFor: (id) => (id === 'tg-b' ? gwB : gwA), now: () => 0 }), ...over }
+    return { gwA, gwB, d }
+  }
+
+  it('asks instead of picking the first candidate, and touches no gateway on that round', async () => {
+    const { gwA, gwB, d } = botDeps({ ask: port() })
+    const err = await executeTool(crossPlatform, 'getUserProfile', { ...tg, user: '55' }, d).then(
+      () => undefined,
+      (e: unknown) => e
+    )
+    expect(err).toBeInstanceOf(AskRequired)
+    expect((err as AskRequired).ask.key).toBe(ASK_KEY)
+    // The KEY is shared so a tool cannot ask twice; the MESSAGE is read only on the round that mints it, so the card still says what is being decided.
+    expect((err as AskRequired).ask.message).toBe(
+      "None of this agent's Telegram bots owns this conversation. Which one should read this user profile?"
+    )
+    // The enum is the trusted session snapshot, never tool input; no ROOT key beyond the three.
+    expect((err as AskRequired).ask.requestedSchema).toEqual(ASK_SCHEMA)
+    // Replay-safe by POSITION: the resolver runs above every read, so the asking round spends nothing.
+    expect(gwA.getUserProfile).not.toHaveBeenCalled()
+    expect(gwB.getUserProfile).not.toHaveBeenCalled()
+  })
+
+  it('acts as the bot the host named on the round that carries the answer', async () => {
+    const { gwA, gwB, d } = botDeps({ ask: port({ [ASK_KEY]: accept('tg-b') }) })
+    expect(await executeTool(crossPlatform, 'getUserProfile', { ...tg, user: '55' }, d)).toMatchObject({
+      platform: 'telegram',
+      name: 'from-b'
+    })
+    expect(gwA.getUserProfile).not.toHaveBeenCalled()
+  })
+
+  // An old in-sandbox bridge declares no ask support (image skew is the normal case), a human can decline, and a host could answer with an id we never offered. Each keeps TODAY's exact pick.
+  it.each([
+    ['no ask port at all', undefined],
+    ['a decline', port({ [ASK_KEY]: { action: 'decline' } })],
+    ['a cancel', port({ [ASK_KEY]: { action: 'cancel' } })],
+    ['an answer naming a bot we never offered', port({ [ASK_KEY]: accept('tg-z') })]
+  ])("keeps today's first-candidate pick on %s", async (_label, ask) => {
+    const { gwB, d } = botDeps(ask ? { ask } : {})
+    expect(await executeTool(crossPlatform, 'getUserProfile', { ...tg, user: '55' }, d)).toMatchObject({
+      name: 'from-a'
+    })
+    expect(gwB.getUserProfile).not.toHaveBeenCalled()
+  })
+
+  it('never asks when the call names an integrationId', async () => {
+    const { gwB, d } = botDeps({ ask: port() })
+    expect(
+      await executeTool(crossPlatform, 'getUserProfile', { ...tg, integrationId: 'tg-b', user: '55' }, d)
+    ).toMatchObject({ name: 'from-b' })
+    expect(gwB.getUserProfile).toHaveBeenCalledWith('55')
+  })
+
+  // SAME-PLATFORM IS BYTE-IDENTICAL: this session's own bot is the trusted tiebreak, so the guard (`ambiguousIntegrations`) is empty and no card is ever raised — including for the `ctx.platform` action tools, whose platform is always the session's own.
+  it("never asks a same-platform call: this session's own bot is the answer", async () => {
+    const ownBot = { ...crossPlatform, platform: 'telegram', integrationId: 'tg-a', channel: '-100' }
+    const { gwA, gwB, d } = botDeps({ ask: port() })
+    expect(await executeTool(ownBot, 'getUserProfile', { user: '55' }, d)).toMatchObject({ name: 'from-a' })
+    expect(await executeTool(ownBot, 'listChannelMembers', {}, d)).toMatchObject({ channel: '-100' })
+    expect(gwA.listMembers).toHaveBeenCalledWith('-100')
+    expect(gwB.getUserProfile).not.toHaveBeenCalled()
+  })
+
+  // ONE question per platform per tool call. `listChannels` resolves a gateway AND may fall back to observed history, and the bridge allows only two rounds per call — so both legs read the SAME ask key, or the second leg's card would arrive on a round that can no longer ask.
+  it('asks once for a read that resolves a gateway and then falls back to history', async () => {
+    const answers: Record<string, AskAnswer> = {}
+    const observedChannels = vi.fn(async () => [{ id: '-100', name: 'team chat' }])
+    // The platform that drives the fallback: a bot API that cannot enumerate its own chats.
+    const gwA = fakeGateway({ listChannels: vi.fn(async () => []) })
+    const gwB = fakeGateway({ listChannels: vi.fn(async () => []) })
+    const d: OpsDeps = {
+      ...makeDeps({ gatewayFor: (id) => (id === 'tg-b' ? gwB : gwA), now: () => 0 }),
+      observedChannels,
+      ask: { answer: (key: string) => answers[key] }
+    }
+
+    await expect(executeTool(crossPlatform, 'listChannels', tg, d)).rejects.toBeInstanceOf(AskRequired)
+    answers[ASK_KEY] = accept('tg-b')
+    // No second AskRequired: the history leg consumes the gateway leg's answer.
+    expect(await executeTool(crossPlatform, 'listChannels', tg, d)).toEqual({
+      platform: 'telegram',
+      integrationId: 'tg-b',
+      channels: [{ id: '-100', name: 'team chat' }],
+      source: 'observed'
+    })
+    expect(gwB.listChannels).toHaveBeenCalledTimes(1)
+    expect(gwA.listChannels).not.toHaveBeenCalled()
+    expect(observedChannels).toHaveBeenCalledWith('bot-a', 'telegram', 'tg-b')
+  })
+
+  // The guess this PR removes, at its most visible: a live channel list is a different set of ids per bot, and the caller had no way to know which bot's it got.
+  it('enumerates live on the chosen bot, not on whichever came first', async () => {
+    const gwA = fakeGateway({ listChannels: vi.fn(async () => [{ id: 'CA' }]) })
+    const gwB = fakeGateway({ listChannels: vi.fn(async () => [{ id: 'CB' }]) })
+    const d: OpsDeps = {
+      ...makeDeps({ gatewayFor: (id) => (id === 'tg-b' ? gwB : gwA), now: () => 0 }),
+      ask: port({ [ASK_KEY]: accept('tg-b') })
+    }
+    // …and it names that bot, exactly as the observed branch does: a live channel list is one bot's ids too, and without it the follow-up `sendMessage` would resolve to tg-a and find CB unreachable.
+    expect(await executeTool(crossPlatform, 'listChannels', tg, d)).toEqual({
+      platform: 'telegram',
+      integrationId: 'tg-b',
+      channels: [{ id: 'CB' }],
+      source: 'live'
+    })
+    expect(gwA.listChannels).not.toHaveBeenCalled()
+  })
+
+  // The whole point of naming it: the id the live read returned routes a follow-up call back through the same bot.
+  it('routes a follow-up send back through the bot the live read named', async () => {
+    const gwA = fakeGateway({ listChannels: vi.fn(async () => [{ id: 'CA' }]) })
+    const gwB = fakeGateway({ listChannels: vi.fn(async () => [{ id: 'CB' }]) })
+    const d: OpsDeps = {
+      ...makeDeps({ gatewayFor: (id) => (id === 'tg-b' ? gwB : gwA), now: () => 0 }),
+      ask: port({ [ASK_KEY]: accept('tg-b') })
+    }
+    const res = (await executeTool(crossPlatform, 'listChannels', tg, d)) as Record<string, unknown>
+    const sent = (await executeTool(
+      crossPlatform,
+      'sendMessage',
+      { ...tg, integrationId: res.integrationId, channel: 'CB', message: 'hi' },
+      d
+    )) as { post: Record<string, unknown> }
+    expect(sent.post).toMatchObject({ platform: 'telegram', integrationId: 'tg-b', channel: 'CB' })
+    expect(gwB.postMessage).toHaveBeenCalled()
+    expect(gwA.postMessage).not.toHaveBeenCalled()
+  })
+
+  // …and it stays omitted where nothing was picked: one bot on that platform is the bot an unqualified follow-up resolves to anyway, so there is nothing to carry.
+  it('names no bot on a live read the agent had only one candidate for', async () => {
+    const oneBot = { ...crossPlatform, integrations: [{ id: 'tg-a', platform: 'telegram' }] }
+    const gwA = fakeGateway({ listChannels: vi.fn(async () => [{ id: 'CA' }]) })
+    const d: OpsDeps = { ...makeDeps({ gatewayFor: () => gwA, now: () => 0 }), ask: port() }
+    expect(await executeTool(oneBot, 'listChannels', tg, d)).toEqual({
+      platform: 'telegram',
+      channels: [{ id: 'CA' }],
+      source: 'live'
+    })
+  })
+
+  // The card is human-paced, so the turn can die while it is open: the answering round meets the turn gate first and refuses, rather than acting as a bot for a turn that is gone.
+  it('lets the turn gate refuse the answering round', async () => {
+    const { gwB, d } = botDeps({ ask: port({ [ASK_KEY]: accept('tg-b') }), canRun: () => false })
+    await expect(executeTool(crossPlatform, 'getUserProfile', { ...tg, user: '55' }, d)).rejects.toThrow(
+      /this agent turn has been stopped/
+    )
+    expect(gwB.getUserProfile).not.toHaveBeenCalled()
+  })
+
+  // One shared key, one message per caller: the human is told which decision they are making.
+  it.each([
+    ['getUserProfile', { ...tg, user: '55' }, 'read this user profile'],
+    ['listChannels', { ...tg }, 'list channels'],
+    ['listChannelMembers', { ...tg, channel: '-100' }, 'list the members of this channel'],
+    ['listKnownUsers', { ...tg }, 'list the users it has seen']
+  ])('names what %s is asking about in the card it mints', async (tool, args, purpose) => {
+    const { d } = botDeps({ ask: port() })
+    const err = await executeTool(crossPlatform, tool, args, d).then(
+      () => undefined,
+      (e: unknown) => e
+    )
+    expect(err).toBeInstanceOf(AskRequired)
+    expect((err as AskRequired).ask.message).toBe(
+      `None of this agent's Telegram bots owns this conversation. Which one should ${purpose}?`
+    )
+  })
+
+  // NO ANSWER CAN REPAIR A CHANNEL-LESS CROSS-PLATFORM CALL: the ask fires exactly when no candidate owns this conversation, which is exactly when `channel` stops defaulting in and becomes required. So it must not spend a human interruption — nor one of the two rounds the bridge allows — to arrive at the identical repairable error it gave before the ask existed.
+  it('asks nothing for a channel-less cross-platform read, and fails repairably', async () => {
+    const { gwA, gwB, d } = botDeps({ ask: port() })
+    const err = await executeTool(crossPlatform, 'listChannelMembers', tg, d).then(
+      () => undefined,
+      (e: unknown) => e
+    )
+    expect(err).not.toBeInstanceOf(AskRequired)
+    expect((err as Error).message).toMatch(/channel is required to list members on telegram/)
+    expect(gwA.listMembers).not.toHaveBeenCalled()
+    expect(gwB.listMembers).not.toHaveBeenCalled()
+  })
+
+  // THE OFFER IS THE TRUSTED SNAPSHOT, not the connections live at this instant: `gatewayFor` may rotate between the round that mints the card and the round that carries its answer, and an offer filtered by it would refuse the id the human had just picked.
+  it('offers every candidate, not only the ones with a live connection right now', async () => {
+    const threeBots = {
+      ...crossPlatform,
+      integrations: [...(crossPlatform.integrations ?? []), { id: 'tg-c', platform: 'telegram' }]
+    }
+    const gw = fakeGateway()
+    const d: OpsDeps = {
+      ...makeDeps({ gatewayFor: (id) => (id === 'tg-b' ? undefined : gw), now: () => 0 }),
+      ask: port()
+    }
+    const err = await executeTool(threeBots, 'getUserProfile', { ...tg, user: '55' }, d).then(
+      () => undefined,
+      (e: unknown) => e
+    )
+    expect(err).toBeInstanceOf(AskRequired)
+    expect((err as AskRequired).ask.requestedSchema.properties.integrationId).toMatchObject({
+      enum: ['tg-a', 'tg-b', 'tg-c']
+    })
+  })
+
+  // THE ANSWER OUTLIVES THE CONNECTION: the human picked tg-b and tg-b's connection went down while the card was open. Acting as tg-a instead would be precisely the silent wrong bot this PR exists to remove, so the pick stands and its own dead connection is what fails — the same error a call naming `integrationId: 'tg-b'` outright would get.
+  it.each([
+    ['two bots offered', ['tg-a', 'tg-b']],
+    ['three bots offered', ['tg-a', 'tg-b', 'tg-c']]
+  ])('keeps the bot the human picked when its connection dies first: %s', async (_label, ids) => {
+    const session = { ...crossPlatform, integrations: ids.map((id) => ({ id, platform: 'telegram' })) }
+    const gwA = fakeGateway({ getUserProfile: vi.fn(async (u) => ({ id: u, name: 'from-a' })) })
+    const d: OpsDeps = {
+      ...makeDeps({ gatewayFor: (id) => (id === 'tg-b' ? undefined : gwA), now: () => 0 }),
+      ask: port({ [ASK_KEY]: accept('tg-b') })
+    }
+    await expect(executeTool(session, 'getUserProfile', { ...tg, user: '55' }, d)).rejects.toThrow(
+      /no live telegram connection for integration tg-b/
+    )
+    expect(gwA.getUserProfile).not.toHaveBeenCalled()
+  })
+
+  // An action is the visible half of the same defect: a reaction posted as the wrong bot cannot be taken back.
+  it('never acts as another bot when the chosen one goes down mid-card', async () => {
+    const unowned = {
+      ...crossPlatform,
+      platform: 'telegram',
+      integrationId: undefined,
+      integrations: [
+        { id: 'tg-a', platform: 'telegram' },
+        { id: 'tg-b', platform: 'telegram' }
+      ]
+    }
+    const gwA = fakeGateway({ addReaction: vi.fn(async () => {}) })
+    const d: OpsDeps = {
+      ...makeDeps({ gatewayFor: (id) => (id === 'tg-b' ? undefined : gwA), now: () => 0 }),
+      ask: port({ [ASK_KEY]: accept('tg-b') })
+    }
+    await expect(
+      executeTool(unowned, 'addReaction', { channel: '-100', messageTs: '1', emoji: 'x' }, d)
+    ).rejects.toThrow(/no live telegram connection for integration tg-b/)
+    expect(gwA.addReaction).not.toHaveBeenCalled()
+  })
+
+  // The offer being round-stable is what the untrusted-input guard rests on: an id outside the trusted snapshot is still refused, so "independent of the live set" never means "any string".
+  it('still refuses an id that was never a candidate, live or not', async () => {
+    const gwA = fakeGateway({ getUserProfile: vi.fn(async (u) => ({ id: u, name: 'from-a' })) })
+    const d: OpsDeps = {
+      ...makeDeps({ gatewayFor: () => gwA, now: () => 0 }),
+      ask: port({ [ASK_KEY]: accept('tg-z') })
+    }
+    expect(await executeTool(crossPlatform, 'getUserProfile', { ...tg, user: '55' }, d)).toMatchObject({
+      name: 'from-a'
+    })
+  })
+
+  // `ctx.integrationId` is OPTIONAL — a session registers without one (a memory-only turn, a cron wake) — so the guard is non-empty on the session's OWN platform too, and the ~11 `ctx.platform` action tools reach the ask as well. That is what `sameBotSelector`'s descriptor now promises.
+  describe('a session no bot owns asks on its own platform too', () => {
+    const unowned: SessionContext = {
+      ...crossPlatform,
+      platform: 'telegram',
+      integrationId: undefined,
+      integrations: [
+        { id: 'tg-a', platform: 'telegram' },
+        { id: 'tg-b', platform: 'telegram' }
+      ]
+    }
+
+    it('asks which bot an action acts as', async () => {
+      const { d } = botDeps({ ask: port() })
+      const err = await executeTool(unowned, 'addReaction', { channel: '-100', messageTs: '1', emoji: 'x' }, d).then(
+        () => undefined,
+        (e: unknown) => e
+      )
+      expect(err).toBeInstanceOf(AskRequired)
+      expect((err as AskRequired).ask.key).toBe(ASK_KEY)
+      expect((err as AskRequired).ask.message).toMatch(/Which one should react to a message\?$/)
+    })
+
+    // The same unanswerable shape as the cross-platform read: no channel, so no answer can help.
+    it.each([
+      ['addReaction', { messageTs: '1', emoji: 'x' }, /channel is required to react to a message on telegram/],
+      ['getThreadHistory', { thread: '9' }, /channel is required to read a thread on telegram/],
+      ['listBookmarks', {}, /channel is required when the bookmark is on another bot/]
+    ])('asks nothing for a channel-less %s, and fails repairably', async (tool, args, message) => {
+      const { d } = botDeps({ ask: port() })
+      const err = await executeTool(unowned, tool, args, d).then(
+        () => undefined,
+        (e: unknown) => e
+      )
+      expect(err).not.toBeInstanceOf(AskRequired)
+      expect((err as Error).message).toMatch(message)
+    })
+
+    // THE SAME RULE ONE LEVEL DOWN, and the general form of the `listChannelMembers` bug: a refusal derived from the ARGUMENTS ALONE reads the same whichever bot the human names, so it belongs ABOVE the ask — otherwise the card spends a human interruption, and one of the two rounds the bridge allows, to arrive at the message the call always gave.
+    it.each([
+      ['createConversation', { isPrivate: true }, /pass `name` to create a channel, or `users` to open a DM/],
+      ['scheduleMessage', { channel: '-100', message: 'hi', postAt: 'soon' }, /postAt is not an ISO-8601 instant/],
+      [
+        'scheduleMessage',
+        { channel: '-100', message: 'hi', postAt: new Date(Date.now() + 60_000).toISOString() },
+        /postAt must be at least 2 minutes in the future/
+      ],
+      ['updateCanvas', { canvasId: 'F1', edits: [{ operation: 'delete' }] }, /delete needs a sectionId from readCanvas/]
+    ])('asks nothing for an argument no bot can repair: %s', async (tool, args, message) => {
+      const gatewayFor = vi.fn(() => fakeGateway())
+      const d: OpsDeps = { ...makeDeps({ gatewayFor, now: () => 0 }), ask: port() }
+      const err = await executeTool(unowned, tool, args, d).then(
+        () => undefined,
+        (e: unknown) => e
+      )
+      expect(err).not.toBeInstanceOf(AskRequired)
+      expect((err as Error).message).toMatch(message)
+      // The refusal is above the resolve, so no bot was even looked up on the way to it.
+      expect(gatewayFor).not.toHaveBeenCalled()
+    })
+  })
+
+  // OUT OF SCOPE BY PRODUCT DECISION: `sendMessage` asks nothing here. Its effect is visible and irreversible, so a card that steers it is a product question `docs/product-conventions.md` would have to admit first — filed separately. The send path does not opt in, so it keeps the first-candidate pick even with an ANSWERING port present.
+  describe('the send path never asks', () => {
+    it.each([
+      ['with no ask port at all', undefined],
+      [
+        'with an answering ask port present',
+        { answer: () => ({ action: 'accept' as const, content: { integrationId: 'tg-b' } }) }
+      ]
+    ])('keeps the first-candidate pick %s', async (_label, ask) => {
+      const gw = fakeGateway()
+      const { deps: base } = deps(gw)
+      const d: OpsDeps = ask ? { ...base, ask } : base
+      const res = (await executeTool(crossPlatform, 'sendMessage', { ...tg, channel: '-100', message: 'hi' }, d)) as {
+        post: Record<string, unknown>
+      }
+      expect(res.post).toMatchObject({ platform: 'telegram', integrationId: 'tg-a', channel: '-100' })
+      expect(gw.postMessage).toHaveBeenCalledWith('-100', 'hi', undefined, authorIdentity)
+    })
+  })
+})
+
+// The ask is OPT-IN, so pin the default directly: a call site that says nothing — `sendMessage`, and every future one — keeps today's first-candidate pick by construction rather than by remembering a gate, and only `ask: true` puts a card in front of a human.
+describe('resolveGatewayForPlatform: the ask is opt-in', () => {
+  const unownedTelegram: SessionContext = {
+    ...ctx,
+    integrations: [
+      { id: 'tg-a', platform: 'telegram' },
+      { id: 'tg-b', platform: 'telegram' }
+    ]
+  }
+
+  it('keeps the first-candidate pick until a call site opts in', () => {
+    const gwA = fakeGateway()
+    const gwB = fakeGateway()
+    const answering = { answer: () => ({ action: 'accept' as const, content: { integrationId: 'tg-b' } }) }
+    const resolveDeps = { gatewayFor: (id: string) => (id === 'tg-b' ? gwB : gwA), ask: answering }
+    expect(resolveGatewayForPlatform(unownedTelegram, resolveDeps, 'telegram')).toMatchObject({
+      integrationId: 'tg-a',
+      sameConvo: false
+    })
+    expect(resolveGatewayForPlatform(unownedTelegram, resolveDeps, 'telegram', undefined, {})).toMatchObject({
+      integrationId: 'tg-a'
+    })
+    // …and the same deps DO ask once a call site opts in, so the assertions above are about the flag alone.
+    expect(
+      resolveGatewayForPlatform(unownedTelegram, resolveDeps, 'telegram', undefined, { ask: true }).integrationId
+    ).toBe('tg-b')
+  })
+
+  it('puts no question to a host that opted in but cannot be asked', () => {
+    const gw = fakeGateway()
+    const resolveDeps = { gatewayFor: () => gw }
+    expect(
+      resolveGatewayForPlatform(unownedTelegram, resolveDeps, 'telegram', undefined, { ask: true }).integrationId
+    ).toBe('tg-a')
   })
 })

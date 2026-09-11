@@ -336,17 +336,21 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
       "The IM platform to target. Defaults to the current conversation's platform. Set it to another platform this " +
       'agent is connected to — e.g. list Slack channels while handling a Telegram chat.'
   }
-  // Mirrors sendMessage: pick a specific bot when the agent has more than one
-  // integration on the same platform. Defaults to the current session's bot, else the first.
+  // Mirrors sendMessage: pick a specific bot when the agent has more than one integration on the same platform. Defaults to the current session's bot, else a human's answer, else the first (#1965 Gap A).
   const integrationId = {
     type: 'string',
-    description: 'Optional. Pick a specific bot when the agent has multiple integrations on the target platform.'
+    description:
+      'Optional. Pick a specific bot when the agent has multiple integrations on the target platform. Omit it and ' +
+      'the bot is the one that owns this conversation; on another platform where the agent has several and none ' +
+      'owns this conversation, a human is asked which one to act as.'
   }
   // The port-gated tools below act on THIS session's platform only, so their bot selector
   // never crosses platforms: another bot of this agent on the same platform, nothing else.
   const sameBotSelector = {
     type: 'string',
-    description: 'Optional. Pick another of this agent’s bots on this platform when it has several.'
+    description:
+      'Optional. Pick another of this agent’s bots on this platform when it has several. Omit it and the bot is ' +
+      'the one that owns this conversation; where none of them does, a human is asked which one to act as.'
   }
   // Port-gated tools have no platform selector: a session on a platform that declares the port
   // gets the tool, any other session does not — cross-platform reach of a platform-shaped

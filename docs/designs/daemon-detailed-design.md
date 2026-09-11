@@ -1283,16 +1283,81 @@ an `integrationId`, and the daemon resolves it to that ONE bot's `transportScope
 the session store's history has always been keyed by (a session that spanned several bots carries a
 `mixed:` scope and belongs to none of them). Three consequences worth stating: an explicitly passed
 `integrationId` now scopes the fallback too — the very repair the note asks for used to return the
-note again; `listChannels` reads a delivered answer BEFORE the live enumeration, because the
-replayed round would otherwise spend a second platform API call on a list the asking round already
-found empty, with the guard unchanged by the answer; and an answer lives only in the SDK's per-call
+note again; `listChannels` asks ABOVE its live enumeration rather than below it (the second class,
+next), so the asking round spends no platform API call at all; and an answer lives only in the SDK's per-call
 state, so a later `tools/call` asks the same human again — accepted, and softened by reporting an
 empty human-disambiguated read as _that bot's_ empty history rather than as a platform-wide `[]`
 the model would want to retry. That last consequence is also why a result scoped to one bot names it
 back as `integrationId`: the answer itself dies with the call, so without the id in the result the
 model would hold chat ids it could only reach through a bot the next unqualified call does not pick.
-Where the ask cannot be made or is declined, both reads fall through to the exact suppressed result,
-note included.
+That applies to `listChannels`' LIVE branch as much as to its observed one — a live channel list is
+one bot's ids too, and moving the ask above the enumeration (below) is what first makes a
+human-chosen bot's live list reachable — so both branches name the bot on one rule: omitted only
+where nothing was picked, which is a single bot on that platform, the one an unqualified follow-up
+resolves to anyway. Where the ask cannot be made or is declined, both reads fall through to the exact
+suppressed result, note included.
+
+The second class is the resolution itself. `resolveGatewayForPlatform` ended in
+`candidates.find((i) => i.id === ctx.integrationId) ?? candidates[0]`: for a same-platform call the
+first arm keeps the session put, which is the right answer, but for a genuine cross-platform call
+with several bots on the target platform the fallback took whichever came first, silently. That was
+the audit's only silent WRONG answer — everything else unresolved in the bridge either throws or
+defaults to something a tool descriptor documents. The resolver can now ask instead, behind the same
+`ambiguousIntegrations` guard, which stops about fifteen read and action tools guessing at once.
+The `ctx.platform` action tools are inside that set, not outside it: `ctx.integrationId` is optional
+(a memory-only turn, a cron wake, a session resumed after a restart registers without one), so a
+session that NO bot owns makes the guard non-empty on its own platform too — which is why the
+port-gated tools' `integrationId` descriptor promises the ask as well.
+
+The ask is OPT-IN, and that is the load-bearing part. `resolveGatewayForPlatform` asks only for a
+call site that passed `ask: true`; every other one of its ~16 callers keeps today's first-candidate
+pick BY CONSTRUCTION, rather than by remembering to switch a default off. An opt-out default would
+mean any call site added later silently acquires a human-facing card — which is exactly the failure
+this seam already produced once, on `listChannelMembers`. `sendMessage` is the one caller that does
+not opt in, and it is untouched by this change: its effect is visible and irreversible, so a card
+that steers it is a product question [product-conventions.md](../product-conventions.md) would have
+to admit first, filed separately.
+
+The ask lives in the resolver, not at its call sites. The function is synchronous and returns
+`{ gw, integrationId, sameConvo }`; making it async-and-three-outcomes would oblige every caller to
+propagate a question it has nothing to say about. `AskRequired` is already a typed sentinel
+`McpControlServer` catches centrally, so the helper raises it and stays synchronous — a call site
+that opts in adds one option, nothing more.
+
+A question the ask must not put is one no answer can repair, and the general rule is positional: a
+refusal derived from the ARGUMENTS ALONE reads the same whichever bot the human names, so it belongs
+ABOVE the ask. Its sharpest form is the channel default — a call whose `channel` defaults in only for
+this session's own bot (`listChannelMembers`, `getThreadHistory`, the reaction/bookmark/schedule
+tools) cannot be repaired by ANY answer when no channel was named, because the ask fires exactly when
+no candidate owns this conversation, which is exactly when `channel` becomes required. So
+`askOnlyWithChannel` opts in only when a channel was named. The same rule hoisted the argument checks
+of `createConversation` (`name`/`users`), `scheduleMessage` (`postAt` and its two bounds) and
+`updateCanvas` (per-edit shape) above their resolve: each otherwise spent a card, and one of the two
+rounds the bridge allows, to arrive at the message the call always gave.
+
+The offered enum is the trusted session snapshot and NOTHING else — in particular not the subset
+whose connection happens to be live. `gatewayFor` may rotate, so a liveness-filtered offer is
+computed from a value that can differ between the round that mints the card and the round that
+carries its answer: pick B, lose B's connection while the card is open, and the answering round finds
+B outside its freshly filtered enum, discards it as un-offered, and acts as A — the silent wrong bot
+this ask exists to remove, on the visible-effect tools too. The offer is therefore round-stable, the
+untrusted-input guard still refuses any id outside the snapshot, and a chosen bot that cannot act by
+the time the answer lands fails with the ordinary `no live connection` naming the id the human chose
+— the same error an explicit `integrationId` would have got. It is also what lets the resolver and
+the history-backed reads share one key honestly: both legs now offer the identical set.
+
+ONE key per platform per tool call (`integrationId.<platform>`), shared by the resolver and the
+history-backed reads. The key is shared; the MESSAGE is not — it is read only on the round that
+mints the ask, so each caller passes the verb phrase the card names ("list channels", "react to a
+message") and the human is told which decision they are making. `listChannels` does both — resolve a
+gateway, then maybe fall back to observed history — and the bridge allows two rounds per call, so a
+second, differently-keyed question would arrive on a round that can no longer ask. Sharing the key
+also deleted a workaround: the read-the-answer-before-enumerating pre-check existed only because the
+ask used to sit BELOW the live call, so a replayed round would spend it twice. The ask now sits
+above it, and the answering round spends exactly one platform call — on the bot the human named.
+
+A decline, a cancel, an answer naming an id we never offered, and a host that cannot render a card
+all keep the first-candidate pick, so nothing changes for a runtime without elicitation.
 
 A third-party MCP server's own elicitation is a separate question and needs no work here: it
 already reaches our chat surfaces by the same route, where `AcpHost` answers
