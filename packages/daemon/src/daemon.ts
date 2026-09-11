@@ -17018,7 +17018,16 @@ export class Daemon {
           this.legacyMicrosandboxSessions.delete(sessionHostKey(rec.agentId, rec.key))
           await this.modelSessions.release(rec.key)
           if (!this.microsandbox) {
-            await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
+            // The row is already gone, so the claim MUST still be attempted: a throw from stopping the
+            // host would otherwise leave the pod's claim alive with this member's launch still cached,
+            // and a cached launch keeps re-stamping the claim — which reads as "in use" to the orphan
+            // sweep forever, the one leak its session-pod half can never collect. Logged, not rethrown:
+            // the sweep's remaining sessions are not this one's to fail.
+            try {
+              await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
+            } catch (err) {
+              this.log.warn(`retention: stopping the host of purged session ${rec.key} failed (${formatErr(err)})`)
+            }
             await this.discardSessionSandbox(rec.agentId, rec.key)
           }
         }

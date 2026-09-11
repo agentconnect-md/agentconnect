@@ -336,9 +336,11 @@ failure mode, a single **orphan reconciler**
 `concurrencyPolicy: Forbid`: one shot per run, and the cluster — not the daemon
 — owns the cadence, the mutual exclusion a lease used to provide, and the
 failure reporting a non-zero exit already gives an operator. The Job uses the
-daemon image, the pool members' ServiceAccount, and the same namespace and
-warm-pool environment they read; the members themselves run no sweep and hold
-no scheduler state for one. The job connects to the control plane as an
+daemon image, the pool members' ServiceAccount, the same namespace and
+warm-pool environment they read, and — read-only, by the same Secret — the
+members' own data plane, without which the two sweeps that ask the store a
+question collect nothing; the members themselves run no sweep and hold no
+scheduler state for one. The job connects to the control plane as an
 **observer** (`register.observer`): the same projected identity a member
 presents, admitted on the same TokenReview path, but enrolled in no member set
 — so the duty ledger can never grant work to a process whose only job is to

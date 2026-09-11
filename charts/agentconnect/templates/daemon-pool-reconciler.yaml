@@ -1,12 +1,12 @@
 {{- $reconciler := .Values.daemonPool.reconciler }}
 {{- if .Values.daemonPool.enabled }}
 {{- $daemonTag := .Values.daemonPool.tag | default (include "agentconnect.imageTag" .) }}
-# The pool's orphan reconciler: one sweep of the agents namespace for sandbox objects nobody
-# will ever clean up, then exit. It used to be a timer inside every member with a lease for
-# mutual exclusion; the cluster
-# already owns all three of those things, so it is a CronJob instead — the schedule is the
-# schedule, `concurrencyPolicy: Forbid` is the mutual exclusion, and a sweep that could not read
-# the control plane is a failed Job rather than a warning inside a daemon that keeps serving.
+# The pool's orphan reconciler: one sweep of the agents namespace for sandbox objects nobody will
+# ever clean up — including a session pod whose session row is gone — then exit.
+# It used to be a timer inside every member with a lease for mutual exclusion; the cluster already
+# owns all three of those things, so it is a CronJob instead — the schedule is the schedule,
+# `concurrencyPolicy: Forbid` is the mutual exclusion, and a sweep that could not read the control
+# plane is a failed Job rather than a warning inside a daemon that keeps serving.
 #
 # It runs the daemon image at the pool's own tag as the pool's ServiceAccount, so its cluster
 # rights are exactly the members' claim Role and its control-plane identity is the same projected
@@ -94,10 +94,28 @@ spec:
               resources:
                 {{- toYaml $reconciler.resources | nindent 16 }}
               volumeMounts:
+                {{- with .Values.daemonPool.dataPlane.existingSecret }}
+                - name: data-plane
+                  mountPath: /var/run/ac-data-plane
+                  readOnly: true
+                {{- end }}
                 - name: cp-identity
                   mountPath: /var/run/ac-cp-identity
                   readOnly: true
           volumes:
+            {{- with .Values.daemonPool.dataPlane.existingSecret }}
+            # The members' own data plane, read-only and by the same Secret. Without it the sweep
+            # cannot ask which session pods still have a row, so every one of them reads as live and
+            # nothing reclaims a session pod whose direct teardown failed; the store retention half
+            # is skipped outright.
+            - name: data-plane
+              secret:
+                secretName: {{ . }}
+                defaultMode: 0400
+                items:
+                  - key: {{ $.Values.daemonPool.dataPlane.key }}
+                    path: config.json
+            {{- end }}
             # The projected control-plane audience token, exactly as the members mount it — the
             # observer registration presents this and nothing else.
             - name: cp-identity

@@ -329,8 +329,14 @@ reconcile_mounts = reconcile_container.fetch('volumeMounts').to_h { |item| [item
 abort('reconciler needs the CP identity mount the members have') unless reconcile_mounts['cp-identity'] == mounts['cp-identity']
 reconcile_token = job_pod.fetch('volumes').find { |item| item['name'] == 'cp-identity' }
 abort('reconciler must present the same projected CP token') unless reconcile_token == volumes['cp-identity']
-# A one-shot sweep holds no agent state; the data-plane database is the members' business.
-abort('reconciler must not mount the data-plane Secret') if reconcile_mounts.key?('data-plane')
+# The members' own data plane, read-only. Without it the sweep cannot ask which session pods still
+# have a row (git-workspace-model.md §11), so every one reads as live and nothing reclaims a session
+# pod whose direct teardown failed, and the store retention half is skipped outright. It used to be
+# deliberately absent — "a one-shot sweep holds no agent state" — which read as a clean run while
+# two of the job's three sweeps were silently disabled.
+abort('reconciler needs the data-plane mount its store reads come from') unless reconcile_mounts['data-plane'] == mounts['data-plane']
+reconcile_plane = job_pod.fetch('volumes').find { |item| item['name'] == 'data-plane' }
+abort('reconciler must read the members own data-plane Secret') unless reconcile_plane == volumes['data-plane']
 
 # Collection and the grace period are the two knobs an install turns after its observation window.
 delete_rendered, delete_error, delete_status = Open3.capture3(*(command + [
@@ -344,6 +350,7 @@ delete_env = delete_cron.dig('spec', 'jobTemplate', 'spec', 'template', 'spec', 
   .find { |item| item['name'] == 'reconcile' }.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
 abort('daemonPool.reconciler.delete must enable collection') unless delete_env['AC_K8S_ORPHAN_DELETE'] == 'true'
 abort('daemonPool.reconciler.graceMs must set the grace period') unless delete_env['AC_K8S_ORPHAN_GRACE_MS'] == '1800000'
+
 
 # One chart, one release: the cluster-scoped objects the install needs are rendered here,
 # not by a second chart. They ride `daemonPool.enabled` — see the disabled render at the end.
