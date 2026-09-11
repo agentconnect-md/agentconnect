@@ -546,21 +546,22 @@ Invariants preserved:
   gone, not narrowed.
 
 - **Billing-ledger exception (accepted, product decision).** The billing
-  Transactions feed names an agent on a charge when that agent appears in the
-  viewer's `/usage?source=gateway` projection for the charge's period — i.e.
-  under exactly the intersection this section already uses for Analytics —
-  and renders the billing service's per-charge amount beside that name. A
-  named agent's per-charge amount may therefore include spend the projection
-  itself withholds (an agent with readable and private spend in the same
-  period is named for charges that cover both). This is a deliberate,
-  narrower cousin of the residual inference channel above and is accepted on
-  the same grounds: the ledger already publishes every charge's amount to
-  every member, and the stricter alternative — naming only in periods whose
-  projection withholds nothing — was shipped and blanked attribution for any
-  org with a single private session. What remains enforced: an agent absent
-  from the projection (no readable spend at all) is never named on any charge,
-  ids the roster cannot resolve are never rendered, and everything withheld on
-  a charge folds into one id-less rollup with no count and no partition.
+  Transactions feed names an agent on a charge when that agent is in the
+  viewer's own Agent roster — Agent visibility alone, with no Session
+  predicate — and renders the billing service's per-charge amount beside that
+  name. A named agent's per-charge amount may therefore be spend from sessions
+  the viewer cannot read. This is a deliberate, narrower cousin of the residual
+  inference channel above and is accepted on the same grounds: the ledger
+  already publishes every charge's amount to every member, so naming discloses
+  only which visible agent spent it, never a session's content or existence.
+  Two stricter gates were shipped and rolled back: naming only in periods whose
+  `/usage` projection withheld nothing blanked attribution for any org with a
+  single private session, and naming only agents present in the viewer's
+  `/usage?source=gateway` projection blanked any agent whose only spend in the
+  period ran in a session the viewer could not read — an agent the Agents page
+  names to that same viewer. What remains enforced: ids the roster cannot
+  resolve are never rendered, and everything withheld on a charge folds into
+  one id-less rollup with no count and no partition.
 
 - 404, never 403, for invisible sessions (no existence oracle).
 - A `?triggeredBy=` / `?channel=` query filter remains a filter, not an
