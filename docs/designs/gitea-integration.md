@@ -320,8 +320,9 @@ review whose `user.id` equals `sender.id`, whose `state` matches the event
 type (`COMMENT`, `APPROVED`, or `REQUEST_CHANGES`), and whose `body` equals
 `review.content`. The delivery's top-level `commit_id` is never assigned for
 review events and arrives as an empty string (§16), so it is not compared;
-the current `pull_request.head.sha` may narrow several candidates to those
-whose review `commit_id` matches it, but never excludes the last one.
+`pull_request.head.sha` is the branch tip at delivery time, not the commit
+the review was submitted against, so it is context for the prompt and never
+a filter on candidates.
 Exactly one candidate is the review. Several — the same person submitting
 twice with identical summaries before the first delivery is processed —
 cannot be told apart by the delivery, and "newest" would pair one summary
