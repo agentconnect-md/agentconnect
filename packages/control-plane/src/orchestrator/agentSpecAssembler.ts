@@ -35,6 +35,7 @@ import type {
 } from '../persistence/ports.js'
 import { AgentId } from '../domain/ids.js'
 import { gitlabManagedProjectPath } from '../domain/git-host.js'
+import { codeHostProviders } from '../codehost/registry.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
 import { resolveAgentSkillEntries, type InvalidSkillSourceProjection } from './skillSource.js'
 import {
@@ -271,6 +272,10 @@ export function agentRecordToSpec(
   // dual encoding to the legacy arms (git-workspace-model.md §8) happens at the
   // transmit sites through encodeSpecWorkspaceForPeer. Credential derivation and
   // the allowlist both stay CP-side.
+  const specCredential =
+    a.workspace.mode === 'git' && a.workspace.credential
+      ? codeHostProviders[a.workspace.credential.provider].workspace.toSpec(a.workspace.credential, a.workspaceRepoId)
+      : null
   const workspace: AgentSpec['workspace'] =
     a.workspace.mode === 'git'
       ? {
@@ -284,15 +289,8 @@ export function agentRecordToSpec(
               : normalizeGitCloneUrl(redactGitUrlSecrets(a.workspace.gitRepo)),
           branch: a.workspace.gitBranch ?? 'main',
           ...(a.workspace.agentDir !== undefined ? { agentDir: a.workspace.agentDir } : {}),
-          // installationId and access stay off the wire: minting re-resolves the live
-          // installation by owner, and the CP clamps minted tokens server-side.
-          ...(a.workspace.credential?.provider === 'github'
-            ? { credential: { provider: 'github' as const } }
-            : a.workspace.credential?.provider === 'gitlab'
-              ? // A gitlab-vouched workspace is frame-fatal on a pre-GitLab daemon;
-                // every projection path gates on daemonSupportsAgent before sending it.
-                { credential: { provider: 'gitlab' as const, projectId: (a.workspaceRepoId ?? 0n).toString() } }
-              : {}),
+          // The vouching host owns its own wire shape; absent ⇒ anonymous clone.
+          ...(specCredential ? { credential: specCredential } : {}),
           additionalRepos
         }
       : {
