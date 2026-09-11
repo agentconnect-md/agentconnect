@@ -251,11 +251,17 @@ app's image silently instead of visibly.
 **A card's events outlive its turn.** The frame is still on screen and its bridge still served
 after the opening turn ends, so the daemon keeps sending replies and settlements on that card's
 original `turnId` — while the browser's ordered turn cursor is retired at `done` and its lane
-refuses to reopen. `app_rpc_result` and `app_resolved` therefore bypass stream admission
-entirely: an RPC result is correlated by its own `callId` and a settlement is an idempotent
-update keyed by `appId`, so neither needs the cursor to be correct. Without that bypass, a
-button pressed after the agent finished would hang to its timeout, and a closed card would
-render as live forever.
+refuses to reopen. `app_rpc_result` and `app_resolved` are therefore applied out of band **when,
+and only when, there is no ordered lane to carry them**: an RPC result is correlated by its own
+`callId` and a settlement is idempotent on `appId`, so neither needs ordering to be correct.
+Without that fallback, a button pressed after the agent finished would hang to its timeout and a
+closed card would render as live forever.
+
+The "only when" is the load-bearing half. While the lane is live these events go through the
+ordered path like every other frame, because applying one out of band would consume its `index`
+without telling the cursor — which then waits for that index forever, leaving the following
+reply text and `done` buffered behind it and the conversation wedged as busy. Out of band is
+correct only once there is no band.
 
 ### 7.4 Bounds
 

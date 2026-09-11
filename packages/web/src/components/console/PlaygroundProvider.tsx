@@ -1181,23 +1181,6 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
 
   const receiveOutput = useCallback(
     (id: string, output: WebchatOutput): void => {
-      // CARD-LIFETIME EVENTS BYPASS THE TURN CURSOR, and they have to.
-      //
-      // An MCP App frame outlives the turn that opened it: the reader is still looking at it, and
-      // its bridge is still served (webchat-mcp-apps.md §7.3). The daemon therefore keeps sending
-      // its replies and settlements on the card's ORIGINAL turnId — but `applyStreamResult` drops
-      // that turn's cursor at `done`, and `admitsLane` refuses to reopen a completed lane, so
-      // every one of them would be discarded the moment the agent finished. A button pressed
-      // afterwards would hang until its timeout, and a closed card would keep rendering as live.
-      //
-      // Neither event needs the ordered cursor to be correct: an RPC result is correlated by its
-      // own `callId`, and a settlement is an idempotent in-place update keyed by `appId`. So they
-      // are applied directly, before any admission question is asked.
-      const event = output.event
-      if (event && (event.kind === 'app_rpc_result' || event.kind === 'app_resolved')) {
-        applyEventRef.current(id, event, output.agentId, output.turnId)
-        return
-      }
       let key = cursorKeyFor(id, output.agentId)
       // A warm session's first stream frame can beat the participant's ack to
       // the browser (the daemon emits it synchronously inside turn admission).
@@ -1213,7 +1196,30 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         syncBusyLanes(id)
       }
       const cursor = key ? streamCursors.current.get(key) : undefined
-      if (!key || !cursor || !bindWebchatTurn(cursor, output.turnId)) return
+      if (!key || !cursor || !bindWebchatTurn(cursor, output.turnId)) {
+        // CARD-LIFETIME EVENTS SURVIVE THE LANE'S RETIREMENT — the one frame kind that still
+        // means something with no ordered lane to carry it.
+        //
+        // An MCP App frame outlives the turn that opened it: the reader is still looking at it,
+        // and its bridge is still served (webchat-mcp-apps.md §7.3). The daemon therefore keeps
+        // sending replies and settlements on the card's ORIGINAL turnId — but that turn's cursor
+        // is dropped at `done` and `admitsLane` refuses to reopen a completed lane, so without
+        // this every one of them would vanish the moment the agent finished: a button pressed
+        // afterwards would hang to its timeout, and a closed card would render as live forever.
+        //
+        // Only reachable with no cursor, and that is the whole discipline. While the lane IS live
+        // these events go through the ordered path below like every other frame — applying them
+        // here instead would consume their `index` without telling the cursor, which then waits
+        // for that index forever and leaves the following reply text and `done` buffered behind
+        // it, wedging the conversation as busy. Out of band is correct only once there is no band.
+        const orphan = output.event
+        if (orphan && (orphan.kind === 'app_rpc_result' || orphan.kind === 'app_resolved')) {
+          // Neither needs ordering to be correct: an RPC result is correlated by its own `callId`,
+          // and a settlement is an idempotent in-place update keyed by `appId`.
+          applyEventRef.current(id, orphan, output.agentId, output.turnId)
+        }
+        return
+      }
       reconnectAttempts.current.delete(id)
       applyStreamResult(id, key, acceptWebchatOutput(cursor, output))
     },

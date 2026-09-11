@@ -1610,6 +1610,32 @@ describe('MCP App card lifetime (webchat-mcp-apps.md §7.3)', () => {
     expect(settled).toEqual({ ok: true, result: { structuredContent: { rows: [1] } } })
   })
 
+  it('keeps the ordered cursor intact when an app event lands MID-turn, so the turn still ends', async () => {
+    const { socket, turnId } = await openStream()
+    // The bot's sequence: app(0) → app_rpc_result(1) → message(2) → done(lastIndex: 2). Applying
+    // index 1 out of band would consume it without telling the cursor, which then waits for it
+    // forever — the reply text and `done` stay buffered and the conversation is wedged busy.
+    act(() => {
+      send(socket, turnId, 0, CARD)
+      send(socket, turnId, 1, {
+        kind: 'app_rpc_result',
+        appId: 'app-1',
+        callId: 'mid-turn',
+        outcome: { ok: true, result: {} }
+      })
+      send(socket, turnId, 2, { kind: 'message', text: 'picked prod' })
+    })
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 2 } })
+      })
+    })
+    // The reply after the app event committed, and the turn is no longer busy.
+    const steps = getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')
+    expect(steps.map((step) => step.kind)).toEqual(['app', 'done'])
+    expect(steps.at(-1)).toMatchObject({ text: 'picked prod' })
+  })
+
   it('drops an RPC answer nobody is waiting for, so a replayed stream is harmless', async () => {
     const { socket, turnId } = await openStream()
     act(() => send(socket, turnId, 0, CARD))
