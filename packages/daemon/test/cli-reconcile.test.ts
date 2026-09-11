@@ -14,8 +14,9 @@ import {
   sessionSandboxSubject
 } from '../src/k8s/sandbox-identity.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
-import { SandboxApi, type SandboxClaim } from '../src/k8s/sandbox-api.js'
+import { SandboxApi, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { ORPHAN_DELETE_ENV } from '../src/k8s/orphan-reconciler.js'
+import { IDLE_VOLUME_DELETE_ENV, IDLE_VOLUME_WINDOW_ENV } from '../src/k8s/idle-volume-reaper.js'
 import { STORE_ORPHAN_DELETE_ENV } from '../src/store/retention.js'
 import type { StoreRetentionCandidate, StoreRetentionRule } from '../src/store/retention.js'
 import { K8S_SANDBOX_NAMESPACE_ENV } from '../src/k8s/runtime-plane.js'
@@ -51,7 +52,7 @@ function sessionClaim(agentId: string, sessionKey: string): SandboxClaim {
 }
 
 /** A cluster holding two claims — one of a live agent, one of a forgotten one — plus any extra. */
-async function cluster(opts: { deleteStatus?: number; extraClaims?: SandboxClaim[] } = {}) {
+async function cluster(opts: { deleteStatus?: number; extraClaims?: SandboxClaim[]; sandboxes?: Sandbox[] } = {}) {
   const deletes: string[] = []
   const { config } = await fakeApiServer(({ method, url }) => {
     if (method === 'DELETE') {
@@ -62,7 +63,7 @@ async function cluster(opts: { deleteStatus?: number; extraClaims?: SandboxClaim
     if (url.pathname.endsWith('/sandboxclaims')) {
       return { json: { items: [claim(LIVE), claim(GONE), ...(opts.extraClaims ?? [])] } }
     }
-    if (url.pathname.endsWith('/sandboxes')) return { json: { items: [] } }
+    if (url.pathname.endsWith('/sandboxes')) return { json: { items: opts.sandboxes ?? [] } }
     return { status: 404, json: { kind: 'Status', reason: 'NotFound' } }
   })
   return { api: new SandboxApi(new K8sHttp(config), 'agent-sandboxes'), deletes }
@@ -101,7 +102,8 @@ describe('reconcile --once', () => {
     expect(deletes).toEqual([
       `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxclaims/agent-${GONE}`
     ])
-    expect(infos.at(-1)).toContain('swept 2 candidates — orphaned=1 deleted=1 skipped-live=1')
+    // One line per sweep, not one per run: the idle-volume half reports after the orphan half.
+    expect(infos.some((m) => m.includes('swept 2 candidates — orphaned=1 deleted=1 skipped-live=1'))).toBe(true)
     // The connection is one-shot: closed whatever the sweep decided.
     expect(cp.wasClosed()).toBe(true)
   })
@@ -172,6 +174,69 @@ describe('reconcile --once', () => {
     )
   })
 
+  it('gives back the volume of an agent the store says has no sessions left', async () => {
+    // The idle-volume half of the same job (k8s-daemon-pool.md §4): the claim is a week old, its
+    // Sandbox is suspended, and session retention has released every session of that agent.
+    const idle = { ...claim(LIVE), status: { sandbox: { name: 'sb-live' } } }
+    idle.metadata!.creationTimestamp = new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString()
+    const { api, deletes } = await cluster({
+      extraClaims: [idle],
+      sandboxes: [{ metadata: { name: 'sb-live', uid: 'uid-sb-live' }, spec: { operatingMode: 'Suspended' } }]
+    })
+    const asked: string[][] = []
+    const infos: string[] = []
+    const code = await runReconcileOnce({
+      api,
+      connectCp: fakeCp().connectCp,
+      apiUrl: 'wss://cp.example.test/daemon/ws',
+      env: { [IDLE_VOLUME_DELETE_ENV]: 'true' },
+      openStore: async () => ({
+        store: {
+          ...storeOf({}, []),
+          agentsWithSessionRows: async (agentIds: string[]) => {
+            asked.push(agentIds)
+            return new Set<string>()
+          }
+        },
+        close: async () => undefined
+      }),
+      log: { info: (m) => infos.push(m), warn: (m) => infos.push(m) }
+    })
+    expect(code).toBe(0)
+    expect(asked).toEqual([[LIVE]])
+    const claims = '/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxclaims'
+    // The orphan half is in dry run here, so this delete is the idle half's and nothing else's.
+    expect(deletes).toEqual([`${claims}/agent-${LIVE}`])
+    expect(infos.some((m) => m.includes('idle=1 deleted=1'))).toBe(true)
+  })
+
+  it('keeps every agent volume when the window has not elapsed', async () => {
+    const idle = { ...claim(LIVE), status: { sandbox: { name: 'sb-live' } } }
+    const { api, deletes } = await cluster({
+      extraClaims: [idle],
+      sandboxes: [{ metadata: { name: 'sb-live', uid: 'uid-sb-live' }, spec: { operatingMode: 'Suspended' } }]
+    })
+    const code = await runReconcileOnce({
+      api,
+      connectCp: fakeCp().connectCp,
+      apiUrl: 'wss://cp.example.test/daemon/ws',
+      // An hour-old claim under a two-hour window: nothing is idle yet, and the store is never asked.
+      env: { [IDLE_VOLUME_DELETE_ENV]: 'true', [IDLE_VOLUME_WINDOW_ENV]: String(2 * 60 * 60_000) },
+      openStore: async () => ({
+        store: {
+          ...storeOf({}, []),
+          agentsWithSessionRows: async () => {
+            throw new Error('the store must not be asked')
+          }
+        },
+        close: async () => undefined
+      }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    expect(code).toBe(0)
+    expect(deletes).toEqual([])
+  })
+
   it('keeps every session pod when no shared store is mounted to answer for its row', async () => {
     const { api, deletes } = await cluster({ extraClaims: [sessionClaim(LIVE, 'slack:C1:T-any:agent')] })
     const code = await runReconcileOnce({
@@ -224,7 +289,7 @@ describe('reconcile --once', () => {
     })
     expect(code).toBe(1)
     expect(deletes).toHaveLength(1)
-    expect(logged.at(-1)).toContain('orphaned=1 deleted=0 skipped-live=1 skipped-grace=0 failed=1')
+    expect(logged.some((m) => m.includes('orphaned=1 deleted=0 skipped-live=1 skipped-grace=0 failed=1'))).toBe(true)
   })
 
   it('exits 1 when the control plane cannot be reached, deleting nothing', async () => {

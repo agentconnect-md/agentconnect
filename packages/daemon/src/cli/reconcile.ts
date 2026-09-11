@@ -1,5 +1,5 @@
 /**
- * `agentconnect-daemon reconcile --once` — one orphan sweep, then exit.
+ * `agentconnect-daemon reconcile --once` — one reclamation pass, then exit.
  *
  * The reconciler is a Kubernetes CronJob, not a timer inside every pool member: the cluster owns
  * the schedule, `concurrencyPolicy: Forbid` is the mutual exclusion a lease used to provide, and a
@@ -7,12 +7,17 @@
  * the sandbox API surface, the shared data-plane store, and a control-plane connection to ask which
  * agents still exist — and nothing else: no agents, no platform connections (k8s-daemon-pool.md §4).
  *
- * Both halves run in the one job because they ask the control plane the SAME question: the batched
- * `agent/exists` read answers "is this leaked?" for a `SandboxClaim` and for an outbox row alike.
- * The store half is skipped where no shared data plane is mounted — a local single-daemon store has
- * one owner forever and its rows are its own to drain. The store is also what answers for a SESSION
- * pod (git-workspace-model.md §11): its claim lives as long as its session row, so a pod whose row is
- * gone is an orphan — and without a store every session pod reads as live.
+ * Three sweeps share the one job. The orphan half and the store half ask the control plane the SAME
+ * question: the batched `agent/exists` read answers "is this leaked?" for a `SandboxClaim` and for an
+ * outbox row alike. The store half is skipped where no shared data plane is mounted — a local
+ * single-daemon store has one owner forever and its rows are its own to drain. The store is also what
+ * answers for a SESSION pod (git-workspace-model.md §11): its claim lives as long as its session row,
+ * so a pod whose row is gone is an orphan — and without a store every session pod reads as live.
+ *
+ * The idle-volume half rides along because it needs strictly less: no control-plane read at all, just
+ * the same claim listing and one store query. It collects the workspace volume of an agent nobody has
+ * used for a window (`idle-volume-reaper.ts`), which is the one thing suspension never gave back —
+ * and which the orphan half cannot collect, because those agents are alive.
  *
  * The connection registers as an OBSERVER. It presents the same projected pool identity a member
  * does, so the control plane admits it on the same TokenReview path, but it is enrolled in no
@@ -32,6 +37,7 @@ import { ClientTransport, ReqRep, systemClock, type Transport } from '@agentconn
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import { SandboxApi } from '../k8s/sandbox-api.js'
 import { OrphanReconciler, resolveOrphanReconcilerSettings } from '../k8s/orphan-reconciler.js'
+import { IdleVolumeReaper, resolveIdleVolumeReaperSettings } from '../k8s/idle-volume-reaper.js'
 import { K8S_SANDBOX_NAMESPACE_ENV } from '../k8s/runtime-plane.js'
 import { readClusterIdentityToken } from '../cp/cluster-identity.js'
 import { DATA_PLANE_CONFIG_PATH } from '../store/postgres-config.js'
@@ -53,7 +59,7 @@ export interface ExistenceReader {
 
 /** The shared data-plane store, plus how to give it back; one that lists session keys also answers for session pods. */
 export interface ReapableStore {
-  store: RetentionCapableStore & Partial<Pick<LocalStore, 'sessionKeysForAgent'>>
+  store: RetentionCapableStore & Partial<Pick<LocalStore, 'sessionKeysForAgent' | 'agentsWithSessionRows'>>
   close: () => Promise<void>
 }
 
@@ -78,7 +84,7 @@ export interface ObserverSeams {
 const dialCp = (url: string): Promise<Transport> =>
   ClientTransport.dial(url, { subprotocol: CP_SUBPROTOCOL, path: CP_WS_PATH, handshakeTimeoutMs: REQUEST_TIMEOUT_MS })
 
-/** Exit code: 0 only when both sweeps ran AND collected everything they decided to; 1 otherwise. */
+/** Exit code: 0 only when every sweep ran AND collected everything it decided to; 1 otherwise. */
 export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<number> {
   const env = opts.env ?? process.env
   const log = opts.log ?? { info: (m: string) => console.log(m), warn: (m: string) => console.error(m) }
@@ -86,6 +92,7 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
   let mounted: ReapableStore | undefined
   try {
     const settings = resolveOrphanReconcilerSettings(env)
+    const idleSettings = resolveIdleVolumeReaperSettings(env)
     const storeSettings = resolveStoreRetentionSettings(env)
     // The namespace is resolved BEFORE the in-cluster config: a missing env var must name itself,
     // not surface as "this process is not in a pod".
@@ -99,6 +106,7 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     mounted = await (opts.openStore ?? openSharedStore)()
     const sessionKeys = mounted?.store.sessionKeysForAgent?.bind(mounted.store)
     const liveSessionLeaves = sessionKeys ? liveSessionLeavesFrom(sessionKeys) : undefined
+    const agentsWithSessions = mounted?.store.agentsWithSessionRows?.bind(mounted.store)
     const reconciler = new OrphanReconciler({
       api,
       liveAgents,
@@ -107,6 +115,14 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
       log
     })
     const summary = await reconciler.sweep()
+    // The idle-volume half, after the orphan half: a claim the orphan sweep just collected is gone
+    // from this listing, so the two never decide about the same object in one run.
+    const idleSummary = await new IdleVolumeReaper({
+      api,
+      ...(agentsWithSessions ? { agentsWithSessions } : {}),
+      settings: idleSettings,
+      log
+    }).sweep()
     // No data plane is not a failure: this deployment keeps no shared store to sweep.
     // No `ownerId`: a one-shot job owns no rows, so every rule keeps its conservative window.
     const storeSummary = mounted
@@ -114,7 +130,7 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
       : { failed: 0 }
     // A delete that failed is counted, not thrown, so the run reports the whole picture — but a run
     // that left an orphan behind is not a successful Job, or the cluster hides a leak that repeats.
-    return summary?.failed === 0 && storeSummary?.failed === 0 ? 0 : 1
+    return summary?.failed === 0 && idleSummary?.failed === 0 && storeSummary?.failed === 0 ? 0 : 1
   } catch (err) {
     log.warn(`reconcile: sweep failed — ${(err as Error).message}`)
     return 1
