@@ -11,7 +11,9 @@
  */
 import { randomUUID } from 'node:crypto'
 import {
+  codeHostHookMetadataOf,
   RELAY_CP_SUBPROTOCOL,
+  type CodeHostProvider,
   type RcCodeHostMembershipAuthz,
   type RcHookRerun,
   type RcHookRerunResult,
@@ -34,6 +36,7 @@ import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
 import { registerGithubIngress } from './hooks/github-ingress.js'
 import { dispatchGitlabRerun, registerGitlabIngress } from './hooks/gitlab-ingress.js'
+import { dispatchGiteaRerun, registerGiteaIngress } from './hooks/gitea/ingress.js'
 import { McpBindingTable } from './mcp/binding-table.js'
 import { registerMcpProxy, registerMemoryPluginProxy } from './mcp/proxy.js'
 import { MemoryConnectionBindingTable } from './memory/binding-table.js'
@@ -62,7 +65,7 @@ async function main(): Promise<void> {
     client?: RelayCpClient
     rdServer?: RelayDaemonServer
     relayIngress?: RelayIngressManager
-    gitlabRerun?: (rerun: RcHookRerun) => RcHookRerunResult
+    hookRerun?: (rerun: RcHookRerun) => RcHookRerunResult
   } = {}
 
   // The bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2).
@@ -175,9 +178,9 @@ async function main(): Promise<void> {
       }),
     onHookAssign: (rule) => hookTable.upsert(rule),
     onHookRemove: (hookId) => hookTable.remove(hookId),
-    // Late-bound: the gitlab ingress deps this reuses are built after listen, so
+    // Late-bound: the code-host ingress deps this reuses are built after listen, so
     // a frame that somehow beats them finds no rule table either.
-    onHookRerun: (rerun) => held.gitlabRerun?.(rerun) ?? { admitted: false, code: 'replay_pending' },
+    onHookRerun: (rerun) => held.hookRerun?.(rerun) ?? { admitted: false, code: 'replay_pending' },
     // Bot-agnostic collaboration routing snapshot (agent-collaboration §2.3/§6.2) —
     // FULL-REPLACE the relay's cross-daemon agent-call routing/policy table.
     onCollabRoutes: (snap) => collab.replace(snap),
@@ -269,8 +272,34 @@ async function main(): Promise<void> {
     log
   }
   registerGitlabIngress(server, gitlabIngressDeps)
-  // The Console "Run again" action (§16.1) re-enters the same dispatch path.
-  held.gitlabRerun = (rerun) => dispatchGitlabRerun(gitlabIngressDeps, rerun)
+
+  // Gitea repository webhooks (gitea-integration.md §7): rule-carried signing
+  // keys, bare-hex signature, no replay window, live membership through the CP.
+  const giteaAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
+  const giteaIngressDeps = {
+    table: hookTable,
+    daemons: () => held.rdServer,
+    report: (r: RcRunReport) => client.emitRunReport(r),
+    authorizeMembership: (request: RcCodeHostMembershipAuthz) => client.authorizeCodeHostMembership(request),
+    authzLimiter: giteaAuthzLimiter,
+    limiter,
+    clock: systemClock,
+    log
+  }
+  registerGiteaIngress(server, giteaIngressDeps)
+
+  // The Console "Run again" action (§16.1, gitea-integration.md §10.4) re-enters the ordinary
+  // dispatch path. `rc/hook-rerun` is provider-keyed: its single member picks the handler, and a
+  // member no handler owns is refused definitively so the CP can ask another relay.
+  const rerunByProvider: Partial<Record<CodeHostProvider, (rerun: RcHookRerun) => RcHookRerunResult>> = {
+    gitlab: (rerun) => dispatchGitlabRerun(gitlabIngressDeps, rerun),
+    gitea: (rerun) => dispatchGiteaRerun(giteaIngressDeps, rerun)
+  }
+  held.hookRerun = (rerun) => {
+    const host = codeHostHookMetadataOf(rerun)
+    const dispatch = host && rerunByProvider[host.provider]
+    return dispatch ? dispatch(rerun) : { admitted: false, code: 'rule_mismatch' }
+  }
 
   // MCP reverse proxy (ALL /mcp/:providerId) — resolves a grant to its upstream, SSRF-guards
   // + IP-pins the operator-supplied upstream, swaps the bearer for the real headers, streams
