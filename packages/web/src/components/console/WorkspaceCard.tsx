@@ -26,8 +26,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
-import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
+import { isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import { GithubMark, LoadingState } from '@/components/marks'
+import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Icon } from '@/components/ui'
+import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { isPoolPlacementKind, workspaceSourceOf, type Agent, type WorkspaceStatusInfo } from '@/lib/data'
 import { creatorLabel, fetchAgentRepos, repoAuthProvider } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
@@ -122,8 +125,9 @@ export function WorkspaceCard({
   // An anonymous checkout has nothing to mint a write token from, so its
   // effective workspace access is read regardless of the stored preference.
   const workspaceAccess = ws.mode === 'git' ? (ws.provider !== undefined ? (ws.gitAccess ?? 'write') : 'read') : null
+  // A code host is named by its projection; everything else is just "remote".
   const remoteLabel =
-    header?.remoteLabel ?? (source === 'gitlab' ? 'GitLab' : source === 'github' ? 'GitHub' : 'remote')
+    header?.remoteLabel ?? (isCodeHostProvider(source) ? CODE_HOST_PROJECTION[source].label : 'remote')
 
   return (
     <div className={`card overflow-hidden max-desktop:rounded-lg ${className ?? ''}`}>
@@ -143,10 +147,8 @@ export function WorkspaceCard({
                   : undefined
             }
           >
-            {source === 'gitlab' ? (
-              <GitlabMark />
-            ) : source === 'github' ? (
-              <GithubMark color="var(--text-secondary)" />
+            {isCodeHostProvider(source) ? (
+              <CodeHostMark provider={source} color="var(--text-secondary)" />
             ) : (
               <Icon name="link-2" size={16} color="var(--text-secondary)" />
             )}
@@ -258,7 +260,7 @@ export function WorkspaceCard({
                 title={`${r.repoFullName} — ${r.access} access${poolPlaced ? '' : ', checked out alongside the workspace'}; added by ${creatorLabel(r.createdBy, me)}`}
               >
                 <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
-                  {repoAuthProvider(r) === 'gitlab' ? <GitlabMark /> : <GithubMark />}
+                  <CodeHostMark provider={repoAuthProvider(r)} />
                 </span>
                 <span className="mono text-[11.5px] text-(--text-primary)">{r.repoFullName}</span>
                 <span className={REPOSITORY_ACCESS_BADGE[r.access]}>{r.access}</span>

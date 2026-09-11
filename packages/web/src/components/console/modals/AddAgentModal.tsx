@@ -46,6 +46,8 @@ import {
   type GithubRepoAccess,
   type GithubRepoDto
 } from '@/lib/api'
+import { isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
+import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
@@ -800,14 +802,12 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // the install button.
   const manageGithubAccess = installGithubApp
 
-  const modeHint =
-    wsMode === 'gitlab'
-      ? 'The project is cloned onto the machine; the agent runs from the directory you pick.'
-      : wsMode === 'github'
-        ? 'The repo is cloned onto the machine; the agent runs from the directory you pick.'
-        : wsMode === 'giturl'
-          ? 'Cloned with the daemon host’s own git credentials; the agent runs from the directory you pick.'
-          : 'We create a fresh working directory on the daemon — nothing is cloned.'
+  // Each code host says what it calls the thing being cloned; the two host-free tiles word themselves.
+  const modeHint = isCodeHostProvider(wsMode)
+    ? `The ${CODE_HOST_PROJECTION[wsMode].repoNounShort} is cloned onto the machine; the agent runs from the directory you pick.`
+    : wsMode === 'giturl'
+      ? 'Cloned with the daemon host’s own git credentials; the agent runs from the directory you pick.'
+      : 'We create a fresh working directory on the daemon — nothing is cloned.'
   const urlTileHint = wsMode === 'giturl' ? gitRepoUrlTileHint(urlInput) : null
 
   // What still blocks Create, per section — an amber dot on the rail item plus,
