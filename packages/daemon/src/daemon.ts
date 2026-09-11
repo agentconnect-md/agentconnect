@@ -14001,8 +14001,9 @@ export class Daemon {
         case 'ui/message': {
           // The frame speaking into the conversation. It becomes the READER's turn, under the
           // author the relay verified — the page is agent-authored and may not name a sender —
-          // and it goes through the ordinary dispatch, so roster, hop budget, busy/steer and
+          // and it goes through the ordinary dispatch, so the roster check, busy/steer and the
           // transcript all apply to it exactly as they do to something typed in the composer.
+          // There is no hop to charge on a user turn; the card's call budget bounds a looping page.
           const ack = await this.webchatTransport.dispatchWebchatTurn(
             app.agentId ?? '',
             app.conversationId,

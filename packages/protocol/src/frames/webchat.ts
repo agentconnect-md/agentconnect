@@ -360,9 +360,11 @@ export const McpAppRpc = z.discriminatedUnion('method', [
   }),
   // `resources/read` — this app's own server only, which is what makes a bare uri safe to take.
   z.object({ method: z.literal('resources/read'), uri: z.string().min(1).max(2048) }),
-  // `ui/message` — the frame speaking into the conversation. Delivered as an ordinary user turn
-  // attributed to the reader, and charged the same hop budget an agent-call activation is: a page
-  // that can post is a loop source, and `hopCount` exists for exactly that.
+  // `ui/message` — the frame speaking into the conversation. Delivered as an ORDINARY user turn
+  // under the author the relay verified, never an author the page named: the roster check, the
+  // busy/steer decision and the transcript then apply to it exactly as to something typed in the
+  // composer. What bounds a page posting in a loop is the card's own call budget and that busy
+  // gate, not a hop count — a user turn has no hop to charge.
   z.object({ method: z.literal('ui/message'), text: z.string().min(1).max(4000) }),
   // `ui/update-model-context` — what the app wants the next turn to know. Held on the session.
   z.object({ method: z.literal('ui/update-model-context'), context: z.string().max(MCP_APP_CONTEXT_MAX_CHARS) })

@@ -240,8 +240,11 @@ that opened it, and only for a live `appId` in its own conversation.
   `superseded`.
 - A view's `tools/call` is rate-limited per `appId`, and every call is a real tool call
   in the transcript — an app cannot act invisibly.
-- `ui/message` is charged the same hop budget an agent-call activation is, for the reason
-  `hopCount` exists: a page that can post into the conversation is a loop source.
+- `ui/message` is delivered through the ORDINARY user-turn dispatch, under the author the
+  relay verified — so the roster check, the busy/steer decision and the transcript apply to it
+  exactly as they do to something typed in the composer. It is not hop-charged, because it is
+  not an agent post: what bounds a page that posts in a loop is the per-card call budget above
+  plus the turn's own busy gate, and a frame is settled the moment its conversation closes.
 
 ## 8. Body-locality
 
