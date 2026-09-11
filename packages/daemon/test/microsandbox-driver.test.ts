@@ -833,6 +833,16 @@ describe('microsandbox process and VM ownership', () => {
     expect([...images.keys()]).toEqual(['test-image'])
   })
 
+  it('reclaims the preparation disk a start left behind after its VM was destroyed', async () => {
+    const { options, created, volumes } = await fixture()
+    await new MicrosandboxManager(options).prepare()
+    const probe = created[created.length - 1]!.name
+    // A start that exits between destroying the VM and removing its disk leaves the disk under a fixed name.
+    volumes.set(`${probe}-docker`, { attached: false })
+    await expect(new MicrosandboxManager(options).prepare()).resolves.toBeDefined()
+    expect(volumes.has(`${probe}-docker`)).toBe(false)
+  })
+
   it('starts when the image cache cannot be read', async () => {
     const { options, imageCache } = await fixture()
     imageCache.list.mockRejectedValueOnce(new Error('image cache is locked'))

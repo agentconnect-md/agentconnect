@@ -400,9 +400,11 @@ export class MicrosandboxManager {
   /** A daemon killed mid-preparation leaves this VM behind, and with it a pin on the image it booted. */
   private async reclaimPreparation(name: string): Promise<void> {
     const existing = await this.find(name)
-    if (!existing) return
-    this.options.log?.warn('microsandbox: removing the preparation VM an earlier start left behind')
-    await existing.destroy({ timeoutMs: STOP_TIMEOUT_MS })
+    if (existing) {
+      this.options.log?.warn('microsandbox: removing the preparation VM an earlier start left behind')
+      await existing.destroy({ timeoutMs: STOP_TIMEOUT_MS })
+    }
+    // The disk outlives a VM destroyed just before cleanup, and this name is fixed, so creation would collide.
     await this.removeVolume(`${name}-docker`)
   }
 
