@@ -15,6 +15,7 @@
 import {
   buildRelayCpFrame,
   decodeRelayCpFrame,
+  GITEA_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
@@ -557,12 +558,16 @@ export class RelayCpClient {
         // admission REP — strictly newer than gitlab-com-v1 (§17.3).
         // gitlab-instance-v1: this relay carries the compiled rule's host through onto the
         // trusted metadata it forwards, so a self-managed rule is dispatchable here (§24.4).
+        // gitea-v1: this relay verifies and routes Gitea repository webhooks and decodes the
+        // gitea arm of rc/hook-rerun, for gitea.com and a self-hosted address alike
+        // (gitea-integration.md §7, §11).
         features: [
           WEBCHAT_SESSION_CONTINUATION_FEATURE,
           GITLAB_COM_V1_FEATURE,
           GITLAB_RERUN_V1_FEATURE,
           GITLAB_INSTANCE_V1_FEATURE,
-          PULL_REQUEST_FEEDBACK_FEATURE
+          PULL_REQUEST_FEEDBACK_FEATURE,
+          GITEA_V1_FEATURE
         ]
       })
     )
