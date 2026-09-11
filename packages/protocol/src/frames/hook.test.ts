@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   codeHostHookMetadataOf,
+  GiteaHookMetadata,
   GithubHookMetadata,
   GithubReviewAuthorize,
   GitlabHookMetadata,
@@ -44,6 +45,12 @@ const github = {
   mergeCommitSha: 'c'.repeat(40),
   isDraft: false,
   baseChanged: false
+}
+
+const gitea = {
+  repoId: '556677',
+  repoPath: 'example-org/example-repo',
+  target: { kind: 'pull' as const, index: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) }
 }
 
 describe('R1/R2a hook control schemas', () => {
@@ -350,6 +357,54 @@ describe('code-host M0 shapes (gitlab-com-integration.md §17.2)', () => {
   })
 })
 
+describe('gitea shapes (gitea-integration.md §8, §11)', () => {
+  it('validates Gitea subject metadata across all three targets', () => {
+    expect(GiteaHookMetadata.safeParse(gitea).success).toBe(true)
+    expect(GiteaHookMetadata.safeParse({ ...gitea, target: { kind: 'issue', index: 12 } }).success).toBe(true)
+    expect(GiteaHookMetadata.safeParse({ ...gitea, target: { kind: 'push', ref: 'refs/heads/main' } }).success).toBe(
+      true
+    )
+    // Issues and pull requests share one index space, so BOTH discriminators are legal and neither
+    // may be omitted — a key built without the kind would fuse issue 7 with pull request 7.
+    expect(GiteaHookMetadata.safeParse({ ...gitea, target: { kind: 'merge_request', index: 7 } }).success).toBe(false)
+    // Missing subject identity is rejected before a session key could be derived from it.
+    expect(GiteaHookMetadata.safeParse({ ...gitea, target: { kind: 'issue' } }).success).toBe(false)
+    expect(GiteaHookMetadata.safeParse({ ...gitea, target: { kind: 'push', ref: '' } }).success).toBe(false)
+    expect(GiteaHookMetadata.safeParse({ ...gitea, repoId: 'example-org/example-repo' }).success).toBe(false)
+    // The instance fence and the acknowledgement target are optional; absent means gitea.com and
+    // "the subject itself fired this delivery".
+    expect(GiteaHookMetadata.safeParse({ ...gitea, host: 'https://gitea.example.test', commentId: '9' }).success).toBe(
+      true
+    )
+  })
+
+  it('keeps hook/start and hook/report a provider one-of with the third member', () => {
+    const base = { hookId: HOOK_ID, agentId: AGENT_ID, deliveryKey: 'delivery-1', ...snapshot }
+    expect(HookStart.safeParse({ ...base, gitea }).success).toBe(true)
+    expect(HookStart.safeParse({ ...base, gitea, github }).success).toBe(false)
+    expect(HookStart.safeParse({ ...base, gitea, gitlab }).success).toBe(false)
+    const report = { hookId: HOOK_ID, agentId: AGENT_ID, deliveryKey: 'delivery-1', status: 'success' as const }
+    expect(HookReport.safeParse({ ...report, gitea }).success).toBe(true)
+    expect(HookReport.safeParse({ ...report, gitea, gitlab }).success).toBe(false)
+  })
+
+  it('round-trips a gitea member over the wire for a peer that negotiated the slice', () => {
+    const start = buildEnvelope('hook/start', {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'delivery-1',
+      event: 'merge_request:synchronize',
+      gitea,
+      ...snapshot
+    })
+    const decoded = decodeEnvelope(JSON.stringify(start))
+    if (!decoded.ok || !isFrame('hook/start')(decoded.frame)) throw new Error('expected hook/start')
+    expect(decoded.frame.payload.github).toBeUndefined()
+    expect(decoded.frame.payload.gitlab).toBeUndefined()
+    expect(decoded.frame.payload.gitea?.repoId).toBe(gitea.repoId)
+  })
+})
+
 describe('code-host member view (gitea-integration.md §13)', () => {
   it('derives one provider-keyed view from the wire members and keys it by repository', () => {
     expect(codeHostHookMetadataOf({ github })).toEqual({
@@ -362,11 +417,18 @@ describe('code-host member view (gitea-integration.md §13)', () => {
       repo: { provider: 'gitlab', externalId: gitlab.projectId, path: gitlab.projectPath },
       metadata: gitlab
     })
+    expect(codeHostHookMetadataOf({ gitea })).toEqual({
+      provider: 'gitea',
+      repo: { provider: 'gitea', externalId: gitea.repoId, path: gitea.repoPath },
+      metadata: gitea
+    })
   })
 
   it('fails closed on a frame carrying no member or (malformed) more than one', () => {
     expect(codeHostHookMetadataOf({})).toBeUndefined()
     expect(codeHostHookMetadataOf({ github, gitlab })).toBeUndefined()
+    expect(codeHostHookMetadataOf({ github, gitea })).toBeUndefined()
+    expect(codeHostHookMetadataOf({ gitlab, gitea })).toBeUndefined()
   })
 
   it('reads the member a decoded frame kept for an older peer', () => {
@@ -384,6 +446,7 @@ describe('code-host member view (gitea-integration.md §13)', () => {
   it('copies the members forward as they are for a frame that only forwards them', () => {
     expect(pickCodeHostHookMembers({ github })).toEqual({ github })
     expect(pickCodeHostHookMembers({ gitlab, github: undefined })).toEqual({ gitlab })
+    expect(pickCodeHostHookMembers({ gitea })).toEqual({ gitea })
     expect(pickCodeHostHookMembers({})).toEqual({})
   })
 })

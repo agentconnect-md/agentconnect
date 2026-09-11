@@ -56,7 +56,9 @@ export const AgentWorkspaceCredential = z.discriminatedUnion('provider', [
   // Minting re-resolves the live installation by owner, so no installationId travels.
   z.object({ provider: z.literal('github') }),
   // The rename-stable numeric project id — the gitcred v2 request identity.
-  z.object({ provider: z.literal('gitlab'), projectId: z.string().regex(/^[1-9]\d*$/) })
+  z.object({ provider: z.literal('gitlab'), projectId: z.string().regex(/^[1-9]\d*$/) }),
+  // The rename-stable numeric repository id (gitea-integration.md §12); same v2 request identity.
+  z.object({ provider: z.literal('gitea'), repoId: z.string().regex(/^[1-9]\d*$/) })
 ])
 export type AgentWorkspaceCredential = z.infer<typeof AgentWorkspaceCredential>
 
@@ -369,6 +371,11 @@ export const AgentSpec = z.object({
   // is what every spec an older CP projects means. One field rather than a per-consumer
   // table is the one-instance axiom (§24.1) made wire-visible.
   gitlabHost: z.string().optional(),
+  // The Gitea instance every Gitea consumer on this spec addresses (gitea-integration.md §11),
+  // the third pre-spawn host field and the exact twin of `gitlabHost` above: set whenever the
+  // assembled spec has ANY Gitea consumer, absent meaning gitea.com. Per-provider rather than a
+  // table of hosts on purpose (§13) — both are one-axis values with a default.
+  giteaHost: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(), // extra env injected into the runtime
   // Write-only secret env vars: same injection as `env` (merged into the spawned
   // child's environment, secrets winning on a key collision), but their VALUES never
