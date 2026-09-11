@@ -101,6 +101,13 @@ same shape, which is what lets one `WorkspaceRoot` drive both. A submodule root
 (decision 11) has the same entry but is never listed as an additional directory;
 ordinary sessions reach its content through the parent's submodule path.
 
+For confined sessions, decision 11 uses each session root's own tree, never a
+shared checkout: the selected revision before a fresh checkout or review reset,
+and the retained working directory on ordinary resume. Discovery precedes the
+next root while checkout may overlap it. An exclusion takes effect only after the
+parent finishes successfully; an unavailable parent leaves the authorized root
+eligible for its own clone. See [the confined preparation sequence](git-workspace-model.md#the-clone).
+
 A GitLab project's subtree is `repos/_gitlab/<project id>` rather than its path
 ([gitlab-com-integration.md §13.1](gitlab-com-integration.md)): a namespaced
 path has any depth, and the numeric id is what a rename cannot change, so the

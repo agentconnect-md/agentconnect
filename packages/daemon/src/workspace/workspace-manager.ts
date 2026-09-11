@@ -47,7 +47,7 @@ import {
 } from './git-injection.js'
 import { GitTransportError, LocalGitRunner, type GitRunner } from './git-runner.js'
 import { localWorkspaceFs, type WorkspaceFs, type WorkspacePlacement } from './workspace-fs.js'
-import { gitmoduleRepos } from './gitmodules.js'
+import { githubSubmoduleRepo, gitmoduleRepos } from './gitmodules.js'
 import {
   GITLAB_ROOTS_DIR,
   gitlabSubtreeName,
@@ -759,10 +759,7 @@ export class WorkspaceManager {
   }
 
   // Prepare available secondary roots lazily, omitting failures and repositories already present as submodules.
-  async prepareSecondaryRoots(
-    agent: Agent,
-    pull = agent.workspace.pullOnNewSession
-  ): Promise<SecondaryWorkspaceRoot[]> {
+  async prepareSecondaryRoots(agent: Agent): Promise<SecondaryWorkspaceRoot[]> {
     const roots = this.secondaryRootsFor(agent)
     if (roots.length === 0) {
       this.readyRoots.delete(agent.id)
@@ -781,7 +778,7 @@ export class WorkspaceManager {
         )
         continue
       }
-      const prepared = await this.prepareSecondaryRoot(agent, root, pull)
+      const prepared = await this.prepareSecondaryRoot(agent, root)
       if (!prepared) continue
       for (const repo of await this.submoduleReposOf(agent.id, root.path)) submodules.add(repo)
       ready.push(prepared)
@@ -1180,15 +1177,15 @@ export class WorkspaceManager {
     return this.withSkills(agent, this.resolveAcpCwd(root, agentDir), opts)
   }
 
-  // Shared checkouts retain identity, submodule discovery and Console reads even when a session clones independently.
-  private async prepareWorkspaceRoots(agent: Agent, pull = agent.workspace.pullOnNewSession): Promise<string> {
-    const root = await this.preparePrimaryRoot(agent, pull)
-    await this.prepareSecondaryRoots(agent, pull)
+  // Shared sessions and unconfined worktrees discover references from these shared roots.
+  private async prepareWorkspaceRoots(agent: Agent): Promise<string> {
+    const root = await this.preparePrimaryRoot(agent)
+    await this.prepareSecondaryRoots(agent)
     return root
   }
 
   // Prepare the shared root; only the eventual session cwd must contain the configured agentDir.
-  private async preparePrimaryRoot(agent: Agent, pull: boolean): Promise<string> {
+  private async preparePrimaryRoot(agent: Agent, pull = agent.workspace.pullOnNewSession): Promise<string> {
     const cwd = agent.workspace.path
     // Fail unsafe config before using either a fresh or existing checkout.
     if (agent.workspace.mode === 'git-repo') normalizeRepoSubdir(agent.workspace.agentDir)
@@ -1859,9 +1856,14 @@ export class WorkspaceManager {
     const reviewRoot = this.reviewedSecondaryRoot(agent, request)
     // Resolve the durable reviewed cwd before shared shortcuts: scratch resumes can carry neither review nor isolation.
     const cwdRoot = reviewRoot ?? (await this.resumedReviewedRoot(agent, request))
-    const isolated = request.isolation === 'session' || cwdRoot !== undefined
-    const confined = isolated && this.confinedSessionTier(agent, request.sessionKey, request.confined)
-    const primary = await this.prepareWorkspaceRoots(agent, !confined && agent.workspace.pullOnNewSession)
+    if (
+      (request.isolation === 'session' || cwdRoot) &&
+      this.confinedSessionTier(agent, request.sessionKey, request.confined)
+    ) {
+      await this.preparePrimaryRoot(agent, false)
+      return this.prepareConfinedSession(agent, this.sandboxMountFor(agent.id), request, cwdRoot, opts)
+    }
+    const primary = await this.prepareWorkspaceRoots(agent)
     if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, opts)
     const agentDir = agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
     if (request.isolation === 'shared') {
@@ -1906,11 +1908,9 @@ export class WorkspaceManager {
     opts: PrepareWorkspaceOptions
   ): Promise<string> {
     // Reuse prepared roots; materialize a withheld submodule only when its own review needs it.
-    const pull =
-      !this.confinedSessionTier(agent, request.sessionKey, request.confined) && agent.workspace.pullOnNewSession
     const prepared =
       this.sessionSecondaryRoots(agent).find((entry) => repoKey(entry.subtreeName) === repoKey(root.subtreeName)) ??
-      (await this.prepareSecondaryRoot(agent, root, pull))
+      (await this.prepareSecondaryRoot(agent, root))
     if (!prepared) {
       throw new Error(`github review checkout of ${root.repoFullName} is unavailable to agent "${agent.id}"`)
     }
@@ -2069,7 +2069,8 @@ export class WorkspaceManager {
   private async prepareRootSessionClone(
     agent: Agent,
     root: WorkspaceRoot,
-    request: PrepareSessionWorkspaceRequest
+    request: PrepareSessionWorkspaceRequest,
+    discover?: (read: () => Promise<Set<string>>) => Promise<void>
   ): Promise<string> {
     const fs = this.fsFor(agent.id)
     const id = this.sessionWorktreeId(request.sessionKey)
@@ -2094,7 +2095,7 @@ export class WorkspaceManager {
       const staged = `${cwd}.clone-${randomUUID()}`
       try {
         await this.cloneSessionRootAt(agent.id, root, staged)
-        await this.prepareSessionCloneCheckout(agent.id, root, staged, request, false)
+        await this.prepareSessionCloneCheckout(agent.id, root, staged, request, false, discover)
         // Publish only after checkout succeeds, so a failed no-checkout clone cannot be resumed as ready.
         await fs.rename(staged, cwd)
       } catch (err) {
@@ -2109,7 +2110,7 @@ export class WorkspaceManager {
         await this.convergeOriginInPlaceFor(agent.id, root, cwd)
         await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id, root.managed).catch(() => undefined)
       }
-      await this.prepareSessionCloneCheckout(agent.id, root, cwd, request, true)
+      await this.prepareSessionCloneCheckout(agent.id, root, cwd, request, true, discover)
     }
     // Reclaim only an empty legacy worktree stub; never remove a session's work.
     if (root.worktreesPath) await fs.rmdir(join(root.worktreesPath, id)).catch(() => false)
@@ -2122,7 +2123,8 @@ export class WorkspaceManager {
     root: WorkspaceRoot,
     cwd: string,
     request: PrepareSessionWorkspaceRequest,
-    attached: boolean
+    attached: boolean,
+    discover?: (read: () => Promise<Set<string>>) => Promise<void>
   ): Promise<void> {
     const id = this.sessionWorktreeId(request.sessionKey)
     // Into the clone, never the primary: the refs, and the exact-HEAD proof, are this session's alone.
@@ -2132,6 +2134,11 @@ export class WorkspaceManager {
     const target = review?.checkout ?? `refs/remotes/origin/${root.branch}`
     // Unsafe executable config gates the checkout itself, as it gates a worktree's creation.
     await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, cwd))
+    await discover?.(() =>
+      attached && !review
+        ? this.submoduleReposOf(agentId, cwd)
+        : this.submoduleReposAtRevision(agentId, root, cwd, target)
+    )
     if (!attached) {
       await this.checkoutSessionBranch(agentId, root, cwd, target, request.initiatedBy)
     } else if (review) {
@@ -2143,6 +2150,32 @@ export class WorkspaceManager {
     if (review && (await this.revParse(agentId, cwd, 'HEAD')).toLowerCase() !== review.checkout) {
       throw new Error('github review clone HEAD does not match the verified revision')
     }
+  }
+
+  // Inspect the selected tree before checkout, fetching only the declaration blob when a partial clone needs it.
+  private async submoduleReposAtRevision(
+    agentId: string,
+    root: WorkspaceRoot,
+    cwd: string,
+    revision: string
+  ): Promise<Set<string>> {
+    const git = this.runnerFor(agentId, cwd).withEnv(this.sessionCloneGitEnv(agentId, root))
+    const oid = (await git.raw(['rev-parse', '--revs-only', `${revision}:.gitmodules`])).trim()
+    if (!oid) return new Set()
+    const { out, overflow } = await git.readBounded(
+      ['config', '--blob', oid, '--no-includes', '--null', '--list'],
+      MAX_GITMODULES_BYTES
+    )
+    const repos = new Set<string>()
+    if (!overflow) {
+      for (const entry of out.toString('utf8').split('\0')) {
+        const separator = entry.indexOf('\n')
+        if (!/^submodule\..+\.url$/i.test(entry.slice(0, separator))) continue
+        const repo = githubSubmoduleRepo(entry.slice(separator + 1))
+        if (repo) repos.add(repo)
+      }
+    }
+    return repos
   }
 
   // A blobless partial clone of one root for a session (§11) — whole history, file contents on demand — straight from the remote through the daemon's credential path like a primary's first clone: never a hardlink of the primary (a session with write on its own `.git` could reach the shared inodes), never `--shared`; a remote that refuses the filter answers with a full clone, and a clone that fails fails the session.
@@ -2387,20 +2420,105 @@ export class WorkspaceManager {
       )
     }
     const reviewRoot = this.reviewedSecondaryRoot(agent, request)
-    await this.prepareSecondaryRoots(agent, false)
     const cwdRoot = reviewRoot ?? (await this.resumedReviewedRoot(agent, request))
-    if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, {})
-    const cwd = await this.prepareSessionRoots(
-      agent,
-      async () =>
-        agent.workspace.mode === 'git-repo'
-          ? await this.prepareRootSessionClone(agent, this.primaryRootAt(agent, mount), request)
-          : this.clusterWorkspaceCheckout(agent, mount),
-      this.referenceRootsOf(agent),
-      request
+    return this.prepareConfinedSession(agent, mount, request, cwdRoot, {})
+  }
+
+  // Discover roots in order, overlapping each checkout with the next root's preparation, with at most two in flight.
+  private async prepareConfinedSession(
+    agent: Agent,
+    mount: string | undefined,
+    request: PrepareSessionWorkspaceRequest,
+    cwdRoot: SecondaryWorkspaceRoot | undefined,
+    opts: PrepareWorkspaceOptions
+  ): Promise<string> {
+    const secondaries = this.secondaryRootsAt(agent, mount)
+    const plans = [
+      ...(agent.workspace.mode === 'git-repo'
+        ? [{ root: this.primaryRootAt(agent, mount), secondary: undefined, required: !cwdRoot }]
+        : []),
+      ...secondaries.map((root) => ({
+        root,
+        secondary: root,
+        required: repoKey(root.subtreeName) === repoKey(cwdRoot?.subtreeName ?? '')
+      }))
+    ].sort((a, b) => Number(b.required) - Number(a.required))
+    const referenceRequest = { ...request, review: undefined, reviewRepoFullName: undefined }
+    const owners = new Map<string, Promise<boolean>[]>()
+    const active = new Set<Promise<boolean>>()
+    const ready = new Map<string, SecondaryWorkspaceRoot>()
+    const failures: unknown[] = []
+    let cwd = this.primaryCheckoutAt(agent, mount)
+    for (const [index, plan] of plans.entries()) {
+      if (!plan.required && plan.secondary) {
+        // A failed parent cannot provide its submodule, so omit a root only after an owner succeeds.
+        const parents = owners.get(repoKey(plan.secondary.repoFullName)) ?? []
+        if ((await Promise.all(parents)).some(Boolean)) continue
+      }
+      if (active.size === 2) await Promise.race(active)
+      let discovered!: () => void
+      const discovery = new Promise<void>((resolve) => {
+        discovered = resolve
+      })
+      const preparation = (async () => {
+        const root = plan.secondary ? await this.prepareSecondaryRoot(agent, plan.secondary, false) : plan.root
+        if (!root) throw new Error(`session repository ${plan.root.cloneUrl} is unavailable`)
+        const path = await this.prepareRootSessionClone(
+          agent,
+          root,
+          plan.required ? request : referenceRequest,
+          async (read) => {
+            if (index < plans.length - 1) {
+              for (const repo of await read()) {
+                const parents = owners.get(repo) ?? []
+                parents.push(preparation)
+                owners.set(repo, parents)
+              }
+            }
+            discovered()
+          }
+        )
+        if (plan.required) cwd = path
+        if (plan.secondary) ready.set(plan.secondary.subtreeName, { ...plan.secondary, ...root })
+        return true
+      })()
+        .catch((err: unknown) => {
+          if (plan.required) failures.push(err)
+          else
+            workspaceLog.warn(
+              `workspace: reference repository ${plan.root.cloneUrl} is unavailable (${formatErr(err)})`
+            )
+          return false
+        })
+        .finally(() => {
+          active.delete(preparation)
+          discovered()
+        })
+      active.add(preparation)
+      await discovery
+    }
+    await Promise.all(active)
+    this.readyRoots.set(
+      agent.id,
+      secondaries.flatMap((root) => ready.get(root.subtreeName) ?? [])
     )
-    if (agent.workspace.mode !== 'git-repo') return cwd
-    return this.resolveRootAcpCwd(agent.id, cwd, normalizeRepoSubdir(agent.workspace.agentDir))
+    if (failures.length) throw failures[0]
+    const agentDir =
+      !cwdRoot && agent.workspace.mode === 'git-repo' ? normalizeRepoSubdir(agent.workspace.agentDir) : undefined
+    const acpCwd = await this.withLocalSkills(
+      agent,
+      agent.workspace.mode === 'from-scratch' && !cwdRoot ? cwd : this.resolveRootAcpCwd(agent.id, cwd, agentDir),
+      opts
+    )
+    if (cwdRoot) {
+      await this.recordSessionCwdRoot(
+        agent.id,
+        dirname(cwdRoot.path),
+        this.sessionWorktreeId(request.sessionKey),
+        cwdRoot.repoFullName
+      )
+    }
+    return acpCwd
   }
 
   // The agent pod's cwd for a SHARED session, once its checkout is ready: the checkout itself, or a reviewed secondary root's exact worktree (decision 5); an isolated session never reaches here — it prepares on its own pod (§11).

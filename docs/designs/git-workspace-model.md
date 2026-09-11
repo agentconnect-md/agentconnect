@@ -311,10 +311,9 @@ Layout, one directory per session, removed whole at retirement:
 
 The primary checkout keeps its roles for `shared` isolation, the console's
 workspace views and unconfined worktrees; for confined sessions it is no longer
-the parent of anything. Confined session preparation retains shared checkout
-initialization, identity checks and submodule discovery, but does not pull those
-checkouts even with `pullOnNewSession` enabled. Shared sessions and unconfined
-worktrees still honor that setting. Skills are reconciled only in the final
+the parent of anything. Confined sessions retain shared checkout initialization and
+identity checks, but do not pull those checkouts. Shared sessions and unconfined
+worktrees still honor `pullOnNewSession`. Skills are reconciled only in the final
 session working directory.
 
 A fresh session clone creates its generated branch at the default tip or verified
@@ -324,10 +323,20 @@ only then is it renamed to the session's final path. A failed checkout is cleane
 up, so resume cannot mistake an unmaterialized clone for a ready workspace.
 
 Session preparation runs at most two independent repository roots concurrently,
-including the working-directory root. Reference roots keep their default branches
-and fail independently; a working-directory failure is returned only after the
-other started preparations settle. Daemon-managed Git uses two checkout workers
-to reduce file materialization time on shared filesystems.
+including the working-directory root. Confined discovery starts with the cwd root,
+then the primary reference and sorted remaining secondary roots. Fresh clones read
+`.gitmodules` from their chosen Git tree before checkout, reviews use the verified
+revision, and ordinary resumes read the retained working directory. Shared working
+trees never decide these exclusions. Discovery overlaps checkout with the next
+root's preparation; a
+submodule match waits for its parent to succeed before omitting the standalone
+root. A failed parent cannot hide another authorized repository, and a reviewed
+root always receives its own exact checkout.
+
+Reference roots keep their default branches and fail independently; a
+working-directory failure is returned only after the other started preparations
+settle. Daemon-managed Git uses two checkout workers to reduce file materialization
+time on shared filesystems.
 
 ### What changes for a confined session
 

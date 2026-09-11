@@ -146,7 +146,7 @@ function substitute(value: string): string {
 /** Real git through the workspace runner seam, with exactly one substitution: a fixture repository's authorized URL becomes its `file://` bare, and `file:` joins the protocol allowlist. */
 class SeamRunner implements GitRunner {
   constructor(
-    private readonly cwd: string | undefined,
+    readonly cwd: string | undefined,
     private readonly abort: AbortSignal | undefined,
     private readonly env: Record<string, string> = {}
   ) {}
@@ -371,6 +371,138 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(existsSync(join(agent.workspace.path, 'app'))).toBe(false)
   })
 
+  it.each(['primary', 'acme/parent'])(
+    'includes an authorized root after its submodule is removed from %s upstream',
+    async (parent) => {
+      const agent = agentFixture({
+        additionalRepos: [
+          ...(parent === 'primary' ? [] : [{ repoFullName: parent, repoId: '41' }]),
+          { repoFullName: 'example-co/library', repoId: '42' }
+        ]
+      })
+      agent.workspace.pullOnNewSession = true
+      const served = serveAll(agent)
+      const seed = served[parent]!.seed
+      writeFileSync(
+        join(seed, '.gitmodules'),
+        '[submodule "library"]\n\tpath = vendor/library\n\turl = https://github.com/example-co/library.git\n'
+      )
+      git(seed, ['add', '.gitmodules'])
+      git(seed, ['commit', '-qm', 'declare library submodule'])
+      git(seed, ['push', '-q', 'origin', 'HEAD'])
+      await workspaces.prepareWorkspace(agent)
+      for (const root of [workspaces.primaryRoot(agent), ...workspaces.secondaryRoots(agent)]) {
+        if (existsSync(join(root.path, '.git'))) git(root.path, ['remote', 'set-url', 'origin', root.cloneUrl])
+      }
+      expect((await workspaces.readySecondaryRoots(agent)).map((root) => root.repoFullName)).not.toContain(
+        'example-co/library'
+      )
+      git(seed, ['rm', '-q', '.gitmodules'])
+      git(seed, ['commit', '-qm', 'remove library submodule'])
+      git(seed, ['push', '-q', 'origin', 'HEAD'])
+
+      const pulls = vi.spyOn(SeamRunner.prototype, 'pull')
+      await workspaces.prepareSessionWorkspace(agent, confined())
+
+      expect(pulls).not.toHaveBeenCalled()
+      const ready = await workspaces.readySecondaryRoots(agent, confined())
+      expect(ready.map((root) => root.repoFullName)).toContain('example-co/library')
+      expect(readFileSync(join(leafOf(agent), 'repos', 'example-co', 'library', 'README.md'), 'utf8')).toBe('seed\n')
+    }
+  )
+
+  it.each(['new', 'review', 'resume'] as const)(
+    'discovers a submodule in the %s session tree even when the shared tree has none',
+    async (mode) => {
+      const agent = agentFixture({ additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }] })
+      const { primary } = mode === 'review' ? serveAllThroughShim(agent) : serveAll(agent)
+      await workspaces.prepareWorkspace(agent)
+      const root = workspaces.secondaryRoots(agent)[0]!
+      git(root.path, ['remote', 'set-url', 'origin', root.cloneUrl])
+      const request = confined()
+      const path = mode === 'resume' ? await workspaces.prepareSessionWorkspace(agent, request) : primary!.seed
+      writeFileSync(join(path, '.gitmodules'), '[submodule "infra"]\n\turl = https://github.com/acme/infra.git\n')
+      if (mode === 'review') {
+        const revision = publishPullRequest(primary!.seed, 'with submodule\n')
+        request.review = { pullNumber: 7, baseSha: revision.base, headSha: revision.head }
+      } else if (mode === 'new') {
+        git(path, ['add', '-A'])
+        git(path, ['commit', '-qm', 'add submodule'])
+        git(path, ['push', '-q', 'origin', 'HEAD'])
+      }
+
+      const cwd = await workspaces.prepareSessionWorkspace(agent, request)
+
+      expect(readFileSync(join(cwd, '.gitmodules'), 'utf8')).toContain('acme/infra')
+      expect(existsSync(join(agent.workspace.path, '.gitmodules'))).toBe(false)
+      expect(await workspaces.readySecondaryRoots(agent, request)).toEqual([])
+      // A resumed session keeps its existing clone; a new one never creates the duplicate.
+      expect(existsSync(join(leafOf(agent), 'repos', 'acme', 'infra', '.git'))).toBe(mode === 'resume')
+    }
+  )
+
+  it('does not exclude a submodule root when its parent checkout fails', async () => {
+    const agent = agentFixture({
+      additionalRepos: [
+        { repoFullName: 'acme/parent', repoId: '41' },
+        { repoFullName: 'example-co/library', repoId: '42' }
+      ]
+    })
+    const served = serveAll(agent)
+    const seed = served['acme/parent']!.seed
+    writeFileSync(join(seed, '.gitmodules'), '[submodule "lib"]\n\turl = https://github.com/example-co/library.git\n')
+    git(seed, ['add', '-A'])
+    git(seed, ['commit', '-qm', 'add submodule'])
+    git(seed, ['push', '-q', 'origin', 'HEAD'])
+    const run = SeamRunner.prototype.raw
+    vi.spyOn(SeamRunner.prototype, 'raw').mockImplementation(function (this: SeamRunner, args) {
+      if (args[0] === 'reset' && this.cwd?.includes('/repos/acme/parent.clone-')) {
+        return Promise.reject(new Error('parent checkout failed'))
+      }
+      return run.call(this, args)
+    })
+
+    await workspaces.prepareSessionWorkspace(agent, confined())
+
+    expect((await workspaces.readySecondaryRoots(agent, confined())).map((root) => root.repoFullName)).toEqual([
+      'example-co/library'
+    ])
+    expect(readFileSync(join(leafOf(agent), 'repos', 'example-co', 'library', 'README.md'), 'utf8')).toBe('seed\n')
+  })
+
+  it('uses a reviewed secondary tree and resumes that cwd in a fresh manager over a scratch workspace', async () => {
+    const agent = agentFixture({
+      mode: 'from-scratch',
+      additionalRepos: [
+        { repoFullName: 'example-co/review', repoId: '41' },
+        { repoFullName: 'acme/library', repoId: '42' }
+      ]
+    })
+    const served = serveAll(agent)
+    const seed = served['example-co/review']!.seed
+    writeFileSync(join(seed, '.gitmodules'), '[submodule "lib"]\n\turl = https://github.com/acme/library.git\n')
+    const revision = publishPullRequest(seed, 'review with submodule\n')
+    const request = confined({
+      isolation: 'shared',
+      reviewRepoFullName: 'example-co/review',
+      review: { pullNumber: 7, baseSha: revision.base, headSha: revision.head }
+    })
+    const cwd = await workspaces.prepareSessionWorkspace(agent, request)
+    expect(cwd).toBe(realpathSync(join(leafOf(agent), 'repos', 'example-co', 'review')))
+    expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(revision.head)
+    expect(await workspaces.sessionAdditionalRoots(agent, request)).toEqual([])
+    expect(existsSync(join(leafOf(agent), 'repos', 'acme', 'library'))).toBe(false)
+    const root = workspaces.secondaryRoots(agent).find((root) => root.repoFullName === 'example-co/review')!
+    for (const path of [root.path, cwd]) git(path, ['remote', 'set-url', 'origin', root.cloneUrl])
+    const fresh = new WorkspaceManager()
+    fresh.setGitRunnerResolver((_agentId, path, abort) => new SeamRunner(path, abort))
+    const resumed = { sessionKey: KEY, isolation: 'shared' as const }
+
+    expect(await fresh.prepareSessionWorkspace(agent, resumed)).toBe(cwd)
+    expect(await fresh.sessionAdditionalRoots(agent, resumed)).toEqual([])
+    expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(revision.head)
+  })
+
   it('pins the credential helper in a github-app clone and converges its origin on resume', async () => {
     const agent = agentFixture({ githubApp: true })
     serveAll(agent)
@@ -450,26 +582,21 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       const started = Array.from({ length: 3 }, gate)
       const release = Array.from({ length: 3 }, gate)
       const primaryFinished = gate()
-      const clone = SeamRunner.prototype.clone
+      const run = SeamRunner.prototype.raw
       let active = 0
       let peak = 0
       const seen: number[] = []
-      const spy = vi.spyOn(SeamRunner.prototype, 'clone').mockImplementation(async function (
-        this: SeamRunner,
-        repo,
-        target,
-        options
-      ) {
-        if (!target.startsWith(leafOf(agent))) return await clone.call(this, repo, target, options)
-        const index = repo === PRIMARY_URL ? 0 : repo.includes('/lib-a') ? 1 : 2
+      const spy = vi.spyOn(SeamRunner.prototype, 'raw').mockImplementation(async function (this: SeamRunner, args) {
+        if (args[0] !== 'reset' || !this.cwd?.startsWith(leafOf(agent))) return await run.call(this, args)
+        const index = this.cwd.includes('/workspace.clone-') ? 0 : this.cwd.includes('/lib-a.clone-') ? 1 : 2
         seen.push(index)
         active += 1
         peak = Math.max(peak, active)
         started[index]!.resolve()
         try {
           await release[index]!.promise
-          if (index === 0 && failPrimary) throw new Error('primary clone unavailable')
-          await clone.call(this, repo, target, options)
+          if (index === 0 && failPrimary) throw new Error('primary checkout unavailable')
+          return await run.call(this, args)
         } finally {
           active -= 1
           if (index === 0) primaryFinished.resolve()
@@ -498,7 +625,7 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
         const result = await prepared
         if (failPrimary) {
           expect(result.error).toBeInstanceOf(Error)
-          expect((result.error as Error).message).toContain('primary clone unavailable')
+          expect((result.error as Error).message).toContain('primary checkout unavailable')
         } else {
           expect(result.error).toBeUndefined()
           expect(readFileSync(join(result.cwd!, 'README.md'), 'utf8')).toBe('seed\n')
