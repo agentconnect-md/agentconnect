@@ -1060,7 +1060,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
 
       const repoId = payload.repository?.id
       const subject = payload.issue ?? payload.pull_request
-      const rules = repoId === undefined ? [] : deps.table.getByRepoId(String(repoId))
+      const rules = repoId === undefined ? [] : deps.table.getByCodeHostRepo('github', String(repoId))
       // Thread events need a subject number; push ("commits") events need a ref; a
       // deployment needs its environment — every deployment there continues one session.
       const environment = isGithubDeploymentEvent(event) ? payload.deployment?.environment : undefined

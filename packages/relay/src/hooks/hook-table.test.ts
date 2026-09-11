@@ -56,7 +56,7 @@ describe('HookTable', () => {
     expect(() => t.remove(HOOK_A)).not.toThrow()
   })
 
-  describe('byRepoId index (github kind)', () => {
+  describe('code-host repository index', () => {
     const HOOK_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     const gh = (repoId: string, hookId = HOOK_A): RcHookAssign =>
       rule({
@@ -73,37 +73,54 @@ describe('HookTable', () => {
           installationIds: ['41']
         }
       })
+    const gl = (projectId: string, hookId = HOOK_A): RcHookAssign =>
+      rule({
+        hookId,
+        kind: 'gitlab',
+        sessionMode: 'perThread',
+        webhook: undefined,
+        gitlab: {
+          projectId,
+          projectPath: 'acme/infra',
+          sessionKeyPrefix: `gitlab:${projectId}`,
+          events: ['issues:opened'],
+          mentionOnly: false,
+          serviceAccountUserId: '7',
+          serviceAccountUsername: 'acme-agent',
+          signingToken: 'whsec_test'
+        }
+      })
 
-    it('indexes a github rule by repoId; one repo carries many hooks', () => {
+    it('indexes a github rule by its repository; one repo carries many hooks', () => {
       const t = new HookTable()
       t.upsert(gh('100'))
       t.upsert(gh('100', HOOK_B))
       expect(
         t
-          .getByRepoId('100')
+          .getByCodeHostRepo('github', '100')
           .map((r) => r.hookId)
           .sort()
       ).toEqual([HOOK_A, HOOK_B])
-      expect(t.getByRepoId('999')).toEqual([])
+      expect(t.getByCodeHostRepo('github', '999')).toEqual([])
     })
 
-    it('a repoId change re-indexes: the old repo stops resolving', () => {
+    it('a repository change re-indexes: the old repository stops resolving', () => {
       const t = new HookTable()
       t.upsert(gh('100'))
       t.upsert(gh('200'))
-      expect(t.getByRepoId('100')).toEqual([])
-      expect(t.getByRepoId('200')[0]?.hookId).toBe(HOOK_A)
+      expect(t.getByCodeHostRepo('github', '100')).toEqual([])
+      expect(t.getByCodeHostRepo('github', '200')[0]?.hookId).toBe(HOOK_A)
     })
 
     it('a kind flip github→webhook clears the repo index (and vice versa the token index)', () => {
       const t = new HookTable()
       t.upsert(gh('100'))
       t.upsert(rule()) // same hookId, back to webhook kind
-      expect(t.getByRepoId('100')).toEqual([])
+      expect(t.getByCodeHostRepo('github', '100')).toEqual([])
       expect(t.getByToken('wh_tok1')?.hookId).toBe(HOOK_A)
       t.upsert(gh('100'))
       expect(t.getByToken('wh_tok1')).toBeUndefined()
-      expect(t.getByRepoId('100')).toHaveLength(1)
+      expect(t.getByCodeHostRepo('github', '100')).toHaveLength(1)
     })
 
     it('remove drops only that hook from the repo bucket', () => {
@@ -111,9 +128,25 @@ describe('HookTable', () => {
       t.upsert(gh('100'))
       t.upsert(gh('100', HOOK_B))
       t.remove(HOOK_A)
-      expect(t.getByRepoId('100').map((r) => r.hookId)).toEqual([HOOK_B])
+      expect(t.getByCodeHostRepo('github', '100').map((r) => r.hookId)).toEqual([HOOK_B])
       t.remove(HOOK_B)
-      expect(t.getByRepoId('100')).toEqual([])
+      expect(t.getByCodeHostRepo('github', '100')).toEqual([])
+    })
+
+    it('qualifies the key by provider: two hosts may carry the same numeric id', () => {
+      const t = new HookTable()
+      t.upsert(gh('100'))
+      t.upsert(gl('100', HOOK_B))
+      expect(t.getByCodeHostRepo('github', '100').map((r) => r.hookId)).toEqual([HOOK_A])
+      expect(t.getByCodeHostRepo('gitlab', '100').map((r) => r.hookId)).toEqual([HOOK_B])
+    })
+
+    it('a provider flip moves the rule between keys instead of leaving both resolving', () => {
+      const t = new HookTable()
+      t.upsert(gh('100'))
+      t.upsert(gl('100'))
+      expect(t.getByCodeHostRepo('github', '100')).toEqual([])
+      expect(t.getByCodeHostRepo('gitlab', '100')[0]?.hookId).toBe(HOOK_A)
     })
   })
 })
