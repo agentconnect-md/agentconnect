@@ -887,6 +887,21 @@ describe('the agent’s elicitation card on the session page', () => {
     expect(live.answered).toEqual([])
   })
 
+  it('unfolds a minimized card when its question settles, so the outcome is never hidden', async () => {
+    await render()
+    await act(async () => {
+      minimizeButton()?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(buttonNamed('main')).toBeUndefined()
+
+    // The same request settles in place — answered elsewhere, or cancelled with the turn.
+    live.steps = [{ ...CARD, elicit: { ...CARD.elicit, outcome: 'accepted', answerLabel: 'develop' } }]
+    await render()
+
+    expect(text()).toContain('develop')
+    expect(buttonNamed('main')).toBeUndefined()
+  })
+
   it('names a turn-end cancellation rather than showing a card nobody can answer', async () => {
     live.steps = [{ ...CARD, elicit: { ...CARD.elicit, outcome: 'cancelled' } }]
     await render()

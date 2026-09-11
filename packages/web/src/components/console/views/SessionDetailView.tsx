@@ -1174,7 +1174,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
         )}
       </div>
       {/* Minimized folds the card to its head line alone — the ask is untouched, only hidden. */}
-      {!minimized && (
+      {/* A card that settles while folded unfolds itself: the outcome is the one row left to read. */}
+      {(!minimized || settled) && (
         <div className="min-w-0 border-t border-(--border-subtle) px-[14px] py-[11px]">
           {preamble && !settled ? (
             <span className="mb-[11px] block min-w-0 whitespace-pre-wrap font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
