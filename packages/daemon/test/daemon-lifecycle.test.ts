@@ -197,17 +197,23 @@ describe('Daemon session lifecycle (#118)', () => {
     }
   })
 
-  it('does not wake a cold microsandbox just to sweep retired roots', async () => {
+  it.each([false, true])('sweeps retired microsandbox roots only with a warm VM (warm: %s)', async (warm) => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
     try {
       await daemon.start()
       const d = daemon as any
       d.cfg.sandbox.backend = 'microsandbox'
-      d.agents.get('bot-a').runInSandbox = true
-      d.microsandbox = { environment: () => undefined, stopAll: async () => {} }
+      const agent = d.agents.get('bot-a')
+      agent.runInSandbox = true
+      const environment = { id: 'bot-a/agent' }
+      d.microsandbox = {
+        environment: (id: string) => (warm && id === environment.id ? environment : undefined),
+        stopAll: async () => {}
+      }
       const list = vi.spyOn(d.workspaces, 'retiredSecondaryRoots').mockResolvedValue([])
       await d.sweepRetiredWorkspaceRoots()
-      expect(list).not.toHaveBeenCalled()
+      if (warm) expect(list).toHaveBeenCalledExactlyOnceWith(agent)
+      else expect(list).not.toHaveBeenCalled()
     } finally {
       await daemon.stop()
     }

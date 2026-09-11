@@ -16789,7 +16789,11 @@ export class Daemon {
       // that finds one bound sweeps it.
       if (this.workspaces.sandboxMode && this.workspaces.sandboxMountFor(agent.id) === undefined) continue
       // Retiring old roots must not create or wake an idle VM merely to inspect its workspace.
-      if (this.usesMicrosandbox(agent) && !this.microsandbox?.environment(agentSandboxSubject(agent.id))) continue
+      if (
+        this.usesMicrosandbox(agent) &&
+        !this.microsandbox?.environment(this.microsandboxPlacement(agent, agent.workspace.path).id)
+      )
+        continue
       const pending = await this.withSandboxVolume(agent.id, () => this.workspaces.retiredSecondaryRoots(agent)).catch(
         (err: unknown) => {
           failures.push((err as Error).message)
