@@ -1114,6 +1114,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   // the preamble it is, above the questions rather than as a paragraph-long title.
   const headLine = step.text.split('\n', 1)[0] ?? step.text
   const preamble = step.text.slice(headLine.length).trim()
+  // A body that is nothing but answers reads a Dismiss beside them as one more answer, so an options card refuses from its head; other shapes have an action row where a refusal beside Submit reads right.
+  const cornerDismiss = !settled && !fields && !typed && !consentUrl
   const counter =
     rows && !settled
       ? `${rows.filter((f) => rowAnswered(f, companionOf(fields!, f), drafts, picks)).length}/${rows.length} answered`
@@ -1138,6 +1140,18 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
           <span className="mt-[3px] ml-auto flex-none font-mono text-[11.5px] font-normal leading-normal text-(--text-disabled)">
             {step.time}
           </span>
+        )}
+        {cornerDismiss && (
+          <button
+            type="button"
+            className={`iconbtn -my-[2px] -mr-[4px] h-[22px] w-[22px] flex-none ${step.time ? '' : 'ml-auto'}`}
+            disabled={!onAnswer}
+            aria-label="Decline without answering"
+            title="Decline without answering"
+            onClick={() => onAnswer?.(null)}
+          >
+            <Icon name="x" size={12} color="var(--text-tertiary)" />
+          </button>
         )}
       </div>
       <div className="min-w-0 border-t border-(--border-subtle) px-[14px] py-[11px]">
@@ -1436,8 +1450,9 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
               })}
             </div>
             {multi && <span className={ELICIT_HINT}>{selectionHint(min, max)}</span>}
-            <div className={ELICIT_ACTIONS}>
-              {multi && (
+            {/* Only a multi-select has anything to submit — a single-choice card answers on the tap. */}
+            {multi && (
+              <div className={ELICIT_ACTIONS}>
                 <button
                   type="button"
                   className="dsbtn dsbtn-primary xs"
@@ -1446,17 +1461,8 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
                 >
                   Confirm
                 </button>
-              )}
-              <button
-                type="button"
-                className={ELICIT_CHIP}
-                disabled={!onAnswer}
-                onClick={() => onAnswer?.(null)}
-                title="Dismiss without answering"
-              >
-                Dismiss
-              </button>
-            </div>
+              </div>
+            )}
           </div>
         )}
       </div>

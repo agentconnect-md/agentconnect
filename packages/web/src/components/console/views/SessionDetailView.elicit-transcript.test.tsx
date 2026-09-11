@@ -184,6 +184,9 @@ async function render() {
 const text = () => container?.textContent ?? ''
 const buttonNamed = (label: string) =>
   [...(container?.querySelectorAll('button') ?? [])].find((b) => b.textContent === label)
+// An options card refuses from its head, where the control is an icon named by its label alone.
+const declineButton = () =>
+  container?.querySelector('button[aria-label="Decline without answering"]') as HTMLButtonElement | null
 
 beforeEach(() => {
   wire.messages = []
@@ -224,7 +227,7 @@ describe('a recorded elicitation card on the session page', () => {
     expect(text()).toContain('release/1.2')
     // A settled card collapses to its outcome, so there is nothing here to tap.
     expect(buttonNamed('main')).toBeUndefined()
-    expect(buttonNamed('Dismiss')).toBeUndefined()
+    expect(declineButton()).toBeNull()
     // And the conversation around it is still the conversation.
     expect(text()).toContain('cut a release')
     expect(text()).toContain('cut from develop')
@@ -237,7 +240,8 @@ describe('a recorded elicitation card on the session page', () => {
     expect(text()).toContain('Which branch should I cut from?')
     // The options are still visible — what was OFFERED is part of the record — but this reader
     // has no socket to answer over, so the card is read-only rather than missing its controls.
-    for (const label of ['main', 'develop', 'Dismiss']) expect(buttonNamed(label)?.disabled).toBe(true)
+    for (const label of ['main', 'develop']) expect(buttonNamed(label)?.disabled).toBe(true)
+    expect(declineButton()?.disabled).toBe(true)
   })
 
   it('keeps the card where it was asked, not above the turn that asked it', async () => {
