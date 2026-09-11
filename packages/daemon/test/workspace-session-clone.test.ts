@@ -11,7 +11,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '../src/agents/agent-schema.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
@@ -456,7 +456,7 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     git(seed, ['push', '-q', 'origin', 'HEAD'])
     const run = SeamRunner.prototype.raw
     vi.spyOn(SeamRunner.prototype, 'raw').mockImplementation(function (this: SeamRunner, args) {
-      if (args[0] === 'reset' && this.cwd?.includes('/repos/acme/parent.clone-')) {
+      if (args[0] === 'reset' && this.cwd && basename(this.cwd).startsWith('parent.clone-')) {
         return Promise.reject(new Error('parent checkout failed'))
       }
       return run.call(this, args)
@@ -588,7 +588,8 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
       const seen: number[] = []
       const spy = vi.spyOn(SeamRunner.prototype, 'raw').mockImplementation(async function (this: SeamRunner, args) {
         if (args[0] !== 'reset' || !this.cwd?.startsWith(leafOf(agent))) return await run.call(this, args)
-        const index = this.cwd.includes('/workspace.clone-') ? 0 : this.cwd.includes('/lib-a.clone-') ? 1 : 2
+        const directory = basename(this.cwd)
+        const index = directory.startsWith('workspace.clone-') ? 0 : directory.startsWith('lib-a.clone-') ? 1 : 2
         seen.push(index)
         active += 1
         peak = Math.max(peak, active)
