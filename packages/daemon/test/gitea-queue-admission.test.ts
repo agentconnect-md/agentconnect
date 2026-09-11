@@ -20,6 +20,8 @@ import {
 } from '../src/codehost/queue-admission.js'
 import type { HookDispatchContext } from '../src/github/hook-coords.js'
 import type { QueueEntry } from '../src/daemon/turn-types.js'
+import type { RdMsgHook } from '@agentconnect.md/protocol'
+import { buildHookMessage } from '../src/messages/hook-message.js'
 
 const REPO = '556677'
 const INDEX = 12
@@ -155,6 +157,67 @@ describe('planRevisionAdmission (gitea)', () => {
 })
 
 describe('gitea comment batching', () => {
+  it('batches the assembled prompt, so coalesced review deliveries keep their fetched inline comments and coordinates', () => {
+    const fire = (deliveryKey: string, summary: string): RdMsgHook => ({
+      source: 'hook',
+      agentId: 'agent-1',
+      sessionKey: KEY,
+      msgId: `hook-1:${deliveryKey}`,
+      hookId: 'hook-1',
+      deliveryKey,
+      firedAt: '2026-09-12T01:24:44.000Z',
+      event: 'review:commented',
+      gitea: {
+        repoId: REPO,
+        repoPath: 'example-org/example-repo',
+        target: { kind: 'pull', index: INDEX, headSha: HEAD_A }
+      },
+      context: {
+        source: 'gitea',
+        event: 'review',
+        action: 'commented',
+        number: INDEX,
+        senderLogin: 'alice',
+        bodyExcerpt: summary,
+        truncated: false
+      }
+    })
+    // Exactly what the dispatch path does: normalize with the fetched review, then open the batch from the result.
+    const supplemented = (deliveryKey: string, summary: string, reviewId: string, body: string): QueueEntry => {
+      const nmsg = buildHookMessage(fire(deliveryKey, summary), 't', {
+        giteaReview: { kind: 'matched', reviews: [{ id: reviewId, comments: [{ id: '1', path: 'src/a.ts', body }] }] }
+      })
+      const context = hook(deliveryKey, 'review:commented', HEAD_A, '2026-09-12T01:24:44.000Z')
+      context.githubReviewBatch = openReviewBatch(context, coords, nmsg.text, 1_000, nmsg.turnBody?.prompt)
+      return {
+        agentId: 'agent-1',
+        msg: nmsg,
+        inboxId: `inbox-${deliveryKey}`,
+        hookContext: context
+      } as unknown as QueueEntry
+    }
+    const leader = supplemented('r1', 'first pass', '987', 'rename this')
+    const follower = supplemented('r2', 'second pass', '988', 'drop the retry')
+    // The console short form stays the summary; the batch item is the whole prompt.
+    expect(leader.msg.text).toBe('first pass')
+    const plan = planReviewBatchCoalesce(leader, follower, 3_000)
+    if (!plan) throw new Error('expected the follower to coalesce')
+    const sealed = reviewBatchSettleStep(plan.nextHook, false, 3_000 + REVIEW_BATCH_QUIET_MS)
+    if (sealed.action !== 'seal') throw new Error('expected a seal')
+    for (const expected of [
+      'rename this',
+      'drop the retry',
+      'Inline comments of review 987',
+      'Inline comments of review 988',
+      `example-org/example-repo#${INDEX}`
+    ]) {
+      expect(sealed.promptText).toContain(expected)
+    }
+    // Without a prompt the short form still batches, as GitLab's notes do.
+    const bare = hook('n9', 'note:created', HEAD_A, '2026-09-12T01:24:44.000Z')
+    expect(openReviewBatch(bare, coords, 'just a comment', 1_000)?.items[0]?.text).toBe('just a comment')
+  })
+
   it('folds a comment and a review submission on the same pull request into one open batch', () => {
     const leader = commentEntry('n1', 'first comment', '2026-09-12T01:24:44.000Z', 1_000)
     const review = commentEntry('r1', 'ship it', '2026-09-12T01:24:46.000Z', 3_000, 'review:approved')

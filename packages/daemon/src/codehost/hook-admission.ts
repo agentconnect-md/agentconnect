@@ -68,12 +68,14 @@ export interface CodeHostHookAdmission {
   rerunsCurrentRevision(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean
   /** Identity of the comment stream this delivery coalesces into, or undefined when it batches with nothing. */
   reviewBatchStream(hook: CodeHostCoordinatedHook | undefined, coords: CodeHostHookCoordinates): string | undefined
-  /** This delivery's own single-item batch, or undefined when it coalesces with nothing. */
+  /** This delivery's own single-item batch, or undefined when it coalesces with nothing. `text` is the console short
+   *  form; `prompt` the assembled turn text, for a host whose delivery carries fetched content the short form omits. */
   openReviewBatch(
     hook: HookDispatchContext,
     coords: CodeHostHookCoordinates,
     text: string,
-    now: number
+    now: number,
+    prompt?: string
   ): GithubReviewBatch | undefined
   /** The item identity a redelivery is deduplicated on within one open batch. */
   batchItemKey(item: GithubReviewBatchItem): string
@@ -122,9 +124,10 @@ export function openReviewBatch(
   hook: HookDispatchContext,
   coords: CodeHostHookCoordinates,
   text: string,
-  now: number
+  now: number,
+  prompt?: string
 ): GithubReviewBatch | undefined {
-  return hookAdmissionFor(hook)?.openReviewBatch(hook, coords, text, now)
+  return hookAdmissionFor(hook)?.openReviewBatch(hook, coords, text, now, prompt)
 }
 
 /** True when the sealed batch on this hook is published item by item rather than by the ordinary reply. */

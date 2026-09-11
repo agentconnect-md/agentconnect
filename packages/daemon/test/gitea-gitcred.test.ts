@@ -7,9 +7,10 @@
  */
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { createServer } from 'node:net'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { isWindowsNamedPipe, localIpcPath } from '../src/paths.js'
 import { PassThrough } from 'node:stream'
 import {
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
@@ -102,13 +103,15 @@ describe('the credential helper on a prefixed instance (§9)', () => {
   })
   afterAll(() => rmSync(runDir, { recursive: true, force: true }))
 
-  /** A one-shot gitcred socket that records the request and answers a fixed grant. */
+  /** A one-shot gitcred socket that records the request and answers a fixed grant — on Windows a named
+   *  pipe, the shape the daemon serves there, since `listen` reads a filesystem path as a pipe name and never answers. */
   async function socket(reply: Record<string, unknown>): Promise<{
     path: string
     requests: Record<string, unknown>[]
     close: () => void
   }> {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-gitea-sock-')), 's')
+    const path = localIpcPath(mkdtempSync(join(tmpdir(), 'ac-gitea-sock-')), 'gitcred')
+    if (!isWindowsNamedPipe(path)) mkdirSync(dirname(path), { recursive: true })
     const requests: Record<string, unknown>[] = []
     const server = createServer((conn) => {
       let buf = ''
@@ -120,7 +123,10 @@ describe('the credential helper on a prefixed instance (§9)', () => {
         conn.end(JSON.stringify(reply) + '\n')
       })
     })
-    await new Promise<void>((resolve) => server.listen(path, resolve))
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(path, () => resolve())
+    })
     return { path, requests, close: () => server.close() }
   }
 

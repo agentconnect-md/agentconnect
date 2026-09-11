@@ -593,12 +593,18 @@ function renderGiteaReviewSupplement(review: GiteaReviewCorrelation): string[] {
       `The inline comments of this review could not be read (${review.reason}); only its summary above is available.`
     ]
   }
-  const several = review.reviews.length > 1
-  const lines: string[] = several
-    ? [
-        `${review.reviews.length} submitted reviews match this delivery and cannot be told apart, so the inline comments of each follow, labeled by review id.`
-      ]
-    : []
+  const omitted = review.omitted ?? 0
+  const total = review.reviews.length + omitted
+  const lines: string[] =
+    omitted > 0
+      ? [
+          `${total} submitted reviews match this delivery and cannot be told apart; the inline comments of the newest ${review.reviews.length} follow, labeled by review id, and ${omitted} older ${omitted === 1 ? 'match was' : 'matches were'} not read, so this is an incomplete view.`
+        ]
+      : total > 1
+        ? [
+            `${total} submitted reviews match this delivery and cannot be told apart, so the inline comments of each follow, labeled by review id.`
+          ]
+        : []
   for (const matched of review.reviews) {
     if (matched.comments.length === 0) {
       lines.push(`Review ${matched.id} carries no inline comments.`)

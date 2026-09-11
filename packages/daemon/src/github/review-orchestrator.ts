@@ -318,11 +318,13 @@ export class GithubReviewOrchestrator {
     )
     const anchored = anchor.message
     if (!anchored) return { accepted: false, reason: anchor.postAttempted ? 'anchor_side_effect' : 'dropped' }
+    // The assembled prompt rides beside the short form: a host whose delivery was supplemented (§8) batches that, not the summary.
     const batch = openReviewBatch(
       hookContext,
       hookCoordinates(msg.agentId, anchored, msg.target?.integrationId),
       anchored.text,
-      this.host.now()
+      this.host.now(),
+      anchored.turnBody?.prompt
     )
     if (batch) hookContext.githubReviewBatch = batch
     let settleAdmission!: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void

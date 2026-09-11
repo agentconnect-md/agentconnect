@@ -127,6 +127,34 @@ describe('correlateGiteaReview', () => {
     })
   })
 
+  it('reads the newest candidates past the budget and reports the older ones as unread, never as the whole match', async () => {
+    // Six identical submissions (same author, state, empty summary) — Gitea lists them oldest first.
+    const routes: Route[] = [
+      {
+        url: `${PREFIX}/reviews?`,
+        body: Array.from({ length: 6 }, (_unused, index) => review(index + 1, { body: '' }))
+      }
+    ]
+    for (let id = 1; id <= 6; id += 1) {
+      routes.push({
+        url: `${PREFIX}/reviews/${id}/comments`,
+        body: [{ id: id * 10, path: 'a', body: `from review ${id}` }]
+      })
+    }
+    const { client, calls } = fakeFetch(routes)
+    const result = await correlateGiteaReview(client, { ...delivery, summary: '' })
+    expect(result).toEqual({
+      kind: 'matched',
+      omitted: 1,
+      reviews: [2, 3, 4, 5, 6].map((id) => ({
+        id: String(id),
+        comments: [{ id: String(id * 10), path: 'a', body: `from review ${id}` }]
+      }))
+    })
+    expect(calls).not.toContain(`${PREFIX}/reviews/1/comments`)
+    expect(calls).toContain(`${PREFIX}/reviews/6/comments`)
+  })
+
   it('is a summary-only trigger when no review matches, reading no comments at all', async () => {
     const { client, calls } = fakeFetch([
       { url: `${PREFIX}/reviews?`, body: [review(1, { user: { id: 9, login: 'bob' } })] }

@@ -54,7 +54,10 @@ export interface GiteaCorrelatedReview {
 }
 
 export type GiteaReviewCorrelation =
-  { kind: 'matched'; reviews: GiteaCorrelatedReview[] } | { kind: 'none' } | { kind: 'unavailable'; reason: string }
+  /** `omitted` counts older candidates beyond the read budget whose comments were NOT read, so the prompt can say the match is incomplete. */
+  | { kind: 'matched'; reviews: GiteaCorrelatedReview[]; omitted?: number }
+  | { kind: 'none' }
+  | { kind: 'unavailable'; reason: string }
 
 /** Bounds on what one correlation may carry into the model's context. */
 const PAGE_SIZE = 50
@@ -144,10 +147,12 @@ export async function correlateGiteaReview(
       .filter((review) => isCandidate(review, delivery))
       .map((review) => idOf(review.id))
       .filter((id): id is string => id !== undefined)
-      .slice(0, MAX_CANDIDATES)
     if (candidates.length === 0) return { kind: 'none' }
+    // Gitea lists oldest first and the delivery is the newest submission, so past the read budget the
+    // NEWEST candidates are read and the rest are counted, never silently presented as the whole match.
+    const omitted = Math.max(0, candidates.length - MAX_CANDIDATES)
     const reviews: GiteaCorrelatedReview[] = []
-    for (const id of candidates) {
+    for (const id of candidates.slice(omitted)) {
       const parsed = await giteaRequest(client, { method: 'GET', path: `${path}/reviews/${id}/comments` })
       const comments = (Array.isArray(parsed) ? parsed : [])
         .map(inlineComment)
@@ -155,7 +160,7 @@ export async function correlateGiteaReview(
         .slice(0, MAX_INLINE_COMMENTS)
       reviews.push({ id, comments })
     }
-    return { kind: 'matched', reviews }
+    return { kind: 'matched', reviews, ...(omitted > 0 ? { omitted } : {}) }
   } catch (err) {
     return { kind: 'unavailable', reason: err instanceof Error ? err.message : String(err) }
   }

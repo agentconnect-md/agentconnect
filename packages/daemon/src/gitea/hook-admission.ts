@@ -50,12 +50,15 @@ function commentBatchStream(
   return JSON.stringify(['comments', lane])
 }
 
-/** One pull request's comment batch; its identity is the subject, since a comment delivery carries no durable batch key. */
+/** One pull request's comment batch; its identity is the subject, since a comment delivery carries no durable batch key.
+ *  The item carries the assembled prompt: a review delivery's inline comments were fetched into it (§8) and the
+ *  console short form is only the summary, so a sealed batch would otherwise lose them and the subject coordinates. */
 function openReviewBatch(
   hook: HookDispatchContext,
   coords: CodeHostHookCoordinates,
   text: string,
-  now: number
+  now: number,
+  prompt?: string
 ): GithubReviewBatch | undefined {
   const target = hook.gitea?.target
   if (!commentBatchStream(hook, coords) || target?.kind !== 'pull') return undefined
@@ -63,7 +66,7 @@ function openReviewBatch(
     reviewId: `${hook.gitea!.repoId}#${target.index}`,
     openedAt: now,
     updatedAt: now,
-    items: [{ deliveryKey: hook.deliveryKey, firedAt: hook.firedAt, text }]
+    items: [{ deliveryKey: hook.deliveryKey, firedAt: hook.firedAt, text: prompt ?? text }]
   }
 }
 

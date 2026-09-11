@@ -322,6 +322,14 @@ describe('a review delivery (§8): the summary rides the wire, the inline commen
     expect(several).toContain('2 submitted reviews match this delivery and cannot be told apart')
     expect(several).toContain('Inline comments of review 987 (1):')
     expect(several).toContain('Review 988 carries no inline comments.')
+    // Past the read budget the prompt says the view is incomplete rather than presenting the read ones as the whole match.
+    const incomplete = buildHookText(reviewFire(), {
+      giteaReview: { kind: 'matched', omitted: 2, reviews: [{ id: '990', comments: [] }] }
+    })
+    expect(incomplete).toContain(
+      '3 submitted reviews match this delivery and cannot be told apart; the inline comments of the newest 1 follow, labeled by review id, and 2 older matches were not read, so this is an incomplete view.'
+    )
+    expect(incomplete).toContain('Review 990 carries no inline comments.')
     const none = buildHookText(reviewFire(), { giteaReview: { kind: 'none' } })
     expect(none).toContain(
       'No submitted review by the sender matched this delivery, so only its summary above is available.'
