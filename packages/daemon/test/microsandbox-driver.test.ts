@@ -355,6 +355,23 @@ async function fixture() {
   return { ...fake, manager, options, environment, request }
 }
 
+/** Wrap the fake builder's terminal create() so a test can stall or fail a VM start. */
+function interceptCreate(
+  options: MicrosandboxManagerOptions,
+  around: (create: () => Promise<unknown>) => Promise<unknown>
+) {
+  const api = options.sdk.Sandbox as unknown as { builder: (name: string) => { create: () => Promise<unknown> } }
+  const build = api.builder.bind(api)
+  const intercepted = vi.fn((create: () => Promise<unknown>) => around(create))
+  vi.spyOn(api, 'builder').mockImplementation((name: string) => {
+    const builder = build(name)
+    const create = builder.create.bind(builder)
+    builder.create = () => intercepted(create)
+    return builder
+  })
+  return intercepted
+}
+
 describe('microsandbox process and VM ownership', () => {
   it.skipIf(process.platform === 'win32')('launches and resumes with the actual daemon support mounts', async () => {
     const { manager, options, environment, request, created } = await fixture()
@@ -923,5 +940,103 @@ describe('microsandbox process and VM ownership', () => {
     expect((await runtime.fromAgent.getReader().read()).value).toEqual(bytes)
     await runtime.stop(0)
     await manager.suspend(environment.id)
+  })
+
+  it('starts one VM at a time so a start cannot inherit the disk locks of another', async () => {
+    const { manager, options, request, created } = await fixture()
+    let active = 0
+    let peak = 0
+    const slowCreate = interceptCreate(options, async (create) => {
+      peak = Math.max(peak, ++active)
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        return await create()
+      } finally {
+        active--
+      }
+    })
+    const environments = ['agent/session-one', 'agent/session-two', 'agent/session-three'].map((id) => ({
+      id,
+      mounts: [],
+      workspaceRoot: '/workspace'
+    }))
+    const runtimes = await Promise.all(environments.map((env) => manager.driverFor(env).launch(request)))
+    expect(slowCreate).toHaveBeenCalledTimes(3)
+    expect(created).toHaveLength(3)
+    expect(peak).toBe(1)
+    await Promise.all(runtimes.map((runtime) => runtime.stop(0)))
+    await manager.stopAll()
+  })
+
+  it('suspends the idle sibling holding an inherited disk lock, then starts on the retry', async () => {
+    const { manager, options, request, created } = await fixture()
+    const sibling = { id: 'agent/session-sibling', mounts: [], workspaceRoot: '/workspace' }
+    const blocked = { id: 'agent/session-blocked', mounts: [], workspaceRoot: '/workspace' }
+    const idle = await manager.driverFor(sibling).launch(request)
+    await idle.stop(0)
+    const vm = created[0]!
+    const volume = 'agentconnect-example-blocked-overlays'
+    options.lockHolder = async () => ({ pid: 4242, sandbox: vm.name })
+    interceptCreate(options, async (create) => {
+      if (!vm.stopWithTimeout.mock.calls.length)
+        throw new options.sdk.InvalidConfigError(
+          `invalid config: volume "${volume}" is already attached with an incompatible disk mode`
+        )
+      return create()
+    })
+    const runtime = await manager.driverFor(blocked).launch(request)
+    expect(vm.stopWithTimeout).toHaveBeenCalledOnce()
+    expect(await manager.environmentIds()).toContain(sibling.id)
+    expect(created).toHaveLength(2)
+    await runtime.stop(0)
+    await manager.stopAll()
+  })
+
+  it('keeps a busy lock holder running and reports who holds the disk instead', async () => {
+    const { manager, options, request, created } = await fixture()
+    const sibling = { id: 'agent/session-sibling', mounts: [], workspaceRoot: '/workspace' }
+    const blocked = { id: 'agent/session-blocked', mounts: [], workspaceRoot: '/workspace' }
+    const busy = await manager.driverFor(sibling).launch(request)
+    const vm = created[0]!
+    const volume = 'agentconnect-example-blocked-overlays'
+    options.lockHolder = async () => ({ pid: 4242, sandbox: vm.name })
+    interceptCreate(options, async () => {
+      throw new options.sdk.InvalidConfigError(
+        `invalid config: volume "${volume}" is already attached with an incompatible disk mode`
+      )
+    })
+    await expect(manager.driverFor(blocked).launch(request)).rejects.toThrow(
+      `volume "${volume}" is still locked by pid 4242 (sandbox ${vm.name})`
+    )
+    expect(vm.stopWithTimeout).not.toHaveBeenCalled()
+    expect(created).toHaveLength(1)
+    await busy.stop(0)
+    await manager.stopAll()
+  })
+
+  it('leaves a lock holder this daemon has no binding for running', async () => {
+    const { manager, options, request, created } = await fixture()
+    const sibling = { id: 'agent/session-sibling', mounts: [], workspaceRoot: '/workspace' }
+    const blocked = { id: 'agent/session-blocked', mounts: [], workspaceRoot: '/workspace' }
+    const idle = await manager.driverFor(sibling).launch(request)
+    await idle.stop(0)
+    await manager.suspend(sibling.id)
+    const vm = created[0]!
+    const stops = vm.stopWithTimeout.mock.calls.length
+    const bindings = join(options.root, 'microsandbox', 'bindings')
+    for (const file of await readdir(bindings)) await rm(join(bindings, file))
+    const volume = 'agentconnect-example-blocked-overlays'
+    options.lockHolder = async () => ({ pid: 4242, sandbox: vm.name })
+    interceptCreate(options, async () => {
+      throw new options.sdk.InvalidConfigError(
+        `invalid config: volume "${volume}" is already attached with an incompatible disk mode`
+      )
+    })
+    await expect(manager.driverFor(blocked).launch(request)).rejects.toThrow(
+      `volume "${volume}" is still locked by pid 4242 (sandbox ${vm.name})`
+    )
+    expect(vm.stopWithTimeout.mock.calls).toHaveLength(stops)
+    expect(created).toHaveLength(1)
+    await manager.stopAll()
   })
 })
