@@ -136,8 +136,9 @@ export class GiteaConnectionService {
   /** §4.1: verify, refuse a bot already bound anywhere on the deployment, refuse a second connection, seal. */
   async connect(orgId: string, token: string, actorUserId?: string): Promise<GiteaConnectionRecord> {
     const bot = await this.verifyToken(token)
-    if (await this.deps.connections.byBotUserId(bot.botUserId)) throw bound()
+    // The organization's own connection is the more specific answer, so it is checked first.
     if (await this.deps.connections.forOrg(orgId)) throw exists()
+    if (await this.deps.connections.byBotUserId(bot.botUserId)) throw bound()
     const sealedToken = await this.deps.cipher.seal(token, orgScope(OrgId(orgId)))
     try {
       return await this.deps.connections.create({
