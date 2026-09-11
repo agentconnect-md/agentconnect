@@ -70,6 +70,8 @@ import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
+import { McpAppCard } from '@/components/console/McpAppCard'
+import type { McpAppRpc } from '@agentconnect.md/protocol'
 import { UserTurnDetails } from '../UserTurnDetails'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
 import type { UserTurnBody } from '@agentconnect.md/protocol'
@@ -107,6 +109,7 @@ import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
   elicitCard,
+  APP_LANE,
   ELICIT_LANE,
   elicitStepKey,
   foldCustomAnswers,
@@ -548,6 +551,7 @@ interface FmtStep {
   plan?: PlanEntry[]
   // The agent's in-band question — present only on an ELICIT_LANE step.
   elicit?: NonNullable<SessionStep['elicit']>
+  app?: NonNullable<SessionStep['app']>
   // A superseded answer collapsed into this lane — carried so the summary can skip it.
   demoted?: boolean
   // A peer participant's message attachment (rendered like the user bubble's).
@@ -1660,6 +1664,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     time: stp.time ?? '',
     ...(stp.kind === 'planblock' ? { plan: stp.plan ?? [] } : {}),
     ...(stp.kind === 'elicit' && stp.elicit ? { elicit: stp.elicit } : {}),
+    ...(stp.kind === 'app' && stp.app ? { app: stp.app } : {}),
     ...(stp.demoted ? { demoted: true } : {}),
     ...(platform ? { platform } : {}),
     // The live wire frame carries no body (kept off the hot path); attach just
@@ -2498,6 +2503,8 @@ export default function SessionDetailView() {
     pgSetFast,
     pgSetWorktree,
     pgAnswerElicitation,
+    pgAppRpc,
+    pgCloseApp,
     pgCancel
   } = usePlayground()
   const { user: viewer, me } = useProfile()
@@ -3737,6 +3744,19 @@ export default function SessionDetailView() {
           if (!requestId) return
           pgAnswerElicitation(session.id, agentId ?? session.agentId ?? '', requestId, value, webchatConversationId)
         }
+      : undefined
+  // An MCP App's bridge is served on the same live socket the composer rides, and for the same
+  // reason it is gated the same way: a frame whose RPCs could not reach the daemon would be a
+  // page whose buttons silently do nothing. Absent ⇒ the card renders as a record, not a frame.
+  const appRpc =
+    isLive && (isPg || isWebchat)
+      ? (agentId: string | undefined, appId: string, rpc: McpAppRpc) =>
+          pgAppRpc(session.id, agentId ?? session.agentId ?? '', appId, rpc, webchatConversationId)
+      : undefined
+  const closeApp =
+    isLive && (isPg || isWebchat)
+      ? (agentId: string | undefined, appId: string): void =>
+          pgCloseApp(session.id, agentId ?? session.agentId ?? '', appId, webchatConversationId)
       : undefined
   // Mid-conversation join (webchat-multi-agents.md §3.1): a live playground
   // conversation may GROW its roster; removal stays unsupported. The join is
@@ -5045,7 +5065,7 @@ export default function SessionDetailView() {
                             const saidSteps = turn.steps.filter(
                               (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE
                             )
-                            const textSteps = saidSteps.filter((s) => s.lane !== ELICIT_LANE)
+                            const textSteps = saidSteps.filter((s) => s.lane !== ELICIT_LANE && s.lane !== APP_LANE)
                             const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
                             // Reasoning steps / tool commands / edited FILES (distinct paths across
                             // EDIT rows, since one EDIT row can touch several files).
@@ -5161,7 +5181,17 @@ export default function SessionDetailView() {
                             would merge messages the platform kept apart. A question card sits
                             between them wherever the agent asked it. */}
                                   {saidSteps.map((st, si) =>
-                                    st.lane === ELICIT_LANE ? (
+                                    st.lane === APP_LANE ? (
+                                      <div key={`a:${st.app?.appId ?? si}`} className={si > 0 ? 'mt-2' : ''}>
+                                        <McpAppCard
+                                          step={st}
+                                          {...(appRpc
+                                            ? { onRpc: (appId, rpc) => appRpc(turn.agentId, appId, rpc) }
+                                            : {})}
+                                          {...(closeApp ? { onClose: (appId) => closeApp(turn.agentId, appId) } : {})}
+                                        />
+                                      </div>
+                                    ) : st.lane === ELICIT_LANE ? (
                                       <div key={`e:${st.elicit?.requestId ?? si}`} className={si > 0 ? 'mt-2' : ''}>
                                         <ElicitationCard
                                           step={st}

@@ -192,6 +192,17 @@ export interface OpsDeps
     name: string,
     args: Record<string, unknown>
   ) => Promise<{ result: unknown } | undefined>
+  /** MCP Apps (webchat-mcp-apps.md §3/§4): run one tool of a DAEMON-HOSTED UI server and, when
+   *  that tool declares an interface, open its card on this turn's surface. Returns undefined
+   *  when `name` is not one of those tools, so the static registry below still answers for
+   *  everything else. Shaped exactly like `evaluationTool` because it is the same kind of thing:
+   *  a dynamic, namespaced tool group resolved ahead of the static one, against the trusted
+   *  session context and never against tool input. */
+  appTool?: (
+    ctx: SessionContext,
+    name: string,
+    args: Record<string, unknown>
+  ) => Promise<{ result: unknown } | undefined>
 }
 
 /**
@@ -345,6 +356,13 @@ export async function executeTool(
   // token-bound SessionContext — never tool-input-supplied identity.
   if (deps.evaluationTool) {
     const handled = await deps.evaluationTool(ctx, name, args)
+    if (handled !== undefined) return handled.result
+  }
+  // MCP Apps: a daemon-hosted UI server's tool, namespaced `<server>__<tool>`. Resolved here and
+  // not in the static registry because the set is discovered from the upstream server at
+  // composition time; the namespace is what makes it impossible to shadow a product tool.
+  if (deps.appTool) {
+    const handled = await deps.appTool(ctx, name, args)
     if (handled !== undefined) return handled.result
   }
   // Session-isolation gate for the memory tools (#653), checked at CALL time so a

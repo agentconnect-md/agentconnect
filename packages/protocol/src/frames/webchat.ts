@@ -224,6 +224,176 @@ export const ElicitCard = z.object({
 })
 export type ElicitCard = z.infer<typeof ElicitCard>
 
+/**
+ * The most HTML one MCP App template may carry.
+ *
+ * The number comes from the wire, not from taste. The template is INLINED on the event rather
+ * than linked, because the CP stores no bodies (webchat-mcp-apps.md §8), so it rides the same
+ * `rd/chat` frame every reply chunk does — and that frame is capped at {@link MAX_FRAME_BYTES}
+ * (256 KiB). A template is then JSON-escaped into it, and HTML is quote-dense enough that the
+ * escape can approach 2×, so the cap is set at 96 KiB: under half the frame budget even before
+ * the card's other fields and the envelope, which leaves a quote-heavy document room to fit
+ * rather than encoding to something the relay would refuse.
+ *
+ * A larger template is DECLINED with a notice rather than truncated — half a document renders as
+ * a broken page, which is the one outcome worse than saying the interface could not be shown.
+ */
+export const MCP_APP_HTML_MAX_BYTES = 96 * 1024
+
+/** The most one card's whole encoded payload may take, including the tool result it carries
+ *  through. Checked where the card is assembled, because the template cap alone does not bound a
+ *  tool that answered with a megabyte of `structuredContent` — and a card that cannot encode is a
+ *  frame the reader never sees, for a reason nothing in the stream would explain. */
+export const MCP_APP_CARD_MAX_BYTES = 160 * 1024
+
+/** The most live app cards one conversation holds. A fifth settles the oldest as `superseded`:
+ *  every live card is an armed iframe with a tool-calling bridge, and an unbounded stack of
+ *  them is an unbounded stack of those. */
+export const MCP_APP_LIVE_CAP = 4
+
+/** The domain allowlists an MCP App resource declared, each widening exactly its own CSP
+ *  directive (SEP-1865). The host builds the policy FROM this and never from the page, and may
+ *  restrict further but must not admit an undeclared domain — so an absent list is the
+ *  restrictive default, not "anything". */
+export const McpAppCsp = z.object({
+  /** `connect-src` — fetch / XHR / WebSocket. */
+  connect: z.array(z.string().min(1).max(253)).max(32).optional(),
+  /** `script-src` / `style-src` / `img-src` / `font-src` — static assets. */
+  resource: z.array(z.string().min(1).max(253)).max(32).optional(),
+  /** `frame-src` — nested iframes. */
+  frame: z.array(z.string().min(1).max(253)).max(32).optional(),
+  /** `base-uri`. */
+  baseUri: z.array(z.string().min(1).max(253)).max(32).optional()
+})
+export type McpAppCsp = z.infer<typeof McpAppCsp>
+
+/** `containerDimensions` — what the view negotiated. An axis marked flexible is the one the
+ *  view may grow along by reporting `ui/notifications/size-changed`; a fixed axis is the
+ *  host's to decide, so the view's report on it is ignored rather than obeyed. */
+export const McpAppDimensions = z.object({
+  width: z.number().int().min(1).max(4096).optional(),
+  height: z.number().int().min(1).max(4096).optional(),
+  flexibleWidth: z.boolean().optional(),
+  flexibleHeight: z.boolean().optional()
+})
+export type McpAppDimensions = z.infer<typeof McpAppDimensions>
+
+/**
+ * ONE MCP App card, as the daemon's Apps host assembled it — the peer of {@link ElicitCard},
+ * and webchat's ONLY rich-UI surface by construction (webchat-mcp-apps.md §2).
+ *
+ * A UI-capable MCP server predeclares an interface as a `ui://` resource and links it to a tool
+ * with `_meta.ui.resourceUri`; the daemon — which is the MCP Apps host, because no ACP runtime
+ * is (§3) — reads the template, calls the tool, and streams both here. The browser renders the
+ * template in an OPAQUE-origin sandboxed frame and speaks MCP's own JSON-RPC to it over
+ * `postMessage`, forwarding the four host methods that need the daemon back as the `app_rpc` op.
+ *
+ * This card is NOT an elicitation: the tool's own result returns to the model the moment the
+ * call completes, so an app that is never opened, never answered, or shown on a surface with no
+ * renderer never blocks the turn. What the reader does in the frame reaches the agent through
+ * ordinary tool calls and `ui/message`, not through a parked resolver.
+ */
+export const McpAppCard = z.object({
+  /** The unguessable id every RPC from this view carries back — the card's identity, exactly as
+   *  `requestId` is an elicitation card's. A view may only reach the server that opened it, and
+   *  only while this id is live in its own conversation. */
+  appId: z.string().min(1).max(200),
+  /** The words above the frame, and the words the decline uses on a surface that has none. */
+  title: z.string().max(200),
+  /** The tool that opened the frame, namespaced `<server>__<tool>` as the bridge exposes it. */
+  toolName: z.string().min(1).max(200),
+  /** The `ui://` template's own text (`text/html;profile=mcp-app`). The BYTE cap
+   *  ({@link MCP_APP_HTML_MAX_BYTES}) is enforced where the bytes are — the daemon reads the
+   *  resource and declines an oversized one before a card exists. What rides here is the cheap
+   *  guard a decoder can afford on every frame: the same number counted in characters, which
+   *  cannot admit anything the byte cap rejects for ASCII and stays a hard ceiling regardless. */
+  html: z.string().min(1).max(MCP_APP_HTML_MAX_BYTES),
+  /** The call's arguments, handed to the view as `ui/notifications/tool-input`. */
+  toolInput: z.record(z.string(), z.unknown()).optional(),
+  /** The call's result, handed to the view as `ui/notifications/tool-result`. `structuredContent`
+   *  is the UI-optimized half the spec keeps out of model context; `content` is the text the
+   *  model already received, carried again so a view may render exactly what the agent read. */
+  toolResult: z
+    .object({
+      content: z.array(z.unknown()).max(64).optional(),
+      structuredContent: z.record(z.string(), z.unknown()).optional(),
+      isError: z.boolean().optional()
+    })
+    .optional(),
+  csp: McpAppCsp.optional(),
+  dimensions: McpAppDimensions.optional()
+})
+export type McpAppCard = z.infer<typeof McpAppCard>
+
+/** How a live app card stopped being one. `closed` is the reader dismissing the frame,
+ *  `superseded` the same conversation opening past {@link MCP_APP_LIVE_CAP}, `expired` the
+ *  session ending under it. Every one of them renders the card inert and keeps its header and
+ *  final result — a persisted app is the record of a decision, never a page re-armed against a
+ *  session that no longer exists (§8). */
+export const McpAppOutcome = z.enum(['closed', 'superseded', 'expired'])
+export type McpAppOutcome = z.infer<typeof McpAppOutcome>
+
+/**
+ * The MCP Apps extension version this host implements, sent as `protocolVersion` in the
+ * `ui/initialize` result and as the host's own version beside it.
+ *
+ * Stated rather than derived: the official SDK's `App.connect()` validates the initialize result
+ * and rejects one without it, so a view built on the SDK never finishes initializing if this is
+ * missing or wrong. SEP-1865 Final, 2026-01-26.
+ */
+export const MCP_APPS_PROTOCOL_VERSION = '2026-01-26'
+
+/** The most text one `ui/message` may carry into the conversation, matching the wire field's own
+ *  bound so a decoded content-block list is clamped before it is refused. */
+export const MCP_APP_MESSAGE_MAX_CHARS = 4000
+
+/** The most model context one app may hold (`ui/update-model-context`). An app's context is a
+ *  note for the next turn, not a store: the session carries it, and the reader who opened the
+ *  frame is the one it speaks for. */
+export const MCP_APP_CONTEXT_MAX_CHARS = 4000
+
+/**
+ * What a view may ASK THE DAEMON for — the four host methods of SEP-1865 that cannot be served
+ * in the browser, reduced to a checked union rather than forwarded as raw JSON-RPC.
+ *
+ * The reduction is the point. Everything else the spec gives a view (`ui/initialize`, the size
+ * and logging notifications, `ui/open-link`) is browser-local and never reaches a wire, so what
+ * remains here is exactly the surface with an authorization question attached — and a union the
+ * daemon can validate before it acts beats a passthrough it has to sanitize after. The candidate
+ * set for every one of them comes from the trusted session snapshot, never from this payload:
+ * `appId` names a live card in the sender's OWN conversation, and that card names the one server
+ * whose tools and resources the view may reach.
+ */
+export const McpAppRpc = z.discriminatedUnion('method', [
+  // `tools/call` — a real tool call on this app's own server, recorded in the transcript like any
+  // other. An app cannot act invisibly.
+  z.object({
+    method: z.literal('tools/call'),
+    name: z.string().min(1).max(200),
+    args: z.record(z.string(), z.unknown()).optional()
+  }),
+  // `resources/read` — this app's own server only, which is what makes a bare uri safe to take.
+  z.object({ method: z.literal('resources/read'), uri: z.string().min(1).max(2048) }),
+  // `ui/message` — the frame speaking into the conversation. Delivered as an ORDINARY user turn
+  // under the author the relay verified, never an author the page named: the roster check, the
+  // busy/steer decision and the transcript then apply to it exactly as to something typed in the
+  // composer. What bounds a page posting in a loop is the card's own call budget and that busy
+  // gate, not a hop count — a user turn has no hop to charge.
+  z.object({ method: z.literal('ui/message'), text: z.string().min(1).max(4000) }),
+  // `ui/update-model-context` — what the app wants the next turn to know. Held on the session.
+  z.object({ method: z.literal('ui/update-model-context'), context: z.string().max(MCP_APP_CONTEXT_MAX_CHARS) })
+])
+export type McpAppRpc = z.infer<typeof McpAppRpc>
+
+/** One view RPC's answer, as the daemon hands it back for the browser to complete the view's
+ *  JSON-RPC call with. `ok:false` carries a message the frame may show; it is never a transport
+ *  failure dressed as a result — an undeliverable RPC never reaches here at all. */
+export const McpAppRpcResult = z.union([
+  z.object({ ok: z.literal(true), result: z.unknown() }),
+  z.object({ ok: z.literal(false), error: z.string().max(500) })
+])
+export type McpAppRpcResult = z.infer<typeof McpAppRpcResult>
+
 export const WebchatEvent = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('message'), text: z.string() }), // from agent_message_chunk
   z.object({ kind: z.literal('thinking'), text: z.string() }), // from agent_thought_chunk
@@ -285,6 +455,27 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     requestId: z.string().min(1).max(200),
     outcome: z.enum(['accepted', 'dismissed', 'cancelled', 'completed']),
     label: z.string().optional()
+  }),
+  // An MCP App opened (webchat-mcp-apps.md §5). A new KIND rather than a field on something
+  // existing, and the skew that follows is the closed one: a relay or browser predating it fails
+  // exactly this frame's decode and shows the turn without the frame, while the tool's own text
+  // result has already reached the model — so the agent still answered in words and nothing
+  // waits on a reader who was never shown anything. An elicitation could not take that trade,
+  // which is why `multi`/`text`/`url` went on the card as optional fields instead.
+  McpAppCard.extend({ kind: z.literal('app') }),
+  // The same card, settled — append-only, keyed by `appId`, exactly as `elicitation_resolved` is.
+  z.object({ kind: z.literal('app_resolved'), appId: z.string().min(1).max(200), outcome: McpAppOutcome }),
+  // One view RPC's answer, correlated by the `callId` the browser minted on the `app_rpc` op.
+  // It rides the reply STREAM rather than a request/reply frame of its own, because the stream is
+  // the only channel webchat has that already survives what an app's RPC has to survive: the
+  // relay bridging a browser onto a daemon, a reconnect mid-call, and a turn ending underneath it.
+  // The browser completes the view's JSON-RPC call from this; an answer with no live call is
+  // dropped, which is what makes a replayed stream harmless.
+  z.object({
+    kind: z.literal('app_rpc_result'),
+    appId: z.string().min(1).max(200),
+    callId: z.string().min(1).max(64),
+    outcome: McpAppRpcResult
   })
 ])
 export type WebchatEvent = z.infer<typeof WebchatEvent>

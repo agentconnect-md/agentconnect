@@ -29,6 +29,7 @@ import {
   type SessionImage,
   type SessionStep
 } from '@/lib/data'
+import type { McpAppCard, McpAppOutcome, McpAppRpc, McpAppRpcResult } from '@agentconnect.md/protocol'
 import { useConsoleData } from '@/lib/data-context'
 import {
   webchatWsUrl,
@@ -61,6 +62,11 @@ import {
   lanesOf as lanesOfLanes
 } from '@/lib/webchat-lanes'
 import { createWebchatDeltaBuffer, type WebchatDeltaBuffer } from '@/lib/webchat-delta-buffer'
+
+/** How long a view's forwarded request waits for its answer. A settled card's RPC may never be
+ *  answered at all — the daemon has stopped serving that bridge — so the frame is told plainly
+ *  rather than left spinning on a promise nothing will resolve. */
+const APP_RPC_TIMEOUT_MS = 30_000
 
 interface PlaygroundData {
   /** Composer buffer for one session id (each live conversation has its own).
@@ -157,6 +163,18 @@ interface PlaygroundData {
     value: ElicitAnswerValue,
     conversationId?: string
   ) => void
+  /** Forward one MCP App view's JSON-RPC to the daemon and resolve with its verdict
+   *  (webchat-mcp-apps.md §7.3). Unlike every other op here this is request/reply: a frame is
+   *  waiting on the answer, and a view left waiting looks to the reader like one that broke. */
+  pgAppRpc: (
+    id: string,
+    agentId: string,
+    appId: string,
+    rpc: McpAppRpc,
+    conversationId?: string
+  ) => Promise<{ ok: true; result: unknown } | { ok: false; error: string }>
+  /** Tell the daemon the reader closed an MCP App frame. */
+  pgCloseApp: (id: string, agentId: string, appId: string, conversationId?: string) => void
   getPgSession: (id: string) => Session | undefined
   pgSessionList: Session[]
   /** Live tail (this-visit) steps for an ADOPTED webchat session, keyed by its CP session
@@ -289,6 +307,9 @@ type WebchatEvent =
       outcome: 'accepted' | 'dismissed' | 'cancelled' | 'completed'
       label?: string
     }
+  | ({ kind: 'app' } & McpAppCard)
+  | { kind: 'app_resolved'; appId: string; outcome: McpAppOutcome }
+  | { kind: 'app_rpc_result'; appId: string; callId: string; outcome: McpAppRpcResult }
 
 /** The session status snapshot carried in a relay `rd/chat` WebchatOutput payload
  *  (mirrors protocol WebchatStatus). Partial: context/cost stream live, token
@@ -448,6 +469,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const stagedWorktree = useRef<Map<string, boolean>>(new Map())
   const busyRef = useRef<Record<string, boolean>>({})
   const closingAll = useRef(false)
+  /** MCP App view RPCs awaiting their `app_rpc_result` event, by the browser-minted `callId`. */
+  const appCalls = useRef(
+    new Map<string, (outcome: { ok: true; result: unknown } | { ok: false; error: string }) => void>()
+  )
   const { activeOrg } = useOrgs()
 
   const stageRuntimeChange = useCallback((id: string, patch: WebchatRuntimeConfig): void => {
@@ -717,6 +742,52 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               observedAtMs
             })
           }
+          return steps
+        }
+        if (ev.kind === 'app') {
+          // An MCP App's interface, standing in the conversation until it settles. `boundary`
+          // keeps the reply chunks that follow from accumulating into it, exactly as an
+          // elicitation card's does — the frame is a thing handed to the reader, not text.
+          return [
+            ...steps,
+            lane({
+              kind: 'app',
+              text: ev.title,
+              app: {
+                appId: ev.appId,
+                title: ev.title,
+                toolName: ev.toolName,
+                html: ev.html,
+                ...(ev.toolInput ? { toolInput: ev.toolInput } : {}),
+                ...(ev.toolResult ? { toolResult: ev.toolResult } : {}),
+                ...(ev.csp ? { csp: ev.csp } : {}),
+                ...(ev.dimensions ? { dimensions: ev.dimensions } : {})
+              },
+              boundary: true
+            })
+          ]
+        }
+        if (ev.kind === 'app_resolved') {
+          // Settle the frame in place, scanned across the whole transcript and matched on lane
+          // identity too — the same rule `elicitation_resolved` follows, and for the same reason:
+          // a card outlives the lane fences the chunk accumulator stops at.
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i]!
+            const body = step.kind === 'app' ? step.app : undefined
+            if (!body || body.appId !== ev.appId) continue
+            if ((step.agentId ?? undefined) !== agentId) continue
+            // The template is dropped with the settlement: a settled frame is never re-armed, and
+            // keeping its document alive in memory would only invite one that is.
+            const { html: _html, ...rest } = body
+            return replaceAt(i, { ...step, app: { ...rest, outcome: ev.outcome }, observedAtMs })
+          }
+          return steps
+        }
+        if (ev.kind === 'app_rpc_result') {
+          // The answer to something a frame asked. It resolves the waiting promise and leaves no
+          // transcript row: the frame renders its own result, and a reader watching a page work
+          // does not need a log line per click.
+          appCalls.current.get(ev.callId)?.(ev.outcome)
           return steps
         }
         if (ev.kind === 'notice') {
@@ -1125,7 +1196,30 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         syncBusyLanes(id)
       }
       const cursor = key ? streamCursors.current.get(key) : undefined
-      if (!key || !cursor || !bindWebchatTurn(cursor, output.turnId)) return
+      if (!key || !cursor || !bindWebchatTurn(cursor, output.turnId)) {
+        // CARD-LIFETIME EVENTS SURVIVE THE LANE'S RETIREMENT — the one frame kind that still
+        // means something with no ordered lane to carry it.
+        //
+        // An MCP App frame outlives the turn that opened it: the reader is still looking at it,
+        // and its bridge is still served (webchat-mcp-apps.md §7.3). The daemon therefore keeps
+        // sending replies and settlements on the card's ORIGINAL turnId — but that turn's cursor
+        // is dropped at `done` and `admitsLane` refuses to reopen a completed lane, so without
+        // this every one of them would vanish the moment the agent finished: a button pressed
+        // afterwards would hang to its timeout, and a closed card would render as live forever.
+        //
+        // Only reachable with no cursor, and that is the whole discipline. While the lane IS live
+        // these events go through the ordered path below like every other frame — applying them
+        // here instead would consume their `index` without telling the cursor, which then waits
+        // for that index forever and leaves the following reply text and `done` buffered behind
+        // it, wedging the conversation as busy. Out of band is correct only once there is no band.
+        const orphan = output.event
+        if (orphan && (orphan.kind === 'app_rpc_result' || orphan.kind === 'app_resolved')) {
+          // Neither needs ordering to be correct: an RPC result is correlated by its own `callId`,
+          // and a settlement is an idempotent in-place update keyed by `appId`.
+          applyEventRef.current(id, orphan, output.agentId, output.turnId)
+        }
+        return
+      }
       reconnectAttempts.current.delete(id)
       applyStreamResult(id, key, acceptWebchatOutput(cursor, output))
     },
@@ -2076,6 +2170,54 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect]
   )
 
+  /**
+   * Forward one MCP App view's request to the daemon and wait for the verdict it answers with.
+   *
+   * The reply rides the ordinary event stream (`app_rpc_result`) rather than a channel of its
+   * own, so it survives what every other webchat event survives — the relay in the middle, a
+   * reconnect, a turn ending underneath the frame. `callId` is what correlates the two halves,
+   * and the timeout exists because a settled card's answer may never come at all: the frame is
+   * told that plainly instead of spinning forever.
+   */
+  const pgAppRpc = useCallback(
+    (
+      id: string,
+      agentForId: string,
+      appId: string,
+      rpc: McpAppRpc,
+      conversationId?: string
+    ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> => {
+      const callId = crypto.randomUUID()
+      return new Promise((resolve) => {
+        const settle = (outcome: { ok: true; result: unknown } | { ok: false; error: string }): void => {
+          if (!appCalls.current.delete(callId)) return
+          clearTimeout(timer)
+          resolve(outcome)
+        }
+        const timer = setTimeout(
+          () => settle({ ok: false, error: 'the request from this interface timed out' }),
+          APP_RPC_TIMEOUT_MS
+        )
+        appCalls.current.set(callId, settle)
+        connect(id, agentForId, conversationId)
+          .ready.then((ws) => ws.send(JSON.stringify({ type: 'app_rpc', appId, callId, rpc, agentId: agentForId })))
+          .catch(() => settle({ ok: false, error: 'this conversation is not connected' }))
+      })
+    },
+    [connect]
+  )
+
+  /** Tell the daemon the reader closed a frame (fire-and-forget) — the daemon settles the card
+   *  and stops serving its bridge, and the `app_resolved` event is what renders it inert here. */
+  const pgCloseApp = useCallback(
+    (id: string, agentForId: string, appId: string, conversationId?: string) => {
+      connect(id, agentForId, conversationId)
+        .ready.then((ws) => ws.send(JSON.stringify({ type: 'app_close', appId, agentId: agentForId })))
+        .catch(() => {})
+    },
+    [connect]
+  )
+
   /** Interrupt the running turn (fire-and-forget). The daemon ends the turn with a
    *  relay `done` item, which clears pgBusy via the socket's done handler. */
   const pgCancel = useCallback(
@@ -2152,6 +2294,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgSetPermissionPreset,
       pgSetFast,
       pgAnswerElicitation,
+      pgAppRpc,
+      pgCloseApp,
       pgCancel,
       getPgSession,
       pgSessionList,
@@ -2181,6 +2325,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgSetPermissionPreset,
       pgSetFast,
       pgAnswerElicitation,
+      pgAppRpc,
+      pgCloseApp,
       pgCancel,
       getPgSession,
       pgSessionList,

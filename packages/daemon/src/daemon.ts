@@ -189,6 +189,10 @@ import {
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
+import { DAEMON_VERSION } from './version.js'
+import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
+import { AppSurface, newAppId, type AppTurn } from './mcp/apps/surface.js'
+import { APP_RPC_REFUSALS, CLOSED, EXPIRED, LiveAppRegistry, SUPERSEDED, appContextBlock } from './mcp/apps/cards.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE, MAX_DREAM_FILES } from './dream/dreamer.js'
@@ -555,7 +559,9 @@ import type {
   SessionPullRequestFeedback,
   SessionPullRequestFeedbackResult,
   TaskList,
-  TaskListReq
+  TaskListReq,
+  McpAppRpc,
+  McpAppRpcResult
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { isBuiltinSystemToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
@@ -1225,6 +1231,11 @@ export class Daemon {
   private mcpServerDefs: Record<string, import('./config/config-schema.js').McpServerDef> = {}
   // Tenant-scoped CP MCP definitions, re-converged from register/ok.
   private cpMcpDefs?: import('./mcp/cp-mcp-defs.js').CpMcpDefs
+  /** MCP Apps (webchat-mcp-apps.md §3): the daemon's own MCP client for `ui: true` servers, the
+   *  registry of which of their cards are live, and the one surface that renders one. */
+  private appsHost!: McpAppsHost
+  private readonly liveApps = new LiveAppRegistry()
+  private appSurface!: AppSurface
   /** CP-owned, daemon-private external-memory definitions + verified clients. */
   private memoryConnections?: CpMemoryConnectionRegistry
   /** Durable reply-after-delivery capture pump. Bodies remain in LocalStore. */
@@ -2510,6 +2521,22 @@ export class Daemon {
     this.mcpServerDefs = this.cpMcpDefs.localDefinitions()
     if (Object.keys(mcpServerDefs).length)
       this.log.info(`mcp servers configured: ${Object.keys(mcpServerDefs).join(', ')}`)
+    // MCP Apps (webchat-mcp-apps.md §4): a `ui: true` server is hosted HERE rather than attached
+    // to the runtime, so the daemon can advertise the UI extension and read its `ui://`
+    // templates. Warmed without waiting — tool composition is synchronous, and a third party's
+    // handshake must not be on the path of starting a session.
+    this.appsHost = new McpAppsHost({
+      defs: () => this.mcpServerDefs,
+      log: this.log,
+      version: DAEMON_VERSION,
+      resolveStdioCommand: (command, entries) =>
+        resolveTrustedExecutable(command, {
+          ...process.env,
+          ...Object.fromEntries((entries ?? []).map((entry) => [entry.name, entry.value]))
+        })
+    })
+    this.appSurface = new AppSurface({ turnFor: (key) => this.appTurnFor(key), log: () => this.log })
+    this.appsHost.warm()
   }
 
   /** Phase 15 — the memory-plugin connection registry the pumps and sessions below bind to. */
@@ -2773,6 +2800,9 @@ export class Daemon {
         })
         return { result }
       },
+      // MCP Apps: a daemon-hosted UI server's tool. Resolution is by the `<server>__<tool>`
+      // namespace the host minted, so nothing here can shadow a product tool.
+      appTool: (ctx, name, args) => this.runAppTool(ctx, name, args),
       // Peer discovery goes to the CP (the only authority for the cross-daemon
       // roster). Resolve the client lazily; fail closed when it isn't connected.
       channelAgents: async ({ currentChannel, currentThread, currentTransportScope, ...req }) => {
@@ -3176,6 +3206,12 @@ export class Daemon {
         if (evaluationTools?.length) {
           tools.push(...evaluationTools.filter((definition) => definition.visibleTo(agent.id)).map((d) => d.descriptor))
         }
+        // MCP Apps (webchat-mcp-apps.md §4): a `ui: true` server's tools reach the runtime through
+        // the bridge, not as an ACP McpServer entry of their own — which is what lets the daemon
+        // see `_meta.ui` on the way back. `resolveAgentMcpServers` below skips the same servers,
+        // so each of their tools has exactly one call path. Read from connections already up: a
+        // server still dialing contributes to the next session rather than delaying this one.
+        tools.push(...this.appsHost.cachedToolsFor(agent.mcpServers))
         // Bind the bridge token to the exact integration that delivered this turn.
         // Falling back to agent.integrations[0] can send a title/message through the
         // wrong bot when one agent has multiple integrations. A memory-only session
@@ -3206,6 +3242,10 @@ export class Daemon {
             enabled: agent.mcpServers,
             defs: this.mcpDefsForAgent(agent.id),
             caps: this.runtimeFacts.mcpCapabilities(agent.runtime),
+            // Withhold a `ui` server from the runtime only when this daemon really hosts it: the
+            // Apps host reads daemon-local config, so a CP-pushed `ui` flag names a server nothing
+            // would carry (webchat-mcp-apps.md §4).
+            hostsUiServer: (name) => this.appsHost.isUiServer(name),
             ...(this.agentRunsInSandbox(agent)
               ? {
                   resolveStdioCommand: (command: string, entries: { name: string; value: string }[]) =>
@@ -8852,7 +8892,29 @@ export class Daemon {
           webchatConversationId: msg.chatId
         })
         return { msgId: msg.msgId, accepted: true }
+      case 'app_rpc':
+        // Accepted means DELIVERED, not allowed: the verdict travels back on the stream as the
+        // `app_rpc_result` event the view's JSON-RPC call is completed from, so a refusal is
+        // something the frame can render rather than an ack the frame never sees.
+        await this.handleAppRpc(msg.chatId, op.appId, op.callId, op.rpc, {
+          ...(op.user !== undefined ? { user: op.user } : {}),
+          ...(op.userId !== undefined ? { userId: op.userId } : {})
+        })
+        return { msgId: msg.msgId, accepted: true }
+      case 'app_close': {
+        // The conversation confines the close to a card this browser was actually shown, exactly
+        // as it confines an elicitation answer.
+        const resolved = this.liveApps.resolve({ appId: op.appId, conversationId: msg.chatId })
+        if ('app' in resolved) {
+          this.liveApps.settle(op.appId)
+          this.appSurface.settle(resolved.app.stream, op.appId, CLOSED)
+        }
+        return { msgId: msg.msgId, accepted: true }
+      }
       case 'close':
+        // Every frame in this conversation stops being served with it: the reader has closed the
+        // page the bridge existed for.
+        this.expireAppCards({ conversationId: msg.chatId })
         this.webchatTransport.handleWebchatClose(msg.chatId)
         return { msgId: msg.msgId, accepted: true }
     }
@@ -12376,6 +12438,12 @@ export class Daemon {
       )
       providerCheckpoint = initialRefresh.providerCheckpoint ?? providerCheckpoint
     }
+    // What this conversation's live MCP App frames asked the next turn to know
+    // (webchat-mcp-apps.md §7.3). Appended last and labelled as page-authored data: the words come
+    // from an agent-authored interface, not from the human, and a turn with no open frame — which
+    // is every turn on every other surface — carries exactly the blocks it always did.
+    const appContext = appContextBlock(this.liveApps.contextsFor(key))
+    if (appContext) promptBlocks.push({ type: 'text', text: appContext })
     return { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint }
   }
 
@@ -13780,6 +13848,208 @@ export class Daemon {
 
   /** Presentation-only source hint carried by provider-rendered session links —
    *  the platform's own fact (§7.4 link-source strategy). */
+  /**
+   * The live turn one logical sessionKey names, as the MCP Apps surface sees it
+   * (webchat-mcp-apps.md §6). Resolved at CARD time rather than installed at turn start on
+   * purpose: an app event is one of the turn's outputs and must take its index from the very
+   * counter every other output takes one from, so the stream is the turn's own live `webchat`
+   * slot or nothing.
+   *
+   * `notice` is the chat surface's decline channel, and it is only handed over when the turn has
+   * a connection to say it on — a headless turn gets neither arm and declines in silence, which
+   * is the same verdict `shareFile` reaches for one.
+   */
+  private appTurnFor(key: string): AppTurn | undefined {
+    const p = [...this.pending.values()].find((t) => t.plan.sessionKey === key)
+    if (!p) return undefined
+    let sessionUrl: string | undefined
+    try {
+      // A console link this daemon cannot compute must not cost the reader the notice itself.
+      sessionUrl = p.outwardSessionId ? this.sessionLink(p.outwardSessionId) : undefined
+    } catch {
+      sessionUrl = undefined
+    }
+    return {
+      ...(p.webchat ? { webchat: p.webchat } : {}),
+      ...(p.conn ? { notice: (text: string) => this.enqueueApply(p, { kind: 'notice', text }) } : {}),
+      ...(sessionUrl ? { sessionUrl } : {})
+    }
+  }
+
+  /**
+   * Run one tool of a daemon-hosted MCP Apps server and, when it has an interface, open that
+   * interface's card on this turn's surface. Undefined ⇒ `name` is not one of those tools.
+   *
+   * The sequence is the design's §6 contract in code: the tool runs first, the card is built from
+   * what came back, and the MODEL's half of the result is returned either way. A surface with no
+   * renderer, an undeliverable stream and an unreadable template all land in the same place —
+   * the agent still has the tool's words to answer with, and the reader is told what they are not
+   * being shown. Nothing here can fail the call for want of a frame.
+   */
+  private async runAppTool(
+    ctx: SessionContext,
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ result: unknown } | undefined> {
+    const split = splitAppToolName(name)
+    if (!split || !this.appsHost.isUiServer(split.server)) return undefined
+    const call = await this.appsHost.call(split.server, split.tool, args)
+    if (!call.card) return { result: { mcpContent: call.content, ...(call.isError ? { mcpIsError: true } : {}) } }
+
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const appId = newAppId()
+    const posted = this.appSurface.open(key, {
+      appId,
+      title: split.tool,
+      toolName: name,
+      html: call.card.html,
+      ...(Object.keys(args).length > 0 ? { toolInput: args } : {}),
+      toolResult: call.card.toolResult,
+      ...(call.card.csp ? { csp: call.card.csp } : {}),
+      ...(call.card.dimensions ? { dimensions: call.card.dimensions } : {})
+    })
+    if (posted.shown) {
+      const superseded = this.liveApps.open({
+        appId,
+        conversationId: ctx.channel,
+        agentId: ctx.agentId,
+        sessionKey: key,
+        server: split.server,
+        toolName: name,
+        openedAt: Date.now(),
+        stream: posted.stream
+      })
+      // A superseded frame the browser was never told about would keep an armed bridge that has
+      // already stopped being served, so the settlement is sent before this call returns.
+      for (const gone of superseded) this.appSurface.settle(gone.stream, gone.appId, SUPERSEDED)
+    }
+    // The model is told an interface opened even when the body was the interface's alone
+    // (`visibility: ["app"]`), so an agent never reads a withheld payload as a failed call.
+    const content =
+      call.content.length > 0
+        ? call.content
+        : [
+            {
+              type: 'text',
+              text: posted.shown
+                ? `Opened the "${split.tool}" interface for the user; its result is shown there.`
+                : `The "${split.tool}" interface cannot be shown on this surface, and the user has been told so.`
+            }
+          ]
+    return { result: { mcpContent: content, ...(call.isError ? { mcpIsError: true } : {}) } }
+  }
+
+  /**
+   * Serve one MCP App view's RPC (webchat-mcp-apps.md §7.3). Four methods reach here; everything
+   * else the extension gives a view is answered in the browser.
+   *
+   * Every authorization question is answered from the daemon's OWN record of the card
+   * ({@link LiveAppRegistry}): the payload says what to do, and the card says what may be
+   * reached — which server's tools, which conversation's stream, whose post a `ui/message`
+   * becomes. `conversationId` comes from the routed frame, so a card id learned anywhere else is
+   * still unusable, and an id that was never live is refused exactly as one from another
+   * conversation is.
+   *
+   * The verdict always goes back on the stream, including a refusal: a frame that never hears
+   * anything cannot tell a refusal from a hang, and the page is the reader's only view of what
+   * just happened.
+   */
+  private async handleAppRpc(
+    conversationId: string,
+    appId: string,
+    callId: string,
+    rpc: McpAppRpc,
+    author?: { user?: string; userId?: string }
+  ): Promise<void> {
+    const resolved = this.liveApps.resolve({ appId, conversationId })
+    if ('refused' in resolved) {
+      // A refusal still has to reach the frame, and the refused card is by definition not the
+      // place to look for its stream — so the conversation's own live one carries it. A refusal
+      // for a conversation with nothing streaming has nowhere to go, and stays silent.
+      const stream = [...this.pending.values()].find((p) => p.webchat?.conversationId === conversationId)?.webchat
+      if (stream)
+        this.appSurface.answer(stream, appId, callId, { ok: false, error: APP_RPC_REFUSALS[resolved.refused] })
+      return
+    }
+    const app = resolved.app
+    const answer = (outcome: McpAppRpcResult): void => this.appSurface.answer(app.stream, appId, callId, outcome)
+    try {
+      switch (rpc.method) {
+        case 'tools/call': {
+          // Charged before the call, so a frame in a loop is stopped by the budget rather than by
+          // whatever the upstream server does about being called thirty times a second.
+          if (!this.liveApps.charge(appId)) {
+            answer({ ok: false, error: APP_RPC_REFUSALS.rate_limited })
+            return
+          }
+          // The SERVER is the card's, always; the name is resolved against that server's own tool
+          // list. A view calls its tool by the name its server gave it (`refresh`) and has no
+          // business knowing the `<server>__<tool>` namespace an operator's config produced.
+          const tool = await this.appsHost.resolveViewTool(app.server, rpc.name)
+          if (tool === undefined) {
+            answer({ ok: false, error: APP_RPC_REFUSALS.unknown_tool })
+            return
+          }
+          const call = await this.appsHost.callForView(app.server, tool, rpc.args ?? {})
+          // The RAW upstream result, structured content included: that payload is what the view
+          // asked for and what it has to render, and the model's half of it would be no use here.
+          answer({
+            ok: true,
+            result: {
+              content: call.content,
+              ...(call.structuredContent ? { structuredContent: call.structuredContent } : {}),
+              ...(call.isError ? { isError: true } : {})
+            }
+          })
+          return
+        }
+        case 'resources/read':
+          answer({ ok: true, result: await this.appsHost.readResource(app.server, rpc.uri) })
+          return
+        case 'ui/message': {
+          // The frame speaking into the conversation. It becomes the READER's turn, under the
+          // author the relay verified — the page is agent-authored and may not name a sender —
+          // and it goes through the ordinary dispatch, so the roster check, busy/steer and the
+          // transcript all apply to it exactly as they do to something typed in the composer.
+          // There is no hop to charge on a user turn; the card's call budget bounds a looping page.
+          const ack = await this.webchatTransport.dispatchWebchatTurn(
+            app.agentId ?? '',
+            app.conversationId,
+            rpc.text,
+            webchatAuthorOf(author ?? {}),
+            app.stream.sink
+          )
+          answer(
+            ack.accepted
+              ? { ok: true, result: { turnId: ack.turnId } }
+              : { ok: false, error: ack.reason ?? 'the message was not accepted' }
+          )
+          return
+        }
+        case 'ui/update-model-context':
+          this.liveApps.setContext(appId, rpc.context)
+          answer({ ok: true, result: {} })
+          return
+      }
+    } catch (err) {
+      // The upstream server's own words, bounded. A view that called a tool which failed needs to
+      // know that it failed, and the frame is where the reader is looking.
+      answer({ ok: false, error: formatErr(err).slice(0, 500) })
+    }
+  }
+
+  /** Settle every app card a session or a conversation held, telling each frame's browser — so no
+   *  frame outlives the bridge that served it, and no bridge answers for a frame nobody has. The
+   *  settlement is best effort (a closed conversation has no stream left to hear it); dropping the
+   *  cards from the registry is the part that decides. */
+  private expireAppCards(scope: { sessionKey: string } | { conversationId: string }): void {
+    const gone =
+      'sessionKey' in scope
+        ? this.liveApps.expireSession(scope.sessionKey)
+        : this.liveApps.expireConversation(scope.conversationId)
+    for (const app of gone) this.appSurface.settle(app.stream, app.appId, EXPIRED)
+  }
+
   private sessionLinkSource(platform: string, integrationId?: string): string | undefined {
     return sessionLinkSourceFor(platform, integrationId ? this.integrationConfigById(integrationId) : undefined)
   }
@@ -16742,6 +17012,7 @@ export class Daemon {
         ) {
           removed += 1
           this.memoryWriteGrants.delete(rec.key)
+          this.expireAppCards({ sessionKey: rec.key })
           if (rec.acpSessionId)
             this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
           this.legacyMicrosandboxSessions.delete(sessionHostKey(rec.agentId, rec.key))
