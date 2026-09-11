@@ -185,9 +185,9 @@ It requires Docker and runs files with four workers by default; set
 ### Windows
 
 The daemon and the CLI are supported on Windows, and CI's `Unit Test (Windows)` job runs both
-packages' unit suites on `windows-latest` — on PRs whose diff reaches those two packages or their
-workspace dependency closure, and never on the release path, which skips it as it skips the sandbox
-suite. A test case that cannot work there goes on
+packages' unit suites on `windows-latest` — on every PR except one whose diff stays entirely inside
+the packages, chart and docs that closure cannot reach, and on the release path too, which gates
+publication on the same legs review ran. A test case that cannot work there goes on
 `it.skipIf(process.platform === 'win32')`; only when _every_ case in a file is POSIX-only does the
 file join `WINDOWS_EXCLUDED` in that package's `vitest.config.ts`, which is applied on Windows
 alone so `vitest run` is green for a Windows contributor too.
