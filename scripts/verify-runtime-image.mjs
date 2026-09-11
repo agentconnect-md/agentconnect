@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-// Asserts what the runtime-sandbox image's CONFIG says — a non-root USER, tini as the ENTRYPOINT and the browser path
-// ENV — without loading the image. The release stage adds one COPY on top of a digest-pinned base, so the base's config
-// IS the image's; this reads the base's config from the registry and, first, checks that the stage writes no config of
-// its own. Everything the image's filesystem can answer runs inside the build (docker/runtime-sandbox/verify-image.mjs).
+// Resolve inherited image configuration and the final USER without loading the runtime image.
 //
 //   node scripts/verify-runtime-image.mjs <runtime-sandbox|runtime-sandbox-full> [--build-arg KEY=VALUE]... \
 //     [--dockerfile <path>] [--platform <os/arch>]
@@ -19,7 +16,7 @@ export const DEFAULT_PLATFORM = 'linux/amd64'
 // Must match SANDBOX_BROWSER_EXECUTABLE_ENV in packages/daemon/src/shim/sandbox-paths.ts.
 export const BROWSER_ENV = 'AGENT_BROWSER_EXECUTABLE_PATH'
 
-// Every instruction that writes the image config a pod inherits; one of these in the release stage voids the reasoning.
+// USER may change during installation; other image configuration must remain inherited from the system base.
 export const CONFIG_INSTRUCTIONS = new Set([
   'USER',
   'ENTRYPOINT',
@@ -74,16 +71,20 @@ export function stagesOf(instructions) {
   return { globalArgs, stages }
 }
 
-/** The base ref the variant's release stage builds on, once that stage is shown to leave the base's config alone. */
+// Follow application stages back to the pinned system base and resolve their final USER.
 export function releaseBase(dockerfile, variant, buildArgs = {}) {
   const { globalArgs, stages } = stagesOf(parseDockerfile(dockerfile))
   const stage = stages.find((candidate) => candidate.name === variant)
   if (!stage) throw new Error(`the Dockerfile has no stage named ${variant}`)
-  const reference = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(stage.from)
+  const chain = []
+  for (let current = stage; current; current = stages.find((candidate) => candidate.name === current.from)) {
+    if (chain.includes(current)) throw new Error(`cyclic stage inheritance in ${variant}`)
+    chain.unshift(current)
+  }
+  const root = chain[0]
+  const reference = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(root.from)
   if (!reference) {
-    throw new Error(
-      `${variant} builds FROM ${stage.from} rather than directly from a build-arg base, so the base config need not be the image config`
-    )
+    throw new Error(`${variant} has no build-arg system base: ${root.from}`)
   }
   const arg = reference[1]
   const override = buildArgs[arg]
@@ -94,12 +95,19 @@ export function releaseBase(dockerfile, variant, buildArgs = {}) {
       `${arg} defaults to ${base}, which is not digest-pinned, so the base inspected need not be the base built`
     )
   }
-  const writes = stage.instructions.filter((entry) => CONFIG_INSTRUCTIONS.has(entry.instruction))
+  const instructions = chain.flatMap((ancestor) => ancestor.instructions)
+  const writes = instructions.filter(
+    (entry) => entry.instruction !== 'USER' && CONFIG_INSTRUCTIONS.has(entry.instruction)
+  )
   if (writes.length > 0) {
     const names = [...new Set(writes.map((entry) => entry.instruction))].join(', ')
     throw new Error(`${variant} writes image config of its own (${names}), so the base config is not the image config`)
   }
-  return { arg, base, stage }
+  const user = instructions.findLast((entry) => entry.instruction === 'USER')?.argument
+  if (user !== undefined && !/^[a-z0-9_-]+(?::[a-z0-9_-]+)?$/i.test(user)) {
+    throw new Error(`${variant} has an unresolved USER: ${user}`)
+  }
+  return { arg, base, stage, user }
 }
 
 /** `.Image` as imagetools prints it: one image, or one per platform when the base is a multi-platform index. */
@@ -172,13 +180,11 @@ export function main(argv, { stdout = process.stdout, stderr = process.stderr, i
   const { variant, buildArgs, dockerfile, platform } = options
   const notes = []
   try {
-    const { arg, base, stage } = releaseBase(readFileSync(dockerfile, 'utf8'), variant, buildArgs)
-    const instructions = stage.instructions.map((entry) => entry.instruction).join(', ') || 'nothing'
-    notes.push(
-      `the ${variant} stage builds directly on \${${arg}} and runs only ${instructions}, so the base config is the image config`
-    )
+    const { arg, base, user } = releaseBase(readFileSync(dockerfile, 'utf8'), variant, buildArgs)
+    notes.push(`the ${variant} stages inherit image config from \${${arg}}${user ? ` with final USER ${user}` : ''}`)
     notes.push(`base ${base}`)
-    notes.push(...checkImageConfig(selectImage(inspect(base), platform).config))
+    const config = selectImage(inspect(base), platform).config
+    notes.push(...checkImageConfig(user === undefined ? config : { ...config, User: user }))
   } catch (err) {
     stdout.write(`${variant} image configuration (${dockerfile})\n${notes.map((note) => `  ✓ ${note}`).join('\n')}\n`)
     stderr.write(`  ✗ ${err.message}\n`)

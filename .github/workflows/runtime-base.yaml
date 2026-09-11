@@ -1,0 +1,123 @@
+name: Build runtime bases
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Optional tag (default: base-YYYYMMDD-HHMMSS in UTC)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-base-publication
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Select a dated tag
+        id: tag
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${REQUESTED_TAG:-base-$(date -u +%Y%m%d-%H%M%S)}"
+          if ! [[ "$tag" =~ ^base-[0-9]{8}([.-][a-zA-Z0-9_.-]+)?$ ]] || [ "${#tag}" -gt 128 ]; then
+            echo 'Use a tag such as base-20260911-120000.' >&2
+            exit 1
+          fi
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: runtime-sandbox
+            base_arg: RUNTIME_SANDBOX_BASE
+          - variant: runtime-sandbox-full
+            base_arg: RUNTIME_SANDBOX_FULL_BASE
+    concurrency:
+      group: image-build-${{ matrix.variant }}
+      cancel-in-progress: false
+    env:
+      IMAGE: ghcr.io/agentconnect-md/${{ matrix.variant }}
+      BASE_TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify native runtime architecture
+        run: |
+          test "$(uname -m)" = x86_64
+          grep -qw avx /proc/cpuinfo
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Refuse to replace an existing base
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$BASE_TAG" > /dev/null 2> "$RUNNER_TEMP/base-inspect.log"; then
+            echo 'The tag already exists; choose a new dated tag.' >&2
+            exit 1
+          fi
+          if ! grep -Eiq 'not found|manifest unknown' "$RUNNER_TEMP/base-inspect.log"; then
+            cat "$RUNNER_TEMP/base-inspect.log" >&2
+            exit 1
+          fi
+      - name: Publish candidate system base
+        id: base
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/runtime-sandbox-base.Dockerfile
+          target: ${{ matrix.variant }}-base
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE }}:${{ env.BASE_TAG }}
+          push: true
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-base
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-base,mode=max
+      - name: Verify application configuration
+        env:
+          VARIANT: ${{ matrix.variant }}
+          BASE_ARG: ${{ matrix.base_arg }}
+          DIGEST: ${{ steps.base.outputs.digest }}
+        run: node scripts/verify-runtime-image.mjs "$VARIANT" --build-arg "$BASE_ARG=$IMAGE@$DIGEST"
+      - name: Verify applications, runtime table and real shim session
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/runtime-sandbox.Dockerfile
+          target: ${{ matrix.variant }}-verify
+          platforms: linux/amd64
+          build-args: ${{ matrix.base_arg }}=${{ env.IMAGE }}@${{ steps.base.outputs.digest }}
+          outputs: type=cacheonly
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache
+            type=registry,ref=${{ env.IMAGE }}:buildcache-verify
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-verify,mode=max
+      - name: Record the verified base pin
+        env:
+          BASE_ARG: ${{ matrix.base_arg }}
+          DIGEST: ${{ steps.base.outputs.digest }}
+        run: |
+          printf '%s=%s:%s@%s\n' "$BASE_ARG" "$IMAGE" "$BASE_TAG" "$DIGEST" > base-pin.txt
+          printf '### Verified base: %s\n\n```dockerfile\nARG %s\n```\n' "$BASE_TAG" "$(cat base-pin.txt)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: verified-base-pin-${{ matrix.variant }}
+          path: base-pin.txt
+          if-no-files-found: error

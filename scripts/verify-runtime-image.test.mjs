@@ -29,16 +29,26 @@ RUN corepack enable
 FROM shim-builder AS runtime-helpers
 RUN mkdir -p /out/shim
 
-FROM \${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full-table-check
+FROM \${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full-apps
+USER root
+RUN npm install --global example-runtime@1.0.0
+USER 10001:10001
+
+FROM \${RUNTIME_SANDBOX_BASE} AS runtime-sandbox-apps
+USER root
+RUN npm install --global example-runtime@1.0.0
+USER 10001:10001
+
+FROM runtime-sandbox-full-apps AS runtime-sandbox-full-table-check
 RUN node /tmp/check.mjs
 
 # The release images.
-FROM \${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full
+FROM runtime-sandbox-full-apps AS runtime-sandbox-full
 COPY --link --from=runtime-helpers --chown=0:0 \\
   # a comment inside the continuation
   /out/ /opt/agentconnect/
 ${releaseExtra}
-FROM \${RUNTIME_SANDBOX_BASE} AS runtime-sandbox
+FROM runtime-sandbox-apps AS runtime-sandbox
 COPY --link --from=runtime-helpers --chown=0:0 /out/ /opt/agentconnect/
 
 FROM runtime-sandbox AS runtime-sandbox-verify
@@ -97,7 +107,7 @@ test('continuation lines are joined, comments and blank lines dropped, instructi
   const env = parsed.find((entry) => entry.instruction === 'ENV')
   assert.equal(env.argument, 'PNPM_HOME=/pnpm PATH=/pnpm:$PATH')
   assert.equal(parsed.filter((entry) => entry.instruction.startsWith('#')).length, 0)
-  assert.equal(parsed.filter((entry) => entry.instruction === 'FROM').length, 7)
+  assert.equal(parsed.filter((entry) => entry.instruction === 'FROM').length, 9)
 })
 
 test('stages carry their name, FROM reference and instructions; global ARG defaults are collected', () => {
@@ -110,7 +120,7 @@ test('stages carry their name, FROM reference and instructions; global ARG defau
     ]
   )
   const release = stages.find((stage) => stage.name === 'runtime-sandbox')
-  assert.equal(release.from, '${RUNTIME_SANDBOX_BASE}')
+  assert.equal(release.from, 'runtime-sandbox-apps')
   assert.deepEqual(
     release.instructions.map((entry) => entry.instruction),
     ['COPY']
@@ -136,10 +146,10 @@ test('a --build-arg override replaces the default and may name a tag, while the 
   )
 })
 
-test('a release stage that writes image config, or builds on another stage, is refused', () => {
+test('stage inheritance permits USER changes but rejects other config writes throughout the chain', () => {
   assert.throws(
     () => releaseBase(fixture({ releaseExtra: 'ENV HOME=/elsewhere\nUSER root\n' }), 'runtime-sandbox-full'),
-    /runtime-sandbox-full writes image config of its own \(ENV, USER\)/
+    /runtime-sandbox-full writes image config of its own \(ENV\)/
   )
   assert.throws(
     () => releaseBase(fixture({ releaseExtra: 'WORKDIR /tmp\n' }), 'runtime-sandbox-full'),
@@ -149,9 +159,14 @@ test('a release stage that writes image config, or builds on another stage, is r
   assert.doesNotThrow(() =>
     releaseBase(fixture({ releaseExtra: 'RUN chmod 0555 /opt/agentconnect\nLABEL a=b\n' }), 'runtime-sandbox-full')
   )
+  assert.equal(releaseBase(fixture(), 'runtime-sandbox-verify').user, 'root')
   assert.throws(
-    () => releaseBase(fixture(), 'runtime-sandbox-verify'),
-    /builds FROM runtime-sandbox rather than directly/
+    () => releaseBase(fixture().replace('USER root', 'ENV HOME=/elsewhere'), 'runtime-sandbox-full'),
+    /\(ENV\)/
+  )
+  assert.throws(
+    () => releaseBase(fixture({ releaseExtra: 'USER $RUNTIME_USER\n' }), 'runtime-sandbox-full'),
+    /unresolved USER/
   )
   assert.throws(() => releaseBase(fixture(), 'runtime-sandbox-smoke'), /no stage named runtime-sandbox-smoke/)
 })
@@ -159,8 +174,9 @@ test('a release stage that writes image config, or builds on another stage, is r
 test('the repository Dockerfile passes the stage assertions for both variants', () => {
   const text = readFileSync(realDockerfile, 'utf8')
   for (const variant of ['runtime-sandbox', 'runtime-sandbox-full']) {
-    const { base, stage } = releaseBase(text, variant)
+    const { base, stage, user } = releaseBase(text, variant)
     assert.match(base, /^ghcr\.io\/[^@]+@sha256:[0-9a-f]{64}$/)
+    assert.equal(user, '10001:10001')
     assert.deepEqual(
       stage.instructions.map((entry) => entry.instruction),
       ['COPY']
@@ -202,7 +218,7 @@ test('main inspects exactly the pinned base of the variant and reports every che
   assert.deepEqual(good.calls, [FULL_BASE])
   assert.match(
     good.stdout,
-    /runtime-sandbox-full stage builds directly on \$\{RUNTIME_SANDBOX_FULL_BASE\} and runs only COPY/
+    /runtime-sandbox-full stages inherit image config from \$\{RUNTIME_SANDBOX_FULL_BASE\} with final USER 10001:10001/
   )
   assert.match(good.stdout, /✓ base registry.example.test\/full:base-1@sha256:b+\n/)
   assert.match(good.stdout, /✓ a non-root USER is configured/)
@@ -214,12 +230,12 @@ test('main inspects exactly the pinned base of the variant and reports every che
 test('main honours --build-arg and --platform, and fails on a bad config without hiding what passed', (t) => {
   const { path } = withDockerfile(t, fixture())
   const tag = 'registry.example.test/pool:base-candidate'
-  const multi = { 'linux/amd64': inspected({ ...goodConfig(), User: 'root' }), 'linux/arm64': inspected() }
+  const multi = { 'linux/amd64': inspected({ ...goodConfig(), Entrypoint: ['node'] }), 'linux/arm64': inspected() }
   const bad = run(['runtime-sandbox', '--dockerfile', path, '--build-arg', `RUNTIME_SANDBOX_BASE=${tag}`], () => multi)
   assert.equal(bad.code, 1)
   assert.deepEqual(bad.calls, [tag])
-  assert.match(bad.stdout, /✓ the runtime-sandbox stage builds directly on/)
-  assert.match(bad.stderr, /✗ USER is root/)
+  assert.match(bad.stdout, /✓ the runtime-sandbox stages inherit image config/)
+  assert.match(bad.stderr, /✗ entrypoint is not tini/)
   const arm = run(
     [
       'runtime-sandbox',
@@ -233,6 +249,10 @@ test('main honours --build-arg and --platform, and fails on a bad config without
     () => multi
   )
   assert.equal(arm.code, 0, arm.stderr)
+  const rootStage = withDockerfile(t, fixture({ releaseExtra: 'USER root\n' }))
+  const root = run(['runtime-sandbox-full', '--dockerfile', rootStage.path], () => inspected())
+  assert.equal(root.code, 1)
+  assert.match(root.stderr, /✗ USER is root/)
 })
 
 test('main refuses a Dockerfile whose release stage writes config before touching the registry', (t) => {

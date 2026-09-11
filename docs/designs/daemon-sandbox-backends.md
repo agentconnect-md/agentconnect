@@ -475,19 +475,29 @@ boot and stop/start, reusing the prepared image cache.
 
 ### Release image selection and Docker
 
-Runtime dependencies live in manually published `base-<version>` tags of the two
-runtime image packages, built from `docker/runtime-sandbox-base.Dockerfile`.
-The release Dockerfile pins their digests and adds only the daemon-versioned helper
-payload. Release builds never rebuild the dependency images, even with an empty
-build cache. Updating Node, the toolchain, Chrome, Docker, or an installed runtime
-requires a manual base build and an explicit digest update.
+Stable system dependencies live in manually published `base-<version>` tags of
+the two runtime image packages, built from `docker/runtime-sandbox-base.Dockerfile`.
+Both bases provide Node, Git, the build toolchain and Chrome with its system
+libraries. Only the full base adds Docker, bubblewrap and socat. Neither base
+installs agent-browser or an ACP harness. Updating system dependencies requires a
+base build and an explicit digest update; release builds reuse these pinned bases
+even with an empty build cache.
+
+`docker/runtime-sandbox.Dockerfile` owns the application versions and installation.
+The full image first adds Antigravity in an independent, fixed-version layer,
+then agent-browser, then the other harnesses. The pool image starts with
+agent-browser and then installs its harnesses. Routine application upgrades change
+these exact version pins and use the normal release image build, without publishing
+another base. Standalone downloads also pin SHA-256. The shim remains an independent
+compilation stage whose small helper payload is copied last into both final images;
+it does not need a separately published image.
 
 The release build bundles `dist/release.json` with a `runtimeSandboxImage` OCI
 reference. It names the current release's `runtime-sandbox-full:v<version>` alias.
 The image workflow creates this alias even when it reuses an older component
 image. The pool continues to use the separate `runtime-sandbox` image. Both targets
-share the same helper payload over their respective dependency bases. Additional
-self-hosted runtimes belong in the full base. The pool provides Claude Code,
+share the same helper payload over their respective application layers. Additional
+self-hosted runtimes belong in the full application stage. The pool provides Claude Code,
 Codex, and DeepSeek Harness. The full image additionally installs Antigravity,
 Cline, Devin, GitHub Copilot, Grok Build, Oh My Pi, OpenCode, pi, Qwen Code,
 Qoder CLI, and Qoder CN CLI. The `qoder` compatibility ID resolves to `qoder-cli`
@@ -497,8 +507,8 @@ one entry while existing agent configurations retain either ID. Explicit runtime
 overrides remain independent. pi includes both its ACP adapter and the underlying
 CLI. Packages are version-pinned; standalone downloads also pin their SHA-256.
 
-Each dependency base bakes an explicit runtime roster and generates its own runtime table
-by probing the installed executables as the ordinary runtime user, without
+Each application stage bakes an explicit runtime roster and generates its own runtime table
+after installation by probing the executables as the ordinary runtime user, without
 provider credentials. Missing executables fail the build instead of silently
 reducing the roster. Installed runtimes remain discoverable without a saved login;
 saved logins also keep runtimes visible when their executable is missing.
@@ -512,15 +522,21 @@ The release images are currently Linux amd64; an arm64 daemon must configure
 a compatible image explicitly. The full image's Antigravity binary requires
 AVX in the guest CPU; amd64 emulation without AVX cannot run that runtime.
 
-To update dependencies, edit the pins in `docker/runtime-sandbox-base.Dockerfile`
-and build both targets on an amd64 host with AVX, using a new tag for each manual
-publication. Push the candidate bases before checking them: nothing references a new
-tag until the release Dockerfile pins it, and the checks read the pushed base the way
-release CI does. Run these commands from the repository root:
+To update system dependencies, edit `docker/runtime-sandbox-base.Dockerfile` and run
+the **Build runtime bases** workflow manually in GitHub Actions. Its default tag is
+`base-YYYYMMDD-HHMMSS` in UTC; an optional explicit tag must also include the date.
+The workflow refuses to overwrite an existing tag, publishes both bases and verifies
+each with the application layers, runtime table and real shim session. Successful jobs
+report digest-pinned references in the run summary and upload them as artifacts.
+Update the two base ARGs in the release Dockerfile to those verified references.
+
+For a local build, use a new tag and an amd64 host with AVX for full application
+verification. Push candidates before checking them: nothing references a new tag
+until the release Dockerfile pins it. Run these commands from the repository root:
 
 ```bash
 set -eu
-BASE_VERSION=20260910.1
+BASE_VERSION=20260911.2
 for variant in runtime-sandbox runtime-sandbox-full; do
   docker buildx build --builder "$(docker context show)" --platform linux/amd64 \
     -f docker/runtime-sandbox-base.Dockerfile --target "$variant-base" \
@@ -544,9 +560,11 @@ The `-verify` target runs the runtime-table probe, the static in-image checks an
 shim smoke test — the image's own entrypoint started as the pod starts it, the daemon
 side dialling it over loopback, the real ACP runtime answering `initialize` and
 `session/new` — as build stages, so the host needs no toolchain. The host script
-checks what only the image configuration says (the non-root user, the tini entrypoint
-and the browser path) against the base the build was given, after asserting that the
-release stage writes no configuration of its own. To try a built image by hand, build
+checks the tini entrypoint and browser path inherited from the pinned system base,
+follows application-stage inheritance and checks the final non-root user. Other
+configuration overrides are rejected. The release fingerprint includes application
+assets and installation scripts as well as Dockerfile pins and shim content.
+To try a built image by hand, build
 the `$variant` target with `--load -t "$variant:local"` and, after `pnpm install` and
 `pnpm --filter '@agentconnect.md/daemon^...' build`, run
 `pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts "$variant:local"`,

@@ -347,10 +347,7 @@ jobs:
           bash scripts/runtime-image-effective.sh "$IMAGE" "$VERSION" "$PREVIOUS_TAG" "$SHIM" "$RECIPE"
           | tee -a "$GITHUB_OUTPUT"
 
-      # What only the image CONFIG can answer — a non-root USER, tini as the ENTRYPOINT and the browser path ENV — read
-      # from the digest-pinned base the Dockerfile names, once the script has checked that the release stage writes no
-      # config of its own: it adds one COPY, so the base's config IS the image's. Independent of the build and cheap, so
-      # it runs first and a Dockerfile mistake fails here before a base is pulled.
+      # Check inherited system-base config and the final application USER before pulling any image layers.
       - name: Verify the runtime sandbox image configuration
         if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         env:
@@ -364,12 +361,7 @@ jobs:
           done <<< "$BUILD_ARGS"
           node scripts/verify-runtime-image.mjs "$@"
 
-      # The Dockerfile's verify target, built with `--output type=cacheonly`: the runtime-table probe (cached by the base
-      # pin and the roster), the shim smoke test (the image's own entrypoint started the way the pod starts it, the daemon
-      # side dialling it over loopback, the real ACP runtime answering `initialize` and `session/new`) and the static
-      # in-image assertions, each inside the built image as its own user. No image is loaded and no toolchain is installed
-      # on the runner. The probe stages are not in the image's graph, and a `mode=max` export replaces the whole cache
-      # manifest, so the Build step below would drop them from the shared ref; they live under their own `-verify` ref.
+      # Verify applications, runtime tables and real shim sessions inside the build, retaining a separate verification cache.
       - name: Verify the runtime sandbox image inside the build
         if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         uses: docker/build-push-action@v7

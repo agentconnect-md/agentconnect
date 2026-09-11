@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +14,9 @@ const DOCKERFILE =
 function harness(t) {
   const root = mkdtempSync(join(tmpdir(), 'ac-runtime-fingerprint-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
+  const assets = join(root, 'runtime-sandbox')
+  mkdirSync(assets)
+  writeFileSync(join(assets, 'install.sh'), 'npm install --global example-runtime@1.0.0\n')
   const fingerprint = ({
     digest = `${DIGEST}\n`,
     dockerfile = DOCKERFILE,
@@ -38,7 +41,7 @@ function harness(t) {
     const start = lines.indexOf('labels<<EOF')
     return { shim: value('shim'), recipe: value('recipe'), labels: lines.slice(start + 1, lines.indexOf('EOF', start)) }
   }
-  return { fingerprint, outputs }
+  return { fingerprint, outputs, assets }
 }
 
 test('the payload digest is read as is and both digests become labels', { skip: process.platform === 'win32' }, (t) => {
@@ -56,7 +59,7 @@ test(
   'the recipe follows the Dockerfile and the build inputs, never the payload',
   { skip: process.platform === 'win32' },
   (t) => {
-    const { fingerprint, outputs } = harness(t)
+    const { fingerprint, outputs, assets } = harness(t)
     const base = outputs(fingerprint())
     assert.equal(outputs(fingerprint()).recipe, base.recipe)
     assert.equal(outputs(fingerprint({ digest: `sha256:${'c'.repeat(64)}\n` })).recipe, base.recipe)
@@ -66,6 +69,8 @@ test(
     assert.notEqual(outputs(fingerprint({ args: 'RUNTIME_SANDBOX_BASE=other' })).recipe, base.recipe)
     assert.notEqual(outputs(fingerprint({ contexts: 'base=docker-image://other' })).recipe, base.recipe)
     assert.notEqual(outputs(fingerprint({ target: 'runtime-sandbox-full' })).recipe, base.recipe)
+    writeFileSync(join(assets, 'install.sh'), 'npm install --global example-runtime@1.0.1\n')
+    assert.notEqual(outputs(fingerprint()).recipe, base.recipe)
   }
 )
 
