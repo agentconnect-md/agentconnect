@@ -366,6 +366,20 @@ describe('sandbox shim dial-in', () => {
 
 /** k8s-daemon-pool §7: what the daemon accepts as proof that the socket it dialed is the pod it launched. */
 describe('dial-in identity handshake', () => {
+  it.each([undefined, ['cluster-skills-v1', 'cluster-skills-v2', 'future-feature']])(
+    'advertises only peer-compatible features when the daemon offers %j',
+    async (supportedFeatures) => {
+      const { port } = await sandbox({ features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'] })
+      const { socket, frames } = await rawDial(port)
+      socket.send(JSON.stringify({ type: 'shim/hello', agentId: 'agent-a', generation: 1, supportedFeatures }))
+      await waitFor(() => frames.length > 0)
+      expect(JSON.parse(frames[0]!)).toMatchObject({
+        type: 'shim/identity',
+        features: ['cluster-skills-v1', 'cluster-skills-v2']
+      })
+    }
+  )
+
   it('fails the dial when the shim answers with anything but its identity', async () => {
     const clock = new VirtualClock()
     const warnings: string[] = []

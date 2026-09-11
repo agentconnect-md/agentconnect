@@ -68,7 +68,7 @@ export const ShimDialHelloSchema = z.object({
   type: z.literal('shim/hello'),
   agentId: z.string().min(1),
   generation: z.number().int().nonnegative(),
-  supportedFeatures: z.array(ShimFeatureSchema).max(16).optional()
+  supportedFeatures: z.array(z.string().min(1).max(80)).max(16).optional()
 })
 
 /** The shim answers the dialer's hello by proving which pod accepted it. */

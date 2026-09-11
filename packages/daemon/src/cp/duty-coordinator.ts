@@ -570,17 +570,7 @@ export class DutyCoordinator {
     await this.onDutyChanged()
   }
 
-  /** Claim one agent's duty because a trigger for it arrived here. A win is
-   *  installed exactly like a `duty/grant`, so the same converge path runs.
-   *  Refuses without asking the CP when this member must not take new work:
-   *  capacity is the member's own call (design D14), and a drain in progress
-   *  would either hand the fresh lease straight back or pin it to an agent whose
-   *  gate is about to drop the very turn that triggered the claim.
-   *
-   *  Both gates are checked AFTER the round trip, not instead of it. Refusing to
-   *  ask would suppress the very answer that makes a stale delivery routable —
-   *  the incumbent's identity — turning a re-routable trigger into a drop. So a
-   *  full or draining member still asks, and hands back anything it wins. */
+  /** Claim, install and project duty before a trigger or admitted lifecycle operation can run. */
   async claimDutyForTrigger(
     agentId: string,
     isLifecycleCurrent?: () => boolean
