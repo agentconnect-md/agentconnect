@@ -24,8 +24,9 @@ command = [
   '--set-json', 'daemonPool.runtime.nodeSelector={"example.com/agents":"true"}',
   '--set-json', 'daemonPool.runtime.tolerations=' \
     '[{"key":"example.com/agents","operator":"Equal","value":"true","effect":"NoSchedule"}]',
-  # Set to prove propagation into controller-created sandbox pods, not just chart-rendered ones.
+  # Both pull-secret wires, set to different names so the render proves they stay separate.
   '--set-json', 'imagePullSecrets=[{"name":"example-pull"}]',
+  '--set-json', 'daemonPool.runtime.imagePullSecrets=[{"name":"example-sandbox-pull"}]',
   # Off here so the object-count assertions below see only chart-owned objects, not the
   # vendored stack; the defaults render at the end covers the default-on stack.
   '--set', 'installCRD=false'
@@ -234,9 +235,13 @@ abort('runtime container must root the workspace and place the shim listener') u
 shim_listen = runtime_container.fetch('env').find { |item| item['name'] == 'AC_SHIM_PORT' }&.fetch('value')
 abort('the shim listener, the dialer, and the policy must share one port') unless
   shim_listen == env['AC_K8S_SHIM_PORT'] && Integer(shim_listen) == ingress['ports'].first['port']
-# Controller-created sandbox pods must carry the same install-wide pull secrets as every
-# chart-rendered pod, or a private-mirror install stops at its first sandbox.
-abort('sandboxes must carry the install-wide pull secrets') unless template_pod['imagePullSecrets'] == [{ 'name' => 'example-pull' }]
+# Two pull-secret wires, one per namespace, and they must not cross. A chart-rendered pod lands
+# in the release namespace and takes the install-wide value; a sandbox pod is created by the
+# controller in the sandbox namespace, where the kubelet resolves the secret, so it takes
+# `daemonPool.runtime.imagePullSecrets`. Cross them and the reference names a Secret that is not
+# in the pod's namespace — FailedToRetrieveImagePullSecret on every sandbox.
+abort('chart-rendered pods must carry the install-wide pull secrets') unless pod['imagePullSecrets'] == [{ 'name' => 'example-pull' }]
+abort('sandboxes must carry their own pull secrets, not the install-wide ones') unless template_pod['imagePullSecrets'] == [{ 'name' => 'example-sandbox-pull' }]
 abort('runtime container must satisfy restricted Pod Security') unless runtime_container['securityContext'] == {
   'allowPrivilegeEscalation' => false, 'capabilities' => { 'drop' => ['ALL'] }
 }
@@ -430,6 +435,10 @@ default_pool = defaults_find.call('Deployment', 'example-agentconnect-daemon-poo
 default_oc = defaults_find.call('Deployment', 'example-agentconnect-open-connector')
 default_warm = defaults_find.call('SandboxWarmPool', 'example-agentconnect-runtime-pool')
 abort('defaults must hold three warm spares') unless default_warm.dig('spec', 'replicas') == 3
+# The runtime-sandbox image is public, so the sandbox pull secrets stay empty until an install
+# hosting it privately sets them — and an empty list must render no key at all, not `null`.
+default_template_pod = defaults_find.call('SandboxTemplate', 'example-agentconnect-runtime').dig('spec', 'podTemplate', 'spec')
+abort('defaults must name no sandbox pull secrets') if default_template_pod.key?('imagePullSecrets')
 # The pool's data-plane Secret is referenced by a default NAME the operator creates, like
 # `secrets.existingSecret` — a required-but-empty value would fail the default render outright.
 default_data_plane = default_pool.dig('spec', 'template', 'spec', 'volumes').find { |v| v['name'] == 'data-plane' }
