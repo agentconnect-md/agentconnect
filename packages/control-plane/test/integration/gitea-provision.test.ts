@@ -200,6 +200,35 @@ describe('GiteaProvisioner (§6) — the managed webhook', () => {
     )
   })
 
+  it('retires a hook at the managed URL that no column records, beside the recorded one', async () => {
+    const h = await harness({}, EVENTS)
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const recorded = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
+    // A create whose answer was lost: the hook exists at the provider under a key nothing records.
+    h.fake.hooks.set(6100, { ...h.fake.hooks.get(Number(recorded))!, secret: 'lost' })
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    expect([...h.fake.hooks.keys()]).toEqual([Number(recorded)])
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId).toBe(recorded)
+  })
+
+  it('records the created webhook before its read-back, so a failed read-back leaves an id an unbind can delete', async () => {
+    const h = await harness({}, EVENTS)
+    let failed = false
+    h.fake.opts.intercept = (method, route) => {
+      if (failed || method !== 'GET' || !/\/hooks\/\d+$/.test(route)) return undefined
+      failed = true
+      return Response.json({ message: 'unavailable' }, { status: 503 })
+    }
+    expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      state: 'admin_degraded',
+      reason: 'gitea_503'
+    })
+    const created = [...h.fake.hooks.keys()][0]!
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId).toBe(BigInt(created))
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
+    expect(h.fake.hooks.size).toBe(0)
+  })
+
   it('reconciles with the events always sent and never a secret: the provider rebuilds subscriptions and ignores re-keys', async () => {
     const h = await harness({}, EVENTS)
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
@@ -427,6 +456,62 @@ describe('GiteaProvisioner (§7) — signing-key rotation by successor webhook',
     expect(h.fake.hooks.get(Number(row.webhookId))!.active).toBe(true)
   })
 
+  it('records the successor before its read-back: a failed read-back is adopted by the retry, not duplicated', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const oldId = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
+    // The successor's read-back answers 503 once, after its create landed.
+    let failed = false
+    h.fake.opts.intercept = (method, route) => {
+      if (failed || method !== 'GET' || !/\/hooks\/\d+$/.test(route)) return undefined
+      failed = true
+      return Response.json({ message: 'unavailable' }, { status: 503 })
+    }
+    h.rebroadcasts.length = 0
+    expect(await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      rotated: false,
+      reason: 'gitea_503'
+    })
+    const row = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!
+    expect(row.nextWebhookId).not.toBeNull()
+    expect(h.fake.hooks.size).toBe(2)
+    expect(h.fake.hooks.get(Number(row.nextWebhookId))!.secret).toBe(
+      (await h.webhookSecrets.get(DEFAULT_ORG_ID, h.binding.id))!.next
+    )
+    // The step stopped before the relays learned the key or the old hook was deactivated.
+    expect(h.rebroadcasts).toEqual([])
+    expect(h.fake.hooks.get(Number(oldId))!.active).toBe(true)
+    // The retry adopts the recorded successor instead of creating a third webhook, and finishes the step.
+    expect(await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      rotated: true,
+      promoted: false
+    })
+    expect(h.fake.hooks.size).toBe(2)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.nextWebhookId).toBe(row.nextWebhookId)
+    expect(h.rebroadcasts).toEqual([REPO])
+    expect(h.fake.hooks.get(Number(oldId))!.active).toBe(false)
+    expect(h.fake.hooks.get(Number(row.nextWebhookId))!.active).toBe(true)
+  })
+
+  it('unbinds right after a failed successor read-back and takes the recorded successor with it', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    let failed = false
+    h.fake.opts.intercept = (method, route) => {
+      if (failed || method !== 'GET' || !/\/hooks\/\d+$/.test(route)) return undefined
+      failed = true
+      return Response.json({ message: 'unavailable' }, { status: 503 })
+    }
+    expect(await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)).toEqual({
+      rotated: false,
+      reason: 'gitea_503'
+    })
+    expect(h.fake.hooks.size).toBe(2)
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
+    expect(h.fake.hooks.size).toBe(0)
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitea' } })).toBe(0)
+  })
+
   it('refuses to replace a working webhook with a successor that lost subscriptions', async () => {
     const h = await harness()
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
@@ -479,6 +564,17 @@ describe('GiteaProvisioner (§6) — unbind', () => {
     expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toBeNull()
     expect(await prisma.giteaWebhookSecret.count()).toBe(0)
     expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitea' } })).toBe(0)
+  })
+
+  it('sweeps a hook at the managed URL whose id was never recorded, beside the recorded ones', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    const recorded = (await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.webhookId!
+    h.fake.hooks.set(6100, { ...h.fake.hooks.get(Number(recorded))!, secret: 'lost' })
+    h.fake.hooks.set(6101, { ...h.fake.hooks.get(Number(recorded))!, url: 'https://elsewhere.example.test/hook' })
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
+    // Only the hooks at OUR URL went; a foreign one at the repository is not ours to delete.
+    expect([...h.fake.hooks.keys()]).toEqual([6101])
   })
 
   it('parks in cleanup_pending and RETAINS the claim when the token is rejected, then finishes under a replacement', async () => {

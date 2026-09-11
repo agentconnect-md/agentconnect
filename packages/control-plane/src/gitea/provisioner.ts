@@ -445,16 +445,19 @@ export class GiteaProvisioner {
     // Mid-rotation the successor is the live webhook; the old one waits inactive until a verified delivery retires it (§7).
     const live = binding.nextWebhookId ?? binding.webhookId
     const fresh = live === null
+    // A hook at OUR exact URL that no column records (a lost create answer) can never verify and cannot be re-keyed: retire it.
+    for (const stray of hooks) {
+      const id = BigInt(stray.id)
+      if (stray.config?.url !== url || id === binding.webhookId || id === binding.nextWebhookId) continue
+      await giteaDeleteWebhook(token, path.owner, path.repo, id, api).catch(swallow404)
+    }
     let webhookId: bigint
     let stored: GiteaWebhook
     if (live === null) {
-      // A crash-left hook at OUR exact URL cannot be re-keyed (the secret is set at creation only): retire it and create afresh.
-      for (const stray of hooks) {
-        if (stray.config?.url !== url) continue
-        await giteaDeleteWebhook(token, path.owner, path.repo, BigInt(stray.id), api).catch(swallow404)
-      }
       stored = await giteaCreateWebhook(token, path.owner, path.repo, { url, secret: keys.current, events }, api)
       webhookId = BigInt(stored.id)
+      // Recorded the moment the create answers, before the read-back can fail: an unbind then deletes it by id.
+      await this.deps.bindings.update(orgId, binding.id, { webhookId, lastVerifiedDeliveryAt: null })
     } else {
       webhookId = live
       stored = await giteaUpdateWebhook(token, path.owner, path.repo, webhookId, { url, events, active: true }, api)
@@ -464,16 +467,10 @@ export class GiteaProvisioner {
     const missing = giteaWebhookEventsMissing(events, readBack.events ?? [])
     if (missing.length > 0) {
       this.deps.log?.warn({ bindingId: binding.id, missing }, 'gitea stored fewer webhook events than asked')
-      await this.deps.bindings.update(orgId, binding.id, {
-        ...(fresh ? { webhookId } : {}),
-        desiredEventsHash: null
-      })
+      await this.deps.bindings.update(orgId, binding.id, { desiredEventsHash: null })
       return { degraded: { state: 'admin_degraded', reason: WEBHOOK_EVENTS_UNSUPPORTED_REASON } }
     }
-    await this.deps.bindings.update(orgId, binding.id, {
-      ...(fresh ? { webhookId, lastVerifiedDeliveryAt: null } : {}),
-      desiredEventsHash: giteaWebhookEventsHash(events)
-    })
+    await this.deps.bindings.update(orgId, binding.id, { desiredEventsHash: giteaWebhookEventsHash(events) })
     if (!fresh) return { verified: binding.lastVerifiedDeliveryAt !== null }
     // §6 step 4: the relay can only verify a delivery under a rule it holds, so the rules go out first.
     await this.rebroadcast(orgId, binding.repoId)
@@ -552,30 +549,39 @@ export class GiteaProvisioner {
       if (!keys) return { rotated: false, reason: 'signing_key_missing' }
       const events = await this.deps.desiredWebhookEvents(orgId, binding.repoId)
       if (!events) return { rotated: false, reason: 'no_managed_webhook' }
-      // A rotation already in flight keeps its successor, which the relays already hold; the test is simply repeated.
-      if (
-        binding.nextWebhookId !== null &&
-        (await giteaWebhook(token, path.owner, path.repo, binding.nextWebhookId, api))
-      ) {
-        return { token, successorId: binding.nextWebhookId }
+      let successorId = binding.nextWebhookId
+      let stored = successorId === null ? null : await giteaWebhook(token, path.owner, path.repo, successorId, api)
+      if (successorId !== null && stored !== null) {
+        // A recorded successor (a rotation cut short) is adopted under its sealed `next` key and re-converged to the union.
+        stored = await giteaUpdateWebhook(token, path.owner, path.repo, successorId, { url, events, active: true }, api)
+      } else {
+        const next = randomBytes(32).toString('hex')
+        await this.deps.webhookSecrets.put(orgId, binding.id, { current: keys.current, next })
+        stored = await giteaCreateWebhook(token, path.owner, path.repo, { url, secret: next, events }, api)
+        successorId = BigInt(stored.id)
+        // Recorded the moment the create answers, before any call that can fail: a retry adopts it, an unbind deletes it.
+        await this.deps.bindings.update(orgId, binding.id, { nextWebhookId: successorId })
       }
-      const next = randomBytes(32).toString('hex')
-      await this.deps.webhookSecrets.put(orgId, binding.id, { current: keys.current, next })
-      const created = await giteaCreateWebhook(token, path.owner, path.repo, { url, secret: next, events }, api)
-      const successorId = BigInt(created.id)
-      const readBack = (await giteaWebhook(token, path.owner, path.repo, successorId, api)) ?? created
+      const readBack = (await giteaWebhook(token, path.owner, path.repo, successorId, api)) ?? stored
       if (giteaWebhookEventsMissing(events, readBack.events ?? []).length > 0) {
-        // A successor that lost subscriptions must not replace a working webhook: undo the whole step.
+        // A successor that lost subscriptions must not replace a working webhook: undo, forgetting it only once it is gone.
         await giteaDeleteWebhook(token, path.owner, path.repo, successorId, api).catch(swallow404)
         await this.deps.webhookSecrets.put(orgId, binding.id, { current: keys.current, next: null })
+        await this.deps.bindings.update(orgId, binding.id, { nextWebhookId: null })
         return { rotated: false, reason: WEBHOOK_EVENTS_UNSUPPORTED_REASON }
       }
-      await this.deps.bindings.update(orgId, binding.id, { nextWebhookId: successorId })
       // Both keys reach the relays before anything is delivered under the successor.
       await this.rebroadcast(orgId, binding.repoId)
       // From here on only the successor receives live events; the old webhook's in-flight deliveries still verify.
       if (binding.webhookId !== null) {
-        await giteaUpdateWebhook(token, path.owner, path.repo, binding.webhookId, { url, events, active: false }, api)
+        await giteaUpdateWebhook(
+          token,
+          path.owner,
+          path.repo,
+          binding.webhookId,
+          { url, events, active: false },
+          api
+        ).catch(swallow404)
       }
       return { token, successorId }
     } catch (e) {
@@ -672,12 +678,7 @@ export class GiteaProvisioner {
     await this.rebroadcast(binding.orgId, binding.repoId)
   }
 
-  /**
-   * §6 unbind: local authority off first, then the managed webhook goes by its recorded id (or the
-   * exact managed URL a crash left behind). Complete cleanup removes the binding and releases the
-   * deployment-global claim; a rejected token parks the binding in `cleanup_pending` until a
-   * replacement token or a manual webhook removal clears it.
-   */
+  /** §6 unbind: authority off first, then every managed webhook (recorded ids, then the managed URL), then the rows and the claim; a rejected token parks it. */
   async disconnect(orgId: string, bindingId: string): Promise<{ removed: boolean; reason?: string }> {
     const binding = await this.deps.bindings.get(orgId, bindingId)
     if (!binding) return { removed: false, reason: 'binding_missing' }
@@ -702,14 +703,13 @@ export class GiteaProvisioner {
         for (const id of [binding.webhookId, binding.nextWebhookId]) {
           if (id !== null) await giteaDeleteWebhook(token, path.owner, path.repo, id, api).catch(swallow404)
         }
-        if (binding.webhookId === null && binding.nextWebhookId === null) {
-          const url = this.managedUrl()
-          if (url) {
-            const pageSize = await giteaPageSize(api)
-            for (const hook of await giteaListWebhooks(token, path.owner, path.repo, api, pageSize)) {
-              if (hook.config?.url === url) {
-                await giteaDeleteWebhook(token, path.owner, path.repo, BigInt(hook.id), api).catch(swallow404)
-              }
+        // Then every hook at OUR exact URL: a create whose answer was lost is recorded nowhere but there.
+        const url = this.managedUrl()
+        if (url) {
+          const pageSize = await giteaPageSize(api)
+          for (const hook of await giteaListWebhooks(token, path.owner, path.repo, api, pageSize)) {
+            if (hook.config?.url === url) {
+              await giteaDeleteWebhook(token, path.owner, path.repo, BigInt(hook.id), api).catch(swallow404)
             }
           }
         }

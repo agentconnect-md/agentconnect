@@ -41,6 +41,8 @@ export interface FakeGiteaOptions {
   maxResponseItems?: number
   /** Runs when a test delivery is fired — the place a test lets the relay "observe" it (§6 step 4). */
   onTestDelivery?: (hookId: number) => Promise<void> | void
+  /** Fault injection: a Response returned here answers an authenticated request in place of its handler. */
+  intercept?: (method: string, route: string) => Response | undefined
 }
 
 export type GiteaScopeCategory = 'user' | 'repository' | 'organization' | 'issue'
@@ -111,7 +113,7 @@ function page<T>(url: string, rows: readonly T[], limitCap: number, withLink = t
 }
 
 export class FakeGitea {
-  readonly opts: Required<Omit<FakeGiteaOptions, 'onTestDelivery' | 'dropEvents'>> & FakeGiteaOptions
+  readonly opts: Required<Omit<FakeGiteaOptions, 'onTestDelivery' | 'dropEvents' | 'intercept'>> & FakeGiteaOptions
   readonly api: GiteaApiClient
   /** What `GET /version` answers NOW — assign mid-test to downgrade. */
   version: string
@@ -247,6 +249,8 @@ export class FakeGitea {
         return Response.json(this.repoJson(repo))
       }
       if (token !== this.token) return Response.json({ message: 'token is required' }, { status: 401 })
+      const injected = this.opts.intercept?.(method, route)
+      if (injected) return injected
       // The scope gate precedes every handler, existence checks included (§16).
       const category = this.categoryOf(route)
       if (category !== null) {

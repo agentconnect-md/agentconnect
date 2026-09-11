@@ -242,10 +242,14 @@ membership steps removed:
    the relay verifies only what it holds a key for, and a later observation
    clears the warning on a binding whose test never arrived.
 
-Repair, transfer, and unbind follow §10 and §19.4. Unbind deletes the managed
-webhook by its recorded id and releases the claim; if the token is rejected
-the binding parks in `cleanup_pending` until a replacement token or a manual
-webhook removal clears it.
+Repair, transfer, and unbind follow §10 and §19.4. A created webhook's id is
+recorded the moment the create answers, before the read-back that can fail,
+and a hook at the managed URL that no column records (a create whose answer
+was lost) is retired by the next repair. Unbind deletes the managed webhooks
+by their recorded ids, sweeps the managed URL for any the columns missed, and
+releases the claim; if the token is rejected the binding parks in
+`cleanup_pending` until a replacement token or a manual webhook removal clears
+it.
 
 ## 7. Webhook Ingress
 
@@ -305,9 +309,14 @@ delivery verified under the next key, delete the old webhook and promote. The
 receiver-side overlap is §7.4's; the sender-side one is the pair of webhooks.
 The compiled rule carries the successor as `nextSigningKey` beside
 `signingKey`, either verifies at the relay, and its `rc/codehost-delivery` says
-which one did — the `next` answer is what promotes. The same rule covers a
-crash-left webhook at the managed URL: it cannot be re-keyed, so it is retired
-and replaced by one whose key this deployment sealed.
+which one did — the `next` answer is what promotes. The successor's id is
+recorded the moment its create answers, before the read-back or any rollback
+call that can fail, and cleared only once the successor is confirmed deleted
+or promoted: a rotation cut short is resumed by the next attempt, which adopts
+the recorded successor rather than creating another, and an unbind deletes it.
+The same rule covers a crash-left webhook at the managed URL: it cannot be
+re-keyed, so it is retired and replaced by one whose key this deployment
+sealed.
 
 **Compiled rule.** The `rc/hook-assign` rule gains a `gitea` member shaped
 like the `gitlab` one: numeric repository id as match key, current path for
