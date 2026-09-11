@@ -31,7 +31,7 @@ import {
 import { runGitCredential } from '../src/gitcred/helper.js'
 import { credentialRepoPathParser } from '../src/gitcred/repo-path.js'
 import { GITCRED_CAPABILITY_ENV } from '../src/gitcred/env.js'
-import { GitCredentialCache, GitCredUnavailableError } from '../src/cp/git-credential.js'
+import { GitCredentialCache, GitCredUnavailableError, type GitCredentialCacheDeps } from '../src/cp/git-credential.js'
 import { giteaCredentials } from '../src/gitea/credentials.js'
 import { codeHostCredentials, credentialProviderOf, managedHostTable } from '../src/codehost/credentials.js'
 import {
@@ -300,7 +300,7 @@ describe('the credential helper on a prefixed instance (§9)', () => {
 describe('the grant echo (§9)', () => {
   function cache(grant: Partial<GitCredGrant>, opts: { giteaHost?: string; gitea?: boolean } = {}) {
     const request = vi.fn(
-      async () =>
+      async (_payload: Parameters<GitCredentialCacheDeps['request']>[0]) =>
         ({
           username: 'example-bot',
           token: 'gitea-token',

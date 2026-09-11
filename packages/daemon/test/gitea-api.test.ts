@@ -53,12 +53,16 @@ describe('giteaRequest', () => {
       { status: 403, body: '{"message":"token does not have at least one of required scope(s): [write:issue]"}' },
       { status: 500, body: 'boom' }
     ])
-    const denied = await giteaRequest(client(fetchImpl), { method: 'GET', path: '/user' }).catch((err) => err)
+    const denied = (await giteaRequest(client(fetchImpl), { method: 'GET', path: '/user' }).catch(
+      (err: unknown) => err
+    )) as GiteaRequestError
     expect(denied).toBeInstanceOf(GiteaRequestError)
     expect(denied.authRejected).toBe(true)
     expect(denied.status).toBe(403)
     expect(denied.message).toContain('write:issue')
-    const failed = await giteaRequest(client(fetchImpl), { method: 'GET', path: '/user' }).catch((err) => err)
+    const failed = (await giteaRequest(client(fetchImpl), { method: 'GET', path: '/user' }).catch(
+      (err: unknown) => err
+    )) as GiteaRequestError
     expect(failed.authRejected).toBe(false)
     expect(failed.message).toBe('Gitea GET failed with 500')
   })
