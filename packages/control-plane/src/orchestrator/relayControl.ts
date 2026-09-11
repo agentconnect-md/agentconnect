@@ -23,7 +23,7 @@ import type {
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
-import { GITLAB_RERUN_V1_FEATURE, RcHookRerunResult } from '@agentconnect.md/protocol'
+import { codeHostHookRuleOf, GITLAB_RERUN_V1_FEATURE, RcHookRerunResult } from '@agentconnect.md/protocol'
 import { advertises, requiredGitlabFeatures, requiredGitlabInstanceFeatures } from '../domain/daemon-features.js'
 
 /** What one Console rerun attempt achieved across the eligible relay pool. */
@@ -58,8 +58,9 @@ export class RelayControlSender {
    *  self-managed host needs the §24.4 bit too — a relay without it would forward
    *  metadata missing the fence host. */
   hookAssign(rule: RcHookAssign): void {
+    const host = codeHostHookRuleOf(rule)
     this.broadcast((ch) => {
-      if (rule.kind === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(rule.gitlab?.host))) return
+      if (host?.provider === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(host.rule.host))) return
       ch.send('rc/hook-assign', rule)
     })
   }

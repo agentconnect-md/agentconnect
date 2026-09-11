@@ -16,7 +16,7 @@
  * holds is always dispatchable. Compiled rules carry the hook's hmacSecret:
  * NEVER log.
  */
-import { type RcHookAssign } from '@agentconnect.md/protocol'
+import { codeHostHookRuleOf, type RcHookAssign } from '@agentconnect.md/protocol'
 import { advertises, requiredGitlabFeatures } from '../domain/daemon-features.js'
 import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
@@ -282,7 +282,8 @@ export class HookService {
       try {
         const rule = await this.compile(hook)
         // The §17.3/§24.4 negotiation gate, per channel (mirrors RelayControlSender).
-        if (rule?.kind === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(rule.gitlab?.host))) continue
+        const host = rule && codeHostHookRuleOf(rule)
+        if (host?.provider === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(host.rule.host))) continue
         if (rule) ch.send('rc/hook-assign', rule)
       } catch (err) {
         this.log?.warn({ hookId: hook.id, err }, 'hook replay: compile/send failed — skipped')
