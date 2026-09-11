@@ -22,6 +22,9 @@ import { codeHostProviders } from '../codehost/registry.js'
 import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
+  GiteaConnectionRepo,
+  GiteaRepositoryBindingRepo,
+  GiteaWebhookSecretStore,
   GithubInstallationRepo,
   GitlabAgentAccountRepo,
   GitlabProjectBindingRepo,
@@ -30,6 +33,7 @@ import type {
   HookRepo,
   HookSecretStore
 } from '../persistence/ports.js'
+import { compilesHookRule } from '../gitea/binding-state.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
@@ -42,6 +46,15 @@ export interface HookAgentReads {
 
 export interface HookServiceLog {
   warn(obj: unknown, msg?: string): void
+}
+
+/** gitea-kind compile sources (gitea-integration.md §7): the binding, its bot connection and the sealed signing keys. */
+export interface GiteaHookCompileSources {
+  bindings: Pick<GiteaRepositoryBindingRepo, 'byRepo'>
+  connections: Pick<GiteaConnectionRepo, 'get'>
+  webhookSecrets: Pick<GiteaWebhookSecretStore, 'get'>
+  /** The deployment's normalized Gitea base URL (§3); it rides every compiled gitea rule as the fence host. */
+  host: string
 }
 
 export class HookService {
@@ -75,7 +88,9 @@ export class HookService {
      *  delivery against. It lives HERE rather than in the CRUD routes because a route is not
      *  the only thing that assigns a rule: the gitlab provisioning bracket commits the row and
      *  rebroadcasts from inside the write, before any route code after it runs. Best-effort. */
-    private readonly projectAgentSpec?: (orgId: OrgId, agentId: AgentId) => Promise<void>
+    private readonly projectAgentSpec?: (orgId: OrgId, agentId: AgentId) => Promise<void>,
+    /** Absent ⇒ gitea hooks never compile (no connection surface wired). */
+    private readonly gitea?: GiteaHookCompileSources
   ) {}
 
   /**
@@ -192,11 +207,43 @@ export class HookService {
         }
       }
     }
-    // gitea (gitea-integration.md §7): the compiled rule needs a connection, a binding and a
-    // webhook signing key, none of which exist before G2 — so a row of this kind never compiles and
-    // the pool converges on hook-remove. Explicit, because the github arm below is the fall-through
-    // and a gitea row reaching it would be broadcast as a GitHub rule.
-    if (hook.kind === 'gitea') return null
+    if (hook.kind === 'gitea') {
+      // gitea (gitea-integration.md §7): the rule carries the connection's single bot user as the
+      // veto set and the signing keys inline. A hook without a working ingress — no binding, no
+      // webhook, no key, a connection mid-removal, or a binding entering cleanup — leaves the pool.
+      if (hook.repoId === null || !this.gitea) return null
+      const binding = await this.gitea.bindings.byRepo(hook.orgId, hook.repoId)
+      if (!binding || !compilesHookRule(binding.state) || binding.webhookId === null) return null
+      const connection = await this.gitea.connections.get(hook.orgId, binding.connectionId)
+      if (!connection || connection.state === 'disconnecting') return null
+      const keys = await this.gitea.webhookSecrets.get(hook.orgId, binding.id)
+      if (!keys) return null
+      return {
+        ...base,
+        kind: 'gitea',
+        gitea: {
+          repoId: hook.repoId.toString(),
+          repoPath: binding.repoPath,
+          sessionKeyPrefix: hook.githubSessionKey ?? `gitea:${hook.repoId}`,
+          events: hook.events,
+          // The row stores the merge_request FAMILY scope; the wire names the comment SUBJECT the relay filters on.
+          ...(hook.commentFamilies.length > 0
+            ? {
+                commentFamilies: hook.commentFamilies.map((family): 'issues' | 'pull_request' =>
+                  family === 'issues' ? 'issues' : 'pull_request'
+                )
+              }
+            : {}),
+          mentionOnly: hook.mentionOnly,
+          agentName: agent.name,
+          botUserId: connection.botUserId.toString(),
+          botUsername: connection.botUsername,
+          signingKey: keys.current,
+          ...(keys.next !== null ? { nextSigningKey: keys.next } : {}),
+          host: this.gitea.host
+        }
+      }
+    }
     // github (P2): the rule carries the org's VALID installation ids — the
     // relay's runtime attribution gate. Suspended/revoked installations are
     // excluded; an empty set means no event could ever prove attribution, so

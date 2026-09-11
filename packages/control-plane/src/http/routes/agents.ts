@@ -238,6 +238,7 @@ import { Tag } from '../plugins/openapi.js'
 import { buildAgentMoves } from '../agent-moves.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitlabApiError, gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
+import { GiteaApiError } from '../../gitea/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { syncAgentBotIcons } from '../agent-bot-icon-sync.js'
@@ -1809,6 +1810,14 @@ export function agentRoutes(deps: HttpDeps) {
                 message: `gitlab: ${e.message}`
               })
             }
+            if (e instanceof GiteaApiError) {
+              const status = e.code === 'RATE_LIMITED' ? 429 : 502
+              return reply.code(status).send({
+                error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',
+                statusCode: status,
+                message: `gitea: ${e.message}`
+              })
+            }
             throw e
           }
           // §17.3/§24.4: a DIRECT placement must advertise the features NOW — the
@@ -2787,6 +2796,14 @@ export function agentRoutes(deps: HttpDeps) {
               error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',
               statusCode: status,
               message: `gitlab: ${err.message}`
+            })
+          }
+          if (err instanceof GiteaApiError) {
+            const status = err.code === 'RATE_LIMITED' ? 429 : 502
+            return reply.code(status).send({
+              error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',
+              statusCode: status,
+              message: `gitea: ${err.message}`
             })
           }
           throw err

@@ -79,20 +79,34 @@ export class AgentSpecAssembler {
     // Optional: the third GitLab consumer (§24.4). A hook can reach an already-running
     // session whose environment cannot be retroactively edited, so an enabled gitlab hook
     // has to put the host on the spec even when neither workspace nor grant does.
-    private readonly hooks?: Pick<HookRepo, 'listForAgent'>
+    private readonly hooks?: Pick<HookRepo, 'listForAgent'>,
+    // The deployment's Gitea instance base URL (gitea-integration.md §11): the same carriage as
+    // GitLab's, set whenever ANY Gitea consumer rides the spec. Absent ⇒ Gitea is not wired.
+    private readonly giteaHost?: string
   ) {}
 
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
-    const [secrets, skillEntries, managedSkillEntries, organization, additionalRepos, gitlabHook] = await Promise.all([
-      this.secrets.get(a.orgId, a.id),
-      resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
-      this.managedSkillsOf(a),
-      this.organizationEnvironmentOf(a),
-      this.additionalReposOf(a),
-      this.gitlabHookOf(a)
-    ])
-    return this.project(a, secrets, skillEntries, managedSkillEntries, organization, additionalRepos, gitlabHook)
+    const [secrets, skillEntries, managedSkillEntries, organization, additionalRepos, gitlabHook, giteaHook] =
+      await Promise.all([
+        this.secrets.get(a.orgId, a.id),
+        resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
+        this.managedSkillsOf(a),
+        this.organizationEnvironmentOf(a),
+        this.additionalReposOf(a),
+        this.gitlabHookOf(a),
+        this.giteaHookOf(a)
+      ])
+    return this.project(
+      a,
+      secrets,
+      skillEntries,
+      managedSkillEntries,
+      organization,
+      additionalRepos,
+      gitlabHook,
+      giteaHook
+    )
   }
 
   /** Whether an enabled gitlab hook rides this agent — the one GitLab consumer no other
@@ -101,6 +115,13 @@ export class AgentSpecAssembler {
     if (this.gitlabHost === undefined || this.hooks === undefined) return false
     const rows = await this.hooks.listForAgent(AgentId(a.id))
     return rows.some((hook) => hook.kind === 'gitlab' && hook.enabled)
+  }
+
+  /** The Gitea twin: an enabled gitea hook is the consumer neither the workspace nor a grant reveals. */
+  async giteaHookOf(a: Pick<AgentRecord, 'id'>): Promise<boolean> {
+    if (this.giteaHost === undefined || this.hooks === undefined) return false
+    const rows = await this.hooks.listForAgent(AgentId(a.id))
+    return rows.some((hook) => hook.kind === 'gitea' && hook.enabled)
   }
 
   /** The organization contribution to one agent's effective environment. */
@@ -197,7 +218,8 @@ export class AgentSpecAssembler {
     managedSkillEntries: ManagedSkillEntry[] = [],
     organization: OrganizationEnvironmentValues = emptyOrganizationEnvironmentValues(),
     additionalRepos: AgentAdditionalRepo[] = [],
-    gitlabHook = false
+    gitlabHook = false,
+    giteaHook = false
   ): AssembledAgentSpec {
     // Resolve by key across both sources BEFORE splitting into the two wire maps
     // (organization-secrets-and-variables.md §3.2), so the winner of a collision
@@ -212,9 +234,28 @@ export class AgentSpecAssembler {
       managedSkillEntries,
       effective.env,
       additionalRepos,
-      gitlabHost(this.gitlabHost, a.workspace, additionalRepos, gitlabHook)
+      gitlabHost(this.gitlabHost, a.workspace, additionalRepos, gitlabHook),
+      giteaHost(this.giteaHost, a.workspace, additionalRepos, giteaHook)
     )
   }
+}
+
+/** The Gitea twin of {@link gitlabHost} (gitea-integration.md §11): one axis, carried whenever any Gitea consumer rides the spec. */
+export function giteaHost(
+  configured: string | undefined,
+  workspace: AgentRecord['workspace'],
+  additionalRepos: readonly AgentAdditionalRepo[],
+  enabledGiteaHook: boolean
+): string | undefined {
+  if (configured === undefined) return undefined
+  const consumer =
+    (workspace.mode === 'git' &&
+      (workspace.credential?.provider === 'gitea' ||
+        // An anonymous public repository on the deployment's own instance still needs the host.
+        gitlabManagedProjectPath(workspace.gitRepo, configured) !== null)) ||
+    enabledGiteaHook ||
+    additionalRepos.some((repo) => repo.provider === 'gitea')
+  return consumer ? configured : undefined
 }
 
 /**
@@ -265,7 +306,9 @@ export function agentRecordToSpec(
   // Defaults to [] so a caller with no allowlist context projects as before.
   additionalRepos: AgentAdditionalRepo[] = [],
   // The §24.4 host carriage, already decided by {@link gitlabHost}.
-  host?: string
+  host?: string,
+  // The Gitea instance carriage, already decided by {@link giteaHost}.
+  giteaInstance?: string
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // The assembled spec always carries the host-neutral `git` arm; the per-peer
@@ -390,6 +433,7 @@ export function agentRecordToSpec(
     // §24.4: pre-spawn host carriage. Present only when a GitLab consumer is, so a spec
     // with none stays byte-identical to what a pre-§24 control plane projected.
     ...(host !== undefined ? { gitlabHost: host } : {}),
+    ...(giteaInstance !== undefined ? { giteaHost: giteaInstance } : {}),
     workspace
   }
 }

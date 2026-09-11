@@ -2245,9 +2245,9 @@ export interface UpsertHookInput {
   /** Trigger text (control metadata, same as CronDef.trigger). */
   sessionMode: HookSessionMode
   enabled?: boolean
-  /** REQUIRED for kind=gitlab: the instance `repoId` names, joining the §24.1
-   *  axis fence inside the insert transaction. Omitting it on a gitlab hook is
-   *  refused, because a disabled hook takes no binding lease of any kind. */
+  /** REQUIRED for kind=gitlab and kind=gitea: the instance `repoId` names, joining
+   *  the host's axis fence inside the insert transaction. Omitting it on such a hook
+   *  is refused, because a disabled hook takes no binding lease of any kind. */
   axisBaseUrl?: string
   /** Generic-endpoint routing key — minted server-side on CREATE, immutable
    *  after (the capability URL must survive edits). */
