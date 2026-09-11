@@ -26,12 +26,22 @@
  *
  * WHICH socket to dial is the caller's business, and that is the whole reason this is a leaf: the
  * daemon CLI derives it from its own root, while in a sandbox pod the same code dials the path the
- * shim serves the daemon's socket on. Its only imports are node builtins and the env names, because
- * the in-sandbox bundle is asserted to import nothing else.
+ * shim serves the daemon's socket on. Its only imports are node builtins and the credential-channel
+ * leaves beside it, because the in-sandbox bundle is asserted to import nothing else.
  */
 import { createConnection } from 'node:net'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from './env.js'
-import { decodeManagedHostTable, GITCRED_HOSTS_ENV, matchManagedHost } from './managed-hosts.js'
+import {
+  decodeManagedHostTable,
+  GITCRED_HOSTS_ENV,
+  IMPLICIT_CREDENTIAL_PROVIDER,
+  matchManagedHost
+} from './managed-hosts.js'
+import { credentialRepoPathParser } from './repo-path.js'
+
+// The path grammars live in the parser table; re-exported because the daemon CLI and the helper's
+// own tests have always reached them through this module.
+export { projectFromPath, repoFromPath } from './repo-path.js'
 
 interface HelperInput {
   protocol?: string
@@ -59,12 +69,15 @@ export async function runGitCredential(action: string, agentId: string, socketPa
 
   const input = parseStdin(await readStdin())
   const match = matchManagedHost(decodeManagedHostTable(process.env[GITCRED_HOSTS_ENV]), input)
-  // GitLab keeps full subgroup depth from the instance's path prefix (§13.2); github stays owner/repo.
-  const gitlab = match?.entry.provider === 'gitlab'
-  const repo = match?.path === undefined ? undefined : gitlab ? projectFromPath(match.path) : repoFromPath(match.path)
+  // Each host spells its own path (§13.2): GitLab keeps full subgroup depth, GitHub stays owner/repo.
+  const parseRepoPath = match === undefined ? undefined : credentialRepoPathParser(match.entry.provider)
+  // A provider the injected table names but this build has no grammar for is not ours either.
+  const provider = parseRepoPath === undefined ? undefined : match?.entry.provider
+  const qualifier = provider !== undefined && provider !== IMPLICIT_CREDENTIAL_PROVIDER ? { provider } : {}
+  const repo = parseRepoPath === undefined || match?.path === undefined ? undefined : parseRepoPath(match.path)
 
   // Not ours — stay silent so git can try other helpers; an absent host still means the workspace.
-  if (input.host !== undefined && match === undefined) return
+  if (input.host !== undefined && provider === undefined) return
 
   if (action === 'erase') {
     // Route the invalidation to the same (agent, repo) key the get used.
@@ -74,7 +87,7 @@ export async function runGitCredential(action: string, agentId: string, socketPa
       capability: process.env[GITCRED_CAPABILITY_ENV],
       password: input.password,
       repoFullName: repo,
-      ...(gitlab ? { provider: 'gitlab' } : {})
+      ...qualifier
     }).catch(() => undefined) // best-effort
     return
   }
@@ -85,7 +98,7 @@ export async function runGitCredential(action: string, agentId: string, socketPa
     agentId,
     capability: process.env[GITCRED_CAPABILITY_ENV],
     repoFullName: repo,
-    ...(gitlab ? { provider: 'gitlab' } : {})
+    ...qualifier
   })
   if (!res.ok || !res.username || !res.password) {
     process.stderr.write(
@@ -115,26 +128,6 @@ function normalizeRepoPath(p: string): string {
     .replace(/^\/+/, '')
     .replace(/\.git$/i, '')
     .toLowerCase()
-}
-
-/** The full namespaced GitLab project path from git's credential `path` —
- *  arbitrary subgroup depth, tolerating a leading slash, a `.git` suffix, and
- *  LFS-ish subpaths (`group/sub/project.git/info/lfs`). */
-export function projectFromPath(p: string): string | undefined {
-  const cleaned = p.replace(/^\/+/, '')
-  const gitSuffix = cleaned.search(/\.git(?:\/|$)/i)
-  const path = (gitSuffix >= 0 ? cleaned.slice(0, gitSuffix) : cleaned).replace(/\/+$/, '')
-  return path.includes('/') ? path.toLowerCase() : undefined
-}
-
-/** "owner/repo" from git's credential `path` — tolerates a leading slash, a
- *  `.git` suffix, and LFS-ish subpaths (`owner/repo.git/info/lfs`). */
-export function repoFromPath(p: string): string | undefined {
-  const segs = p.replace(/^\/+/, '').split('/')
-  const owner = segs[0]
-  const repo = segs[1]?.replace(/\.git$/i, '')
-  if (!owner || !repo) return undefined
-  return `${owner}/${repo}`.toLowerCase()
 }
 
 function parseStdin(text: string): HelperInput {
