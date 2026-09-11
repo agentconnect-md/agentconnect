@@ -162,7 +162,10 @@ defaults. The local `chat` command uses them when running with SRT.
 
 Restart the daemon after editing `config.json`. A retained microsandbox session
 uses the updated environment when its runtime restarts; changing only
-`sandbox.env` does not require discarding its VM or disks.
+`sandbox.env` does not require replacing its VM. Changes to mounts, VM resources,
+credential scope, or image content replace the VM while retaining its host-mounted
+workspace, HOME, and memory. The VM root disk and its Docker and Overlay write
+volumes are disposable across replacement; put durable files in host mounts.
 
 ### Shared bases with session-local writes
 
@@ -773,8 +776,9 @@ to verify the final images and exercise a real ACP session through the shim.
 An explicit daemon image overrides this metadata. Development builds remove
 release metadata and require an explicit image; they do not derive a default
 from the development package version. Release defaults and explicit image
-overrides select the image for newly created VMs. Retained VMs continue using
-their recorded image.
+overrides select the image for newly created VMs. Retained environments compare
+the recorded platform manifest identity with the configured image: another tag
+for the same digest reuses the VM, while changed content replaces it on refresh.
 
 The full image contains `bubblewrap` and `socat` for native credential shields;
 bubblewrap supports `--argv0` so Codex can start while its state directory is
@@ -862,9 +866,19 @@ added for them.
 - Before admitting new VM launches, daemon restart stops recorded owned VMs that
   are still running. It retains their disks and replaces the socket bridge and ACP
   processes on the next start; it does not adopt the old running processes.
-- Existing bindings may retain the retired helper's exact read-only mount. Its
-  file remains an inert mount source; new VMs do not mount it. VM identity and the
-  full persisted configuration hash still have to match.
+- Agent installation starts a background workspace prefetch that refreshes changed
+  agent-level VMs without awaiting all agents before daemon readiness. Unchanged
+  VMs remain asleep; session-owned VMs refresh on their next use. Workspace preparation
+  for that agent joins the same queue. Activation and refresh prepare mounts without
+  starting ACP; initialization and session loading happen at the actual runtime wake.
+- A replacement stops the old VM, creates a fresh candidate with the desired
+  mounts, verifies mount presence and permissions, and atomically commits its binding.
+  Only then are the old VM and its owned disks removed. A failed candidate preserves
+  the old binding and reports failure rather than silently using obsolete settings.
+  Durable candidate and retirement records permit cleanup after an interrupted swap.
+- VM identity and the full persisted configuration hash must still match their
+  binding before refresh. An externally altered VM is refused, not automatically
+  adopted or erased. Host-mounted files are never copied or deleted by VM replacement.
 - Retirement uses existing dirty/unpushed-work protection before deleting a
   session's retained storage. VM removal deletes its private disk and binding;
   operator-owned host mount contents are not deleted by VM removal.

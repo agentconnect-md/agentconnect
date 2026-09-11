@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, readlink, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, posix } from 'node:path'
 import { promisify } from 'node:util'
 import type { Sandbox, SandboxHandle } from 'microsandbox'
@@ -9,7 +9,6 @@ import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-dri
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import { formatErr } from '../daemon/text.js'
-import { gitcredShimPath } from '../cp/gitcred-server.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { SinkRelPathSchema } from '../shim/file-sink.js'
@@ -29,6 +28,7 @@ import {
 
 const runFile = promisify(execFile)
 const STOP_TIMEOUT_MS = 10_000
+const REPLACEMENT_LABEL = 'io.agentconnect.vm-replacement'
 const RUNTIME_TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 const IMAGE_PROBE_SCRIPT = `
 const { existsSync, readFileSync } = require('node:fs');
@@ -38,6 +38,20 @@ const table = JSON.parse(readFileSync(process.argv[1], 'utf8'));
 const bridge = process.argv[2];
 if (existsSync(bridge)) table.mcpBridge = { command: process.execPath, args: [bridge] };
 process.stdout.write(JSON.stringify(table));
+`
+
+const MOUNT_PROBE_SCRIPT = String.raw`
+const fs = require('node:fs');
+const unescape = value => value.replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
+const mounted = new Map(fs.readFileSync('/proc/self/mountinfo', 'utf8').trim().split('\n').map(line => {
+  const fields = line.split(' ');
+  return [unescape(fields[4]), fields[5].split(',')];
+}));
+for (const mount of JSON.parse(process.argv[1])) {
+  fs.statSync(mount.target);
+  const flags = mounted.get(mount.target);
+  if (!flags || flags.includes('ro') !== (mount.mode === 'readonly')) throw new Error('workspace mount verification failed: ' + mount.target);
+}
 `
 
 export interface MicrosandboxEnvironment {
@@ -93,14 +107,21 @@ interface EnvironmentState {
   shim?: Promise<MicrosandboxShim>
 }
 
-interface Binding {
-  version: 1
-  spec: string
+interface OwnedSandbox {
+  sandboxName?: string
   sandboxId: string
   configHash: string
-  environmentId: string
   dockerVolume?: string
   overlayVolume?: string
+}
+
+interface Binding extends OwnedSandbox {
+  version: 1
+  spec: string
+  environmentId: string
+  imageIdentity?: string
+  replacement?: string
+  retired?: OwnedSandbox[]
 }
 
 export interface LockHolder {
@@ -117,6 +138,7 @@ export class MicrosandboxManager {
   private preparation?: Promise<K8sRuntimeTable>
   private closed = false
   private startGate: Promise<void> = Promise.resolve()
+  private readonly imageIdentities = new Map<string, Promise<string | undefined>>()
 
   constructor(private readonly options: MicrosandboxManagerOptions) {}
 
@@ -138,6 +160,32 @@ export class MicrosandboxManager {
 
   driverFor(environment: MicrosandboxEnvironment): SpawnDriver {
     return { launch: (request) => this.launch(environment, request) }
+  }
+
+  // Warm only the VM and mounts; ACP starts when a caller launches a runtime.
+  async prepareEnvironment(environment: MicrosandboxEnvironment): Promise<void> {
+    const { state, release } = this.acquire(environment)
+    let ready!: () => void
+    const pending = new Promise<void>((resolve) => {
+      ready = resolve
+    })
+    state.pending.add(pending)
+    try {
+      await state.sandbox
+    } finally {
+      state.pending.delete(pending)
+      release()
+      ready()
+    }
+  }
+
+  // Agent activation refreshes retained VMs in the background without waking unchanged ones.
+  async refreshEnvironment(environment: MicrosandboxEnvironment): Promise<void> {
+    const binding = await this.readBinding(environment.id)
+    if (!binding) return
+    const desired = await this.desiredSpec(environment, binding)
+    if (binding.spec === desired.spec && desired.sameImage && !binding.replacement && !binding.retired?.length) return
+    await this.prepareEnvironment(environment)
   }
 
   async withShim<T>(environment: MicrosandboxEnvironment, work: (shim: MicrosandboxShim) => Promise<T>): Promise<T> {
@@ -285,6 +333,37 @@ export class MicrosandboxManager {
     return join(this.options.root, 'microsandbox', 'bindings', `${this.name(id)}.json`)
   }
 
+  private sandboxName(id: string, binding?: OwnedSandbox): string {
+    return binding?.sandboxName ?? this.name(id)
+  }
+
+  private imageIdentity(reference: string): Promise<string | undefined> {
+    let identity = this.imageIdentities.get(reference)
+    if (!identity) {
+      identity = this.options.sdk.Image.get(reference).then(
+        (image) =>
+          image.manifestDigest && image.os && image.architecture
+            ? `${image.os}/${image.architecture}@${image.manifestDigest}`
+            : undefined,
+        () => undefined
+      )
+      this.imageIdentities.set(reference, identity)
+    }
+    return identity
+  }
+
+  private async desiredSpec(environment: MicrosandboxEnvironment, binding?: Binding) {
+    const imageIdentity = await this.imageIdentity(this.options.config.image)
+    if (!imageIdentity) throw new Error('microsandbox configured image has no cached platform manifest identity')
+    const previousImage = binding ? SpecImageSchema.parse(JSON.parse(binding.spec)).config.image : undefined
+    const sameImage = imageIdentity === binding?.imageIdentity
+    return {
+      spec: this.spec(environment, sameImage ? previousImage! : this.options.config.image),
+      imageIdentity,
+      sameImage
+    }
+  }
+
   private spec(environment: MicrosandboxEnvironment, image = this.options.config.image): string {
     return stableJson({
       version: 2,
@@ -357,15 +436,25 @@ export class MicrosandboxManager {
     await mkdir(bindings, { recursive: true, mode: 0o700 })
     const keep = new Set([this.options.config.image])
     for (const id of await this.persistedIds()) {
-      const binding = await this.readBinding(id)
-      // A retained VM boots from the image it was created with, so that image is not garbage.
-      if (binding) keep.add(SpecImageSchema.parse(JSON.parse(binding.spec)).config.image)
-      const handle = await this.find(this.name(id))
-      if (handle) {
-        if (handle.id !== binding?.sandboxId) throw new Error('microsandbox persisted environment identity changed')
-        if (handle.status === 'running' || handle.status === 'starting' || handle.status === 'draining') {
-          await handle.stopWithTimeout(STOP_TIMEOUT_MS)
+      try {
+        const binding = await this.readBinding(id)
+        if (binding) keep.add(SpecImageSchema.parse(JSON.parse(binding.spec)).config.image)
+        const handle = await this.find(this.sandboxName(id, binding))
+        if (handle) {
+          if (handle.id !== binding?.sandboxId) throw new Error('microsandbox persisted environment identity changed')
+          if (handle.status === 'running' || handle.status === 'starting' || handle.status === 'draining') {
+            await handle.stopWithTimeout(STOP_TIMEOUT_MS)
+          }
         }
+        if (binding) {
+          // Capture legacy cache identity before pulling a tag that could have moved.
+          if (!binding.imageIdentity) {
+            const imageIdentity = await this.imageIdentity(SpecImageSchema.parse(JSON.parse(binding.spec)).config.image)
+            if (imageIdentity) await this.writeBinding({ ...binding, imageIdentity })
+          }
+        }
+      } catch (error) {
+        this.options.log?.warn(`microsandbox: environment ${id} is unavailable — ${formatErr(error)}`)
       }
     }
     const name = this.name('probe')
@@ -373,6 +462,7 @@ export class MicrosandboxManager {
     // Free the retired releases before the pull, so a tight disk is not asked to hold both.
     await this.collectImages(keep)
     await this.prepareImage()
+    this.imageIdentities.delete(this.options.config.image)
     let sandbox = await this.serializeStart(() => this.builder(name, []).create())
     try {
       const output = await sandbox.exec(MICROSANDBOX_NODE, [
@@ -541,7 +631,9 @@ export class MicrosandboxManager {
   private async releaseIdleHolder(volume: string, holder?: LockHolder): Promise<boolean> {
     if (!holder?.sandbox) return false
     let id: string | undefined
-    for (const candidate of await this.environmentIds()) if (this.name(candidate) === holder.sandbox) id = candidate
+    for (const candidate of await this.environmentIds()) {
+      if (this.sandboxName(candidate, await this.readBinding(candidate)) === holder.sandbox) id = candidate
+    }
     // A sandbox this daemon has no binding for can be running work no counter here can see.
     if (id === undefined) return false
     const state = this.environments.get(id)
@@ -561,14 +653,24 @@ export class MicrosandboxManager {
       const value: unknown = JSON.parse(await readFile(this.bindingPath(id), 'utf8'))
       if (!value || typeof value !== 'object') throw new Error('invalid binding')
       const binding = value as Partial<Binding>
+      const validOwned = (owned: OwnedSandbox): boolean => {
+        const name = this.sandboxName(id, owned)
+        return (
+          (name === this.name(id) || new RegExp(`^${this.name(id)}-[a-f0-9]{32}$`).test(name)) &&
+          typeof owned.sandboxId === 'string' &&
+          typeof owned.configHash === 'string' &&
+          (owned.dockerVolume === undefined || owned.dockerVolume === `${name}-docker`) &&
+          (owned.overlayVolume === undefined || owned.overlayVolume === `${name}-overlays`)
+        )
+      }
       if (
         binding.version !== 1 ||
         binding.environmentId !== id ||
         typeof binding.spec !== 'string' ||
-        typeof binding.sandboxId !== 'string' ||
-        typeof binding.configHash !== 'string' ||
-        (binding.dockerVolume !== undefined && binding.dockerVolume !== `${this.name(id)}-docker`) ||
-        (binding.overlayVolume !== undefined && binding.overlayVolume !== `${this.name(id)}-overlays`)
+        !validOwned(binding as Binding) ||
+        (binding.imageIdentity !== undefined && typeof binding.imageIdentity !== 'string') ||
+        (binding.replacement !== undefined && !/^[a-f0-9]{32}$/.test(binding.replacement)) ||
+        (binding.retired !== undefined && (!Array.isArray(binding.retired) || !binding.retired.every(validOwned)))
       ) {
         throw new Error('invalid binding')
       }
@@ -586,62 +688,30 @@ export class MicrosandboxManager {
       if (contains(source, stateRoot) || contains(stateRoot, source))
         throw new Error('microsandbox mounts cannot expose host sandbox state')
     }
-    const name = this.name(environment.id)
-    const binding = await this.readBinding(environment.id)
-    // Image changes apply to new environments; retained disks keep their original image.
-    const image = binding ? SpecImageSchema.parse(JSON.parse(binding.spec)).config.image : this.options.config.image
-    const spec = this.spec(environment, image)
+    let binding = await this.readBinding(environment.id)
+    if (binding) {
+      await this.cleanReplacement(binding)
+      binding = await this.cleanRetired(binding)
+    }
+    const name = this.sandboxName(environment.id, binding)
+    const { spec, imageIdentity: targetIdentity, sameImage } = await this.desiredSpec(environment, binding)
     const existing = await this.find(name)
     if (binding || existing) {
-      let matchingSpec = binding?.spec === spec
-      if (binding && !matchingSpec) {
-        const helper = canonicalPath(
-          join(this.options.root, 'run', 'microsandbox-helpers', 'git-credential'),
-          process.env
-        )
-        const legacyMounts = environment.mounts.map((mount) =>
-          mount.source === helper && mount.target === gitcredShimPath(this.options.root) && mount.mode === 'readonly'
-            ? {
-                ...mount,
-                source: canonicalPath(join(this.options.root, 'microsandbox', 'helpers', 'git-credential'), process.env)
-              }
-            : mount
-        )
-        // Retained VMs may still own the old exact read-only helper mount; new mounts use the public support directory.
-        matchingSpec = binding.spec === this.spec({ ...environment, mounts: legacyMounts }, image)
-        const source = await realpath(join(this.options.root, 'microsandbox', 'helpers', 'guest.js')).catch(
-          (error: NodeJS.ErrnoException) => {
-            if (error.code === 'ENOENT') return undefined
-            throw error
-          }
-        )
-        // Retain an older VM's disk when only the retired, read-only guest helper mount differs.
-        if (source && !matchingSpec) {
-          matchingSpec =
-            binding.spec ===
-            this.spec(
-              {
-                ...environment,
-                mounts: [...legacyMounts, { source, target: '/opt/agentconnect-local/guest.js', mode: 'readonly' }]
-              },
-              image
-            )
-        }
-      }
+      const matchingSpec = binding?.spec === spec
       if (
         !binding ||
         !existing ||
-        !matchingSpec ||
         binding.sandboxId !== existing.id ||
         binding.configHash !== hash(stableJson(existing.config()))
       ) {
         throw new Error(
-          `microsandbox environment ${environment.id} has missing or changed persisted configuration. Restore the previous configuration and runtime credentials, or start a new session. Existing session data has been retained.`
+          `microsandbox environment ${environment.id} has missing or changed persisted configuration. Restore its recorded VM identity and configuration before retrying. Existing session data has been retained.`
         )
       }
       if (existing.status === 'running' || existing.status === 'starting' || existing.status === 'draining') {
         await existing.stopWithTimeout(STOP_TIMEOUT_MS)
       }
+      if (!matchingSpec || !sameImage) return this.replace(environment, binding, targetIdentity)
       if (environment.secrets?.length) {
         const result = await existing.modify({
           secrets: Object.fromEntries(environment.secrets.map((secret) => [secret.env, { value: secret.readValue() }])),
@@ -680,6 +750,7 @@ export class MicrosandboxManager {
         spec,
         sandboxId: persisted.id,
         configHash: hash(stableJson(persisted.config())),
+        imageIdentity: targetIdentity,
         dockerVolume: `${name}-docker`,
         ...(overlayMounts(environment.mounts).length ? { overlayVolume: `${name}-overlays` } : {})
       }
@@ -695,6 +766,110 @@ export class MicrosandboxManager {
       await rm(this.bindingPath(environment.id), { force: true })
       throw error
     }
+  }
+
+  private async destroyOwned(id: string, owned: OwnedSandbox): Promise<void> {
+    const handle = await this.find(this.sandboxName(id, owned))
+    if (handle) {
+      if (handle.id !== owned.sandboxId || hash(stableJson(handle.config())) !== owned.configHash)
+        throw new Error('microsandbox retired environment identity changed')
+      await handle.destroy({ timeoutMs: STOP_TIMEOUT_MS })
+    }
+    for (const volume of [owned.dockerVolume, owned.overlayVolume]) if (volume) await this.removeVolume(volume)
+  }
+
+  private async cleanRetired(binding: Binding): Promise<Binding> {
+    if (!binding.retired?.length) return binding
+    try {
+      for (const owned of binding.retired) await this.destroyOwned(binding.environmentId, owned)
+      delete binding.retired
+      await this.writeBinding(binding)
+    } catch (error) {
+      this.options.log?.warn(`microsandbox: retired VM cleanup will retry — ${formatErr(error)}`)
+    }
+    return binding
+  }
+
+  private async cleanReplacement(binding: Binding): Promise<void> {
+    if (!binding.replacement) return
+    const name = `${this.name(binding.environmentId)}-${binding.replacement}`
+    const handle = await this.find(name)
+    if (handle) {
+      const { labels } = z.object({ labels: z.record(z.string(), z.string()) }).parse(handle.config())
+      if (labels[REPLACEMENT_LABEL] !== binding.replacement)
+        throw new Error('microsandbox replacement environment identity changed')
+      await handle.destroy({ timeoutMs: STOP_TIMEOUT_MS })
+    }
+    await this.removeVolume(`${name}-docker`)
+    await this.removeVolume(`${name}-overlays`)
+    delete binding.replacement
+    await this.writeBinding(binding)
+  }
+
+  private async replace(
+    environment: MicrosandboxEnvironment,
+    binding: Binding,
+    imageIdentity: string
+  ): Promise<Sandbox> {
+    const token = randomUUID().replaceAll('-', '')
+    const name = `${this.name(environment.id)}-${token}`
+    binding.replacement = token
+    await this.writeBinding(binding)
+    this.options.log?.info(`microsandbox: replacing environment ${environment.id}; host workspace mounts are retained`)
+    let sandbox: Sandbox | undefined
+    let next: Binding
+    try {
+      sandbox = await this.startVm(environment.id, () =>
+        this.builder(name, environment.mounts, environment.secrets)
+          .label(REPLACEMENT_LABEL, token)
+          .vsock(this.options.sockets.mcp, 5000)
+          .vsock(this.options.sockets.gitcred, 5001)
+          .create()
+      )
+      await prepareOverlayMounts(sandbox, environment.mounts)
+      const checked = await sandbox.exec(MICROSANDBOX_NODE, [
+        '-e',
+        MOUNT_PROBE_SCRIPT,
+        JSON.stringify(environment.mounts)
+      ])
+      if (!checked.success) throw new Error(`microsandbox replacement mount check failed: ${checked.stderr().trim()}`)
+      await this.startBridge(environment.id, sandbox)
+      const persisted = await this.options.sdk.Sandbox.get(name)
+      const old: OwnedSandbox = {
+        sandboxName: binding.sandboxName,
+        sandboxId: binding.sandboxId,
+        configHash: binding.configHash,
+        dockerVolume: binding.dockerVolume,
+        overlayVolume: binding.overlayVolume
+      }
+      next = {
+        version: 1,
+        environmentId: environment.id,
+        sandboxName: name,
+        sandboxId: persisted.id,
+        configHash: hash(stableJson(persisted.config())),
+        spec: this.spec(environment),
+        imageIdentity,
+        dockerVolume: `${name}-docker`,
+        ...(overlayMounts(environment.mounts).length ? { overlayVolume: `${name}-overlays` } : {}),
+        retired: [...(binding.retired ?? []), old]
+      }
+      await this.writeBinding(next)
+    } catch (error) {
+      const bridge = this.bridges.get(environment.id)
+      this.bridges.delete(environment.id)
+      await bridge?.stop(STOP_TIMEOUT_MS).catch(() => {})
+      await sandbox?.stopWithTimeout(STOP_TIMEOUT_MS).catch(() => {})
+      await sandbox?.detach().catch(() => {})
+      await this.cleanReplacement(binding).catch((cleanup: unknown) =>
+        this.options.log?.warn(`microsandbox: replacement cleanup will retry — ${formatErr(cleanup)}`)
+      )
+      throw error
+    }
+    // The new binding is durable before the old VM or its disposable disks are removed.
+    await this.cleanRetired(next)
+    this.options.log?.info(`microsandbox: environment ${environment.id} updated; ACP remains on demand`)
+    return sandbox
   }
 
   private async writeBinding(binding: Binding): Promise<void> {
@@ -777,13 +952,18 @@ export class MicrosandboxManager {
       throw new Error(`microsandbox environment ${environment.id} transport failed; stopping before retry`)
     }
     const spec = this.spec(environment)
-    if (state && state.spec !== spec)
-      throw new Error(`microsandbox environment ${environment.id} configuration changed while active`)
+    let stopping: Promise<void> | undefined
+    if (state && state.spec !== spec) {
+      if (state.active || state.pending.size || state.processes.size)
+        throw new Error(`microsandbox environment ${environment.id} configuration changed while active`)
+      stopping = this.closeEnvironment(environment.id, false)
+      state = undefined
+    }
     if (!state) {
       state = {
         environment,
         spec,
-        sandbox: this.open(environment),
+        sandbox: stopping ? stopping.then(() => this.open(environment)) : this.open(environment),
         active: 0,
         processes: new Set(),
         pending: new Set(),
@@ -922,7 +1102,8 @@ export class MicrosandboxManager {
             (shim) => shim.stop(),
             () => {}
           )
-        const handle = await this.find(this.name(id))
+        if (binding) await this.cleanReplacement(binding)
+        const handle = await this.find(this.sandboxName(id, binding))
         if (handle) {
           if (!binding || handle.id !== binding.sandboxId)
             throw new Error(`microsandbox environment ${id} identity changed`)
@@ -935,8 +1116,9 @@ export class MicrosandboxManager {
           else await handle.stopWithTimeout(STOP_TIMEOUT_MS)
         }
         if (state) await (await state.sandbox).detach()
-        this.environments.delete(id)
+        if (this.environments.get(id) === state) this.environments.delete(id)
         if (remove) {
+          for (const owned of binding?.retired ?? []) await this.destroyOwned(id, owned)
           for (const volume of [binding?.dockerVolume, binding?.overlayVolume]) {
             if (volume) await this.removeVolume(volume)
           }

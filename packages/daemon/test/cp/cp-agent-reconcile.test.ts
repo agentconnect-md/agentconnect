@@ -115,6 +115,63 @@ const DUTY_BUNDLE = {
 }
 
 describe('Daemon CP agent → memory + reconcile', () => {
+  it('activates a sandboxed agent after workspace preparation without starting ACP', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    await seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })
+    ;(daemon as any).cfg.sandbox.backend = 'microsandbox'
+    const preparation = vi
+      .spyOn(daemon as any, 'runAgentWorkspacePreparation')
+      .mockResolvedValue(join(root, 'agents', 'bot-a', 'ws'))
+    await expect(
+      seam(daemon).applyAgentActivate({
+        agentId: 'bot-a',
+        moveId: MOVE_ID,
+        spec: { name: 'bot-a', runtime: 'claude', runInSandbox: true },
+        integrations: [],
+        crons: []
+      })
+    ).resolves.toEqual({ ok: true })
+    expect(preparation).toHaveBeenCalled()
+    expect(hosts).toHaveLength(0)
+    expect((daemon as any).agents.has('bot-a')).toBe(true)
+    expect((daemon as any).drainingAgents.has('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
+  it('refreshes retained VMs in background prefetch and gates only their workspace preparation', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    writeAgent(root, 'bot-b')
+    const { daemon, hosts } = makeDaemon(root)
+    await daemon.start()
+    const entered = signal()
+    const release = signal()
+    const refreshing = vi.fn(async () => {
+      entered.resolve()
+      await release.promise
+    })
+    ;(daemon as any).microsandbox = {
+      refreshEnvironment: refreshing,
+      stopAll: vi.fn(async () => {}),
+      suspendIdle: vi.fn(async () => {})
+    }
+    vi.spyOn(daemon as any, 'usesMicrosandbox').mockReturnValue(true)
+    vi.spyOn(daemon as any, 'microsandboxContext').mockReturnValue({ environment: { id: 'bot-a/agent' } })
+    const agent = (daemon as any).agents.get('bot-a')
+    ;(daemon as any).prefetchClone(agent)
+    await entered.promise
+    await daemon.reconcile()
+    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(true)
+    expect((daemon as any).workspacePreparationTails.has('bot-b')).toBe(false)
+    expect(hosts).toHaveLength(0)
+    release.resolve()
+    await (daemon as any).waitForWorkspacePreparations('bot-a')
+    await daemon.stop()
+  })
+
   it('keeps a corrupt move tombstone fail-closed without poisoning reconnect registration', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')

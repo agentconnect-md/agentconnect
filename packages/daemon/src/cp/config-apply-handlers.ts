@@ -692,9 +692,13 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
       if (requiresRuntime || host.servesAgent(agentId)) {
         try {
           if (!host.servesAgent(agentId)) throw new Error('execution duty was revoked during activation')
-          // Key-server mode gives every session its own credential-scoped host, so there is no
-          // shared agent host to prove — reconciling the workspace is the whole of the proof.
-          if (host.keyServer()) await host.prepareAgentWorkspace(agent, undefined, undefined, true)
+          // VM activation prepares the workspace; ACP initialization belongs to the first wake.
+          if (
+            host.keyServer() ||
+            (host.cfg().sandbox.backend === 'microsandbox' &&
+              (host.cfg().security.requireSandbox || agent.runInSandbox))
+          )
+            await host.prepareAgentWorkspace(agent, undefined, undefined, true)
           else await host.ensureHostAsync(agentId, { allowAgentDrain: true })
         } catch (err) {
           host.moveStagedAgents().add(agentId)
