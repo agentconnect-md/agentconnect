@@ -169,7 +169,9 @@ export class GiteaConnectionService {
       )
     }
     const sealedToken = await this.deps.cipher.seal(token, orgScope(OrgId(orgId)))
-    const updated = await this.deps.connections.replaceToken(orgId, connectionId, bot, sealedToken)
+    // A disconnect still walking its bindings keeps walking; only a rejected token returns to connected.
+    const state = existing.state === 'disconnecting' ? 'disconnecting' : 'connected'
+    const updated = await this.deps.connections.replaceToken(orgId, connectionId, bot, sealedToken, state)
     if (!updated) throw missing()
     await this.deps.onCredentialEpochChanged?.(orgId, updated)
     return updated

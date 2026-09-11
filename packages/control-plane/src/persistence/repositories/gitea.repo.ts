@@ -121,13 +121,14 @@ export class PgGiteaConnectionRepo implements GiteaConnectionRepo {
     orgId: string,
     connectionId: string,
     bot: GiteaVerifiedBot,
-    sealedToken: string
+    sealedToken: string,
+    state: Extract<GiteaConnectionState, 'connected' | 'disconnecting'>
   ): Promise<GiteaConnectionRecord | null> {
     return this.prisma.$transaction(async (tx) => {
       // The same bot only (§4.3): the numeric user id is the identity a replacement must keep.
       const res = await tx.giteaConnection.updateMany({
         where: { id: connectionId, orgId, botUserId: bot.botUserId },
-        data: { ...botFacts(bot), state: 'connected', credentialEpoch: { increment: 1n } }
+        data: { ...botFacts(bot), state, credentialEpoch: { increment: 1n } }
       })
       if (res.count !== 1) return null
       await tx.giteaConnectionSecret.upsert({

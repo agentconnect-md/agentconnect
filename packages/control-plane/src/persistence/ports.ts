@@ -3835,7 +3835,9 @@ export interface GiteaConnectionRepo {
     orgId: string,
     connectionId: string,
     bot: GiteaVerifiedBot,
-    sealedToken: string
+    sealedToken: string,
+    /** The state the connection returns to: `connected`, unless a disconnect is still walking its bindings. */
+    state: Extract<GiteaConnectionState, 'connected' | 'disconnecting'>
   ): Promise<GiteaConnectionRecord | null>
   update(
     orgId: string,

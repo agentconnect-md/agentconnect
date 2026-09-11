@@ -597,6 +597,14 @@ export class GiteaProvisioner {
     // The binding just left the servable states: pull its compiled rules off the relay pool now.
     await this.rebroadcast(orgId, binding.repoId)
     const path = splitGiteaRepoPath(binding.repoPath)
+    // A webhook the path cannot address cannot be deleted: park rather than release the claim over it.
+    if (!path && binding.webhookId !== null) {
+      await this.deps.bindings.update(orgId, bindingId, {
+        state: 'cleanup_pending',
+        stateReason: 'repository_path_unreadable'
+      })
+      return { removed: false, reason: 'repository_path_unreadable' }
+    }
     try {
       const token = await this.deps.tokens.withToken(orgId, binding.connectionId)
       if (path) {
