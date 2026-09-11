@@ -12,9 +12,11 @@ export const PRIMARY_CHECKOUT_DIR = 'workspace'
 export const SECONDARY_ROOTS_DIR = 'repos'
 /** GitLab roots sit under one reserved owner keyed by numeric project id: `repos/_gitlab/<id>`. A GitHub login admits neither `_` nor a leading one, so no GitHub row can name this directory. */
 export const GITLAB_ROOTS_DIR = '_gitlab'
+/** Gitea roots likewise: `repos/_gitea/<id>`. A Gitea username must start with a letter or digit, so no Gitea row can name it either. */
+export const GITEA_ROOTS_DIR = '_gitea'
 /** Owner directories under `repos/` a provider reserves for its own id-keyed subtrees: a row whose
  *  own text would place a subtree there is refused rather than allowed to collide with one. */
-export const RESERVED_SECONDARY_ROOT_DIRS: ReadonlySet<string> = new Set([GITLAB_ROOTS_DIR])
+export const RESERVED_SECONDARY_ROOT_DIRS: ReadonlySet<string> = new Set([GITLAB_ROOTS_DIR, GITEA_ROOTS_DIR])
 /** Every root's per-session worktrees hang off this leaf of it — the agent root for the primary, the subtree for a secondary. */
 export const WORKTREES_DIR = 'worktrees'
 /** What a secondary root's subtree records about the checkout beside it. */
@@ -48,9 +50,14 @@ export function gitlabSubtreeName(projectId: string): string {
   return `${GITLAB_ROOTS_DIR}/${projectId}`
 }
 
+/** The subtree name a Gitea repository's root hangs at — its numeric id, which a rename or transfer cannot change. */
+export function giteaSubtreeName(repoId: string): string {
+  return `${GITEA_ROOTS_DIR}/${repoId}`
+}
+
 /** One secondary subtree's daemon-owned paths, in the shape a `WorkspaceRoot` needs. */
 export interface SecondarySubtree {
-  /** The `<a>/<b>` pair under `repos/` — `owner/repo` for GitHub, `_gitlab/<project id>` for GitLab. */
+  /** The `<a>/<b>` pair under `repos/` — `owner/repo` for GitHub, `_gitlab/<project id>` for GitLab, `_gitea/<repository id>` for Gitea. */
   subtreeName: string
   /** The whole `repos/<owner>/<repo>` subtree — what retirement removal deletes. */
   subtree: string

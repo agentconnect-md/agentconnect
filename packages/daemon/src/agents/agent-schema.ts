@@ -204,6 +204,8 @@ export const AgentSchema = z.object({
   memory: AgentMemoryBinding.optional(),
   // The instance every GitLab consumer here addresses (§24.4); absent ⇒ GitLab.com, the axis default.
   gitlabHost: z.string().optional(),
+  // Its Gitea twin (gitea-integration.md §11); absent ⇒ gitea.com, the axis default.
+  giteaHost: z.string().optional(),
   workspace: z.object({
     mode: z.enum(['git-repo', 'from-scratch']),
     // Internal isolation policy. Product surfaces call the session mode
@@ -218,10 +220,15 @@ export const AgentSchema = z.object({
     // Remote-git credential mode. Absent ⇒ anonymous (public repos). 'github-app' ⇒
     // clone/fetch/push authenticate via the local credential helper backed by
     // CP-minted short-lived installation tokens — nothing durable on this host.
-    gitCredential: z.enum(['github-app', 'gitlab']).optional(),
+    gitCredential: z.enum(['github-app', 'gitlab', 'gitea']).optional(),
     // gitlab mode: the v2 rename-stable numeric project id (gitlab-com-integration.md
     // §17.1) — the identity the credential consumer verifies against every grant echo.
     gitlabProjectId: z
+      .string()
+      .regex(/^[1-9]\d*$/)
+      .optional(),
+    // gitea mode: the same v2 identity, the numeric repository id (gitea-integration.md §12).
+    giteaRepoId: z
       .string()
       .regex(/^[1-9]\d*$/)
       .optional(),

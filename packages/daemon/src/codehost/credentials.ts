@@ -31,6 +31,19 @@ export interface CodeHostSpecHosts {
   giteaHost?: string
 }
 
+/** The numeric workspace identity a replicated spec may carry, one field per host whose grants are numerically qualified (§17.1). */
+export interface CodeHostWorkspaceIds {
+  gitlabProjectId?: string
+  giteaRepoId?: string
+}
+
+/** An agent's managed workspace repository as its spec identifies it: provider, rename-stable id, and current path from the instance root. */
+export interface ManagedWorkspaceRepo {
+  provider: CodeHostProvider
+  repoId: string
+  repoPath?: string
+}
+
 /** Where one authorized additional repository's subtree hangs under `repos/` (multi-repository-workspaces.md). */
 export interface SecondaryRootPlacement {
   provider: CodeHostProvider
@@ -55,6 +68,8 @@ export interface CodeHostCredentialModule {
   managedRemoteUrl(repository: string): string
   /** Credential purposes this host re-resolves live, so a refusal is never durable (§14.1, §14.2). */
   readonly liveCredentialPurposes: readonly string[]
+  /** The workspace repository's rename-stable id on the spec — the §17.1 identity a grant echo is verified against; undefined for a host that resolves by name. */
+  workspaceRepoId(workspace: CodeHostWorkspaceIds): string | undefined
   /** Where one additional repository lands, or undefined when the row is not a placeable name. */
   placeSecondaryRoot(row: { repoFullName: string; repoId: string }): SecondaryRootPlacement | undefined
   /** The authorized clone URL of one additional repository on this host. */

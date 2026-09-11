@@ -22,9 +22,9 @@ export const LinearTurnFacts = z.object({
 })
 export type LinearTurnFacts = z.infer<typeof LinearTurnFacts>
 
-/** The code-host facts behind one GitHub or GitLab delivery turn. */
+/** The code-host facts behind one GitHub, GitLab, or Gitea delivery turn. */
 export const CodehostTurnFacts = z.object({
-  provider: z.enum(['github', 'gitlab']),
+  provider: z.enum(['github', 'gitlab', 'gitea']),
   event: z.string(),
   action: z.string().optional(),
   subject: z.object({

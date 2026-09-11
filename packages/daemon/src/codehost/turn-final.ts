@@ -27,6 +27,7 @@ import { gitlabTurnFinal, type GitlabTurnFinalHost } from '../gitlab/turn-final.
 import { giteaTurnFinal, type GiteaTurnFinalHost } from '../gitea/turn-final.js'
 import type { GithubCommentAttributionSource } from '../github/poster.js'
 import type { GitlabPublishFailure } from '../gitlab/poster.js'
+import type { HookPromptSupplement } from '../messages/hook-message.js'
 import { replyTargetProvider, type CodeHostReplyTarget } from './reply-target.js'
 
 /** The one end-of-turn poster both providers implement — the published surface's `poster` slot. */
@@ -50,6 +51,14 @@ export interface CodeHostFinalPosterDeps extends CodeHostEffectLease {
   log: { warn: (message: string) => void }
 }
 
+/** What a provider reads to fetch prompt content before a turn: the turn's own lease and a warn sink. */
+export interface CodeHostPromptSupplementDeps {
+  token: () => Promise<string>
+  apiBaseUrl: () => string
+  log: { warn: (message: string) => void }
+  fetchImpl?: typeof fetch
+}
+
 /** A delivery's trusted members plus the normalized event — the pair a lifecycle cleanup is fenced on. */
 export type CodeHostDelivery = CodeHostHookMembers & { event?: string }
 
@@ -71,6 +80,8 @@ export interface CodeHostTurnFinal<P extends CodeHostProvider = CodeHostProvider
   effectLease(agentId: string, target: CodeHostReplyTarget, host: CodeHostTurnFinalHost): CodeHostEffectLease
   /** The turn's one poster, tokened through that lease. */
   finalPoster(target: CodeHostReplyTarget, deps: CodeHostFinalPosterDeps): CodeHostFinalPoster
+  /** Host content this delivery's prompt needs fetched first (gitea-integration.md §8); absent for a host whose deliveries are complete on the wire. */
+  promptSupplement?(msg: RdMsgHook, deps: CodeHostPromptSupplementDeps): Promise<HookPromptSupplement | undefined>
   /** True when this provider's poster names WHY its one comment is absent (§14.1); GitHub's reports none. */
   readonly reportsAbsentOutput: boolean
 }
@@ -95,6 +106,26 @@ export function codeHostReplyTarget(msg: RdMsgHook): CodeHostReplyTarget | undef
   const source = msg.context?.source
   if (source === undefined || !isCodeHostHookKind(source)) return undefined
   return TURN_FINALS[source].replyTarget(msg)
+}
+
+/** What a delivery's prompt needs from its host, fetched under the turn's own lease; a failure leaves the prompt as delivered. */
+export async function codeHostPromptSupplement(
+  msg: RdMsgHook,
+  host: CodeHostTurnFinalHost
+): Promise<HookPromptSupplement | undefined> {
+  const target = codeHostReplyTarget(msg)
+  if (!target) return undefined
+  const turnFinal = turnFinalFor(target)
+  if (!turnFinal.promptSupplement) return undefined
+  const lease = turnFinal.effectLease(msg.agentId, target, host)
+  try {
+    return await turnFinal.promptSupplement(msg, { token: lease.token, apiBaseUrl: lease.apiBaseUrl, log: host.log })
+  } catch (err) {
+    host.log.warn(
+      `hook: prompt supplement for ${msg.msgId} failed (${err instanceof Error ? err.message : String(err)})`
+    )
+    return undefined
+  }
 }
 
 /** The turn-start refusal this delivery takes when it names an instance the session's spec is not bound to (§24.4). */

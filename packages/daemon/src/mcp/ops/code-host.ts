@@ -1,6 +1,7 @@
-// The provider-neutral code-host effect tools (gitlab-com-integration.md §14.2), GitLab-backed today.
-// Every handler validates bounded arguments and hands the daemon a discriminated operation; the
-// target project and the effect token stay daemon-private.
+// The provider-neutral code-host effect tools (gitlab-com-integration.md §14.2, gitea-integration.md
+// §10.2), routed by the active turn's provider to the broker registered for it. Every handler validates
+// bounded arguments and hands the daemon a discriminated operation; the target repository and the
+// effect token stay daemon-private.
 import { z } from 'zod'
 import type { SessionContext } from './context.js'
 import {
@@ -13,7 +14,7 @@ import {
   requiredPositiveInt,
   requiredString
 } from './args.js'
-import { BROKER_PIPELINE_STATUSES, type GitlabBrokerOperation } from '../../gitlab/broker.js'
+import { BROKER_PIPELINE_STATUSES, type CodeHostBrokerOperation } from '../../codehost/broker.js'
 
 const SUBJECTS = ['issue', 'merge_request'] as const
 const INSPECT_SCOPES = ['pipelines', 'pipeline', 'pipeline_jobs', 'job'] as const
@@ -94,7 +95,7 @@ export interface CodeHostEffectReq {
   channel: string
   thread: string
   transportScope?: string
-  operation: GitlabBrokerOperation
+  operation: CodeHostBrokerOperation
 }
 
 /** The broker seam. Optional: an ordinary daemon carries the descriptors but fails closed. */
@@ -103,7 +104,7 @@ export interface CodeHostEffectDeps {
   codeHostEffect?: (req: CodeHostEffectReq) => Promise<unknown>
 }
 
-function run(ctx: SessionContext, deps: CodeHostEffectDeps, operation: GitlabBrokerOperation): Promise<unknown> {
+function run(ctx: SessionContext, deps: CodeHostEffectDeps, operation: CodeHostBrokerOperation): Promise<unknown> {
   if (!deps.codeHostEffect) throw new Error('code-host effects are unavailable on this daemon')
   return deps.codeHostEffect({
     agentId: ctx.agentId,

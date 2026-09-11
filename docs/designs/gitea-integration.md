@@ -646,15 +646,12 @@ are deliberately inert and each is replaced by the step that gives it work:
 | CP provider module: workspace arms decline, hook convergence is a no-op  | G2          |
 | CP hook compile: a `gitea` row never compiles, so the pool holds no rule | G2          |
 | CP `codeHostStateExists('gitea')`: no table exists to count yet          | G2          |
-| Daemon credentials: no helper path grammar, so a request is "not ours"   | G4          |
-| Daemon ack, final poster, effect lease                                   | G4          |
-| Daemon hook admission: no lane, no generation, no batch                  | G4          |
-| Daemon hook normalization: session key and subject label only            | G4          |
 | Console: hook marks and labels are real; pickers do not offer the host   | G6          |
 
-The daemon's turn-final `hostFence` is NOT inert: a delivery carrying a Gitea
-member is refused there under `code_host_not_implemented`, so the placeholders
-above can only be reached by a delivery the relay also refuses.
+The daemon's entries — credentials, ack, final poster, effect lease, hook
+admission, hook normalization — were on this list until G4 made each real; its
+turn-final `hostFence` was never inert, refusing every Gitea delivery under
+`code_host_not_implemented` until G4 turned it into the §11 instance comparison.
 
 Two things stay un-generalized on purpose. The Control Plane's provider-neutral
 note-projection service keeps its GitLab constant, because Gitea does not use
@@ -719,9 +716,10 @@ Each step is one pull request, merged in order.
   membership-authorization arm.
 - **G3 — Relay ingress.** `hooks/gitea/`: signature, event mapping, veto and
   gate table, delivery key, rerun dispatch.
-- **G4 — Daemon credentials, workspace, sessions.** Managed-host entry, helper
-  path rules, session-key recompute, transport-scope pin, the ack reaction,
-  maintenance cleanup, the final poster and effect broker.
+- **G4 — Daemon credentials, workspace, sessions.** _Landed (#2054)._ Managed-host
+  entry, helper path rules, session-key recompute, transport-scope pin, the ack
+  reaction, maintenance cleanup, the final poster and effect broker, and the §8
+  review-delivery correlation fetched under the turn's lease before the prompt.
 - **G5 — Reviews and run projection.** The Gitea review adapter, the commit
   status writer, the Console rerun binding.
 - **G6 — Console and docs.** The Gitea card, picker, hook kind, workspace and
