@@ -2,6 +2,7 @@
 // non-review effects an agent may ask the daemon to perform under an effect lease.
 // The token never enters the agent environment and the project is never model input.
 import type { GitCredGrant } from '@agentconnect.md/protocol'
+import { parseCodeHostJson } from '../codehost/json.js'
 
 /** §13.1 authorization levels, ordered — an operation's class is checked against the CLAMPED grant. */
 export type BrokerCapability = GitCredGrant['access']
@@ -145,7 +146,7 @@ const BRANCH_NAME = /^[\w.\-/]{1,255}$/
 
 /** GitLab ids exceed the safe-integer range; quote them before parsing, as the poster does. */
 export function parseGitlabJson(raw: string): unknown {
-  return JSON.parse(raw.replace(/"((?:[a-z][a-z0-9_]*_)?id)"\s*:\s*(\d{15,})/g, '"$1":"$2"'))
+  return parseCodeHostJson(raw)
 }
 
 /** A big-int-safe id as a decimal string; undefined when the value is not one. */
