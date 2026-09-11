@@ -205,7 +205,7 @@ importers:
         version: 6.0.0
       fastify-type-provider-zod:
         specifier: ^7.0.0
-        version: 7.0.0(@fastify/swagger@9.8.1(supports-color@7.2.0))(fastify@5.12.3)(openapi-types@12.1.3)(zod@4.6.1)
+        version: 7.0.0(@fastify/swagger@9.8.1(supports-color@7.2.0))(fastify@5.12.3)(openapi-types@12.1.3)(zod@4.5.4)
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
@@ -217,7 +217,7 @@ importers:
         version: 11.5.2
       lucide:
         specifier: ^1.41.0
-        version: 1.43.0
+        version: 1.42.0
       sharp:
         specifier: ^0.35.4
         version: 0.35.4(@types/node@24.13.3)
@@ -229,7 +229,7 @@ importers:
         version: 2.9.0
       zod:
         specifier: ^4.5.4
-        version: 4.6.1
+        version: 4.5.4
     devDependencies:
       '@opentelemetry/sdk-trace':
         specifier: ^2.11.0
@@ -269,7 +269,7 @@ importers:
     dependencies:
       '@agentclientprotocol/sdk':
         specifier: ^1.4.0
-        version: 1.4.0(zod@4.6.1)
+        version: 1.4.0(zod@4.5.4)
       '@agentconnect.md/activation-policy':
         specifier: workspace:*
         version: link:../activation-policy
@@ -362,7 +362,7 @@ importers:
         version: 5.0.3
       systeminformation:
         specifier: ^5.33.8
-        version: 5.33.10
+        version: 5.33.9
       tar:
         specifier: 7.5.22
         version: 7.5.22
@@ -380,7 +380,7 @@ importers:
         version: 2.9.0
       zod:
         specifier: ^4.5.4
-        version: 4.6.1
+        version: 4.5.4
     devDependencies:
       '@testcontainers/postgresql':
         specifier: ^12.0.4
@@ -463,7 +463,7 @@ importers:
         version: 1.43.0
       zod:
         specifier: ^4.5.4
-        version: 4.6.1
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: ^24.13.3
@@ -532,7 +532,7 @@ importers:
     dependencies:
       zod:
         specifier: ^4.5.4
-        version: 4.6.1
+        version: 4.5.4
     devDependencies:
       typescript:
         specifier: ^6.0.3
@@ -569,7 +569,7 @@ importers:
         version: 8.21.3
       zod:
         specifier: ^4.5.4
-        version: 4.6.1
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: ^24.13.3
@@ -600,7 +600,7 @@ importers:
         version: 6.2.12
       zod:
         specifier: ^4.5.4
-        version: 4.6.1
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: ^24.13.3
@@ -627,8 +627,8 @@ importers:
         specifier: workspace:*
         version: link:../protocol
       '@iconify-icons/logos':
-        specifier: ^2.0.0
-        version: 2.0.0
+        specifier: ^2.0.1
+        version: 2.0.1
       '@iconify-icons/ph':
         specifier: ^2.0.0
         version: 2.0.0
@@ -636,8 +636,8 @@ importers:
         specifier: ^6.0.2
         version: 6.0.2(react@19.2.8)
       '@logto/browser':
-        specifier: ^3.0.13
-        version: 3.0.13
+        specifier: ^3.0.14
+        version: 3.0.14
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -676,7 +676,7 @@ importers:
         version: 11.12.0
       lucide-react:
         specifier: ^1.41.0
-        version: 1.43.0(react@19.2.8)
+        version: 1.42.0(react@19.2.8)
       next:
         specifier: ^16.3.4
         version: 16.3.4(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -685,7 +685,7 @@ importers:
         version: 2.2.0
       posthog-js:
         specifier: ^1.427.2
-        version: 1.429.1(@types/react@19.2.18)(react@19.2.8)
+        version: 1.428.4(@types/react@19.2.18)(react@19.2.8)
       react:
         specifier: ^19.2.8
         version: 19.2.8
@@ -731,10 +731,10 @@ importers:
         version: 19.2.18
       '@types/react-dom':
         specifier: ^19.2.7
-        version: 19.3.0(@types/react@19.2.18)
+        version: 19.2.7(@types/react@19.2.18)
       happy-dom:
         specifier: ^20.14.0
-        version: 20.14.3
+        version: 20.14.0
       mdast-util-to-hast:
         specifier: ^13.2.1
         version: 13.2.1
@@ -749,7 +749,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^5.0.0
-        version: 5.0.0(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(happy-dom@20.14.3)(vite@8.1.3(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
+        version: 5.0.0(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(happy-dom@20.14.0)(vite@8.1.3(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
 
 packages:
 
@@ -1450,8 +1450,8 @@ packages:
     resolution: {integrity: sha512-ks7EI3TlrnZ6uKEIGemLHiBqOaqrA2dALNhC9Potl5CeajGNhF0n6eY30cNRvboDbuMRibw1iAtn7vnX4dzlwg==}
     engines: {node: '>=20.0.0'}
 
-  '@iconify-icons/logos@2.0.0':
-    resolution: {integrity: sha512-+2g3obIntbmwwF/gsQUWCTOXJn3J/BK25qpESjE94bijMfBekJTpKbclbNM34ORVcXwVlVkeJiM97V1FCwT7Tw==}
+  '@iconify-icons/logos@2.0.1':
+    resolution: {integrity: sha512-XnPDge6cMJTnymjLUSb5Mfw5iokmhWR2DU9MDJl2oG0MHwr+ko0YukPZt9gjIZBGG2PRHuL5LGfdoDA3NDEWlg==}
 
   '@iconify-icons/ph@2.0.0':
     resolution: {integrity: sha512-X2bxpVWpMUayUHTIZl5Ue4xk/2JWtyafCLPVXA4i0P0lUk75A4in7rdv4ZfjV2U67mK8yf/L7tRPPlG57pgW8Q==}
@@ -1842,11 +1842,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@logto/browser@3.0.13':
-    resolution: {integrity: sha512-SlZ76XiVh2es6eFB1M+ldV6b60eC3+eeKoRQ8/AvOlpwHhrY/v2FPw5LOd/vZ+WYjzDqsxNtOMdhTdliHZ7V1g==}
+  '@logto/browser@3.0.14':
+    resolution: {integrity: sha512-2c+1rPmsRzOSX9lPxrjyjxMUo7qChUWjS234gwYgblbbVJv3dqXqLDNRG8E3a2Lbnlmj/h6pJI4qeKemZSsrqA==}
 
-  '@logto/client@3.1.8':
-    resolution: {integrity: sha512-f6NcPOV/K1IpPm4ccARWeYpQVMeN4mfikGg+5Qw1rcIPYPUpD5BmDsQbVTAnDepCMbC7syzRerZmbwL8S3UL+A==}
+  '@logto/client@3.1.9':
+    resolution: {integrity: sha512-L8blDiB7z+D5nRVl8myrCHFTFtMgeWL46paKF0WKgbZHElYkt3NiqdWqZamlkzhoXTz+9cMjkRPBgcAmAP1JLw==}
 
   '@logto/js@6.1.2':
     resolution: {integrity: sha512-YB/TfixPGI0Spbs8LXiKuASOKFUE9VmlTkXiPfgg3UXQsIPTU71KjKxEXZRePu3xdPNhsZ6WtnRfRvvcpP+KGQ==}
@@ -3576,6 +3576,11 @@ packages:
 
   '@types/range-parser@1.2.7':
     resolution: {integrity: sha512-hKormJbkJqzQGhziax5PItDUTMAM9uE2XXQmM37dyd4hVM+5aVl7oVxMVUiVQn2oCQFN/LKCZdvSM0pFRqbSmQ==}
+
+  '@types/react-dom@19.2.7':
+    resolution: {integrity: sha512-I8bPpDLcHBv1qiIiXDCy71Rt8eQDKJP0sMSWJphDdAcdqiJ1sGpZamavoEIRZmYzjia9LuEb2HlYdDpmoENpvQ==}
+    peerDependencies:
+      '@types/react': ^19.2.0
 
   '@types/react-dom@19.3.0':
     resolution: {integrity: sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q==}
@@ -5751,6 +5756,10 @@ packages:
     engines: {node: '>=0.4.7'}
     hasBin: true
 
+  happy-dom@20.14.0:
+    resolution: {integrity: sha512-4bRh1KzRvKDnFNTlLhzT1RZTpkKhQbQDl9j+7GXszWsvuspYdo29k6OHRf4PwiM6oLb8r/pMWeYiJjkfod5AvQ==}
+    engines: {node: '>=20.0.0'}
+
   happy-dom@20.14.3:
     resolution: {integrity: sha512-0KMb/Eh8rsd+aMNkOk5h8LkAjo9Na1aksnEGmsuZf+GXl6UkAdIi0VbUHU7d59lXhNmawODgwwuCMiZpCxwwCw==}
     engines: {node: '>=20.0.0'}
@@ -6440,13 +6449,13 @@ packages:
     resolution: {integrity: sha512-DqC6n3QQ77zdFpCMASA1a3Jlb64Hv2N2DciFGkO/4L9+q/IpIAuRlKOvCXabtRW6cQf8usbmM6BE/TOPysCdIA==}
     engines: {bun: '>=1.0.0', deno: '>=1.30.0', node: '>=8.0.0'}
 
-  lucide-react@1.43.0:
-    resolution: {integrity: sha512-ubtnda1fVK5ky0PNEpOmB0wiwhpZUyJiol4K14KCm+QKvuCkfUu54Et/rIjyupJpwiJ5Hg+BLQE86/GEsS+IgQ==}
+  lucide-react@1.42.0:
+    resolution: {integrity: sha512-b3jprplnoLS8n5etw1z8xODe3hF/yjKATrTitsrKrnjUhCef5BdDct6Ppv3zVvzFwmtfWgLO6XNM3C9fAD93ug==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
-  lucide@1.43.0:
-    resolution: {integrity: sha512-koRMVADN3XR9zte+NHXFHuJM4ejAqvwu/6DMf2O40jl2rMlhzu3t2mHSd3ugXnmTm5HIMUbOexhC/nClhetbGg==}
+  lucide@1.42.0:
+    resolution: {integrity: sha512-KLZ517pIUzuXGSFLlDL+5s6pcp4FI7brn4AXrFmRP7ghtxVVJ7/o4d3VejZeLPU127D/jITLs5WTLnH9Dc7VxA==}
 
   magic-bytes.js@1.13.1:
     resolution: {integrity: sha512-x5sn4UX2k5gCWlcfmoFwG4TPie8+dctESyqOBdhB5p6MsgWXdBKGmt9nXPObj/JI50TTL928lc5Yt1WntMn1bw==}
@@ -7425,8 +7434,8 @@ packages:
     resolution: {integrity: sha512-Jtc2612XINuBjIl/QTWsV5UvE8UHuNblcO3vVADSrKsrc6RqGX6lOW1cEo3CM2v0XG4Nat8nI+YM7/f26VxXLw==}
     engines: {node: '>=12'}
 
-  posthog-js@1.429.1:
-    resolution: {integrity: sha512-6DnWhkmaFlY6/Wjrw59GXeUyyS2NG0CIFNklxuUlEfbw1Wx2A3Z9/NSYCUJlY7feMgqN74BguAmQtXAlsNwguQ==}
+  posthog-js@1.428.4:
+    resolution: {integrity: sha512-tVkQ0ZXWPaeYaRs/d6yVkBXAOYy3E0VFmoRQvYV3eCLWXZE9rhBQ/nl/Lw9e9FN8R0Hjk0O7ENNnzuUSs4nJkQ==}
     peerDependencies:
       '@types/react': '>=16.8.0'
       react: '>=16.8.0'
@@ -8214,8 +8223,8 @@ packages:
     resolution: {integrity: sha512-yUT0ukFkFEt4nb+NY+n2ag51aS/u9UHXoZw+A4jgD77/jzZsBoSDHuqysrVCBC4CYR4TYvUJq54ONpXgDBH8tA==}
     engines: {node: '>=0.2.6'}
 
-  systeminformation@5.33.10:
-    resolution: {integrity: sha512-/NXbMVASt2UbSVgmWto4aBTIAeuYY7zOELpZybmNxqpsrbo5uYHpuEPf5nkyrPng0uG5YOb+Yv6s0FyKY4mDQg==}
+  systeminformation@5.33.9:
+    resolution: {integrity: sha512-mlE+h4IVAA4F4O6sc8NFpClFvsO6yjQ/uVKTq3kmruYqno2CenyDQhyOqRO7q5sl2FZie9c+R3E7pKOBKPDHCA==}
     engines: {node: '>=10.0.0'}
     os: [darwin, linux, win32, freebsd, openbsd, netbsd, sunos, android]
     hasBin: true
@@ -8915,8 +8924,8 @@ packages:
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
-  zod@4.6.1:
-    resolution: {integrity: sha512-341aRWQsve0rvronKNTqZpjmzdbUDlFuzHaI/XLg/Ej82qffDJRRfBTCuv7+9q/rMjB6LSLyEBnW4InJeMtt/Q==}
+  zod@4.5.4:
+    resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
 
   zone.js@0.16.2:
     resolution: {integrity: sha512-Eky7p2Z1Ig3NnbfodSPoARCjKBSTFMnE/ACsP1L/XJEfY4SdOFce19BsUCWVwL6K5ABZFy5J3bjcMWffX+YM3Q==}
@@ -8946,9 +8955,9 @@ snapshots:
 
   '@actions/io@3.0.2': {}
 
-  '@agentclientprotocol/sdk@1.4.0(zod@4.6.1)':
+  '@agentclientprotocol/sdk@1.4.0(zod@4.5.4)':
     dependencies:
-      zod: 4.6.1
+      zod: 4.5.4
 
   '@ai-sdk/gateway@3.0.184(zod@4.4.3)':
     dependencies:
@@ -9917,7 +9926,7 @@ snapshots:
       - supports-color
     optional: true
 
-  '@iconify-icons/logos@2.0.0':
+  '@iconify-icons/logos@2.0.1':
     dependencies:
       '@iconify/types': 2.0.0
 
@@ -10267,13 +10276,13 @@ snapshots:
   '@libsql/win32-x64-msvc@0.5.29':
     optional: true
 
-  '@logto/browser@3.0.13':
+  '@logto/browser@3.0.14':
     dependencies:
-      '@logto/client': 3.1.8
+      '@logto/client': 3.1.9
       '@silverhand/essentials': 2.9.3
       js-base64: 3.9.3
 
-  '@logto/client@3.1.8':
+  '@logto/client@3.1.9':
     dependencies:
       '@logto/js': 6.1.2
       '@silverhand/essentials': 2.9.3
@@ -10295,11 +10304,11 @@ snapshots:
       eventsource-parser: 3.1.1
       jose: 6.2.10
       pkce-challenge: 5.0.1
-      zod: 4.6.1
+      zod: 4.4.3
 
   '@modelcontextprotocol/core@2.0.0':
     dependencies:
-      zod: 4.6.1
+      zod: 4.4.3
 
   '@modelcontextprotocol/node@2.0.0(@modelcontextprotocol/server@2.0.0)(hono@4.13.5)':
     dependencies:
@@ -10336,7 +10345,7 @@ snapshots:
   '@modelcontextprotocol/server@2.0.0':
     dependencies:
       '@modelcontextprotocol/core': 2.0.0
-      zod: 4.6.1
+      zod: 4.4.3
 
   '@mongodb-js/saslprep@1.5.0':
     dependencies:
@@ -12040,9 +12049,14 @@ snapshots:
 
   '@types/range-parser@1.2.7': {}
 
+  '@types/react-dom@19.2.7(@types/react@19.2.18)':
+    dependencies:
+      '@types/react': 19.2.18
+
   '@types/react-dom@19.3.0(@types/react@19.2.18)':
     dependencies:
       '@types/react': 19.2.18
+    optional: true
 
   '@types/react@19.2.18':
     dependencies:
@@ -13826,13 +13840,13 @@ snapshots:
 
   fastify-plugin@6.0.0: {}
 
-  fastify-type-provider-zod@7.0.0(@fastify/swagger@9.8.1(supports-color@7.2.0))(fastify@5.12.3)(openapi-types@12.1.3)(zod@4.6.1):
+  fastify-type-provider-zod@7.0.0(@fastify/swagger@9.8.1(supports-color@7.2.0))(fastify@5.12.3)(openapi-types@12.1.3)(zod@4.5.4):
     dependencies:
       '@fastify/error': 4.2.0
       '@fastify/swagger': 9.8.1(supports-color@7.2.0)
       fastify: 5.12.3
       openapi-types: 12.1.3
-      zod: 4.6.1
+      zod: 4.5.4
 
   fastify@5.12.3:
     dependencies:
@@ -14226,6 +14240,19 @@ snapshots:
     optionalDependencies:
       uglify-js: 3.19.3
 
+  happy-dom@20.14.0:
+    dependencies:
+      '@types/node': 24.13.3
+      '@types/whatwg-mimetype': 3.0.2
+      '@types/ws': 8.18.1
+      buffer-image-size: 0.6.4
+      entities: 7.0.1
+      whatwg-mimetype: 3.0.0
+      ws: 8.21.3
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
   happy-dom@20.14.3:
     dependencies:
       '@types/node': 24.13.3
@@ -14238,6 +14265,7 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
+    optional: true
 
   has-flag@3.0.0: {}
 
@@ -14879,11 +14907,11 @@ snapshots:
 
   lru.min@1.1.4: {}
 
-  lucide-react@1.43.0(react@19.2.8):
+  lucide-react@1.42.0(react@19.2.8):
     dependencies:
       react: 19.2.8
 
-  lucide@1.43.0: {}
+  lucide@1.42.0: {}
 
   magic-bytes.js@1.13.1: {}
 
@@ -15994,7 +16022,7 @@ snapshots:
 
   postgres@3.4.7: {}
 
-  posthog-js@1.429.1(@types/react@19.2.18)(react@19.2.8):
+  posthog-js@1.428.4(@types/react@19.2.18)(react@19.2.8):
     dependencies:
       '@posthog/browser-common': 0.8.2
       '@posthog/core': 1.52.0
@@ -17171,7 +17199,7 @@ snapshots:
   sylvester@0.0.21:
     optional: true
 
-  systeminformation@5.33.10: {}
+  systeminformation@5.33.9: {}
 
   tagged-tag@1.0.0: {}
 
@@ -17649,6 +17677,29 @@ snapshots:
       tsx: 4.23.13
       yaml: 2.9.0
 
+  vitest@5.0.0(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(happy-dom@20.14.0)(vite@8.1.3(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0)):
+    dependencies:
+      '@types/chai': 5.2.3
+      '@vitest/mocker': 5.0.0(vite@8.1.3(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
+      chai: 6.2.2
+      es-module-lexer: 2.3.2
+      expect-type: 1.4.0
+      magic-string: 1.2.3
+      obug: 2.1.4
+      picomatch: 4.0.7
+      std-env: 4.2.0
+      tinybench: 6.1.4
+      tinyexec: 1.3.0
+      tinyglobby: 0.2.17
+      vite: 8.1.3(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0)
+      why-is-node-running: 2.3.0
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.1
+      '@types/node': 24.13.3
+      happy-dom: 20.14.0
+    transitivePeerDependencies:
+      - msw
+
   vitest@5.0.0(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(happy-dom@20.14.3)(vite@8.1.3(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0)):
     dependencies:
       '@types/chai': 5.2.3
@@ -17878,7 +17929,7 @@ snapshots:
 
   zod@4.4.3: {}
 
-  zod@4.6.1: {}
+  zod@4.5.4: {}
 
   zone.js@0.16.2: {}
 

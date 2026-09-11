@@ -20,10 +20,10 @@
   },
   "dependencies": {
     "@agentconnect.md/protocol": "workspace:*",
-    "@iconify-icons/logos": "^2.0.0",
+    "@iconify-icons/logos": "^2.0.1",
     "@iconify-icons/ph": "^2.0.0",
     "@iconify/react": "^6.0.2",
-    "@logto/browser": "^3.0.13",
+    "@logto/browser": "^3.0.14",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/context-zone": "^2.11.0",
     "@opentelemetry/core": "^2.11.0",
