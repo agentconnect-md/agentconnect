@@ -1445,19 +1445,6 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     await s.close()
   })
 
-  it('agentsWithSessionRows answers for a whole batch, closed rows included', async () => {
-    // The idle-volume reaper's veto: a row's EXISTENCE is what keeps an agent volume, whatever its
-    // state — a closed session retention has refused to purge is exactly the case it protects.
-    const s = await store()
-    await seed(s, 'k1', 'bot-a', 'idle', 100)
-    await s.setSessionState('k1', 'closed', 100)
-    await seed(s, 'k2', 'bot-b', 'idle', 300)
-    expect(await s.agentsWithSessionRows(['bot-a', 'bot-b', 'bot-c'])).toEqual(new Set(['bot-a', 'bot-b']))
-    expect(await s.agentsWithSessionRows(['bot-c'])).toEqual(new Set())
-    expect(await s.agentsWithSessionRows([])).toEqual(new Set())
-    await s.close()
-  })
-
   it('setSessionMuted persists a cold !stop tombstone across reopen and later session creation', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-mute-')), 'local.sqlite')
     let s = await reopen(path)

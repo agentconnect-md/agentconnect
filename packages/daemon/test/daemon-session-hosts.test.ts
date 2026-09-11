@@ -392,6 +392,37 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     }
   })
 
+  it('purges every expired session even when one will not stop, and still retires its pod', async () => {
+    // The row is deleted before the pod is, so a throw from stopping the host used to escape the
+    // purge, abort the rest of the sweep, and leave a claim alive with this member's launch still
+    // cached — a cached launch keeps re-stamping the claim, which reads as "in use" to the orphan
+    // sweep forever, the one leak its session-pod half can never collect (k8s-daemon-pool.md §4).
+    const root = scaffold({}, 'shared')
+    const { daemon } = await startDaemon(root)
+    try {
+      await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+      await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+      await (daemon as any).stopHost('bot-a')
+      const store = (daemon as any).store
+      const retired: string[] = []
+      ;(daemon as any).stopSessionHost = async (_agentId: string, key: string) => {
+        throw new Error(`host of ${key} would not stop`)
+      }
+      ;(daemon as any).discardSessionSandbox = async (_agentId: string, key: string) => void retired.push(key)
+      for (const thread of ['T1', 'T2']) {
+        await store.db.prepare('UPDATE sessions SET updatedAt = ? WHERE key = ?').run(1, KEY(thread))
+      }
+      await (daemon as any).sweepExpiredSessions()
+      // Both rows gone — the first session's failure is not the second session's problem …
+      expect(await store.getSession(KEY('T1'))).toBeUndefined()
+      expect(await store.getSession(KEY('T2'))).toBeUndefined()
+      // … and each pod was still retired, which is the half that must never be skipped.
+      expect(retired.sort()).toEqual([KEY('T1'), KEY('T2')].sort())
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it('preserves legacy shared VM sessions through restart and retires that VM only with its last session', async () => {
     const root = scaffold({}, 'shared')
     const { daemon, hosts } = await startDaemon(root)

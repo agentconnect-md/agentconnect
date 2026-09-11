@@ -3073,19 +3073,6 @@ export class LocalStore {
     return row?.ts ?? null
   }
 
-  /** Which of these agents still have ANY session row, asked in one query — the idle-volume reaper's
-   *  veto (k8s-daemon-pool.md §4). A row's existence is the proof that session retention has not yet
-   *  judged and released every session of the agent, including one it REFUSED to release over
-   *  uncommitted or unpushed work, so its agent volume is not disposable. */
-  async agentsWithSessionRows(agentIds: string[]): Promise<Set<string>> {
-    const unique = [...new Set(agentIds)]
-    if (unique.length === 0) return new Set()
-    const rows = (await this.db
-      .prepare(`SELECT DISTINCT agentId FROM sessions WHERE agentId IN (${unique.map(() => '?').join(',')})`)
-      .all(...unique)) as unknown as Array<{ agentId: string }>
-    return new Set(rows.map((row) => row.agentId))
-  }
-
   /** Every session key of the agent, open or closed — a row's existence is what keeps its session pod's claim (git-workspace-model §11). */
   async sessionKeysForAgent(agentId: string): Promise<string[]> {
     const rows = (await this.db.prepare('SELECT key FROM sessions WHERE agentId = ?').all(agentId)) as Array<{

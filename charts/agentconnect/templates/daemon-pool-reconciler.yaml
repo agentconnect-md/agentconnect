@@ -1,8 +1,8 @@
 {{- $reconciler := .Values.daemonPool.reconciler }}
 {{- if .Values.daemonPool.enabled }}
 {{- $daemonTag := .Values.daemonPool.tag | default (include "agentconnect.imageTag" .) }}
-# The pool's reclamation job: one pass over the agents namespace — first the sandbox objects nobody
-# will ever clean up, then the workspace volumes of agents nobody has used for a window — and exit.
+# The pool's orphan reconciler: one sweep of the agents namespace for sandbox objects nobody will
+# ever clean up — including a session pod whose session row is gone — then exit.
 # It used to be a timer inside every member with a lease for mutual exclusion; the cluster already
 # owns all three of those things, so it is a CronJob instead — the schedule is the schedule,
 # `concurrencyPolicy: Forbid` is the mutual exclusion, and a sweep that could not read the control
@@ -89,19 +89,6 @@ spec:
                 - name: AC_K8S_ORPHAN_DELETE
                   value: 'true'
                 {{- end }}
-                {{- with $reconciler.idleVolume.windowMs }}
-                # How long an agent must have gone unused before its workspace volume can be
-                # given back. Unset ⇒ the daemon's own 7-day default.
-                - name: AC_K8S_IDLE_VOLUME_MS
-                  value: {{ . | quote }}
-                {{- end }}
-                {{- if $reconciler.idleVolume.delete }}
-                # The idle-volume half's own opt-in, separate from the orphan half's: this one
-                # collects volumes of agents that still EXIST, so an operator turns it on only
-                # after reading its own dry-run lines. Unset ⇒ reports and deletes nothing.
-                - name: AC_K8S_IDLE_VOLUME_DELETE
-                  value: 'true'
-                {{- end }}
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:
@@ -119,9 +106,10 @@ spec:
                   readOnly: true
           volumes:
             {{- with .Values.daemonPool.dataPlane.existingSecret }}
-            # The members' own data plane, read-only and by the same Secret. Two sweeps have no
-            # answer without it and collect nothing: which session pods still have a row, and
-            # which agents have none left. The store retention half needs it too.
+            # The members' own data plane, read-only and by the same Secret. Without it the sweep
+            # cannot ask which session pods still have a row, so every one of them reads as live and
+            # nothing reclaims a session pod whose direct teardown failed; the store retention half
+            # is skipped outright.
             - name: data-plane
               secret:
                 secretName: {{ . }}

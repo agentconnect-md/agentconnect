@@ -399,64 +399,6 @@ probe-claim GC, and agent removal's sandbox teardown is best-effort because of
 it: `discardAgent` deletes the claim once and logs a failure, and the
 reconciler collects the leftovers.
 
-### Idle agent volumes
-
-Suspension gives back an agent sandbox's CPU and memory. It gives back no
-storage: the claim keeps a provisioned workspace volume, and the only path that
-ever deleted an agent claim was agent removal (`discardAgent`). Session pods
-already had a reclamation path — the retention GC deletes a session's row and
-its claim together — so an install accrued exactly one live volume per agent
-anyone had ever used, indefinitely. The orphan reconciler cannot collect those:
-their agents are alive, which is precisely the case it refuses to touch.
-
-The **idle-volume reaper**
-(`packages/daemon/src/k8s/idle-volume-reaper.ts`) is a second sweep in the same
-CronJob, and rides along rather than getting a job of its own because it needs
-strictly less: no scheduler, no lease, and no control-plane read — the same
-claim listing plus one store query. It collects an agent pod's claim, and with
-it the volume, when all four hold:
-
-- the claim is an **agent pod's** (no `agentconnect.md/session` label, not a
-  probe claim) and no session pod of that agent is present;
-- its `Sandbox` reads `operatingMode: Suspended` — one a member has awake is in
-  use, whatever the rows say;
-- the agent has **no session row left** in the shared store;
-- the claim is older than the window (`AC_K8S_IDLE_VOLUME_MS`, default 7 days).
-
-**The third condition is the load-bearing one.** A session row's existence is
-what keeps a session pod's claim ([git-workspace-model.md](git-workspace-model.md)
-§11), and the retention GC deletes a row only after judging that session's
-worktrees — including REFUSING to delete one that still holds uncommitted or
-unpushed work. So "this agent has no session rows" reads as "session retention
-has already judged and released every session of this agent", which is what
-makes the volume disposable. The agent's own checkout is NOT judged: the pod is
-suspended, and judging would mean waking it, which is the cost the sweep exists
-to avoid. The window stands in for that — an agent nobody has touched for a
-week has a re-clonable checkout, not a workspace. An install that wants the
-checkout judged too wants a daemon-side sweep instead, on the holder that can
-mount the volume.
-
-Two consequences worth naming. An install with `sessions.retention: never`
-collects no agent volume at all, which is correct rather than broken: keeping
-every session forever is keeping their workspaces. And the effective idle time
-is `max(sessions.retention, AC_K8S_IDLE_VOLUME_MS)`, because a session row
-survives its own retention window before the agent can read as session-free.
-
-**Fail-closed everywhere, and not fenced on the admission stamp.** No store
-mounted, a store read that throws, or a Sandbox listing the Role does not
-permit each keep every volume rather than guess. The delete carries the UID and
-resourceVersion from the LIST snapshot, so a wake that landed after the listing
-— which writes `agentconnect.md/last-admitted-at` and moves the version —
-fails the delete instead of taking a live volume. But the stamp is deliberately
-NOT what the window is measured from, unlike the orphan sweep's grace: it means
-"last seen in use by a member", and a rollout re-stamps every claim it adopts,
-so a window of days measured from it would be reset by every deploy and would
-never elapse. Deletion is opt-in on its own flag
-(`AC_K8S_IDLE_VOLUME_DELETE`), separate from the orphan half's, because this
-half collects volumes of agents that still exist. An agent is unaffected
-otherwise: its next turn claims a fresh sandbox and re-prepares the workspace,
-at the cost of that one clone.
-
 **The store half: one rule table.** Row retention across the daemon store used
 to be scattered — a private constant and a `DELETE … WHERE … < x` wherever each
 table's writer happened to live, so "how long do we keep X" had as many answers

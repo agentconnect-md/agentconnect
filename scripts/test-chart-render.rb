@@ -306,11 +306,6 @@ end
 # collection is a value an install flips after watching the summary lines.
 abort('reconciler must ship dry-run') if reconcile_env.key?('AC_K8S_ORPHAN_DELETE')
 abort('reconciler must leave the grace period at the daemon default') if reconcile_env.key?('AC_K8S_ORPHAN_GRACE_MS')
-# The idle-volume half is the same story on its own flag: it collects the workspace volume of an
-# agent that still EXISTS, so it reports until an install turns it on, and its window defaults in
-# the daemon rather than here.
-abort('the idle-volume sweep must ship dry-run') if reconcile_env.key?('AC_K8S_IDLE_VOLUME_DELETE')
-abort('the idle-volume window must default in the daemon') if reconcile_env.key?('AC_K8S_IDLE_VOLUME_MS')
 # Member-only variables have no meaning for a one-shot sweep and must not be implied by the partial.
 %w[AC_K8S_MEMBER_ID AC_POD_TEMPLATE_HASH AC_READINESS_PORT].each do |key|
   abort("reconciler must not carry the member-only #{key}") if reconcile_container.fetch('env').any? { |item| item['name'] == key }
@@ -319,11 +314,11 @@ reconcile_mounts = reconcile_container.fetch('volumeMounts').to_h { |item| [item
 abort('reconciler needs the CP identity mount the members have') unless reconcile_mounts['cp-identity'] == mounts['cp-identity']
 reconcile_token = job_pod.fetch('volumes').find { |item| item['name'] == 'cp-identity' }
 abort('reconciler must present the same projected CP token') unless reconcile_token == volumes['cp-identity']
-# The members' own data plane, read-only. Two of the three sweeps have no answer without it and
-# collect NOTHING: which session pods still have a row (git-workspace-model.md §11), and which
-# agents have no session row left (the idle-volume half). The store retention half is skipped
-# outright. It used to be deliberately absent — "a one-shot sweep holds no agent state" — which
-# read as a clean run while two sweeps were silently disabled.
+# The members' own data plane, read-only. Without it the sweep cannot ask which session pods still
+# have a row (git-workspace-model.md §11), so every one reads as live and nothing reclaims a session
+# pod whose direct teardown failed, and the store retention half is skipped outright. It used to be
+# deliberately absent — "a one-shot sweep holds no agent state" — which read as a clean run while
+# two of the job's three sweeps were silently disabled.
 abort('reconciler needs the data-plane mount its store reads come from') unless reconcile_mounts['data-plane'] == mounts['data-plane']
 reconcile_plane = job_pod.fetch('volumes').find { |item| item['name'] == 'data-plane' }
 abort('reconciler must read the members own data-plane Secret') unless reconcile_plane == volumes['data-plane']
@@ -341,21 +336,6 @@ delete_env = delete_cron.dig('spec', 'jobTemplate', 'spec', 'template', 'spec', 
 abort('daemonPool.reconciler.delete must enable collection') unless delete_env['AC_K8S_ORPHAN_DELETE'] == 'true'
 abort('daemonPool.reconciler.graceMs must set the grace period') unless delete_env['AC_K8S_ORPHAN_GRACE_MS'] == '1800000'
 
-# The idle-volume half's own two knobs, separate from the orphan half's by design.
-idle_rendered, idle_error, idle_status = Open3.capture3(*(command + [
-  '--set', 'daemonPool.reconciler.idleVolume.delete=true', '--set', 'daemonPool.reconciler.idleVolume.windowMs=1209600000'
-]))
-abort("helm template (idle volumes collecting) failed:\n#{idle_error}") unless idle_status.success?
-idle_cron = YAML.load_stream(idle_rendered).compact.find do |doc|
-  doc['kind'] == 'CronJob' && doc.dig('metadata', 'name') == 'example-agentconnect-daemon-pool-reconciler'
-end || abort('missing reconciler CronJob with idle-volume collection on')
-idle_env = idle_cron.dig('spec', 'jobTemplate', 'spec', 'template', 'spec', 'containers')
-  .find { |item| item['name'] == 'reconcile' }.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
-abort('idleVolume.delete must enable collection') unless idle_env['AC_K8S_IDLE_VOLUME_DELETE'] == 'true'
-abort('idleVolume.windowMs must set the idle window') unless idle_env['AC_K8S_IDLE_VOLUME_MS'] == '1209600000'
-# The two halves must stay independently switchable: one flag must never imply the other.
-abort('the idle-volume flag must not turn the orphan half on') if idle_env.key?('AC_K8S_ORPHAN_DELETE')
-abort('the orphan flag must not turn the idle-volume half on') if delete_env.key?('AC_K8S_IDLE_VOLUME_DELETE')
 
 # One chart, one release: the cluster-scoped objects the install needs are rendered here,
 # not by a second chart. They ride `daemonPool.enabled` — see the disabled render at the end.

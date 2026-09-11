@@ -307,21 +307,6 @@ daemonPool:
     # which is what keeps a creation still racing the control plane's write out of the candidate
     # set. Empty ⇒ the daemon's own 10-minute default.
     graceMs: ''
-    # The idle-volume half of the same job: suspension gives back an agent sandbox's CPU and
-    # memory, but its claim keeps a provisioned workspace volume for as long as the agent exists,
-    # and only agent removal ever deleted one. This collects the volume of an agent whose sandbox
-    # is suspended, whose sessions have all been released by session retention, and whose claim is
-    # older than the window below. The agent is unaffected — its next turn claims a fresh sandbox
-    # and re-prepares the workspace, at the cost of that one clone.
-    idleVolume:
-      # AC_K8S_IDLE_VOLUME_DELETE. FALSE = dry run, and separately from `delete` above: this half
-      # collects volumes of agents that still exist, so read its own summary lines for an
-      # observation window before flipping it.
-      delete: false
-      # AC_K8S_IDLE_VOLUME_MS. Empty ⇒ the daemon's own 7-day default. The effective idle time is
-      # max(this, the daemon's `sessions.retention`), since a session row survives its own
-      # retention window before the agent can read as session-free.
-      windowMs: ''
     # One short sweep: two list calls, one `agent/exists` read, then exit.
     resources:
       requests:
