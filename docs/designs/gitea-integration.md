@@ -313,12 +313,21 @@ on every pull-request payload and become the head fence.
 A review delivery is lossy in a way the diff-comment trigger has to absorb
 (§16): it carries the summary body and nothing about the inline comments — no
 path, line, hunk, body, or even the review id — so the trigger prompt is built
-by listing the pull request's reviews, selecting the newest authored by
-`sender.id`, and reading `GET /pulls/:index/reviews/:id/comments`. Two reads
-against a shared identity, so the selection is by reviewer and submission time
-rather than by position. The same event type arrives for a summary-only comment
-review, which carries no inline comments at all; that is a valid trigger, not a
-failed lookup. And `requested_reviewer` on a review delivery names the review's
+by listing the pull request's reviews and reading
+`GET /pulls/:index/reviews/:id/comments` for the review the delivery
+describes. Correlation uses what the delivery does carry: a candidate is a
+review whose `user.id` equals `sender.id`, whose `commit_id` equals the
+delivery's `commit_id`, whose `state` matches the event type (`COMMENT`,
+`APPROVED`, or `REQUEST_CHANGES`), and whose `body` equals `review.content`.
+Exactly one candidate is the review. Several — the same person submitting
+twice on one head with identical summaries before the first delivery is
+processed — cannot be told apart by the delivery, and "newest" would pair one
+summary with another review's comments, so the turn reads the inline comments
+of every candidate, labeled by review id; the pull-request batching of §8
+merges the deliveries into one turn anyway. No candidate is a summary-only
+trigger that says so in the prompt, never a failed lookup. The same event type
+arrives for a summary-only comment review, which carries no inline comments
+at all; that too is a valid trigger. And `requested_reviewer` on a review delivery names the review's
 author, not a requested reviewer — only `pull_request_review_request` uses that
 field as its name suggests, so the reviewer-requested trigger must key on the
 event type before reading it.
@@ -481,10 +490,12 @@ line with the start recorded in the comment body's first line. This is a
 declared parity gap, not an approximation hidden from the agent.
 
 Three properties of the reconcile step are confirmed by §16 and constrain it.
-`GET /pulls/:index/reviews` applies no filter of any kind: it returns every
-review row to any caller who can read the pull request, pending rows included,
-which is what lets step 2 see the bot's orphan — and also means a pending
-review is never private on this provider. A pending row is identified by
+`GET /pulls/:index/reviews` shows a pending review to its author and to
+instance administrators only — the query is unfiltered, the response
+conversion at the 1.27.3 tag skips other users' pending rows — which is
+exactly what lets step 2 see the bot's own orphan; the gitea.com development
+build returned every pending row to any reader, and nothing here relies on
+that. A pending row is identified by
 `state: "PENDING"`; there is no separate `pending` flag. The list also contains
 a `state: "REQUEST_REVIEW"` row for each outstanding reviewer request, which is
 not a verdict and must not be read as one. And `DELETE
@@ -728,8 +739,10 @@ review:             {"type": "pull_request_review_comment", "content": "review b
 `action`, `commit_id`, `number`, `pull_request`, `repository`,
 `requested_reviewer`, `review`, and `sender`; no path, line, diff hunk, comment
 body, comment id, or review id appears anywhere in it. A consumer that needs the
-inline content must list the pull request's reviews, select the newest authored
-by `sender.id`, and read `GET /pulls/:index/reviews/:id/comments`, which
+inline content must list the pull request's reviews, correlate on `user.id`,
+`commit_id`, `state`, and `body` against the delivery's `sender.id`,
+`commit_id`, event type, and `review.content` (§8 states the rule and its
+ambiguity fallback), and read `GET /pulls/:index/reviews/:id/comments`, which
 returns `path`, `position`, `diff_hunk`, and `body`. `requested_reviewer` on a
 review delivery is the review's author, not a requested reviewer.
 `review.type` always repeats the event type, and the verdict variants are
@@ -773,10 +786,13 @@ review and for an already-submitted one;
 `routers/api/v1/repo/pull_review.go` authorizes only
 `ctx.Doer.IsAdmin || ctx.Doer.ID == review.ReviewerID` and imposes no
 pending-only restriction. `ListPullReviews` passes
-`FindReviewOptions{IssueID: pr.IssueID}` with no type or reviewer filter and
-`ToPullReview` maps `ReviewTypePending` to `PENDING` unconditionally, so every
-review row including other users' pending ones is returned to any reader, with
-no separate `pending` field. Requesting a reviewer adds a
+`FindReviewOptions{IssueID: pr.IssueID}` with no type or reviewer filter, but
+`services/convert/pull_review.go` at the tag skips a `ReviewTypePending` row
+unless the caller is its author or an instance administrator, so on 1.27.3
+another user's pending review is hidden while the bot's own is visible with
+`state: "PENDING"` and no separate `pending` field. The gitea.com development
+build observed here returned other users' pending rows too; the design relies
+only on the author's own visibility, which both builds provide. Requesting a reviewer adds a
 `state: "REQUEST_REVIEW"` row to the same list. Self-verdicts were refused 422
 with `approve your own pull is not allowed` and `reject your own pull is not
 allowed`; requesting the bot itself was refused 422 with
