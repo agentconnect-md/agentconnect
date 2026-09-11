@@ -231,7 +231,11 @@ membership steps removed:
    binding is `ready`. A binding whose test never arrives is `ready` with a
    `webhook_unverified` warning naming the outbound allowlist, so a blocked
    relay address is visible at install time and not after the first missed
-   pull request.
+   pull request. The relay reports every signature-verified delivery, matched
+   or not, as a body-free `rc/codehost-delivery` event naming the key that
+   verified it; the compiled rules go out before the test is fired, because
+   the relay verifies only what it holds a key for, and a later observation
+   clears the warning on a binding whose test never arrived.
 
 Repair, transfer, and unbind follow §10 and §19.4. Unbind deletes the managed
 webhook by its recorded id and releases the claim; if the token is rejected
@@ -285,7 +289,10 @@ pull-request comment.
 
 **Rotation.** Generate and seal the next key, distribute both to eligible
 relays, `PATCH` the webhook's `config.secret`, observe one verified delivery
-under the next key, promote. Identical to §7.4's receiver-side overlap.
+under the next key, promote. Identical to §7.4's receiver-side overlap. The
+compiled rule carries the successor as `nextSigningKey` beside `signingKey`,
+either verifies at the relay, and its `rc/codehost-delivery` says which one
+did — the `next` answer is what promotes.
 
 **Compiled rule.** The `rc/hook-assign` rule gains a `gitea` member shaped
 like the `gitlab` one: numeric repository id as match key, current path for
@@ -570,6 +577,12 @@ rerun frame with a `gitea` member.
   hosts a compile-time event.
 - The gitcred purpose enum gains `gitea_hook_reply` and `gitea_effect`; the
   membership-authorization request gains the sender username beside the id.
+- The relay reports a signature-verified delivery to the Control Plane as
+  `rc/codehost-delivery` (provider, numeric repository id, delivery key, and
+  which signing key verified it), the observation §6 and §7 wait on. It is
+  fire-and-forget: a dropped report leaves a binding `webhook_unverified`
+  until the next delivery, and a rotation promotes on the next delivery
+  verified under the successor.
 - Hook and relay frames gain a `gitea` optional member beside `github` and
   `gitlab`. The wire keeps one optional member per provider, so an older peer
   keeps decoding today's frames and the new member reaches only a peer that
@@ -639,18 +652,17 @@ is a behavior-neutral refactor of exactly these:
 8. **The deployment-config base-URL lock** becomes per-provider.
 
 G1 fills those tables before the behavior behind them exists, so several entries
-are deliberately inert and each is replaced by the step that gives it work:
+are deliberately inert and each is replaced by the step that gives it work (G2
+replaced the Control Plane's three: the provider module, the hook compile arm,
+and the base-URL lock's state count):
 
-| Entry                                                                    | Replaced by |
-| ------------------------------------------------------------------------ | ----------- |
-| CP provider module: workspace arms decline, hook convergence is a no-op  | G2          |
-| CP hook compile: a `gitea` row never compiles, so the pool holds no rule | G2          |
-| CP `codeHostStateExists('gitea')`: no table exists to count yet          | G2          |
-| Daemon credentials: no helper path grammar, so a request is "not ours"   | G4          |
-| Daemon ack, final poster, effect lease                                   | G4          |
-| Daemon hook admission: no lane, no generation, no batch                  | G4          |
-| Daemon hook normalization: session key and subject label only            | G4          |
-| Console: hook marks and labels are real; pickers do not offer the host   | G6          |
+| Entry                                                                  | Replaced by |
+| ---------------------------------------------------------------------- | ----------- |
+| Daemon credentials: no helper path grammar, so a request is "not ours" | G4          |
+| Daemon ack, final poster, effect lease                                 | G4          |
+| Daemon hook admission: no lane, no generation, no batch                | G4          |
+| Daemon hook normalization: session key and subject label only          | G4          |
+| Console: hook marks and labels are real; pickers do not offer the host | G6          |
 
 The daemon's turn-final `hostFence` is NOT inert: a delivery carrying a Gitea
 member is refused there under `code_host_not_implemented`, so the placeholders
@@ -713,10 +725,13 @@ Each step is one pull request, merged in order.
   an entry in every provider table on all four hosts, so the step also filled
   those (§13). The open-connector blocklist entry moved here from G2 with them:
   it is a one-line default beside the provider vocabulary, not connection state.
-- **G2 — Control Plane connection and bindings.** `GiteaConnection`,
+- **G2 — Control Plane connection and bindings.** _Landed._ `GiteaConnection`,
   `GiteaRepositoryBinding`, secrets, the connect/replace/disconnect routes,
-  the picker, the provisioning saga, webhook install and rotation, and the
-  membership-authorization arm.
+  the picker, the provisioning saga, webhook install and rotation, the
+  membership-authorization arm, the gitcred grants, and the `gitea` hook and
+  grant arms of the existing routes. Because the saga waits on the relay, the
+  step also added the relay's half of that seam: the `rc/codehost-delivery`
+  report and verification under a rule's successor key.
 - **G3 — Relay ingress.** `hooks/gitea/`: signature, event mapping, veto and
   gate table, delivery key, rerun dispatch.
 - **G4 — Daemon credentials, workspace, sessions.** Managed-host entry, helper
