@@ -349,7 +349,7 @@ it('executes conditional MCP writes with trusted scope, approvals and synthetic-
   decision = 'allow'
   await expect(
     executeTool(
-      { ...ctx, memoryBinding: { source: 'distill', scope: { agentId: 'agent' }, maxTopics: 0 } },
+      { ...ctx, memoryBinding: { source: 'distill', scope: { agentId: 'agent' } } },
       'createMemoryEntry',
       { text: 'bypass' },
       deps

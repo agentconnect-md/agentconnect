@@ -103,8 +103,6 @@ export interface DreamExplorationPromptInput {
 /** Same topic discipline as the distiller, enforced on the dream's memory-tool binding. */
 export const DREAM_TOPIC_RE = /^[a-z0-9][a-z0-9-]{0,62}\.md$/
 
-/** Bounded proposal: a store rebuild, not a dump. */
-export const MAX_DREAM_FILES = 64
 /** Skill candidates are REVIEWED BY A HUMAN one by one, so the cap is about
  *  what a person will actually read, not what the model can produce. */
 export const MAX_DREAM_SKILLS = 5

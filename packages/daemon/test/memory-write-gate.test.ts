@@ -301,7 +301,6 @@ describe('a dream-bound session writing its staged store', () => {
       source: 'dream',
       scope: { agentId: 'bot-a', root: { key: 'staged' } as never },
       topicPattern: /^[a-z0-9][a-z0-9-]{0,62}\.md$/,
-      maxTopics: 2,
       ...over
     }
   })
@@ -322,16 +321,14 @@ describe('a dream-bound session writing its staged store', () => {
     expect(d.memory.write).not.toHaveBeenCalled()
   })
 
-  it('caps DISTINCT topics, while letting one topic be rewritten freely', async () => {
+  it('never caps the number of distinct topics — a rebuild must be able to keep every live one', async () => {
     const d = deps('allow')
     const ctx = dreamCtx()
-    await executeTool(ctx, 'writeMemory', { path: 'one.md', content: 'a' }, d)
-    await executeTool(ctx, 'writeMemory', { path: 'one.md', content: 'a2' }, d) // same topic, fine
-    await executeTool(ctx, 'writeMemory', { path: 'two.md', content: 'b' }, d)
-    await expect(executeTool(ctx, 'writeMemory', { path: 'three.md', content: 'c' }, d)).rejects.toThrow(
-      /topic limit reached/
-    )
-    expect((d.memory.write as unknown as WriteCalls).mock.calls).toHaveLength(3)
+    for (let i = 0; i < 200; i++) {
+      await executeTool(ctx, 'writeMemory', { path: `topic-${i}.md`, content: `entry ${i}` }, d)
+    }
+    expect((d.memory.write as unknown as WriteCalls).mock.calls).toHaveLength(200)
+    expect(boundWrittenTopics(ctx)).toHaveLength(200)
   })
 
   it('reports the topics it wrote, which is what the dream stages against', async () => {
@@ -342,7 +339,7 @@ describe('a dream-bound session writing its staged store', () => {
     expect(boundWrittenTopics(ctx)).toEqual(['one.md'])
   })
 
-  it('does not let a REFUSED write vouch for its topic or spend a topic slot', async () => {
+  it('does not let a REFUSED write vouch for its topic', async () => {
     // The store rejects the write (a subdirectory path, an oversized body). The name must
     // not enter the provenance record, or a dream could claim a topic through the tool and
     // then put the actual bytes there with the runtime's own file tool.
@@ -354,7 +351,7 @@ describe('a dream-bound session writing its staged store', () => {
     await expect(executeTool(ctx, 'writeMemory', { path: 'one.md', content: 'x' }, d)).rejects.toThrow()
     expect(boundWrittenTopics(ctx)).toEqual([])
 
-    // ...and the refusal did not consume one of the two allowed topics.
+    // ...and it stays out of the record once later writes succeed.
     await executeTool(ctx, 'writeMemory', { path: 'two.md', content: 'x' }, d)
     await executeTool(ctx, 'writeMemory', { path: 'three.md', content: 'x' }, d)
     expect(boundWrittenTopics(ctx).sort()).toEqual(['three.md', 'two.md'])

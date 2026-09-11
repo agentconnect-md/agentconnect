@@ -102,10 +102,10 @@ Three invariants:
    successful adoption.
 3. **The model proposes; the daemon disposes.** The model's writes reach disk
    only through the daemon's own memory tools, bound to the staged store: the
-   same path validation, topic-name rule, and byte caps a turn gets, plus the
-   dream's own bounded file count. The daemon still performs every filesystem
-   write itself and generates the index. `.history` is never part of the
-   proposal — it is carried over verbatim and appended to.
+   same path validation, topic-name rule, and byte caps a turn gets. The daemon
+   still performs every filesystem write itself and generates the index.
+   `.history` is never part of the proposal — it is carried over verbatim and
+   appended to.
 
 Invariant 3 bounds only what the dream _output_ can do: a bad proposal can
 change only the managed-memory store, and only after staging and validation.
@@ -252,8 +252,9 @@ interface DreamRecord {
    session's `writeMemory`/`readMemory` are bound to `memory-dreams/<dreamId>/`
    as their store, so every topic file went through the same write path a turn
    uses (header normalize + stamp, byte cap, `.history`) — the binding also
-   carries the two limits the old JSON format enforced, the topic regex
-   `^[a-z0-9][a-z0-9-]{0,62}\.md$` and the bounded file count. Staging then
+   carries the topic regex `^[a-z0-9][a-z0-9-]{0,62}\.md$` the old JSON format
+   enforced; a rebuild is never capped on file count, since the live store it
+   must be able to keep in full is not. Staging then
    generates the index from those files' `description` headers, so the index a
    human reviews is byte-for-byte the one adoption installs. Parse the returned
    JSON (§5) for the review queue only — skills and organization suggestions,
