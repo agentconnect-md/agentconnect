@@ -334,6 +334,16 @@ provider; restricted console visibility is not per-agent call isolation.
 Private upstreams are rejected by default. `autoApprove` and per-tool
 granularity are also out of scope.
 
+**Becoming an MCP client to render a third-party server's elicitation is also a
+non-goal — and it is not needed.** §5.1 rejects parsing MCP for the legacy SSE
+`endpoint`; the elicitation case does not even raise the question. A third-party
+server's `elicitation/create` is forwarded by the agent's own harness onto the
+ACP wire, arrives at the daemon on the capability it already declares, and
+routes to the chat card that [#1794](https://github.com/agentconnect-md/agentconnect/issues/1794)
+landed — verified live against both pinned harnesses. See
+[mcp-elicitation.md](mcp-elicitation.md) §5-§6 for the evidence and for what
+remains (per-harness coverage, not a new component).
+
 ## 11. Tests
 
 - Protocol codec: zod round-trips for `mcpserver/*` and `rc/mcp-assign/unassign`.
