@@ -243,6 +243,55 @@ describe('parseBrowserFrame', () => {
     expect(parseBrowserFrame(null, USER)).toBeNull()
     expect(parseBrowserFrame(42, USER)).toBeNull()
   })
+
+  it('stamps an MCP App RPC with the relay’s OWN verified author, never the frame’s claim', () => {
+    // The page asking is agent-authored HTML, so a `ui/message` it sends must be attributed from
+    // the relay's verdict — anything the frame said about who it is has to be dropped.
+    expect(
+      parseBrowserFrame(
+        {
+          type: 'app_rpc',
+          appId: 'app-1',
+          callId: 'c-1',
+          rpc: { method: 'ui/message', text: 'ship it' },
+          user: 'someone-else',
+          userId: 'forged'
+        },
+        USER,
+        'principal-1'
+      )
+    ).toEqual({
+      op: {
+        op: 'app_rpc',
+        appId: 'app-1',
+        callId: 'c-1',
+        rpc: { method: 'ui/message', text: 'ship it' },
+        user: USER,
+        userId: 'principal-1'
+      }
+    })
+  })
+
+  it('refuses an app RPC naming a method this host does not serve, or missing its correlation', () => {
+    // `ui/open-link` is browser-local (webchat-mcp-apps.md §7.3); it must never reach a wire.
+    expect(
+      parseBrowserFrame(
+        { type: 'app_rpc', appId: 'a', callId: 'c', rpc: { method: 'ui/open-link', url: 'https://example.test' } },
+        USER
+      )
+    ).toBeNull()
+    expect(
+      parseBrowserFrame({ type: 'app_rpc', appId: 'a', rpc: { method: 'ui/message', text: 'x' } }, USER)
+    ).toBeNull()
+    expect(parseBrowserFrame({ type: 'app_rpc', appId: 'a', callId: 'c' }, USER)).toBeNull()
+  })
+
+  it('takes a frame close, addressed to the participant that owns the card', () => {
+    expect(parseBrowserFrame({ type: 'app_close', appId: 'app-1', agentId: AGENT.toUpperCase() }, USER)).toEqual({
+      op: { op: 'app_close', appId: 'app-1', agentId: AGENT }
+    })
+    expect(parseBrowserFrame({ type: 'app_close' }, USER)).toBeNull()
+  })
 })
 
 describe('RelayBrowserConnection', () => {

@@ -10,6 +10,7 @@ import { frameSchema } from '../envelope.js'
 import { ErrorFrame } from './error.js'
 import {
   ELICIT_FORM_WIRE_FIELD_CAP,
+  McpAppRpc,
   WebchatDone,
   WebchatImageAttachment,
   WebchatOutput,
@@ -242,6 +243,29 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
         .refine((v) => Object.keys(v).length <= ELICIT_FORM_WIRE_FIELD_CAP),
       z.null()
     ]),
+    agentId: z.string().uuid().optional()
+  }),
+  // One MCP App view's request to the daemon (webchat-mcp-apps.md §5). `callId` is browser-minted
+  // and correlates the `app_rpc_result` event that answers it; `appId` names the live card the
+  // view belongs to, and the daemon resolves BOTH against its own record of that conversation's
+  // cards — the payload names what to do, never what it is allowed to reach.
+  z.object({
+    op: z.literal('app_rpc'),
+    appId: z.string().min(1).max(200),
+    callId: z.string().min(1).max(64),
+    rpc: McpAppRpc,
+    // Stamped by the RELAY from its verified verdict, exactly as a `turn`'s are and for the same
+    // reason: a `ui/message` is delivered as the reader's own post, so its author may not be
+    // something the frame — which is agent-authored HTML — gets to name.
+    user: z.string().optional(),
+    userId: z.string().optional(),
+    agentId: z.string().uuid().optional()
+  }),
+  // The reader closed a frame. Distinct from a turn ending: the card settles as `closed` and its
+  // bridge stops being served, which is the only way a view stops on the reader's say-so.
+  z.object({
+    op: z.literal('app_close'),
+    appId: z.string().min(1).max(200),
     agentId: z.string().uuid().optional()
   }),
   z.object({ op: z.literal('close') })

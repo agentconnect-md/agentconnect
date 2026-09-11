@@ -4,7 +4,7 @@
 import type { AgentIcon } from '@/lib/agent-icon'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol/code-host'
-import type { DaemonLifecyclePhase } from '@agentconnect.md/protocol'
+import type { DaemonLifecyclePhase, McpAppCsp, McpAppDimensions, McpAppOutcome } from '@agentconnect.md/protocol'
 import type {
   DaemonSessionRetention,
   ManagedMemoryHome,
@@ -285,7 +285,7 @@ export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime' | 'placeme
 // `plan` is REASONING, for historical reasons — the ACP task list is `planblock`, which is
 // not a work lane at all. Renaming `plan` to `think` would be the honest fix; it is left
 // alone here so this change stays about the task list.
-export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice' | 'planblock' | 'elicit'
+export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice' | 'planblock' | 'elicit' | 'app'
 
 export interface LaneInfo {
   lane: string
@@ -359,6 +359,18 @@ const LANE_MAP: Record<LaneKind, LaneInfo> = {
   // paints its own surface.
   elicit: {
     lane: 'ELICIT',
+    laneColor: 'var(--text-tertiary)',
+    dot: 'var(--text-disabled)',
+    weight: 400,
+    textColor: 'var(--text-primary)',
+    codeColor: 'var(--text-secondary)'
+  },
+  // An MCP App's interface (webchat-mcp-apps.md). Like `elicit` and for the same reason, NOT a
+  // work lane: it is a surface handed to the reader, so it stands in the conversation rather than
+  // collapsing into "Thought through N steps". The row colors are unused — McpAppCard paints its
+  // own chrome around a frame that paints itself.
+  app: {
+    lane: 'APP',
     laneColor: 'var(--text-tertiary)',
     dot: 'var(--text-disabled)',
     weight: 400,
@@ -1217,12 +1229,34 @@ export interface SessionStep {
      *  accepted content, which is already in the agent's own context. */
     answerLabel?: string
   }
+  /** An MCP App's interface — present only on an `app` step. `outcome` is absent while the frame
+   *  is live and its bridge is served, and set once the daemon settles the card (the reader
+   *  closed it, a newer card superseded it, or the session ended), which is what renders the
+   *  frame inert in place. */
+  app?: {
+    appId: string
+    title: string
+    toolName: string
+    /** The template, present only on a LIVE card. A persisted row carries none: see McpAppBody. */
+    html?: string
+    toolInput?: Record<string, unknown>
+    toolResult?: { content?: unknown[]; structuredContent?: Record<string, unknown>; isError?: boolean }
+    csp?: McpAppCsp
+    dimensions?: McpAppDimensions
+    outcome?: McpAppOutcome
+  }
 }
 
 /** The agent's structured question as the transcript PERSISTS it (protocol `ElicitBody`): the
  *  card plus how it ended, carried as a JSON string in an `elicit` row's `body`. Deliberately the
  *  same type a live step carries, so one component renders the live card and the recorded one. */
 export type ElicitBody = NonNullable<SessionStep['elicit']>
+
+/** An MCP App card as the transcript PERSISTS it. The live step's own shape minus the template:
+ *  a recorded app is the record of a decision, not a page to re-run against a session that no
+ *  longer exists (webchat-mcp-apps.md §8), so history shows the header and the final result and
+ *  never re-arms the frame. */
+export type McpAppBody = Omit<NonNullable<SessionStep['app']>, 'html'>
 
 // Per-session token accounting (protocol `SessionUsage`), metered by the daemon.
 // Token counts are session-cumulative; context/cost are the latest snapshot.

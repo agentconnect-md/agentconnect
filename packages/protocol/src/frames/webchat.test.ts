@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { ELICIT_FORM_WIRE_FIELD_CAP, WebchatOutput, WebchatStatus } from '../index.js'
+import {
+  ELICIT_FORM_WIRE_FIELD_CAP,
+  MCP_APP_CONTEXT_MAX_CHARS,
+  MCP_APP_HTML_MAX_BYTES,
+  McpAppRpc,
+  WebchatOutput,
+  WebchatStatus
+} from '../index.js'
 
 const CONV = '11111111-1111-4111-8111-111111111111'
 const TURN = '22222222-2222-4222-8222-222222222222'
@@ -278,5 +285,93 @@ describe('WebchatOutput — event / status framing', () => {
     expect(r.success).toBe(true)
     if (r.success) expect(r.data.models).toEqual(['a', 'b'])
     if (r.success) expect(r.data.permissionModes).toEqual(['default', 'plan'])
+  })
+})
+
+describe('McpAppCard — the MCP Apps wire (webchat-mcp-apps.md §5)', () => {
+  const card = {
+    kind: 'app',
+    appId: 'app-1',
+    title: 'Deploy target',
+    toolName: 'charts__pick_target',
+    html: '<div>hi</div>'
+  }
+
+  it('accepts a minimal app event and one carrying the declared CSP + dimensions', () => {
+    expect(WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 0, event: card }).success).toBe(true)
+    const rich = WebchatOutput.safeParse({
+      conversationId: CONV,
+      turnId: TURN,
+      index: 1,
+      event: {
+        ...card,
+        toolInput: { env: 'prod' },
+        toolResult: { structuredContent: { targets: ['a'] } },
+        csp: { connect: ['https://api.example.test'], resource: ['cdn.example.test'] },
+        dimensions: { height: 400, flexibleHeight: true }
+      }
+    })
+    expect(rich.success).toBe(true)
+  })
+
+  it('refuses a template past the wire guard, and an app event with no template at all', () => {
+    const oversized = { ...card, html: 'x'.repeat(MCP_APP_HTML_MAX_BYTES + 1) }
+    expect(WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 0, event: oversized }).success).toBe(
+      false
+    )
+    const { html: _html, ...noTemplate } = card
+    expect(WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 0, event: noTemplate }).success).toBe(
+      false
+    )
+  })
+
+  it('settles a card by appId, and refuses an outcome it has no verdict for', () => {
+    const settled = { kind: 'app_resolved', appId: 'app-1', outcome: 'superseded' }
+    expect(WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 2, event: settled }).success).toBe(true)
+    expect(
+      WebchatOutput.safeParse({
+        conversationId: CONV,
+        turnId: TURN,
+        index: 3,
+        event: { ...settled, outcome: 'accepted' }
+      }).success
+    ).toBe(false)
+  })
+
+  it('carries a view RPC verdict back, correlated by the browser-minted callId', () => {
+    const ok = { kind: 'app_rpc_result', appId: 'app-1', callId: 'c1', outcome: { ok: true, result: {} } }
+    const refused = { kind: 'app_rpc_result', appId: 'app-1', callId: 'c1', outcome: { ok: false, error: 'nope' } }
+    for (const event of [ok, refused]) {
+      expect(WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 4, event }).success).toBe(true)
+    }
+    // An outcome that is neither shape is not a partial answer the browser could act on.
+    expect(
+      WebchatOutput.safeParse({
+        conversationId: CONV,
+        turnId: TURN,
+        index: 5,
+        event: { kind: 'app_rpc_result', appId: 'a', callId: 'c', outcome: { ok: true, error: 'both' } }
+      }).success
+    ).toBe(false)
+  })
+})
+
+describe('McpAppRpc — the four host methods a view may reach the daemon with', () => {
+  it('accepts each method in its own shape', () => {
+    expect(McpAppRpc.safeParse({ method: 'tools/call', name: 'charts__render' }).success).toBe(true)
+    expect(McpAppRpc.safeParse({ method: 'resources/read', uri: 'ui://charts/tpl' }).success).toBe(true)
+    expect(McpAppRpc.safeParse({ method: 'ui/message', text: 'ship it' }).success).toBe(true)
+    expect(McpAppRpc.safeParse({ method: 'ui/update-model-context', context: 'picked prod' }).success).toBe(true)
+  })
+
+  it('refuses a method this host does not serve, and a served one with the wrong params', () => {
+    // Browser-local by design (webchat-mcp-apps.md §7.3) — it must never reach a wire.
+    expect(McpAppRpc.safeParse({ method: 'ui/open-link', url: 'https://example.test' }).success).toBe(false)
+    expect(McpAppRpc.safeParse({ method: 'tools/call' }).success).toBe(false)
+    expect(McpAppRpc.safeParse({ method: 'ui/message', text: '' }).success).toBe(false)
+    expect(
+      McpAppRpc.safeParse({ method: 'ui/update-model-context', context: 'x'.repeat(MCP_APP_CONTEXT_MAX_CHARS + 1) })
+        .success
+    ).toBe(false)
   })
 })

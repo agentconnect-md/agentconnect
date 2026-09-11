@@ -48,6 +48,7 @@ the picture it draws.
 - [webchat-side-panels.md](designs/webchat-side-panels.md) — The session-detail right dock.
 - [webchat-cross-integration-continuation.md](designs/webchat-cross-integration-continuation.md) — Continuing other integrations' sessions from webchat.
 - [webchat-preset-agentconnect-mcp.md](designs/webchat-preset-agentconnect-mcp.md) — The preset AgentConnect MCP for webchat sessions.
+- [webchat-mcp-apps.md](designs/webchat-mcp-apps.md) — MCP Apps (`ui://`) rendered in a sandboxed console frame; webchat-only by construction.
 - [merged-conversation-view.md](designs/merged-conversation-view.md) — One merged transcript across a conversation's sessions.
 - [icon-uploads.md](designs/icon-uploads.md) — Agent and organization icon upload, storage, and serving.
 

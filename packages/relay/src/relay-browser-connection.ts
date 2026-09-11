@@ -215,6 +215,34 @@ export function parseBrowserFrame(
       })
       return parsed.success ? { op: parsed.data } : null
     }
+    case 'app_rpc': {
+      // One MCP App view's request. Only the four host methods the daemon serves reach a wire
+      // (webchat-mcp-apps.md §7.3) — the rest of the extension's view→host surface is answered
+      // in the browser — and the union below is what admits them. The author is stamped from the
+      // relay's OWN verified verdict, never from the frame: the page asking is agent-authored.
+      if (typeof m.appId !== 'string' || typeof m.callId !== 'string') return null
+      if (m.agentId !== undefined && !(typeof m.agentId === 'string' && UUID_RE.test(m.agentId))) return null
+      const parsed = RelayWebchatOp.safeParse({
+        op: 'app_rpc',
+        appId: m.appId,
+        callId: m.callId,
+        rpc: m.rpc,
+        user,
+        ...(userId ? { userId } : {}),
+        ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {})
+      })
+      return parsed.success ? { op: parsed.data } : null
+    }
+    case 'app_close': {
+      if (typeof m.appId !== 'string') return null
+      if (m.agentId !== undefined && !(typeof m.agentId === 'string' && UUID_RE.test(m.agentId))) return null
+      const parsed = RelayWebchatOp.safeParse({
+        op: 'app_close',
+        appId: m.appId,
+        ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {})
+      })
+      return parsed.success ? { op: parsed.data } : null
+    }
     default:
       return null
   }
@@ -324,11 +352,16 @@ export class RelayBrowserConnection implements ChatSink {
       for (const p of this.byAgentId.values()) void this.sendToParticipant(p.agentId, { op: 'cancel' }, 'cancel')
       return
     }
-    // Single-daemon ops: resume/attach/cancel/elicitation_choice go to the named
+    // Single-daemon ops: resume/attach/cancel/elicitation_choice/app_* go to the named
     // participant, everything else (set_*) to the primary — multi-agent conversations
     // expose no runtime override (webchat-multi-agents.md §9.3), so set_* is single-agent.
     const targetAgent =
-      op.op === 'resume' || op.op === 'attach' || op.op === 'cancel' || op.op === 'elicitation_choice'
+      op.op === 'resume' ||
+      op.op === 'attach' ||
+      op.op === 'cancel' ||
+      op.op === 'elicitation_choice' ||
+      op.op === 'app_rpc' ||
+      op.op === 'app_close'
         ? (op.agentId ?? this.deps.agentId)
         : this.deps.agentId
     await this.sendToParticipant(targetAgent, op, op.op)

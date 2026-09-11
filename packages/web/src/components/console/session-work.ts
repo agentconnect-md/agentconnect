@@ -22,6 +22,11 @@ export const PLAN_LANE = 'PLAN_BLOCK'
  *  of collapsing behind the work toggle where nobody would see it in time to answer. */
 export const ELICIT_LANE = 'ELICIT'
 
+/** An MCP App's interface (webchat-mcp-apps.md). NOT a work lane either, and for the same reason
+ *  as ELICIT: it is a surface handed to the reader, so collapsing it behind the work toggle would
+ *  hide the one thing in the turn they are meant to touch. */
+export const APP_LANE = 'APP'
+
 export type PlanEntry = PlanBody['entries'][number]
 
 /** The plan block's one-line label. Computed from the entries wherever they are present —

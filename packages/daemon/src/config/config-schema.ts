@@ -56,7 +56,14 @@ export const McpServerDefSchema = z
     readRoots: z.array(z.string()).optional(),
     // http/sse transports: the server endpoint (required for http/sse).
     url: z.string().optional(),
-    headers: NameValueList
+    headers: NameValueList,
+    // MCP Apps (webchat-mcp-apps.md §4): this server is hosted by the DAEMON rather than attached
+    // to the runtime, so the daemon can advertise the `io.modelcontextprotocol/ui` extension, read
+    // the server's `ui://` templates, and render them in webchat. Opt-in rather than probed on
+    // purpose: hosting a server daemon-side moves who holds its transport credentials, which is an
+    // operator's decision. `resolveAgentMcpServers` skips one, or its tools would be callable on
+    // two paths with only one of them rendering.
+    ui: z.boolean().optional()
   })
   .superRefine((def, ctx) => {
     if (def.transport === 'stdio' && !def.command)
