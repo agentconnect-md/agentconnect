@@ -84,7 +84,8 @@ export async function microsandboxSkillTarget(shim: MicrosandboxShim, cwd: strin
         request: (capability, request, options) => shim.session.request(capability, { cwd, request }, options)
       },
       shim.session.hasCapability('skills-wide'),
-      true
+      true,
+      shim.session.hasCapability('skills-receipts')
     )
   }
 }
@@ -229,7 +230,7 @@ export async function startMicrosandboxShim(input: {
           subject,
           sandboxUid: sandbox.id,
           generation,
-          grants: ['read', 'skills', 'skills-wide'],
+          grants: ['read', 'skills', 'skills-wide', 'skills-receipts'],
           podName: subject
         },
         TIMEOUT_MS

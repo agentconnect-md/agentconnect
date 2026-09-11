@@ -1,0 +1,3 @@
+export const MAX_SKILL_BUNDLES = 64
+export const MAX_SKILL_RECEIPT_FILES = 64
+export const MAX_SKILL_PATH_BYTES = 1024

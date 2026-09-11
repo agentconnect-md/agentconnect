@@ -27,7 +27,7 @@ export const SHIM_WORKSPACE_ROOT_ENV = 'AC_SHIM_WORKSPACE_ROOT'
 export const DEFAULT_SHIM_WORKSPACE_ROOT = '/agent'
 
 /** `cluster-skills-v2` admits the widened skill manifest; a v1-only shim still gets the narrow one. */
-export const ShimFeatureSchema = z.enum(['cluster-skills-v1', 'cluster-skills-v2'])
+export const ShimFeatureSchema = z.enum(['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>
 
 /** Operations the daemon may ask a bound shim to perform. Every one is authorized
@@ -54,6 +54,8 @@ export const ShimCapabilitySchema = z.enum([
   'skills',
   /** The same channel at the widened manifest limits — all the daemon learns from `cluster-skills-v2`. */
   'skills-wide',
+  // Bounded paging of prior and installed skill receipts.
+  'skills-receipts',
   /** Report which runtimes this image actually provides, by asking them. The daemon cannot learn
    *  this any other way: `--k8s` runs no local runtime, and anything it states from its own
    *  configuration is a claim about an image it never opened. */
@@ -65,7 +67,8 @@ export type ShimCapability = z.infer<typeof ShimCapabilitySchema>
 export const ShimDialHelloSchema = z.object({
   type: z.literal('shim/hello'),
   agentId: z.string().min(1),
-  generation: z.number().int().nonnegative()
+  generation: z.number().int().nonnegative(),
+  supportedFeatures: z.array(z.string().min(1).max(80)).max(16).optional()
 })
 
 /** The shim answers the dialer's hello by proving which pod accepted it. */

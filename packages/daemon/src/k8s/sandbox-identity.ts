@@ -106,7 +106,8 @@ export const RUNTIME_GRANTS: ShimCapability[] = [
   'tunnel',
   'automerge',
   'skills',
-  'skills-wide'
+  'skills-wide',
+  'skills-receipts'
 ]
 
 /** A probe sandbox asks the image what it provides and then RUNS those runtimes to read the

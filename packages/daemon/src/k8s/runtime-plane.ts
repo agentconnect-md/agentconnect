@@ -471,7 +471,12 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     skillClientFor: (subject) => {
       const session = boundSession(subject)
       if (!session?.hasCapability('skills')) return undefined
-      return new ClusterSkillClient(session, session.hasCapability('skills-wide'))
+      return new ClusterSkillClient(
+        session,
+        session.hasCapability('skills-wide'),
+        false,
+        session.hasCapability('skills-receipts')
+      )
     },
     workspaceIncarnationFor: (subject) => driver.currentLaunch(subject)?.claimUid,
     shimGenerationFor: (subject) => driver.currentLaunch(subject)?.generation,

@@ -570,21 +570,17 @@ export class DutyCoordinator {
     await this.onDutyChanged()
   }
 
-  /** Claim one agent's duty because a trigger for it arrived here. A win is
-   *  installed exactly like a `duty/grant`, so the same converge path runs.
-   *  Refuses without asking the CP when this member must not take new work:
-   *  capacity is the member's own call (design D14), and a drain in progress
-   *  would either hand the fresh lease straight back or pin it to an agent whose
-   *  gate is about to drop the very turn that triggered the claim.
-   *
-   *  Both gates are checked AFTER the round trip, not instead of it. Refusing to
-   *  ask would suppress the very answer that makes a stale delivery routable —
-   *  the incumbent's identity — turning a re-routable trigger into a drop. So a
-   *  full or draining member still asks, and hands back anything it wins. */
-  async claimDutyForTrigger(agentId: string): Promise<{ granted: boolean; holder?: string }> {
-    // A drain that has already begun is the one case worth short-circuiting: it
-    // cannot be resolved by learning a holder, because this member is leaving.
-    if (this.host.dutyClaimsSuspended() || this.host.drainingAgents().has(agentId)) {
+  /** Claim, install and project duty before a trigger or admitted lifecycle operation can run. */
+  async claimDutyForTrigger(
+    agentId: string,
+    isLifecycleCurrent?: () => boolean
+  ): Promise<{ granted: boolean; holder?: string }> {
+    // An explicit lifecycle admission can claim behind its own drain gate, while its operation remains current.
+    const blocked = () =>
+      this.host.dutyClaimsSuspended() ||
+      this.host.draining() ||
+      (isLifecycleCurrent ? !isLifecycleCurrent() : this.host.drainingAgents().has(agentId))
+    if (blocked()) {
       this.log.debug(`duty: not claiming ${agentId} while draining`)
       return { granted: false }
     }
@@ -606,8 +602,7 @@ export class DutyCoordinator {
       // The group we were actually given may cover several agents, so capacity
       // is judged against it — never against the single agent we asked about.
       const arriving = grant.members.filter((m) => m.kind === 'agent' && !this.duties.holdsAgent(m.refId)).length
-      const draining =
-        this.host.dutyClaimsSuspended() || this.host.draining() || this.host.drainingAgents().has(agentId)
+      const draining = blocked()
       if (draining || arriving > this.dutyHeadroomForPendingClaim()) {
         const why = draining ? 'a drain started while the claim was in flight' : 'it does not fit remaining capacity'
         this.log.info(`duty: handing ${grant.groupId} straight back — ${why}`)

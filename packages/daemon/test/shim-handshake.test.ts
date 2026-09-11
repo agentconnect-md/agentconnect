@@ -214,12 +214,21 @@ describe('shim feature negotiation', () => {
       })
       const connection = await runVirtual(
         clock,
-        dialer.connect(SCRIPTED_ENDPOINT, record({ grants: ['skills', 'skills-wide'] as never }), 500)
+        dialer.connect(
+          SCRIPTED_ENDPOINT,
+          record({ grants: ['skills', 'skills-wide', 'skills-receipts'] as never }),
+          500
+        )
       )
       return connection.binding.grants
     }
     expect(await grantsFor(['cluster-skills-v1'])).toEqual(['skills'])
     expect(await grantsFor(['cluster-skills-v1', 'cluster-skills-v2'])).toEqual(['skills', 'skills-wide'])
+    expect(await grantsFor(['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'])).toEqual([
+      'skills',
+      'skills-wide',
+      'skills-receipts'
+    ])
   })
 })
 
@@ -315,7 +324,12 @@ describe('shim handshake', () => {
     expect(connection.binding.grants).toEqual(['materialize'])
     expect(connection.issuedCredential).toMatch(/^[\w-]{20,}$/)
     // The daemon announced the launch it expects to bind before the pod proved anything.
-    expect(peers[0]!.received[0]).toEqual({ type: 'shim/hello', agentId: 'agent-a', generation: 3 })
+    expect(peers[0]!.received[0]).toEqual({
+      type: 'shim/hello',
+      agentId: 'agent-a',
+      generation: 3,
+      supportedFeatures: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3']
+    })
     // The audience is what makes handing over the pod's own token safe: a token minted
     // for anything else must not authenticate here.
     expect(review.reviewToken).toHaveBeenCalledWith('projected-token', [SHIM_TOKEN_AUDIENCE])

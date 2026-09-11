@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ClusterSkillReconcileAuthority, ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 import type { ClusterSkillClient } from '../shim/skill-client.js'
-import { ClusterSkillReconcileReplySchema, type ClusterSkillFile } from '../shim/skill-protocol.js'
+import { ClusterSkillReconcileResultSchema, type ClusterSkillFile } from '../shim/skill-protocol.js'
 import { inspectLocalSkillSource, type SkillSourceSnapshotLimits } from './skill-source-snapshot.js'
 
 export interface ClusterSkillSnapshotSource {
@@ -115,7 +115,7 @@ export class ClusterSkillCoordinator {
     if (!(await this.store.authorizeClusterSkillMutation({ ...authority, priorRevision: begun.priorRevision }))) {
       throw new Error('cluster skill reconciliation lost duty authority')
     }
-    const reply = ClusterSkillReconcileReplySchema.parse(
+    const reply = ClusterSkillReconcileResultSchema.parse(
       await input.client.reconcile({
         operationId: authority.operationId,
         handle,

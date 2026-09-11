@@ -181,6 +181,7 @@ function make(
     workspaceRepoId?: bigint
     sourceDetachStarted?: () => void
     waitSourceDetach?: Promise<void>
+    recomputeDuties?: (orgId: string) => Promise<void>
     /** Which set each daemon belongs to (absent daemon ⇒ no set) + each set's members. */
     sets?: { setIdOf: Record<string, string>; members: Record<string, string[]> }
     /** Daemon ids the liveness fake reports READY; others read as disconnected. */
@@ -374,6 +375,7 @@ function make(
     httpBot: { syncBot: async () => void calls.push('http') } as unknown as HttpBotOrchestrator,
     collabRoutes: { broadcast: async () => void calls.push('collab') } as unknown as CollabRoutesService,
     mutations,
+    recomputeDuties: opts.recomputeDuties,
     sessionOwners: { releaseSession: (key) => void releasedLive.push(key as typeof SESSION_KEY) },
     ...(opts.sets
       ? {
@@ -739,6 +741,33 @@ describe('AgentMoveService', () => {
 
     expect(t.activations).toHaveLength(1)
     expect(t.activations[0]?.moveId).toBe(t.detaches[0]?.moveId)
+    expect(t.activations[0]?.unstageOnly).toBe(true)
+  })
+
+  it('waits for duty eligibility after target staging and before activation', async () => {
+    let markStarted!: () => void
+    let release!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const resume = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const t = make({
+      recomputeDuties: async (orgId) => {
+        expect(orgId).toBe(ORG)
+        markStarted()
+        await resume
+      }
+    })
+    const pending = t.service.move(t.current(), onDaemon(TARGET))
+    await started
+    expect(t.current().daemonId).toBe(TARGET)
+    expect(t.calls).toContain(`detach:${TARGET}`)
+    expect(t.activations).toEqual([])
+    release()
+    await pending
+    expect(t.calls).toContain(`activate:${TARGET}`)
   })
 
   it('reconnect recovery releases a reported stale fence for an eligible member that serves nothing', async () => {

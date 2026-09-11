@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { constants, promises as fsp, type Stats } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { TextDecoder } from 'node:util'
+import { MAX_SKILL_PATH_BYTES, MAX_SKILL_RECEIPT_FILES } from './skill-limits.js'
 
 export interface SkillSourceSnapshotLimits {
   maxFiles: number
@@ -14,12 +15,12 @@ export interface SkillSourceSnapshotLimits {
 }
 
 export const DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS: Readonly<SkillSourceSnapshotLimits> = {
-  maxFiles: 64,
+  maxFiles: MAX_SKILL_RECEIPT_FILES,
   maxTotalBytes: 4 * 1024 * 1024,
   maxFileBytes: 512 * 1024,
   maxEntries: 256,
   maxDepth: 32,
-  maxPathBytes: 1024
+  maxPathBytes: MAX_SKILL_PATH_BYTES
 }
 
 /** A Git source is a whole collection repo — skills plus docs, tests and tooling — not one bundle. */
@@ -29,7 +30,7 @@ export const GIT_SKILL_SOURCE_SNAPSHOT_LIMITS: Readonly<SkillSourceSnapshotLimit
   maxFileBytes: 16 * 1024 * 1024,
   maxEntries: 65_536,
   maxDepth: 64,
-  maxPathBytes: 1024
+  maxPathBytes: MAX_SKILL_PATH_BYTES
 }
 
 export interface SkillSourceSnapshotOptions {

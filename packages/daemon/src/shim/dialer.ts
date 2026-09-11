@@ -13,6 +13,7 @@ import {
   SHIM_TOKEN_AUDIENCE,
   SHIM_WS_PATH,
   parseShimFrame,
+  ShimFeatureSchema,
   type ShimFrame,
   type ShimIdentity,
   type ShimRejected
@@ -389,7 +390,8 @@ export class ShimDialer {
         JSON.stringify({
           type: 'shim/hello',
           agentId: record.agentId,
-          generation: record.generation
+          generation: record.generation,
+          supportedFeatures: ShimFeatureSchema.options
         } satisfies Extract<ShimFrame, { type: 'shim/hello' }>)
       )
     })
@@ -426,10 +428,17 @@ export class ShimDialer {
   private negotiate(record: SpawnRecord, identity: ShimIdentity): SpawnRecord {
     const supportsSkills = identity.features?.includes('cluster-skills-v1') === true
     const supportsWideSkills = supportsSkills && identity.features?.includes('cluster-skills-v2') === true
+    const supportsReceipts = supportsWideSkills && identity.features?.includes('cluster-skills-v3') === true
     return {
       ...record,
       grants: record.grants.filter((grant) =>
-        grant === 'skills' ? supportsSkills : grant === 'skills-wide' ? supportsWideSkills : true
+        grant === 'skills'
+          ? supportsSkills
+          : grant === 'skills-wide'
+            ? supportsWideSkills
+            : grant === 'skills-receipts'
+              ? supportsReceipts
+              : true
       )
     }
   }

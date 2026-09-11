@@ -1309,6 +1309,7 @@ export class Daemon {
    *  distinct reservation because they do not necessarily delete CP authority,
    *  but an older launch/activate must still be unable to reopen the gate. */
   private pendingAgentDrains = new Map<string, { count: number; preexisting: boolean; preserve: boolean }>()
+  private agentDrainVersions = new Map<string, number>()
   // dispatchOne leases close the pre-pending gap: a turn captures its platform
   // connection before sessions.handle() returns and before it appears in `pending`.
   // Agent detach waits these leases before archiving/closing the last connection.
@@ -17465,6 +17466,7 @@ export class Daemon {
   }
 
   private reserveAgentRemoval(agentId: string): { release: () => boolean; markerError?: Error } {
+    this.agentDrainVersions.set(agentId, (this.agentDrainVersions.get(agentId) ?? 0) + 1)
     // Publish the live fail-closed boundary before the durable write. A local
     // filesystem failure must leave the old replica dark in this process.
     this.drainingAgents.add(agentId)
@@ -17537,6 +17539,7 @@ export class Daemon {
    *  rolls back a gate introduced solely by reservations whose operations all
    *  ended without establishing a destructive state. */
   private reserveAgentDrain(agentId: string): (preserveGate: boolean) => void {
+    this.agentDrainVersions.set(agentId, (this.agentDrainVersions.get(agentId) ?? 0) + 1)
     let reservation = this.pendingAgentDrains.get(agentId)
     if (!reservation) {
       reservation = { count: 0, preexisting: this.drainingAgents.has(agentId), preserve: false }
@@ -17630,7 +17633,8 @@ export class Daemon {
     kind: 'detach' | 'activate',
     agentId: string,
     moveId: string,
-    work: () => Promise<Ack>
+    work: () => Promise<Ack>,
+    admit?: () => Promise<Ack | undefined>
   ): Promise<Ack> {
     const key = `${kind}:${agentId}:${moveId}`
     const duplicate = this.agentMoveInFlight.get(key)
@@ -17639,11 +17643,14 @@ export class Daemon {
     // Detach admission must close the gate before the lifecycle body queues,
     // but duplicate retransmits join the exact same promise/reservation.
     const releaseDrain = kind === 'detach' ? this.reserveAgentDrain(agentId) : undefined
-    const lifecycle = this.queueAgentLifecycle(
-      agentId,
-      work,
-      kind === 'detach' ? { failureOwner: `detach:${moveId}` } : {}
-    )
+    const queue = () =>
+      this.queueAgentLifecycle(agentId, work, kind === 'detach' ? { failureOwner: `detach:${moveId}` } : {})
+    // Admission may install duty bundles through the lifecycle queue; duplicate moves still share its result.
+    const lifecycle = admit
+      ? Promise.resolve()
+          .then(admit)
+          .then((ack) => ack ?? queue())
+      : queue()
     const run = releaseDrain
       ? lifecycle.then(
           (ack) => {
@@ -18111,6 +18118,7 @@ export class Daemon {
       reserveAgentDrain: (agentId) => this.reserveAgentDrain(agentId),
       agentRemovalPending: (agentId) => this.agentRemovalPending(agentId),
       agentDestructivePending: (agentId) => this.agentDestructivePending(agentId),
+      agentDrainVersion: (agentId) => this.agentDrainVersions.get(agentId) ?? 0,
       clearRemovalAfterDestruction: (agentId) => this.clearRemovalAfterDestruction(agentId),
       clearRemovalForReadd: (agentId) => this.clearRemovalForReadd(agentId),
       queueAgentLifecycle: <T>(
@@ -18118,7 +18126,7 @@ export class Daemon {
         work: () => Promise<T>,
         opts?: { failureOwner?: string; onSettled?: () => void }
       ): Promise<T> => this.queueAgentLifecycle(agentId, work, opts),
-      queueAgentMove: (kind, agentId, moveId, work) => this.queueAgentMove(kind, agentId, moveId, work),
+      queueAgentMove: (kind, agentId, moveId, work, admit) => this.queueAgentMove(kind, agentId, moveId, work, admit),
       agents: () => this.agents,
       workspaces: () => this.workspaces,
       runtimes: () => this.runtimes,
@@ -18142,6 +18150,7 @@ export class Daemon {
       ): Promise<T> => this.enqueueAgentWorkspacePreparation(agent, operation, expectedWarmHost, allowAgentDrain),
       activationCapabilityError: (agent) => this.activationCapabilityError(agent),
       servesAgent: (agentId) => this.servesAgent(agentId),
+      claimAgentDuty: (agentId, isCurrent) => this.dutyCoordinator.claimDutyForTrigger(agentId, isCurrent),
       closeUnusedPlatformConnections: () => this.connections.closeUnusedPlatformConnections(),
       applyDutyGrant: (grants) => this.dutyCoordinator.applyDutyGrant(grants),
       applyDutyRevoke: (revocations) => this.dutyCoordinator.applyDutyRevoke(revocations),
