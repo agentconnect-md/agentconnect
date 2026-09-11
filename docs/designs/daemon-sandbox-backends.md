@@ -401,6 +401,27 @@ API records for providers configured only inside the guest retain their native l
 behavior on resume; they are not host-managed proxy credentials. Blank or malformed
 API keys are not selected for protection and do not prevent preparing other records.
 
+pi uses the same proxy for file-based `type: api_key` records in `auth.json` and
+provider `apiKey` fields in `models.json`, honoring `PI_CODING_AGENT_DIR`. Its
+shared state descriptors now discover and seed `models.json` for both SRT and
+microsandbox. The VM receives projected auth, model and settings files; matching
+key values and Bearer headers are replaced, and host files remain unchanged.
+Providers sharing a literal key share a placeholder and their authorized hosts.
+Routing uses the host's JSONC `models.json` provider and model `baseUrl` values,
+with audited defaults for Anthropic, OpenAI, DeepSeek, Google, xAI, OpenRouter,
+Groq and Mistral. Guest model edits cannot authorize additional destinations.
+
+This pi path supports literal API keys. Command-based keys, interpolation and
+structured provider `env` credentials are replaced by inert placeholders without
+executing helpers or importing their secret values. Unknown providers and
+unsupported endpoints also retain placeholders without proxy injection; their
+keys are never mounted as a fallback. Extra secrets stored only in arbitrary
+headers or extensions are not discovered by this path. Symlinked host files are
+skipped, matching native HOME seeding. OAuth records and guest-only logins retain
+their existing behavior, including refreshed private OAuth state on resume.
+Pure OAuth launches do not enable secret injection. SRT authentication and tool
+policies are unchanged; it imports the native files without this VM proxy.
+
 When a DeepSeek key is available, the daemon projects the credential seed files
 with that ref replaced by the placeholder; other provider refs, OAuth records and
 existing private logins are preserved. Without a DeepSeek key, normal seeding is

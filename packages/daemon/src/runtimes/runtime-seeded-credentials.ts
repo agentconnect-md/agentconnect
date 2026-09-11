@@ -14,6 +14,7 @@ export interface SeededCredentialFile {
   format:
     | 'grok'
     | 'pi'
+    | 'pi-models'
     | 'opencode'
     | 'oauth'
     | 'claude-oauth'
@@ -142,8 +143,16 @@ function credentialsInFile(text: string, file: SeededCredentialFile): { present:
   }
   const json = text.replace(/^\uFEFF/, '')
   const data: unknown = JSON.parse(
-    file.format === 'copilot' || file.format === 'qwen-settings' ? stripJsonComments(json) : json
+    file.format === 'copilot' || file.format === 'qwen-settings' || file.format === 'pi-models'
+      ? stripJsonComments(json, { trailingCommas: file.format === 'pi-models' })
+      : json
   )
+  if (file.format === 'pi-models') {
+    const providers = Object.entries(record(record(data)?.providers) ?? {}).flatMap(([provider, value]) =>
+      provider && nonempty(record(value)?.apiKey) ? [provider] : []
+    )
+    return { present: providers.length > 0, providers }
+  }
   if (file.format === 'copilot') {
     const present = Object.entries(record(record(data)?.copilotTokens) ?? {}).some(
       ([account, token]) => nonempty(account) && nonempty(token)

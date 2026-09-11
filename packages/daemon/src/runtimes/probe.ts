@@ -246,8 +246,7 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
     ...state(join(home(env), '.opencode'), '.opencode')
   ],
 
-  // pi (svkozak pi-acp npx adapter) — auth/settings live below the agent dir;
-  // sessions, downloaded binaries, and adapter state must remain agent-private.
+  // pi imports auth/model configuration; sessions, binaries and adapter state remain agent-private.
   'pi-acp': (env) => [
     ...state(
       join(env.PI_CODING_AGENT_DIR || join(home(env), '.pi', 'agent'), 'auth.json'),
@@ -255,6 +254,13 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
       undefined,
       undefined,
       [{ path: '', format: 'pi' }]
+    ),
+    ...state(
+      join(env.PI_CODING_AGENT_DIR || join(home(env), '.pi', 'agent'), 'models.json'),
+      join('.pi', 'agent', 'models.json'),
+      undefined,
+      undefined,
+      [{ path: '', format: 'pi-models' }]
     ),
     ...state(env.PI_CODING_AGENT_DIR, join('.pi', 'agent'), ['settings.json']),
     ...state(join(home(env), '.pi'), '.pi', [join('agent', 'settings.json')])
