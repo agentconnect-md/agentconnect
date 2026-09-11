@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, readlink, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, posix } from 'node:path'
 import { promisify } from 'node:util'
 import type { Sandbox, SandboxHandle } from 'microsandbox'
@@ -64,6 +64,8 @@ export interface MicrosandboxManagerOptions {
   msbCommand: { command: string; args: string[] }
   // Overridden by tests; the real check opens this host's /dev/kvm.
   kvmPreflight?: () => void
+  // Overridden by tests; the real lookup reads this host's /proc.
+  lockHolder?: (volume: string) => Promise<LockHolder | undefined>
   log?: Logger
   sockets: { mcp: string; gitcred: string }
   nextShimGeneration?: (subject: string) => Promise<number>
@@ -73,6 +75,7 @@ interface EnvironmentState {
   environment: MicrosandboxEnvironment
   spec: string
   sandbox: Promise<Sandbox>
+  started?: boolean
   active: number
   closing?: Promise<void>
   failed?: boolean
@@ -92,6 +95,11 @@ interface Binding {
   overlayVolume?: string
 }
 
+export interface LockHolder {
+  pid: number
+  sandbox?: string
+}
+
 const SpecImageSchema = z.object({ config: z.object({ image: z.string().min(1) }) })
 
 /** Owns VM lifecycle while exposing the existing ACP process-stream contract. */
@@ -100,6 +108,7 @@ export class MicrosandboxManager {
   private readonly bridges = new Map<string, MicrosandboxProcess>()
   private preparation?: Promise<K8sRuntimeTable>
   private closed = false
+  private startGate: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: MicrosandboxManagerOptions) {}
 
@@ -350,7 +359,7 @@ export class MicrosandboxManager {
     }
     await this.prepareImage()
     const name = `${this.name('probe')}-${randomUUID().slice(0, 8)}`
-    let sandbox = await this.builder(name, []).create()
+    let sandbox = await this.serializeStart(() => this.builder(name, []).create())
     try {
       const output = await sandbox.exec(MICROSANDBOX_NODE, [
         '-e',
@@ -363,7 +372,7 @@ export class MicrosandboxManager {
       const table = K8sRuntimeTableSchema.parse(JSON.parse(output.stdout()))
       await sandbox.stopWithTimeout(STOP_TIMEOUT_MS)
       await sandbox.detach()
-      sandbox = await this.retryDiskOperation(async () => (await this.options.sdk.Sandbox.get(name)).startDetached())
+      sandbox = await this.startVm(name, async () => (await this.options.sdk.Sandbox.get(name)).startDetached())
       await sandbox.ping()
       this.options.log?.info('microsandbox: image, Node, Python/vsock, runtime table and disk resume verified')
       return table
@@ -413,8 +422,8 @@ export class MicrosandboxManager {
     }
   }
 
-  private async retryDiskOperation<T>(operation: () => Promise<T>): Promise<T> {
-    const deadline = Date.now() + 1_000
+  private async retryDiskOperation<T>(operation: () => Promise<T>, deadlineMs = 1_000): Promise<T> {
+    const deadline = Date.now() + deadlineMs
     for (;;) {
       try {
         return await operation()
@@ -431,6 +440,71 @@ export class MicrosandboxManager {
         await new Promise((resolve) => setTimeout(resolve, 25))
       }
     }
+  }
+
+  // The SDK clears CLOEXEC on a starting VM's disk locks, so a start spawned beside another one inherits its locks
+  // and keeps them after that VM stops (superradcompany/microsandbox#1558). One start at a time closes that window.
+  private async serializeStart<T>(operation: () => Promise<T>): Promise<T> {
+    const ahead = this.startGate
+    let done!: () => void
+    this.startGate = new Promise<void>((resolve) => (done = resolve))
+    await ahead
+    try {
+      return await operation()
+    } finally {
+      done()
+    }
+  }
+
+  /** The one place a VM starts: serialized, and retried once after an unrelated sandbox's inherited disk lock is released. */
+  private async startVm<T>(subject: string, start: () => Promise<T>): Promise<T> {
+    return this.serializeStart(async () => {
+      try {
+        return await this.retryDiskOperation(start)
+      } catch (error) {
+        const volume = lockedVolume(error, this.options.sdk)
+        if (!volume) throw error
+        const holder = await this.lockHolder(volume)
+        if (!(await this.releaseIdleHolder(volume, holder))) throw lockError(subject, volume, holder, error)
+        // The supervisor releases the lock as it exits, which the SDK can observe a moment later.
+        return await this.retryDiskOperation(start, 5_000)
+      }
+    })
+  }
+
+  /** The process whose inherited fd still locks this volume's disk, and the sandbox it belongs to. */
+  private async lockHolder(volume: string): Promise<LockHolder | undefined> {
+    if (this.options.lockHolder) return this.options.lockHolder(volume)
+    if (process.platform !== 'linux') return undefined
+    const disk = join(this.options.root, 'microsandbox', 'volumes', volume, 'disk.raw')
+    const entries = await readdir('/proc').catch(() => [])
+    for (const pid of entries.filter((entry) => /^\d+$/.test(entry))) {
+      const fds = await readdir(`/proc/${pid}/fd`).catch(() => [])
+      for (const fd of fds) {
+        if ((await readlink(`/proc/${pid}/fd/${fd}`).catch(() => undefined)) !== disk) continue
+        const argv = (await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '')).split('\0')
+        const named = argv.indexOf('--name')
+        return { pid: Number(pid), sandbox: named < 0 ? undefined : argv[named + 1] }
+      }
+    }
+    return undefined
+  }
+
+  /** Suspend the idle environment whose supervisor inherited this lock; refuse while that environment still has work. */
+  private async releaseIdleHolder(volume: string, holder?: LockHolder): Promise<boolean> {
+    if (!holder?.sandbox) return false
+    let id: string | undefined
+    for (const candidate of await this.environmentIds()) if (this.name(candidate) === holder.sandbox) id = candidate
+    const state = id === undefined ? undefined : this.environments.get(id)
+    // Only a settled start can be suspended: awaiting one queued behind this start would deadlock on the gate.
+    if (state && !(state.started && !state.closing && !state.failed && !state.active && !state.processes.size))
+      return false
+    this.options.log?.warn(
+      `microsandbox: suspending idle environment ${id ?? holder.sandbox} — it inherited the disk lock of volume "${volume}"`
+    )
+    if (id !== undefined && state) await this.suspend(id)
+    else await (await this.find(holder.sandbox))?.stopWithTimeout(STOP_TIMEOUT_MS)
+    return true
   }
 
   private async readBinding(id: string): Promise<Binding | undefined> {
@@ -532,7 +606,7 @@ export class MicrosandboxManager {
           await this.writeBinding(binding)
         }
       }
-      const sandbox = await this.retryDiskOperation(() => existing.connectOrStart({ detached: true }))
+      const sandbox = await this.startVm(environment.id, () => existing.connectOrStart({ detached: true }))
       try {
         await prepareOverlayMounts(sandbox, environment.mounts)
         await this.startBridge(environment.id, sandbox)
@@ -543,10 +617,12 @@ export class MicrosandboxManager {
         throw error
       }
     }
-    const sandbox = await this.builder(name, environment.mounts, environment.secrets)
-      .vsock(this.options.sockets.mcp, 5000)
-      .vsock(this.options.sockets.gitcred, 5001)
-      .create()
+    const sandbox = await this.startVm(environment.id, () =>
+      this.builder(name, environment.mounts, environment.secrets)
+        .vsock(this.options.sockets.mcp, 5000)
+        .vsock(this.options.sockets.gitcred, 5001)
+        .create()
+    )
     try {
       const persisted = await this.options.sdk.Sandbox.get(name)
       const binding: Binding = {
@@ -666,9 +742,12 @@ export class MicrosandboxManager {
       }
       this.environments.set(environment.id, state)
       const opening = state
-      void state.sandbox.catch(() => {
-        if (this.environments.get(environment.id) === opening) this.environments.delete(environment.id)
-      })
+      void state.sandbox.then(
+        () => (opening.started = true),
+        () => {
+          if (this.environments.get(environment.id) === opening) this.environments.delete(environment.id)
+        }
+      )
     }
     state.active++
     state.lastUsed = Date.now()
@@ -1029,4 +1108,21 @@ function stableJson(value: unknown): string {
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex')
+}
+
+/** The named volume a start refused to lock, or undefined for any other failure. */
+function lockedVolume(error: unknown, sdk: MicrosandboxManagerOptions['sdk']): string | undefined {
+  if (!(error instanceof sdk.InvalidConfigError)) return undefined
+  return /volume "(.+)" is already attached with an incompatible disk mode$/.exec(error.message)?.[1]
+}
+
+function lockError(subject: string, volume: string, holder: LockHolder | undefined, cause: unknown): Error {
+  const held = holder
+    ? `pid ${holder.pid}${holder.sandbox === undefined ? '' : ` (sandbox ${holder.sandbox})`}`
+    : 'a process this daemon could not identify'
+  return new Error(
+    `microsandbox could not start ${subject}: volume "${volume}" is still locked by ${held}. A starting VM's disk ` +
+      'locks leak into unrelated sandbox processes (superradcompany/microsandbox#1558); stop that sandbox to release it.',
+    { cause }
+  )
 }
