@@ -170,6 +170,11 @@ export async function giteaPagedGet<T>(path: string, opts: PagedOpts): Promise<T
   throw new GiteaApiError(`gitea listing exceeds ${MAX_PAGES} pages`, 0, 'INTERNAL', true)
 }
 
+/** One page of one row: the cheapest read that exercises a listing's scope category (§4.1 scope verification). */
+export async function giteaProbeListing(token: string, path: string, client: GiteaApiClient): Promise<void> {
+  await giteaRequest<unknown[]>(`${path}?page=1&limit=1`, { token, client })
+}
+
 /** The instance's paging ceiling (`GET /settings/api`); the Gitea default when it cannot be read. */
 export async function giteaPageSize(client: GiteaApiClient): Promise<number> {
   try {

@@ -327,13 +327,14 @@ export class PgGiteaRepositoryBindingRepo implements GiteaRepositoryBindingRepo 
     return res.count
   }
 
-  async markDeliveryVerified(orgId: string, repoId: bigint, at: Date): Promise<GiteaRepositoryBindingRecord | null> {
+  async markDeliveryVerified(repoId: bigint, at: Date): Promise<GiteaRepositoryBindingRecord | null> {
     const res = await this.prisma.giteaRepositoryBinding.updateMany({
-      where: { orgId, repoId },
+      where: { repoId },
       data: { lastVerifiedDeliveryAt: at }
     })
     if (res.count !== 1) return null
-    return this.byRepo(orgId, repoId)
+    const row = await this.prisma.giteaRepositoryBinding.findFirst({ where: { repoId } })
+    return row ? toBindingRecord(row) : null
   }
 
   async markConvergeOwed(orgId: string, bindingId: string, at: Date): Promise<void> {

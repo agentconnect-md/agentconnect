@@ -3910,8 +3910,9 @@ export interface GiteaRepositoryBindingRepo {
   ): Promise<GiteaRepositoryBindingRecord | null>
   /** §4.3: every binding of a connection whose token was rejected leaves the servable states. */
   degradeForConnection(orgId: string, connectionId: string, reason: string): Promise<number>
-  /** Record a relay-verified delivery for the repository (§6 step 4); null when none is bound. */
-  markDeliveryVerified(orgId: string, repoId: bigint, at: Date): Promise<GiteaRepositoryBindingRecord | null>
+  /** Record a relay-verified delivery for the repository (§6 step 4). Deployment-global, like the
+   *  claim that makes one numeric repository at most one binding; null when none is bound. */
+  markDeliveryVerified(repoId: bigint, at: Date): Promise<GiteaRepositoryBindingRecord | null>
   markConvergeOwed(orgId: string, bindingId: string, at: Date): Promise<void>
   listConvergeOwed(before: Date, limit: number): Promise<GiteaRepositoryBindingRecord[]>
   /** The §10.2 exclusive run lease over the claim, exactly as the GitLab binding takes it. */
