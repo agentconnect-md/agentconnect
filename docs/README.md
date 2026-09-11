@@ -58,6 +58,7 @@ the picture it draws.
 - [github-app-git-credentials.md](designs/github-app-git-credentials.md) — GitHub App repository selection and credential-free git on daemons.
 - [github-pr-review-checks.md](designs/github-pr-review-checks.md) — Formal GitHub PR reviews and durable informational Checks.
 - [gitlab-com-integration.md](designs/gitlab-com-integration.md) — The GitLab integration end to end.
+- [gitea-integration.md](designs/gitea-integration.md) — The Gitea integration: one bot token per organization over the GitLab skeleton.
 - [linear-integration.md](designs/linear-integration.md) — The Linear integration.
 - [git-workspace-model.md](designs/git-workspace-model.md) — The host-neutral git workspace contract, and session isolation under an OS boundary.
 - [multi-repository-workspaces.md](designs/multi-repository-workspaces.md) — Secondary workspace roots and cross-repository review.
