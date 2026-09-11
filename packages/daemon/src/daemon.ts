@@ -195,7 +195,7 @@ import { AppSurface, newAppId, type AppTurn } from './mcp/apps/surface.js'
 import { APP_RPC_REFUSALS, CLOSED, EXPIRED, LiveAppRegistry, SUPERSEDED, appContextBlock } from './mcp/apps/cards.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
-import { DREAM_TOPIC_RE, MAX_DREAM_FILES } from './dream/dreamer.js'
+import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
 import {
@@ -6039,8 +6039,8 @@ export class Daemon {
     // The token is unregistered in finally so a leaked token cannot outlive the
     // one-off dream host.
     // The dream writes its proposal through the SAME memory tools an agent uses,
-    // bound to the dream's staged store rather than the live one (#41). The two
-    // constraints its old JSON format enforced ride along on the binding.
+    // bound to the dream's staged store rather than the live one (#41). The topic-name
+    // rule its old JSON format enforced rides along on the binding.
     const mcpToken = this.mcp.register({
       agentId,
       platform: 'dream',
@@ -6051,8 +6051,7 @@ export class Daemon {
       memoryBinding: {
         source: 'dream',
         scope: { agentId, root: context.stagedStore },
-        topicPattern: DREAM_TOPIC_RE,
-        maxTopics: MAX_DREAM_FILES
+        topicPattern: DREAM_TOPIC_RE
       }
     })
     const mcpServers = this.mcpToolServerSpec(mcpToken, this.agents.get(agentId))

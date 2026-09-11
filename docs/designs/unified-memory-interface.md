@@ -398,8 +398,8 @@ and the trusted source turn internally. Every mutation goes through the existing
 write-access/approval gate, and the entry service rechecks access before resolving
 the live provider. A one-call approval permits that payload while a subsequent
 policy denial still wins. Synthetic extraction and Dream bindings retain their
-constrained legacy writer; entry mutations are forbidden there so topic limits,
-staged-root provenance, and adoption checks cannot be bypassed.
+constrained legacy writer; entry mutations are forbidden there so the topic-name
+rule, staged-root provenance, and adoption checks cannot be bypassed.
 
 Admin HTTP mutation transport and UI remain separate follow-up work. This MCP
 projection does not send large mutation bodies in the bounded daemon/CP read frame;
