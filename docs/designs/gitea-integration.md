@@ -71,7 +71,7 @@ parity table holds with `gitlab` replaced by `gitea`.
 | Request changes          | Needs a reviewer record; advisory on Free         | Native `REQUEST_CHANGES`, no precondition                                                                 |
 | Approve                  | Separate SHA-fenced approval call                 | Native `APPROVED` in the same call; **refused when the bot authored the pull request**                    |
 | Informational run state  | Daemon-authored status note                       | Control-Plane-written commit status                                                                       |
-| Re-request               | Reviewer re-request, mention, Console re-run      | Same three; re-requesting the bot as reviewer is a plain `POST /requested_reviewers`                      |
+| Re-request               | Reviewer re-request, mention, reply, new revision | Same four; re-requesting the bot as reviewer is a plain `POST /requested_reviewers`                       |
 | Loop prevention veto set | Every bound service-account user id               | The connection's single bot user id                                                                       |
 | Read-only provider CLI   | `glab` wrapper                                    | None in v1; `tea` has no read-only mode and a generic `tea api` escape hatch                              |
 | Lost-delivery recovery   | Provider retries only                             | Provider retries only; Gitea exposes no delivery-history or redelivery API                                |
@@ -589,9 +589,8 @@ An operator who adds the context to a branch protection's required status
 checks has chosen to make it a gate, exactly as with a GitHub Check; the
 product does not do so on the operator's behalf.
 
-Re-request follows §16.1: re-requesting the bot as reviewer, an authorized
-mention, or the Console "Run again" action, whose relay path is the existing
-rerun frame with a `gitea` member.
+Re-request follows §16.1: a follow-up message in the session, a new revision on
+the pull request, re-requesting the bot as reviewer, or an authorized mention.
 
 ## 11. Protocol and Compatibility
 
@@ -640,9 +639,9 @@ REST at the organization scope: `POST /gitea/connections` (connect),
 `GET /gitea/connections`, `POST /gitea/connections/:id/token` (replace),
 `DELETE /gitea/connections/:id`, `GET /gitea/connections/:id/repositories`
 (picker), `GET|POST /gitea/repositories`, `POST
-/gitea/repositories/:id/repair`, `DELETE /gitea/repositories/:id`, and the
-existing rerun route with a `gitea` binding. Every route carries the OpenAPI
-tags, summary, description, and operation id the docs surface requires.
+/gitea/repositories/:id/repair`, and `DELETE /gitea/repositories/:id`. Every
+route carries the OpenAPI tags, summary, description, and operation id the docs
+surface requires.
 
 The upstream connector id `gitea` joins the open-connector provider blocklist
 default, following the native-integration convention.
@@ -769,14 +768,13 @@ Each step is one pull request, merged in order.
   over the code-host seam's shared attempt engine, with `ambiguous_locked`
   cleared only by a later reconciliation finding the marked review submitted;
   the Control-Plane-written commit status, one per hook, repository, pull
-  request, and head; and the rerun route's Gitea arm.
+  request, and head.
 - **G6 — Console and docs.** _Landed (#2055)._ The Gitea card — connect, replace token,
   disconnect, the repository picker, the five binding states with their repair
   reasons, repair, webhook-secret rotation and unbind — the `gitea` hook kind
   with its two subject families and the commit-status disclosure, the workspace
   and additional-repository pickers, the agent page's repository rows, the
-  operator guide (`docs/self-hosted-gitea.md`), and the docs index. The rerun
-  button is wired to the one rerun route and lights up with G5's arm behind it.
+  operator guide (`docs/self-hosted-gitea.md`), and the docs index.
 
 ### Probe results (2026-09-12, gitea.com, Gitea 1.27 development build)
 

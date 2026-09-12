@@ -4279,52 +4279,6 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
   return apiGet<HookRunDto[]>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}/runs`)
 }
 
-/** One rerun subject — the two GitLab thread kinds a session can be keyed to. */
-export interface GitlabRerunSubject {
-  kind: 'merge_request' | 'issue'
-  iid: number
-}
-
-export interface HookRerunDto {
-  accepted: true
-  deliveryKey: string
-  event: string
-  /** The merge request's current head, read live by the CP; null for an issue. */
-  headSha: string | null
-}
-
-// The "Run again" action for a GitLab trigger thread (gitlab-com-integration.md
-// §16.1). The caller names only the subject: the Control Plane reads its current
-// state and head itself, so the console can never re-run a stale revision.
-export async function rerunGitlabHook(
-  hookId: string,
-  subject: GitlabRerunSubject,
-  orgId?: string
-): Promise<HookRerunDto> {
-  return apiPost<HookRerunDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(hookId)}/rerun`, { subject })
-}
-
-/** One Gitea rerun subject — the two thread kinds a session can be keyed to. Gitea gives
- *  issues and pull requests ONE index space, so the kind discriminates and the index is the
- *  `iid` the shared route already carries. */
-export interface GiteaRerunSubject {
-  kind: 'pull' | 'issue'
-  index: number
-}
-
-// The "Run again" action for a Gitea trigger thread. Gitea has no native re-run control
-// either, so it reuses the one rerun route: the caller names only the subject, and the
-// Control Plane reads its current state and head itself.
-export async function rerunGiteaHook(
-  hookId: string,
-  subject: GiteaRerunSubject,
-  orgId?: string
-): Promise<HookRerunDto> {
-  return apiPost<HookRerunDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(hookId)}/rerun`, {
-    subject: { kind: subject.kind === 'pull' ? 'merge_request' : 'issue', iid: subject.index }
-  })
-}
-
 // Per-conversation trigger choice (`PATCH /integrations/:id/channels/:channelId`). The CP
 // persists it and pushes the integration's recomputed bind rules to the owning daemon.
 export async function updateIntegrationChannel(

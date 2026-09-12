@@ -225,23 +225,3 @@ export function giteaCadencePick(
   if (mode === giteaTriggerModeOf(hook) && !giteaHookNeedsNormalization(hook)) return null
   return { family, mode }
 }
-
-/**
- * The rename-stable thread key a Gitea hook session carries (gitea-integration.md §8):
- * `gitea:<repo-id>:<kind>:<index>`, where the kind discriminates the one index space Gitea
- * gives issues and pull requests. A push session's `…:push:<ref>` deliberately does not
- * parse — a branch is not a subject the "Run again" action can re-run.
- */
-const GITEA_HOOK_THREAD = /^gitea:[1-9]\d*:(pull|issue):([1-9]\d*)$/
-
-export interface GiteaHookThread {
-  kind: 'pull' | 'issue'
-  index: number
-}
-
-/** The thread's rerun subject, or null when it names none. */
-export function parseGiteaHookThread(thread: string | null | undefined): GiteaHookThread | null {
-  const match = thread ? GITEA_HOOK_THREAD.exec(thread) : null
-  if (!match) return null
-  return { kind: match[1] as GiteaHookThread['kind'], index: Number(match[2]) }
-}

@@ -35,7 +35,6 @@ import { GitlabCredentialRotator } from './gitlab/rotator.js'
 import { GitlabRetirementSweeper } from './gitlab/retirement-sweeper.js'
 import { GitlabConvergeSweeper } from './gitlab/converge-sweeper.js'
 import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.js'
-import { GitlabHookRerunService } from './gitlab/hook-rerun.service.js'
 import { CodeHostReviewBrokerService } from './codehost/review-lease.service.js'
 import { unionGitlabWebhookEvents } from './gitlab/webhook-events.js'
 import { resolveGiteaInstanceConfig } from './gitea/config.js'
@@ -44,7 +43,6 @@ import { GiteaConnectionService } from './gitea/connection.service.js'
 import { GiteaProvisioner } from './gitea/provisioner.js'
 import { GiteaConvergeSweeper } from './gitea/converge-sweeper.js'
 import { GiteaGitcredService } from './gitea/gitcred.service.js'
-import { GiteaHookRerunService } from './gitea/hook-rerun.service.js'
 import { GiteaStatusCoordinator, GiteaStatusReporter } from './gitea/status-projection.js'
 import { GiteaMembershipAuthzService } from './gitea/membership-authz.service.js'
 import { unionGiteaWebhookEvents } from './gitea/webhook-events.js'
@@ -1123,18 +1121,6 @@ export function buildContainer(
     ? {
         api: gitlabApi!,
         oauth: gitlabOauthService,
-        // The Console "Run again" action (§16.1) — fences here, dispatch on the relay.
-        hookRerun: new GitlabHookRerunService({
-          hooks: repos.hook,
-          agents: repos.agent,
-          bindings: repos.gitlabProjectBinding,
-          accounts: repos.gitlabAgentAccount,
-          credentials: new PgGitlabProjectCredentialRepo(prisma),
-          credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
-          hookService,
-          relayControl,
-          api: gitlabApi!
-        }),
         accounts: gitlabAccountService!,
         provisioner: new GitlabProvisioner({
           oauth: gitlabOauthService,
@@ -1307,17 +1293,6 @@ export function buildContainer(
   const gitea = {
     connections: giteaConnectionService,
     provisioner: giteaProvisioner,
-    // The Console "Run again" action (gitea-integration.md §10.4) — fences here, dispatch on the relay.
-    hookRerun: new GiteaHookRerunService({
-      hooks: repos.hook,
-      agents: repos.agent,
-      bindings: repos.giteaRepositoryBinding,
-      connections: repos.giteaConnection,
-      tokens: giteaConnectionService,
-      hookService,
-      relayControl,
-      api: giteaApi
-    }),
     api: giteaApi
   }
   // The §6 convergence sweep, the half of a contended pass's obligation that survives a restart.

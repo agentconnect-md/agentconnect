@@ -45,21 +45,10 @@ import {
   HookListDto,
   CreatedHookDto,
   HookRunListDto,
-  HookRerunBody,
-  HookRerunDto,
-  HookRerunErrorDto,
   ErrorDto,
   IdParam,
   type HookDtoT
 } from '../dto/index.js'
-
-/** Reason phrases for the rerun route's refusal statuses. */
-const RERUN_STATUS_TEXT = {
-  409: 'Conflict',
-  429: 'Too Many Requests',
-  502: 'Bad Gateway',
-  503: 'Service Unavailable'
-} as const
 
 /** The (agent, kind, repo, family) uniqueness lives in Postgres, so a duplicate
  *  subscription arrives here as a constraint violation rather than a probe. */
@@ -1276,78 +1265,6 @@ export function hookRoutes(deps: HttpDeps) {
           redeliveryAttempts: run.redeliveryAttempts,
           redeliveryLastRequestedAt: run.redeliveryLastRequestedAt?.toISOString() ?? null
         }))
-      }
-    )
-
-    // Console "Run again" (gitlab §16.1, gitea §10.4): the provider service revalidates every fence live; registered unconditionally.
-    r.post(
-      '/hooks/:id/rerun',
-      {
-        schema: {
-          tags: [Tag.Hooks],
-          summary: 'Run a GitLab or Gitea trigger again',
-          description:
-            'Re-dispatches one GitLab or Gitea trigger turn for a merge/pull request or issue thread. Neither host offers a native re-run control, so this is the console entry point. The enabled trigger, its agent, the managed repository binding, and the subject are all revalidated live, and a merge-request rerun targets the head SHA the host reports right now — never a stored one. Refusals carry a machine-readable `code`. The `merge_request` subject kind names a Gitea pull request by its index.',
-          operationId: 'rerunHook',
-          params: IdParam,
-          body: HookRerunBody,
-          response: {
-            200: HookRerunDto,
-            403: ErrorDto,
-            404: ErrorDto,
-            409: HookRerunErrorDto,
-            429: HookRerunErrorDto,
-            502: HookRerunErrorDto,
-            503: HookRerunErrorDto
-          }
-        }
-      },
-      async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return
-        // Cross-org and invisible-agent ids read as absent, like every other hook route.
-        const hook = await getOrgHook(req, req.params.id)
-        if (!hook) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'hook not found' })
-        }
-        const rerun = async () => {
-          if (hook.kind === 'gitea') {
-            if (!deps.gitea) {
-              return {
-                ok: false as const,
-                status: 409 as const,
-                code: 'GITEA_NOT_CONFIGURED',
-                message: 'this deployment has no Gitea connection surface configured'
-              }
-            }
-            const { kind, iid } = req.body.subject
-            return deps.gitea.hookRerun.rerun(hook, { kind, index: iid })
-          }
-          if (!deps.gitlab) {
-            return {
-              ok: false as const,
-              status: 409 as const,
-              code: 'GITLAB_NOT_CONFIGURED',
-              message: 'this deployment has no GitLab application configured'
-            }
-          }
-          return deps.gitlab.hookRerun.rerun(hook, req.body.subject)
-        }
-        const outcome = await rerun()
-        if (!outcome.ok) {
-          return reply.code(outcome.status).send({
-            error: RERUN_STATUS_TEXT[outcome.status],
-            statusCode: outcome.status,
-            message: outcome.message,
-            code: outcome.code,
-            relayCode: 'relayCode' in outcome ? outcome.relayCode : undefined
-          })
-        }
-        return {
-          accepted: true as const,
-          deliveryKey: outcome.deliveryKey,
-          event: outcome.event,
-          headSha: outcome.headSha
-        }
       }
     )
 

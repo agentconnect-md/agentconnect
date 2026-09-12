@@ -9,54 +9,19 @@
  * connection index.
  *
  * Fire-and-forget + per-socket isolated: a dead relay socket's error is swallowed
- * (its close removes it from the registry). The one exception is {@link
- * RelayControlSender.hookRerun}, which AWAITS a correlated admission — a console
- * action must not report success for a frame that merely reached a socket.
+ * (its close removes it from the registry).
  */
 import type {
-  CodeHostProvider,
   RcHookAssign,
-  RcHookRerun,
-  RcHookRerunRefusal,
   RcCollabRoutes,
   RcMcpAssign,
   RcMcpUnassign,
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
-import {
-  codeHostHookMetadataOf,
-  codeHostHookRuleOf,
-  GITEA_V1_FEATURE,
-  GITLAB_RERUN_V1_FEATURE,
-  RcHookRerunResult
-} from '@agentconnect.md/protocol'
+import { codeHostHookRuleOf } from '@agentconnect.md/protocol'
 import { advertises } from '../domain/daemon-features.js'
 import { codeHostProviders } from '../codehost/registry.js'
-
-/**
- * The bit a relay must advertise to DECODE one provider's `rc/hook-rerun`, or null when this
- * provider has no rerun frame at all. Total over the providers, so a third host says which of the
- * two it is instead of inheriting GitLab's bit: GitHub reruns ride its own native Check action,
- * `gitlab-rerun-v1` is strictly newer than `gitlab-com-v1` (whose holder cannot decode the frame),
- * and the Gitea slice ships with the frame, so its one string covers it (gitea-integration.md §10.4).
- */
-const RERUN_DECODE_FEATURE: Readonly<Record<CodeHostProvider, string | null>> = {
-  github: null,
-  gitlab: GITLAB_RERUN_V1_FEATURE,
-  gitea: GITEA_V1_FEATURE
-}
-
-/** What one Console rerun attempt achieved across the eligible relay pool. */
-export type RelayRerunOutcome =
-  | { kind: 'admitted' }
-  /** The relay that answered definitively declined; nothing ran, anywhere. */
-  | { kind: 'refused'; code: RcHookRerunRefusal }
-  /** A relay went quiet mid-request: the turn may or may not have started. */
-  | { kind: 'ambiguous' }
-  /** No connected relay could be asked (none eligible, or none reachable). */
-  | { kind: 'unreachable' }
-import { RelayNotWritten } from '../ws/relay-registry.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 
 export class RelayControlSender {
@@ -91,51 +56,6 @@ export class RelayControlSender {
   /** Drop one hook rule pool-wide (hook disabled / deleted / agent unplaced). */
   hookRemove(hookId: string): void {
     this.broadcast((ch) => ch.send('rc/hook-remove', { hookId }))
-  }
-
-  /**
-   * Hand ONE gitlab rerun to ONE relay (§16.1) and wait for its verdict.
-   * Reaching a socket proves nothing: only a relay that answers `admitted` has
-   * queued a turn and opened a run row, so the console is told "started" on that
-   * REP alone.
-   *
-   * THE FIRST ANSWERED VERDICT IS FINAL — refusals included. Relay rule tables
-   * converge independently, so a peer asked after a refusal may still hold the
-   * pre-disable or pre-bump replica and would dispatch under authority this one
-   * already revoked; and walking past `limiter_exhausted` would turn a per-hook
-   * budget into a pool-wide walk. An ambiguous failure stops for the older
-   * reason: the frame was written, so a turn may already have started.
-   *
-   * The walk therefore only skips relays that could not answer at all —
-   * ineligible (`gitlab-rerun-v1`; `gitlab-com-v1` predates the frame and its
-   * holder cannot decode it, §17.3) or unreachable before the frame was written.
-   *
-   * §24.4 adds the host to that eligibility, not just to the frame: a relay denied the
-   * self-managed RULE holds none, so asking it would collect a `replay_pending` refusal —
-   * and the first answered verdict is final, so that refusal would end the walk before an
-   * eligible peer was ever asked.
-   */
-  async hookRerun(rerun: RcHookRerun): Promise<RelayRerunOutcome> {
-    // The frame carries exactly one provider member; which bit a relay must advertise to DECODE it
-    // is that provider's, and an unreadable frame has no eligible relay at all.
-    const member = codeHostHookMetadataOf(rerun)
-    const decodes = member ? RERUN_DECODE_FEATURE[member.provider] : null
-    if (!member || decodes === null) return { kind: 'unreachable' }
-    const host = 'host' in member.metadata ? member.metadata.host : undefined
-    const required = [decodes, ...codeHostProviders[member.provider].features.requiredForInstance(host)]
-    for (const ch of this.relays.all()) {
-      if (!advertises(ch.features, required) || typeof ch.request !== 'function') continue
-      let result: RcHookRerunResult
-      try {
-        result = RcHookRerunResult.parse(await ch.request('rc/hook-rerun', rerun))
-      } catch (e) {
-        // Nothing reached the wire, so nothing could have been admitted here.
-        if (e instanceof RelayNotWritten) continue
-        return { kind: 'ambiguous' }
-      }
-      return result.admitted ? { kind: 'admitted' } : { kind: 'refused', code: result.code }
-    }
-    return { kind: 'unreachable' }
   }
 
   /** Load an MCP provider's proxy binding onto every relay (whole-pool BROADCAST —

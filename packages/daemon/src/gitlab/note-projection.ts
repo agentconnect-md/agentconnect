@@ -19,7 +19,7 @@ const STATE_LABEL: Record<CodeHostNoteState, string> = {
 
 /** §16.1: the only authorized ways to open a new generation, named on a note that ended early. */
 const RE_REQUEST_SENTENCE =
-  'To run again, re-request a review from the project service account, mention the agent explicitly, or use "Run again" in the AgentConnect Console.'
+  'To run again, re-request a review from the project service account, mention the agent explicitly, reply in the agent session, or push a new revision.'
 
 /** The hidden stable marker a note is reconciled by; identical across every generation of one head. */
 const MARKER_PREFIX = 'agentconnect-projection:'

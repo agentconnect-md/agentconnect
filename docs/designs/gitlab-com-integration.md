@@ -1524,10 +1524,11 @@ writer; daemon loss or lease expiry alone cannot authorize another writer.
 A new generation may start only for the current head and current enabled hook
 after an authorized:
 
-- reviewer request or re-request targeting the hook agent's service account;
-- explicit mention passing the same Developer-or-higher gate; or
-- Console "Run again" action — a new surface this design adds (route in
-  Section 18.2), replacing the native Check-button re-run GitLab lacks.
+- reviewer request or re-request targeting the hook agent's service account; or
+- explicit mention passing the same Developer-or-higher gate.
+
+The Console carries no re-run control: a follow-up message in the session re-runs
+the work, and a new revision on the merge request re-fires the trigger by itself.
 
 The requester is checked live and all hook, placement, project, head, and
 projection fences are revalidated. A stale status note cannot authorize a new
@@ -1708,13 +1709,11 @@ Free request changes block merges.
 User-facing copy says GitLab, connection, project, webhook, and bot. It does
 not expose internal Control Plane or relay terminology.
 
-Two Console decisions are explicit. The hook run surface gains a "Run again"
-action (Section 16.1) because GitLab offers no native Check button. The
-session merge-request panel — the dock pull-request surface with Auto-fix,
-Merge-when-ready, and direct merge that GitHub sessions have today — is scoped
-out of GitLab v1: its merge actions are Control-Plane-direct provider
-mutations, which the Section 7.3 credential model deliberately does not budget
-for.
+One Console decision is explicit. The session merge-request panel — the dock
+pull-request surface with Auto-fix, Merge-when-ready, and direct merge that
+GitHub sessions have today — is scoped out of GitLab v1: its merge actions are
+Control-Plane-direct provider mutations, which the Section 7.3 credential model
+deliberately does not budget for.
 
 ### 18.2 REST
 
@@ -1730,14 +1729,14 @@ POST   /api/v1/orgs/:orgId/gitlab/projects
 POST   /api/v1/orgs/:orgId/gitlab/projects/:bindingId/repair
 POST   /api/v1/orgs/:orgId/gitlab/projects/:bindingId/transfer
 DELETE /api/v1/orgs/:orgId/gitlab/projects/:bindingId
-POST   /api/v1/orgs/:orgId/hooks/:hookId/rerun
 ```
 
 Authenticated routes are organization-scoped under `/orgs/:orgId`, matching
 the existing tenancy convention where cross-organization access reads as 404;
 only the OAuth callback sits at the version root, mirrored at the public `/v1`
-alias like the GitHub setup callback. The re-run route is the Console entry
-point from Section 16.1.
+alias like the GitHub setup callback. Re-running a turn needs no route of its
+own: Section 16.1's paths are a follow-up message in the session, a new
+revision, or re-requesting the bot as reviewer or an authorized mention.
 
 Project list routes return metadata only. Create/repair routes return
 provisioning state and non-secret external identifiers. They never return OAuth
