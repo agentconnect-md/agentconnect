@@ -299,6 +299,17 @@ describe('AddIntegrationModal, Gitea trigger', () => {
     })
   })
 
+  it('states what a subscription does once, where every code host states it', async () => {
+    // The footer under the form carries that sentence for all three hosts; the Gitea pane
+    // printed it a second time of its own.
+    mocks.fetchGiteaRepositories.mockResolvedValue([binding])
+    await renderAgent({ id: 'agent-hint' })
+    await pickRepository()
+
+    const hint = 'reply on the same issue, pull request or push thread'
+    expect((document.body.textContent ?? '').split(hint)).toHaveLength(2)
+  })
+
   it('offers the two subjects only — nothing reachable compiles a push event', async () => {
     mocks.fetchGiteaRepositories.mockResolvedValue([binding])
     await renderAgent({ id: 'agent-subjects' })
