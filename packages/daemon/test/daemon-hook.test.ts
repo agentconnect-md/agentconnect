@@ -173,7 +173,7 @@ const gitlabReviewFire = (dispatchDaemonId: string): RdMsgHook => {
 }
 
 describe('Daemon rd/msg hook fires', () => {
-  it('uses the display agent, runtime, and session model in GitHub attribution', async () => {
+  it('uses the display agent, runtime, and session model in code-host attribution', async () => {
     const { factory, host } = streamingHost()
     host.modelOptions.mockReturnValue({ current: 'claude-sonnet-4-5' } as never)
     const daemon = new Daemon({
@@ -185,12 +185,17 @@ describe('Daemon rd/msg hook fires', () => {
     ;(daemon as any).runtimeFacts.names.claude = 'Claude Code'
     await (daemon as any).ensureHostAsync(AGENT_ID)
 
-    expect(await (daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-hook-1')).toMatchObject({
-      agentName: 'Review Bot',
-      runtime: 'Claude Code',
-      model: 'claude-sonnet-4-5',
-      sessionUrl: 'http://localhost:3000/sessions/acp-hook-1?source=github'
-    })
+    // The session link brands by the host that publishes the footer, never as GitHub for all three.
+    for (const provider of ['github', 'gitlab', 'gitea'] as const) {
+      expect(
+        await (daemon as any).githubReviews.githubCommentAttribution(AGENT_ID, 'acp-hook-1', provider)
+      ).toMatchObject({
+        agentName: 'Review Bot',
+        runtime: 'Claude Code',
+        model: 'claude-sonnet-4-5',
+        sessionUrl: `http://localhost:3000/sessions/acp-hook-1?source=${provider}`
+      })
+    }
 
     await daemon.stop()
   })
