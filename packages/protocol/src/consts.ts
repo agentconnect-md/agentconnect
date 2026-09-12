@@ -353,21 +353,15 @@ export function isSelfManagedGitlabHost(host: string | undefined): boolean {
 
 /** Daemon/relay serves the complete Gitea slice: hook normalization, credential routing,
  *  poster, and (relay) signed ingress. Gate for placement, spec projection, hook assignment,
- *  rerun dispatch, and the relay's dispatch target, with the same fail-closed-by-omission
- *  semantics as the GitLab bits. One string covers gitea.com and a self-hosted instance: a
- *  self-hosted address is the same code path, so there is no separate instance feature. */
+ *  and the relay's dispatch target, with the same fail-closed-by-omission semantics as the
+ *  GitLab bits. One string covers gitea.com and a self-hosted instance: a self-hosted
+ *  address is the same code path, so there is no separate instance feature. */
 export const GITEA_V1_FEATURE = 'gitea-v1'
 
 /** The default value of the Gitea instance axis (§3). An absent host on a replicated agent
  *  spec, a compiled hook rule, trusted hook metadata, or a credential grant means this — the
  *  default of one axis, never a separate mode. */
 export const GITEA_DEFAULT_BASE_URL = 'https://gitea.com'
-
-/** Relay decodes `rc/hook-rerun` and answers its correlated admission REP
- *  (§16.1 Console "Run again"). Strictly newer than `gitlab-com-v1`: a relay
- *  advertising only that one cannot decode the frame, so the CP must select
- *  rerun targets on THIS bit alone. */
-export const GITLAB_RERUN_V1_FEATURE = 'gitlab-rerun-v1'
 
 /** CP serves provider-qualified gitcred v2 request/grant fields. A daemon must not name a
  *  provider before seeing this, and must reject a grant whose provider or numeric repository

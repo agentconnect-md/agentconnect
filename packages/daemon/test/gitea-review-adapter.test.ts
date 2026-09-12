@@ -748,7 +748,7 @@ describe('Gitea review adapter — pre-effect rejections and turn ownership', ()
       h.open(hookContext({ snapshot: { ...SNAPSHOT, dispatchDaemonId: '99999999-9999-4999-8999-999999999999' } }), 'k5')
     ).toBeUndefined()
     // The console re-run and a relay-flagged reviewer request open one like a revision does.
-    expect(h.open(hookContext({ event: 'merge_request:rerun' }), 'k6')).toBeDefined()
+    expect(h.open(hookContext({ event: 'merge_request:review_requested' }), 'k6')).toBeDefined()
     expect(
       h.open(
         hookContext({
@@ -1133,7 +1133,7 @@ describe('Gitea review adapter — ambiguous submission (§10.3 step 5, §15.2)'
     expect(codeHostReviewFallbackAllowed(h.hook)).toBe(false)
 
     // A later delivery on the same pull request is refused by the lock: nothing is submitted, the lock holds.
-    const retryHook = hookContext({ deliveryKey: 'delivery-2', event: 'merge_request:rerun' })
+    const retryHook = hookContext({ deliveryKey: 'delivery-2', event: 'merge_request:review_requested' })
     const retryKey = sessionKey('hook', HOOK_ID, THREAD, AGENT_ID, `gitea:${REPO}`)
     h.open(retryHook, retryKey)
     const retried = (await h.adapter.submit(retryKey, {
@@ -1151,7 +1151,7 @@ describe('Gitea review adapter — ambiguous submission (§10.3 step 5, §15.2)'
 
     // The lost request finished at Gitea: the next attempt's refusal runs the pass, names the review when it asks again, and publishes under a fresh fence.
     seedSubmitted(state, ATTEMPT)
-    const laterHook = hookContext({ deliveryKey: 'delivery-3', event: 'merge_request:rerun' })
+    const laterHook = hookContext({ deliveryKey: 'delivery-3', event: 'merge_request:review_requested' })
     const laterKey = sessionKey('hook', HOOK_ID, THREAD, AGENT_ID, `gitea:${REPO}:later`)
     h.open(laterHook, laterKey)
     const cleared = (await h.adapter.submit(laterKey, {
@@ -1201,7 +1201,7 @@ describe('Gitea review adapter — ambiguous submission (§10.3 step 5, §15.2)'
       control: first.control,
       reviewStore: new FakeReviewStore(),
       markerSeed: OTHER_DAEMON_SEED,
-      hook: hookContext({ deliveryKey: 'delivery-2', event: 'merge_request:rerun' }),
+      hook: hookContext({ deliveryKey: 'delivery-2', event: 'merge_request:review_requested' }),
       attemptIds: [SECOND_ATTEMPT]
     })
     const cleared = (await second.adapter.submit(KEY, request())) as GiteaReviewOutcome
@@ -1236,7 +1236,7 @@ describe('Gitea review adapter — ambiguous submission (§10.3 step 5, §15.2)'
     expect(((await h.adapter.submit(KEY, request())) as GiteaReviewOutcome).state).toBe('ambiguous_locked')
     // Staging happened; submission did not.
     seedPending(state, ATTEMPT)
-    const retryHook = hookContext({ deliveryKey: 'delivery-2', event: 'merge_request:rerun' })
+    const retryHook = hookContext({ deliveryKey: 'delivery-2', event: 'merge_request:review_requested' })
     const retryKey = sessionKey('hook', HOOK_ID, THREAD, AGENT_ID, `gitea:${REPO}`)
     h.open(retryHook, retryKey)
     const retried = (await h.adapter.submit(retryKey, {

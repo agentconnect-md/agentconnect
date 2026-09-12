@@ -5272,7 +5272,7 @@ export class Daemon {
       // §24.4: the instance is resolved from the spec, not assumed; no self-managed work without this.
       GITLAB_INSTANCE_V1_FEATURE,
       // gitea-integration.md §11: the complete Gitea slice — credentials, normalization, poster, broker,
-      // admission. The CP withholds gitea specs, hook assignments, and reruns until this is advertised.
+      // admission. The CP withholds gitea specs and hook assignments until this is advertised.
       GITEA_V1_FEATURE,
       // §16: this daemon renders and updates the run-projection note. The CP leaves the desired
       // generation pending rather than opening a second provider egress path without this bit.

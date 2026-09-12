@@ -1944,14 +1944,13 @@ external credentials by deleting only local metadata.
 ## 22. Implementation Plan
 
 > **Implementation status.** The M0–M8 spine below is implemented. Its
-> rolling-compatibility seams are gated by six feature strings, all declared in
+> rolling-compatibility seams are gated by five feature strings, all declared in
 > `packages/protocol/src/consts.ts`: `gitcred-provider-v2` (provider-qualified
 > Git credentials), `gitlab-com-v1` (the complete daemon and relay GitLab
 > slice), `gitlab-effect-v1` (the Section 14.2 broker effect lease),
-> `gitlab-rerun-v1` (the relay's `rc/hook-rerun` admission),
 > `codehost-note-projection-v1` (the daemon-owned status-note projection), and
 > `codehost-review-v1` (the provider-routed formal-review surface). M8 needed
-> no seventh string — the Section 7.2 per-agent identity reached the wire as
+> no sixth string — the Section 7.2 per-agent identity reached the wire as
 > additive optional members under the Section 17.3 discipline. Two gaps
 > are deliberate. The `hook/start` barrier is a provider one-of on the wire but
 > is still served GitHub-only in the Control Plane, so the note projection's
@@ -2458,15 +2457,11 @@ Merge order, GitLab.com green at every step:
   directions — a daemon gaining the bit would stay ruleless until an unrelated
   event, and one losing it would keep a live rule, the very thing the gate
   exists to prevent. The fence sits on the live connection and is re-read per
-  delivery attempt, so a rollout heals with no convergence pass; both the
-  webhook path and the authorized re-run reach it through the same dispatch,
-  which is what makes one fence cover delivery, retries, and re-runs alike. The
+  delivery attempt, so a rollout heals with no convergence pass; the webhook
+  path and the authorized reviewer re-request reach it through the same
+  dispatch, which is what makes one fence cover delivery and retries alike. The
   relay advertises the feature because carrying the host through is its whole
-  share of the work. The rerun walk also takes the host into its relay
-  ELIGIBILITY, not just its frame: a relay denied the self-managed rule holds
-  none, so asking it would collect a `replay_pending` refusal — and the first
-  answered verdict is final, so that refusal would end the walk before an
-  eligible peer was asked. And because an enabled hook is a spec consumer, a
+  share of the work. And because an enabled hook is a spec consumer, a
   hook write is a spec edit, ordered against the rule: the agent GAINING the
   consumer is re-projected before the rule is assigned, the one LOSING it after
   the rule is gone. That ordering lives in the rule convergence itself, not in

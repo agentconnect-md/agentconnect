@@ -1,5 +1,5 @@
 /** GitLab's implementation of the daemon hook-admission contract (§6.5, §12.3):
- *  merge-request lanes, the console/reviewer re-run pins, and note coalescing. */
+ *  merge-request lanes, the reviewer re-request pin, and note coalescing. */
 import {
   codeHostLane,
   type CodeHostCoordinatedHook,
@@ -12,8 +12,8 @@ import type { GithubReviewBatch, GithubReviewBatchItem, HookDispatchContext } fr
 /** Deliveries that establish a new merge-request head. */
 const MERGE_REQUEST_REVISION_EVENTS = new Set(['merge_request:opened', 'merge_request:synchronize'])
 
-/** Deliveries that re-run the head already current: a reviewer request, or the console's `rc/hook-rerun`. */
-const MERGE_REQUEST_RERUN_EVENTS = new Set(['merge_request:review_requested', 'merge_request:rerun'])
+/** Deliveries that re-run the head already current: a reviewer request naming the bot. */
+const MERGE_REQUEST_RERUN_EVENTS = new Set(['merge_request:review_requested'])
 
 /** The one comment family; GitLab normalizes conversation notes and diff notes to the same event. */
 const NOTE_EVENT = 'note:created'
