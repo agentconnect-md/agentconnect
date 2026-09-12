@@ -495,9 +495,7 @@ export function hookRoutes(deps: HttpDeps) {
       return null
     }
 
-    // gitea (gitea-integration.md §6): a repository is bound on first use, so a trigger names one the
-    // bot administers rather than one already added. The facts come first, for the gates that need
-    // the path; the bind runs AFTER the agent gate, so a refused trigger never binds anything.
+    // gitea (gitea-integration.md §6): the facts first, for the gates that need the path; the bind AFTER the agent gate, so a refused trigger binds nothing.
     type GiteaRepositoryStep<T> =
       ({ ok: true } & T) | { ok: false; status: 400 | 403 | 404 | 409 | 429 | 502; message: string }
     const giteaRefusal = (e: unknown): { ok: false; status: 400 | 403 | 404 | 409 | 429 | 502; message: string } => {
@@ -668,8 +666,7 @@ export function hookRoutes(deps: HttpDeps) {
                 })()
               : req.body.kind === 'gitea'
                 ? await (async () => {
-                    // The repository the bot administers, by the numeric id the server re-reads (§6); bound
-                    // on first use below, AFTER the §8.3 gate — a hook never creates a grant.
+                    // The repository the bot administers, re-read by numeric id (§6); bound below, AFTER the §8.3 gate — a hook never creates a grant.
                     const repoId = BigInt((req.body as { repoId: string }).repoId)
                     const facts = await giteaRepositoryFacts(orgId, repoId)
                     if (!facts.ok) return facts
