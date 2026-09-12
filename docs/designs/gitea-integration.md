@@ -384,6 +384,17 @@ event type before reading it.
 A standalone inline comment — one left outside a review submission — produces
 no delivery at all, so there is no such trigger to build.
 
+**Summon forms.** A mention-gated rule is summoned by `@<agent-name>`, by the
+connection bot's own handle as the repository-wide broadcast, or by
+`@<owner>/<agent-name>` — Gitea's organization team syntax, which an organization
+makes autocomplete in the comment composer by creating a visible team named after
+the agent; the owner comes from the delivery's own `repository`, matching is pure
+text, and the team is never read back through the API. Gitea's `api.User` carries
+no organization kind, so unlike GitHub's form this one is gated on nothing: it is
+text against the owner login, and is simply inert on a personal repository, where
+Gitea renders no team mention. Because `@<owner>/<slug>` is the team form, it is
+never also read as a bare mention of `<owner>`.
+
 **Loop prevention.** A delivery whose `sender.id` is the connection's bot
 user id is rejected, with the §12.1 exception that the bot's own same-repository
 pull-request revisions still enter review. With one identity per organization

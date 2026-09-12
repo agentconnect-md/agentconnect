@@ -13,7 +13,7 @@
  * plus the Control Plane's live membership resolution.
  */
 import type { GiteaHookMetadata, GiteaHookTarget, HookContext, RcHookAssign } from '@agentconnect.md/protocol'
-import { mentionsGithubHandle, truncateUtf8, GITHUB_BODY_EXCERPT_MAX } from '../github-ingress.js'
+import { mentionsGithubHandle, mentionsGithubTeam, truncateUtf8, GITHUB_BODY_EXCERPT_MAX } from '../github-ingress.js'
 
 /** The Gitea webhook event types this ingress maps; every other type is silently unmapped. */
 export const GITEA_EVENT_ISSUES = 'issues'
@@ -67,7 +67,7 @@ export interface GiteaPayload {
   action?: string
   /** Comment deliveries only: whether the commented subject is a pull request. */
   is_pull?: boolean
-  repository?: { id?: number; full_name?: string }
+  repository?: { id?: number; full_name?: string; owner?: GiteaUserRef }
   sender?: GiteaUserRef
   issue?: GiteaIssueRef
   pull_request?: GiteaPullRequestRef
@@ -94,6 +94,8 @@ export interface GiteaMatchCtx {
   subjectAuthorLogin?: string
   labels: string[]
   mentionText: string | undefined
+  /** The owner login a `@<owner>/<agent-name>` team mention may name (§8). */
+  teamOwnerLogin?: string
   /** Pull-request facts (loop prevention + the §8 external gate + metadata). */
   sourceRepoId?: string
   targetRepoId?: string
@@ -116,6 +118,13 @@ function userId(user: GiteaUserRef | undefined): string | undefined {
 
 function labelNames(subject: GiteaIssueRef | undefined): string[] {
   return (subject?.labels ?? []).map((label) => label.name ?? '').filter(Boolean)
+}
+
+/** The owner login a Gitea team mention names. Gitea's `api.Repository.owner` is an `api.User`
+ *  with no organization kind in 1.27 (`modules/structs/user.go`), so nothing in the signed payload
+ *  gates the form: it is pure text against the owner login, inert where Gitea renders no team. */
+function giteaTeamOwner(repository: GiteaPayload['repository']): string | undefined {
+  return repository?.owner?.login || repository?.owner?.username || repository?.full_name?.split('/')[0] || undefined
 }
 
 function positiveIndex(value: number | undefined): number | undefined {
@@ -170,6 +179,15 @@ function pullRequestCtxBase(payload: GiteaPayload, pull: GiteaPullRequestRef, in
  * `pull_request` `edited`, which is inert here for the same reason.
  */
 export function normalizeGiteaEvent(eventType: string, payload: GiteaPayload): GiteaMatchCtx | undefined {
+  const ctx = normalizeGiteaSubject(eventType, payload)
+  if (!ctx) return undefined
+  // The team-mention owner comes from the delivery's OWN repository, never from a rule.
+  const teamOwnerLogin = giteaTeamOwner(payload.repository)
+  return teamOwnerLogin === undefined ? ctx : { ...ctx, teamOwnerLogin }
+}
+
+/** The subject half of the normalization: everything except the team-mention owner. */
+function normalizeGiteaSubject(eventType: string, payload: GiteaPayload): GiteaMatchCtx | undefined {
   if (eventType === GITEA_EVENT_PUSH) {
     if (!payload.ref) return undefined
     return {
@@ -272,19 +290,27 @@ export function normalizeGiteaEvent(eventType: string, payload: GiteaPayload): G
   return undefined
 }
 
+/** The targeted agent handle in either accepted form: the bare name, or the `@<owner>/<agent-name>`
+ *  team an organization creates so the same handle autocompletes in Gitea's comment composer. */
+function giteaMentionsAgent(body: string | undefined, rule: RcHookAssign, owner: string | undefined): boolean {
+  return mentionsGithubHandle(body, rule.gitea?.agentName) || mentionsGithubTeam(body, owner, rule.gitea?.agentName)
+}
+
 export function giteaRuleIsSummoned(rule: RcHookAssign, ctx: GiteaMatchCtx): boolean {
   return (
     mentionsGithubHandle(ctx.mentionText, rule.gitea?.botUsername) ||
-    mentionsGithubHandle(ctx.mentionText, rule.gitea?.agentName)
+    giteaMentionsAgent(ctx.mentionText, rule, ctx.teamOwnerLogin)
   )
 }
 
 /** Explicit agent handles narrow a repository fan-out; the connection's bot handle is the broadcast form. */
-export function giteaMentionCandidates(rules: RcHookAssign[], body: string | undefined): RcHookAssign[] {
+export function giteaMentionCandidates(
+  rules: RcHookAssign[],
+  body: string | undefined,
+  owner?: string
+): RcHookAssign[] {
   if (rules.some((rule) => mentionsGithubHandle(body, rule.gitea?.botUsername))) return rules
-  const targeted = new Set(
-    rules.filter((rule) => mentionsGithubHandle(body, rule.gitea?.agentName)).map((rule) => rule.agentId)
-  )
+  const targeted = new Set(rules.filter((rule) => giteaMentionsAgent(body, rule, owner)).map((rule) => rule.agentId))
   return targeted.size === 0 ? rules : rules.filter((rule) => targeted.has(rule.agentId))
 }
 
