@@ -30,6 +30,8 @@ import {
 } from '../../persistence/ports.js'
 import { AgentWorkspaceRepoConflict } from '../../persistence/errors.js'
 import { GithubApiError } from '../../github/api.js'
+import { GiteaApiError } from '../../gitea/api.js'
+import { GiteaConnectDenied } from '../../gitea/connection.service.js'
 import { gitlabAuthorizationAccessLevel } from '../../gitlab/api.js'
 import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
@@ -218,29 +220,44 @@ export function agentRepoRoutes(deps: HttpDeps) {
       return toDto(row)
     }
 
-    /** The gitea arm of `POST /agents/:agentId/repos` (gitea-integration.md §5): the binding vouches, the tier is a local clamp. */
+    const ERROR_NAMES = {
+      400: 'Bad Request',
+      403: 'Forbidden',
+      404: 'Not Found',
+      409: 'Conflict',
+      429: 'Too Many Requests',
+      502: 'Bad Gateway'
+    } as const
+
+    /** The gitea arm of `POST /agents/:agentId/repos` (gitea-integration.md §5, §6): the binding vouches — bound on first use — and the tier is a local clamp. */
     const authorizeGiteaRepository = async (
       req: FastifyRequest,
       reply: FastifyReply,
       agent: AgentRecord,
       body: { repoId: string; access: RepoAccess }
     ): Promise<AgentRepoAuthDtoT | undefined> => {
-      const conflict = (message: string): undefined => {
-        void reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
+      const refused = (status: 400 | 403 | 404 | 409 | 429 | 502, message: string): undefined => {
+        void reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
       }
+      const conflict = (message: string): undefined => refused(409, message)
       if (!deps.gitea) return conflict('Gitea is not configured on this deployment')
       const orgId = orgOf(req)
       const repoId = BigInt(body.repoId)
-      const binding = await deps.repos.giteaRepositoryBinding.byRepo(orgId, repoId)
-      if (!binding || binding.state === 'cleanup_pending') {
-        return conflict('the repository is not a managed Gitea repository in this organization')
-      }
       if (
         agent.workspace.mode === 'git' &&
         agent.workspace.credential?.provider === 'gitea' &&
         agent.workspaceRepoId === repoId
       ) {
         return conflict('this is already the agent’s workspace repository')
+      }
+      let binding
+      try {
+        // The grant is the consumer that binds the repository when nothing else has (§6).
+        binding = (await deps.gitea.bindings.ensureBound(orgId, repoId)).binding
+      } catch (e) {
+        if (e instanceof GiteaConnectDenied) return refused(e.status, e.message)
+        if (e instanceof GiteaApiError) return refused(e.code === 'RATE_LIMITED' ? 429 : 502, `gitea: ${e.message}`)
+        throw e
       }
       const held = await deps.repos.agentRepoAuth.listForAgent(agent.id)
       if (held.some((row) => row.provider === 'gitea' && row.repoId === repoId)) {

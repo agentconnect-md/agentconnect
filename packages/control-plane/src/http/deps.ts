@@ -70,6 +70,7 @@ import type { GitlabAccountService } from '../gitlab/account.service.js'
 import type { GitlabProvisioner } from '../gitlab/provisioner.js'
 import type { GiteaConnectionService } from '../gitea/connection.service.js'
 import type { GiteaProvisioner } from '../gitea/provisioner.js'
+import type { GiteaBindingService } from '../gitea/binding.service.js'
 import type { GiteaApiClient } from '../gitea/api.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
@@ -427,6 +428,8 @@ export interface HttpDeps {
   gitea?: {
     connections: GiteaConnectionService
     provisioner: GiteaProvisioner
+    /** Binding on first use (§6): the one path a trigger, workspace, grant or the card binds a repository through. */
+    bindings: GiteaBindingService
     api: GiteaApiClient
   }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */

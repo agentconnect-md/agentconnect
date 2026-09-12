@@ -4193,6 +4193,8 @@ export interface AgentRepoAuthorizationRepo {
   get(id: string): Promise<AgentRepoAuthorizationRecord | null>
   /** The agent's grants — the console card AND the mint-gate read (viewer-free). */
   listForAgent(agentId: AgentId): Promise<AgentRepoAuthorizationRecord[]>
+  /** Every grant in the organization over one numeric repository — who still consumes a binding (gitea-integration.md §6). */
+  listForRepository(orgId: OrgId, provider: CodeHostProvider, repoId: bigint): Promise<AgentRepoAuthorizationRecord[]>
   /** Raise a grant's capability tier after the caller's GitHub access is re-checked. */
   updateAccess(id: string, access: RepoAccess): Promise<AgentRepoAuthorizationRecord | null>
   /** Best-effort display refresh when the mint gate detects a rename (repoId match

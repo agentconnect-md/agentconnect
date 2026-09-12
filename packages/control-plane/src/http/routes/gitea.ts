@@ -22,12 +22,11 @@ import {
   giteaListUserRepositories,
   giteaOrganizationName,
   giteaPageSize,
-  giteaRepositoryById,
   type GiteaRepository
 } from '../../gitea/api.js'
+import { collectGiteaReferences, describeGiteaReferences } from '../../gitea/references.js'
 import { unionGiteaWebhookEvents } from '../../gitea/webhook-events.js'
 import { GITEA_MINIMUM_VERSION_LABEL, parseGiteaVersion } from '../../gitea/version.js'
-import { GiteaRepositoryClaimConflict } from '../../persistence/errors.js'
 import {
   ConnectGiteaBody,
   CreateGiteaRepositoryBody,
@@ -347,9 +346,9 @@ export function giteaRoutes(deps: HttpDeps) {
       {
         schema: {
           tags: [Tag.Gitea],
-          summary: 'Bind a Gitea repository',
+          summary: 'Bind a Gitea repository ahead of use',
           description:
-            'Re-fetches the selected repository by numeric id through the organization’s connection, requires the bot to hold admin on it (§4.4), acquires the deployment-global repository claim, creates the binding in the provisioning state and runs the §6 saga: the managed webhook is installed when an enabled trigger wants ingress, tested, and the binding is ready — with the webhook_unverified warning when the relay never observed the test delivery.',
+            'Optional: a repository is bound on first use when a trigger, an agent workspace or an additional-repository grant names it (§6), and this route binds one ahead of that. It re-fetches the repository by numeric id through the organization’s connection, requires the bot to hold admin on it (§4.4), acquires the deployment-global repository claim, creates the binding and runs the §6 saga: the managed webhook is installed when an enabled trigger wants ingress, tested, and the binding is ready — with the webhook_unverified warning when the relay never observed the test delivery. A repository that is already bound answers 409.',
           operationId: 'createGiteaRepository',
           body: CreateGiteaRepositoryBody,
           response: {
@@ -367,51 +366,23 @@ export function giteaRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const orgId = orgOf(req)
         const repoId = BigInt(req.body.repoId)
-        const err = (status: 400 | 403 | 404 | 409, message: string) =>
-          reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
-        const connection = await deps.repos.giteaConnection.forOrg(orgId)
-        if (!connection) return err(404, 'this organization has no Gitea connection')
-        if (connection.state !== 'connected') {
-          return err(
-            409,
-            connection.state === 'token_rejected'
-              ? 'the Gitea token was rejected — replace it first'
-              : 'the Gitea connection is being removed'
-          )
-        }
-        if (await deps.repos.giteaRepositoryBinding.byRepo(orgId, repoId)) {
-          return err(409, 'repository is already bound in this organization')
-        }
         try {
-          const token = await gitea.connections.withToken(orgId, connection.id)
-          // The server re-fetches; the client-supplied id is never trusted for facts (§6).
-          const repo = await giteaRepositoryById(token, repoId, gitea.api)
-          if (!repo) return err(400, 'repository is not accessible through this connection')
-          if (repo.permissions?.admin !== true) {
-            return err(
-              403,
-              `the bot ${connection.botUsername} must hold admin on ${repo.full_name} — grant it as a collaborator or through a team first`
-            )
+          const bound = await gitea.bindings.ensureBound(orgId, repoId)
+          if (!bound.created) {
+            return reply.code(409).send({
+              error: ERROR_NAMES[409],
+              statusCode: 409,
+              message: 'repository is already bound in this organization'
+            })
           }
-          const binding = await deps.repos.giteaRepositoryBinding.createWithClaim({
-            orgId,
-            connectionId: connection.id,
-            repoId,
-            repoPath: repo.full_name,
-            ...(repo.default_branch ? { defaultBranch: repo.default_branch } : {}),
-            ...(repo.clone_url ? { cloneUrl: repo.clone_url } : {}),
-            axisBaseUrl: gitea.api.baseUrl
-          })
-          await gitea.provisioner.provision(orgId, binding.id)
-          const converged = await deps.repos.giteaRepositoryBinding.get(orgId, binding.id)
           const wanted = await webhookWanted(orgId)
-          return bindingToDto(converged ?? binding, wanted(binding.repoId))
+          return bindingToDto(bound.binding, wanted(bound.binding.repoId))
         } catch (e) {
-          // The deployment-global claim: one managing organization per repository; never disclose WHICH.
-          if (e instanceof GiteaRepositoryClaimConflict)
-            return err(409, 'repository is already claimed by another organization')
           if (e instanceof GiteaConnectDenied) return denied(reply, e)
-          if (e instanceof GiteaApiError) return upstream(reply, e, orgId, connection.id)
+          if (e instanceof GiteaApiError) {
+            const connection = await deps.repos.giteaConnection.forOrg(orgId)
+            return upstream(reply, e, orgId, connection?.id ?? '')
+          }
           throw e
         }
       }
@@ -474,7 +445,7 @@ export function giteaRoutes(deps: HttpDeps) {
           tags: [Tag.Gitea],
           summary: 'Unbind a managed Gitea repository',
           description:
-            'Disables local authority, deletes the managed webhook by its recorded id and releases the deployment-global claim (§6). A rejected token parks the binding in cleanup_pending until a replacement token or a manual webhook removal clears it.',
+            'Disables local authority, deletes the managed webhook by its recorded id and releases the deployment-global claim (§6). Refused with 409 while a trigger, an agent workspace or an additional-repository grant still references the repository — the binding was bound on first use and is never unbound on last use, so this is the one removal. A rejected token parks the binding in cleanup_pending until a replacement token or a manual webhook removal clears it.',
           operationId: 'deleteGiteaRepository',
           params: IdParam,
           response: {
@@ -484,15 +455,28 @@ export function giteaRoutes(deps: HttpDeps) {
               stateReason: z.string().nullable().optional()
             }),
             403: ErrorDto,
-            404: ErrorDto
+            404: ErrorDto,
+            409: ErrorDto
           }
         }
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         const orgId = orgOf(req)
-        if (!(await deps.repos.giteaRepositoryBinding.get(orgId, req.params.id)))
-          return notFound(reply, 'gitea repository')
+        const target = await deps.repos.giteaRepositoryBinding.get(orgId, req.params.id)
+        if (!target) return notFound(reply, 'gitea repository')
+        // A parked cleanup finishes what it started; anything live is refused while something still points at it.
+        if (target.state !== 'cleanup_pending') {
+          const references = await collectGiteaReferences(deps.repos, OrgId(orgId), target.repoId)
+          if (references.length > 0) {
+            return reply.code(409).send({
+              error: ERROR_NAMES[409],
+              statusCode: 409,
+              message: describeGiteaReferences(target.repoPath, references),
+              code: 'repository_in_use'
+            })
+          }
+        }
         const outcome = await gitea.provisioner.disconnect(orgId, req.params.id)
         if (outcome.removed) return { removed: true }
         const binding = await deps.repos.giteaRepositoryBinding.get(orgId, req.params.id)

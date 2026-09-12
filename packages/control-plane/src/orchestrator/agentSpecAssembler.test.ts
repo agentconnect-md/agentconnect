@@ -99,6 +99,7 @@ function repoAuthWith(rows: Array<[fullName: string, repoId: bigint]>): AgentRep
         createdBy: null
       })),
     create: unused,
+    listForRepository: unused,
     get: unused,
     updateAccess: unused,
     updateFullName: unused,

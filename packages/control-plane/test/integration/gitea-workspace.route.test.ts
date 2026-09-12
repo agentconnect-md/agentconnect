@@ -51,7 +51,7 @@ async function harness() {
   })
   seam = built
   running = buildHttpApp(prisma, { PUBLIC_RELAY_URL: 'https://relay.example.test' }, undefined, undefined, {
-    gitea: { connections: built.connections, provisioner: built.provisioner, api: built.api }
+    gitea: built.httpDeps
   })
   built.broadcast.current = (hook) => running!.deps.hooks.broadcast(hook)
   const connection = await built.connections.connect(DEFAULT_ORG_ID, built.fake.token)
@@ -142,7 +142,9 @@ describe('gitea workspaces (§5) — the binding vouches', () => {
       }
     })
     expect(write.statusCode).toBe(409)
-    expect((write.json() as { message: string }).message).toContain('managed repository')
+    expect((write.json() as { message: string }).message).toContain('a repository the connected bot administers')
+    // Nothing the bot does not administer was bound along the way (§6).
+    expect(await prisma.giteaRepositoryBinding.count({ where: { repoId: 556690n } })).toBe(0)
   })
 
   it('refuses a workspace on a binding mid-removal', async () => {
@@ -201,12 +203,14 @@ describe('gitea additional-repository grants (§5)', () => {
       payload: { provider: 'gitea', repoId: REPO.toString() }
     })
     expect(workspace.statusCode).toBe(409)
+    // A repository the bot does not administer cannot be bound on first use (§4.4, §6).
     const unbound = await h.a.app.inject({
       method: 'POST',
       url: `${ORG}/agents/${agentId}/repos`,
       payload: { provider: 'gitea', repoId: '556690' }
     })
-    expect(unbound.statusCode).toBe(409)
+    expect(unbound.statusCode).toBe(403)
+    expect((unbound.json() as { message: string }).message).toContain('must hold admin')
   })
 })
 

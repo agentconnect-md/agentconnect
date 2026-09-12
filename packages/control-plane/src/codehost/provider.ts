@@ -124,6 +124,8 @@ export interface CodeHostWorkspaceDerivation {
   gitRepo: string
   /** Unstated ⇒ the highest tier the target carries. */
   requestedAccess?: 'read' | 'write'
+  /** True when the caller persists the outcome: a host that binds on first use binds HERE (gitea-integration.md §6); a preview never writes. */
+  write?: boolean
 }
 
 /** The persisted workspace fields one of this host's derivations writes. */

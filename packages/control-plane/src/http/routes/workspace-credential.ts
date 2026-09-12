@@ -39,7 +39,9 @@ export async function deriveWorkspaceCredential(
   orgId: string,
   actorUserId: string | undefined,
   gitRepo: string,
-  requestedAccess?: 'read' | 'write'
+  requestedAccess?: 'read' | 'write',
+  /** `write` marks the two persisting callers: a host that binds on first use binds only for them (gitea-integration.md §6). */
+  opts: { write?: boolean } = {}
 ): Promise<DerivedWorkspace> {
   // Asked in the registry's own order, which is the order these arms have always
   // run in: the first host that RECOGNIZES the address owns the outcome, refusals
@@ -51,7 +53,8 @@ export async function deriveWorkspaceCredential(
       orgId,
       ...(actorUserId !== undefined ? { actorUserId } : {}),
       gitRepo,
-      ...(requestedAccess !== undefined ? { requestedAccess } : {})
+      ...(requestedAccess !== undefined ? { requestedAccess } : {}),
+      ...(opts.write ? { write: true } : {})
     })
     if (derived) return derived
   }

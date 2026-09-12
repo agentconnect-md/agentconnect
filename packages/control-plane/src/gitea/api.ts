@@ -328,6 +328,24 @@ export async function giteaPublicRepository(
   }
 }
 
+/** One repository by path AS THE BOT (`GET /repos/:owner/:repo`); null when the bot cannot see it — the first-use read of §6. */
+export async function giteaRepositoryByPath(
+  token: string,
+  owner: string,
+  repo: string,
+  client: GiteaApiClient
+): Promise<GiteaRepository | null> {
+  try {
+    return await giteaRequest<GiteaRepository>(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
+      token,
+      client
+    })
+  } catch (e) {
+    if (e instanceof GiteaApiError && (e.code === 'NOT_FOUND' || e.code === 'FORBIDDEN')) return null
+    throw e
+  }
+}
+
 /** The `owner/repo` halves of a repository path; null unless it has exactly two segments. */
 export function splitGiteaRepoPath(path: string): { owner: string; repo: string } | null {
   const segments = path.split('/')

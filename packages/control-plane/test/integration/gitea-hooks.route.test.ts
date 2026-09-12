@@ -40,7 +40,7 @@ async function harness() {
   const built = buildGiteaSeam(prisma, cipher, clock)
   seam = built
   running = buildHttpApp(prisma, { PUBLIC_RELAY_URL: RELAY_URL }, undefined, undefined, {
-    gitea: { connections: built.connections, provisioner: built.provisioner, api: built.api }
+    gitea: built.httpDeps
   })
   built.broadcast.current = (hook) => running!.deps.hooks.broadcast(hook)
   // A live relay row so the ingress gate passes.
@@ -166,15 +166,16 @@ describe('gitea hooks — routes, compile, webhook converge (§7)', () => {
     expect(await prisma.giteaWebhookSecret.count()).toBe(0)
   })
 
-  it('refuses a repository that is not a managed binding, an unauthorized agent, and GitLab-only run notes', async () => {
+  it('refuses a repository the bot cannot see, an unauthorized agent, and GitLab-only run notes', async () => {
     const h = await harness()
+    // Binding on first use (§6) reaches only what the bot administers: an unknown id is the bot's 404, answered as such.
     const unbound = await h.a.app.inject({
       method: 'POST',
       url: `${ORG}/hooks`,
       payload: body(h.agentId, { repoId: '999' })
     })
-    expect(unbound.statusCode).toBe(409)
-    expect((unbound.json() as { message: string }).message).toContain('not a managed Gitea binding')
+    expect(unbound.statusCode).toBe(400)
+    expect((unbound.json() as { message: string }).message).toContain('not accessible through this connection')
     // §5: a hook never creates a grant, so the stranger is refused until the repository is authorized.
     const stranger = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: body(h.strangerId) })
     expect(stranger.statusCode).toBe(409)

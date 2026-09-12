@@ -41,6 +41,7 @@ import { resolveGiteaInstanceConfig } from './gitea/config.js'
 import { GiteaApiClient, type FetchLike as GiteaFetchLike } from './gitea/api.js'
 import { GiteaConnectionService } from './gitea/connection.service.js'
 import { GiteaProvisioner } from './gitea/provisioner.js'
+import { GiteaBindingService } from './gitea/binding.service.js'
 import { GiteaConvergeSweeper } from './gitea/converge-sweeper.js'
 import { GiteaGitcredService } from './gitea/gitcred.service.js'
 import { GiteaStatusCoordinator, GiteaStatusReporter } from './gitea/status-projection.js'
@@ -1290,9 +1291,18 @@ export function buildContainer(
     api: giteaApi,
     log: { warn: (obj, msg) => http.log.warn(obj, msg) }
   })
+  // §6 binding on first use: the path every write that names a repository binds it through.
+  const giteaBindingService = new GiteaBindingService({
+    connections: repos.giteaConnection,
+    tokens: giteaConnectionService,
+    bindings: repos.giteaRepositoryBinding,
+    provisioner: giteaProvisioner,
+    api: giteaApi
+  })
   const gitea = {
     connections: giteaConnectionService,
     provisioner: giteaProvisioner,
+    bindings: giteaBindingService,
     api: giteaApi
   }
   // The §6 convergence sweep, the half of a contended pass's obligation that survives a restart.

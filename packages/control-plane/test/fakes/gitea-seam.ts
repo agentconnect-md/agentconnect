@@ -7,8 +7,10 @@
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
 import type { Clock } from '../../src/domain/clock.js'
 import { OrgId } from '../../src/domain/ids.js'
+import { GiteaBindingService } from '../../src/gitea/binding.service.js'
 import { GiteaConnectionService } from '../../src/gitea/connection.service.js'
 import { GiteaProvisioner } from '../../src/gitea/provisioner.js'
+import type { HttpDeps } from '../../src/http/deps.js'
 import { unionGiteaWebhookEvents } from '../../src/gitea/webhook-events.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
@@ -34,6 +36,10 @@ export interface GiteaSeam {
   fake: FakeGitea
   connections: GiteaConnectionService
   provisioner: GiteaProvisioner
+  /** Binding on first use (§6) over the same stores. */
+  bindingService: GiteaBindingService
+  /** The bundle a suite hands `buildHttpApp` as `depsOverrides.gitea`. */
+  httpDeps: NonNullable<HttpDeps['gitea']>
   api: FakeGitea['api']
   connectionRepo: PgGiteaConnectionRepo
   bindings: PgGiteaRepositoryBindingRepo
@@ -110,5 +116,24 @@ export function buildGiteaSeam(
       await new Promise<void>((resolve) => setImmediate(resolve))
     }
   }
-  return { fake, connections, provisioner, api: fake.api, connectionRepo, bindings, webhookSecrets, broadcast, settled }
+  const bindingService = new GiteaBindingService({
+    connections: connectionRepo,
+    tokens: connections,
+    bindings,
+    provisioner,
+    api: fake.api
+  })
+  return {
+    fake,
+    connections,
+    provisioner,
+    bindingService,
+    httpDeps: { connections, provisioner, bindings: bindingService, api: fake.api },
+    api: fake.api,
+    connectionRepo,
+    bindings,
+    webhookSecrets,
+    broadcast,
+    settled
+  }
 }

@@ -31,7 +31,7 @@ function app(options: GiteaSeamOptions = {}): HttpApp & { seam: GiteaSeam } {
   const built = buildGiteaSeam(prisma, cipher, clock, options)
   seam = built
   running = buildHttpApp(prisma, { PUBLIC_RELAY_URL: 'https://relay.example.test' }, undefined, undefined, {
-    gitea: { connections: built.connections, provisioner: built.provisioner, api: built.api }
+    gitea: built.httpDeps
   })
   built.broadcast.current = (hook) => running!.deps.hooks.broadcast(hook)
   return { ...running, seam: built }

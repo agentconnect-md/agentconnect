@@ -18,7 +18,7 @@ import { Prisma } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import type { CodeHostProvider } from '@agentconnect.md/protocol'
 import type { AgentRepoAuthorizationRecord, AgentRepoAuthorizationRepo, RepoAccess } from '../ports.js'
-import { AgentId } from '../../domain/ids.js'
+import { AgentId, type OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockHookReviewAgentRepoScope } from '../review-projection-lock.js'
 import { AgentWorkspaceRepoConflict } from '../errors.js'
@@ -97,6 +97,19 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
   async listForAgent(agentId: AgentId): Promise<AgentRepoAuthorizationRecord[]> {
     const rows = await this.db.agentRepoAuthorization.findMany({
       where: { agentId },
+      include: withCreator,
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toRecord)
+  }
+
+  async listForRepository(
+    orgId: OrgId,
+    provider: CodeHostProvider,
+    repoId: bigint
+  ): Promise<AgentRepoAuthorizationRecord[]> {
+    const rows = await this.db.agentRepoAuthorization.findMany({
+      where: { provider, repoId, agent: { orgId } },
       include: withCreator,
       orderBy: { createdAt: 'asc' }
     })

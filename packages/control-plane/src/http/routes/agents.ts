@@ -62,7 +62,8 @@ import {
   AGENT_WAKE_FEATURE,
   WorkspaceErrorReason,
   TaskErrorReason,
-  gitRepoLabel
+  gitRepoLabel,
+  isCodeHostHookKind
 } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
@@ -1781,7 +1782,9 @@ export function agentRoutes(deps: HttpDeps) {
         if (ws?.mode === 'git') {
           let derived: DerivedWorkspace
           try {
-            derived = await deriveWorkspaceCredential(deps, orgOf(req), req.principal?.userId, ws.gitRepo, ws.access)
+            derived = await deriveWorkspaceCredential(deps, orgOf(req), req.principal?.userId, ws.gitRepo, ws.access, {
+              write: true
+            })
           } catch (e) {
             if (e instanceof WorkspaceCredentialRefused) return conflict(e.message)
             if (e instanceof UserAuthzDeniedError) {
@@ -2642,7 +2645,8 @@ export function agentRoutes(deps: HttpDeps) {
                 existing.orgId,
                 req.principal?.userId,
                 req.body.gitRepo,
-                req.body.access
+                req.body.access,
+                { write: true }
               )
             } catch (e) {
               if (e instanceof WorkspaceCredentialRefused) return conflict(e.message)
@@ -3208,6 +3212,13 @@ export function agentRoutes(deps: HttpDeps) {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)
           }
           for (const h of removedHooks) deps.hooks.remove(h.id)
+          // A code-host hook that left with the agent no longer wants ingress: its host narrows the managed webhook to what remains.
+          for (const h of removedHooks) {
+            if (!isCodeHostHookKind(h.kind)) continue
+            codeHosts[h.kind].hooks.convergeManagedRepository(deps, current.orgId, h.repoId, (err) =>
+              app.log.warn({ err, hookId: h.id }, `${h.kind} webhook converge after agent delete failed`)
+            )
+          }
           // §19.4: the agent's GitLab accounts retire — memberships removed,
           // PATs revoked, accounts deleted. Best-effort here; an account whose
           // external cleanup fails stays `cleanup_pending` for a repair.
