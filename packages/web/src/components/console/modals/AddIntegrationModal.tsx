@@ -2114,11 +2114,6 @@ export default function AddIntegrationModal({
                     ) : null
                   }
                 />
-
-                <div className="mb-4 flex items-start gap-2 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  <Icon name="info" size={13} className="mt-[1px] flex-none" />
-                  <span>{CODE_HOST_SUBSCRIPTION_HINT.gitea}</span>
-                </div>
               </>
             )}
           </>
