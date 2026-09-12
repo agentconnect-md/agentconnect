@@ -47,6 +47,7 @@ import {
   HookRunListDto,
   HookRerunBody,
   HookRerunDto,
+  HookRerunErrorDto,
   ErrorDto,
   IdParam,
   type HookDtoT
@@ -1294,10 +1295,10 @@ export function hookRoutes(deps: HttpDeps) {
             200: HookRerunDto,
             403: ErrorDto,
             404: ErrorDto,
-            409: ErrorDto,
-            429: ErrorDto,
-            502: ErrorDto,
-            503: ErrorDto
+            409: HookRerunErrorDto,
+            429: HookRerunErrorDto,
+            502: HookRerunErrorDto,
+            503: HookRerunErrorDto
           }
         }
       },
@@ -1337,7 +1338,8 @@ export function hookRoutes(deps: HttpDeps) {
             error: RERUN_STATUS_TEXT[outcome.status],
             statusCode: outcome.status,
             message: outcome.message,
-            code: outcome.code
+            code: outcome.code,
+            relayCode: 'relayCode' in outcome ? outcome.relayCode : undefined
           })
         }
         return {
