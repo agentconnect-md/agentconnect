@@ -179,7 +179,7 @@ describe('AddAgentRepoModal, Gitea repositories', () => {
     expect(created).toHaveLength(1)
   })
 
-  it('sets a repository up before the selection lands, then authorizes it', async () => {
+  it('offers a repository that is not added yet and authorizes it — the grant binds it', async () => {
     mocks.fetchGiteaRepositories.mockResolvedValue([])
     connected([
       {
@@ -190,18 +190,18 @@ describe('AddAgentRepoModal, Gitea repositories', () => {
         private: false
       }
     ])
-    mocks.createGiteaRepository.mockResolvedValue(binding({ repoId: '7712', repoPath: 'example-org/example-second' }))
     mocks.createAgentRepo.mockResolvedValue(grant({ repoId: '7712' }))
     await render()
     await act(async () => buttonsNamed('Gitea')[0]?.click())
     await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
-    expect(document.body.textContent).toContain('sets up on pick')
+    expect(document.body.textContent).toContain('added on save')
 
     const option = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('example-org/example-second')
     )
     await act(async () => option?.click())
-    expect(mocks.createGiteaRepository).toHaveBeenCalledWith({ repoId: '7712' })
+    // Binding on first use (§6): the grant itself binds the repository; the picker sets nothing up.
+    expect(mocks.createGiteaRepository).not.toHaveBeenCalled()
 
     await act(async () => buttonsNamed('Add')[0]?.click())
     expect(mocks.createAgentRepo).toHaveBeenCalledWith('agent-a', {
@@ -209,6 +209,7 @@ describe('AddAgentRepoModal, Gitea repositories', () => {
       repoId: '7712',
       access: 'read'
     })
+    expect(mocks.createGiteaRepository).not.toHaveBeenCalled()
   })
 
   it('says a repository is taken by the workspace or an existing grant instead of offering it', async () => {

@@ -380,21 +380,19 @@ export function GiteaRepositoryField(props: RepositoryPickerProps) {
 }
 
 /** One pickable Gitea repository — already added, or one the organization's bot administers.
- *  Picking an unadded one installs its managed webhook, which is why it says so before the
- *  click. Transient states are listed and disabled, not hidden: a repository that is mid-setup
- *  reads as on its way rather than mysteriously absent. */
+ *  An unadded one is added by the save that follows (gitea-integration.md §6), which is why it
+ *  says so before the click. Transient states are listed and disabled, not hidden: a repository
+ *  that is mid-setup reads as on its way rather than mysteriously absent. */
 export function GiteaRepositoryOption({
   choice,
   selected = false,
-  busy = false,
   onSelect
 }: {
   choice: GiteaRepositoryChoice
   selected?: boolean
-  busy?: boolean
   onSelect: () => void
 }) {
-  const selectable = giteaChoiceSelectable(choice) && !busy
+  const selectable = giteaChoiceSelectable(choice)
   const state = choice.binding ? GITEA_REPOSITORY_STATE[choice.binding.state] : null
   const branch = choice.defaultBranch ? `default branch ${choice.defaultBranch}` : 'no default branch reported'
   return (
@@ -421,7 +419,7 @@ export function GiteaRepositoryOption({
           {choice.repoPath}
         </span>
         <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          {busy ? 'Installing the repository webhook…' : choice.binding ? branch : `${branch} · sets up on pick`}
+          {choice.binding ? branch : `${branch} · added on save`}
         </span>
       </span>
       {state && state.label !== 'ready' && <span className={`badge flex-none ${state.badge}`}>{state.label}</span>}
@@ -490,7 +488,7 @@ export function GiteaNoRepositoriesNotice({
       ) : (
         <span>
           The connected Gitea bot administers no repository. Give it Admin on one — as a collaborator or through a team
-          — before it can be set up here.
+          — before it can be picked here.
         </span>
       )}
     </div>

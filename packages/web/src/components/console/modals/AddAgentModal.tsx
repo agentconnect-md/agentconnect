@@ -205,7 +205,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [glAccessOpen, setGlAccessOpen] = useState(false)
   const [glPush, setGlPush] = useState(true)
   // Gitea path: repositories picked by their numeric id. One this organization has not added
-  // yet is set up as part of picking it (gitea-integration.md §6); there is no anonymous arm —
+  // yet is bound by the create itself (gitea-integration.md §6); there is no anonymous arm —
   // a public Gitea repository is the Git URL tile's business.
   const [gtRepo, setGtRepo] = useState('')
   const [gtOpen, setGtOpen] = useState(false)
@@ -445,9 +445,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const gtPicked = gt.choices.find((choice) => choice.repoId === gtRepo)
   const gtMatches = matchGiteaRepositories(gt.choices, gtQ)
 
-  // Picking an unadded repository installs its webhook first; a failed setup picks nothing.
-  const pickGtRepository = async (choice: GiteaRepositoryChoice) => {
-    if (!choice.binding && !(await gt.provision(choice.repoId))) return
+  // An unadded repository is bound by the create itself, so the pick is only a pick.
+  const pickGtRepository = (choice: GiteaRepositoryChoice) => {
     setGtRepo(choice.repoId)
     setGtOpen(false)
     setBranch(choice.defaultBranch ?? '')
@@ -1395,15 +1394,13 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                       }}
                       onClose={() => setGtOpen(false)}
                       onQueryChange={setGtQ}
-                      error={gt.provisionError ? `Couldn’t set up that repository — ${gt.provisionError}` : undefined}
                     >
                       {gtMatches.map((choice) => (
                         <GiteaRepositoryOption
                           key={choice.repoId}
                           choice={choice}
                           selected={gtRepo === choice.repoId}
-                          busy={gt.provisioning === choice.repoId}
-                          onSelect={() => void pickGtRepository(choice)}
+                          onSelect={() => pickGtRepository(choice)}
                         />
                       ))}
                       {gtMatches.length === 0 && (

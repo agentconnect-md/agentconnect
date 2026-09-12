@@ -375,9 +375,9 @@ describe('AddIntegrationModal, Gitea trigger', () => {
     expect(mocks.createGiteaHook).toHaveBeenCalledWith(expect.objectContaining({ family: 'issues' }))
   })
 
-  it('sets up a repository the organization has not added yet, then keys the hook on its id', async () => {
-    // The wizard is where a repository joins the organization (§6): picking an unadded one
-    // installs its webhook first, and the create that follows carries the numeric id.
+  it('offers a repository the organization has not added yet and keys the hook on its id — the create binds it', async () => {
+    // Binding on first use (§6): the wizard never sets a repository up itself; the hook create
+    // carries the numeric id and the Control Plane binds the repository as the same write.
     mocks.fetchGiteaRepositories.mockResolvedValue([])
     mocks.fetchGiteaConnectionRepositories.mockResolvedValue([
       {
@@ -388,17 +388,17 @@ describe('AddIntegrationModal, Gitea trigger', () => {
         private: true
       }
     ])
-    mocks.createGiteaRepository.mockResolvedValue(binding)
     await renderAgent({ id: 'agent-fresh-repo' })
 
     await act(async () => tileNamed('Gitea')?.click())
     expect(mocks.fetchGiteaConnectionRepositories).toHaveBeenCalledWith('conn-1')
     await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
-    expect(document.body.textContent).toContain('sets up on pick')
+    expect(document.body.textContent).toContain('added on save')
     await act(async () => clickText('example-org/example-repo')?.click())
-    expect(mocks.createGiteaRepository).toHaveBeenCalledWith({ repoId: '7711' })
+    expect(mocks.createGiteaRepository).not.toHaveBeenCalled()
 
     await act(async () => clickText('Connect')?.click())
     expect(mocks.createGiteaHook).toHaveBeenCalledWith(expect.objectContaining({ repoId: '7711' }))
+    expect(mocks.createGiteaRepository).not.toHaveBeenCalled()
   })
 })

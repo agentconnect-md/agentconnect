@@ -5,11 +5,11 @@
  *
  * The shape is `gitlab-projects.ts` with Gitea's two differences. The picker
  * offers one list of two kinds of row — a repository this organization already
- * added and one the connection's bot administers — so the flow reads as "pick a
- * repository" rather than "go set one up elsewhere first". And the candidate
- * list is the bot's own `admin` set (§4.4), not a search: a repository the bot
- * only has `write` on is never offered, because binding it could not install the
- * managed webhook.
+ * added and one the connection's bot administers — and picking either is the
+ * whole flow: the write that names an unadded one (the trigger, the workspace,
+ * the grant) binds it on the way (§6). And the candidate list is the bot's own
+ * `admin` set (§4.4), not a search: a repository the bot only has `write` on is
+ * never offered, because binding it could not install the managed webhook.
  *
  * The state vocabulary is the one GitLab uses (gitea-integration.md §12), so a
  * reader who manages both hosts reads one set of badges; the host-specific
@@ -98,7 +98,7 @@ export function giteaStateReasonText(reason: string | null): string | null {
   return GITEA_STATE_REASON[reason] ?? null
 }
 
-/** One pickable repository: `binding` null means picking it sets it up first. */
+/** One pickable repository: `binding` null means the write that picks it binds it (§6). */
 export interface GiteaRepositoryChoice {
   repoId: string
   repoPath: string
@@ -113,7 +113,7 @@ export function giteaRepositorySelectable(state: GiteaRepositoryBindingState): b
   return state === 'ready' || state === 'admin_degraded' || state === 'runtime_degraded'
 }
 
-/** An unadded repository is always selectable — setup is what picking it does. */
+/** An unadded repository is always selectable — the save that follows binds it. */
 export function giteaChoiceSelectable(choice: GiteaRepositoryChoice): boolean {
   return choice.binding === null || giteaRepositorySelectable(choice.binding.state)
 }

@@ -618,7 +618,7 @@ export default function AddIntegrationModal({
   const [glReportingMode, setGlReportingMode] = useState<HookReportingMode>('check')
 
   // Gitea path: one hook per repository, picked here. A repository the organization has not
-  // added yet is set up as part of picking it (gitea-integration.md §6).
+  // added yet is bound by the create itself (gitea-integration.md §6).
   const [gtRepo, setGtRepo] = useState<string | null>(null)
   const [gtOpen, setGtOpen] = useState(false)
   const [gtQ, setGtQ] = useState('')
@@ -1111,10 +1111,8 @@ export default function AddIntegrationModal({
   const gtPicked = gt.choices.find((choice) => choice.repoId === gtRepo)
   const gtMatches = matchGiteaRepositories(gt.choices, gtQ)
 
-  // Picking an unadded repository installs its webhook first; the pick lands on the binding the
-  // saga produced, so a failed setup selects nothing.
-  const pickGtRepository = async (choice: GiteaRepositoryChoice) => {
-    if (!choice.binding && !(await gt.provision(choice.repoId))) return
+  // An unadded repository is bound by the create below, so the pick is only a pick.
+  const pickGtRepository = (choice: GiteaRepositoryChoice) => {
     setGtRepo(choice.repoId)
     setGtOpen(false)
     setErr(null)
@@ -2051,11 +2049,9 @@ export default function AddIntegrationModal({
                     onClose={() => setGtOpen(false)}
                     onQueryChange={setGtQ}
                     error={
-                      gt.provisionError
-                        ? `Couldn’t set up that repository — ${gt.provisionError}`
-                        : gtAlreadyWatched
-                          ? `This agent already watches ${gtPicked?.repoPath ?? 'this repository'}.`
-                          : undefined
+                      gtAlreadyWatched
+                        ? `This agent already watches ${gtPicked?.repoPath ?? 'this repository'}.`
+                        : undefined
                     }
                   >
                     {gtMatches.map((choice) => (
@@ -2063,8 +2059,7 @@ export default function AddIntegrationModal({
                         key={choice.repoId}
                         choice={choice}
                         selected={gtRepo === choice.repoId}
-                        busy={gt.provisioning === choice.repoId}
-                        onSelect={() => void pickGtRepository(choice)}
+                        onSelect={() => pickGtRepository(choice)}
                       />
                     ))}
                     {gtMatches.length === 0 && <div className="fnohit">No repositories match &ldquo;{gtQ}&rdquo;</div>}

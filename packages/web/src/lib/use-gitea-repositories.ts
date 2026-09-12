@@ -5,21 +5,22 @@
  * Add-integration wizard's Gitea trigger, the agent-workspace forms, and the
  * additional-repository grant.
  *
- * The shape is `use-gitlab-projects.ts` with Gitea's two differences
+ * The shape is `use-gitlab-projects.ts` with Gitea's three differences
  * (gitea-integration.md §4, §6). Authorization is the organization's ONE bot
  * connection, which is made on the Integrations card — there is no browser
  * authorization to start from a picker, so this hook offers no `connect`: it
- * reports `connected: false` and the caller sends the reader to the card. And
- * the candidates are the bot's whole `admin` set in one listing rather than a
+ * reports `connected: false` and the caller sends the reader to the card. The
+ * candidates are the bot's whole `admin` set in one listing rather than a
  * server-side search, so the query filters locally: the set is bounded by what
  * one bot user administers, and Gitea's repository search cannot express
- * "administered by me".
+ * "administered by me". And there is no `provision`: a repository the
+ * organization has not added is bound by the write that first names it — the
+ * trigger, the workspace, the grant — so picking one is just picking it.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ApiError,
-  createGiteaRepository,
   fetchGiteaConnectionRepositories,
   fetchGiteaConnections,
   fetchGiteaRepositories,
@@ -63,12 +64,6 @@ export interface GiteaRepositoryPicker {
   reload: () => void
   /** A `reload` is in flight. */
   reloading: boolean
-  /** Repository id whose setup saga is running right now. */
-  provisioning: string | null
-  /** The last failed setup, in Gitea's words. */
-  provisionError: string | null
-  /** Bind an unadded repository. Resolves to null when setup failed. */
-  provision: (repoId: string) => Promise<GiteaRepositoryBindingDto | null>
 }
 
 /** `active` keeps a pane that is not showing from issuing any request at all. */
@@ -79,11 +74,8 @@ export function useGiteaRepositories(active: boolean): GiteaRepositoryPicker {
   const [instanceUrl, setInstanceUrl] = useState(GITEA_DEFAULT_INSTANCE_URL)
   const [candidates, setCandidates] = useState<GiteaRepositoryDto[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [provisioning, setProvisioning] = useState<string | null>(null)
-  const [provisionError, setProvisionError] = useState<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
   const [reloading, setReloading] = useState(false)
-  const busy = useRef(false)
 
   // One request per active lifecycle, and no one-shot guard: the guard would survive the
   // cleanup that abandons its own request, so Strict Mode's setup/cleanup/setup — or leaving
@@ -128,29 +120,6 @@ export function useGiteaRepositories(active: boolean): GiteaRepositoryPicker {
     }
   }, [active, connectionId, reloadToken])
 
-  const provision = useCallback(
-    async (repoId: string): Promise<GiteaRepositoryBindingDto | null> => {
-      if (busy.current || !connectionId) return null
-      busy.current = true
-      setProvisioning(repoId)
-      setProvisionError(null)
-      try {
-        // The saga runs server-side and answers with the converged binding, so its outcome
-        // state — ready, or ready with a webhook warning — is what the picker shows.
-        const binding = await createGiteaRepository({ repoId })
-        setBindings((current) => [...(current ?? []).filter((b) => b.id !== binding.id), binding])
-        return binding
-      } catch (e) {
-        setProvisionError(errorText(e))
-        return null
-      } finally {
-        busy.current = false
-        setProvisioning(null)
-      }
-    },
-    [connectionId]
-  )
-
   const reload = useCallback((): void => {
     setReloading(true)
     setReloadToken((token) => token + 1)
@@ -175,9 +144,6 @@ export function useGiteaRepositories(active: boolean): GiteaRepositoryPicker {
     connected: connectionId !== null,
     instanceUrl,
     reload,
-    reloading,
-    provisioning,
-    provisionError,
-    provision
+    reloading
   }
 }

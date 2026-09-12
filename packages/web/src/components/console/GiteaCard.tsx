@@ -1,10 +1,11 @@
 // No 'use client' here: rendered only inside a client boundary (IntegrationsView).
 
-// The organization's Gitea connection and the repositories it manages
+// The organization's Gitea connection and the repositories in use under it
 // (gitea-integration.md §4, §6, §12). Unlike the GitLab card the CONNECTION is the only
-// identity — one bot user serves every agent — so the rows under it are repositories, and
-// they are added here: binding one needs the bot to hold Admin on it, which is a fact about
-// the bot rather than about whoever is picking.
+// identity — one bot user serves every agent — so the rows under it are repositories. They
+// arrive by first use: a trigger, a workspace or a grant that names one the bot administers
+// binds it, and "Add repository" here binds one ahead of that. Each row keeps Repair, rotate
+// and Remove; Remove is refused, naming the reference, while anything still points at it.
 // Deployment-config opt-in: with no Gitea instance configured these routes 404 and the card says so.
 // Connections and repositories are org-level infrastructure — visible to all, writable by non-viewers.
 
@@ -107,7 +108,7 @@ function ConnectFields({
           <Icon name="users" size={13} className="mt-[2px] flex-none" />
           <span>
             Use a dedicated bot user with <span className="text-(--text-secondary)">Admin</span>&#32;on each repository
-            you add. Everything an agent writes is attributed to it, and an agent can do anything the bot can.
+            agents will use. Everything an agent writes is attributed to it, and an agent can do anything the bot can.
           </span>
         </span>
       </div>
@@ -576,7 +577,8 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
 
       {enabled === true && connection !== null && bindings.length === 0 && (
         <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No repositories yet. Add one here, then point a trigger or an agent workspace at it.
+          No repositories in use yet. Point a trigger or an agent workspace at one the bot administers and it appears
+          here — or add one ahead of time.
         </div>
       )}
 

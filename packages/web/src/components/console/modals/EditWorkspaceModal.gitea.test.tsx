@@ -193,7 +193,7 @@ describe('EditWorkspaceModal, Gitea workspace', () => {
     expect(mocks.fetchGiteaConnectionRepositories).not.toHaveBeenCalled()
   })
 
-  it('sets up a repository the organization has not added, then saves it', async () => {
+  it('offers a repository the organization has not added and saves it as its address — the save binds it', async () => {
     mocks.fetchGiteaRepositories.mockResolvedValue([])
     connected([
       {
@@ -204,30 +204,19 @@ describe('EditWorkspaceModal, Gitea workspace', () => {
         private: true
       }
     ])
-    let settle: (value: unknown) => void = () => undefined
-    mocks.createGiteaRepository.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          settle = resolve
-        })
-    )
     await render()
     await act(async () => buttonsNamed('Gitea')[0]?.click())
     expect(mocks.fetchGiteaConnectionRepositories).toHaveBeenCalledWith('conn-1')
 
     await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
-    expect(document.body.textContent).toContain('sets up on pick')
+    expect(document.body.textContent).toContain('added on save')
     const option = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('example-org/example-repo')
     )
     await act(async () => option?.click())
-    expect(mocks.createGiteaRepository).toHaveBeenCalledWith({ repoId: '7711' })
-    // The saga installs a webhook, which takes a moment — the picker says so instead of looking stuck.
-    expect(document.body.textContent).toContain('Installing the repository webhook')
+    // Binding on first use (§6): the workspace write binds the repository; the picker sets nothing up.
+    expect(mocks.createGiteaRepository).not.toHaveBeenCalled()
 
-    await act(async () => {
-      settle(binding({ repoId: '7711' }))
-    })
     await act(async () => buttonsNamed('Replace workspace')[0]?.click())
     expect(mocks.setAgentWorkspace).toHaveBeenCalledWith('agent-a', {
       mode: 'git',
@@ -236,5 +225,6 @@ describe('EditWorkspaceModal, Gitea workspace', () => {
       gitBranch: 'main',
       access: 'write'
     })
+    expect(mocks.createGiteaRepository).not.toHaveBeenCalled()
   })
 })
