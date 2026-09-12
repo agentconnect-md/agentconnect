@@ -13,6 +13,7 @@ import {
   giteaFamilyTile,
   giteaHookFamily,
   giteaHookNeedsNormalization,
+  giteaMentionUsage,
   giteaTriggerModeOf,
   giteaTriggerTooltip
 } from './gitea-events'
@@ -30,6 +31,15 @@ describe('GT_TRIGGER_LABEL', () => {
     expect(giteaDefaultTriggerMode('merge_request')).toBe('every')
     expect(giteaDefaultTriggerMode('issues')).toBe('first')
     expect(giteaDefaultTriggerMode('push')).toBe('first')
+  })
+
+  it('offers the owner-qualified team form once a repository owner is known', () => {
+    // No picked repository ⇒ no owner to qualify the handle with.
+    expect(giteaMentionUsage('triager')).toBe('Use @triager to trigger only this agent.')
+    expect(giteaMentionUsage('triager', null)).toBe('Use @triager to trigger only this agent.')
+    const owned = giteaMentionUsage('triager', 'example-org')
+    expect(owned).toContain('@triager')
+    expect(owned).toContain('@example-org/triager')
   })
 
   it('admits the organization bot’s broadcast and reviewer requests, without an absolute "only"', () => {

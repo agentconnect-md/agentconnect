@@ -93,9 +93,14 @@ export function giteaTriggerTooltip(mode: GtTriggerMode, agentName: string): str
   }
 }
 
-/** Concrete hover copy for the agent-targeted Gitea mention form. */
-export function giteaMentionUsage(agentName: string): string {
-  return `Use @${agentName} to trigger only this agent.`
+/** Concrete hover copy for the agent-targeted Gitea mention form. `teamOwner` is the
+ *  repository owner: a Gitea team named after the agent makes the same handle autocomplete in
+ *  the comment composer. Teams exist only under an organization, and no field the console holds
+ *  says whether this owner is one, so the copy names the condition instead of hiding the form. */
+export function giteaMentionUsage(agentName: string, teamOwner?: string | null): string {
+  return teamOwner
+    ? `Use @${agentName} — or @${teamOwner}/${agentName}, once the organization has a team named ${agentName} — to trigger only this agent.`
+    : `Use @${agentName} to trigger only this agent.`
 }
 
 /** The default create-form selection: pull requests only. */
