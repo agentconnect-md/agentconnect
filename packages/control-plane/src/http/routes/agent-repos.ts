@@ -28,7 +28,7 @@ import {
   type AgentRepoAuthorizationRecord,
   type RepoAccess
 } from '../../persistence/ports.js'
-import { AgentWorkspaceRepoConflict } from '../../persistence/errors.js'
+import { AgentWorkspaceRepoConflict, GiteaBindingUnavailable } from '../../persistence/errors.js'
 import { GithubApiError } from '../../github/api.js'
 import { GiteaApiError } from '../../gitea/api.js'
 import { GiteaConnectDenied } from '../../gitea/connection.service.js'
@@ -265,14 +265,21 @@ export function agentRepoRoutes(deps: HttpDeps) {
           `${binding.repoPath} is already authorized for this agent — upgrade that grant or remove it to lower the tier`
         )
       }
-      const row = await deps.repos.agentRepoAuth.create({
-        agentId: agent.id,
-        provider: 'gitea',
-        repoId,
-        repoFullName: binding.repoPath,
-        access: body.access,
-        ...(req.principal ? { createdByUserId: req.principal.userId } : {})
-      })
+      let row: AgentRepoAuthorizationRecord
+      try {
+        row = await deps.repos.agentRepoAuth.create({
+          agentId: agent.id,
+          provider: 'gitea',
+          repoId,
+          repoFullName: binding.repoPath,
+          access: body.access,
+          ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+        })
+      } catch (e) {
+        // The binding fence (§6): the repository was removed while this grant was in flight.
+        if (e instanceof GiteaBindingUnavailable) return conflict(e.message)
+        throw e
+      }
       void deps.repos.audit
         .append({
           kind: 'agent_repo_change',

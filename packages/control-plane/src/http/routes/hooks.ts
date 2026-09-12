@@ -35,7 +35,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { toDbPlatform, type DbPlatform } from '../../persistence/platform.js'
-import { AgentWorkspaceIntegrationConflict } from '../../persistence/errors.js'
+import { AgentWorkspaceIntegrationConflict, GiteaBindingUnavailable } from '../../persistence/errors.js'
 import { isCanonicalGithubAddress } from '../../domain/git-host.js'
 import { hookFamilyShapeError, hookSiblingShapeError, type HookFamily } from '../../hooks/hook-family.js'
 import { codeHostsOf } from '../../codehost/registry.js'
@@ -210,7 +210,7 @@ export function hookRoutes(deps: HttpDeps) {
     // The repository repeats the workspace-access invariant under its shared
     // transaction fence. Surface a concurrent loser as the same 409 as the
     // route's fast preflight instead of leaking it as a generic 500.
-    type PersistOutcome = HookRecord | AgentWorkspaceIntegrationConflict | DuplicateHookFamily
+    type PersistOutcome = HookRecord | AgentWorkspaceIntegrationConflict | DuplicateHookFamily | GiteaBindingUnavailable
     const persistHook = async (input: UpsertHookInput): Promise<PersistOutcome> => {
       try {
         // §24.1: every gitlab-kind write carries the instance its repoId names,
@@ -224,7 +224,7 @@ export function hookRoutes(deps: HttpDeps) {
               : input
         return await deps.repos.hook.upsert(fenced)
       } catch (err) {
-        if (err instanceof AgentWorkspaceIntegrationConflict) return err
+        if (err instanceof AgentWorkspaceIntegrationConflict || err instanceof GiteaBindingUnavailable) return err
         if (isHookFamilyCollision(err)) return new DuplicateHookFamily()
         throw err
       }
@@ -777,7 +777,7 @@ export function hookRoutes(deps: HttpDeps) {
             .send({ error: ERROR_NAMES[written.status], statusCode: written.status, message: written.message })
         }
         const hook = written.result
-        if (hook instanceof AgentWorkspaceIntegrationConflict) {
+        if (hook instanceof AgentWorkspaceIntegrationConflict || hook instanceof GiteaBindingUnavailable) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
         if (hook instanceof DuplicateHookFamily) {
@@ -1205,7 +1205,7 @@ export function hookRoutes(deps: HttpDeps) {
             .send({ error: ERROR_NAMES[written.status], statusCode: written.status, message: written.message })
         }
         const hook = written.result
-        if (hook instanceof AgentWorkspaceIntegrationConflict) {
+        if (hook instanceof AgentWorkspaceIntegrationConflict || hook instanceof GiteaBindingUnavailable) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
         // A retarget carries the row's own family onto the new repository, where

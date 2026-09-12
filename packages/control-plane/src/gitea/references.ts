@@ -66,8 +66,9 @@ function describeReference(reference: GiteaBindingReference): string {
   }
 }
 
-/** The refusal a referenced binding's removal answers; empty references mean nothing to refuse. */
+/** The refusal a referenced binding's removal answers; a reference that left between the refusal and this read is still a refusal. */
 export function describeGiteaReferences(repoPath: string, references: readonly GiteaBindingReference[]): string {
+  if (references.length === 0) return `${repoPath} was still in use when its removal was refused — retry`
   const named = references.slice(0, NAMED_REFERENCES).map(describeReference)
   const rest = references.length - named.length
   const list = rest > 0 ? `${named.join(', ')} and ${rest} more` : named.join(', ')

@@ -15,6 +15,12 @@ import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { trackedTestClock } from '../fakes/tracked-clock.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { DaemonLiveness } from '../../src/ports.js'
+import { GiteaBindingUnavailable } from '../../src/persistence/errors.js'
+import { joinGiteaBindingFence } from '../../src/persistence/repositories/gitea-binding-fence.js'
+import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { PgAgentRepoAuthorizationRepo } from '../../src/persistence/repositories/agent-repo-auth.repo.js'
+import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
+import { AgentId, HookId, OrgId } from '../../src/domain/ids.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const REPO = 556677n
@@ -477,5 +483,155 @@ describe('removing a referenced binding (§6)', () => {
     expect(await bindings()).toHaveLength(0)
     expect(await claims()).toBe(0)
     expect(managedHooks(h)).toHaveLength(0)
+  })
+})
+
+describe('the reference fence (§6)', () => {
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+  /** Settles to 'blocked' unless `run` finishes first — the probe that a lock is really held against it. */
+  const raced = (run: Promise<unknown>) =>
+    Promise.race([
+      run.then(
+        () => 'finished',
+        () => 'finished'
+      ),
+      sleep(400).then(() => 'blocked')
+    ])
+  const hookRow = (agentId: string) => ({
+    id: randomUUID(),
+    orgId: DEFAULT_ORG_ID,
+    agentId,
+    kind: 'gitea' as const,
+    name: 'late',
+    sessionMode: 'perThread' as const,
+    repoId: REPO,
+    repoFullName: 'example-org/example-repo',
+    family: 'merge_request',
+    events: ['merge_request:*']
+  })
+
+  it('a removal waits for an in-flight reference commit and is then refused by it', async () => {
+    const h = await harness()
+    const { binding } = await h.seam.bindingService.ensureBound(DEFAULT_ORG_ID, REPO)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: h.daemonId, name: 'writer' })
+    // A writer has passed the fence and inserted its trigger, but has not committed yet.
+    let release: () => void = () => undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const writer = prisma.$transaction(
+      async (tx) => {
+        await joinGiteaBindingFence(tx, DEFAULT_ORG_ID, REPO)
+        await tx.hookDef.create({ data: hookRow(agentId) })
+        await held
+      },
+      { timeout: 15_000 }
+    )
+    await sleep(200)
+    // The removal cannot count past the writer's shared lock; once it can, the reference is there.
+    const removal = h.seam.bindings.beginCleanup(DEFAULT_ORG_ID, binding.id, REPO, new Date(clock.now()), {
+      unlessReferenced: true
+    })
+    expect(await raced(removal)).toBe('blocked')
+    release()
+    await writer
+    expect(await removal).toBe('referenced')
+    expect((await h.seam.bindings.get(DEFAULT_ORG_ID, binding.id))!.state).toBe('ready')
+    expect(await claims()).toBe(1)
+  })
+
+  it('a reference write behind a removal waits for it and is refused once the binding is parked', async () => {
+    const h = await harness()
+    await h.seam.bindingService.ensureBound(DEFAULT_ORG_ID, REPO)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: h.daemonId, name: 'late' })
+    // A removal holds the claim exclusively, about to park it.
+    let release: () => void = () => undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const remover = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "code_host_repository_claim" WHERE "provider" = 'gitea' AND "externalId" = ${REPO.toString()}::bigint FOR UPDATE`
+        await held
+        await tx.codeHostRepositoryClaim.updateMany({
+          where: { provider: 'gitea', externalId: REPO },
+          data: { state: 'cleanup_pending' }
+        })
+      },
+      { timeout: 15_000 }
+    )
+    await sleep(200)
+    const grant = new PgAgentRepoAuthorizationRepo(prisma).create({
+      agentId: AgentId(agentId),
+      provider: 'gitea',
+      repoId: REPO,
+      repoFullName: 'example-org/example-repo',
+      access: 'read'
+    })
+    // The grant waits on the exclusive lock, then re-reads a parked binding and refuses.
+    expect(await raced(grant)).toBe('blocked')
+    release()
+    await remover
+    await expect(grant).rejects.toBeInstanceOf(GiteaBindingUnavailable)
+    expect(await prisma.agentRepoAuthorization.count({ where: { provider: 'gitea', repoId: REPO } })).toBe(0)
+  })
+
+  it('the trigger, workspace and grant writes all refuse a parked binding', async () => {
+    const h = await harness()
+    const { binding } = await h.seam.bindingService.ensureBound(DEFAULT_ORG_ID, REPO)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: h.daemonId, name: 'parked-out' })
+    expect(await h.seam.bindings.beginCleanup(DEFAULT_ORG_ID, binding.id, REPO, new Date(clock.now()))).toBe('parked')
+    await expect(
+      new PgHookRepo(prisma).upsert({
+        hookId: HookId(randomUUID()),
+        orgId: OrgId(DEFAULT_ORG_ID),
+        agentId: AgentId(agentId),
+        kind: 'gitea',
+        name: 'late',
+        sessionMode: 'perThread',
+        axisBaseUrl: BASE,
+        repoId: REPO,
+        repoFullName: 'example-org/example-repo',
+        family: 'merge_request',
+        events: ['merge_request:*']
+      })
+    ).rejects.toBeInstanceOf(GiteaBindingUnavailable)
+    const agents = new PgAgentRepo(prisma)
+    const agent = (await agents.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    await expect(
+      agents.setWorkspace(
+        OrgId(DEFAULT_ORG_ID),
+        agent.id,
+        agent.lastModifiedAt,
+        'scratch',
+        {
+          mode: 'git',
+          isolation: 'shared',
+          gitRepo: `${BASE}/example-org/example-repo.git`,
+          credential: { provider: 'gitea', access: 'write' }
+        },
+        REPO
+      )
+    ).rejects.toBeInstanceOf(GiteaBindingUnavailable)
+    await expect(
+      new PgAgentRepoAuthorizationRepo(prisma).create({
+        agentId: AgentId(agentId),
+        provider: 'gitea',
+        repoId: REPO,
+        repoFullName: 'example-org/example-repo',
+        access: 'read'
+      })
+    ).rejects.toBeInstanceOf(GiteaBindingUnavailable)
+    expect(await prisma.hookDef.count({ where: { orgId: DEFAULT_ORG_ID, kind: 'gitea', repoId: REPO } })).toBe(0)
+    // The route answers the same refusal as a 409, not a 500.
+    const viaRoute = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents/${agentId}/repos`,
+      payload: { provider: 'gitea', repoId: REPO.toString(), access: 'read' }
+    })
+    expect(viaRoute.statusCode).toBe(409)
   })
 })

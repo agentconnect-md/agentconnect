@@ -24,6 +24,7 @@ import {
   giteaPageSize,
   type GiteaRepository
 } from '../../gitea/api.js'
+import { REPOSITORY_IN_USE_REASON } from '../../gitea/binding-state.js'
 import { collectGiteaReferences, describeGiteaReferences } from '../../gitea/references.js'
 import { unionGiteaWebhookEvents } from '../../gitea/webhook-events.js'
 import { GITEA_MINIMUM_VERSION_LABEL, parseGiteaVersion } from '../../gitea/version.js'
@@ -465,19 +466,17 @@ export function giteaRoutes(deps: HttpDeps) {
         const orgId = orgOf(req)
         const target = await deps.repos.giteaRepositoryBinding.get(orgId, req.params.id)
         if (!target) return notFound(reply, 'gitea repository')
-        // A parked cleanup finishes what it started; anything live is refused while something still points at it.
-        if (target.state !== 'cleanup_pending') {
+        // §6: never unbound on last use — refused, under the claim's lock, while a trigger, workspace or grant still names it.
+        const outcome = await gitea.provisioner.disconnect(orgId, req.params.id, { unlessReferenced: true })
+        if (outcome.reason === REPOSITORY_IN_USE_REASON) {
           const references = await collectGiteaReferences(deps.repos, OrgId(orgId), target.repoId)
-          if (references.length > 0) {
-            return reply.code(409).send({
-              error: ERROR_NAMES[409],
-              statusCode: 409,
-              message: describeGiteaReferences(target.repoPath, references),
-              code: 'repository_in_use'
-            })
-          }
+          return reply.code(409).send({
+            error: ERROR_NAMES[409],
+            statusCode: 409,
+            message: describeGiteaReferences(target.repoPath, references),
+            code: REPOSITORY_IN_USE_REASON
+          })
         }
-        const outcome = await gitea.provisioner.disconnect(orgId, req.params.id)
         if (outcome.removed) return { removed: true }
         const binding = await deps.repos.giteaRepositoryBinding.get(orgId, req.params.id)
         return { removed: false, state: binding?.state, stateReason: binding?.stateReason ?? outcome.reason ?? null }

@@ -105,8 +105,8 @@ export function buildGiteaSeam(
     track(convergeRepository(orgId, repoId, convergeOpts))
   // The routes also kick a parked cleanup fire-and-forget after a token replacement.
   const disconnect = provisioner.disconnect.bind(provisioner)
-  provisioner.disconnect = (orgId, bindingId) => {
-    const run = disconnect(orgId, bindingId)
+  provisioner.disconnect = (orgId, bindingId, opts) => {
+    const run = disconnect(orgId, bindingId, opts)
     void track(run.then(() => undefined))
     return run
   }

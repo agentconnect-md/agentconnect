@@ -268,7 +268,11 @@ webhook follows §7's inverse (no enabled trigger, no ingress) while the binding
 and its claim stay for the operator. Removing a binding that a trigger, an agent
 workspace or an additional-repository grant still references is refused with a
 409 naming the references; a binding already parked in `cleanup_pending`
-finishes its cleanup regardless.
+finishes its cleanup regardless. The refusal is fenced on the claim row: every
+transaction that commits a reference locks the repository's claim shared and
+re-reads the binding as live, and the removal counts references and parks under
+the same row held exclusively, so a reference can neither land after the count
+nor survive the park.
 
 Repair, transfer, and unbind follow §10 and §19.4. A created webhook's id is
 recorded the moment the create answers, before the read-back that can fail,

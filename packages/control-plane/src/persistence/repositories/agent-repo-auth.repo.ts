@@ -22,6 +22,7 @@ import { AgentId, type OrgId } from '../../domain/ids.js'
 import { PgHookRepo } from './hook.repo.js'
 import { lockHookReviewAgentRepoScope } from '../review-projection-lock.js'
 import { AgentWorkspaceRepoConflict } from '../errors.js'
+import { joinGiteaBindingFence } from './gitea-binding-fence.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 
 const withCreator = { createdBy: true } as const
@@ -66,13 +67,15 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
       await lockHookReviewAgentRepoScope(tx, input.agentId, input.repoId)
       const agent = await tx.agent.findUnique({
         where: { id: input.agentId },
-        select: { workspaceRepoId: true, gitCredentialProvider: true }
+        select: { orgId: true, workspaceRepoId: true, gitCredentialProvider: true }
       })
       // The hosts number repositories independently, so the workspace collides only
       // when the grant names ITS provider — `gitCredentialProvider` is that provider.
       if (agent?.workspaceRepoId === input.repoId && agent.gitCredentialProvider === input.provider) {
         throw new AgentWorkspaceRepoConflict(input.repoId)
       }
+      // A gitea grant references a binding (gitea-integration.md §6): it commits only while that binding is live.
+      if (input.provider === 'gitea' && agent) await joinGiteaBindingFence(tx, agent.orgId, input.repoId)
       const row = await tx.agentRepoAuthorization.create({
         data: {
           agentId: input.agentId,

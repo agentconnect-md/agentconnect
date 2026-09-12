@@ -131,6 +131,7 @@ import {
   AGENT_WORKSPACE_INTEGRATION_CONFLICT_MESSAGE,
   AgentSetPlacementDenied,
   DaemonPlacementInSet,
+  GiteaBindingUnavailable,
   MemoryConnectionBusy,
   MemoryConnectionMissing
 } from '../../persistence/errors.js'
@@ -2074,6 +2075,8 @@ export function agentRoutes(deps: HttpDeps) {
           if (e instanceof OrganizationEnvironmentAdmissionError) {
             return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: e.message })
           }
+          // The binding fence (gitea-integration.md §6): the repository was removed while this create was in flight.
+          if (e instanceof GiteaBindingUnavailable) return conflict(e.message)
           const refused = placementRefusalMessage(e)
           if (refused) return conflict(refused)
           throw e

@@ -53,6 +53,7 @@ import {
 } from '../../agent-memory/home.js'
 import { PgAgentMemoryFileRepo, PgAgentMemoryHistoryRepo } from './agent-memory.repo.js'
 import { PgHookRepo } from './hook.repo.js'
+import { joinGiteaBindingFence } from './gitea-binding-fence.js'
 import { lockAgentPlacement, settlePlacementChange } from './agent-placement.js'
 import { assertAgentMayUseSet, assertDaemonNotInSet } from './member-set.repo.js'
 
@@ -360,6 +361,10 @@ export class PgAgentRepo implements AgentRepo {
       // the two writers in a cycle. Full order for every agent-config writer:
       // skill-source name scopes → org row (create only) → agent rows.
       await lockOrgForConfigWrite(tx, input.orgId)
+      // A gitea workspace references a binding (gitea-integration.md §6): it commits only while that binding is live.
+      if (ws.mode === 'git' && ws.credential?.provider === 'gitea' && input.workspaceRepoId !== undefined) {
+        await joinGiteaBindingFence(tx, input.orgId, input.workspaceRepoId)
+      }
       const bindId = externalConnectionIdOf(input.memory)[0]
       await fenceMemoryConnections(tx, input.orgId, externalConnectionIdOf(input.memory), bindId)
       const orgDefault =
@@ -727,6 +732,10 @@ export class PgAgentRepo implements AgentRepo {
           await lockHookReviewAgentRepoScope(tx, agentId, repoId)
         }
         await assertWorkspaceIntegrationCompatible(tx, agentId, affectedRepoIds, workspace, workspaceRepoId)
+        // A gitea workspace references a binding (gitea-integration.md §6): it commits only while that binding is live.
+        if (workspace.mode === 'git' && workspace.credential?.provider === 'gitea' && workspaceRepoId !== undefined) {
+          await joinGiteaBindingFence(tx, orgId, workspaceRepoId)
+        }
         const a = await tx.agent.update({
           where: { id: agentId, orgId, workspaceMode: expectedMode, lastModifiedAt: expectedLastModifiedAt },
           data: {

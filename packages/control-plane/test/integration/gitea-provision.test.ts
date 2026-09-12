@@ -531,7 +531,7 @@ describe('GiteaProvisioner (§6) — unbind', () => {
   it('parks the binding with its claim in ONE transaction before any provider call', async () => {
     const h = await harness()
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
-    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, REPO, new Date(clock.now()))).toBe(true)
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, REPO, new Date(clock.now()))).toBe('parked')
     expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('cleanup_pending')
     const claim = await prisma.codeHostRepositoryClaim.findUniqueOrThrow({
       where: { provider_externalId: { provider: 'gitea', externalId: REPO } }
@@ -540,7 +540,7 @@ describe('GiteaProvisioner (§6) — unbind', () => {
     // The same flip without an attached claim (an already-tombstoned one).
     await prisma.codeHostRepositoryClaim.update({ where: { id: claim.id }, data: { bindingRef: null } })
     await h.bindings.update(DEFAULT_ORG_ID, h.binding.id, { state: 'ready' })
-    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, REPO, new Date(clock.now()))).toBe(true)
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, REPO, new Date(clock.now()))).toBe('parked')
     expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('cleanup_pending')
     // A live lease refuses, and the binding is left exactly as it was.
     await h.bindings.update(DEFAULT_ORG_ID, h.binding.id, { state: 'ready' })
@@ -552,7 +552,7 @@ describe('GiteaProvisioner (§6) — unbind', () => {
     expect(
       await h.bindings.markProviderMutationStarted(DEFAULT_ORG_ID, h.binding.id, REPO, 'peer', until, new Date())
     ).toBe(true)
-    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, REPO, new Date(clock.now()))).toBe(false)
+    expect(await h.bindings.beginCleanup(DEFAULT_ORG_ID, h.binding.id, REPO, new Date(clock.now()))).toBe('leased')
     expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('ready')
   })
 
