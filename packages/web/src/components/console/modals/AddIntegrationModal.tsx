@@ -627,7 +627,7 @@ export default function AddIntegrationModal({
   const [gtModes, setGtModes] = useState<Partial<Record<GtFamily, GtTriggerMode>>>({})
   const gtModeOf = (fam: GtFamily): GtTriggerMode => gtModes[fam] ?? giteaDefaultTriggerMode(fam)
   const [gtReviewPolicy, setGtReviewPolicy] = useState<HookReviewPolicy>('full')
-  const [gtReportingMode, setGtReportingMode] = useState<HookReportingMode>('check')
+  const [gtReportingMode, setGtReportingMode] = useState<HookReportingMode>('status')
 
   // Reusing a bot is an advanced path; every platform opens on the create flow
   // until the user explicitly chooses an existing identity.

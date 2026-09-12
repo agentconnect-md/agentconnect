@@ -4099,8 +4099,8 @@ export type GiteaCommentFamily = GitlabCommentFamily
 /** The stored union across code hosts; each row carries only its own host's subset. */
 export type HookCommentFamily = GithubCommentFamily | GitlabCommentFamily
 export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
-// R2a intentionally exposes informational Checks only. `status` is R3.
-export type HookReportingMode = 'off' | 'check'
+// `check` is GitHub's informational Check and GitLab's run note; `status` is Gitea's commit status.
+export type HookReportingMode = 'off' | 'check' | 'status'
 // `required` remains server-rejected until the R2b acceptance gates pass.
 export type HookGateMode = 'informational'
 
@@ -4204,7 +4204,7 @@ export interface CreateGiteaHookInput {
   commentFamilies?: GiteaCommentFamily[]
   mentionOnly?: boolean
   reviewPolicy?: HookReviewPolicy
-  // 'check' publishes the pull request's commit status; no gateMode — a required check is the operator's choice.
+  // 'status' publishes the pull request's commit status; no gateMode — a required check is the operator's choice.
   reportingMode?: HookReportingMode
 }
 

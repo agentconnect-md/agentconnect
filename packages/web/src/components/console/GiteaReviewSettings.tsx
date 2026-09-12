@@ -21,7 +21,7 @@ export function GiteaReviewSettings({
   layout?: 'disclosure' | 'format'
   defaultExpanded?: boolean
 }) {
-  const repositoryMissing = !repositoryReady && (value.reviewPolicy !== 'off' || value.reportingMode === 'check')
+  const repositoryMissing = !repositoryReady && (value.reviewPolicy !== 'off' || value.reportingMode !== 'off')
   return (
     <CodeHostReviewSettings
       title="PR review"
@@ -31,6 +31,7 @@ export function GiteaReviewSettings({
       layout={layout}
       defaultExpanded={defaultExpanded}
       statusCheckLabel="Commit status"
+      statusMode="status"
       help={{
         inlineComments:
           'Submit formal COMMENT reviews with optional comments on specific changed lines. Gitea takes one comment per line, never a range.',
