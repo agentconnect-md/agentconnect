@@ -71,12 +71,6 @@ jobs:
             ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Install
         run: pnpm install --frozen-lockfile
-      # Still the first thing after the install, and the Build step below is why: it has to see the
-      # source checkout before protocol/connection dist artifacts can mask export resolution.
-      - name: Evaluation config validation · clean checkout
-        env:
-          PROMPTFOO_DISABLE_TELEMETRY: '1'
-        run: pnpm eval:validate
       - name: Generate Prisma client
         run: pnpm -r prisma:generate
       - name: Lint · Format · Typecheck
@@ -314,15 +308,19 @@ jobs:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
         run: cat "$CAPTURED_JOB_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
 
-  # The evaluation gates, off the Unit Test job's critical path. They are ~48s of the ~3m27s that
-  # job took, and it is the slowest in the workflow, so they buy back most of that on their own
-  # runner. `evals/README.md` calls these the deterministic, credential-free layer — the real
-  # Promptfoo evaluation (`eval:addons`) needs model credentials and never ran here.
+  # Everything the evaluation layer gates, off the Unit Test job's critical path. The gates alone were
+  # ~48s of the ~3m27s that job took, and it is the slowest in the workflow, so they buy back most of
+  # that on their own runner. `evals/README.md` calls these the deterministic, credential-free layer —
+  # the real Promptfoo evaluation (`eval:addons`) needs model credentials and never ran here.
+  #
+  # The config validation is here rather than beside a build because it has to read the source checkout
+  # before protocol/connection dist artifacts can mask export resolution. This job never builds, so that
+  # is a property of where it runs instead of a step order the next edit can reverse.
   #
   # No `prisma:generate` step: this closure reaches evals/, packages/daemon and the protocol-side
   # packages, none of which import the generated client.
   evals:
-    name: Evaluation Gates
+    name: Evaluation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -342,6 +340,10 @@ jobs:
           node-version-file: .nvmrc
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Evaluation config validation · clean checkout
+        env:
+          PROMPTFOO_DISABLE_TELEMETRY: '1'
+        run: pnpm eval:validate
       # Evaluation contracts, the Collaboration Arena gate (collaboration-arena.md §14 step 3), and
       # cross-surface activation parity (docs/designs/activation-parity.md) — a PR that changes
       # "who does this message activate" on one surface must either keep every leg green or declare
