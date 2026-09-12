@@ -234,7 +234,9 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       }
 
       const candidates =
-        ctx.eventAction === 'merge_request:review_requested' ? rules : giteaMentionCandidates(rules, ctx.mentionText)
+        ctx.eventAction === 'merge_request:review_requested'
+          ? rules
+          : giteaMentionCandidates(rules, ctx.mentionText, ctx.teamOwnerLogin)
       const matched = candidates
         .map((rule) => ({ rule, verdict: giteaRuleVerdict(rule, ctx) }))
         .filter((candidate) => candidate.verdict !== 'no-match')

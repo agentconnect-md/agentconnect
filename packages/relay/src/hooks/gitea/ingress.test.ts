@@ -31,7 +31,9 @@ const BOT_USER = 424242
 const BOT_LOGIN = 'example-bot'
 const HUMAN = 515151
 const OUTSIDER = 606060
-const REPO_PATH = 'example-org/example-repo'
+const REPO_OWNER = 'example-org'
+const REPO_PATH = `${REPO_OWNER}/example-repo`
+const REPO_OWNER_ID = 818181
 const HEAD_SHA = 'a'.repeat(40)
 const BASE_SHA = 'b'.repeat(40)
 const KEY = randomBytes(32).toString('hex')
@@ -76,7 +78,7 @@ function sender(id = HUMAN, login = 'alice'): Record<string, unknown> {
 }
 
 function repository(): Record<string, unknown> {
-  return { id: REPO, full_name: REPO_PATH }
+  return { id: REPO, full_name: REPO_PATH, owner: { id: REPO_OWNER_ID, login: REPO_OWNER, username: REPO_OWNER } }
 }
 
 function issuePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -725,6 +727,45 @@ describe('gitea ingress', () => {
     await flush()
     expect(h.sent).toHaveLength(0)
     expect(h.reports).toHaveLength(0)
+  })
+
+  it('the `@<owner>/<agent>` team form summons the agent and narrows a repository fan-out', async () => {
+    h.table.upsert(rule({}, { mentionOnly: true, commentFamilies: ['issues'], agentName: 'oncall' }))
+    h.table.upsert(
+      rule(
+        { hookId: HOOK_B, agentId: AGENT_B },
+        { mentionOnly: true, commentFamilies: ['issues'], agentName: 'deploy' }
+      )
+    )
+    const team = issueCommentPayload({ comment: { id: 2, body: `@${REPO_OWNER}/oncall please look` } })
+    expect((await post(h, team, { eventType: 'issue_comment' })).statusCode).toBe(202)
+    await flush()
+    expect(h.sent.map((m) => (m as RdMsgHook).hookId)).toEqual([HOOK])
+
+    // The bare handle is unaffected by the second accepted form.
+    h.sent.length = 0
+    const bare = issueCommentPayload({ comment: { id: 3, body: '@deploy ship it' } })
+    expect((await post(h, bare, { eventType: 'issue_comment', delivery: 'd2' })).statusCode).toBe(202)
+    await flush()
+    expect(h.sent.map((m) => (m as RdMsgHook).hookId)).toEqual([HOOK_B])
+  })
+
+  it('the team form is never a bare mention of the owner, and is inert without an owner', () => {
+    const body = `@${REPO_OWNER}/oncall please look`
+    const ctx = normalizeGiteaEvent('issue_comment', issueCommentPayload({ comment: { id: 4, body } }) as GiteaPayload)!
+    expect(ctx.teamOwnerLogin).toBe(REPO_OWNER)
+    const mentionOnly = { mentionOnly: true, commentFamilies: ['issues' as const] }
+    expect(giteaRuleVerdict(rule({}, { ...mentionOnly, agentName: 'oncall' }), ctx)).toBe('needs-authz')
+    // `@<owner>/<slug>` is the TEAM form, so an agent named after the owner is not summoned by it.
+    expect(giteaRuleVerdict(rule({}, { ...mentionOnly, agentName: REPO_OWNER }), ctx)).toBe('no-match')
+    expect(giteaRuleVerdict(rule({}, { ...mentionOnly, agentName: 'deploy' }), ctx)).toBe('no-match')
+    // A delivery naming no owner at all yields none, so the form selects nobody there.
+    const ownerless = normalizeGiteaEvent(
+      'issue_comment',
+      issueCommentPayload({ comment: { id: 5, body }, repository: { id: REPO } }) as GiteaPayload
+    )!
+    expect(ownerless.teamOwnerLogin).toBeUndefined()
+    expect(giteaRuleVerdict(rule({}, { ...mentionOnly, agentName: 'oncall' }), ownerless)).toBe('no-match')
   })
 
   it('verdict is pure: patterns gate before authz, and a foreign kind never matches', () => {

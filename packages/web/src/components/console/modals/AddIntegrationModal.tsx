@@ -1109,6 +1109,8 @@ export default function AddIntegrationModal({
     authorizedRepos.some((r) => repoAuthProvider(r) === 'gitlab' && r.repoId === glProject)
 
   const gtPicked = gt.choices.find((choice) => choice.repoId === gtRepo)
+  // The owner segment of the picked repository's path — the only owner the console holds for Gitea.
+  const gtTeamOwner = gtPicked?.repoPath?.split('/')[0] ?? null
   const gtMatches = matchGiteaRepositories(gt.choices, gtQ)
 
   // An unadded repository is bound by the create below, so the pick is only a pick.
@@ -2095,7 +2097,9 @@ export default function AddIntegrationModal({
                   familyAttr="data-gitea-family"
                   triggerAttr="data-gitea-trigger"
                   titleOf={(mode) =>
-                    mode === 'mention' ? giteaMentionUsage(agent.name) : giteaTriggerTooltip(mode, agent.name)
+                    mode === 'mention'
+                      ? giteaMentionUsage(agent.name, gtTeamOwner)
+                      : giteaTriggerTooltip(mode, agent.name)
                   }
                   bodyExtra={(fam) =>
                     giteaFamilyCarriesReviews(fam) ? (
