@@ -14,8 +14,7 @@ import {
   gitlabHookFamily,
   gitlabHookNeedsNormalization,
   gitlabTriggerModeOf,
-  gitlabTriggerTooltip,
-  parseGitlabHookThread
+  gitlabTriggerTooltip
 } from './gitlab-events'
 
 describe('GL_TRIGGER_LABEL', () => {
@@ -246,13 +245,6 @@ describe('gitlabHookNeedsNormalization', () => {
 
   it('leaves a note-only rule outside the console normalization model', () => {
     expect(gitlabHookNeedsNormalization({ events: [], commentFamilies: ['issues'], mentionOnly: false })).toBe(false)
-  })
-})
-
-describe('parseGitlabHookThread', () => {
-  it('names a rerunnable subject but never a branch', () => {
-    expect(parseGitlabHookThread('gitlab:4210:merge_request:17')).toEqual({ kind: 'merge_request', iid: 17 })
-    expect(parseGitlabHookThread('gitlab:4210:push:refs/heads/main')).toBeNull()
   })
 })
 

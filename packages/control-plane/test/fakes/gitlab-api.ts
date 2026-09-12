@@ -94,9 +94,6 @@ export class FakeGitlab {
   >()
   members = new Map<number, number>() // userId → access_level
   removedMembers: number[] = []
-  /** §16.1 rerun subjects, by IID. `headSha` is what a live read reports NOW. */
-  mergeRequests = new Map<number, { state: string; headSha: string; baseSha?: string; draft?: boolean }>()
-  issues = new Map<number, { state: string }>()
   deletedServiceAccounts: number[] = []
   /** Every accepted `PUT /user/avatar`, by the PAT that presented it (§7.3:
    *  only an account's own `api` token may wear its avatar). */
@@ -253,35 +250,6 @@ export class FakeGitlab {
           })
           return Response.json({ id, url: payload.url })
         }
-      }
-
-      if (/\/api\/v4\/projects\/\d+\/merge_requests\/\d+$/.test(url) && method === 'GET') {
-        const iid = Number(/merge_requests\/(\d+)$/.exec(url)![1])
-        const mr = this.mergeRequests.get(iid)
-        if (!mr) return Response.json({ message: 'Not Found' }, { status: 404 })
-        const projectId = Number(/projects\/(\d+)\//.exec(url)![1])
-        return Response.json({
-          iid,
-          state: mr.state,
-          title: `merge request ${iid}`,
-          web_url: `${this.opts.baseUrl}/${this.opts.path}/-/merge_requests/${iid}`,
-          draft: mr.draft ?? false,
-          sha: mr.headSha,
-          source_project_id: projectId,
-          target_project_id: projectId,
-          diff_refs: { base_sha: mr.baseSha ?? null, head_sha: mr.headSha, start_sha: mr.baseSha ?? null }
-        })
-      }
-      if (/\/api\/v4\/projects\/\d+\/issues\/\d+$/.test(url) && method === 'GET') {
-        const iid = Number(/issues\/(\d+)$/.exec(url)![1])
-        const issue = this.issues.get(iid)
-        if (!issue) return Response.json({ message: 'Not Found' }, { status: 404 })
-        return Response.json({
-          iid,
-          state: issue.state,
-          title: `issue ${iid}`,
-          web_url: `${this.opts.baseUrl}/${this.opts.path}/-/issues/${iid}`
-        })
       }
 
       if (/\/api\/v4\/projects\/\d+$/.test(url)) {

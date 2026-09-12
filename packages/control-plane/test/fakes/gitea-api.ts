@@ -64,22 +64,6 @@ export interface FakeGiteaHook {
   active: boolean
 }
 
-/** One pull request as the rerun and status paths read it (§10.4, §16.1). */
-export interface FakeGiteaPull {
-  state: 'open' | 'closed'
-  headSha: string
-  baseSha?: string
-  merged?: boolean
-  draft?: boolean
-  headRepoId?: number
-}
-
-export interface FakeGiteaIssue {
-  state: 'open' | 'closed'
-  /** Issues and pull requests share one index space; a pull request answers the issue read too. */
-  isPull?: boolean
-}
-
 /** One appended commit status; Gitea keeps the history and shows the latest per context. */
 export interface FakeGiteaStatus {
   id: number
@@ -149,9 +133,6 @@ export class FakeGitea {
   repositories: FakeGiteaRepo[]
   permissions: Record<string, 'none' | 'read' | 'write' | 'admin' | 'owner'>
   hooks = new Map<number, FakeGiteaHook>()
-  /** Pull requests and issues by index, for the rerun subject reads; absent ⇒ 404. */
-  pulls = new Map<number, FakeGiteaPull>()
-  issues = new Map<number, FakeGiteaIssue>()
   /** Every commit status ever written, in order. */
   statuses: FakeGiteaStatus[] = []
   /** Test deliveries fired, by hook id. */
@@ -370,37 +351,6 @@ export class FakeGitea {
         return Response.json({ permission: answer, role_name: answer, user: { id, login, username: login } })
       }
 
-      const pullRoute = /^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/.exec(route)
-      if (pullRoute && method === 'GET') {
-        const repo = this.repositories.find((candidate) => candidate.full_name === `${pullRoute[1]}/${pullRoute[2]}`)
-        const pull = this.pulls.get(Number(pullRoute[3]))
-        if (!repo || !pull) return Response.json({ message: "The target couldn't be found." }, { status: 404 })
-        return Response.json({
-          id: 7_000_000 + Number(pullRoute[3]),
-          number: Number(pullRoute[3]),
-          state: pull.state,
-          merged: pull.merged === true,
-          ...(pull.draft !== undefined ? { draft: pull.draft } : {}),
-          head: { sha: pull.headSha, ref: 'feature', repo_id: pull.headRepoId ?? repo.id },
-          base: { sha: pull.baseSha ?? 'b'.repeat(40), ref: repo.default_branch ?? 'main' },
-          user: { id: this.opts.users.alice ?? 1, login: 'alice' }
-        })
-      }
-      const issueByIndex = /^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(route)
-      if (issueByIndex && method === 'GET' && this.issues.has(Number(issueByIndex[3]))) {
-        const repo = this.repositories.find(
-          (candidate) => candidate.full_name === `${issueByIndex[1]}/${issueByIndex[2]}`
-        )
-        if (!repo) return Response.json({ message: "The target couldn't be found." }, { status: 404 })
-        const issue = this.issues.get(Number(issueByIndex[3]))!
-        return Response.json({
-          id: 8_000_000 + Number(issueByIndex[3]),
-          number: Number(issueByIndex[3]),
-          state: issue.state,
-          title: 'example issue',
-          ...(issue.isPull ? { pull_request: { merged: false } } : {})
-        })
-      }
       const statusRoute = /^\/repos\/([^/]+)\/([^/]+)\/statuses\/([^/]+)$/.exec(route)
       if (statusRoute) {
         const repo = this.repositories.find(

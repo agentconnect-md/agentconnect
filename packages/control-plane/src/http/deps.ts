@@ -68,9 +68,7 @@ import type { GitlabOauthService } from '../gitlab/oauth.service.js'
 import type { GitlabApiClient } from '../gitlab/api.js'
 import type { GitlabAccountService } from '../gitlab/account.service.js'
 import type { GitlabProvisioner } from '../gitlab/provisioner.js'
-import type { GitlabHookRerunService } from '../gitlab/hook-rerun.service.js'
 import type { GiteaConnectionService } from '../gitea/connection.service.js'
-import type { GiteaHookRerunService } from '../gitea/hook-rerun.service.js'
 import type { GiteaProvisioner } from '../gitea/provisioner.js'
 import type { GiteaApiClient } from '../gitea/api.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
@@ -422,8 +420,6 @@ export interface HttpDeps {
     provisioner: GitlabProvisioner
     /** §7.2 per-agent accounts: convergence, retirement, and PAT rotation. */
     accounts: GitlabAccountService
-    /** The §16.1 Console rerun authorizer; the route 404s without the GitLab app. */
-    hookRerun: GitlabHookRerunService
     api: GitlabApiClient
   }
   /** Gitea connection surface (gitea-integration.md §4, §6, §12); absent ⇒ routes 404.
@@ -431,8 +427,6 @@ export interface HttpDeps {
   gitea?: {
     connections: GiteaConnectionService
     provisioner: GiteaProvisioner
-    /** The §10.4 Console rerun authorizer. */
-    hookRerun: GiteaHookRerunService
     api: GiteaApiClient
   }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */

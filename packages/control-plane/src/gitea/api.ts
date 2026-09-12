@@ -482,66 +482,7 @@ export async function giteaTestWebhook(
   await giteaRequest<void>(`${hooksPath(owner, repo)}/${webhookId}/tests`, { method: 'POST', token, client })
 }
 
-// ── pull requests, issues, and commit statuses (§10.4, §16.1) ────────────────
-
-export interface GiteaPullRequest {
-  id?: number
-  number: number
-  state: string
-  merged?: boolean
-  draft?: boolean
-  title?: string
-  head?: { sha?: string; ref?: string; repo_id?: number }
-  base?: { sha?: string; ref?: string }
-  user?: { id?: number; login?: string }
-}
-
-/** One pull request by index (`GET /repos/:owner/:repo/pulls/:index`); null on a definitive 404. */
-export async function giteaPullRequest(
-  token: string,
-  owner: string,
-  repo: string,
-  index: number,
-  client: GiteaApiClient
-): Promise<GiteaPullRequest | null> {
-  try {
-    return await giteaRequest<GiteaPullRequest>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${index}`,
-      { token, client }
-    )
-  } catch (e) {
-    if (e instanceof GiteaApiError && e.code === 'NOT_FOUND') return null
-    throw e
-  }
-}
-
-export interface GiteaIssue {
-  id?: number
-  number: number
-  state: string
-  title?: string
-  /** Present when the index names a pull request — issues and pull requests share one index space. */
-  pull_request?: unknown
-}
-
-/** One issue by index (`GET /repos/:owner/:repo/issues/:index`); null on a definitive 404. */
-export async function giteaIssue(
-  token: string,
-  owner: string,
-  repo: string,
-  index: number,
-  client: GiteaApiClient
-): Promise<GiteaIssue | null> {
-  try {
-    return await giteaRequest<GiteaIssue>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}`,
-      { token, client }
-    )
-  } catch (e) {
-    if (e instanceof GiteaApiError && e.code === 'NOT_FOUND') return null
-    throw e
-  }
-}
+// ── commit statuses (§10.4) ──────────────────────────────────────────────────
 
 /** The states `POST …/statuses/:sha` accepts; `warning` is never written (§10.4). */
 export type GiteaCommitStatusState = 'pending' | 'success' | 'error' | 'failure' | 'warning'

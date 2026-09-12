@@ -77,8 +77,6 @@ import { parseUserTurnBody } from '@/lib/user-turn-body'
 import type { UserTurnBody } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
-import { GiteaRerunButton } from '@/components/console/GiteaRerunButton'
-import { GitlabRerunButton } from '@/components/console/GitlabRerunButton'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
 import { sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
@@ -4716,18 +4714,6 @@ export default function SessionDetailView() {
                   </div>
                 </div>
               )}
-              <GitlabRerunButton
-                hookKind={session.hookKind}
-                hookId={currentSessionDetail?.channel}
-                thread={currentSessionDetail?.thread}
-                className="ml-[-3px]"
-              />
-              <GiteaRerunButton
-                hookKind={session.hookKind}
-                hookId={currentSessionDetail?.channel}
-                thread={currentSessionDetail?.thread}
-                className="ml-[-3px]"
-              />
               <button
                 className="ml-auto flex h-[19px] w-[19px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
                 onClick={onCopyLink}
@@ -4783,16 +4769,6 @@ export default function SessionDetailView() {
               </Link>
             ) : null}
             {visibilityControl}
-            <GitlabRerunButton
-              hookKind={session.hookKind}
-              hookId={currentSessionDetail?.channel}
-              thread={currentSessionDetail?.thread}
-            />
-            <GiteaRerunButton
-              hookKind={session.hookKind}
-              hookId={currentSessionDetail?.channel}
-              thread={currentSessionDetail?.thread}
-            />
             <button
               type="button"
               onClick={toggleDetailTap}

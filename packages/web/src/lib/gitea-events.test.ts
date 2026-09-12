@@ -14,8 +14,7 @@ import {
   giteaHookFamily,
   giteaHookNeedsNormalization,
   giteaTriggerModeOf,
-  giteaTriggerTooltip,
-  parseGiteaHookThread
+  giteaTriggerTooltip
 } from './gitea-events'
 
 describe('GT_TRIGGER_LABEL', () => {
@@ -180,21 +179,5 @@ describe('giteaCadencePick', () => {
 
   it('writes no edit for a rule that names no subject at all', () => {
     expect(giteaCadencePick({ family: null, events: [], commentFamilies: [], mentionOnly: false }, 'every')).toBeNull()
-  })
-})
-
-describe('parseGiteaHookThread', () => {
-  it('names a rerunnable subject but never a branch', () => {
-    // Gitea gives issues and pull requests ONE index space, so the kind discriminates.
-    expect(parseGiteaHookThread('gitea:7711:pull:42')).toEqual({ kind: 'pull', index: 42 })
-    expect(parseGiteaHookThread('gitea:7711:issue:7')).toEqual({ kind: 'issue', index: 7 })
-    // A push session names a ref, which is not a subject a re-run can target.
-    expect(parseGiteaHookThread('gitea:7711:push:refs/heads/main')).toBeNull()
-    // Another host's thread key, and the shapes that are not keys at all.
-    expect(parseGiteaHookThread('gitlab:7711:merge_request:42')).toBeNull()
-    expect(parseGiteaHookThread('gitea:7711:pull:0')).toBeNull()
-    expect(parseGiteaHookThread('gitea:7711:pull')).toBeNull()
-    expect(parseGiteaHookThread(null)).toBeNull()
-    expect(parseGiteaHookThread(undefined)).toBeNull()
   })
 })

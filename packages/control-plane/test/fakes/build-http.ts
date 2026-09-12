@@ -37,8 +37,6 @@ import {
   PgGitlabAgentAccountRepo,
   PgGitlabInstanceStateStore,
   PgGitlabProjectBindingRepo,
-  PgGitlabProjectCredentialRepo,
-  PgGitlabProjectCredentialSecretStore,
   PgGitlabWebhookSecretStore,
   PgGiteaConnectionRepo,
   PgGiteaRepositoryBindingRepo,
@@ -105,8 +103,6 @@ import { RelayRegistry } from '../../src/ws/relay-registry.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { SessionUsageWriter } from '../../src/usage/writer.js'
 import { HookService } from '../../src/hooks/hook.service.js'
-import { GitlabHookRerunService } from '../../src/gitlab/hook-rerun.service.js'
-import { GiteaHookRerunService } from '../../src/gitea/hook-rerun.service.js'
 import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
@@ -249,13 +245,7 @@ export function buildHttpApp(
   // the platform keys are peeled into `platformStubs` and the rest merged last, so
   // a test can register funnel routes that gate on these at plugin-registration
   // time. Nested config goes through `configOverrides`, not here.
-  // The gitlab seam's rerun authorizer is filled in below from the same repos,
-  // so a suite wires only `{ oauth, provisioner, fetchImpl }`.
-  depsOverrides?: Partial<Omit<HttpDeps, 'gitlab' | 'gitea'>> &
-    Partial<PlatformStubs> & {
-      gitlab?: Omit<NonNullable<HttpDeps['gitlab']>, 'hookRerun'> & { hookRerun?: GitlabHookRerunService }
-      gitea?: Omit<NonNullable<HttpDeps['gitea']>, 'hookRerun'> & { hookRerun?: GiteaHookRerunService }
-    }
+  depsOverrides?: Partial<HttpDeps> & Partial<PlatformStubs>
 ): HttpApp {
   // The gitea seam a suite wires: the hook compile sources and the spec host follow it exactly as
   // the gitlab ones follow theirs, so a suite without one never compiles a gitea rule.
@@ -461,39 +451,6 @@ export function buildHttpApp(
         }
       : undefined
   )
-  // The gitea rerun authorizer rides its seam the same way (gitea-integration.md §10.4).
-  if (coreOverrides.gitea && !coreOverrides.gitea.hookRerun) {
-    coreOverrides.gitea = {
-      ...coreOverrides.gitea,
-      hookRerun: new GiteaHookRerunService({
-        hooks: hookRepo,
-        agents: agentRepo,
-        bindings: new PgGiteaRepositoryBindingRepo(prisma),
-        connections: new PgGiteaConnectionRepo(prisma),
-        tokens: coreOverrides.gitea.connections,
-        hookService,
-        relayControl,
-        api: coreOverrides.gitea.api
-      })
-    }
-  }
-  // The §16.1 rerun authorizer rides the gitlab seam; a suite may still override it.
-  if (coreOverrides.gitlab && !coreOverrides.gitlab.hookRerun) {
-    coreOverrides.gitlab = {
-      ...coreOverrides.gitlab,
-      hookRerun: new GitlabHookRerunService({
-        hooks: hookRepo,
-        agents: agentRepo,
-        bindings: new PgGitlabProjectBindingRepo(prisma),
-        accounts: new PgGitlabAgentAccountRepo(prisma),
-        credentials: new PgGitlabProjectCredentialRepo(prisma),
-        credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
-        hookService,
-        relayControl,
-        api: coreOverrides.gitlab.api
-      })
-    }
-  }
 
   const deps: HttpDeps = {
     runtimeConfig: {},

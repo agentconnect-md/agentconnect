@@ -5,7 +5,7 @@
  * vouches for a workspace, every hook write re-converges the project's webhook
  * and §7.2 memberships, a self-managed instance adds a negotiated feature, and a
  * grant tier is also a project role. The binding lifecycle itself — OAuth
- * administration, service accounts, PAT rotation, the rerun authorizer — stays in
+ * administration, service accounts, and PAT rotation — stays in
  * its own services: it has no GitHub counterpart to share a shape with.
  */
 import {

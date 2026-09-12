@@ -18,7 +18,7 @@
  *  - webhook-secret distribution and credential minting (one deployment-wide App
  *    secret versus a per-binding signing token; App JWTs versus OAuth);
  *  - GitHub-only product surfaces (the workflow-approval start path, the session
- *    merge-request panel) and the GitLab-only console rerun;
+ *    merge-request panel);
  *  - the per-provider spec host field (`gitlabHost`): both hosts' instance axes
  *    are one-axis values with a default, and a table of hosts would be guessing
  *    at a multi-instance design that does not exist yet. A provider reads its own

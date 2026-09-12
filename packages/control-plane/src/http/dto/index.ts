@@ -2840,23 +2840,6 @@ export const HookRunDto = z.object({
 export const HookRunListDto = z.array(HookRunDto)
 export type HookRunDtoT = z.infer<typeof HookRunDto>
 
-// The Console "Run again" action (gitlab-com-integration.md §16.1): the caller
-// names the subject thread; the Control Plane reads its CURRENT state itself.
-export const HookRerunBody = z.object({
-  subject: z.object({
-    kind: z.enum(['merge_request', 'issue']),
-    iid: z.number().int().positive()
-  })
-})
-export const HookRerunDto = z.object({
-  accepted: z.literal(true),
-  /** The minted delivery identity — the run row this rerun opens. */
-  deliveryKey: z.string(),
-  event: z.string(),
-  /** The merge request's current head, read live; null for an issue subject. */
-  headSha: z.string().nullable()
-})
-
 // ── sessions (CP-stored metadata; transcript bodies remain daemon-local) ──
 export const SessionKeyDto = z.object({
   platform: z.string(),
@@ -3927,11 +3910,6 @@ export const ErrorDto = z.object({
   /** Machine-readable denial reason where the console branches on it (e.g.
    *  github user-authz: GITHUB_IDENTITY_REQUIRED vs USER_NO_ACCESS). */
   code: z.string().optional()
-})
-
-/** The rerun route's refusal shape: `RELAY_REJECTED` also carries the relay's own category, which the console branches on. */
-export const HookRerunErrorDto = ErrorDto.extend({
-  relayCode: z.string().optional()
 })
 
 /** The Slack install funnels' error shape. A refusal carrying
