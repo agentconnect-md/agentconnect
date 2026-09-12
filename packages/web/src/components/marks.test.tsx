@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { AgentIconView, GitlabMark, OrgIconView, PlatformMark, modelProviderSlug } from './marks'
+import { SQUARE_MARK_FILL_PCT } from './mark-box'
+import { AgentIconView, GiteaMark, GithubMark, GitlabMark, OrgIconView, PlatformMark, modelProviderSlug } from './marks'
 
 describe('modelProviderSlug', () => {
   it('reads the provider prefix from provider/model ids', () => {
@@ -139,6 +140,18 @@ describe('PlatformMark', () => {
     // Below the cap nothing changes, and an uncapped mark still fills its box.
     expect(renderToStaticMarkup(<PlatformMark platform="discord" fillPct={70} />)).toContain('width:70%')
     expect(renderToStaticMarkup(<PlatformMark platform="telegram" fillPct={100} />)).toContain('width:100%')
+  })
+
+  it('lands a full-bleed square glyph on the fill a directly-named mark can ask for', () => {
+    // What the code-host cards rely on: their own mark at SQUARE_MARK_FILL_PCT is the size the
+    // bot tabs' marks render at, so a code host reads the same as a chat platform beside it.
+    const fill = `width:${SQUARE_MARK_FILL_PCT}%`
+    for (const platform of ['github', 'gitlab']) {
+      expect(renderToStaticMarkup(<PlatformMark platform={platform} fillPct={100} />), platform).toContain(fill)
+    }
+    expect(renderToStaticMarkup(<GithubMark fillPct={SQUARE_MARK_FILL_PCT} />)).toContain(fill)
+    expect(renderToStaticMarkup(<GitlabMark fillPct={SQUARE_MARK_FILL_PCT} />)).toContain(fill)
+    expect(renderToStaticMarkup(<GiteaMark fillPct={SQUARE_MARK_FILL_PCT} />)).toContain(fill)
   })
 
   it('uses the filled Lark brand asset for the shared Lark and Feishu platform family', () => {

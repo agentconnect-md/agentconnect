@@ -271,6 +271,19 @@ describe('GiteaCard', () => {
     )
   })
 
+  it('sizes the card and connection marks like the chat-platform marks beside them', async () => {
+    // The card header and the connection row render the Gitea mark at the fill a full-bleed
+    // square glyph lands on through PlatformMark, which is what the bot tabs' marks render at.
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
+    await render()
+
+    for (const selector of ['.cardtitle svg', '[data-gitea-connection] svg']) {
+      const mark = host.querySelector(selector)
+      expect(mark, selector).not.toBeNull()
+      expect(mark?.getAttribute('style'), selector).toContain('80%')
+    }
+  })
+
   it('says an instance below the floor once, not on every repository', async () => {
     mocks.fetchConnections.mockResolvedValue({
       enabled: true,

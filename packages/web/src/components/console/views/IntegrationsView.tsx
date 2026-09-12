@@ -13,6 +13,7 @@ import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { Button, Icon, Toggle } from '@/components/ui'
+import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { useModal } from '@/components/console/ModalProvider'
 import { DefaultDispatchPicker } from '@/components/console/DefaultDispatchPicker'
@@ -712,8 +713,9 @@ function GithubCard({ canWrite, isOwner }: { canWrite: boolean; isOwner: boolean
     <div className="card">
       <div className="cardhead justify-between">
         <span className="cardtitle flex items-center gap-2">
-          <span className="flex h-[15px] w-[15px] items-center justify-center">
-            <GithubMark color="var(--text-primary)" />
+          {/* The box and fill the bot tabs' marks use, so a code host reads the same size as a chat platform. */}
+          <span className="flex h-[14px] w-[14px] flex-none items-center justify-center">
+            <GithubMark color="var(--text-primary)" fillPct={SQUARE_MARK_FILL_PCT} />
           </span>
           GitHub
         </span>
@@ -760,7 +762,7 @@ function GithubCard({ canWrite, isOwner }: { canWrite: boolean; isOwner: boolean
               <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
                 <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
                   <span className="flex h-[14px] w-[14px] items-center justify-center">
-                    <GithubMark color="var(--text-primary)" />
+                    <GithubMark color="var(--text-primary)" fillPct={SQUARE_MARK_FILL_PCT} />
                   </span>
                 </span>
                 <span className="mono min-w-0 truncate text-[12.5px]">{i.accountLogin}</span>
