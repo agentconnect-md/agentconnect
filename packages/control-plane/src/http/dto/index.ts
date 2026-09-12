@@ -2004,7 +2004,8 @@ export const GiteaConnectionDto = z.object({
 })
 export type GiteaConnectionDtoT = z.infer<typeof GiteaConnectionDto>
 
-export const GiteaConnectionListDto = z.object({ connections: z.array(GiteaConnectionDto) })
+// `instanceUrl` is the deployment's instance (§3), so the card can name it before any connection exists.
+export const GiteaConnectionListDto = z.object({ connections: z.array(GiteaConnectionDto), instanceUrl: z.string() })
 
 /** The bot token, write-only: it is verified, sealed, and never echoed by any route. */
 export const ConnectGiteaBody = z.object({ token: z.string().trim().min(1).max(512) })
