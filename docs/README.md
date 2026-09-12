@@ -12,6 +12,7 @@ cross-references inside it.
 - [config-file-secrets.md](config-file-secrets.md) — The `*_DATA` secret convention for file-shaped credentials (Docker config, kubeconfig).
 - [self-host-caddy-https.md](self-host-caddy-https.md) — Publishing a self-hosted stack behind Caddy HTTPS.
 - [self-managed-gitlab.md](self-managed-gitlab.md) — Connecting a deployment to a self-managed GitLab instance.
+- [self-hosted-gitea.md](self-hosted-gitea.md) — Connecting a deployment to a self-hosted Gitea instance.
 
 ## Designs
 

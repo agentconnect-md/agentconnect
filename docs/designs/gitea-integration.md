@@ -676,14 +676,12 @@ is a behavior-neutral refactor of exactly these:
    projection table keyed by provider.
 8. **The deployment-config base-URL lock** becomes per-provider.
 
-G1 fills those tables before the behavior behind them exists, so several entries
-are deliberately inert and each is replaced by the step that gives it work (G2
-replaced the Control Plane's three: the provider module, the hook compile arm,
-and the base-URL lock's state count):
-
-| Entry                                                                  | Replaced by |
-| ---------------------------------------------------------------------- | ----------- |
-| Console: hook marks and labels are real; pickers do not offer the host | G6          |
+G1 filled those tables before the behavior behind them existed, so several
+entries were deliberately inert and each was replaced by the step that gave it
+work: G2 replaced the Control Plane's three — the provider module, the hook
+compile arm, and the base-URL lock's state count — and G6 replaced the last one,
+the Console's, whose marks and labels were already real while its pickers
+withheld the host.
 
 The daemon's entries — credentials, ack, final poster, effect lease, hook
 admission, hook normalization — were on this list until G4 made each real; its
@@ -762,9 +760,13 @@ Each step is one pull request, merged in order.
   review-delivery correlation fetched under the turn's lease before the prompt.
 - **G5 — Reviews and run projection.** The Gitea review adapter, the commit
   status writer, the Console rerun binding.
-- **G6 — Console and docs.** The Gitea card, picker, hook kind, workspace and
-  grant pickers, the operator guide (`docs/self-hosted-gitea.md`), and the
-  docs index.
+- **G6 — Console and docs.** _Landed._ The Gitea card — connect, replace token,
+  disconnect, the repository picker, the five binding states with their repair
+  reasons, repair, webhook-secret rotation and unbind — the `gitea` hook kind
+  with its two subject families and the commit-status disclosure, the workspace
+  and additional-repository pickers, the agent page's repository rows, the
+  operator guide (`docs/self-hosted-gitea.md`), and the docs index. The rerun
+  button is wired to the one rerun route and lights up with G5's arm behind it.
 
 ### Probe results (2026-09-12, gitea.com, Gitea 1.27 development build)
 
