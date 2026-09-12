@@ -759,12 +759,13 @@ describe('resweep scheduling edges (round-4 review)', () => {
 })
 
 describe('the run-projection template', () => {
-  it('names the three authorized re-request paths on a superseded or interrupted note', () => {
+  it('names the authorized re-request paths on a superseded or interrupted note', () => {
     for (const state of ['superseded', 'interrupted'] as CodeHostNoteState[]) {
       const body = renderProjectionNote(desiredFrame({ state }))
       expect(body).toContain('re-request a review from the project service account')
       expect(body).toContain('mention the agent explicitly')
-      expect(body).toContain('"Run again" in the AgentConnect Console')
+      expect(body).toContain('reply in the agent session')
+      expect(body).toContain('push a new revision')
     }
     // A live generation carries no re-request sentence — nothing has ended yet.
     expect(renderProjectionNote(desiredFrame({ state: 'running' }))).not.toContain('To run again')
