@@ -14,6 +14,7 @@ import {
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   pickCodeHostHookMembers,
+  type CodeHostProvider,
   type GithubHookMetadata,
   type HookReviewResult,
   type RdAck,
@@ -52,7 +53,8 @@ import { initiatorLabel } from '../workspace/session-branch.js'
 import { effectiveSessionIsolation, type PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
 import { GithubReplyCollector, type GithubCommentAttribution } from './poster.js'
 import { acknowledgeCodeHostTrigger } from '../codehost/ack.js'
-import type { CodeHostReplyTarget } from '../codehost/reply-target.js'
+import { codeHostLinkSource } from '../platforms/link-source.js'
+import { replyTargetProvider, type CodeHostReplyTarget } from '../codehost/reply-target.js'
 import {
   codeHostHostFence,
   codeHostPromptSupplement,
@@ -860,7 +862,7 @@ export class GithubReviewOrchestrator {
       authorizedReviewTarget(active, attemptId, authorized, recovering),
       req,
       this.agents.get(req.agentId)?.output.showFooter
-        ? await this.githubCommentAttribution(req.agentId, active.sessionId)
+        ? await this.githubCommentAttribution(req.agentId, active.sessionId, 'github')
         : undefined
     )
     const result = await this.persistGithubReviewEffect(active, attemptId, effect)
@@ -985,13 +987,20 @@ export class GithubReviewOrchestrator {
       poster: turnFinal.finalPoster(ref, {
         ...turnFinal.effectLease(agentId, ref, this.turnFinalHost),
         attribution: () =>
-          this.agents.get(agentId)?.output.showFooter ? this.githubCommentAttribution(agentId, sessionId) : undefined,
+          this.agents.get(agentId)?.output.showFooter
+            ? this.githubCommentAttribution(agentId, sessionId, replyTargetProvider(ref))
+            : undefined,
         log: { warn: (m: string) => this.log.warn(m) }
       })
     }
   }
 
-  async githubCommentAttribution(agentId: string, sessionId: string): Promise<GithubCommentAttribution> {
+  /** `provider` is the host that will publish this footer — it brands the session link (§7.4). */
+  async githubCommentAttribution(
+    agentId: string,
+    sessionId: string,
+    provider: CodeHostProvider
+  ): Promise<GithubCommentAttribution> {
     const agent = this.agents.get(agentId)
     const runtime = agent?.runtime
     // The footer links the console, which knows this session by its outward id (§1.1).
@@ -1004,7 +1013,7 @@ export class GithubReviewOrchestrator {
         (await this.host.hostForStoredSession(agentId, sessionId))?.modelOptions?.(sessionId)?.current ??
         agent?.runtimeOverrides?.model ??
         'default',
-      sessionUrl: this.host.sessionLink(outward ?? sessionId, 'github'),
+      sessionUrl: this.host.sessionLink(outward ?? sessionId, codeHostLinkSource(provider)),
       // Same CP-resolved public avatar Slack uses for icon_url; GitHub renders it
       // inline ahead of the footer sentence.
       ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})

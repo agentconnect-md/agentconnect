@@ -8784,7 +8784,7 @@ export class Daemon {
   }
 
   /** What every formal-review adapter shares: the CP surface, the outbox, the org lookup, the footer. */
-  private codeHostReviewDeps<Turn extends { agentId: string; sessionId: string }>() {
+  private codeHostReviewDeps<Turn extends { agentId: string; sessionId: string }>(provider: CodeHostProvider) {
     return {
       cp: () => this.codeHostReviewCp(),
       orgForAgent: (agentId: string) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
@@ -8793,7 +8793,7 @@ export class Daemon {
       outbox: this.reviewOutbox,
       attribution: async (turn: Turn) =>
         this.agents.get(turn.agentId)?.output.showFooter
-          ? await this.githubReviews.githubCommentAttribution(turn.agentId, turn.sessionId)
+          ? await this.githubReviews.githubCommentAttribution(turn.agentId, turn.sessionId, provider)
           : undefined,
       log: { warn: (message: string) => this.log.warn(message) }
     }
@@ -8802,7 +8802,7 @@ export class Daemon {
   /** §15 GitLab review adapter deps: the CP lease surface plus the never-agent-visible effect PAT. */
   private gitlabReviewDeps(): GitlabReviewAdapterDeps {
     return {
-      ...this.codeHostReviewDeps<GitlabReviewTurn>(),
+      ...this.codeHostReviewDeps<GitlabReviewTurn>('gitlab'),
       apiBaseUrl: (turn) => this.gitlabApiBase(turn.agentId),
       markerKey: this.reviewMarkerKey('gitlab-review-marker-key'),
       token: async (turn) => (await this.gitCreds.getGitlabEffectToken(turn.agentId, turn.repoId, turn.hookId)).token,
@@ -8813,7 +8813,7 @@ export class Daemon {
   /** gitea-integration.md §10.3: the same seam over the connection token's `gitea_effect` lease. */
   private giteaReviewDeps(): GiteaReviewAdapterDeps {
     return {
-      ...this.codeHostReviewDeps<GiteaReviewTurn>(),
+      ...this.codeHostReviewDeps<GiteaReviewTurn>('gitea'),
       apiBaseUrl: (turn) => this.giteaApiBase(turn.agentId),
       markerKey: this.reviewMarkerKey('gitea-review-marker-key'),
       token: async (turn) => (await this.gitCreds.getGiteaEffectToken(turn.agentId, turn.repoId, turn.hookId)).token,
