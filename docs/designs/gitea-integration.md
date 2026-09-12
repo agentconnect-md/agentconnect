@@ -247,9 +247,10 @@ recorded the moment the create answers, before the read-back that can fail,
 and a hook at the managed URL that no column records (a create whose answer
 was lost) is retired by the next repair. Unbind deletes the managed webhooks
 by their recorded ids, sweeps the managed URL for any the columns missed, and
-releases the claim; if the token is rejected the binding parks in
-`cleanup_pending` until a replacement token or a manual webhook removal clears
-it.
+releases the claim; a repository already deleted at the provider answers 404
+to both and has nothing left to clean, so it releases as well. If the token is
+rejected the binding parks in `cleanup_pending` until a replacement token or a
+manual webhook removal clears it.
 
 ## 7. Webhook Ingress
 

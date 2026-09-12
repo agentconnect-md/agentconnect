@@ -577,6 +577,19 @@ describe('GiteaProvisioner (§6) — unbind', () => {
     expect([...h.fake.hooks.keys()]).toEqual([6101])
   })
 
+  it('completes an unbind whose repository is already gone at the provider', async () => {
+    const h = await harness()
+    await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
+    await h.provisioner.rotateWebhookSecret(DEFAULT_ORG_ID, h.binding.id)
+    expect((await h.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.nextWebhookId).not.toBeNull()
+    // The repository was deleted at Gitea: the deletes by id AND the sweep's listing answer 404.
+    h.fake.repositories.splice(0, h.fake.repositories.length)
+    expect(await h.provisioner.disconnect(DEFAULT_ORG_ID, h.binding.id)).toEqual({ removed: true })
+    expect(await h.bindings.get(DEFAULT_ORG_ID, h.binding.id)).toBeNull()
+    expect(await prisma.giteaWebhookSecret.count()).toBe(0)
+    expect(await prisma.codeHostRepositoryClaim.count({ where: { provider: 'gitea' } })).toBe(0)
+  })
+
   it('parks in cleanup_pending and RETAINS the claim when the token is rejected, then finishes under a replacement', async () => {
     const h = await harness()
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)

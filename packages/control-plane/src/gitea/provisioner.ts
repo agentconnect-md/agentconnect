@@ -707,7 +707,8 @@ export class GiteaProvisioner {
         const url = this.managedUrl()
         if (url) {
           const pageSize = await giteaPageSize(api)
-          for (const hook of await giteaListWebhooks(token, path.owner, path.repo, api, pageSize)) {
+          const hooks = await giteaListWebhooks(token, path.owner, path.repo, api, pageSize).catch(noneWhenGone)
+          for (const hook of hooks) {
             if (hook.config?.url === url) {
               await giteaDeleteWebhook(token, path.owner, path.repo, BigInt(hook.id), api).catch(swallow404)
             }
@@ -743,5 +744,11 @@ function contended(outcome: ProvisionOutcome): boolean {
 /** A definitively absent external resource IS cleaned up; anything else rethrows. */
 function swallow404(e: unknown): void {
   if (e instanceof GiteaApiError && e.code === 'NOT_FOUND') return
+  throw e
+}
+
+/** A repository already deleted at the provider lists as 404 and has nothing left to clean. */
+function noneWhenGone(e: unknown): GiteaWebhook[] {
+  if (e instanceof GiteaApiError && e.code === 'NOT_FOUND') return []
   throw e
 }
