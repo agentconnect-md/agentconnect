@@ -15,10 +15,34 @@ import {
   type DerivedWorkspace
 } from '../codehost/provider.js'
 import type { AgentWorkspaceCredentialDtoT } from '../http/dto/index.js'
+import type { GiteaRepositoryBindingRecord } from '../persistence/ports.js'
 import { gitlabManagedProjectPath } from '../domain/git-host.js'
 import { giteaPublicRepository, splitGiteaRepoPath } from './api.js'
+import { GiteaConnectDenied } from './connection.service.js'
 
-/** The gitea arm of the §6 outcome table: a managed binding, else an anonymous public repository. */
+/** The managed outcome: the persisted catalog row, never caller input or a composed URL, is the clone authority. */
+async function managedGiteaWorkspace(
+  derivation: CodeHostWorkspaceDerivation,
+  binding: GiteaRepositoryBindingRecord
+): Promise<DerivedWorkspace> {
+  const catalogRow = await derivation.deps.repos.codeHostRepository.byExternalId(
+    derivation.orgId,
+    'gitea',
+    binding.repoId
+  )
+  if (!catalogRow?.cloneUrl) {
+    refuseWorkspaceCredential('the Gitea repository binding has no clone URL yet — repair the repository first')
+  }
+  return {
+    kind: 'gitea',
+    repoId: binding.repoId,
+    gitRepo: catalogRow.cloneUrl,
+    defaultBranch: binding.defaultBranch ?? 'main',
+    access: derivation.requestedAccess ?? 'write'
+  }
+}
+
+/** The gitea arm of the §6 outcome table: a managed binding — bound on first use where the bot administers the address — else an anonymous public repository. */
 async function deriveGiteaWorkspace(derivation: CodeHostWorkspaceDerivation): Promise<DerivedWorkspace | null> {
   const { deps, orgId, gitRepo, requestedAccess } = derivation
   const gitea = deps.gitea
@@ -32,28 +56,50 @@ async function deriveGiteaWorkspace(derivation: CodeHostWorkspaceDerivation): Pr
     if (binding.state === 'cleanup_pending') {
       refuseWorkspaceCredential(`${repoPath} is being removed from this organization — wait for cleanup to finish`)
     }
-    // The persisted catalog row, not caller input and never a composed URL, is the clone authority.
-    const catalogRow = await deps.repos.codeHostRepository.byExternalId(orgId, 'gitea', binding.repoId)
-    if (!catalogRow?.cloneUrl) {
-      refuseWorkspaceCredential('the Gitea repository binding has no clone URL yet — repair the repository first')
+    return managedGiteaWorkspace(derivation, binding)
+  }
+  // Not bound yet: a repository the bot administers is managed all the same (§6) — a write binds it here, a preview only says so.
+  let administered
+  try {
+    administered = await gitea.bindings.administeredByPath(orgId, split.owner, split.repo)
+  } catch (e) {
+    if (e instanceof GiteaConnectDenied) refuseWorkspaceCredential(e.message)
+    throw e
+  }
+  if (administered) {
+    if (derivation.write) {
+      try {
+        const bound = await gitea.bindings.ensureBound(orgId, BigInt(administered.repo.id))
+        return managedGiteaWorkspace(derivation, bound.binding)
+      } catch (e) {
+        if (e instanceof GiteaConnectDenied) refuseWorkspaceCredential(e.message)
+        throw e
+      }
+    }
+    let cloneUrl: string
+    try {
+      cloneUrl = normalizeGitCloneUrl(administered.repo.clone_url ?? gitRepo)
+    } catch (e) {
+      if (!(e instanceof GitCloneUrlError)) throw e
+      cloneUrl = normalizeGitUrl(gitRepo)
     }
     return {
       kind: 'gitea',
-      repoId: binding.repoId,
-      gitRepo: catalogRow.cloneUrl,
-      defaultBranch: binding.defaultBranch ?? 'main',
+      repoId: BigInt(administered.repo.id),
+      gitRepo: cloneUrl,
+      defaultBranch: administered.repo.default_branch ?? 'main',
       access: requestedAccess ?? 'write'
     }
   }
   if (requestedAccess === 'write') {
     refuseWorkspaceCredential(
-      'gitea write access requires a managed repository — add the repository to the organization first'
+      `gitea write access requires a repository the connected bot administers — give it admin on ${repoPath}, or check the connection on the Integrations card`
     )
   }
   const repository = await giteaPublicRepository(split.owner, split.repo, gitea.api)
   if (!repository) {
     refuseWorkspaceCredential(
-      `${repoPath} is not a managed Gitea repository in this organization — add the repository first`
+      `${repoPath} is not a Gitea repository the connected bot administers — give it admin on the repository, or check the connection on the Integrations card`
     )
   }
   let cloneUrl: string

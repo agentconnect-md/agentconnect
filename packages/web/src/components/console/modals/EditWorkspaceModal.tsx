@@ -251,8 +251,8 @@ export default function EditWorkspaceModal({
   // still add — picking one of those sets it up here (§18.1).
   const gl = useGitlabProjects(repositoryEditor === null && mode === 'gitlab', glQ)
 
-  // The repositories this organization added, plus the ones the bot administers — picking one of
-  // those installs its webhook here (gitea-integration.md §6).
+  // The repositories this organization added, plus the ones the bot administers — saving one of
+  // those as the workspace binds it (gitea-integration.md §6).
   const gt = useGiteaRepositories(repositoryEditor === null && mode === 'gitea')
 
   const openGhInstall = async () => {
@@ -501,9 +501,8 @@ export default function EditWorkspaceModal({
     setErr(null)
   }
 
-  // Picking an unadded repository installs its webhook first; a failed setup picks nothing.
-  const selectRepository = async (choice: GiteaRepositoryChoice) => {
-    if (!choice.binding && !(await gt.provision(choice.repoId))) return
+  // An unadded repository is bound by the save itself, so the pick is only a pick.
+  const selectRepository = (choice: GiteaRepositoryChoice) => {
     setGtPick(choice.repoId)
     setGtPickOpen(false)
     setAccessOpen(false)
@@ -829,15 +828,13 @@ export default function EditWorkspaceModal({
                     }}
                     onClose={() => setGtPickOpen(false)}
                     onQueryChange={setGtQ}
-                    error={gt.provisionError ? `Couldn’t set up that repository — ${gt.provisionError}` : undefined}
                   >
                     {gtMatches.map((choice) => (
                       <GiteaRepositoryOption
                         key={choice.repoId}
                         choice={choice}
                         selected={gtPick === choice.repoId}
-                        busy={gt.provisioning === choice.repoId}
-                        onSelect={() => void selectRepository(choice)}
+                        onSelect={() => selectRepository(choice)}
                       />
                     ))}
                     {gtMatches.length === 0 && <div className="fnohit">No repositories match &ldquo;{gtQ}&rdquo;</div>}

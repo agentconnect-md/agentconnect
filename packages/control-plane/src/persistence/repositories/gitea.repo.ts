@@ -12,6 +12,7 @@ import type { PrismaLike } from '../prisma.js'
 import { GiteaBotAlreadyBound, GiteaConnectionExists, GiteaRepositoryClaimConflict } from '../errors.js'
 import type {
   GiteaBindingState,
+  GiteaCleanupEntry,
   GiteaConnectionRecord,
   GiteaConnectionRepo,
   GiteaConnectionSecretStore,
@@ -408,32 +409,51 @@ export class PgGiteaRepositoryBindingRepo implements GiteaRepositoryBindingRepo 
     return res.count === 1
   }
 
-  async beginCleanup(orgId: string, bindingId: string, repoId: bigint, now: Date): Promise<boolean> {
+  async beginCleanup(
+    orgId: string,
+    bindingId: string,
+    repoId: bigint,
+    now: Date,
+    opts: { unlessReferenced?: boolean } = {}
+  ): Promise<GiteaCleanupEntry> {
     // The binding leaves the servable states in the SAME transaction as its claim: nothing compiles, issues or authorizes past here.
     const parked = { state: 'cleanup_pending', convergeOwedAt: null }
-    const attached = await this.prisma.codeHostRepositoryClaim.count({
-      where: { provider: 'gitea', externalId: repoId, orgId, bindingRef: bindingId }
-    })
-    if (attached === 0) {
-      await this.prisma.giteaRepositoryBinding.updateMany({ where: { id: bindingId, orgId }, data: parked })
-      return true
-    }
-    // A live lease refuses: cleanup must wait, so there is no window between a fence check and its write.
     return this.prisma.$transaction(async (tx) => {
-      const res = await tx.codeHostRepositoryClaim.updateMany({
-        where: {
-          provider: 'gitea',
-          externalId: repoId,
-          orgId,
-          bindingRef: bindingId,
-          OR: [{ opOwner: null }, { opLeaseUntil: { lt: now } }]
-        },
+      // The claim row is the mutex every reference-committing write shares (FOR SHARE): held exclusively here, nothing lands between the count and the park.
+      const claims = await tx.$queryRaw<{ state: string; opOwner: string | null; opLeaseUntil: Date | null }[]>`
+        SELECT "state", "opOwner", "opLeaseUntil" FROM "code_host_repository_claim"
+         WHERE "provider" = 'gitea' AND "externalId" = ${repoId.toString()}::bigint AND "orgId" = ${orgId}
+           AND "bindingRef" = ${bindingId}::uuid
+           FOR UPDATE`
+      const claim = claims[0]
+      if (claim === undefined) {
+        // An already-tombstoned claim leaves only the binding to park.
+        await tx.giteaRepositoryBinding.updateMany({ where: { id: bindingId, orgId }, data: parked })
+        return 'parked'
+      }
+      // A live lease refuses: cleanup must wait, so there is no window between a fence check and its write.
+      const leaseUntil = claim.opLeaseUntil === null ? null : new Date(claim.opLeaseUntil).getTime()
+      if (claim.opOwner !== null && (leaseUntil === null || leaseUntil >= now.getTime())) return 'leased'
+      // A parked cleanup finishes what it started; a live binding stays while anything still points at it (§6).
+      if (opts.unlessReferenced && claim.state !== 'cleanup_pending' && (await this.referenced(tx, orgId, repoId))) {
+        return 'referenced'
+      }
+      await tx.codeHostRepositoryClaim.updateMany({
+        where: { provider: 'gitea', externalId: repoId, orgId, bindingRef: bindingId },
         data: { state: 'cleanup_pending', opOwner: null, opLeaseUntil: null }
       })
-      if (res.count !== 1) return false
       await tx.giteaRepositoryBinding.updateMany({ where: { id: bindingId, orgId }, data: parked })
-      return true
+      return 'parked'
     })
+  }
+
+  /** Whether a trigger, an agent workspace or an additional-repository grant in the organization still names the repository. */
+  private async referenced(tx: Prisma.TransactionClient, orgId: string, repoId: bigint): Promise<boolean> {
+    if ((await tx.hookDef.count({ where: { orgId, kind: 'gitea', repoId } })) > 0) return true
+    if ((await tx.agent.count({ where: { orgId, gitCredentialProvider: 'gitea', workspaceRepoId: repoId } })) > 0) {
+      return true
+    }
+    return (await tx.agentRepoAuthorization.count({ where: { provider: 'gitea', repoId, agent: { orgId } } })) > 0
   }
 
   async removeWithClaim(orgId: string, bindingId: string, repoId: bigint): Promise<boolean> {

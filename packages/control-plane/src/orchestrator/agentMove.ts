@@ -43,7 +43,7 @@ import type {
   IntegrationChannelRepo,
   IntegrationRepo
 } from '../persistence/ports.js'
-import { AgentWorkspaceIntegrationConflict } from '../persistence/errors.js'
+import { AgentWorkspaceIntegrationConflict, GiteaBindingUnavailable } from '../persistence/errors.js'
 import { isCanonicalGithubAddress } from '../domain/git-host.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import {
@@ -428,7 +428,7 @@ export class AgentMoveService {
         const observed = await this.deps.agents.getUnscoped(agent.id).catch(() => null)
         if (observed && !isPlaced(observed) && sameWorkspace(observed, workspace, workspaceRepoId)) {
           converted = observed
-        } else if (err instanceof AgentWorkspaceIntegrationConflict) {
+        } else if (err instanceof AgentWorkspaceIntegrationConflict || err instanceof GiteaBindingUnavailable) {
           throw new AgentMoveConflict(err.message)
         } else {
           throw new AgentMoveFailed('failed to persist the workspace settings', err)
@@ -493,7 +493,10 @@ export class AgentMoveService {
           persistenceError ? 'workspace persistence failed' : 'workspace compare-and-set failed'
         )
         if (persistenceError) {
-          if (persistenceError instanceof AgentWorkspaceIntegrationConflict) {
+          if (
+            persistenceError instanceof AgentWorkspaceIntegrationConflict ||
+            persistenceError instanceof GiteaBindingUnavailable
+          ) {
             throw new AgentMoveConflict(persistenceError.message)
           }
           throw new AgentMoveFailed('failed to persist the workspace settings', persistenceError)

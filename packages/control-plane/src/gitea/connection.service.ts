@@ -43,7 +43,7 @@ export const GITEA_REQUIRED_TOKEN_SCOPES = [
 export class GiteaConnectDenied extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 | 502,
+    readonly status: 400 | 403 | 404 | 409 | 502,
     readonly code: string
   ) {
     super(message)

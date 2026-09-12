@@ -25,6 +25,8 @@ import {
   type UpsertHookInput
 } from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
+import { GiteaApiError } from '../../gitea/api.js'
+import { GiteaConnectDenied } from '../../gitea/connection.service.js'
 import { GITLAB_ACCESS_DEVELOPER } from '../../gitlab/api.js'
 import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import { GitCredDeniedError, type ResolvedAgentRepoAuthorization } from '../../github/service.js'
@@ -33,7 +35,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { toDbPlatform, type DbPlatform } from '../../persistence/platform.js'
-import { AgentWorkspaceIntegrationConflict } from '../../persistence/errors.js'
+import { AgentWorkspaceIntegrationConflict, GiteaBindingUnavailable } from '../../persistence/errors.js'
 import { isCanonicalGithubAddress } from '../../domain/git-host.js'
 import { hookFamilyShapeError, hookSiblingShapeError, type HookFamily } from '../../hooks/hook-family.js'
 import { codeHostsOf } from '../../codehost/registry.js'
@@ -208,7 +210,7 @@ export function hookRoutes(deps: HttpDeps) {
     // The repository repeats the workspace-access invariant under its shared
     // transaction fence. Surface a concurrent loser as the same 409 as the
     // route's fast preflight instead of leaking it as a generic 500.
-    type PersistOutcome = HookRecord | AgentWorkspaceIntegrationConflict | DuplicateHookFamily
+    type PersistOutcome = HookRecord | AgentWorkspaceIntegrationConflict | DuplicateHookFamily | GiteaBindingUnavailable
     const persistHook = async (input: UpsertHookInput): Promise<PersistOutcome> => {
       try {
         // §24.1: every gitlab-kind write carries the instance its repoId names,
@@ -222,7 +224,7 @@ export function hookRoutes(deps: HttpDeps) {
               : input
         return await deps.repos.hook.upsert(fenced)
       } catch (err) {
-        if (err instanceof AgentWorkspaceIntegrationConflict) return err
+        if (err instanceof AgentWorkspaceIntegrationConflict || err instanceof GiteaBindingUnavailable) return err
         if (isHookFamilyCollision(err)) return new DuplicateHookFamily()
         throw err
       }
@@ -326,6 +328,8 @@ export function hookRoutes(deps: HttpDeps) {
     }
     const ERROR_NAMES = {
       400: 'Bad Request',
+      403: 'Forbidden',
+      404: 'Not Found',
       409: 'Conflict',
       429: 'Too Many Requests',
       502: 'Bad Gateway'
@@ -491,6 +495,41 @@ export function hookRoutes(deps: HttpDeps) {
       return null
     }
 
+    // gitea (gitea-integration.md §6): the facts first, for the gates that need the path; the bind AFTER the agent gate, so a refused trigger binds nothing.
+    type GiteaRepositoryStep<T> =
+      ({ ok: true } & T) | { ok: false; status: 400 | 403 | 404 | 409 | 429 | 502; message: string }
+    const giteaRefusal = (e: unknown): { ok: false; status: 400 | 403 | 404 | 409 | 429 | 502; message: string } => {
+      if (e instanceof GiteaConnectDenied) return { ok: false, status: e.status, message: e.message }
+      if (e instanceof GiteaApiError) {
+        return { ok: false, status: e.code === 'RATE_LIMITED' ? 429 : 502, message: `gitea: ${e.message}` }
+      }
+      throw e
+    }
+    const giteaRepositoryFacts = async (
+      orgId: OrgId,
+      repoId: bigint
+    ): Promise<GiteaRepositoryStep<{ repoPath: string }>> => {
+      if (!deps.gitea) return { ok: false, status: 409, message: 'Gitea is not configured on this deployment' }
+      const binding = await deps.repos.giteaRepositoryBinding.byRepo(orgId, repoId)
+      if (binding && binding.state !== 'cleanup_pending') return { ok: true, repoPath: binding.repoPath }
+      try {
+        return { ok: true, repoPath: (await deps.gitea.bindings.administered(orgId, repoId)).repo.full_name }
+      } catch (e) {
+        return giteaRefusal(e)
+      }
+    }
+    const bindGiteaRepository = async (
+      orgId: OrgId,
+      repoId: bigint
+    ): Promise<GiteaRepositoryStep<{ binding: { state: GiteaBindingState; repoPath: string } }>> => {
+      if (!deps.gitea) return { ok: false, status: 409, message: 'Gitea is not configured on this deployment' }
+      try {
+        return { ok: true, binding: (await deps.gitea.bindings.ensureBound(orgId, repoId)).binding }
+      } catch (e) {
+        return giteaRefusal(e)
+      }
+    }
+
     // Validate the optional anchoring target against the hook's agent (the
     // anchor posts through one of THAT agent's integrations — cron semantics).
     const resolveTarget = async (
@@ -521,7 +560,15 @@ export function hookRoutes(deps: HttpDeps) {
             'Create a trigger for one agent. `kind:"webhook"` mints an ingress URL (the response carries it plus — when requested — the one-time HMAC signing secret, never retrievable again). `kind:"github"` subscribes a repository covered by one of the organization’s GitHub App installations to issue, pull-request, push or deployment events. A code-host trigger covers ONE subject `family`, so a repository watched for both pull requests and issues is two triggers, each with its own cadence and mention gate; a second trigger on the same family is a 409. A `deployment_status:<state>` pattern selects on the status state (`success`, `failure`, …).',
           operationId: 'createHook',
           body: CreateHookBody,
-          response: { 200: CreatedHookDto, 400: ErrorDto, 403: ErrorDto, 409: ErrorDto, 429: ErrorDto, 502: ErrorDto }
+          response: {
+            200: CreatedHookDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -619,31 +666,26 @@ export function hookRoutes(deps: HttpDeps) {
                 })()
               : req.body.kind === 'gitea'
                 ? await (async () => {
-                    // The repository must already be a managed binding (gitea-integration.md §5): a
-                    // hook never creates a binding, and the numeric id is validated against the org's row.
+                    // The repository the bot administers, re-read by numeric id (§6); bound below, AFTER the §8.3 gate — a hook never creates a grant.
                     const repoId = BigInt((req.body as { repoId: string }).repoId)
-                    const binding = deps.gitea ? await deps.repos.giteaRepositoryBinding.byRepo(orgId, repoId) : null
-                    if (!binding || binding.state === 'cleanup_pending') {
-                      return {
-                        ok: false as const,
-                        status: 409 as const,
-                        message: 'the repository is not a managed Gitea binding in this organization'
-                      }
-                    }
-                    const siblingError = await siblingShapeError(agent.id, 'gitea', repoId, binding.repoPath, hookId, {
+                    const facts = await giteaRepositoryFacts(orgId, repoId)
+                    if (!facts.ok) return facts
+                    const siblingError = await siblingShapeError(agent.id, 'gitea', repoId, facts.repoPath, hookId, {
                       targetPlatform: target.targetPlatform,
                       targetChannel: req.body.targetChannel ?? null,
                       targetIntegrationId: target.targetIntegrationId ?? null
                     })
                     if (siblingError) return { ok: false as const, status: 409 as const, message: siblingError }
-                    const authz = await watchRepoAuthorized(agent, 'gitea', repoId, binding.repoPath)
+                    const authz = await watchRepoAuthorized(agent, 'gitea', repoId, facts.repoPath)
                     if (!authz.ok) return authz
-                    const effectError = validateGiteaEffects(binding, effects!)
+                    const bound = await bindGiteaRepository(orgId, repoId)
+                    if (!bound.ok) return bound
+                    const effectError = validateGiteaEffects(bound.binding, effects!)
                     if (effectError) return { ok: false as const, ...effectError }
                     return {
                       sessionMode: 'perThread' as const,
                       repoId,
-                      repoFullName: binding.repoPath,
+                      repoFullName: bound.binding.repoPath,
                       githubSessionKey: `gitea:${repoId}`,
                       hmacSecret: null
                     }
@@ -735,7 +777,7 @@ export function hookRoutes(deps: HttpDeps) {
             .send({ error: ERROR_NAMES[written.status], statusCode: written.status, message: written.message })
         }
         const hook = written.result
-        if (hook instanceof AgentWorkspaceIntegrationConflict) {
+        if (hook instanceof AgentWorkspaceIntegrationConflict || hook instanceof GiteaBindingUnavailable) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
         if (hook instanceof DuplicateHookFamily) {
@@ -1061,15 +1103,15 @@ export function hookRoutes(deps: HttpDeps) {
           }
         } else if (req.body.kind === 'gitea') {
           const repoId = BigInt(req.body.repoId)
-          const binding = deps.gitea ? await deps.repos.giteaRepositoryBinding.byRepo(orgId, repoId) : null
-          if (!binding || binding.state === 'cleanup_pending') {
-            return reply.code(409).send({
-              error: ERROR_NAMES[409],
-              statusCode: 409,
-              message: 'the repository is not a managed Gitea binding in this organization'
+          const facts = await giteaRepositoryFacts(orgId, repoId)
+          if (!facts.ok) {
+            return reply.code(facts.status).send({
+              error: ERROR_NAMES[facts.status],
+              statusCode: facts.status,
+              message: facts.message
             })
           }
-          const siblingError = await siblingShapeError(agent.id, 'gitea', repoId, binding.repoPath, existing.id, {
+          const siblingError = await siblingShapeError(agent.id, 'gitea', repoId, facts.repoPath, existing.id, {
             targetPlatform: target.targetPlatform,
             targetChannel: req.body.targetChannel ?? null,
             targetIntegrationId: target.targetIntegrationId ?? null
@@ -1079,7 +1121,7 @@ export function hookRoutes(deps: HttpDeps) {
           }
           // Binding-CHANGING edits go through the gate, exactly as the other two hosts.
           if (repoId !== existing.repoId || agent.id !== existing.agentId) {
-            const authz = await watchRepoAuthorized(agent, 'gitea', repoId, binding.repoPath)
+            const authz = await watchRepoAuthorized(agent, 'gitea', repoId, facts.repoPath)
             if (!authz.ok) {
               return reply.code(authz.status).send({
                 error: ERROR_NAMES[authz.status],
@@ -1088,6 +1130,16 @@ export function hookRoutes(deps: HttpDeps) {
               })
             }
           }
+          // Bound on first use (§6), after the gate.
+          const bound = await bindGiteaRepository(orgId, repoId)
+          if (!bound.ok) {
+            return reply.code(bound.status).send({
+              error: ERROR_NAMES[bound.status],
+              statusCode: bound.status,
+              message: bound.message
+            })
+          }
+          const binding = bound.binding
           const effectConfig = {
             reviewPolicy: req.body.reviewPolicy ?? existing.reviewPolicy,
             reportingMode: req.body.reportingMode ?? existing.reportingMode
@@ -1153,7 +1205,7 @@ export function hookRoutes(deps: HttpDeps) {
             .send({ error: ERROR_NAMES[written.status], statusCode: written.status, message: written.message })
         }
         const hook = written.result
-        if (hook instanceof AgentWorkspaceIntegrationConflict) {
+        if (hook instanceof AgentWorkspaceIntegrationConflict || hook instanceof GiteaBindingUnavailable) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
         // A retarget carries the row's own family onto the new repository, where

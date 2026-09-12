@@ -6,8 +6,8 @@
 // installations, GitLab projects the connection administers, Gitea repositories
 // the organization's bot administers — plus an access choice, preflighted against
 // the per-user identity-assertion gate when the deployment has one. Picking a
-// project or repository that is not set up yet runs its provisioning saga inline
-// before the selection lands, exactly as the workspace and trigger pickers do.
+// GitLab project that is not set up yet runs its provisioning saga inline before
+// the selection lands; a Gitea repository is bound by the grant itself (§6).
 //
 // This renders its own scrim/modal overlay because Edit workspace can expose it
 // as a preserved-state subview while another editor (such as GitHub hook setup)
@@ -273,10 +273,8 @@ export default function AddAgentRepoModal({
     workspaceRepository === repoId ? 'workspace' : authorizedRepositories.has(repoId) ? 'authorized' : null
   const gtNoRepositories = gt.empty || !gt.enabled || !gt.connected
 
-  // Picking a repository that is not set up yet installs its webhook first; a failed setup
-  // selects nothing, so the footer stays inert (gitea-integration.md §6).
-  const selectRepository = async (choice: GiteaRepositoryChoice) => {
-    if (!choice.binding && !(await gt.provision(choice.repoId))) return
+  // A repository that is not added yet is bound by the grant itself (gitea-integration.md §6).
+  const selectRepository = (choice: GiteaRepositoryChoice) => {
     setGtPick(choice.repoId)
     setGtPickOpen(false)
     setErr(null)
@@ -348,7 +346,8 @@ export default function AddAgentRepoModal({
         input: { provider: 'gitlab', projectId: glPick, access }
       },
       gitea: {
-        ready: !!gtPick && gtTakenBy(gtPick) === null && gt.provisioning === null,
+        // Nothing to wait for: an unadded repository is bound by the grant itself (gitea-integration.md §6).
+        ready: !!gtPick && gtTakenBy(gtPick) === null,
         input: { provider: 'gitea', repoId: gtPick, access }
       }
     }
@@ -430,7 +429,6 @@ export default function AddAgentRepoModal({
               }}
               onClose={() => setGtPickOpen(false)}
               onQueryChange={setGtQ}
-              error={gt.provisionError ? `Couldn’t set up that repository — ${gt.provisionError}` : undefined}
             >
               {gtMatches.map((choice) => {
                 const taken = gtTakenBy(choice.repoId)
@@ -449,8 +447,7 @@ export default function AddAgentRepoModal({
                     key={choice.repoId}
                     choice={choice}
                     selected={gtPick === choice.repoId}
-                    busy={gt.provisioning === choice.repoId}
-                    onSelect={() => void selectRepository(choice)}
+                    onSelect={() => selectRepository(choice)}
                   />
                 )
               })}

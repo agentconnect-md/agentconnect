@@ -299,6 +299,17 @@ export class GiteaConnectionExists extends Error {
   }
 }
 
+/** A write would reference a Gitea binding that is gone or parked (gitea-integration.md §6): the removal fence refused it. */
+export class GiteaBindingUnavailable extends Error {
+  readonly code = 'GITEA_BINDING_UNAVAILABLE' as const
+  constructor(readonly repoId: bigint) {
+    super(
+      `gitea repository ${repoId} is no longer a live managed binding in this organization — it was removed while this write was in flight`
+    )
+    this.name = 'GiteaBindingUnavailable'
+  }
+}
+
 /** A numeric repository is already the agent's implicit workspace authority,
  * so persisting a second "additional repository" grant would be redundant and
  * could later make grant deletion look like a real authority revocation. */

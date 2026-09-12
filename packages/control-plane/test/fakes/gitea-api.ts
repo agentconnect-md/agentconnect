@@ -43,6 +43,8 @@ export interface FakeGiteaOptions {
   onTestDelivery?: (hookId: number) => Promise<void> | void
   /** Fault injection: a Response returned here answers an authenticated request in place of its handler. */
   intercept?: (method: string, route: string) => Response | undefined
+  /** Awaited before an authenticated request is served — a race test's barrier. */
+  gate?: (method: string, route: string) => Promise<void>
 }
 
 export type GiteaScopeCategory = 'user' | 'repository' | 'organization' | 'issue'
@@ -124,7 +126,8 @@ function page<T>(url: string, rows: readonly T[], limitCap: number, withLink = t
 }
 
 export class FakeGitea {
-  readonly opts: Required<Omit<FakeGiteaOptions, 'onTestDelivery' | 'dropEvents' | 'intercept'>> & FakeGiteaOptions
+  readonly opts: Required<Omit<FakeGiteaOptions, 'onTestDelivery' | 'dropEvents' | 'intercept' | 'gate'>> &
+    FakeGiteaOptions
   readonly api: GiteaApiClient
   /** What `GET /version` answers NOW — assign mid-test to downgrade. */
   version: string
@@ -275,6 +278,7 @@ export class FakeGitea {
         return Response.json(this.repoJson(repo))
       }
       if (token !== this.token) return Response.json({ message: 'token is required' }, { status: 401 })
+      await this.opts.gate?.(method, route)
       const injected = this.opts.intercept?.(method, route)
       if (injected) return injected
       // The scope gate precedes every handler, existence checks included (§16).
@@ -290,6 +294,12 @@ export class FakeGitea {
       }
 
       if (route === '/user') return Response.json({ ...this.opts.bot, username: this.opts.bot.login })
+      // The same path read AS THE BOT: every listed repository is one it can see (§6 first-use read).
+      if (publicRepo && method === 'GET') {
+        const repo = this.repositories.find((candidate) => candidate.full_name === `${publicRepo[1]}/${publicRepo[2]}`)
+        if (!repo) return Response.json({ message: "The target couldn't be found." }, { status: 404 })
+        return Response.json(this.repoJson(repo))
+      }
       const userByLogin = /^\/users\/([^/]+)$/.exec(route)
       if (userByLogin) {
         const login = decodeURIComponent(userByLogin[1]!)

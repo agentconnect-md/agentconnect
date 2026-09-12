@@ -42,6 +42,7 @@ import {
   ADMIN_LOST_REASON,
   afterDeliveryVerified,
   readyOutcome,
+  REPOSITORY_IN_USE_REASON,
   TOKEN_REJECTED_REASON,
   WEBHOOK_EVENTS_UNSUPPORTED_REASON
 } from './binding-state.js'
@@ -679,12 +680,23 @@ export class GiteaProvisioner {
   }
 
   /** §6 unbind: authority off first, then every managed webhook (recorded ids, then the managed URL), then the rows and the claim; a rejected token parks it. */
-  async disconnect(orgId: string, bindingId: string): Promise<{ removed: boolean; reason?: string }> {
+  async disconnect(
+    orgId: string,
+    bindingId: string,
+    /** `unlessReferenced` refuses, under the claim's lock, while a trigger, workspace or grant still names the repository (§6). */
+    opts: { unlessReferenced?: boolean } = {}
+  ): Promise<{ removed: boolean; reason?: string }> {
     const binding = await this.deps.bindings.get(orgId, bindingId)
     if (!binding) return { removed: false, reason: 'binding_missing' }
-    if (!(await this.deps.bindings.beginCleanup(orgId, bindingId, binding.repoId, new Date(this.deps.clock.now())))) {
-      return { removed: false, reason: 'provisioning_in_progress' }
-    }
+    const entry = await this.deps.bindings.beginCleanup(
+      orgId,
+      bindingId,
+      binding.repoId,
+      new Date(this.deps.clock.now()),
+      opts
+    )
+    if (entry === 'leased') return { removed: false, reason: 'provisioning_in_progress' }
+    if (entry === 'referenced') return { removed: false, reason: REPOSITORY_IN_USE_REASON }
     // The binding just left the servable states: pull its compiled rules off the relay pool now.
     await this.rebroadcast(orgId, binding.repoId)
     const path = splitGiteaRepoPath(binding.repoPath)

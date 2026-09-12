@@ -67,6 +67,7 @@ import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 import { joinAxisFence } from './gitlab-axis.js'
 import { joinGiteaAxisFence } from './gitea-axis.js'
+import { joinGiteaBindingFence } from './gitea-binding-fence.js'
 
 type HookWithUsers = HookDef & {
   createdBy: User | null
@@ -542,6 +543,8 @@ export class PgHookRepo implements HookRepo {
         if (input.kind === 'gitea') {
           if (!input.axisBaseUrl) throw new Error('gitea hook write is missing its axis base url')
           await joinGiteaAxisFence(tx, input.axisBaseUrl)
+          // §6: the row references a binding, so it commits only while that binding is live.
+          if (input.repoId != null) await joinGiteaBindingFence(tx, input.orgId, input.repoId)
         }
         const lockedAgentIds = await this.lockAgentLifecycleScopes(tx, [
           ownerHint ? AgentId(ownerHint) : null,

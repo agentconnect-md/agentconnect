@@ -14,6 +14,8 @@ export const ADMIN_LOST_REASON = 'admin_lost' as const
 export const WEBHOOK_UNVERIFIED_REASON = 'webhook_unverified' as const
 /** The subscription Gitea stored is missing names the union asked for (§7 read-back). */
 export const WEBHOOK_EVENTS_UNSUPPORTED_REASON = 'webhook_events_unsupported' as const
+/** A removal refused because a trigger, workspace or grant still names the repository (§6). */
+export const REPOSITORY_IN_USE_REASON = 'repository_in_use' as const
 
 /** Runtime keeps serving through an admin-plane fault; a rejected token or cleanup stops it (§4.4, §6). */
 export function servesRuntime(state: GiteaBindingState): boolean {
