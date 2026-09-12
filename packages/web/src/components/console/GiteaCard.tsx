@@ -92,7 +92,7 @@ function ConnectFields({
         <span className="flex items-start gap-[6px]">
           <Icon name="key-round" size={13} className="mt-[2px] flex-none" />
           <span>
-            Generate it on the bot user&rsquo;s Settings &rarr; Applications page with exactly these scopes:{' '}
+            Bot user&rsquo;s Settings &rarr; Applications, scopes{' '}
             {scopes.map((scope, index) => (
               <span key={scope}>
                 {index > 0 ? ', ' : ''}
@@ -105,18 +105,8 @@ function ConnectFields({
         <span className="flex items-start gap-[6px]">
           <Icon name="users" size={13} className="mt-[2px] flex-none" />
           <span>
-            Use a dedicated user, not a person&rsquo;s account: every comment, review and commit status an agent writes
-            is attributed to it. Give it <span className="text-(--text-secondary)">Admin</span>&#32;on each repository
-            you add here — as a collaborator or through a team — so AgentConnect can install and repair that
-            repository&rsquo;s webhook.
-          </span>
-        </span>
-        <span className="flex items-start gap-[6px]">
-          <Icon name="shield-alert" size={13} className="mt-[2px] flex-none" />
-          <span>
-            This one token is the whole identity, so an agent running on a bound repository can do anything the bot can
-            — including changing that repository&rsquo;s settings. It is sealed at rest and reaches a daemon only as a
-            short lease, never as stored state.
+            Use a dedicated bot user with <span className="text-(--text-secondary)">Admin</span>&#32;on each repository
+            you add. Everything an agent writes is attributed to it, and an agent can do anything the bot can.
           </span>
         </span>
       </div>

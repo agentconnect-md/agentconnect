@@ -212,8 +212,8 @@ describe('GiteaCard', () => {
     for (const scope of ['read:user', 'write:repository', 'write:issue', 'read:organization']) {
       expect(panel.textContent).toContain(scope)
     }
-    // A dedicated user, Admin on every bound repository (§4.4) …
-    expect(panel.textContent).toContain('Use a dedicated user')
+    // A dedicated bot user, Admin on every bound repository (§4.4) …
+    expect(panel.textContent).toContain('Use a dedicated bot user')
     expect(panel.textContent).toContain('Admin')
     // … and §15's trade-off, said rather than implied.
     expect(panel.textContent).toContain('can do anything the bot can')
