@@ -226,10 +226,17 @@ never a provider role.
 The picker pages `GET /user/repos` and, for each organization the bot belongs
 to, `GET /orgs/:org/repos` (`limit` at the instance's `max_response_items`,
 following `Link`), keeps rows with `permissions.admin`, and keys them by
-numeric `id`. Selecting one runs the §10.2 saga with the account and
-membership steps removed:
+numeric `id`. It lists what the bot administers, not what is already bound.
 
-1. acquire the deployment-global claim for `(gitea, id)`;
+**Binding is implicit.** A repository becomes a managed binding the first time
+a write names it: creating a Gitea trigger, making the repository an agent's
+workspace, or granting it as an additional repository. The write re-reads the
+repository as the bot (by numeric id for a trigger or grant, by `owner/repo`
+under the instance base for a workspace address), requires `permissions.admin`
+(§4.4), and runs the §10.2 saga with the account and membership steps removed:
+
+1. acquire the deployment-global claim for `(gitea, id)` and create the
+   binding and catalog row in the same transaction;
 2. refresh the repository by id and store path, clone URL, default branch;
 3. install or reconcile the managed webhook (§7); and
 4. issue a test delivery and require the relay to observe it before the
@@ -241,6 +248,27 @@ membership steps removed:
    verified it; the compiled rules go out before the test is fired, because
    the relay verifies only what it holds a key for, and a later observation
    clears the warning on a binding whose test never arrived.
+
+The saga converges inline, so the write that bound the repository reads a
+settled state; the trigger that bound it is then what makes step 3 want a
+webhook, which the write's own post-commit convergence installs. The §8.3 rule
+is untouched: a trigger never creates a **grant**, and the agent gate runs
+before the bind, so a refused trigger binds nothing. Two writes racing for one
+repository resolve on the claim's uniqueness — the loser adopts the winner's
+binding and joins its convergence rather than creating a second. The resolve
+preview (`GET /git/resolve`) reports an administered-but-unbound address as a
+managed Gitea repository without binding it; only the persisting routes bind.
+The card's "Add repository" remains as an optional pre-warm over the same path.
+
+Several agents share one binding: one webhook per repository, its subscription
+the union of every enabled trigger on it (§7), widened and narrowed by PATCH as
+triggers — or the agents holding them — come and go. A binding is bound on
+first use but never unbound on last use: when the last trigger leaves, the
+webhook follows §7's inverse (no enabled trigger, no ingress) while the binding
+and its claim stay for the operator. Removing a binding that a trigger, an agent
+workspace or an additional-repository grant still references is refused with a
+409 naming the references; a binding already parked in `cleanup_pending`
+finishes its cleanup regardless.
 
 Repair, transfer, and unbind follow §10 and §19.4. A created webhook's id is
 recorded the moment the create answers, before the read-back that can fail,
@@ -629,19 +657,29 @@ floor check. `GITEA_BASE_URL` is the no-document fallback.
 
 The Console's Gitea card offers connect (paste token, with the scope list and
 the bot-user requirements beside it), replace token, disconnect, and the
-repository picker; binding rows show the five states with the same
-translations GitLab uses plus `token_rejected`, `admin_lost`, and
-`webhook_unverified` reasons. Hooks use kind `gitea`; workspaces and
+repositories in use under the connection, each with Repair, rotate, and
+Remove; "Add repository" binds one ahead of its first use and is optional.
+Binding rows show the five states with the same translations GitLab uses plus
+`token_rejected`, `admin_lost`, and `webhook_unverified` reasons. The trigger,
+workspace, and additional-repository pickers list what the bot administers and
+mark an unbound row "added on save"; the write binds it (§6), so the pickers
+run no saga of their own. Hooks use kind `gitea`; workspaces and
 additional-repository grants use the host-neutral git mode with credential
 `{ provider: 'gitea', repoId }`.
 
 REST at the organization scope: `POST /gitea/connections` (connect),
 `GET /gitea/connections`, `POST /gitea/connections/:id/token` (replace),
 `DELETE /gitea/connections/:id`, `GET /gitea/connections/:id/repositories`
-(picker), `GET|POST /gitea/repositories`, `POST
-/gitea/repositories/:id/repair`, and `DELETE /gitea/repositories/:id`. Every
-route carries the OpenAPI tags, summary, description, and operation id the docs
-surface requires.
+(picker), `GET|POST /gitea/repositories` (the POST is the optional pre-warm;
+an already bound repository answers 409), `POST
+/gitea/repositories/:id/repair`, and `DELETE /gitea/repositories/:id` (409
+`repository_in_use` naming the trigger, workspace, or grant that still
+references it). `POST /hooks`, `POST|PUT /agents/:id/workspace`, and `POST
+/agents/:id/repos` bind on first use and answer the bind's own refusals —
+400 for a repository the bot cannot see, 403 for one it does not administer,
+404 without a connection, 409 for a rejected token or a claim held elsewhere.
+Every route carries the OpenAPI tags, summary, description, and operation id
+the docs surface requires.
 
 The upstream connector id `gitea` joins the open-connector provider blocklist
 default, following the native-integration convention.
@@ -777,6 +815,13 @@ Each step is one pull request, merged in order.
   User- and operator-facing setup lives on the documentation site:
   https://docs.agentconnect.md/docs/gitea and
   https://docs.agentconnect.md/docs/deployment-and-configuration#gitea.
+- **G7 — Binding on first use.** _Landed._ The explicit "Add repository" step
+  became optional: a trigger, a workspace, or an additional-repository grant
+  binds the repository it names as the same write (§6), the pickers stopped
+  running the saga themselves, several agents share one binding and one
+  webhook whose subscription is the union of their triggers, agent deletion
+  narrows that union, and removing a binding something still references is
+  refused naming the reference (§12).
 
 ### Probe results (2026-09-12, gitea.com, Gitea 1.27 development build)
 
