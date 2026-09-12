@@ -24,8 +24,11 @@ export function markBox(fillPct: number): MarkBox {
   return box(fillPct)
 }
 
+/** The fill a full-bleed square glyph lands on — what a directly-named mark asks for to match it. */
+export const SQUARE_MARK_FILL_PCT = 80
+
 /**
- * The requested fill, CAPPED at 80%.
+ * The requested fill, CAPPED at {@link SQUARE_MARK_FILL_PCT}.
  *
  * Slack / GitHub / Discord ship as full-bleed square glyphs with no internal
  * padding of their own, so a caller asking for a full-bleed box (`fillPct=100`,
@@ -33,7 +36,7 @@ export function markBox(fillPct: number): MarkBox {
  * mark beside them. Below the cap nothing changes.
  */
 export function squareMarkBox(fillPct: number): MarkBox {
-  return fillPct > 80 ? box(80) : box(fillPct)
+  return fillPct > SQUARE_MARK_FILL_PCT ? box(SQUARE_MARK_FILL_PCT) : box(fillPct)
 }
 
 /** The default fill every mark starts from. */

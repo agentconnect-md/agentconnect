@@ -13,6 +13,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
+import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { AgentIconView, GitlabMark, LoadingState } from '@/components/marks'
 import { useConsoleData } from '@/lib/data-context'
 import { agentLabel } from '@/lib/data'
@@ -461,8 +462,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     <div className="card">
       <div className="cardhead justify-between">
         <span className="cardtitle flex items-center gap-2">
-          <span className="flex h-[15px] w-[15px] items-center justify-center">
-            <GitlabMark />
+          {/* The box and fill the bot tabs' marks use, so a code host reads the same size as a chat platform. */}
+          <span className="flex h-[14px] w-[14px] flex-none items-center justify-center">
+            <GitlabMark fillPct={SQUARE_MARK_FILL_PCT} />
           </span>
           GitLab
           {/* Which instance, and what it runs — one line of hover on the card, not a badge on every identity. */}
@@ -520,7 +522,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
               <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
                 <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
                   <span className="flex h-[14px] w-[14px] items-center justify-center">
-                    <GitlabMark />
+                    <GitlabMark fillPct={SQUARE_MARK_FILL_PCT} />
                   </span>
                 </span>
                 <span className="mono min-w-0 truncate text-[12.5px]">{c.gitlabUsername}</span>

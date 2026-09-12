@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Button, Icon } from '@/components/ui'
+import { SQUARE_MARK_FILL_PCT } from '@/components/mark-box'
 import { GiteaMark, LoadingState } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import {
@@ -425,8 +426,9 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
     <div className="card">
       <div className="cardhead justify-between">
         <span className="cardtitle flex items-center gap-2">
-          <span className="flex h-[15px] w-[15px] items-center justify-center">
-            <GiteaMark />
+          {/* The box and fill the bot tabs' marks use, so a code host reads the same size as a chat platform. */}
+          <span className="flex h-[14px] w-[14px] flex-none items-center justify-center">
+            <GiteaMark fillPct={SQUARE_MARK_FILL_PCT} />
           </span>
           Gitea
           {/* Which instance, and what it runs — one line of hover on the card. */}
@@ -506,7 +508,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
             <div className="flex min-w-0 flex-wrap items-center gap-[10px]">
               <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
                 <span className="flex h-[14px] w-[14px] items-center justify-center">
-                  <GiteaMark />
+                  <GiteaMark fillPct={SQUARE_MARK_FILL_PCT} />
                 </span>
               </span>
               <a
