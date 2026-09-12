@@ -302,6 +302,8 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionWriterR
       // A write in flight owns this generation: park the edge rather than move the generation, or
       // rewrite the state, under a mutation whose outcome nobody has settled yet.
       if (current.writePhase !== null) {
+        // A superseded head's own late edge parks nothing: draining it would revive the row.
+        if (sameRun && current.desiredState === 'superseded') return toRecord(current)
         const pending: Prisma.InputJsonValue = {
           desiredState: input.desiredState,
           reason: input.reason ?? null,
@@ -370,6 +372,8 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionWriterR
         id: projectionId,
         generation,
         tombstonedAt: null,
+        // A superseded head never revives: a newer head owns the subject, whatever its late edges say.
+        desiredState: { not: 'superseded' },
         // Once any terminal authority seals this generation a delayed queued/running edge can no
         // longer regress it, even if its caller held a stale row snapshot.
         ...(terminal ? {} : { sealedThrough: { lt: generation } })
@@ -389,7 +393,8 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionWriterR
     projectId: bigint,
     mergeRequestIid: number,
     currentHeadSha: string,
-    at: Date
+    at: Date,
+    acceptedAt?: Date
   ): Promise<number> {
     return this.transaction(async (tx) => {
       const candidates = await tx.codeHostRunProjection.findMany({
@@ -397,15 +402,20 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionWriterR
           hookId,
           projectId,
           mergeRequestIid,
-          headSha: { not: currentHeadSha },
           tombstonedAt: null,
-          desiredState: { notIn: ['superseded'] }
+          desiredState: { notIn: ['superseded'] },
+          ...(acceptedAt ? {} : { headSha: { not: currentHeadSha } })
         },
-        select: { id: true }
+        select: { id: true, headSha: true, queuedAt: true }
       })
+      // With an acceptance time only the newest accepted head stays current, the caller's own rows included; no `queuedAt` ranks oldest.
+      const rank = (row: { headSha: string; queuedAt: Date | null }) =>
+        row.headSha === currentHeadSha ? acceptedAt!.getTime() : (row.queuedAt?.getTime() ?? Number.NEGATIVE_INFINITY)
+      const newest = acceptedAt ? Math.max(acceptedAt.getTime(), ...candidates.map(rank)) : undefined
+      const older = newest === undefined ? candidates : candidates.filter((row) => rank(row) < newest)
       let changed = 0
       // Deterministic id order: supersession overlaps ordinary lifecycle edges on the same subject.
-      for (const { id } of [...candidates].sort((a, b) => a.id.localeCompare(b.id))) {
+      for (const { id } of [...older].sort((a, b) => a.id.localeCompare(b.id))) {
         const row = await this.lockById(tx, id)
         if (!row || row.tombstonedAt !== null || row.desiredState === 'superseded') continue
         // A mutation is in flight for the current generation: park supersession as pending intent

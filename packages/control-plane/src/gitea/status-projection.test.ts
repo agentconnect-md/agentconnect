@@ -208,7 +208,10 @@ describe('GiteaStatusCoordinator', () => {
     const service = new GiteaStatusCoordinator({
       projections,
       runs: {
-        getRun: vi.fn(async () => ({ projectionEpoch: options.runEpoch === undefined ? 1n : options.runEpoch }))
+        getRun: vi.fn(async () => ({
+          projectionEpoch: options.runEpoch === undefined ? 1n : options.runEpoch,
+          startedAt: new Date(NOW)
+        }))
       } as never,
       agents: { getUnscoped: vi.fn(async () => agent) },
       bindings: { byRepo: vi.fn(async () => (options.binding === undefined ? binding : options.binding)) },
@@ -222,7 +225,11 @@ describe('GiteaStatusCoordinator', () => {
   it('opens queued on an accepted delivery with the connection epoch and the accepted fence, and kicks the reporter', async () => {
     const { service, projections, kick } = coordinator()
     await service.afterAccepted(edge())
-    expect(projections.supersede).toHaveBeenCalledWith(hookId, REPO, 12, HEAD, new Date(NOW))
+    // The row is established first, then older heads are preempted by the run's acceptance rank.
+    expect(projections.supersede).toHaveBeenCalledWith(hookId, REPO, 12, HEAD, new Date(NOW), new Date(NOW))
+    expect(projections.upsert.mock.invocationCallOrder[0]!).toBeLessThan(
+      projections.supersede.mock.invocationCallOrder[0]!
+    )
     expect(projections.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         provider: 'gitea',
@@ -246,6 +253,15 @@ describe('GiteaStatusCoordinator', () => {
     )
     expect(projections.setDesired).toHaveBeenCalledWith(projection().id, 1n, 'queued', new Date(NOW), undefined)
     expect(kick).toHaveBeenCalledOnce()
+  })
+
+  it('moves nothing for an edge whose row already belongs to a newer run of the same head', async () => {
+    const { service, projections, kick } = coordinator({ row: { ...projection(), currentDeliveryKey: 'delivery-9' } })
+    await service.afterReport(edge({ state: 'completed' }))
+    expect(projections.upsert).toHaveBeenCalledOnce()
+    expect(projections.supersede).not.toHaveBeenCalled()
+    expect(projections.setDesired).not.toHaveBeenCalled()
+    expect(kick).not.toHaveBeenCalled()
   })
 
   it('reads a delivery failure as skipped whatever kept the daemon away — the Control Plane writes', async () => {

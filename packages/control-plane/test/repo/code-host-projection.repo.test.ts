@@ -154,6 +154,59 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
     expect(await ledger.supersede(hookId, PROJECT, 42, NEXT_HEAD, LATER)).toBe(0)
   })
 
+  it('ranks heads by acceptance when asked to: an older head’s late edge preempts nothing and its row never revives (gitea-integration.md §10.4)', async () => {
+    const ledger = repo()
+    const subject = await owner()
+    const { hookId } = subject
+    const THIRD_HEAD = 'c'.repeat(40)
+    const accepted = { old: NOW, next: new Date(NOW.getTime() + 30_000), third: new Date(NOW.getTime() - 60_000) }
+    const late = new Date(LATER.getTime() + 60_000)
+    const old = await upsert({ ...subject, headSha: HEAD, desiredState: 'running', queuedAt: accepted.old })
+    const next = await upsert({
+      ...subject,
+      headSha: NEXT_HEAD,
+      currentDeliveryKey: 'delivery-2',
+      currentRunAt: LATER,
+      queuedAt: accepted.next
+    })
+    // The newer head's edge supersedes the older head.
+    expect(await ledger.supersede(hookId, PROJECT, 42, NEXT_HEAD, LATER, accepted.next)).toBe(1)
+    expect((await ledger.get(old.id))!.desiredState).toBe('superseded')
+
+    // The older head's late terminal report ranks by its acceptance: it preempts nothing ...
+    expect(await ledger.supersede(hookId, PROJECT, 42, HEAD, late, accepted.old)).toBe(0)
+    expect((await ledger.get(next.id))!.desiredState).toBe('queued')
+    // ... and its own row refuses the edge, terminal or not.
+    const superseded = (await ledger.get(old.id))!
+    expect(await ledger.setDesired(superseded.id, superseded.generation, 'completed', late)).toBe(false)
+    expect((await ledger.get(old.id))!.desiredState).toBe('superseded')
+    // Mid-write the late edge parks nothing either: draining it would revive the row.
+    expect(
+      await ledger.beginWrite(superseded.id, superseded.generation, DAEMON, randomUUID(), 'update', late, late)
+    ).toBe(true)
+    const parked = await upsert({
+      ...subject,
+      headSha: HEAD,
+      desiredState: 'completed',
+      completedAt: late,
+      currentRunAt: late
+    })
+    expect(parked.pendingIntent).toBeNull()
+    expect(parked.desiredState).toBe('superseded')
+
+    // An older head whose first edge arrives after a newer head was accepted is superseded on arrival, the newer head untouched.
+    const third = await upsert({
+      ...subject,
+      headSha: THIRD_HEAD,
+      currentDeliveryKey: 'delivery-0',
+      currentRunAt: late,
+      queuedAt: accepted.third
+    })
+    expect(await ledger.supersede(hookId, PROJECT, 42, THIRD_HEAD, late, accepted.third)).toBe(1)
+    expect((await ledger.get(third.id))!.desiredState).toBe('superseded')
+    expect((await ledger.get(next.id))!.desiredState).toBe('queued')
+  })
+
   it('holds one write at a time and ignores an older generation settling it', async () => {
     const ledger = repo()
     const base = input(await owner())

@@ -175,14 +175,8 @@ export class GiteaStatusCoordinator {
     const connection = await this.deps.connections.get(edge.orgId, binding.connectionId)
     if (!connection) return
 
-    // A newer head preempts every older generation on the same pull request before the new one opens.
-    await this.deps.projections.supersede(
-      HookId(edge.hookId),
-      subject.projectId,
-      subject.mergeRequestIid,
-      subject.headSha,
-      edge.at
-    )
+    // The run's acceptance ranks its head on the pull request: the same on every edge, so a late edge of an older head outranks nothing.
+    const acceptedAt = run.startedAt
     const terminal = edge.state !== 'queued' && edge.state !== 'running'
     const reason = normalizedReason(edge.reason)
     const projection = await this.deps.projections.upsert({
@@ -200,16 +194,27 @@ export class GiteaStatusCoordinator {
       ...subject,
       ...(reason ? { reason } : {}),
       ...(edge.sessionId ? { sessionId: edge.sessionId } : {}),
-      ...(edge.state === 'queued' ? { queuedAt: edge.at } : {}),
+      queuedAt: acceptedAt,
       ...(edge.state === 'running' ? { startedAt: edge.at } : {}),
       ...(terminal ? { completedAt: edge.at } : {}),
       nextAttemptAt: edge.at
     })
     // Null ⇒ the hook was retired under the lifecycle fence while this edge was in flight.
     if (!projection || projection.tombstonedAt) return
+    // The row already belongs to a newer run of this head: an older delivery's edge moves nothing.
+    if (projection.currentDeliveryKey !== edge.deliveryKey) return
+    // The newest accepted head preempts every older one, this head's own row included when a newer head is already here.
+    await this.deps.projections.supersede(
+      HookId(edge.hookId),
+      subject.projectId,
+      subject.mergeRequestIid,
+      subject.headSha,
+      edge.at,
+      acceptedAt
+    )
     // The upsert parks an edge that landed mid-write; the reporter drains it once that write settles.
     if (projection.writePhase !== null) return
-    // A late queued/running edge loses here against the terminal authority that already sealed it.
+    // A late queued/running edge loses against the terminal authority that sealed the generation; a superseded row refuses every edge.
     const moved = await this.deps.projections.setDesired(
       projection.id,
       projection.generation,

@@ -72,14 +72,14 @@ async function harness() {
     reportingMode: 'status' as const,
     gateMode: 'informational' as const
   }
-  const accept = async (deliveryKey: string) => {
+  const accept = async (deliveryKey: string, startedAt: Date = new Date(NOW)) => {
     await prisma.hookRun.create({
       data: {
         hookId,
         orgId: DEFAULT_ORG_ID,
         deliveryKey,
         event: 'merge_request:opened',
-        startedAt: new Date(NOW),
+        startedAt,
         agentId,
         configRevision: 3n,
         dispatchRevision: 5n,
@@ -206,13 +206,13 @@ describe('gitea commit-status projection (§10.4)', () => {
     await h.accept('delivery-1')
     await h.coordinator.afterAccepted(h.edge())
     await h.reporter.tick()
-    await h.accept('delivery-2')
     const next = {
       repoId: REPO.toString(),
       repoPath: 'example-org/example-repo',
       target: { kind: 'pull' as const, index: 12, headSha: NEXT_HEAD }
     }
     h.clock.advance(1_000)
+    await h.accept('delivery-2', new Date(h.clock.now()))
     await h.coordinator.afterAccepted(h.edge({ deliveryKey: 'delivery-2', gitea: next }))
     await h.reporter.tick()
     // The old head reads superseded (success, named as such); the new head reads queued.
@@ -233,6 +233,44 @@ describe('gitea commit-status projection (§10.4)', () => {
       description: 'AgentConnect review failed (session_start_failed)'
     })
     expect(h.fake.statuses.some((status) => status.status === 'warning')).toBe(false)
+  })
+
+  it('keeps the newest head current when an older head reports late', async () => {
+    const h = await harness()
+    await h.accept('delivery-1')
+    await h.coordinator.afterAccepted(h.edge())
+    h.clock.advance(1_000)
+    await h.coordinator.afterStart(h.edge({ state: 'running', sessionId: 'session-1' }))
+    await h.reporter.tick()
+    const next = {
+      repoId: REPO.toString(),
+      repoPath: 'example-org/example-repo',
+      target: { kind: 'pull' as const, index: 12, headSha: NEXT_HEAD }
+    }
+    h.clock.advance(1_000)
+    await h.accept('delivery-2', new Date(h.clock.now()))
+    await h.coordinator.afterAccepted(h.edge({ deliveryKey: 'delivery-2', gitea: next }))
+    await h.reporter.tick()
+    const on = (sha: string) => h.fake.statuses.filter((status) => status.sha === sha)
+    expect(on(HEAD).at(-1)).toMatchObject({
+      status: 'success',
+      description: 'AgentConnect review superseded by a newer revision'
+    })
+    expect(on(NEXT_HEAD).at(-1)).toMatchObject({ status: 'pending' })
+    const written = h.fake.statuses.length
+
+    // The older head's run finishes after the newer head arrived: nothing is written, the newer head stays current, the older stays superseded.
+    h.clock.advance(1_000)
+    await h.coordinator.afterReport(h.edge({ state: 'completed', sessionId: 'session-1' }))
+    await h.reporter.tick()
+    expect(h.fake.statuses).toHaveLength(written)
+    expect(on(HEAD).at(-1)).toMatchObject({ description: 'AgentConnect review superseded by a newer revision' })
+    expect(on(NEXT_HEAD).at(-1)).toMatchObject({ status: 'pending' })
+    expect(await h.row()).toMatchObject({ desiredState: 'superseded' })
+    const newer = await prisma.codeHostRunProjection.findFirstOrThrow({
+      where: { hookId: h.hookId, headSha: NEXT_HEAD }
+    })
+    expect(newer.desiredState).toBe('queued')
   })
 
   it('keeps an ambiguous write under its marker and reconciles the landed status instead of replaying it', async () => {
