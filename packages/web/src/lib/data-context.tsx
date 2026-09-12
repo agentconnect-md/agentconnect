@@ -44,6 +44,7 @@ import {
   createHook as apiCreateHook,
   createGithubHook as apiCreateGithubHook,
   createGitlabHook as apiCreateGitlabHook,
+  createGiteaHook as apiCreateGiteaHook,
   deleteHook as apiDeleteHook,
   fetchBots,
   deleteBot as apiDeleteBot,
@@ -118,6 +119,7 @@ import {
   type CreatedHookDto,
   type CreateHookInput,
   type CreateGithubHookInput,
+  type CreateGiteaHookInput,
   type CreateGitlabHookInput,
   type BotDto,
   type UpsertCronInput,
@@ -243,6 +245,9 @@ interface ConsoleData {
   /** Create a GitLab subscription hook against a managed project binding, then
    *  invalidate its agent's hook cache. */
   createGitlabHook: (input: CreateGitlabHookInput) => Promise<CreatedHookDto>
+  /** Create a Gitea subscription hook against a managed repository binding, then
+   *  invalidate its agent's hook cache. */
+  createGiteaHook: (input: CreateGiteaHookInput) => Promise<CreatedHookDto>
   /** Delete a hook (its ingress URL dies with it), then invalidate its agent's hook cache. */
   deleteHook: (id: string, agentId?: string | null) => Promise<void>
   /** Per-conversation trigger choice (PATCH), applied to the local row on success. */
@@ -1239,6 +1244,18 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateCache, orgKey]
   )
 
+  // Gitea subscription — the CP validates the numeric repository id against the
+  // organization's own managed binding before it writes anything.
+  const createGiteaHook = useCallback(
+    async (input: CreateGiteaHookInput): Promise<CreatedHookDto> => {
+      const created = await apiCreateGiteaHook(input)
+      const hooksKey = consoleKeys.agentHooks(orgKey, input.agentId)
+      if (hooksKey) settleInBackground(mutateCache(hooksKey))
+      return created
+    },
+    [mutateCache, orgKey]
+  )
+
   const deleteHook = useCallback(
     async (id: string, agentId?: string | null) => {
       await apiDeleteHook(id)
@@ -1663,6 +1680,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       createHook,
       createGithubHook,
       createGitlabHook,
+      createGiteaHook,
       deleteHook,
       deleteBot,
       setChannelTrigger,
@@ -1745,6 +1763,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       createHook,
       createGithubHook,
       createGitlabHook,
+      createGiteaHook,
       deleteHook,
       deleteBot,
       setChannelTrigger,

@@ -34,11 +34,11 @@ export const CODE_HOST_PROJECTION: Record<CodeHostProvider, CodeHostProjection> 
  * repository picker, the settings panes behind it.
  *
  * A provider is known to the wire before its console surface exists (gitea-integration.md §16: G1
- * makes `gitea` a code host, G6 gives it a card), and a tile that opens nothing is worse than no
+ * made `gitea` a code host, G6 gave it a card), and a tile that opens nothing is worse than no
  * tile. Total over the providers rather than a list of exclusions, so the step that adds the surface
  * flips one value here.
  */
-const CODE_HOST_CONSOLE_READY: Record<CodeHostProvider, boolean> = { github: true, gitlab: true, gitea: false }
+const CODE_HOST_CONSOLE_READY: Record<CodeHostProvider, boolean> = { github: true, gitlab: true, gitea: true }
 
 /** The hosts the console OFFERS. Every `Record<CodeHostProvider, …>` above stays total regardless:
  *  a row, a label and a mark are needed wherever an existing hook or grant names the host. */

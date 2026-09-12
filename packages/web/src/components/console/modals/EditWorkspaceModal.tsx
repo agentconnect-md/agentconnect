@@ -14,8 +14,10 @@ import { agentLabel, isPoolPlacementKind, workspaceSourceOf, type Agent } from '
 import { sessionIsolationLabel } from '@/lib/session-isolation'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
+import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import { gitRepoUrlTileHint } from '@/lib/git-url-tile'
+import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   ApiError,
@@ -40,6 +42,9 @@ import { useGithubRepoPicker, type InstalledRepo } from '@/lib/use-github-repo-p
 import { GithubRepoPickerOptions } from '@/components/console/GithubRepoPickerOptions'
 import { agentDirInputValue, normalizeAgentDir } from '@/lib/repo-subdir'
 import {
+  GiteaNoRepositoriesNotice,
+  GiteaRepositoryField,
+  GiteaRepositoryOption,
   GithubConnectedBanner,
   GithubInstallPrompt,
   GithubPrivateReposNotice,
@@ -111,6 +116,7 @@ export default function EditWorkspaceModal({
   const codeHostWorkspace = codeHostRecord((provider) => (currentSource === provider ? gitWorkspace : null))
   const githubWorkspace = codeHostWorkspace.github
   const gitlabWorkspace = codeHostWorkspace.gitlab
+  const giteaWorkspace = codeHostWorkspace.gitea
   const giturlWorkspace = currentSource === 'giturl' ? gitWorkspace : null
   const isGithubApp = githubWorkspace?.provider === 'github'
   // An anonymous checkout mints nothing, so only a credentialed workspace can hold write.
@@ -156,6 +162,11 @@ export default function EditWorkspaceModal({
   const [urlInput, setUrlInput] = useState(giturlWorkspace?.gitRepo ?? '')
   const [glPickOpen, setGlPickOpen] = useState(false)
   const [glQ, setGlQ] = useState('')
+  // Gitea arm: a repository is named by its numeric id, and there is no anonymous second arm —
+  // a public Gitea repository is the Git URL tile's business (gitea-integration.md §9).
+  const [gtPick, setGtPick] = useState(giteaWorkspace?.provider === 'gitea' ? (giteaWorkspace.repoId ?? '') : '')
+  const [gtPickOpen, setGtPickOpen] = useState(false)
+  const [gtQ, setGtQ] = useState('')
   const [write, setWrite] = useState(currentWrite ?? (authorized[0] ? authorized[0].access === 'write' : true))
   const [authorizations, setAuthorizations] = useState(authorized)
   const [repositoryEditor, setRepositoryEditor] = useState<{
@@ -239,6 +250,10 @@ export default function EditWorkspaceModal({
   // The projects this organization added, plus the ones the connected account can
   // still add — picking one of those sets it up here (§18.1).
   const gl = useGitlabProjects(repositoryEditor === null && mode === 'gitlab', glQ)
+
+  // The repositories this organization added, plus the ones the bot administers — picking one of
+  // those installs its webhook here (gitea-integration.md §6).
+  const gt = useGiteaRepositories(repositoryEditor === null && mode === 'gitea')
 
   const openGhInstall = async () => {
     const url = await fetchGithubInstallUrl().catch(() => null)
@@ -366,6 +381,11 @@ export default function EditWorkspaceModal({
   }
 
   const noProjects = mode === 'gitlab' && gl.empty
+  const noRepositories = mode === 'gitea' && gt.empty
+  const gtPicked = gt.choices.find((choice) => choice.repoId === gtPick)
+  const gtMatches = matchGiteaRepositories(gt.choices, gtQ)
+  // Falls back to the stored path so the current repository reads correctly before the list lands.
+  const gtPickLabel = gtPicked?.repoPath ?? (gtPick && gtPick === giteaWorkspace?.repoId ? giteaWorkspace.repo : '')
   const glPicked = gl.choices.find((choice) => choice.projectId === glPick)
   const glMatches = matchGitlabProjects(gl.choices, glQ)
   // Falls back to the stored path so the current project reads correctly before the list lands.
@@ -383,7 +403,9 @@ export default function EditWorkspaceModal({
           (glPublic !== null
             ? glPublic !== (gitlabWorkspace.provider === undefined ? gitlabWorkspace.repo : null)
             : glPick !== gitlabWorkspace.repoId)
-        : mode === 'giturl' && (giturlWorkspace === null || urlInput.trim() !== giturlWorkspace.gitRepo)
+        : mode === 'gitea'
+          ? giteaWorkspace === null || gtPick !== giteaWorkspace.repoId
+          : mode === 'giturl' && (giturlWorkspace === null || urlInput.trim() !== giturlWorkspace.gitRepo)
   const branchChanged = mode === currentSource && gitWorkspace !== null && branch.trim() !== gitWorkspace.branch
   const agentDirChanged =
     mode === currentSource && gitWorkspace !== null && (normalizedAgentDir ?? '') !== currentAgentDir
@@ -414,6 +436,13 @@ export default function EditWorkspaceModal({
         agentDirChanged ||
         worktreeChanged ||
         accessChanged)) ||
+    (mode === 'gitea' &&
+      (giteaWorkspace === null ||
+        repoChanged ||
+        branchChanged ||
+        agentDirChanged ||
+        worktreeChanged ||
+        accessChanged)) ||
     (mode === 'giturl' &&
       (giturlWorkspace === null || repoChanged || branchChanged || agentDirChanged || worktreeChanged))
   const canSubmit =
@@ -421,13 +450,15 @@ export default function EditWorkspaceModal({
     (mode === 'scratch' ||
       (mode === 'gitlab'
         ? (!!glPick || !!glPublic) && agentDirError === null
-        : mode === 'giturl'
-          ? !!urlInput.trim() && urlTileHint === null && agentDirError === null
-          : !!pick &&
-            !uncovered &&
-            !probeDenies &&
-            agentDirError === null &&
-            (!!pickInstallationId || publicSelected || !appAvailable)))
+        : mode === 'gitea'
+          ? !!gtPick && agentDirError === null
+          : mode === 'giturl'
+            ? !!urlInput.trim() && urlTileHint === null && agentDirError === null
+            : !!pick &&
+              !uncovered &&
+              !probeDenies &&
+              agentDirError === null &&
+              (!!pickInstallationId || publicSelected || !appAvailable)))
 
   const applyPick = (fullName: string, defaultBranch: string | undefined, asPublic: GithubRepoDto | null) => {
     setPick(fullName)
@@ -470,6 +501,17 @@ export default function EditWorkspaceModal({
     setErr(null)
   }
 
+  // Picking an unadded repository installs its webhook first; a failed setup picks nothing.
+  const selectRepository = async (choice: GiteaRepositoryChoice) => {
+    if (!choice.binding && !(await gt.provision(choice.repoId))) return
+    setGtPick(choice.repoId)
+    setGtPickOpen(false)
+    setAccessOpen(false)
+    setBranch(choice.defaultBranch ?? '')
+    setAgentDir('')
+    setErr(null)
+  }
+
   const submit = async () => {
     if (busyRef.current || !canSubmit) return
     busyRef.current = true
@@ -497,22 +539,36 @@ export default function EditWorkspaceModal({
                 ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
                 access: glPublic === null && write ? 'write' : 'read'
               }
-            : mode === 'giturl'
+            : mode === 'gitea'
               ? {
                   mode: 'git',
-                  gitRepo: urlInput.trim(),
-                  worktree,
-                  ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                  ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
-                }
-              : {
-                  mode: 'git',
-                  gitRepo: pick,
+                  // An unchanged pick submits the STORED address — never a client-side
+                  // recomposition, which cannot know the deployment's instance URL.
+                  gitRepo:
+                    !repoChanged && giteaWorkspace !== null
+                      ? giteaWorkspace.gitRepo
+                      : `${gt.instanceUrl.replace(/\/+$/, '')}/${gtPickLabel}`,
                   worktree,
                   ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                   ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                  access: effectiveWrite ? 'write' : 'read'
+                  access: write ? 'write' : 'read'
                 }
+              : mode === 'giturl'
+                ? {
+                    mode: 'git',
+                    gitRepo: urlInput.trim(),
+                    worktree,
+                    ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                    ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
+                  }
+                : {
+                    mode: 'git',
+                    gitRepo: pick,
+                    worktree,
+                    ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                    ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                    access: effectiveWrite ? 'write' : 'read'
+                  }
       )
       onChanged()
     } catch (error) {
@@ -604,6 +660,7 @@ export default function EditWorkspaceModal({
               setAccessOpen(false)
               setBranchOpen(false)
               setGlPickOpen(false)
+              setGtPickOpen(false)
               setErr(null)
             }}
           />
@@ -712,6 +769,101 @@ export default function EditWorkspaceModal({
                       repositorySelected={!!glPick || !!glPublic}
                       unselectedLabel="Pick project first"
                       defaultBranchLabel="GitLab default branch"
+                      value={branch}
+                      branches={null}
+                      open={false}
+                      query=""
+                      onToggle={() => {}}
+                      onClose={() => {}}
+                      onQueryChange={() => {}}
+                      onChange={(value) => {
+                        setBranch(value)
+                        setErr(null)
+                      }}
+                    />
+
+                    <WorkingSubdirectoryField
+                      value={agentDir}
+                      error={agentDirError}
+                      onChange={(value) => {
+                        setAgentDir(value)
+                        setErr(null)
+                      }}
+                    />
+                    <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {mode === 'gitea' && (
+            <div className="mb-4 grid grid-cols-1 gap-[14px] desktop:grid-cols-2 desktop:gap-x-7">
+              {gt.error ? (
+                <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error) desktop:col-span-2">
+                  Couldn&rsquo;t load your Gitea repositories — {gt.error}
+                </div>
+              ) : gt.loading ? (
+                <div className="desktop:col-span-2">
+                  <LoadingState size={20} padding={16} />
+                </div>
+              ) : noRepositories ? (
+                <GiteaNoRepositoriesNotice
+                  connected={gt.connected}
+                  enabled={gt.enabled}
+                  integrationsHref={orgPath('/integrations')}
+                  onSync={gt.reload}
+                  syncing={gt.reloading}
+                />
+              ) : (
+                <>
+                  <GiteaRepositoryField
+                    value={gtPickLabel}
+                    icon="book-marked"
+                    loading={false}
+                    open={gtPickOpen}
+                    query={gtQ}
+                    onToggle={() => {
+                      setGtQ('')
+                      setAccessOpen(false)
+                      setGtPickOpen((value) => !value)
+                    }}
+                    onClose={() => setGtPickOpen(false)}
+                    onQueryChange={setGtQ}
+                    error={gt.provisionError ? `Couldn’t set up that repository — ${gt.provisionError}` : undefined}
+                  >
+                    {gtMatches.map((choice) => (
+                      <GiteaRepositoryOption
+                        key={choice.repoId}
+                        choice={choice}
+                        selected={gtPick === choice.repoId}
+                        busy={gt.provisioning === choice.repoId}
+                        onSelect={() => void selectRepository(choice)}
+                      />
+                    ))}
+                    {gtMatches.length === 0 && <div className="fnohit">No repositories match &ldquo;{gtQ}&rdquo;</div>}
+                  </GiteaRepositoryField>
+
+                  <RepositoryAccessField
+                    repositorySelected={!!gtPick}
+                    writeDescription="Push, open pull requests & request reviews"
+                    value={write ? 'write' : 'read'}
+                    open={accessOpen}
+                    onToggle={() => {
+                      setGtPickOpen(false)
+                      setAccessOpen((value) => !value)
+                    }}
+                    onClose={() => setAccessOpen(false)}
+                    onChange={(value) => {
+                      setWrite(value === 'write')
+                      setAccessOpen(false)
+                      setErr(null)
+                    }}
+                  />
+
+                  <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+                    <WorkspaceBranchField
+                      repositorySelected={!!gtPick}
+                      defaultBranchLabel="Gitea default branch"
                       value={branch}
                       branches={null}
                       open={false}

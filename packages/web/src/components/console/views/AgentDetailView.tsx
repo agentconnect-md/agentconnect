@@ -30,16 +30,19 @@ import {
 import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import {
   createGithubHook,
+  createGiteaHook,
   createGitlabHook,
   creatorLabel,
   fetchAgentHooks,
   fetchAgentRepos,
   fetchGithubInstallations,
+  fetchGiteaConnections,
   fetchGitlabConnections,
   fetchHookRuns,
   fetchSessionDetail,
   sessionFromDetailDto,
   updateGithubHook,
+  updateGiteaHook,
   updateGitlabHook,
   uploadAgentIcon,
   type GithubInstallationDto,
@@ -71,6 +74,7 @@ import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
+import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
@@ -79,6 +83,23 @@ import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
 import { platformAgentCard } from '@/components/console/platforms/registry'
+import {
+  GT_TRIGGER_MODES,
+  GT_TRIGGER_PILL,
+  giteaCadencePick,
+  giteaCommentFamilies,
+  giteaDefaultTriggerMode,
+  giteaFamilyCarriesReviews,
+  giteaFamilySubscription,
+  giteaFamilyTile,
+  giteaHookFamily,
+  giteaHookNeedsNormalization,
+  giteaTriggerModeOf,
+  giteaTriggerTooltip,
+  type GtFamily,
+  type GtTriggerMode
+} from '@/lib/gitea-events'
+import { giteaInstanceHost } from '@/lib/gitea-repositories'
 import {
   GL_TRIGGER_MODES,
   GL_TRIGGER_PILL,
@@ -96,7 +117,7 @@ import {
   type GlTriggerMode
 } from '@/lib/gitlab-events'
 import { gitlabInstanceHost } from '@/lib/gitlab-projects'
-import { orderedGithubHookRows, orderedGitlabHookRows } from '@/lib/code-host-hook-groups'
+import { orderedGiteaHookRows, orderedGithubHookRows, orderedGitlabHookRows } from '@/lib/code-host-hook-groups'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
@@ -276,6 +297,8 @@ export default function AgentDetailView() {
   // One flat row per subscription still — the grouping is only the ORDER (a repo's rows adjacent) plus its add offer.
   const githubRows = orderedGithubHookRows(githubHooks)
   const gitlabRows = orderedGitlabHookRows(gitlabHooks)
+  const giteaHooks = codeHostHooks.gitea
+  const giteaRows = orderedGiteaHookRows(giteaHooks)
   const githubInstallationsKey =
     activeOrg && githubHooks.length > 0 ? (['github-review-installations', activeOrg.id] as const) : null
   const { data: githubInstallationsData } = useSWR<GithubInstallationDto[]>(githubInstallationsKey, () =>
@@ -291,6 +314,12 @@ export default function AgentDetailView() {
   // A pending read and a failed one both arrive as undefined, and neither is evidence of an
   // instance, so the host is named only once a connection has said it.
   const gitlabInstanceUrl = gitlabConnectionsData?.[0]?.instanceUrl ?? null
+  // One deployment talks to exactly one Gitea instance (§3), so any connection names the host.
+  const giteaConnectionsKey = activeOrg && giteaHooks.length > 0 ? (['gitea-connections', activeOrg.id] as const) : null
+  const { data: giteaConnectionsData } = useSWR(giteaConnectionsKey, () =>
+    fetchGiteaConnections().then((result) => result.connections)
+  )
+  const giteaInstanceUrl = giteaConnectionsData?.[0]?.instanceUrl ?? null
 
   // Authorization provenance for the unauthorized-watch badge (multi-repo
   // design §web 3): numeric repo ids first, names only for rolling legacy rows.
@@ -401,8 +430,17 @@ export default function AgentDetailView() {
     // Each host's PUT re-sends its own whole block; only the two effect axes move. Total over
     // the providers, so a new host writes through its own endpoint instead of GitHub's.
     const writers: Record<CodeHostProvider, (() => Promise<HookDto>) | null> = {
-      // G6 adds Gitea's hook routes; a null writer is how this table says a host has none.
-      gitea: null,
+      gitea: hook.repoId
+        ? () =>
+            updateGiteaHook(hook.id, {
+              ...common,
+              repoId: hook.repoId!,
+              commentFamilies: giteaCommentFamilies(hook.commentFamilies),
+              mentionOnly: hook.mentionOnly,
+              reviewPolicy,
+              reportingMode
+            })
+        : null,
       github: hook.repoFullName
         ? () =>
             updateGithubHook(hook.id, {
@@ -457,8 +495,14 @@ export default function AgentDetailView() {
       setReviewSettingsDraft((current) => (current ? { ...current, reportingMode } : current))
     }
     const editors: Record<CodeHostProvider, () => ReactNode> = {
-      // Unreachable: the dialog opens from a hook row, and no gitea row can exist yet.
-      gitea: () => null,
+      gitea: () => (
+        <GiteaReviewSettings
+          value={draft}
+          onReviewPolicyChange={onReviewPolicyChange}
+          onReportingModeChange={onReportingModeChange}
+          defaultExpanded
+        />
+      ),
       github: () => (
         <GithubReviewSettings
           value={draft}
@@ -528,6 +572,33 @@ export default function AgentDetailView() {
       setHookBusy(null)
     }
   }
+  // The Gitea counterpart — its own whole-block PUT, keyed on the numeric repository id.
+  const saveGiteaHookEvents = async (h: HookDto, fam: GtFamily, mode: GtTriggerMode) => {
+    if (hookBusy || !h.agentId || !h.repoId) return
+    setHookBusy(h.id)
+    try {
+      const updated = await updateGiteaHook(h.id, {
+        agentId: h.agentId,
+        name: h.name,
+        enabled: h.enabled,
+        repoId: h.repoId,
+        ...giteaFamilySubscription(fam, mode),
+        reviewPolicy: h.reviewPolicy,
+        reportingMode: h.reportingMode
+      })
+      void mutateHooks((rows) => rows?.map((r) => (r.id === h.id ? updated : r)), { revalidate: false })
+    } catch {
+      /* controls stay as they were — the next refresh interval reconciles */
+    } finally {
+      setHookBusy(null)
+    }
+  }
+  // The same pure helper rule as gitlab: a no-op write is refused, which leaves an
+  // inexpressible stored rule untouched.
+  const setGiteaHookCadence = async (h: HookDto, mode: GtTriggerMode) => {
+    const edit = giteaCadencePick(h, mode)
+    if (edit) await saveGiteaHookEvents(h, edit.family, edit.mode)
+  }
   // A pure helper decides the gitlab edit: it refuses a no-op write, which is what leaves an inexpressible stored rule untouched.
   const setGitlabHookCadence = async (h: HookDto, mode: GlTriggerMode) => {
     const edit = gitlabCadencePick(h, mode)
@@ -588,6 +659,28 @@ export default function AgentDetailView() {
       setAddFamilyBusy(null)
     }
   }
+  // The Gitea counterpart — its create keys on the numeric repository id.
+  const addGiteaFamily = async (seed: HookDto, repoKey: string, fam: GtFamily) => {
+    if (addFamilyBusy || !seed.agentId || !seed.repoId) return
+    setAddFamilyBusy(addFamilyKey(repoKey, fam))
+    setAddFamilyError(null)
+    try {
+      await createGiteaHook({
+        agentId: seed.agentId,
+        name: seed.repoFullName ?? seed.name,
+        repoId: seed.repoId,
+        family: fam,
+        ...giteaFamilySubscription(fam, giteaDefaultTriggerMode(fam)),
+        reviewPolicy: 'off',
+        reportingMode: 'off'
+      })
+      await mutateHooks()
+    } catch (error) {
+      setAddFamilyError({ key: repoKey, message: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setAddFamilyBusy(null)
+    }
+  }
   // The row's family is a read-only fact now: it labels the row and decides
   // whether the review/Check surface applies to it at all.
   const ghRowPill = (h: HookDto) => {
@@ -610,6 +703,14 @@ export default function AgentDetailView() {
   const glRowCarriesReviews = (h: HookDto) => {
     const fam = gitlabHookFamily(h)
     return !!fam && gitlabFamilyCarriesReviews(fam)
+  }
+  const gtRowPill = (h: HookDto) => {
+    const fam = giteaHookFamily(h)
+    return fam ? (giteaFamilyTile(fam)?.pill ?? fam) : 'no events'
+  }
+  const gtRowCarriesReviews = (h: HookDto) => {
+    const fam = giteaHookFamily(h)
+    return !!fam && giteaFamilyCarriesReviews(fam)
   }
   // One open-state drives both agent-actions surfaces: the desktop kebab dropdown
   // and the mobile bottom sheet (only one is ever visible — CSS gates them).
@@ -1690,6 +1791,78 @@ export default function AgentDetailView() {
                       )}
                     </div>
                   ))}
+                  {giteaRows.map(({ hook: h, repoKey, first, last, addFamilies }, i) => (
+                    <div
+                      key={h.id}
+                      className={`${codeHostMobileRowCls(first, last)} ${
+                        first && agentInts.length + webhookHooks.length + githubRows.length + gitlabRows.length + i > 0
+                          ? 'border-t'
+                          : ''
+                      }`}
+                    >
+                      {first && (
+                        <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+                          <span className="flex h-[18px] w-[18px] items-center justify-center">
+                            <PlatformMark platform="gitea" fillPct={100} />
+                          </span>
+                        </span>
+                      )}
+                      <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                        {first && (
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
+                              {h.repoFullName ?? h.name}
+                            </span>
+                            {/* The repository's first row offers what it does not watch yet — same + menu as desktop. */}
+                            {addFamilies.length > 0 && (
+                              <RowMoreMenu
+                                ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                icon="plus"
+                                title="Watch another subject"
+                                triggerClassName={ADD_SUBJECT_BTN}
+                                align="start"
+                                items={addFamilies.map((fam) => ({
+                                  icon: (giteaFamilyTile(fam)?.icon ?? 'plus') as Parameters<typeof Icon>[0]['name'],
+                                  label: `Add ${giteaFamilyTile(fam)?.label ?? fam}`,
+                                  onClick: () => void addGiteaFamily(h, repoKey, fam)
+                                }))}
+                              />
+                            )}
+                          </span>
+                        )}
+                        <span className="flex min-w-0 items-center gap-2">
+                          {/* What this row subscribes to — a label, not a control — then when it runs. */}
+                          <span className="flex-none font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                            {gtRowPill(h)}
+                          </span>
+                          <span className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                            {GT_TRIGGER_PILL[giteaTriggerModeOf(h)]}
+                          </span>
+                        </span>
+                        {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
+                          <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                            {reviewPolicyLabel(h.reviewPolicy)} review
+                            {h.reportingMode === 'check' ? ' · commit status' : ''}
+                          </span>
+                        )}
+                        {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                          <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                            {addFamilyError.message}
+                          </span>
+                        )}
+                      </span>
+                      {/* Reviews and the commit status exist on the pull-request row only. */}
+                      {gtRowCarriesReviews(h) && (
+                        <button
+                          className="iconbtn flex-none"
+                          title="PR review and commit status settings"
+                          onClick={() => openReviewSettings(h)}
+                        >
+                          <Icon name="settings-2" size={15} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
                 </div>
                 <div className="hidden flex-col gap-3 px-4 py-[14px] desktop:flex">
                   {agentInts.map((g, i) => {
@@ -2075,6 +2248,147 @@ export default function AgentDetailView() {
                           <Icon name="info" size={12} className="flex-none" />
                           Pick which projects to watch and which events run the agent — it replies on the same issue,
                           merge request thread.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {/* Gitea group — the same one-card, one-row-per-family shape. */}
+                  {giteaHooks.length > 0 && (
+                    <div className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
+                      <div className="flex items-center gap-3 px-[14px] py-3">
+                        <span className="flex h-[34px] w-[34px] flex-none items-center justify-center">
+                          <span className="flex h-[26px] w-[26px] items-center justify-center">
+                            <GiteaMark fillPct={100} />
+                          </span>
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-sans text-[13.5px] font-semibold leading-normal">Gitea</span>
+                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
+                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
+                              connected
+                            </span>
+                          </div>
+                          {giteaInstanceUrl && (
+                            <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">
+                              {giteaInstanceHost(giteaInstanceUrl)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="border-t border-(--border-subtle) bg-(--surface-app)">
+                        {giteaRows.map(({ hook: h, repoKey, first, last, addFamilies }) => (
+                          <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
+                            {/* One repository = one attached block: its first row names it, its
+                                  siblings indent to that name and only state their family. */}
+                            <div className={codeHostRowCls(first, last)}>
+                              {first ? (
+                                <>
+                                  <Icon
+                                    name="folder-git-2"
+                                    size={14}
+                                    color="var(--text-tertiary)"
+                                    className="flex-none"
+                                  />
+                                  <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
+                                    {h.repoFullName ?? h.name}
+                                  </span>
+                                </>
+                              ) : null}
+                              {/* The repository's first row offers what it does not watch yet. */}
+                              {addFamilies.length > 0 && (
+                                <RowMoreMenu
+                                  ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                  icon="plus"
+                                  title="Watch another subject"
+                                  triggerClassName={ADD_SUBJECT_BTN}
+                                  align="start"
+                                  items={addFamilies.map((fam) => ({
+                                    icon: (giteaFamilyTile(fam)?.icon ?? 'plus') as Parameters<typeof Icon>[0]['name'],
+                                    label: `Add ${giteaFamilyTile(fam)?.label ?? fam}`,
+                                    onClick: () => void addGiteaFamily(h, repoKey, fam)
+                                  }))}
+                                />
+                              )}
+                              {giteaHookNeedsNormalization(h) && (
+                                <span
+                                  className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
+                                  title="The stored subscription matches no trigger exactly — the nearest one is shown. Picking a trigger replaces it."
+                                >
+                                  custom rule
+                                </span>
+                              )}
+                              {/* What this row subscribes to, stated at the head of its control cluster. */}
+                              <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                                {gtRowPill(h)}
+                              </span>
+                              <TriggerSelect
+                                className="w-[126px] flex-none"
+                                options={GT_TRIGGER_MODES.map((mode) => ({
+                                  value: mode,
+                                  label: GT_TRIGGER_PILL[mode],
+                                  hint: giteaTriggerTooltip(mode, da.name)
+                                }))}
+                                value={giteaTriggerModeOf(h)}
+                                onChange={(mode) => void setGiteaHookCadence(h, mode)}
+                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${gtRowPill(h)}`}
+                                hint="Trigger — when this agent runs"
+                                busy={hookBusy === h.id}
+                              />
+                              <span className="inline-flex flex-none gap-[2px]">
+                                {/* Reviews and the commit status exist on the pull-request row only. */}
+                                <RowMoreMenu
+                                  ariaLabel={`More for ${h.repoFullName ?? h.name} ${gtRowPill(h)}`}
+                                  items={[
+                                    ...(gtRowCarriesReviews(h)
+                                      ? [
+                                          {
+                                            icon: 'settings-2' as const,
+                                            label: 'Review & commit status settings',
+                                            onClick: () => openReviewSettings(h)
+                                          }
+                                        ]
+                                      : []),
+                                    {
+                                      icon: 'rotate-ccw-clock' as const,
+                                      label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
+                                      onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
+                                    }
+                                  ]}
+                                />
+                                <button
+                                  className="iconbtn h-[26px] w-[26px] flex-none"
+                                  title={`Stop watching ${gtRowPill(h)}`}
+                                  onClick={() => openModal('deleteHook', h)}
+                                >
+                                  <Icon name="x" size={13} />
+                                </button>
+                              </span>
+                            </div>
+                            {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                              <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                                {addFamilyError.message}
+                              </div>
+                            )}
+                            {hookRunsFor === h.id && (
+                              <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
+                            )}
+                          </div>
+                        ))}
+                        <div className="px-[14px] py-2">
+                          {/* Straight to the Gitea pane — this button adds a repository, not a bot. */}
+                          <button
+                            className="lnk text-[12px]"
+                            onClick={() => openModal('integration', da, { platform: 'gitea' })}
+                          >
+                            <Icon name="plus" size={13} />
+                            Add repository
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-[7px] px-[14px] pt-0 pb-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                          <Icon name="info" size={12} className="flex-none" />
+                          Pick which repositories to watch and which events run the agent — it replies on the same issue
+                          or pull-request thread.
                         </div>
                       </div>
                     </div>

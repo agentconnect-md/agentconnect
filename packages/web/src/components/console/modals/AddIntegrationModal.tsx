@@ -16,9 +16,13 @@ import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeis
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
+import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import {
   GithubPrivateReposNotice,
+  GiteaNoRepositoriesNotice,
+  GiteaRepositoryField,
+  GiteaRepositoryOption,
   GitlabNoProjectsNotice,
   GitlabProjectField,
   GitlabProjectOption,
@@ -95,7 +99,22 @@ import {
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
+import {
+  GT_DEFAULT_FAMILIES,
+  GT_FAMILIES,
+  GT_TRIGGER_LABEL,
+  giteaDefaultTriggerMode,
+  giteaFamCovered,
+  giteaFamilyCarriesReviews,
+  giteaFamilySubscription,
+  giteaMentionUsage,
+  giteaTriggerTooltip,
+  type GtFamily,
+  type GtTriggerMode
+} from '@/lib/gitea-events'
+import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   effectiveRepoAccess,
@@ -204,6 +223,22 @@ const GL_TRIGGER_TILES: Partial<Record<GlFamily, TriggerTile<GlTriggerMode>[]>> 
   ]
 }
 
+/** Gitea's cadences — the same three, worded for a pull request. Gitea's own label events are
+ *  not a verified subscription here either, so its issues keep the three the wire carries. */
+const GT_TRIGGER_TILES: Partial<Record<GtFamily, TriggerTile<GtTriggerMode>[]>> = {
+  merge_request: [
+    // Same honesty rule: draft/ready flips are dropped by ingress normalization.
+    { mode: 'first', label: GT_TRIGGER_LABEL.first, desc: 'A new PR is opened' },
+    { mode: 'every', label: GT_TRIGGER_LABEL.every, desc: 'Every new commit, reply or review' },
+    { mode: 'mention', label: GT_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
+  ],
+  issues: [
+    { mode: 'first', label: GT_TRIGGER_LABEL.first, desc: 'A new issue is filed' },
+    { mode: 'every', label: GT_TRIGGER_LABEL.every, desc: 'Every update or comment' },
+    { mode: 'mention', label: GT_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
+  ]
+}
+
 /**
  * "Listen for": one full-width card per subject family. Unchecked it is a slim
  * row — glyph, name, checkbox. Checked, that row becomes the card's tinted
@@ -234,8 +269,8 @@ function FamilyCards<F extends string, M extends string>({
   onToggle: (fam: F) => void
   modeOf: (fam: F) => M
   onPick: (fam: F, mode: M) => void
-  familyAttr: 'data-github-family' | 'data-gitlab-family'
-  triggerAttr: 'data-github-trigger' | 'data-gitlab-trigger'
+  familyAttr: 'data-github-family' | 'data-gitlab-family' | 'data-gitea-family'
+  triggerAttr: 'data-github-trigger' | 'data-gitlab-trigger' | 'data-gitea-trigger'
   /** Hover copy that goes BEYOND the tile's own subtitle, which the user can already read. */
   titleOf: (mode: M, fam: F) => string
   bodyExtra?: (fam: F) => ReactNode
@@ -420,6 +455,7 @@ export default function AddIntegrationModal({
     bots,
     createHook,
     createGithubHook,
+    createGiteaHook,
     createGitlabHook,
     daemons,
     daemonsLoading,
@@ -580,6 +616,18 @@ export default function AddIntegrationModal({
   const glModeOf = (fam: GlFamily): GlTriggerMode => glModes[fam] ?? gitlabDefaultTriggerMode(fam)
   const [glReviewPolicy, setGlReviewPolicy] = useState<HookReviewPolicy>('full')
   const [glReportingMode, setGlReportingMode] = useState<HookReportingMode>('check')
+
+  // Gitea path: one hook per repository, picked here. A repository the organization has not
+  // added yet is set up as part of picking it (gitea-integration.md §6).
+  const [gtRepo, setGtRepo] = useState<string | null>(null)
+  const [gtOpen, setGtOpen] = useState(false)
+  const [gtQ, setGtQ] = useState('')
+  const gt = useGiteaRepositories(platform === 'gitea')
+  const [gtFams, setGtFams] = useState<Set<GtFamily>>(new Set(GT_DEFAULT_FAMILIES))
+  const [gtModes, setGtModes] = useState<Partial<Record<GtFamily, GtTriggerMode>>>({})
+  const gtModeOf = (fam: GtFamily): GtTriggerMode => gtModes[fam] ?? giteaDefaultTriggerMode(fam)
+  const [gtReviewPolicy, setGtReviewPolicy] = useState<HookReviewPolicy>('full')
+  const [gtReportingMode, setGtReportingMode] = useState<HookReportingMode>('check')
 
   // Reusing a bot is an advanced path; every platform opens on the create flow
   // until the user explicitly chooses an existing identity.
@@ -1060,6 +1108,88 @@ export default function AddIntegrationModal({
     (agent.workspace.mode === 'git' && agent.workspace.provider === 'gitlab' && agent.workspace.repoId === glProject) ||
     authorizedRepos.some((r) => repoAuthProvider(r) === 'gitlab' && r.repoId === glProject)
 
+  const gtPicked = gt.choices.find((choice) => choice.repoId === gtRepo)
+  const gtMatches = matchGiteaRepositories(gt.choices, gtQ)
+
+  // Picking an unadded repository installs its webhook first; the pick lands on the binding the
+  // saga produced, so a failed setup selects nothing.
+  const pickGtRepository = async (choice: GiteaRepositoryChoice) => {
+    if (!choice.binding && !(await gt.provision(choice.repoId))) return
+    setGtRepo(choice.repoId)
+    setGtOpen(false)
+    setErr(null)
+  }
+  // One hook per (agent, repository, FAMILY) — the CP 409s a duplicate family, so the picker
+  // takes the taken families out of the offer first.
+  const gtWatchedFamilies = useMemo(() => {
+    const byRepository = new Map<string, Set<GtFamily>>()
+    for (const h of agentHooksData ?? []) {
+      if (h.kind !== 'gitea' || !h.repoId) continue
+      const key = h.repoId.toString()
+      const taken = byRepository.get(key) ?? new Set<GtFamily>()
+      // A null-family legacy row still blocks every family its events cover.
+      for (const { fam } of GT_FAMILIES) {
+        if (h.family ? h.family === fam : giteaFamCovered(h.events, fam)) taken.add(fam)
+      }
+      byRepository.set(key, taken)
+    }
+    return byRepository
+  }, [agentHooksData])
+  const gtPickedWatched = (gtRepo && gtWatchedFamilies.get(gtRepo)) || new Set<GtFamily>()
+  const gtAlreadyWatched = !!gtRepo && GT_FAMILIES.every(({ fam }) => gtPickedWatched.has(fam))
+  const gtSelectedFams = GT_FAMILIES.map(({ fam }) => fam).filter((fam) => gtFams.has(fam) && !gtPickedWatched.has(fam))
+  // Reviews and the commit status ride the pull-request row only.
+  const gtPrSelected = gtSelectedFams.includes('merge_request')
+  const gtEffectiveReviewPolicy: HookReviewPolicy = gtPrSelected ? gtReviewPolicy : 'off'
+  const gtEffectiveReportingMode: HookReportingMode = gtPrSelected ? gtReportingMode : 'off'
+  // §8.3 again: a trigger never creates a grant, so the watched repository must already be the
+  // agent's workspace repository or an authorized additional one.
+  const gtRepoAuthorized =
+    !gtRepo ||
+    (agent.workspace.mode === 'git' && agent.workspace.provider === 'gitea' && agent.workspace.repoId === gtRepo) ||
+    authorizedRepos.some((r) => repoAuthProvider(r) === 'gitea' && r.repoId === gtRepo)
+
+  // One subscription = one hook row PER SELECTED FAMILY on this agent, each with its OWN
+  // cadence, all named after the repository — the GitLab submit's shape.
+  const submitGitea = async () => {
+    if (busyRef.current || !gtRepo || gtSelectedFams.length === 0) return
+    if (gtAlreadyWatched) {
+      setErr(
+        `This agent already watches ${gtPicked?.repoPath ?? 'this repository'} — edit its events on the agent page instead.`
+      )
+      return
+    }
+    if (!gtRepoAuthorized) {
+      setErr(
+        `This agent isn’t authorized for ${gtPicked?.repoPath ?? 'this repository'} — authorize the repository on the agent’s Workspace tab, or make it the agent’s workspace repository, then create the trigger.`
+      )
+      return
+    }
+    busyRef.current = true
+    setSaving(true)
+    setErr(null)
+    try {
+      for (const fam of gtSelectedFams) {
+        const reviews = giteaFamilyCarriesReviews(fam)
+        await createGiteaHook({
+          agentId: agent.id,
+          name: gtPicked?.repoPath ?? gtRepo,
+          repoId: gtRepo,
+          family: fam,
+          ...giteaFamilySubscription(fam, gtModeOf(fam)),
+          reviewPolicy: reviews ? gtEffectiveReviewPolicy : 'off',
+          reportingMode: reviews ? gtEffectiveReportingMode : 'off'
+        })
+      }
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      void mutateAgentHooks()
+      setSaving(false)
+      busyRef.current = false
+    }
+  }
+
   // One subscription = one hook row PER SELECTED FAMILY on this agent, each with
   // its OWN cadence, all named after the project. The creates run in order; a
   // failure part-way leaves the earlier families created, which the refreshed
@@ -1212,9 +1342,12 @@ export default function AddIntegrationModal({
       enabled: !!glProject && !glAlreadyWatched && glProjectAuthorized && glSelectedFams.length > 0,
       hidden: false
     },
-    // Gitea's pane arrives in G6 (gitea-integration.md §16), so there is nothing to submit and the
-    // footer stays hidden; the picker does not offer the tile that would reach it either.
-    gitea: { label: 'Connect', act: () => {}, enabled: false, hidden: true }
+    gitea: {
+      label: 'Connect',
+      act: () => void submitGitea(),
+      enabled: !!gtRepo && !gtAlreadyWatched && gtRepoAuthorized && gtSelectedFams.length > 0,
+      hidden: false
+    }
   }
   const footer =
     platform === 'webhook'
@@ -1276,11 +1409,13 @@ export default function AddIntegrationModal({
             the one row (the flagged GitLab tile widens it rather than wrapping below). */}
         <div
           className={`mb-[18px] grid grid-cols-2 gap-2 ${
-            platformTiles.length > 7
-              ? 'desktop:grid-cols-8'
-              : platformTiles.length > 6
-                ? 'desktop:grid-cols-7'
-                : 'desktop:grid-cols-6'
+            platformTiles.length > 8
+              ? 'desktop:grid-cols-9'
+              : platformTiles.length > 7
+                ? 'desktop:grid-cols-8'
+                : platformTiles.length > 6
+                  ? 'desktop:grid-cols-7'
+                  : 'desktop:grid-cols-6'
           }`}
         >
           {platformTiles.map((candidate) => {
@@ -1882,6 +2017,113 @@ export default function AddIntegrationModal({
             )}
           </>
         )}
+        {platform === 'gitea' && (
+          <>
+            {gt.error ? (
+              <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+                Couldn&rsquo;t load your Gitea repositories — {gt.error}
+              </div>
+            ) : gt.loading ? (
+              <LoadingState size={20} padding={16} />
+            ) : gt.empty ? (
+              <div className="mb-4">
+                <GiteaNoRepositoriesNotice
+                  connected={gt.connected}
+                  enabled={gt.enabled}
+                  integrationsHref={orgPath('/integrations')}
+                  onSync={gt.reload}
+                  syncing={gt.reloading}
+                />
+              </div>
+            ) : (
+              <>
+                <div className="mb-[18px]">
+                  <GiteaRepositoryField
+                    value={gtPicked?.repoPath ?? ''}
+                    icon="book-marked"
+                    loading={false}
+                    open={gtOpen}
+                    query={gtQ}
+                    onToggle={() => {
+                      setGtQ('')
+                      setGtOpen((value) => !value)
+                    }}
+                    onClose={() => setGtOpen(false)}
+                    onQueryChange={setGtQ}
+                    error={
+                      gt.provisionError
+                        ? `Couldn’t set up that repository — ${gt.provisionError}`
+                        : gtAlreadyWatched
+                          ? `This agent already watches ${gtPicked?.repoPath ?? 'this repository'}.`
+                          : undefined
+                    }
+                  >
+                    {gtMatches.map((choice) => (
+                      <GiteaRepositoryOption
+                        key={choice.repoId}
+                        choice={choice}
+                        selected={gtRepo === choice.repoId}
+                        busy={gt.provisioning === choice.repoId}
+                        onSelect={() => void pickGtRepository(choice)}
+                      />
+                    ))}
+                    {gtMatches.length === 0 && <div className="fnohit">No repositories match &ldquo;{gtQ}&rdquo;</div>}
+                  </GiteaRepositoryField>
+                </div>
+
+                {!gtRepoAuthorized && (
+                  <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                    <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
+                    <span>
+                      <span className="mono">{agentLabel(agent)}</span>&#32;is not authorized for{' '}
+                      <span className="mono">{gtPicked?.repoPath ?? 'this repository'}</span>. Authorize the repository
+                      on the agent&rsquo;s Workspace tab, or make it the agent&rsquo;s workspace repository, first.
+                    </span>
+                  </div>
+                )}
+
+                <FamilyCards
+                  families={GT_FAMILIES}
+                  tilesOf={(fam) => GT_TRIGGER_TILES[fam] ?? []}
+                  takenOf={(fam) => gtPickedWatched.has(fam)}
+                  onOf={(fam) => gtFams.has(fam)}
+                  onToggle={(fam) =>
+                    setGtFams((current) => {
+                      const next = new Set(current)
+                      if (next.has(fam)) next.delete(fam)
+                      else next.add(fam)
+                      return next
+                    })
+                  }
+                  modeOf={gtModeOf}
+                  onPick={(fam, mode) => setGtModes((current) => ({ ...current, [fam]: mode }))}
+                  familyAttr="data-gitea-family"
+                  triggerAttr="data-gitea-trigger"
+                  titleOf={(mode) =>
+                    mode === 'mention' ? giteaMentionUsage(agent.name) : giteaTriggerTooltip(mode, agent.name)
+                  }
+                  bodyExtra={(fam) =>
+                    giteaFamilyCarriesReviews(fam) ? (
+                      <GiteaReviewSettings
+                        value={{ reviewPolicy: gtReviewPolicy, reportingMode: gtReportingMode }}
+                        onReviewPolicyChange={setGtReviewPolicy}
+                        onReportingModeChange={setGtReportingMode}
+                        repositoryReady={!gtPicked?.binding || gtPicked.binding.state !== 'provisioning'}
+                        layout="format"
+                      />
+                    ) : null
+                  }
+                />
+
+                <div className="mb-4 flex items-start gap-2 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
+                  <Icon name="info" size={13} className="mt-[1px] flex-none" />
+                  <span>{CODE_HOST_SUBSCRIPTION_HINT.gitea}</span>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
         {platform === 'gitlab' && (
           <>
             {gl.error ? (

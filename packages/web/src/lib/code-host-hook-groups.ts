@@ -9,11 +9,13 @@
 
 import type { HookDto } from './api'
 import { GH_FAMILIES, githubHookFamily, type GhFamily } from './github-events'
+import { GT_FAMILIES, giteaHookFamily, type GtFamily } from './gitea-events'
 import { GL_FAMILIES, gitlabHookFamily, type GlFamily } from './gitlab-events'
 
 // Sibling order for one repo: the change-proposal subject (it carries reviews), issues, deployments, then the held-back push.
 const GH_ROW_ORDER: readonly GhFamily[] = ['pull_request', 'issues', 'deployment', 'push']
 const GL_ROW_ORDER: readonly GlFamily[] = ['merge_request', 'issues', 'push']
+const GT_ROW_ORDER: readonly GtFamily[] = ['merge_request', 'issues', 'push']
 
 /** One listed subscription: its row, the family it covers (null on a legacy-inert row), and its place in the block. */
 export interface CodeHostHookRow<F extends string> {
@@ -82,5 +84,15 @@ export function orderedGitlabHookRows(hooks: readonly HookDto[]): CodeHostHookRo
     gitlabHookFamily,
     GL_ROW_ORDER,
     GL_ROW_ORDER.filter((family) => GL_FAMILIES.some((tile) => tile.fam === family))
+  )
+}
+
+/** The agent's gitea rows in list order, each carrying its repository's add-family offer. */
+export function orderedGiteaHookRows(hooks: readonly HookDto[]): CodeHostHookRow<GtFamily>[] {
+  return orderRows(
+    hooks,
+    giteaHookFamily,
+    GT_ROW_ORDER,
+    GT_ROW_ORDER.filter((family) => GT_FAMILIES.some((tile) => tile.fam === family))
   )
 }

@@ -47,19 +47,26 @@ describe('WorkspaceFormFields', () => {
     const onChange = vi.fn()
     await render(<WorkspaceModeField value="scratch" onChange={onChange} />)
 
-    // Both code hosts are always offered; a deployment that configures neither
-    // says so in the pane the tile opens, never by dropping the tile. The fourth
-    // tile clones any other Git server with no credential at all.
+    // Every code host the console has a pane for is always offered; a deployment that
+    // configures none says so in the pane the tile opens, never by dropping the tile. The
+    // last tile clones any other Git server with no credential at all.
     const buttons = Array.from(container?.querySelectorAll('button') ?? [])
-    expect(buttons.map((button) => button.textContent)).toEqual(['Scratch', 'GitHub', 'GitLab', 'Git URL'])
+    expect(buttons.map((button) => button.textContent)).toEqual(['Scratch', 'GitHub', 'GitLab', 'Gitea', 'Git URL'])
     // The tiles are compact chips, so each one's one-line description is its tooltip.
     expect(buttons.map((button) => button.getAttribute('title'))).toEqual([
       'Fresh empty directory.',
       'Clone a repo on a branch.',
       'Clone a project on a branch.',
+      'Clone a repo on a branch.',
       'Clone any Git server anonymously.'
     ])
-    expect(buttons.map((button) => button.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false', 'false'])
+    expect(buttons.map((button) => button.getAttribute('aria-pressed'))).toEqual([
+      'true',
+      'false',
+      'false',
+      'false',
+      'false'
+    ])
     // The accent style alone says which tile is on — no check glyph crowds the chip.
     expect(buttons[0]?.className).toContain('ptile on')
     expect(container?.innerHTML).not.toContain('lucide-check')
@@ -69,6 +76,8 @@ describe('WorkspaceFormFields', () => {
     await act(async () => buttons[2]?.click())
     expect(onChange).toHaveBeenCalledWith('gitlab')
     await act(async () => buttons[3]?.click())
+    expect(onChange).toHaveBeenCalledWith('gitea')
+    await act(async () => buttons[4]?.click())
     expect(onChange).toHaveBeenCalledWith('giturl')
   })
 
@@ -77,7 +86,7 @@ describe('WorkspaceFormFields', () => {
     await render(<WorkspaceModeField value="scratch" onChange={vi.fn()} />)
 
     const labels = Array.from(container?.querySelectorAll('button') ?? []).map((button) => button.textContent)
-    expect(labels).toEqual(['Scratch', 'GitHub', 'GitLab'])
+    expect(labels).toEqual(['Scratch', 'GitHub', 'GitLab', 'Gitea'])
   })
 
   it('keeps the Git URL tile for a workspace already on one, flag or not', async () => {
@@ -85,8 +94,8 @@ describe('WorkspaceFormFields', () => {
     await render(<WorkspaceModeField value="giturl" onChange={vi.fn()} />)
 
     const buttons = Array.from(container?.querySelectorAll('button') ?? [])
-    expect(buttons.map((button) => button.textContent)).toEqual(['Scratch', 'GitHub', 'GitLab', 'Git URL'])
-    expect(buttons[3]?.getAttribute('aria-pressed')).toBe('true')
+    expect(buttons.map((button) => button.textContent)).toEqual(['Scratch', 'GitHub', 'GitLab', 'Gitea', 'Git URL'])
+    expect(buttons[4]?.getAttribute('aria-pressed')).toBe('true')
   })
 
   it('returns the shared repository access vocabulary', async () => {

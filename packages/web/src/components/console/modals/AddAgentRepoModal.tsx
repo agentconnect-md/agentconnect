@@ -3,11 +3,11 @@
 // Authorize a repository for one agent (issue #457,
 // agent-multi-repo-authorization.md §web 1; gitlab-com-integration.md §18.1):
 // one picker per code host — GitHub repositories across the org's App
-// installations, GitLab projects the connection administers — plus an access
-// choice, preflighted against the per-user identity-assertion gate when the
-// deployment has one. Picking a GitLab project that is not set up yet runs the
-// §10.2 provisioning saga inline before the selection lands, exactly as the
-// workspace and trigger pickers do.
+// installations, GitLab projects the connection administers, Gitea repositories
+// the organization's bot administers — plus an access choice, preflighted against
+// the per-user identity-assertion gate when the deployment has one. Picking a
+// project or repository that is not set up yet runs its provisioning saga inline
+// before the selection lands, exactly as the workspace and trigger pickers do.
 //
 // This renders its own scrim/modal overlay because Edit workspace can expose it
 // as a preserved-state subview while another editor (such as GitHub hook setup)
@@ -23,12 +23,17 @@ import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-h
 import { agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import {
+  GiteaNoRepositoriesNotice,
+  GiteaRepositoryField,
+  GiteaRepositoryOption,
   GithubPrivateReposNotice,
   GitlabNoProjectsNotice,
   GitlabProjectField,
   GitlabProjectOption
 } from '@/components/console/WorkspaceFormFields'
+import { matchGiteaRepositories, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import { useGiteaRepositories } from '@/lib/use-gitea-repositories'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   ApiError,
@@ -74,6 +79,18 @@ const GITLAB_TIERS: { v: RepoAccess; label: string; icon: string; desc: string }
     label: 'Read & write',
     icon: 'git-branch',
     desc: 'Push, open merge requests & run pipelines'
+  }
+]
+
+// The same two tiers in Gitea's vocabulary. Gitea has no hosted CI of its own in this
+// contract, so write buys pushing and proposing changes — never a pipeline promise.
+const GITEA_TIERS: { v: RepoAccess; label: string; icon: string; desc: string }[] = [
+  { v: 'read', label: 'Read only', icon: 'eye', desc: 'Clone & read files only' },
+  {
+    v: 'write',
+    label: 'Read & write',
+    icon: 'git-branch',
+    desc: 'Push, open pull requests & request reviews'
   }
 ]
 
@@ -141,6 +158,13 @@ export default function AddAgentRepoModal({
   const [glPick, setGlPick] = useState('')
   const [glPickOpen, setGlPickOpen] = useState(false)
   const gl = useGitlabProjects(provider === 'gitlab', glQ)
+  // Gitea arm: the repositories the organization's ONE bot administers, merged with the ones
+  // already added. Inert until the Gitea tile is picked, so a GitHub-only deployment issues no
+  // Gitea request at all.
+  const [gtQ, setGtQ] = useState('')
+  const [gtPick, setGtPick] = useState('')
+  const [gtPickOpen, setGtPickOpen] = useState(false)
+  const gt = useGiteaRepositories(provider === 'gitea')
 
   // Escape closes THIS layer only: capture-phase + stopPropagation beats the
   // ModalProvider's bubble-phase window listener when we're nested in a dialog.
@@ -236,6 +260,28 @@ export default function AddAgentRepoModal({
     workspaceProject === projectId ? 'workspace' : authorizedProjects.has(projectId) ? 'authorized' : null
   const glNoProjects = gl.empty || !gl.enabled || !gl.connected
 
+  // Gitea identity is the numeric repository id, never the owner/repo path.
+  const authorizedRepositories = useMemo(
+    () => new Set(authorized.filter((r) => repoAuthProvider(r) === 'gitea' && r.repoId).map((r) => r.repoId as string)),
+    [authorized]
+  )
+  const workspaceRepository =
+    agent.workspace.mode === 'git' && agent.workspace.provider === 'gitea' ? agent.workspace.repoId : undefined
+  const gtMatches = matchGiteaRepositories(gt.choices, gtQ)
+  const gtPicked = gt.choices.find((c) => c.repoId === gtPick)
+  const gtTakenBy = (repoId: string): 'workspace' | 'authorized' | null =>
+    workspaceRepository === repoId ? 'workspace' : authorizedRepositories.has(repoId) ? 'authorized' : null
+  const gtNoRepositories = gt.empty || !gt.enabled || !gt.connected
+
+  // Picking a repository that is not set up yet installs its webhook first; a failed setup
+  // selects nothing, so the footer stays inert (gitea-integration.md §6).
+  const selectRepository = async (choice: GiteaRepositoryChoice) => {
+    if (!choice.binding && !(await gt.provision(choice.repoId))) return
+    setGtPick(choice.repoId)
+    setGtPickOpen(false)
+    setErr(null)
+  }
+
   // Picking a project that is not set up yet runs the provisioning saga first; a
   // failed setup selects nothing, so the footer stays inert (§18.1).
   const selectProject = async (choice: GitlabProjectChoice) => {
@@ -301,9 +347,10 @@ export default function AddAgentRepoModal({
         ready: !!glPick && glTakenBy(glPick) === null && gl.provisioning === null,
         input: { provider: 'gitlab', projectId: glPick, access }
       },
-      // Gitea grants arrive with the repository catalog (gitea-integration.md G2): the create route
-      // admits no gitea arm, so this host has no payload at all and the tile is not offered.
-      gitea: { ready: false, input: null }
+      gitea: {
+        ready: !!gtPick && gtTakenBy(gtPick) === null && gt.provisioning === null,
+        input: { provider: 'gitea', repoId: gtPick, access }
+      }
     }
   const canSubmit = grantSubmit[provider].ready
 
@@ -349,12 +396,102 @@ export default function AddAgentRepoModal({
   // providers, so a new code host brings its own pane instead of inheriting the first one's; one
   // whose console surface does not exist yet says so rather than rendering another host's.
   const grantPicker: Record<CodeHostProvider, () => ReactNode> = {
-    gitea: () => (
-      <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-        <Icon name="info" size={15} className="mt-[1px] flex-none" />
-        <span>Gitea repositories cannot be authorized from the console yet.</span>
-      </div>
-    ),
+    gitea: () =>
+      gt.error ? (
+        <div className="mb-4 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+          Couldn&rsquo;t load your Gitea repositories — {gt.error}
+        </div>
+      ) : gt.loading ? (
+        <div className="mb-4">
+          <LoadingState size={20} padding={16} />
+        </div>
+      ) : gtNoRepositories ? (
+        <div className="mb-4">
+          <GiteaNoRepositoriesNotice
+            connected={gt.connected}
+            enabled={gt.enabled}
+            integrationsHref={orgPath('/integrations')}
+            onSync={gt.reload}
+            syncing={gt.reloading}
+          />
+        </div>
+      ) : (
+        <>
+          <div className="mb-[18px]">
+            <GiteaRepositoryField
+              value={gtPicked?.repoPath ?? ''}
+              icon="book-marked"
+              loading={false}
+              open={gtPickOpen}
+              query={gtQ}
+              onToggle={() => {
+                setGtQ('')
+                setGtPickOpen((value) => !value)
+              }}
+              onClose={() => setGtPickOpen(false)}
+              onQueryChange={setGtQ}
+              error={gt.provisionError ? `Couldn’t set up that repository — ${gt.provisionError}` : undefined}
+            >
+              {gtMatches.map((choice) => {
+                const taken = gtTakenBy(choice.repoId)
+                if (taken !== null) {
+                  return (
+                    <div key={choice.repoId} className="fnohit">
+                      {choice.repoPath}
+                      {taken === 'workspace'
+                        ? ' is the agent’s workspace repository'
+                        : ' is already authorized for this agent'}
+                    </div>
+                  )
+                }
+                return (
+                  <GiteaRepositoryOption
+                    key={choice.repoId}
+                    choice={choice}
+                    selected={gtPick === choice.repoId}
+                    busy={gt.provisioning === choice.repoId}
+                    onSelect={() => void selectRepository(choice)}
+                  />
+                )
+              })}
+              {gtMatches.length === 0 && <div className="fnohit">No repositories match &ldquo;{gtQ}&rdquo;</div>}
+            </GiteaRepositoryField>
+          </div>
+
+          <div className="fldlbl mb-2">Access</div>
+          <div className="mb-4 flex flex-col gap-[9px]">
+            {GITEA_TIERS.map((t) => {
+              const on = access === t.v
+              return (
+                <div
+                  key={t.v}
+                  className={`flex cursor-pointer items-center gap-[11px] rounded-[9px] border px-[13px] py-[11px] ${
+                    on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-subtle) bg-(--surface-card)'
+                  }`}
+                  onClick={() => setAccess(t.v)}
+                >
+                  <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+                    <Icon name={t.icon} size={16} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-sans text-[13px] font-semibold leading-normal">{t.label}</div>
+                    <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                      {t.desc}
+                    </div>
+                  </div>
+                  <span
+                    className={`flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] ${
+                      on ? 'border-(--brand)' : 'border-(--border-strong)'
+                    }`}
+                  >
+                    {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      ),
     github: () =>
       gh === null ? (
         <div className="mb-4 flex items-center gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -737,7 +874,7 @@ export default function AddAgentRepoModal({
           {!fixedRepo && (
             <div className="fld mb-[18px]">
               <span className="fldlbl">Code host</span>
-              <div className="grid grid-cols-2 gap-[10px]">
+              <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-3">
                 {hostTiles.map((host) => (
                   <button
                     key={host.v}
