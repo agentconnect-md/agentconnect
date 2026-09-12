@@ -19,6 +19,7 @@
   <a href="https://www.larksuite.com"><img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" /></a>&nbsp;&nbsp;
   <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
   <a href="https://gitlab.com"><img src="https://api.iconify.design/logos/gitlab-icon.svg" width="16" height="16" alt="GitLab" title="GitLab" /></a>&nbsp;&nbsp;
+  <a href="https://about.gitea.com"><img src="https://cdn.simpleicons.org/gitea" width="16" height="16" alt="Gitea" title="Gitea" /></a>&nbsp;&nbsp;
   <a href="https://linear.app"><img src="https://cdn.simpleicons.org/linear" width="16" height="16" alt="Linear" title="Linear" /></a>&nbsp;&nbsp;
   <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
   &nbsp;&nbsp;&nbsp;&nbsp;
@@ -56,9 +57,10 @@
 </p>
 
 AgentConnect is an open-source platform where teams and multiple AI agents work
-together across Slack, Telegram, Discord, Lark, GitHub, GitLab, and Linear.
-Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible agent
-into the conversations and workflows your team already has open.
+together across Slack, Telegram, Discord, Lark, GitHub, GitLab, Gitea, and
+Linear. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any
+ACP-compatible agent into the conversations and workflows your team already has
+open.
 
 Give each agent a role, then let people and agents collaborate in shared
 conversations. Agents can call one another and remember what they learn, and
@@ -114,7 +116,7 @@ Teams use it to:
   rebuild the workflow around it.
 - **Keep work where it happens.** Link agents to bots in Slack, Telegram,
   Discord, and Lark, or to repositories, issues, and workflows on GitHub,
-  GitLab, and Linear.
+  GitLab, Gitea, and Linear.
 - **Choose the right agent for every job.** Configure each agent's runtime,
   model, workspace, tools, and machine independently.
 - **Carry context forward.** Give each agent its own memory and skills, and
