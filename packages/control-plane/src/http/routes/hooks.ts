@@ -19,6 +19,7 @@ import type { HttpDeps } from '../deps.js'
 import {
   isSyntheticEmail,
   type AgentRecord,
+  type GiteaBindingState,
   type GitlabBindingState,
   type HookRecord,
   type UpsertHookInput
@@ -222,8 +223,13 @@ export function hookRoutes(deps: HttpDeps) {
       try {
         // §24.1: every gitlab-kind write carries the instance its repoId names,
         // enabled or not — the disabled path reaches this with no lease at all.
+        // The gitea kind joins its own axis the same way (gitea-integration.md §3).
         const fenced =
-          input.kind === 'gitlab' && deps.gitlab ? { ...input, axisBaseUrl: deps.gitlab.api.baseUrl } : input
+          input.kind === 'gitlab' && deps.gitlab
+            ? { ...input, axisBaseUrl: deps.gitlab.api.baseUrl }
+            : input.kind === 'gitea' && deps.gitea
+              ? { ...input, axisBaseUrl: deps.gitea.api.baseUrl }
+              : input
         return await deps.repos.hook.upsert(fenced)
       } catch (err) {
         if (err instanceof AgentWorkspaceIntegrationConflict) return err
@@ -478,6 +484,23 @@ export function hookRoutes(deps: HttpDeps) {
       return null
     }
 
+    // The Gitea counterpart (gitea-integration.md §10.4): the run state is a commit status the
+    // Control Plane writes, so GitLab's run note has no Gitea meaning; every effect is authored by
+    // the one bot token, so the only configuration-time fact is that the binding has converged.
+    const validateGiteaEffects = (
+      binding: { state: GiteaBindingState; repoPath: string },
+      cfg: CodeHostEffectConfig
+    ): CodeHostEffectDenial | null => {
+      if (cfg.reportingMode === 'check') {
+        return { status: 409, message: 'run notes are not available for Gitea repositories — report a commit status' }
+      }
+      if (cfg.reviewPolicy === 'off' && cfg.reportingMode === 'off') return null
+      if (binding.state === 'provisioning') {
+        return { status: 409, message: `${binding.repoPath} is still being set up — reviews and run reporting need it` }
+      }
+      return null
+    }
+
     // Validate the optional anchoring target against the hook's agent (the
     // anchor posts through one of THAT agent's integrations — cron semantics).
     const resolveTarget = async (
@@ -604,39 +627,70 @@ export function hookRoutes(deps: HttpDeps) {
                     hmacSecret: null
                   }
                 })()
-              : await (async () => {
-                  const repo = await resolveGithubRepo(orgId, (req.body as { repoFullName: string }).repoFullName)
-                  if (!repo.ok) return repo
-                  const siblingError = await siblingShapeError(
-                    agent.id,
-                    'github',
-                    repo.repoId,
-                    repo.repoFullName,
-                    hookId,
-                    {
+              : req.body.kind === 'gitea'
+                ? await (async () => {
+                    // The repository must already be a managed binding (gitea-integration.md §5): a
+                    // hook never creates a binding, and the numeric id is validated against the org's row.
+                    const repoId = BigInt((req.body as { repoId: string }).repoId)
+                    const binding = deps.gitea ? await deps.repos.giteaRepositoryBinding.byRepo(orgId, repoId) : null
+                    if (!binding || binding.state === 'cleanup_pending') {
+                      return {
+                        ok: false as const,
+                        status: 409 as const,
+                        message: 'the repository is not a managed Gitea binding in this organization'
+                      }
+                    }
+                    const siblingError = await siblingShapeError(agent.id, 'gitea', repoId, binding.repoPath, hookId, {
                       targetPlatform: target.targetPlatform,
                       targetChannel: req.body.targetChannel ?? null,
                       targetIntegrationId: target.targetIntegrationId ?? null
+                    })
+                    if (siblingError) return { ok: false as const, status: 409 as const, message: siblingError }
+                    const authz = await watchRepoAuthorized(agent, 'gitea', repoId, binding.repoPath)
+                    if (!authz.ok) return authz
+                    const effectError = validateGiteaEffects(binding, effects!)
+                    if (effectError) return { ok: false as const, ...effectError }
+                    return {
+                      sessionMode: 'perThread' as const,
+                      repoId,
+                      repoFullName: binding.repoPath,
+                      githubSessionKey: `gitea:${repoId}`,
+                      hmacSecret: null
                     }
-                  )
-                  if (siblingError) {
-                    return { ok: false as const, status: 409 as const, message: siblingError }
-                  }
-                  const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
-                  if (!authz.ok) return authz
-                  const configError = await validateGithubEffects(agent, repo.repoId, repo.repoFullName, effects!)
-                  if (configError) {
-                    return { ok: false as const, ...configError }
-                  }
-                  return {
-                    // github is perThread by definition — the same issue/PR
-                    // continues one session (design decision 7).
-                    sessionMode: 'perThread' as const,
-                    repoId: repo.repoId,
-                    repoFullName: repo.repoFullName,
-                    hmacSecret: null
-                  }
-                })()
+                  })()
+                : await (async () => {
+                    const repo = await resolveGithubRepo(orgId, (req.body as { repoFullName: string }).repoFullName)
+                    if (!repo.ok) return repo
+                    const siblingError = await siblingShapeError(
+                      agent.id,
+                      'github',
+                      repo.repoId,
+                      repo.repoFullName,
+                      hookId,
+                      {
+                        targetPlatform: target.targetPlatform,
+                        targetChannel: req.body.targetChannel ?? null,
+                        targetIntegrationId: target.targetIntegrationId ?? null
+                      }
+                    )
+                    if (siblingError) {
+                      return { ok: false as const, status: 409 as const, message: siblingError }
+                    }
+                    const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
+                    if (!authz.ok) return authz
+                    const configError = await validateGithubEffects(agent, repo.repoId, repo.repoFullName, effects!)
+                    if (configError) {
+                      return { ok: false as const, ...configError }
+                    }
+                    return {
+                      // github is perThread by definition — the same issue/PR
+                      // continues one session (design decision 7).
+                      sessionMode: 'perThread' as const,
+                      repoId: repo.repoId,
+                      repoFullName: repo.repoFullName,
+                      hmacSecret: null
+                    }
+                  })()
         if ('status' in kindFields) {
           const { status, message } = kindFields
           return reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
@@ -663,7 +717,7 @@ export function hookRoutes(deps: HttpDeps) {
                   gateMode: req.body.gateMode
                 }
               : {}),
-            ...(req.body.kind === 'gitlab'
+            ...(req.body.kind === 'gitlab' || req.body.kind === 'gitea'
               ? {
                   family: req.body.family,
                   events: req.body.events,
@@ -671,7 +725,7 @@ export function hookRoutes(deps: HttpDeps) {
                   mentionOnly: req.body.mentionOnly,
                   reviewPolicy: req.body.reviewPolicy,
                   reportingMode: req.body.reportingMode
-                  // No gateMode: GitLab has no required-gate surface, so the row stays informational.
+                  // No gateMode: neither host has a required-gate surface, so the row stays informational.
                 }
               : {}),
             targetPlatform: target.targetPlatform,
@@ -1010,6 +1064,68 @@ export function hookRoutes(deps: HttpDeps) {
             sessionMode: 'perThread',
             repoId: projectId,
             repoFullName: binding.projectPath,
+            events: req.body.events,
+            commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
+            mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
+            ...effectConfig
+          }
+        } else if (req.body.kind === 'gitea') {
+          const repoId = BigInt(req.body.repoId)
+          const binding = deps.gitea ? await deps.repos.giteaRepositoryBinding.byRepo(orgId, repoId) : null
+          if (!binding || binding.state === 'cleanup_pending') {
+            return reply.code(409).send({
+              error: ERROR_NAMES[409],
+              statusCode: 409,
+              message: 'the repository is not a managed Gitea binding in this organization'
+            })
+          }
+          const siblingError = await siblingShapeError(agent.id, 'gitea', repoId, binding.repoPath, existing.id, {
+            targetPlatform: target.targetPlatform,
+            targetChannel: req.body.targetChannel ?? null,
+            targetIntegrationId: target.targetIntegrationId ?? null
+          })
+          if (siblingError) {
+            return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: siblingError })
+          }
+          // Binding-CHANGING edits go through the gate, exactly as the other two hosts.
+          if (repoId !== existing.repoId || agent.id !== existing.agentId) {
+            const authz = await watchRepoAuthorized(agent, 'gitea', repoId, binding.repoPath)
+            if (!authz.ok) {
+              return reply.code(authz.status).send({
+                error: ERROR_NAMES[authz.status],
+                statusCode: authz.status,
+                message: authz.message
+              })
+            }
+          }
+          const effectConfig = {
+            reviewPolicy: req.body.reviewPolicy ?? existing.reviewPolicy,
+            reportingMode: req.body.reportingMode ?? existing.reportingMode
+          }
+          const shapeError = existing.family
+            ? familyShapeError({
+                kind: 'gitea',
+                family: existing.family as HookFamily,
+                events: req.body.events,
+                commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
+                ...effectConfig
+              })
+            : null
+          if (shapeError) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: shapeError })
+          }
+          const effectError = validateGiteaEffects(binding, effectConfig)
+          if (effectError) {
+            return reply.code(effectError.status).send({
+              error: ERROR_NAMES[effectError.status],
+              statusCode: effectError.status,
+              message: effectError.message
+            })
+          }
+          kindFields = {
+            sessionMode: 'perThread',
+            repoId,
+            repoFullName: binding.repoPath,
             events: req.body.events,
             commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
             mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,

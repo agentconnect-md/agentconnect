@@ -218,6 +218,61 @@ export function agentRepoRoutes(deps: HttpDeps) {
       return toDto(row)
     }
 
+    /** The gitea arm of `POST /agents/:agentId/repos` (gitea-integration.md §5): the binding vouches, the tier is a local clamp. */
+    const authorizeGiteaRepository = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agent: AgentRecord,
+      body: { repoId: string; access: RepoAccess }
+    ): Promise<AgentRepoAuthDtoT | undefined> => {
+      const conflict = (message: string): undefined => {
+        void reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
+      }
+      if (!deps.gitea) return conflict('Gitea is not configured on this deployment')
+      const orgId = orgOf(req)
+      const repoId = BigInt(body.repoId)
+      const binding = await deps.repos.giteaRepositoryBinding.byRepo(orgId, repoId)
+      if (!binding || binding.state === 'cleanup_pending') {
+        return conflict('the repository is not a managed Gitea repository in this organization')
+      }
+      if (
+        agent.workspace.mode === 'git' &&
+        agent.workspace.credential?.provider === 'gitea' &&
+        agent.workspaceRepoId === repoId
+      ) {
+        return conflict('this is already the agent’s workspace repository')
+      }
+      const held = await deps.repos.agentRepoAuth.listForAgent(agent.id)
+      if (held.some((row) => row.provider === 'gitea' && row.repoId === repoId)) {
+        return conflict(
+          `${binding.repoPath} is already authorized for this agent — upgrade that grant or remove it to lower the tier`
+        )
+      }
+      const row = await deps.repos.agentRepoAuth.create({
+        agentId: agent.id,
+        provider: 'gitea',
+        repoId,
+        repoFullName: binding.repoPath,
+        access: body.access,
+        ...(req.principal ? { createdByUserId: req.principal.userId } : {})
+      })
+      void deps.repos.audit
+        .append({
+          kind: 'agent_repo_change',
+          orgId,
+          agentId: agent.id,
+          ...(req.principal ? { actorUserId: req.principal.userId } : {}),
+          frameType: 'gitcred/grant',
+          message: `gitea repository ${row.repoFullName} authorized (${row.access})`,
+          details: { repoAuthId: row.id, provider: 'gitea', repoFullName: row.repoFullName, access: row.access }
+        })
+        .catch(() => {})
+      // The grant is a consumer: the spec carries the host from here on (gitea-integration.md §11).
+      convergeManagedRepository('gitea', orgId, repoId)
+      await replicateUpsert(agent)
+      return toDto(row)
+    }
+
     r.get(
       '/agents/:agentId/repos',
       {
@@ -246,7 +301,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Authorize a repository for an agent',
           description:
-            'Grant the agent access to one code-host repository. With `provider: github` (the default) the repository is named `owner/repo` and must be covered by one of the organization’s GitHub App installations; App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. With the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write). With `provider: gitlab` the project is named by its numeric id and must already be a managed GitLab project in this organization; authorizing it provisions the agent’s own GitLab bot account and project membership before the grant lands.',
+            'Grant the agent access to one code-host repository. With `provider: github` (the default) the repository is named `owner/repo` and must be covered by one of the organization’s GitHub App installations; App-backed workspaces may add repositories beyond their implicit workspace grant, scratch workspaces may add any covered repository, and a manual GitHub workspace may explicitly authorize only its own repository for control-plane review/check effects. With the per-user gate configured, the caller must hold the matching GitHub permission (`read`/`comment` tiers need read, `write` needs write). With `provider: gitlab` the project is named by its numeric id and must already be a managed GitLab project in this organization; authorizing it provisions the agent’s own GitLab bot account and project membership before the grant lands. With `provider: gitea` the repository is named by its numeric id and must already be a managed Gitea repository in this organization; the organization’s bot token serves every tier, so the tier is a clamp on what the agent may do, never a provider role.',
           operationId: 'createAgentRepoAuthorization',
           params: z.object({ agentId: z.string() }),
           body: CreateAgentRepoAuthBody,
@@ -266,6 +321,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
         const agent = await getViewableAgent(req, req.params.agentId)
         if (!agent) return agentNotFound(reply)
         if (req.body.provider === 'gitlab') return authorizeGitlabProject(req, reply, agent, req.body)
+        if (req.body.provider === 'gitea') return authorizeGiteaRepository(req, reply, agent, req.body)
         if (!deps.github) {
           return reply.code(409).send({
             error: 'Conflict',

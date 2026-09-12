@@ -260,6 +260,45 @@ export class GitlabMembershipGone extends Error {
   }
 }
 
+/** The deployment-global repository claim for Gitea (gitea-integration.md §6): one managing organization per numeric repository. */
+export class GiteaRepositoryClaimConflict extends Error {
+  readonly code = 'GITEA_REPOSITORY_CLAIM_CONFLICT' as const
+  constructor(readonly repoId: bigint) {
+    super(`gitea repository ${repoId} is already claimed by another organization`)
+    this.name = 'GiteaRepositoryClaimConflict'
+  }
+}
+
+/** The Gitea host axis moved under an in-flight write (gitea-integration.md §3); the operation's host-relative ids must not land. */
+export class GiteaAxisRetargeted extends Error {
+  readonly code = 'gitea_base_url_changed' as const
+  constructor(
+    readonly operationBaseUrl: string,
+    readonly persistedBaseUrl: string
+  ) {
+    super(`the gitea instance changed to ${persistedBaseUrl} while this ${operationBaseUrl} operation was in flight`)
+    this.name = 'GiteaAxisRetargeted'
+  }
+}
+
+/** The bot user already serves a connection somewhere on this deployment (gitea-integration.md §4.1); which one is never disclosed. */
+export class GiteaBotAlreadyBound extends Error {
+  readonly code = 'GITEA_BOT_ALREADY_BOUND' as const
+  constructor() {
+    super('this Gitea bot user already serves another connection on this deployment')
+    this.name = 'GiteaBotAlreadyBound'
+  }
+}
+
+/** One organization holds at most one Gitea connection (gitea-integration.md §4.1). */
+export class GiteaConnectionExists extends Error {
+  readonly code = 'GITEA_CONNECTION_EXISTS' as const
+  constructor() {
+    super('this organization already has a Gitea connection — replace its token or disconnect it first')
+    this.name = 'GiteaConnectionExists'
+  }
+}
+
 /** A numeric repository is already the agent's implicit workspace authority,
  * so persisting a second "additional repository" grant would be redundant and
  * could later make grant deletion look like a real authority revocation. */

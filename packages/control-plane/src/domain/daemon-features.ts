@@ -37,6 +37,7 @@ type WorkspaceShapedAgent = {
     additionalRepos?: readonly { provider?: string }[]
   }
   gitlabHost?: string
+  giteaHost?: string
 }
 
 export { isSelfManagedGitlabHost }

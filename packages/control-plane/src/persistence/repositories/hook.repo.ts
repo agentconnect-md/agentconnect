@@ -66,6 +66,7 @@ import { authoritativeHookProjectionState } from '../../github/projection-state.
 import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 import { joinAxisFence } from './gitlab-axis.js'
+import { joinGiteaAxisFence } from './gitea-axis.js'
 
 type HookWithUsers = HookDef & {
   createdBy: User | null
@@ -536,6 +537,11 @@ export class PgHookRepo implements HookRepo {
         if (input.kind === 'gitlab') {
           if (!input.axisBaseUrl) throw new Error('gitlab hook write is missing its axis base url')
           await joinAxisFence(tx, input.axisBaseUrl)
+        }
+        // The same fence on the Gitea axis (gitea-integration.md §3): a gitea `repoId` is host-relative too.
+        if (input.kind === 'gitea') {
+          if (!input.axisBaseUrl) throw new Error('gitea hook write is missing its axis base url')
+          await joinGiteaAxisFence(tx, input.axisBaseUrl)
         }
         const lockedAgentIds = await this.lockAgentLifecycleScopes(tx, [
           ownerHint ? AgentId(ownerHint) : null,

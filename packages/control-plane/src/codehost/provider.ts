@@ -87,12 +87,19 @@ export type DerivedWorkspace =
       access: 'read' | 'write'
     }
   | {
+      kind: 'gitea'
+      repoId: bigint
+      gitRepo: string // the catalog row's provider-authored clone URL (gitea-integration.md §6)
+      defaultBranch: string
+      access: 'read' | 'write'
+    }
+  | {
       kind: 'anonymous'
       gitRepo: string
       defaultBranch?: string
       access: 'read'
       /** Which managed host the anonymous target sits on, for display derivation (§7). */
-      host: 'github' | 'gitlab' | 'other'
+      host: CodeHostProvider | 'other'
     }
 
 /** Actionable refusal (§6 table) — the routes answer it as a 409. */

@@ -123,12 +123,17 @@ personal access token. Before anything is stored the Control Plane:
 The required token scopes are `read:user`, `write:repository`, `write:issue`,
 and `read:organization` — confirmed sufficient and minimal by §16's scope
 probe; the Console shows the list beside the input and the connect step
-verifies each by a probe read it will need anyway (the user read, a repository
-listing, an organization listing). A token without `write:issue` cannot comment
-and is refused at connect time rather than at the first turn. The organization
-scope is not optional: `GET /orgs/:org/repos`, which the picker needs, is
-organization-scoped rather than repository-scoped, and `GET /user/orgs`
-requires the user and organization scopes together.
+verifies each by a probe it will need anyway (the user read, a repository
+listing, an organization listing). The read probes cannot tell a read-only
+token apart, because Gitea takes the level from the method, so the two write
+scopes are proven by a write-method request against a repository that does not
+exist under the bot's own login: the scope check runs on the route group before
+the repository resolves, so a missing scope answers the scope 403 and a present
+one the repository's 404, and nothing is ever written. A token without
+`write:issue` cannot comment and is refused at connect time rather than at the
+first turn. The organization scope is not optional: `GET /orgs/:org/repos`,
+which the picker needs, is organization-scoped rather than repository-scoped,
+and `GET /user/orgs` requires the user and organization scopes together.
 
 One organization holds at most one active connection in v1. A second bot
 would be a per-agent identity, which is deliberately later work (§14).
@@ -231,12 +236,21 @@ membership steps removed:
    binding is `ready`. A binding whose test never arrives is `ready` with a
    `webhook_unverified` warning naming the outbound allowlist, so a blocked
    relay address is visible at install time and not after the first missed
-   pull request.
+   pull request. The relay reports every signature-verified delivery, matched
+   or not, as a body-free `rc/codehost-delivery` event naming the key that
+   verified it; the compiled rules go out before the test is fired, because
+   the relay verifies only what it holds a key for, and a later observation
+   clears the warning on a binding whose test never arrived.
 
-Repair, transfer, and unbind follow §10 and §19.4. Unbind deletes the managed
-webhook by its recorded id and releases the claim; if the token is rejected
-the binding parks in `cleanup_pending` until a replacement token or a manual
-webhook removal clears it.
+Repair, transfer, and unbind follow §10 and §19.4. A created webhook's id is
+recorded the moment the create answers, before the read-back that can fail,
+and a hook at the managed URL that no column records (a create whose answer
+was lost) is retired by the next repair. Unbind deletes the managed webhooks
+by their recorded ids, sweeps the managed URL for any the columns missed, and
+releases the claim; a repository already deleted at the provider answers 404
+to both and has nothing left to clean, so it releases as well. If the token is
+rejected the binding parks in `cleanup_pending` until a replacement token or a
+manual webhook removal clears it.
 
 ## 7. Webhook Ingress
 
@@ -283,9 +297,27 @@ into `pull_request`, and names an inline review comment
 `pull_request_comment`, which is also the exact type of an ordinary
 pull-request comment.
 
-**Rotation.** Generate and seal the next key, distribute both to eligible
-relays, `PATCH` the webhook's `config.secret`, observe one verified delivery
-under the next key, promote. Identical to §7.4's receiver-side overlap.
+**Rotation.** A webhook's secret is set at creation only: `editHook` never
+assigns `config.secret`, and it rebuilds the subscription from the request's
+`events` (an omission leaves the hook subscribed to nothing), so an edit can
+neither re-key a webhook nor be sent without its full event list. The key is
+therefore rotated by replacing the webhook: generate and seal the next key,
+create a successor webhook under it with the full event union, distribute both
+keys to eligible relays, deactivate the old webhook (its in-flight deliveries
+still verify under the current key while only the successor receives new
+events), fire a test delivery at the successor, and once the relay observes one
+delivery verified under the next key, delete the old webhook and promote. The
+receiver-side overlap is §7.4's; the sender-side one is the pair of webhooks.
+The compiled rule carries the successor as `nextSigningKey` beside
+`signingKey`, either verifies at the relay, and its `rc/codehost-delivery` says
+which one did — the `next` answer is what promotes. The successor's id is
+recorded the moment its create answers, before the read-back or any rollback
+call that can fail, and cleared only once the successor is confirmed deleted
+or promoted: a rotation cut short is resumed by the next attempt, which adopts
+the recorded successor rather than creating another, and an unbind deletes it.
+The same rule covers a crash-left webhook at the managed URL: it cannot be
+re-keyed, so it is retired and replaced by one whose key this deployment
+sealed.
 
 **Compiled rule.** The `rc/hook-assign` rule gains a `gitea` member shaped
 like the `gitlab` one: numeric repository id as match key, current path for
@@ -570,6 +602,12 @@ rerun frame with a `gitea` member.
   hosts a compile-time event.
 - The gitcred purpose enum gains `gitea_hook_reply` and `gitea_effect`; the
   membership-authorization request gains the sender username beside the id.
+- The relay reports a signature-verified delivery to the Control Plane as
+  `rc/codehost-delivery` (provider, numeric repository id, delivery key, and
+  which signing key verified it), the observation §6 and §7 wait on. It is
+  fire-and-forget: a dropped report leaves a binding `webhook_unverified`
+  until the next delivery, and a rotation promotes on the next delivery
+  verified under the successor.
 - Hook and relay frames gain a `gitea` optional member beside `github` and
   `gitlab`. The wire keeps one optional member per provider, so an older peer
   keeps decoding today's frames and the new member reaches only a peer that
@@ -639,14 +677,13 @@ is a behavior-neutral refactor of exactly these:
 8. **The deployment-config base-URL lock** becomes per-provider.
 
 G1 fills those tables before the behavior behind them exists, so several entries
-are deliberately inert and each is replaced by the step that gives it work:
+are deliberately inert and each is replaced by the step that gives it work (G2
+replaced the Control Plane's three: the provider module, the hook compile arm,
+and the base-URL lock's state count):
 
-| Entry                                                                    | Replaced by |
-| ------------------------------------------------------------------------ | ----------- |
-| CP provider module: workspace arms decline, hook convergence is a no-op  | G2          |
-| CP hook compile: a `gitea` row never compiles, so the pool holds no rule | G2          |
-| CP `codeHostStateExists('gitea')`: no table exists to count yet          | G2          |
-| Console: hook marks and labels are real; pickers do not offer the host   | G6          |
+| Entry                                                                  | Replaced by |
+| ---------------------------------------------------------------------- | ----------- |
+| Console: hook marks and labels are real; pickers do not offer the host | G6          |
 
 The daemon's entries — credentials, ack, final poster, effect lease, hook
 admission, hook normalization — were on this list until G4 made each real; its
@@ -710,10 +747,13 @@ Each step is one pull request, merged in order.
   an entry in every provider table on all four hosts, so the step also filled
   those (§13). The open-connector blocklist entry moved here from G2 with them:
   it is a one-line default beside the provider vocabulary, not connection state.
-- **G2 — Control Plane connection and bindings.** `GiteaConnection`,
+- **G2 — Control Plane connection and bindings.** _Landed._ `GiteaConnection`,
   `GiteaRepositoryBinding`, secrets, the connect/replace/disconnect routes,
-  the picker, the provisioning saga, webhook install and rotation, and the
-  membership-authorization arm.
+  the picker, the provisioning saga, webhook install and rotation, the
+  membership-authorization arm, the gitcred grants, and the `gitea` hook and
+  grant arms of the existing routes. Because the saga waits on the relay, the
+  step also added the relay's half of that seam: the `rc/codehost-delivery`
+  report and verification under a rule's successor key.
 - **G3 — Relay ingress.** `hooks/gitea/`: signature, event mapping, veto and
   gate table, delivery key, rerun dispatch.
 - **G4 — Daemon credentials, workspace, sessions.** _Landed (#2054)._ Managed-host

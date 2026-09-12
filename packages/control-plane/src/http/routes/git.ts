@@ -15,6 +15,7 @@ import { ErrorDto, GitResolveDto, type GitResolveDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitlabApiError } from '../../gitlab/api.js'
+import { GiteaApiError } from '../../gitea/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { deriveWorkspaceCredential, WorkspaceCredentialRefused, type DerivedWorkspace } from './workspace-credential.js'
@@ -84,7 +85,7 @@ export function gitRoutes(deps: HttpDeps) {
           if (e instanceof LogtoApiError) {
             return reply.code(502).send({ error: 'Bad Gateway', statusCode: 502, message: e.message })
           }
-          if (e instanceof GithubApiError || e instanceof GitlabApiError) {
+          if (e instanceof GithubApiError || e instanceof GitlabApiError || e instanceof GiteaApiError) {
             const status = e.code === 'RATE_LIMITED' ? 429 : 502
             return reply.code(status).send({
               error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',

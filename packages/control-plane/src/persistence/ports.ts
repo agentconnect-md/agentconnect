@@ -619,6 +619,12 @@ export type AgentWorkspaceCredential =
       provider: 'gitlab'
       access: 'read' | 'write'
     }
+  | {
+      /** A managed Gitea repository binding vouches (gitea-integration.md §5): the organization's
+       *  one bot token serves it, and `workspaceRepoId` holds the numeric repository id. */
+      provider: 'gitea'
+      access: 'read' | 'write'
+    }
 
 export type AgentWorkspace =
   | { mode: 'scratch'; isolation?: WorkspaceIsolation }
@@ -908,6 +914,14 @@ export interface AgentRepo {
    *  spec push replicates. Returns the affected agent ids. `cloneUrl` is the
    *  provider's own value (§24.1) — omitted ⇒ only display paths converge. */
   refreshGitlabProjectPath(orgId: OrgId, projectId: bigint, projectPath: string, cloneUrl?: string): Promise<AgentId[]>
+  /** The same convergence for any managed host's numeric repository (gitea-integration.md §6). */
+  refreshCodeHostRepositoryPath(
+    orgId: OrgId,
+    provider: CodeHostProvider,
+    repoId: bigint,
+    repoPath: string,
+    cloneUrl?: string
+  ): Promise<AgentId[]>
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
    *  separate from content `update`). An org→restricted transition atomically
    *  closes known direct-conversation rows. Stamps the last-modified audit;
@@ -2231,9 +2245,9 @@ export interface UpsertHookInput {
   /** Trigger text (control metadata, same as CronDef.trigger). */
   sessionMode: HookSessionMode
   enabled?: boolean
-  /** REQUIRED for kind=gitlab: the instance `repoId` names, joining the §24.1
-   *  axis fence inside the insert transaction. Omitting it on a gitlab hook is
-   *  refused, because a disabled hook takes no binding lease of any kind. */
+  /** REQUIRED for kind=gitlab and kind=gitea: the instance `repoId` names, joining
+   *  the host's axis fence inside the insert transaction. Omitting it on such a hook
+   *  is refused, because a disabled hook takes no binding lease of any kind. */
   axisBaseUrl?: string
   /** Generic-endpoint routing key — minted server-side on CREATE, immutable
    *  after (the capability URL must survive edits). */
@@ -3763,6 +3777,175 @@ export interface GitlabOauthStateStore {
   bindBrowser(nonce: string, browserHash: string, now: Date): Promise<GitlabOauthStateRecord | null>
   /** Callback: atomically delete and return the row — single use; null ⇒ replay/unknown/expired. */
   consume(nonce: string, now: Date): Promise<GitlabOauthStateRecord | null>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Gitea connections and repository bindings (gitea-integration.md §4, §5): one
+// organization-level bot whose token is the whole identity, and the managed
+// repositories it administers. Sealed token material lives ONLY behind
+// GiteaConnectionSecretStore; DTO reads never join it.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** `disconnecting` keeps the row while parked bindings still owe external cleanup (§6). */
+export type GiteaConnectionState = 'connected' | 'token_rejected' | 'disconnecting'
+
+export interface GiteaConnectionRecord {
+  id: string
+  orgId: string
+  createdByUserId: string | null
+  botUserId: bigint
+  botUsername: string
+  botDisplayName: string | null
+  credentialEpoch: bigint
+  instanceVersion: string | null
+  state: GiteaConnectionState
+  lastVerifiedAt: Date | null
+  createdAt: Date
+}
+
+/** The verified facts a connect or replacement writes beside the sealed token (§4.1). */
+export interface GiteaVerifiedBot {
+  botUserId: bigint
+  botUsername: string
+  botDisplayName: string | null
+  instanceVersion: string
+  verifiedAt: Date
+}
+
+export interface GiteaConnectionRepo {
+  /** Connect (§4.1), atomic with its sealed token. Throws GiteaBotAlreadyBound when the bot user
+   *  already serves a connection anywhere on the deployment, and GiteaConnectionExists when the
+   *  organization already holds one. Joins the §3 axis fence with `axisBaseUrl`. */
+  create(input: {
+    orgId: string
+    createdByUserId?: string
+    bot: GiteaVerifiedBot
+    sealedToken: string
+    axisBaseUrl: string
+  }): Promise<GiteaConnectionRecord>
+  get(orgId: string, connectionId: string): Promise<GiteaConnectionRecord | null>
+  /** The organization's one connection, whatever its state; null when it has none. */
+  forOrg(orgId: string): Promise<GiteaConnectionRecord | null>
+  listForOrg(orgId: string): Promise<GiteaConnectionRecord[]>
+  /** Deployment-global lookup by the bot's numeric user id (§4.1 uniqueness). */
+  byBotUserId(botUserId: bigint): Promise<GiteaConnectionRecord | null>
+  /** Token replacement (§4.3): the sealed value swaps, the epoch advances and the state returns to
+   *  `connected` in ONE transaction, so no reader opens an old token under a new epoch. */
+  replaceToken(
+    orgId: string,
+    connectionId: string,
+    bot: GiteaVerifiedBot,
+    sealedToken: string,
+    /** The state the connection returns to: `connected`, unless a disconnect is still walking its bindings. */
+    state: Extract<GiteaConnectionState, 'connected' | 'disconnecting'>
+  ): Promise<GiteaConnectionRecord | null>
+  update(
+    orgId: string,
+    connectionId: string,
+    patch: Partial<{
+      state: GiteaConnectionState
+      instanceVersion: string | null
+      lastVerifiedAt: Date | null
+    }>
+  ): Promise<GiteaConnectionRecord | null>
+  /** Drop the row and its sealed token; refused while any binding still references it. */
+  remove(orgId: string, connectionId: string): Promise<'removed' | 'blocked' | 'missing'>
+}
+
+/** Sealed bot-token reads (per-org key scope); writes ride the connection repo's transitions. */
+export interface GiteaConnectionSecretStore {
+  get(orgId: string, connectionId: string): Promise<string | null>
+}
+
+export type GiteaBindingState = 'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
+
+export interface GiteaRepositoryBindingRecord {
+  id: string
+  orgId: string
+  connectionId: string
+  repoId: bigint
+  repoPath: string
+  cloneUrl: string | null
+  defaultBranch: string | null
+  webhookId: bigint | null
+  /** The rotation successor (§7): live beside the old webhook until a delivery verifies under its key. */
+  nextWebhookId: bigint | null
+  desiredEventsHash: string | null
+  /** When the relay last verified a delivery for this repository (§6 step 4). */
+  lastVerifiedDeliveryAt: Date | null
+  convergeOwedAt: Date | null
+  state: GiteaBindingState
+  stateReason: string | null
+  createdAt: Date
+}
+
+export interface GiteaRepositoryBindingRepo {
+  /** §6 step 1: acquire the deployment-global claim, upsert the catalog row, and create the
+   *  `provisioning` binding atomically; a claim loser throws GiteaRepositoryClaimConflict. */
+  createWithClaim(input: {
+    orgId: string
+    connectionId: string
+    repoId: bigint
+    repoPath: string
+    cloneUrl?: string
+    defaultBranch?: string
+    axisBaseUrl: string
+  }): Promise<GiteaRepositoryBindingRecord>
+  get(orgId: string, bindingId: string): Promise<GiteaRepositoryBindingRecord | null>
+  byRepo(orgId: string, repoId: bigint): Promise<GiteaRepositoryBindingRecord | null>
+  /** Case-insensitive lookup by the CURRENT owner/repo path, any lifecycle state. */
+  byRepoPath(orgId: string, repoPath: string): Promise<GiteaRepositoryBindingRecord | null>
+  listForOrg(orgId: string): Promise<GiteaRepositoryBindingRecord[]>
+  listForConnection(orgId: string, connectionId: string): Promise<GiteaRepositoryBindingRecord[]>
+  update(
+    orgId: string,
+    bindingId: string,
+    patch: Partial<{
+      repoPath: string
+      cloneUrl: string | null
+      defaultBranch: string | null
+      webhookId: bigint | null
+      nextWebhookId: bigint | null
+      desiredEventsHash: string | null
+      lastVerifiedDeliveryAt: Date | null
+      convergeOwedAt: Date | null
+      state: GiteaBindingState
+      stateReason: string | null
+    }>
+  ): Promise<GiteaRepositoryBindingRecord | null>
+  /** §4.3: every binding of a connection whose token was rejected leaves the servable states. */
+  degradeForConnection(orgId: string, connectionId: string, reason: string): Promise<number>
+  /** Record a relay-verified delivery for the repository (§6 step 4). Deployment-global, like the
+   *  claim that makes one numeric repository at most one binding; null when none is bound. */
+  markDeliveryVerified(repoId: bigint, at: Date): Promise<GiteaRepositoryBindingRecord | null>
+  markConvergeOwed(orgId: string, bindingId: string, at: Date): Promise<void>
+  listConvergeOwed(before: Date, limit: number): Promise<GiteaRepositoryBindingRecord[]>
+  /** The §10.2 exclusive run lease over the claim, exactly as the GitLab binding takes it. */
+  markProviderMutationStarted(
+    orgId: string,
+    bindingId: string,
+    repoId: bigint,
+    owner: string,
+    until: Date,
+    now: Date
+  ): Promise<boolean>
+  endProviderMutation(orgId: string, bindingId: string, repoId: bigint, owner: string): Promise<void>
+  renewProviderLease(orgId: string, bindingId: string, repoId: bigint, owner: string, until: Date): Promise<boolean>
+  /** Cleanup entry, exclusive with a live lease (false while held): flips the attached claim AND the binding to `cleanup_pending` in one transaction. */
+  beginCleanup(orgId: string, bindingId: string, repoId: bigint, now: Date): Promise<boolean>
+  removeWithClaim(orgId: string, bindingId: string, repoId: bigint): Promise<boolean>
+}
+
+/** The managed webhook's sealed signing keys (§7): the current one and, mid-rotation, its successor. */
+export interface GiteaWebhookSigningKeys {
+  current: string
+  next: string | null
+}
+
+export interface GiteaWebhookSecretStore {
+  put(orgId: string, bindingId: string, keys: GiteaWebhookSigningKeys): Promise<void>
+  get(orgId: string, bindingId: string): Promise<GiteaWebhookSigningKeys | null>
+  delete(orgId: string, bindingId: string): Promise<void>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

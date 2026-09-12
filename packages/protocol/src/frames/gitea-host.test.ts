@@ -10,7 +10,7 @@ import { CODE_HOST_PROVIDERS, HOOK_KINDS, isCodeHostProvider } from '../code-hos
 import { AgentSpec } from './agent.js'
 import { GiteaHookMetadata } from './hook.js'
 import { GitCredRequest } from './gitcred.js'
-import { RcHookAssign, RcHookRerun, codeHostHookRuleOf } from './relay-cp.js'
+import { RELAY_CP_SCHEMAS, RcCodeHostDelivery, RcHookAssign, RcHookRerun, codeHostHookRuleOf } from './relay-cp.js'
 import { RdMsg } from './relay-daemon.js'
 
 const SELF_HOSTED = 'https://gitea.example.test/gitea'
@@ -159,5 +159,37 @@ describe('the gitcred purposes (§10.1, §10.2)', () => {
       expect(GitCredRequest.safeParse({ agentId: AGENT_ID, purpose }).success, purpose).toBe(true)
     }
     expect(GitCredRequest.safeParse({ agentId: AGENT_ID, purpose: 'gitea_review' }).success).toBe(false)
+  })
+})
+
+describe('the webhook secret overlap and the delivery observation (§6, §7)', () => {
+  it('carries the successor signing key beside the current one mid-rotation', () => {
+    const rotating = RcHookAssign.parse({
+      ...hookRule,
+      gitea: { ...hookRule.gitea, nextSigningKey: 'b'.repeat(64), commentFamilies: ['pull_request'] }
+    })
+    expect(rotating.gitea?.nextSigningKey).toBe('b'.repeat(64))
+    expect(rotating.gitea?.commentFamilies).toEqual(['pull_request'])
+    expect(RcHookAssign.parse(hookRule).gitea?.nextSigningKey).toBeUndefined()
+    // The comment scope names the subject (`is_pull`), never the event family the CP stores it under.
+    expect(
+      RcHookAssign.safeParse({ ...hookRule, gitea: { ...hookRule.gitea, commentFamilies: ['merge_request'] } }).success
+    ).toBe(false)
+  })
+
+  it('reports one verified delivery body-free, naming the key that verified it', () => {
+    const observed = RcCodeHostDelivery.parse({
+      provider: 'gitea',
+      repoExternalId: '556677',
+      deliveryKey: '71edfd2a-0000-4000-8000-000000000000',
+      receivedAt: '2026-09-12T00:00:00.000Z',
+      verifiedWith: 'next'
+    })
+    expect(observed.verifiedWith).toBe('next')
+    expect(RELAY_CP_SCHEMAS['rc/codehost-delivery']).toBe(RcCodeHostDelivery)
+    expect(
+      RcCodeHostDelivery.safeParse({ provider: 'gitea', repoExternalId: 'org/repo', deliveryKey: 'd', receivedAt: 'x' })
+        .success
+    ).toBe(false)
   })
 })

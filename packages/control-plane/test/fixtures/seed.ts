@@ -77,6 +77,8 @@ export async function seedAgent(
     installationId?: string
     /** Numeric GitLab project id ⇒ the gitlab credential vouches (managed binding). */
     gitlabProjectId?: bigint
+    /** Numeric Gitea repository id ⇒ the gitea credential vouches (managed binding). */
+    giteaRepoId?: bigint
     gitAccess?: 'read' | 'write'
     /** `runtimeOverrides` JSON — where the MCP enable-list and memory binding live. */
     runtimeOverrides?: Record<string, unknown>
@@ -104,6 +106,14 @@ export async function seedAgent(
             gitCredentialProvider: 'gitlab',
             workspaceRepoId: opts.gitlabProjectId,
             gitRepo: opts.gitRepo ?? 'https://gitlab.com/example-group/example-project'
+          }
+        : {}),
+      ...(opts.giteaRepoId !== undefined
+        ? {
+            workspaceMode: 'git' as const,
+            gitCredentialProvider: 'gitea',
+            workspaceRepoId: opts.giteaRepoId,
+            gitRepo: opts.gitRepo ?? 'https://gitea.com/example-org/example-repo'
           }
         : {}),
       ...(opts.installationId ? { installationId: opts.installationId, gitCredentialProvider: 'github' } : {}),

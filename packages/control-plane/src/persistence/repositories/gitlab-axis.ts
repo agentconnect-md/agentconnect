@@ -15,7 +15,8 @@ import { GitlabAxisRetargeted } from '../errors.js'
 import { effectiveGitlabBaseUrl, parseDeploymentConfigValues } from '../deployment-config.js'
 
 export const DEPLOYMENT_CONFIG_ID = 1
-const DEPLOYMENT_CONFIG_LOCK_KEY = 'agentconnect:deployment-config'
+/** Shared with the Gitea fence: one key carries both axes, so the config writer excludes both. */
+export const DEPLOYMENT_CONFIG_LOCK_KEY = 'agentconnect:deployment-config'
 
 /** The config writer's side: nothing else may commit GitLab state alongside it. */
 export async function lockAxisExclusive(tx: Prisma.TransactionClient): Promise<void> {

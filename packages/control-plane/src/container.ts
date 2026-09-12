@@ -38,6 +38,14 @@ import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.
 import { GitlabHookRerunService } from './gitlab/hook-rerun.service.js'
 import { CodeHostReviewBrokerService } from './codehost/review-lease.service.js'
 import { unionGitlabWebhookEvents } from './gitlab/webhook-events.js'
+import { resolveGiteaInstanceConfig } from './gitea/config.js'
+import { GiteaApiClient, type FetchLike as GiteaFetchLike } from './gitea/api.js'
+import { GiteaConnectionService } from './gitea/connection.service.js'
+import { GiteaProvisioner } from './gitea/provisioner.js'
+import { GiteaConvergeSweeper } from './gitea/converge-sweeper.js'
+import { GiteaGitcredService } from './gitea/gitcred.service.js'
+import { GiteaMembershipAuthzService } from './gitea/membership-authz.service.js'
+import { unionGiteaWebhookEvents } from './gitea/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import { resolveLinearPlatformAppConfig } from './config/linear-platform.js'
@@ -124,6 +132,10 @@ import {
   PgGitlabWebhookSecretStore,
   PgGitlabInstanceStateStore,
   PgGitlabOauthStateStore,
+  PgGiteaConnectionRepo,
+  PgGiteaConnectionSecretStore,
+  PgGiteaRepositoryBindingRepo,
+  PgGiteaWebhookSecretStore,
   PgCodeHostReviewLeaseRepo,
   PgSocialIdentityMutationGate,
   PgCronRepo,
@@ -313,6 +325,8 @@ export interface ContainerOpts {
   githubFetch?: FetchLike
   /** GitLab HTTP edge stub for tests (mirrors githubFetch). */
   gitlabFetch?: GitlabFetchLike
+  /** Gitea HTTP edge stub for tests (mirrors gitlabFetch). */
+  giteaFetch?: GiteaFetchLike
   /** Slack Web API fetch override for Session membership checks. */
   slackFetch?: FetchLike
   /** Feishu/Lark Open Platform fetch override for Session membership checks. */
@@ -477,7 +491,9 @@ export function buildContainer(
     gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
     gitlabAgentAccount: new PgGitlabAgentAccountRepo(prisma),
     gitlabOauthState: new PgGitlabOauthStateStore(prisma),
-    gitlabInstanceState: new PgGitlabInstanceStateStore(prisma)
+    gitlabInstanceState: new PgGitlabInstanceStateStore(prisma),
+    giteaConnection: new PgGiteaConnectionRepo(prisma),
+    giteaRepositoryBinding: new PgGiteaRepositoryBindingRepo(prisma)
   }
 
   // ── C3/C4/C5 services ─────────────────────────────────────────────────────
@@ -581,6 +597,8 @@ export function buildContainer(
   // GitLab OAuth app config, resolved before the spec assembler because the host axis
   // rides every projected spec with a GitLab consumer (§24.4); absent ⇒ gitlab disabled.
   const gitlabAppCfg = resolveGitlabAppConfig(config)
+  // The Gitea instance axis (gitea-integration.md §3): always resolved — an unset address is gitea.com.
+  const giteaCfg = resolveGiteaInstanceConfig(config)
 
   // The ONE assembler of CP→daemon AgentSpecs — owns secret loading (the only
   // AgentSecretStore VALUE reader) + icon bases, shared by every emission path:
@@ -613,7 +631,8 @@ export function buildContainer(
     // §24.4 host carriage: the axis, and the hook read that reveals the one GitLab
     // consumer neither the workspace nor the allowlist does.
     gitlabAppCfg?.baseUrl,
-    repos.hook
+    repos.hook,
+    giteaCfg.baseUrl
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
@@ -734,6 +753,9 @@ export function buildContainer(
   // process is composed from this client, so nothing can address another host.
   const gitlabApi = gitlabAppCfg ? new GitlabApiClient(gitlabAppCfg.baseUrl, opts.gitlabFetch) : undefined
   const gitlabWebhookSecretStore = gitlabAppCfg ? new PgGitlabWebhookSecretStore(prisma, secretCipher) : undefined
+  // The Gitea edge, bound once to the resolved instance; every Gitea URL in the process composes from it.
+  const giteaApi = new GiteaApiClient(giteaCfg.baseUrl, opts.giteaFetch)
+  const giteaWebhookSecretStore = new PgGiteaWebhookSecretStore(prisma, secretCipher)
   const hookService = new HookService(
     repos.hook,
     repos.hookSecret,
@@ -758,6 +780,13 @@ export function buildContainer(
           http.log.warn({ err, agentId, daemonId }, 'hook converge: agent spec reconcile failed')
         }
       })
+    },
+    // gitea-kind compile sources (gitea-integration.md §7): the binding, its bot connection, the sealed keys.
+    {
+      bindings: repos.giteaRepositoryBinding,
+      connections: repos.giteaConnection,
+      webhookSecrets: giteaWebhookSecretStore,
+      host: giteaCfg.baseUrl
     }
   )
 
@@ -1197,6 +1226,98 @@ export function buildContainer(
       })
     : undefined
 
+  // Gitea (gitea-integration.md §4, §6): one bot connection per organization, the repository
+  // saga over the deployment-global claim, and the rules rebroadcast after every converge.
+  const rebroadcastGiteaRules = async (orgId: string, repoId: bigint): Promise<void> => {
+    for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'gitea')) {
+      if (row.repoId === repoId) await hookService.broadcast(row)
+    }
+  }
+  // Every agent with a Gitea consumer, re-projected: a spec push is what reaches a daemon's caches.
+  const reprojectGiteaConsumers = async (orgId: string): Promise<void> => {
+    const hookAgents = new Set(
+      (await repos.hook.listForOrgKind(OrgId(orgId), 'gitea')).filter((h) => h.enabled).map((h) => h.agentId)
+    )
+    for (const agent of await repos.agent.list(OrgId(orgId))) {
+      const consumer =
+        (agent.workspace.mode === 'git' && agent.workspace.credential?.provider === 'gitea') ||
+        hookAgents.has(agent.id) ||
+        (await repos.agentRepoAuth.listForAgent(agent.id)).some((row) => row.provider === 'gitea')
+      if (!consumer) continue
+      await agentDelivery.upsert(agent, (err, daemonId) => {
+        if (!(err instanceof NoConnection))
+          http.log.warn({ err, agentId: agent.id, daemonId }, 'gitea: agent re-projection failed')
+      })
+    }
+  }
+  const giteaConnectionService = new GiteaConnectionService({
+    connections: repos.giteaConnection,
+    secrets: new PgGiteaConnectionSecretStore(prisma, secretCipher),
+    bindings: repos.giteaRepositoryBinding,
+    cipher: secretCipher,
+    clock,
+    api: giteaApi,
+    // §4.3: a replacement advanced the epoch — every consumer's spec goes out again.
+    onCredentialEpochChanged: (orgId) => reprojectGiteaConsumers(orgId),
+    // A rejection degraded the bindings: their rules and their agents reflect it.
+    onBindingsDegraded: async (orgId, bindings) => {
+      for (const binding of bindings) await rebroadcastGiteaRules(orgId, binding.repoId)
+    },
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+  const giteaProvisioner = new GiteaProvisioner({
+    connections: repos.giteaConnection,
+    tokens: giteaConnectionService,
+    bindings: repos.giteaRepositoryBinding,
+    webhookSecrets: giteaWebhookSecretStore,
+    catalog: repos.codeHostRepository,
+    clock,
+    ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
+    // §7: the union every enabled gitea hook on the repository wants.
+    desiredWebhookEvents: async (orgId, repoId) =>
+      unionGiteaWebhookEvents(await repos.hook.listForOrgKind(OrgId(orgId), 'gitea'), repoId),
+    syncWorkspacePaths: async (orgId, repoId, repoPath, cloneUrl) => {
+      const agentIds = await repos.agent.refreshCodeHostRepositoryPath(
+        OrgId(orgId),
+        'gitea',
+        repoId,
+        repoPath,
+        cloneUrl
+      )
+      for (const agentId of agentIds) {
+        void repos.agent
+          .getUnscoped(agentId)
+          .then(
+            (agent) =>
+              agent &&
+              agentDelivery.upsert(agent, (err, daemonId) =>
+                http.log.warn({ err, agentId, daemonId }, 'gitea rename: agent/upsert failed (backstop: reconnect)')
+              )
+          )
+          .catch((err) => http.log.warn({ err, agentId }, 'gitea rename: agent refresh fan-out failed'))
+      }
+    },
+    // AWAITED by the saga before a test delivery: the relay verifies only what it holds a key for.
+    onConverged: (orgId, repoId) => rebroadcastGiteaRules(orgId, repoId),
+    api: giteaApi,
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+  const gitea = { connections: giteaConnectionService, provisioner: giteaProvisioner, api: giteaApi }
+  // The §6 convergence sweep, the half of a contended pass's obligation that survives a restart.
+  const giteaConvergeSweeper = new GiteaConvergeSweeper({
+    provisioner: giteaProvisioner,
+    clock,
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+  // The Gitea arm of rc/codehost-membership-authz (§8): the live collaborator permission through the bot token.
+  const giteaMembershipAuthz = new GiteaMembershipAuthzService({
+    hooks: repos.hook,
+    bindings: repos.giteaRepositoryBinding,
+    connections: repos.giteaConnection,
+    tokens: giteaConnectionService,
+    api: giteaApi
+  })
+
   // §16 informational run projection: the CP records the desired generation, the OWNING DAEMON
   // writes the note. Assembled with the GitLab administration surface, since the ledger's
   // credential fence comes from the acting agent's account on a project binding.
@@ -1528,6 +1649,8 @@ export function buildContainer(
       gitlabProjectBinding: repos.gitlabProjectBinding,
       gitlabAgentAccount: repos.gitlabAgentAccount,
       gitlabInstanceState: repos.gitlabInstanceState,
+      giteaConnection: repos.giteaConnection,
+      giteaRepositoryBinding: repos.giteaRepositoryBinding,
       audit: repos.audit,
       webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth
@@ -1573,6 +1696,7 @@ export function buildContainer(
     resolvePublicRepo: createPublicRepoResolver(),
     ...(github ? { github } : {}),
     ...(gitlab ? { gitlab } : {}),
+    gitea,
     ...(pullRequestView ? { pullRequestView } : {}),
     ...(sessionPullRequestLink ? { sessionPullRequestLink } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
@@ -1983,6 +2107,15 @@ export function buildContainer(
           })
         }
       : {}),
+    // gitcred v2 (gitea-integration.md §9): the gitea arm serves the organization's bot token.
+    giteaGitcred: new GiteaGitcredService({
+      connections: repos.giteaConnection,
+      secrets: new PgGiteaConnectionSecretStore(prisma, secretCipher),
+      bindings: repos.giteaRepositoryBinding,
+      repoAuths: repos.agentRepoAuth,
+      clock,
+      baseUrl: giteaCfg.baseUrl
+    }),
     // The SAME token service the funnel, the disconnect edge and the sweep hold — the `linearcred`
     // broker must not become a second opinion on when a grant is stale (linear-integration.md §4.4).
     linearTokens: linearTokenService,
@@ -2047,7 +2180,21 @@ export function buildContainer(
     // Missing GitHub configuration fails closed.
     authorizeGithubComment: async (req) => (githubCommentAuthz ? githubCommentAuthz.allowed(req) : false),
     authorizeGithubRerequest: async (req) => (githubRerequest ? githubRerequest.resolve(req) : { allowed: false }),
-    authorizeCodeHostMembership: async (req) => (gitlabMembershipAuthz ? gitlabMembershipAuthz.allowed(req) : false),
+    // Provider fail-per-value: each arm answers only for its own host; an unknown host is denied.
+    authorizeCodeHostMembership: async (req) => {
+      if (req.provider === 'gitea') return giteaMembershipAuthz.allowed(req)
+      return gitlabMembershipAuthz ? gitlabMembershipAuthz.allowed(req) : false
+    },
+    // One verified delivery the relay observed (gitea-integration.md §6, §7): the binding is marked
+    // verified and a rotated key promoted; a provider this deployment does not manage is ignored.
+    onCodeHostDelivery: async (observed) => {
+      if (observed.provider !== 'gitea' || !/^[1-9]\d*$/.test(observed.repoExternalId)) return
+      await giteaProvisioner.observeDelivery({
+        repoId: BigInt(observed.repoExternalId),
+        at: new Date(observed.receivedAt),
+        ...(observed.verifiedWith !== undefined ? { verifiedWith: observed.verifiedWith } : {})
+      })
+    },
     onPullRequestFeedback: async (signal) => (await sessionPullRequestFeedback?.enqueue(signal)) ?? false,
     // A relay just (re)registered — refresh every daemon's roster, (re)assign every
     // HTTP bots' ingress + routes (§5, idempotent), AND replay the compiled hook
@@ -2316,6 +2463,7 @@ export function buildContainer(
       gitlabRotator?.start()
       gitlabRetirementSweeper?.start()
       gitlabConvergeSweeper?.start()
+      giteaConvergeSweeper.start()
       for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
       dutyRecompute.start()
@@ -2338,6 +2486,7 @@ export function buildContainer(
       gitlabRotator?.stop()
       gitlabRetirementSweeper?.stop()
       gitlabConvergeSweeper?.stop()
+      giteaConvergeSweeper.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()

@@ -229,9 +229,8 @@ const CREDENTIAL_OF: Record<CodeHostProvider, (a: Agent) => AgentWorkspaceCreden
       ? { provider: 'github', installationId: a.installationId, access: a.gitAccess }
       : undefined,
   gitlab: (a) => (a.workspaceRepoId !== null ? { provider: 'gitlab', access: a.gitAccess } : undefined),
-  // G2 adds the Gitea catalog and the persisted credential this would read; until then the column
-  // can never name this host, so the entry answers anonymous rather than inventing a credential.
-  gitea: () => undefined
+  // The same shape as GitLab's: the numeric repository id is what the bot token is served for (gitea-integration.md §5).
+  gitea: (a) => (a.workspaceRepoId !== null ? { provider: 'gitea', access: a.gitAccess } : undefined)
 }
 
 function credentialOf(a: Agent): AgentWorkspaceCredential | undefined {
@@ -796,28 +795,38 @@ export class PgAgentRepo implements AgentRepo {
     }
   }
 
-  async refreshGitlabProjectPath(
+  refreshGitlabProjectPath(
     orgId: OrgId,
     projectId: bigint,
     projectPath: string,
     cloneUrl?: string
   ): Promise<AgentId[]> {
+    return this.refreshCodeHostRepositoryPath(orgId, 'gitlab', projectId, projectPath, cloneUrl)
+  }
+
+  async refreshCodeHostRepositoryPath(
+    orgId: OrgId,
+    provider: CodeHostProvider,
+    projectId: bigint,
+    projectPath: string,
+    cloneUrl?: string
+  ): Promise<AgentId[]> {
     // The path is a mutable display/transport hint keyed by the immutable project
-    // id (§8.1). Both places that replicate it drift on a rename: a gitlab
+    // id (§8.1). Both places that replicate it drift on a rename: a managed
     // workspace's clone URL, and every explicit authorization's display path,
     // which is what the daemon maps a NAMED project back to its numeric id with
     // (§13.1). Leaving a grant stale orphans the new path and makes an ask under
     // the old one fail the daemon's echo check against the binding's new path.
     // Both writes join the configRevision ordering domain the daemon fences on,
     // in one transaction, so a spec never carries one half of the rename.
-    // The clone URL is the provider's own `http_url_to_repo`, never composed
-    // (§24.1); a provider answer without one leaves the existing URL alone.
+    // The clone URL is the provider's own answer, never composed (§24.1); a
+    // provider answer without one leaves the existing URL alone.
     return this.transaction(async (tx) => {
       const workspaces = cloneUrl
         ? await tx.agent.findMany({
             where: {
               orgId,
-              gitCredentialProvider: 'gitlab',
+              gitCredentialProvider: provider,
               workspaceRepoId: projectId,
               NOT: { gitRepo: cloneUrl }
             },
@@ -827,12 +836,12 @@ export class PgAgentRepo implements AgentRepo {
       const workspaceIds = workspaces.map((row: { id: string }) => row.id)
       if (cloneUrl && workspaceIds.length > 0) {
         await tx.agent.updateMany({
-          where: { id: { in: workspaceIds }, orgId, gitCredentialProvider: 'gitlab', workspaceRepoId: projectId },
+          where: { id: { in: workspaceIds }, orgId, gitCredentialProvider: provider, workspaceRepoId: projectId },
           data: { gitRepo: cloneUrl }
         })
       }
       const staleGrants = {
-        provider: 'gitlab',
+        provider,
         repoId: projectId,
         agent: { orgId },
         repoFullName: { not: projectPath }
@@ -871,7 +880,7 @@ export class PgAgentRepo implements AgentRepo {
       if (
         !agent ||
         agent.workspaceMode !== 'git' ||
-        agent.gitCredentialProvider === 'gitlab' ||
+        (agent.gitCredentialProvider !== null && agent.gitCredentialProvider !== 'github') ||
         !isCanonicalGithubAddress(agent.gitRepo ?? '') ||
         (agent.workspaceRepoId !== null && agent.workspaceRepoId !== repoId)
       ) {

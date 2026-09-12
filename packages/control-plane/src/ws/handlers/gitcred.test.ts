@@ -664,3 +664,84 @@ describe('handleGitCredRequest — explicit provider=github (§17.3)', () => {
     expect('externalRepoId' in grant).toBe(false)
   })
 })
+
+describe('handleGitCredRequest — the gitea arm (gitea-integration.md §9, §10)', () => {
+  const GRANT = {
+    username: 'example-bot',
+    token: 'gitea-token-1',
+    ttlSec: 3600,
+    expiresAt: '2026-07-11T01:00:00.000Z',
+    repoFullName: 'example-org/example-repo',
+    access: 'write' as const,
+    provider: 'gitea',
+    externalRepoId: '556677',
+    credentialEpoch: '1',
+    host: 'https://gitea.com'
+  }
+
+  it('serves the workspace grant, narrowed by the requested access, without touching the GitHub arm', async () => {
+    const grantForAgent = vi.fn(async () => GRANT)
+    const mintForAgent = vi.fn()
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      github: { mintForAgent },
+      giteaGitcred: { grantForAgent }
+    } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    const frame = gitcredFrame({ provider: 'gitea', externalRepoId: '556677', requestedAccess: 'read' })
+    await handleGitCredRequest(frame, conn, deps)
+    expect(grantForAgent).toHaveBeenCalledWith(PLACED_AGENT, 556677n, 'read')
+    expect(mintForAgent).not.toHaveBeenCalled()
+    expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', GRANT)
+  })
+
+  it('routes gitea_hook_reply and gitea_effect through the enabled gitea hook', async () => {
+    const grantForHookReply = vi.fn(async () => ({ ...GRANT, access: 'read' as const, ttlSec: 900 }))
+    const grantForBrokerEffect = vi.fn(async () => ({ ...GRANT, access: 'comment' as const, ttlSec: 900 }))
+    const hook = { agentId: AGENT_ID, kind: 'gitea', enabled: true, repoId: 556677n }
+    const deps = {
+      agent: { get: async () => PLACED_AGENT },
+      hook: { get: async () => hook },
+      giteaGitcred: { grantForHookReply, grantForBrokerEffect }
+    } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    await handleGitCredRequest(
+      gitcredFrame({ provider: 'gitea', purpose: 'gitea_hook_reply', hookId: HOOK_ID, externalRepoId: '556677' }),
+      conn,
+      deps
+    )
+    expect(grantForHookReply).toHaveBeenCalledWith(ORG_ID, 556677n)
+    await handleGitCredRequest(
+      gitcredFrame({ provider: 'gitea', purpose: 'gitea_effect', hookId: HOOK_ID, externalRepoId: '556677' }),
+      conn,
+      deps
+    )
+    expect(grantForBrokerEffect).toHaveBeenCalledWith(PLACED_AGENT, 556677n, true)
+    expect(conn.sendError).not.toHaveBeenCalled()
+    // A hook on another repository, or of another kind, is a fence — refused rather than ignored.
+    await handleGitCredRequest(
+      gitcredFrame({ provider: 'gitea', purpose: 'gitea_hook_reply', hookId: HOOK_ID, externalRepoId: '999' }),
+      conn,
+      deps
+    )
+    expect(conn.sendError).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'SCOPE_DENIED',
+      expect.stringContaining('gitea hook'),
+      false
+    )
+  })
+
+  it('denies every gitea request on a control plane without the gitea arm', async () => {
+    const deps = { agent: { get: async () => PLACED_AGENT }, github: {} } as unknown as DaemonWsDeps
+    const conn = fakeConn()
+    await handleGitCredRequest(gitcredFrame({ provider: 'gitea' }), conn, deps)
+    expect(conn.sendError).toHaveBeenCalledWith(
+      expect.anything(),
+      'SCOPE_DENIED',
+      expect.stringContaining('gitea'),
+      false
+    )
+    expect(conn.replyTo).not.toHaveBeenCalled()
+  })
+})

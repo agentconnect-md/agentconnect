@@ -36,7 +36,7 @@ afterEach(async () => {
 function stubbedGithub(): GithubService {
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
   return new GithubService({
-    cfg: { appId: 1, slug: 'agentconnect-test', jwtIssuer: '1', privateKey },
+    cfg: { appId: 1, slug: 'example-deployment', jwtIssuer: '1', privateKey },
     clock: systemClock,
     installations: new PgGithubInstallationRepo(prisma),
     installState: new PgGithubInstallStateStore(prisma),

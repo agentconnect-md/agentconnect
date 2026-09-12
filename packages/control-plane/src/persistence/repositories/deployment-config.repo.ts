@@ -101,11 +101,17 @@ const CODE_HOST_STATE_EXISTS: Record<CodeHostProvider, (tx: Prisma.TransactionCl
     ])
     return connections + bindings + accounts + hooks + claims > 0
   },
-  // G2 adds the Gitea connection, binding, secret and claim tables this must count
-  // (gitea-integration.md §5); with none of them existing yet, no Gitea state can pin the axis and
-  // the base URL is freely editable. The `gitea` hook kind is in the enum but no route can write
-  // one, so counting it here would be counting a row nothing can create.
-  gitea: async () => false
+  // A connection in any state binds (its bot user id and token are host-relative), as does a
+  // binding in any state (`cleanup_pending` included), a hook, or a claim that still owes cleanup.
+  gitea: async (tx) => {
+    const [connections, bindings, hooks, claims] = await Promise.all([
+      tx.giteaConnection.count(),
+      tx.giteaRepositoryBinding.count(),
+      tx.hookDef.count({ where: { kind: 'gitea' } }),
+      tx.codeHostRepositoryClaim.count({ where: { provider: 'gitea' } })
+    ])
+    return connections + bindings + hooks + claims > 0
+  }
 }
 
 function codeHostStateExists(tx: Prisma.TransactionClient, provider: CodeHostProvider): Promise<boolean> {

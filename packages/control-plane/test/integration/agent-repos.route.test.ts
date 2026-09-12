@@ -92,7 +92,7 @@ function stubbedGithub(): GithubService {
     throw new Error(`unexpected github call: ${url}`)
   }
   return new GithubService({
-    cfg: { appId: 1, slug: 'agentconnect-test', jwtIssuer: '1', privateKey },
+    cfg: { appId: 1, slug: 'example-deployment', jwtIssuer: '1', privateKey },
     clock: systemClock,
     installations: new PgGithubInstallationRepo(prisma),
     installState: new PgGithubInstallStateStore(prisma),

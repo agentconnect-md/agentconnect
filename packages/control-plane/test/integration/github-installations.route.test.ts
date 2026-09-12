@@ -48,7 +48,7 @@ function appAs(
   const calls: GithubCall[] = []
   const githubStatus = opts.githubStatus ?? 204
   const github = new GithubService({
-    cfg: { appId: 1, slug: 'agentconnect-test', jwtIssuer: '1', privateKey },
+    cfg: { appId: 1, slug: 'example-deployment', jwtIssuer: '1', privateKey },
     clock: systemClock,
     installations: new PgGithubInstallationRepo(prisma),
     installState: new PgGithubInstallStateStore(prisma),

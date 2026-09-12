@@ -55,6 +55,8 @@ import type {
   GitlabAgentAccountRepo,
   GitlabInstanceStateRepo,
   GitlabProjectBindingRepo,
+  GiteaConnectionRepo,
+  GiteaRepositoryBindingRepo,
   DaemonLifecycleOpRepo,
   OAuthRepo,
   WebchatMcpOperationRepo
@@ -67,6 +69,9 @@ import type { GitlabApiClient } from '../gitlab/api.js'
 import type { GitlabAccountService } from '../gitlab/account.service.js'
 import type { GitlabProvisioner } from '../gitlab/provisioner.js'
 import type { GitlabHookRerunService } from '../gitlab/hook-rerun.service.js'
+import type { GiteaConnectionService } from '../gitea/connection.service.js'
+import type { GiteaProvisioner } from '../gitea/provisioner.js'
+import type { GiteaApiClient } from '../gitea/api.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
@@ -263,6 +268,10 @@ export interface HttpDeps {
     gitlabAgentAccount: GitlabAgentAccountRepo
     /** Deployment-level observed instance version (§24.2). */
     gitlabInstanceState: GitlabInstanceStateRepo
+    /** The organization's Gitea bot connection (gitea-integration.md §4); the token lives behind its secret store. */
+    giteaConnection: GiteaConnectionRepo
+    /** Managed Gitea repository bindings (gitea-integration.md §5/§6). */
+    giteaRepositoryBinding: GiteaRepositoryBindingRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
     /** Durable browser-confirmed delegated MCP operation ledger. */
@@ -415,6 +424,13 @@ export interface HttpDeps {
     /** The §16.1 Console rerun authorizer; the route 404s without the GitLab app. */
     hookRerun: GitlabHookRerunService
     api: GitlabApiClient
+  }
+  /** Gitea connection surface (gitea-integration.md §4, §6, §12); absent ⇒ routes 404.
+   *  `api` is the base-bound Gitea edge the routes share with the services. */
+  gitea?: {
+    connections: GiteaConnectionService
+    provisioner: GiteaProvisioner
+    api: GiteaApiClient
   }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
   pullRequestView?: PullRequestViewService

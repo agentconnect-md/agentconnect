@@ -104,7 +104,8 @@ export class AgentDelivery {
     // rather than sent a frame it would decode into the wrong host.
     const shaped = {
       workspace: spec.workspace ?? agent.workspace,
-      ...(spec.gitlabHost !== undefined ? { gitlabHost: spec.gitlabHost } : {})
+      ...(spec.gitlabHost !== undefined ? { gitlabHost: spec.gitlabHost } : {}),
+      ...(spec.giteaHost !== undefined ? { giteaHost: spec.giteaHost } : {})
     }
     const targets = candidates.filter((daemonId) => daemonSupportsAgent(shaped, this.deps.daemonFeatures?.(daemonId)))
     if (targets.length === 0) return

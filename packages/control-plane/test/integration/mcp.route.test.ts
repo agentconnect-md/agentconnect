@@ -766,8 +766,8 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
     // routes are legitimately absent and the drift guard would read as a rename.
     const githubApp = build(undefined, undefined, undefined, {
       github: {
-        slug: 'agentconnect-test',
-        installUrl: async () => 'https://github.com/apps/agentconnect-test/installations/new',
+        slug: 'example-deployment',
+        installUrl: async () => 'https://github.com/apps/example-deployment/installations/new',
         outdatedInstallations: async () => new Map()
       } as never,
       // The per-user access route exists only where this gate is configured.

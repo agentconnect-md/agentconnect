@@ -1,6 +1,12 @@
 import { z } from 'zod'
 import { frameSchema } from '../envelope.js'
-import { HOOK_KINDS, type CodeHostProvider, type CodeHostRepoRef } from '../code-host.js'
+import {
+  CodeHostExternalId,
+  CodeHostProviderString,
+  HOOK_KINDS,
+  type CodeHostProvider,
+  type CodeHostRepoRef
+} from '../code-host.js'
 import { ErrorFrame } from './error.js'
 import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
@@ -379,6 +385,7 @@ export const RcGiteaHookRule = z.object({
   repoPath: z.string().min(1), // display/logs only; never matched on
   sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitea:<repoId>
   events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
+  // The comment SUBJECT vocabulary (`is_pull`), not the event family: the CP maps a stored `merge_request` scope here.
   commentFamilies: z.array(z.enum(['issues', 'pull_request'])).optional(),
   mentionOnly: z.boolean(),
   agentName: z.string().optional(),
@@ -388,6 +395,8 @@ export const RcGiteaHookRule = z.object({
   botUsername: z.string().min(1),
   // Hex HMAC-SHA256 key for the `X-Gitea-Signature` verification of §7.
   signingKey: z.string().min(1),
+  // The successor key mid-rotation (§7): the relay accepts either until the CP promotes it.
+  nextSigningKey: z.string().min(1).optional(),
   // The instance this rule addresses (§3), copied opaquely onto forwarded metadata as the turn-time host fence; absent means gitea.com.
   host: z.string().optional()
 })
@@ -621,6 +630,22 @@ export const RcGithubInstallation = z.object({
   action: z.string().min(1) // created|deleted|suspend|…|added|removed
 })
 export type RcGithubInstallation = z.infer<typeof RcGithubInstallation>
+
+// R→C EVT (fire-and-forget) — one signature-verified code-host delivery observed for a
+// repository the relay holds a rule for, matched or not (gitea-integration.md §6, §7). The CP
+// turns a managed webhook's test delivery into a verified binding and promotes a rotated
+// signing key once a delivery verifies under it. Body-free: provider, repository and delivery
+// identity only. A dropped observation leaves the binding `webhook_unverified`, which the next
+// delivery clears — never an error path.
+export const RcCodeHostDelivery = z.object({
+  provider: CodeHostProviderString,
+  repoExternalId: CodeHostExternalId,
+  deliveryKey: z.string().min(1),
+  receivedAt: z.string().datetime(),
+  // Which of the rule's signing keys verified the body; absent means the current one.
+  verifiedWith: z.enum(['current', 'next']).optional()
+})
+export type RcCodeHostDelivery = z.infer<typeof RcCodeHostDelivery>
 
 // ── revocation (§9 revocation loop) ─────────────────────────────────────────
 
@@ -1264,6 +1289,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/hook-rerun/ok': RcHookRerunResult,
   'rc/run-report': RcRunReport,
   'rc/github-installation': RcGithubInstallation,
+  'rc/codehost-delivery': RcCodeHostDelivery,
   'rc/daemon-revoke': RcDaemonRevoke,
   'rc/bot-assign': RcBotAssign,
   'rc/bot-unassign': RcBotUnassign,
@@ -1317,6 +1343,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/hook-rerun/ok', RELAY_CP_SCHEMAS['rc/hook-rerun/ok']),
   frameSchema('rc/run-report', RELAY_CP_SCHEMAS['rc/run-report']),
   frameSchema('rc/github-installation', RELAY_CP_SCHEMAS['rc/github-installation']),
+  frameSchema('rc/codehost-delivery', RELAY_CP_SCHEMAS['rc/codehost-delivery']),
   frameSchema('rc/daemon-revoke', RELAY_CP_SCHEMAS['rc/daemon-revoke']),
   frameSchema('rc/bot-assign', RELAY_CP_SCHEMAS['rc/bot-assign']),
   frameSchema('rc/bot-unassign', RELAY_CP_SCHEMAS['rc/bot-unassign']),

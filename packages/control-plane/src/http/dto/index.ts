@@ -385,6 +385,11 @@ export const AgentWorkspaceCredentialDto = z.discriminatedUnion('provider', [
     provider: z.literal('gitlab'),
     access: z.enum(['read', 'write']),
     projectId: z.string() // rename-stable numeric project id (workspaceRepoId)
+  }),
+  z.object({
+    provider: z.literal('gitea'),
+    access: z.enum(['read', 'write']),
+    repoId: z.string() // rename-stable numeric repository id (workspaceRepoId)
   })
 ])
 export type AgentWorkspaceCredentialDtoT = z.infer<typeof AgentWorkspaceCredentialDto>
@@ -760,14 +765,14 @@ export const SetAgentWorkspaceBody = AgentWorkspaceInputBody
  *  write path about what a pick means. Never consulted to display a stored workspace. */
 export const GitResolveDto = z.object({
   /** Who would vouch for this address if written now; 'anonymous' ⇒ read-only clone. */
-  provider: z.enum(['github', 'gitlab', 'anonymous']),
+  provider: z.enum(['github', 'gitlab', 'gitea', 'anonymous']),
   /** Canonical cloneable address the write would persist. */
   gitRepo: z.string(),
   /** The acting caller's access ceiling on this target. */
   access: z.enum(['read', 'write']),
   defaultBranch: z.string().optional(),
-  /** For an anonymous outcome: which managed host the target sits on ('other' ⇒ neither). */
-  host: z.enum(['github', 'gitlab', 'other']).optional()
+  /** For an anonymous outcome: which managed host the target sits on ('other' ⇒ none of them). */
+  host: z.enum(['github', 'gitlab', 'gitea', 'other']).optional()
 })
 export type GitResolveDtoT = z.infer<typeof GitResolveDto>
 
@@ -1973,6 +1978,88 @@ export const GitlabOrgAccountListDto = z.object({
   converging: z.boolean()
 })
 
+// ── gitea (gitea-integration.md §4, §5, §12) ─────────────────────────────────
+/** The organization's Gitea bot connection — identity facts only, NEVER the token. */
+export const GiteaConnectionDto = z.object({
+  id: z.string(),
+  botUserId: z.string(), // numeric Gitea user id, losslessly as a string
+  botUsername: z.string(),
+  botDisplayName: z.string().nullable(),
+  state: z.enum(['connected', 'token_rejected', 'disconnecting']),
+  connectedBy: z.string().nullable(), // AgentConnect user id; null after user deletion
+  credentialEpoch: z.string(),
+  /** Managed repositories this connection administers; removal walks each one (§6). */
+  boundRepositories: z.number().int(),
+  /** The instance this deployment talks to (§3) — the same for every connection. */
+  instanceUrl: z.string(),
+  /** What the instance last reported through this connection; null until first contact. */
+  instanceVersion: z.string().nullable(),
+  instanceVersionSupported: z.boolean().nullable(),
+  /** The `MAJOR.MINOR` floor this deployment enforces, so the console names it. */
+  instanceVersionFloor: z.string(),
+  /** The token scopes the connect step verifies (§4.1); the console shows them beside the input. */
+  requiredScopes: z.array(z.string()),
+  lastVerifiedAt: z.string().nullable(),
+  createdAt: z.string()
+})
+export type GiteaConnectionDtoT = z.infer<typeof GiteaConnectionDto>
+
+export const GiteaConnectionListDto = z.object({ connections: z.array(GiteaConnectionDto) })
+
+/** The bot token, write-only: it is verified, sealed, and never echoed by any route. */
+export const ConnectGiteaBody = z.object({ token: z.string().trim().min(1).max(512) })
+
+/** Removal walks every binding first (§6): `removed` is true only once the row itself is gone. */
+export const GiteaConnectionDeleteDto = z.object({
+  removed: z.boolean(),
+  /** Bindings still parked in cleanup_pending, whose webhook removal is owed. */
+  pendingRepositories: z.number().int(),
+  connection: GiteaConnectionDto.nullable()
+})
+
+/** One repository the bot administers, for the picker (§6) — metadata only. */
+export const GiteaRepositoryDto = z.object({
+  repoId: z.string(), // numeric id, losslessly as a string
+  path: z.string(), // current owner/repo — display only
+  cloneUrl: z.string().nullable(),
+  defaultBranch: z.string().nullable(),
+  private: z.boolean()
+})
+
+export const GiteaRepositoryListDto = z.object({ repositories: z.array(GiteaRepositoryDto) })
+
+/** One managed repository binding — the §5 lifecycle states, no secret material. */
+export const GiteaRepositoryBindingDto = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  repoId: z.string(),
+  repoPath: z.string(),
+  cloneUrl: z.string().nullable(),
+  defaultBranch: z.string().nullable(),
+  state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
+  /** `token_rejected`, `admin_lost`, `webhook_unverified`, or another bounded repair category. */
+  stateReason: z.string().nullable(),
+  /** The managed webhook's state (§7). `not_needed` is NORMAL — no enabled trigger wants ingress. */
+  webhookState: z.enum(['not_needed', 'installed', 'repairing', 'failed']),
+  /** When the relay last verified a delivery for this repository; null until the test delivery arrived. */
+  lastVerifiedDeliveryAt: z.string().nullable(),
+  createdAt: z.string()
+})
+export type GiteaRepositoryBindingDtoT = z.infer<typeof GiteaRepositoryBindingDto>
+
+export const GiteaRepositoryBindingListDto = z.object({ bindings: z.array(GiteaRepositoryBindingDto) })
+
+export const CreateGiteaRepositoryBody = z.object({
+  repoId: z.string().regex(/^[1-9]\d*$/) // numeric id as a string; the server re-fetches and validates
+})
+
+/** The rotation outcome (§7): `promoted` says whether the relay already verified a delivery under the successor's key and retired the old webhook. */
+export const GiteaWebhookRotationDto = z.object({
+  rotated: z.boolean(),
+  promoted: z.boolean(),
+  reason: z.string().nullable()
+})
+
 export const GithubAppDto = z.object({
   enabled: z.boolean(),
   /** github.com/apps/<slug>; null when the feature is disabled. */
@@ -2077,6 +2164,12 @@ export const CreateAgentRepoAuthBody = z.union([
   z.strictObject({
     provider: z.literal('gitlab'),
     projectId: z.string().regex(/^[1-9]\d*$/),
+    access: RepoAccessDto.default('read')
+  }),
+  // A managed Gitea repository by its numeric id (gitea-integration.md §5); the tier is a local clamp only.
+  z.strictObject({
+    provider: z.literal('gitea'),
+    repoId: z.string().regex(/^[1-9]\d*$/),
     access: RepoAccessDto.default('read')
   }),
   z.strictObject({
@@ -2611,10 +2704,25 @@ export const CreateGitlabHookBody = HookBodyBase.extend({
   reportingMode: HookReportingModeEnum.default('off')
 })
 
+/** Gitea rows speak the GitLab family vocabulary (gitea-integration.md §8): a pull request is the merge_request family. */
+export const CreateGiteaHookBody = HookBodyBase.extend({
+  kind: z.literal('gitea'),
+  // perThread by definition; the repository must already be a managed binding in this organization.
+  repoId: z.string().regex(/^[1-9]\d*$/),
+  family: GitlabHookFamily,
+  events: z.array(z.string().regex(GitlabHookEventPattern)).min(1).max(20),
+  commentFamilies: z.array(GitlabCommentFamily).max(2).default([]),
+  mentionOnly: z.boolean().default(false),
+  // `status` is the Control-Plane-written commit status (§10.4); no gateMode — a required check is the operator's choice.
+  reviewPolicy: HookReviewPolicyEnum.default('off'),
+  reportingMode: HookReportingModeEnum.default('off')
+})
+
 export const CreateHookBody = z.discriminatedUnion('kind', [
   CreateWebhookHookBody,
   CreateGithubHookBody,
-  CreateGitlabHookBody
+  CreateGitlabHookBody,
+  CreateGiteaHookBody
 ])
 
 // PUT: `kind` discriminates the body but STAYS OPTIONAL for webhook updates —
@@ -2634,6 +2742,13 @@ export const UpdateHookBody = z.union([
     commentFamilies: z.array(GitlabCommentFamily).max(2).optional(),
     mentionOnly: z.boolean().optional(),
     // Optional on whole-definition PUT so a client predating these axes preserves the stored policy.
+    reviewPolicy: HookReviewPolicyEnum.optional(),
+    reportingMode: HookReportingModeEnum.optional()
+  }),
+  CreateGiteaHookBody.omit({ family: true }).extend({
+    enabled: z.boolean().optional(),
+    commentFamilies: z.array(GitlabCommentFamily).max(2).optional(),
+    mentionOnly: z.boolean().optional(),
     reviewPolicy: HookReviewPolicyEnum.optional(),
     reportingMode: HookReportingModeEnum.optional()
   }),

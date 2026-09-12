@@ -22,7 +22,7 @@ class PrefixCipher implements SecretCipher {
 
 const GITHUB_VALUES: DeploymentConfigValuesV1 = {
   ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
-  github: { appId: 123, slug: 'agentconnect-test', clientId: 'Iv1.test' }
+  github: { appId: 123, slug: 'example-deployment', clientId: 'Iv1.test' }
 }
 
 describe('deployment configuration store (real Postgres)', () => {

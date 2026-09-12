@@ -46,6 +46,15 @@ function gitlabHookAuthorizes(
   )
 }
 
+/** The Gitea twin (gitea-integration.md §10.1): an ENABLED gitea hook of this agent on that very repository. */
+function giteaHookAuthorizes(
+  hook: HookRecord | null,
+  agentId: AgentId,
+  repoId: bigint
+): hook is HookRecord & { repoId: bigint } {
+  return hook !== null && hook.agentId === agentId && hook.kind === 'gitea' && hook.enabled && hook.repoId === repoId
+}
+
 export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   if (!isFrame('gitcred/request')(frame)) return
   const {
@@ -66,15 +75,20 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     return
   }
   const gitlabRequest = provider === 'gitlab'
+  const giteaRequest = provider === 'gitea'
   // §17.3: an explicit 'github' takes exactly the arms the absent form takes and adds the echo the
   // daemon verifies. The absent form stays unqualified — old daemons upgrade slowly and still send it.
   const githubQualified = provider === 'github'
-  if (!gitlabRequest && !deps.github) {
+  if (!gitlabRequest && !giteaRequest && !deps.github) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'github-app workspaces are not enabled on this control plane', false)
     return
   }
   if (gitlabRequest && !deps.gitlabGitcred) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'gitlab workspaces are not enabled on this control plane', false)
+    return
+  }
+  if (giteaRequest && !deps.giteaGitcred) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'gitea workspaces are not enabled on this control plane', false)
     return
   }
 
@@ -95,6 +109,66 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   }
 
   try {
+    if (giteaRequest) {
+      // gitea-integration.md §4.2/§10: one token serves every purpose; the authority differs per purpose.
+      if (purpose === 'gitea_hook_reply') {
+        if (hookId === undefined || externalRepoId === undefined) {
+          conn.sendError(
+            frame.id,
+            'SCOPE_DENIED',
+            'gitea hook reply credentials require a hook and a repository',
+            false
+          )
+          return
+        }
+        const hook = await deps.hook.get(orgId, HookId(hookId))
+        if (!giteaHookAuthorizes(hook, AgentId(agentId), BigInt(externalRepoId))) {
+          conn.sendError(
+            frame.id,
+            'SCOPE_DENIED',
+            'hook is not an enabled gitea hook of this agent on that repository',
+            false
+          )
+          return
+        }
+        conn.replyTo(frame, 'gitcred/grant', await deps.giteaGitcred!.grantForHookReply(orgId, hook.repoId))
+        return
+      }
+      if (purpose === 'gitea_effect') {
+        if (externalRepoId === undefined) {
+          conn.sendError(frame.id, 'SCOPE_DENIED', 'gitea effect credentials require a repository', false)
+          return
+        }
+        const repoId = BigInt(externalRepoId)
+        let hookAuthorized = false
+        if (hookId !== undefined) {
+          const hook = await deps.hook.get(orgId, HookId(hookId))
+          if (!giteaHookAuthorizes(hook, AgentId(agentId), repoId)) {
+            conn.sendError(
+              frame.id,
+              'SCOPE_DENIED',
+              'hook is not an enabled gitea hook of this agent on that repository',
+              false
+            )
+            return
+          }
+          hookAuthorized = true
+        }
+        conn.replyTo(
+          frame,
+          'gitcred/grant',
+          await deps.giteaGitcred!.grantForBrokerEffect(agent, repoId, hookAuthorized)
+        )
+        return
+      }
+      const grant = await deps.giteaGitcred!.grantForAgent(
+        agent,
+        externalRepoId !== undefined ? BigInt(externalRepoId) : undefined,
+        requestedAccess
+      )
+      conn.replyTo(frame, 'gitcred/grant', grant)
+      return
+    }
     if (gitlabRequest) {
       if (purpose === 'gitlab_hook_reply') {
         // §14.1: the daemon-owned note poster — its authority is the ENABLED gitlab hook itself, not the workspace clamp.
