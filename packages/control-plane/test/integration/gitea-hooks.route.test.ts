@@ -446,13 +446,15 @@ describe('gitea hook rerun — the Console "Run again" route (gitea-integration.
     const refused = await rerunHarness({ admitted: false, code: 'rule_mismatch' })
     const answer = await rerun(refused.h.a, refused.hookId, { kind: 'merge_request', iid: INDEX })
     expect(answer.statusCode).toBe(409)
-    expect(answer.json()).toMatchObject({ code: 'RELAY_REJECTED' })
+    // The relay's own category rides along so the console can tell "still loading" from "ran too often".
+    expect(answer.json()).toMatchObject({ code: 'RELAY_REJECTED', relayCode: 'rule_mismatch' })
     expect(await prisma.hookRun.count({ where: { hookId: refused.hookId } })).toBe(0)
 
     refused.h.a.relayReg.remove((refused.relay.ch as { relayId: string }).relayId, refused.relay.ch)
     const nobody = await rerun(refused.h.a, refused.hookId, { kind: 'merge_request', iid: INDEX })
     expect(nobody.statusCode).toBe(503)
-    expect((nobody.json() as { code: string }).code).toBe('RELAY_UNAVAILABLE')
+    expect(nobody.json()).toMatchObject({ code: 'RELAY_UNAVAILABLE' })
+    expect(nobody.json()).not.toHaveProperty('relayCode')
   })
 
   it('refuses the rerun once the connection token is rejected, and flips the connection', async () => {

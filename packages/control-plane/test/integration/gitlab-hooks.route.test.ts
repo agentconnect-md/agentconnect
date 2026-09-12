@@ -1083,8 +1083,10 @@ describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', 
 
       const res = await rerun(h.a, hookId, { kind: 'merge_request', iid: MR_IID })
       expect(res.statusCode).toBe(status)
-      const body = res.json() as { code: string; message: string }
+      const body = res.json() as { code: string; message: string; relayCode?: string }
       expect(body.code).toBe('RELAY_REJECTED')
+      // The wire category is forwarded verbatim; the console branches on it.
+      expect(body.relayCode).toBe(code)
       // Human prose, never the wire category.
       expect(body.message).not.toContain(code)
       // The relay WAS asked — and answered no. Its verdict is final.

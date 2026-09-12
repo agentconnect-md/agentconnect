@@ -3929,6 +3929,11 @@ export const ErrorDto = z.object({
   code: z.string().optional()
 })
 
+/** The rerun route's refusal shape: `RELAY_REJECTED` also carries the relay's own category, which the console branches on. */
+export const HookRerunErrorDto = ErrorDto.extend({
+  relayCode: z.string().optional()
+})
+
 /** The Slack install funnels' error shape. A refusal carrying
  *  `code: 'SLACK_MISSING_SCOPES'` also names the required bot scopes the
  *  workspace authorization did not grant — the console renders THAT list, since
