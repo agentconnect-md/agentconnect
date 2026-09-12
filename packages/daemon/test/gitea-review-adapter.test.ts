@@ -43,7 +43,10 @@ const KEY = sessionKey('hook', HOOK_ID, THREAD, AGENT_ID)
 const MARKER_SEED = 'gitea-review-marker-test-key-001'
 const PULL_PATH = `/repos/example-org/example-repo/pulls/${INDEX}`
 
-const signer = new ReviewMarkerSigner(Buffer.from(MARKER_SEED, 'utf8'))
+const OTHER_DAEMON_SEED = 'gitea-review-marker-test-key-002'
+
+// The adapter keys markers per attempt off the daemon key, so fixtures mint the same way.
+const signer = ReviewMarkerSigner.derived(Buffer.from(MARKER_SEED, 'utf8'))
 
 const SNAPSHOT: HookConfigSnapshot = {
   configRevision: '4',
@@ -266,6 +269,7 @@ interface LeaseRow {
   event?: string
   verdict?: string
   headSha?: string
+  markerSeed?: string
 }
 
 interface OpRow {
@@ -340,6 +344,29 @@ function fakeCp(opts: CpOptions = {}) {
     }
     return lease.phase
   }
+  // The lock's durable coordinates: the owner, its fence, the retained ambiguous record, the head, and the seed the owner left.
+  const retainedOf = (lease: LeaseRow) =>
+    [...records.entries()].find(([, row]) => row.attemptId === lease.attemptId && row.state === 'ambiguous')
+  const lockOf = (lease: LeaseRow): Pick<Extract<CodeHostReviewAuthorized, { authorized: false }>, 'lock'> => {
+    const retained = retainedOf(lease)
+    if (!lease.attemptId || !lease.headSha || !lease.markerSeed || !retained) return {}
+    return {
+      lock: {
+        attemptId: lease.attemptId,
+        fence: String(lease.fence),
+        recordId: retained[0],
+        headSha: lease.headSha,
+        markerSeed: lease.markerSeed
+      }
+    }
+  }
+  const locked = (attemptId: string, lease: LeaseRow): CodeHostReviewAuthorized => ({
+    authorized: false,
+    attemptId,
+    reason: 'ambiguous_locked',
+    retryable: false,
+    ...lockOf(lease)
+  })
   const cp: CodeHostReviewControlPlane = {
     supportsReview: () => opts.supports !== false,
     authorize: async (payload): Promise<CodeHostReviewAuthorized> => {
@@ -347,9 +374,22 @@ function fakeCp(opts: CpOptions = {}) {
       if (opts.refuse) return { authorized: false, attemptId: payload.attemptId, reason: opts.refuse, retryable: false }
       const key = subjectOf(payload.projectId, payload.mergeRequestIid)
       let lease = leases.get(key)
-      if (lease?.phase === 'ambiguous_locked') {
-        return { authorized: false, attemptId: payload.attemptId, reason: 'ambiguous_locked', retryable: false }
+      // The lock's one exit: the refused daemon names the retained record's object; the owner's effect is recorded and the lease releases.
+      const unlock = payload.unlock
+      if (unlock && lease?.phase === 'ambiguous_locked' && lease.attemptId === unlock.attemptId) {
+        const retained = records.get(unlock.recordId)
+        if (
+          String(lease.fence) === unlock.fence &&
+          retained?.attemptId === lease.attemptId &&
+          retained.state === 'ambiguous'
+        ) {
+          retained.state = 'settled'
+          retained.externalId = unlock.externalRef.externalId
+          outcomes.set(lease.attemptId, 'submitted')
+          release(lease)
+        }
       }
+      if (lease?.phase === 'ambiguous_locked') return locked(payload.attemptId, lease)
       if (lease && lease.attemptId !== null && lease.attemptId !== payload.attemptId && lease.phase !== 'settled') {
         if (lease.leaseUntil > now()) {
           return { authorized: false, attemptId: payload.attemptId, reason: 'lease_held', retryable: true }
@@ -357,7 +397,7 @@ function fakeCp(opts: CpOptions = {}) {
         // An expired lease transfers only under the §15.1 conditions; an outstanding record locks it.
         if (ledger(lease.attemptId).some((row) => row.state !== 'settled' && row.state !== 'unused')) {
           lease.phase = 'ambiguous_locked'
-          return { authorized: false, attemptId: payload.attemptId, reason: 'ambiguous_locked', retryable: false }
+          return locked(payload.attemptId, lease)
         }
       }
       if (!lease || lease.attemptId !== payload.attemptId) {
@@ -368,7 +408,8 @@ function fakeCp(opts: CpOptions = {}) {
           leaseUntil: now() + 300_000,
           event: payload.requestedEvent,
           verdict: payload.requestedVerdict,
-          headSha: payload.headSha
+          headSha: payload.headSha,
+          ...(payload.markerSeed ? { markerSeed: payload.markerSeed } : {})
         }
         leases.set(key, lease)
       } else {
@@ -554,6 +595,8 @@ interface HarnessOptions {
   hook?: HookDispatchContext
   key?: string
   reviewStore?: FakeReviewStore
+  /** The daemon key a fresh store mints; a different one is another daemon. */
+  markerSeed?: string
   attemptIds?: string[]
   open?: boolean
   failPersist?: boolean
@@ -578,7 +621,8 @@ function harness(opts: HarnessOptions = {}) {
     orgForAgent: () => 'org-1',
     daemonId: () => DAEMON_ID,
     store: reviewStore,
-    markerKey: async () => Buffer.from(await reviewStore.getOrCreateDaemonSecret(() => MARKER_SEED), 'utf8'),
+    markerKey: async () =>
+      Buffer.from(await reviewStore.getOrCreateDaemonSecret(() => opts.markerSeed ?? MARKER_SEED), 'utf8'),
     token: async () => {
       const token = supply[Math.min(minted.length, supply.length - 1)]!
       minted.push(token)
@@ -1102,7 +1146,10 @@ describe('Gitea review adapter — ambiguous submission (§10.3 step 5, §15.2)'
     expect(h.control.leases.get(h.control.subjectOf(REPO, INDEX))!.phase).toBe('ambiguous_locked')
     expect(codeHostReviewFallbackAllowed(retryHook)).toBe(false)
 
-    // The lost request finished at Gitea: the next attempt's refusal runs the pass, the lock clears, and the new attempt publishes under a fresh fence.
+    // The refused attempt read the pull request from the lock's coordinates and found nothing submitted: it asked once.
+    expect(h.authorizations.filter((authorization) => authorization.attemptId === SECOND_ATTEMPT)).toHaveLength(1)
+
+    // The lost request finished at Gitea: the next attempt's refusal runs the pass, names the review when it asks again, and publishes under a fresh fence.
     seedSubmitted(state, ATTEMPT)
     const laterHook = hookContext({ deliveryKey: 'delivery-3', event: 'merge_request:rerun' })
     const laterKey = sessionKey('hook', HOOK_ID, THREAD, AGENT_ID, `gitea:${REPO}:later`)
@@ -1113,21 +1160,96 @@ describe('Gitea review adapter — ambiguous submission (§10.3 step 5, §15.2)'
     })) as GiteaReviewOutcome
     expect(cleared.state).toBe('submitted')
     expect(submissions(h.calls)).toHaveLength(2)
-    // The locked attempt's record was upgraded by positive identification and its outcome re-reported.
-    const upgrade = h.ops.find(
-      (op) => op.op === 'settle' && op.attemptId === ATTEMPT && op.outcome.kind === 'deterministic'
-    ) as { outcome: { externalId?: string } } | undefined
-    expect(upgrade?.outcome.externalId).toBe(state.reviews[0]!.id)
-    expect(h.results.filter((result) => result.attemptId === ATTEMPT).map((result) => result.state)).toEqual([
-      'ambiguous_locked',
-      'submitted'
+    const asks = h.authorizations.filter((authorization) => authorization.attemptId === THIRD_ATTEMPT)
+    expect(asks.map((ask) => ask.unlock)).toEqual([
+      undefined,
+      {
+        attemptId: ATTEMPT,
+        fence: '7',
+        recordId: recordIdOf(ATTEMPT, 7, 'bulk_publish', 0),
+        externalRef: { kind: 'review', externalId: state.reviews[0]!.id }
+      }
     ])
+    // The control plane settled the retained record by its object and recorded the owner's effect; the daemon settles and reports nothing for it.
+    expect(h.control.records.get(recordIdOf(ATTEMPT, 7, 'bulk_publish', 0))).toMatchObject({
+      state: 'settled',
+      externalId: state.reviews[0]!.id
+    })
     expect(h.control.outcomes.get(ATTEMPT)).toBe('submitted')
+    expect(
+      h.ops.filter((op) => op.attemptId === ATTEMPT).flatMap((op) => (op.op === 'settle' ? [op.outcome.kind] : []))
+    ).toEqual(['ambiguous'])
+    expect(h.results.filter((result) => result.attemptId === ATTEMPT).map((result) => result.state)).toEqual([
+      'ambiguous_locked'
+    ])
     expect(h.control.leases.get(h.control.subjectOf(REPO, INDEX))).toMatchObject({ phase: 'settled', attemptId: null })
-    // The locked delivery's durable row follows: its attempt is now submitted and names the review.
-    expect(h.hook.codeReview).toMatchObject({ attemptId: ATTEMPT, state: 'submitted' })
-    expect(h.hook.codeReview?.externalIds).toEqual([{ kind: 'review', externalId: state.reviews[0]!.id }])
-    expect(h.hook.codeReview?.operations ?? []).toEqual([])
+  })
+
+  it('clears the lock from another daemon: the seed and the record travel with the lease, not with the process', async () => {
+    const state = giteaState()
+    const first = harness({ state, script: [{ method: 'POST', path: /\/reviews$/, reply: 'network' }] })
+    expect(((await first.adapter.submit(KEY, request())) as GiteaReviewOutcome).state).toBe('ambiguous_locked')
+    // The owner left its per-attempt seed with the lease when it asked.
+    const seed = ReviewMarkerSigner.seed(Buffer.from(MARKER_SEED, 'utf8'), ATTEMPT).toString('hex')
+    expect(first.authorizations[0]!.markerSeed).toBe(seed)
+    expect(first.control.leases.get(first.control.subjectOf(REPO, INDEX))!.markerSeed).toBe(seed)
+
+    // The lost request finished at Gitea after the daemon that sent it was gone; another daemon picks up the next delivery.
+    seedSubmitted(state, ATTEMPT)
+    const second = harness({
+      state,
+      control: first.control,
+      reviewStore: new FakeReviewStore(),
+      markerSeed: OTHER_DAEMON_SEED,
+      hook: hookContext({ deliveryKey: 'delivery-2', event: 'merge_request:rerun' }),
+      attemptIds: [SECOND_ATTEMPT]
+    })
+    const cleared = (await second.adapter.submit(KEY, request())) as GiteaReviewOutcome
+    expect(cleared.state).toBe('submitted')
+    expect(second.authorizations.at(-1)?.unlock).toEqual({
+      attemptId: ATTEMPT,
+      fence: '7',
+      recordId: recordIdOf(ATTEMPT, 7, 'bulk_publish', 0),
+      externalRef: { kind: 'review', externalId: state.reviews[0]!.id }
+    })
+    expect(first.control.records.get(recordIdOf(ATTEMPT, 7, 'bulk_publish', 0))).toMatchObject({
+      state: 'settled',
+      externalId: state.reviews[0]!.id
+    })
+    expect(first.control.outcomes.get(ATTEMPT)).toBe('submitted')
+    expect(first.control.leases.get(first.control.subjectOf(REPO, INDEX))).toMatchObject({
+      phase: 'settled',
+      attemptId: null
+    })
+    // The other daemon's own key never signed that marker: only the seed the lease carried could verify it.
+    const foreign = ReviewMarkerSigner.derived(Buffer.from(OTHER_DAEMON_SEED, 'utf8'))
+    expect(foreign.read(state.reviews[0]!.body, HEAD)).toBeUndefined()
+  })
+
+  it('keeps the lock while the marked review is only pending: the coordinates let a daemon look, not unlock', async () => {
+    const state = giteaState()
+    const h = harness({
+      state,
+      attemptIds: [ATTEMPT, SECOND_ATTEMPT],
+      script: [{ method: 'POST', path: /\/reviews$/, reply: 'network' }]
+    })
+    expect(((await h.adapter.submit(KEY, request())) as GiteaReviewOutcome).state).toBe('ambiguous_locked')
+    // Staging happened; submission did not.
+    seedPending(state, ATTEMPT)
+    const retryHook = hookContext({ deliveryKey: 'delivery-2', event: 'merge_request:rerun' })
+    const retryKey = sessionKey('hook', HOOK_ID, THREAD, AGENT_ID, `gitea:${REPO}`)
+    h.open(retryHook, retryKey)
+    const retried = (await h.adapter.submit(retryKey, {
+      ...request(),
+      transportScope: `gitea:${REPO}`
+    })) as GiteaReviewOutcome
+    expect(retried.state).toBe('ambiguous_locked')
+    expect(h.authorizations.filter((authorization) => authorization.attemptId === SECOND_ATTEMPT)).toHaveLength(1)
+    expect(mutations(h.calls)).toEqual([`POST ${PULL_PATH}/reviews`])
+    expect(h.control.leases.get(h.control.subjectOf(REPO, INDEX))).toMatchObject({
+      phase: 'ambiguous_locked',
+      attemptId: ATTEMPT
+    })
   })
 
   it('surfaces a control-plane ambiguous_locked refusal it holds no record for, without touching the provider', async () => {

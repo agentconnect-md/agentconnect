@@ -19,6 +19,8 @@ import type {
   CodeHostReviewAcquireInput,
   CodeHostReviewAcquireResult,
   CodeHostReviewAdvanceInput,
+  CodeHostReviewIdentifyInput,
+  CodeHostReviewIdentifyResult,
   CodeHostReviewIssueInput,
   CodeHostReviewLeaseRecord,
   CodeHostReviewLeaseRepo,
@@ -91,7 +93,7 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
       reconciled: outcomeReconciles(this.outcomes.get(current?.attemptId ?? '')?.state ?? null)
     })
     if (decision.kind === 'already_locked') {
-      return { outcome: 'locked', lease: current!, lock: current!.lockedReason }
+      return { outcome: 'locked', lease: current!, lock: current!.lockedReason, retained: this.retainedOf(current!) }
     }
     if (decision.kind === 'held') return { outcome: 'held', lease: current! }
     if (decision.kind === 'idempotent') {
@@ -101,7 +103,7 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     if (decision.kind === 'lock') {
       current!.phase = 'ambiguous_locked'
       current!.lockedReason = decision.lock
-      return { outcome: 'locked', lease: current!, lock: decision.lock }
+      return { outcome: 'locked', lease: current!, lock: decision.lock, retained: this.retainedOf(current!) }
     }
     const lease: CodeHostReviewLeaseRecord = {
       id: current?.id ?? this.id('lease'),
@@ -118,7 +120,8 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
       headSha: input.headSha,
       phase: 'open',
       leaseUntil: input.leaseUntil,
-      lockedReason: null
+      lockedReason: null,
+      markerSeed: input.markerSeed ?? null
     }
     this.leases.set(k, lease)
     return {
@@ -253,6 +256,40 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     this.outcomes.set(input.attemptId, { state: input.state, externalIds: input.externalIds })
     // Recording the outcome never clears ownership by itself — the ledger decides.
     return { outcome: existing?.state === input.state ? 'idempotent' : 'recorded', phase: this.releaseIfNowSafe(lease) }
+  }
+
+  async identifyLocked(input: CodeHostReviewIdentifyInput): Promise<CodeHostReviewIdentifyResult> {
+    if (!isEncodedExternalRef(input.externalRef)) return { outcome: 'mismatch' }
+    const lease = this.byAttemptSync(input.attemptId)
+    if (!lease || lease.phase !== 'ambiguous_locked') return { outcome: 'not_locked' }
+    if (lease.orgId !== input.orgId || lease.fence !== input.fence || key(lease) !== key(input.subject)) {
+      return { outcome: 'mismatch' }
+    }
+    const record = this.operations.get(input.recordId)
+    if (
+      !record ||
+      record.attemptId !== lease.attemptId ||
+      record.fence !== lease.fence ||
+      record.state !== 'ambiguous'
+    ) {
+      return { outcome: 'mismatch' }
+    }
+    const existing = this.outcomes.get(lease.attemptId!)
+    if (existing && existing.state !== 'submitted' && !unlocks(existing.state, 'submitted'))
+      return { outcome: 'mismatch' }
+    record.state = 'settled'
+    record.responseStatus = 200
+    record.responseExternalId = input.externalRef.split(':')[1] ?? null
+    this.outcomes.set(lease.attemptId!, { state: 'submitted', externalIds: [input.externalRef] })
+    return { outcome: this.releaseIfNowSafe(lease) === 'settled' ? 'released' : 'retained' }
+  }
+
+  /** The locked owner's ambiguous record, the one a later positive identification can still settle. */
+  private retainedOf(lease: CodeHostReviewLeaseRecord): CodeHostReviewOperationRecord | null {
+    const rows = [...this.operations.values()]
+      .filter((op) => op.attemptId === lease.attemptId && op.state === 'ambiguous')
+      .sort((a, b) => b.ordinal - a.ordinal)
+    return rows[0] ?? null
   }
 
   /** The same release classification the Postgres repository runs under the subject lock. */

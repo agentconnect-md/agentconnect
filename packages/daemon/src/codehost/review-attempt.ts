@@ -13,6 +13,7 @@ import {
   type CodeHostReviewRefusalReason,
   type CodeHostReviewResultReport,
   type CodeHostReviewState,
+  type CodeHostReviewUnlock,
   type HookConfigSnapshot
 } from '@agentconnect.md/protocol'
 import { reviewPolicyAllows, type CodeReviewOperation, type HookDispatchContext } from '../github/hook-coords.js'
@@ -232,8 +233,18 @@ export abstract class CodeHostReviewAttemptAdapter<
 
   /** The restart-stable signer, minted from the daemon store on first use. */
   protected markerSigner(): Promise<ReviewMarkerSigner> {
-    this.signerPromise ??= this.deps.markerKey().then((key) => new ReviewMarkerSigner(key))
+    this.signerPromise ??= this.deps.markerKey().then((key) => this.buildSigner(key))
     return this.signerPromise
+  }
+
+  /** How this provider's markers are keyed off the daemon key; one key for every attempt by default. */
+  protected buildSigner(key: Buffer): ReviewMarkerSigner {
+    return new ReviewMarkerSigner(key)
+  }
+
+  /** Per-attempt key material the CP may keep with the lease for a later lock exit; none by default. */
+  protected async markerSeed(_attemptId: string): Promise<string | undefined> {
+    return undefined
   }
 
   closeTurn(key: string, turn?: Turn): void {
@@ -263,14 +274,14 @@ export abstract class CodeHostReviewAttemptAdapter<
     attempt: Attempt
   ): Promise<CodeHostReviewOutcome | undefined>
 
-  /** A typed refusal's second chance: `retry` re-asks the authorization once. Default: none. */
+  /** A typed refusal's second chance: a returned retry re-asks once, naming the locked object it identified. Default: none. */
   protected async onRefused(
     _cp: CodeHostReviewControlPlane,
     _turn: Turn,
     _req: SubmitCodeReviewReq,
     _answer: Extract<CodeHostReviewAuthorized, { authorized: false }>
-  ): Promise<'refuse' | 'retry'> {
-    return 'refuse'
+  ): Promise<{ unlock?: CodeHostReviewUnlock } | undefined> {
+    return undefined
   }
 
   async submit(key: string, req: SubmitCodeReviewReq): Promise<CodeHostReviewOutcome> {
@@ -356,7 +367,8 @@ export abstract class CodeHostReviewAttemptAdapter<
     const facts = await this.preLeaseFacts(session, req)
 
     // §15 steps 2-3: the durable publication lease and the CP's authorization in one round trip.
-    const authorize = () =>
+    const markerSeed = await this.markerSeed(attemptId)
+    const authorize = (unlock?: CodeHostReviewUnlock) =>
       cp.authorize(
         {
           hookId: turn.hookId,
@@ -372,13 +384,16 @@ export abstract class CodeHostReviewAttemptAdapter<
           ...(turn.expectedBaseSha ? { baseSha: turn.expectedBaseSha } : {}),
           ...(facts.serviceAccountIsReviewer !== undefined
             ? { serviceAccountIsReviewer: facts.serviceAccountIsReviewer }
-            : {})
+            : {}),
+          ...(markerSeed ? { markerSeed } : {}),
+          ...(unlock ? { unlock } : {})
         },
         orgId
       )
     let authorized = await authorize()
-    if (!authorized.authorized && (await this.onRefused(cp, turn, req, authorized)) === 'retry') {
-      authorized = await authorize()
+    if (!authorized.authorized) {
+      const again = await this.onRefused(cp, turn, req, authorized)
+      if (again) authorized = await authorize(again.unlock)
     }
     if (!authorized.authorized) return await this.refused(turn, req, authorized)
     if (

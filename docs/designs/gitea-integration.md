@@ -515,7 +515,14 @@ operator looking at Gitea and seeing no submission has exactly the
 information the automated lookup had. `ambiguous_locked` therefore holds
 the lease indefinitely and suppresses the ordinary fallback, and it clears
 on one condition only — a later reconciliation pass finds the marked review
-submitted. There is no operator force-unlock, matching §15.1: Gitea exposes
+submitted. That pass runs from durable coordinates, not process state: the
+Control Plane keeps the attempt's per-attempt marker seed and its retained
+operation record with the locked lease and hands both to the next daemon
+the lock refuses, which reads the pull request, verifies the marker with
+that seed alone, and names the review when it asks again; the Control Plane
+settles the record by that object, records the owner's effect, and releases.
+A restart or a different daemon changes nothing about it. There is no
+operator force-unlock, matching §15.1: Gitea exposes
 nothing that proves an outstanding request can no longer execute. The
 honest consequence is that a request Gitea genuinely lost mid-flight leaves
 this bot's formal reviews on that pull request blocked until a marked

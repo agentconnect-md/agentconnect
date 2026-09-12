@@ -898,10 +898,15 @@ describe('a result releases the lease only through the ledger (§15.1)', () => {
         ORG
       )
     ).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
-    // A newer attempt meets the lock, however long it waits.
+    // A newer attempt meets the lock, however long it waits; without a seed left behind it gets no coordinates either.
     advance(365 * 24 * 60 * 60 * 1000)
     const contender = authorizeInput({ deliveryKey: SECOND_DELIVERY, snapshot: SECOND_SNAPSHOT })
-    expect(await service.authorize(contender, OTHER_DAEMON, ORG)).toMatchObject({ reason: 'ambiguous_locked' })
+    expect(await service.authorize(contender, OTHER_DAEMON, ORG)).toEqual({
+      authorized: false,
+      attemptId: contender.attemptId,
+      reason: 'ambiguous_locked',
+      retryable: false
+    })
 
     // The later reconciliation pass found the marked review submitted: identify, then re-report.
     const identified = await service.operate(
@@ -927,6 +932,58 @@ describe('a result releases the lease only through the ledger (§15.1)', () => {
     await expect(
       service.recordResult(resultInput(attemptId, { state: 'ambiguous_locked' }), DAEMON, ORG)
     ).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+  })
+
+  it('hands a refused daemon the lock coordinates and admits it when it names the identified object (gitea-integration.md §10.3)', async () => {
+    const { service, advance, leases } = build()
+    const seed = 'ab'.repeat(32)
+    const input = authorizeInput({ markerSeed: seed })
+    const granted = await service.authorize(input, DAEMON, ORG)
+    if (!granted.authorized) throw new Error('expected a lease')
+    const { attemptId } = input
+    const fence = granted.lease.fence
+    const permit = { kind: 'bulk_publish' as const, method: 'POST' as const, target: '/x', ordinal: 0 }
+    const { recordId } = await service.operate({ op: 'issue', attemptId, fence, ...permit }, DAEMON, ORG)
+    await service.operate({ op: 'start', attemptId, fence, recordId, startToken: randomUUID() }, DAEMON, ORG)
+    await service.operate(
+      { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'ambiguous', code: 'publish_unreconciled' } },
+      DAEMON,
+      ORG
+    )
+    await service.recordResult(resultInput(attemptId, { state: 'ambiguous_locked' }), DAEMON, ORG)
+
+    // The refusal carries exactly what the exit needs: the owner, its fence, the retained record, the head, the seed.
+    advance(10 * 60 * 1000)
+    const contender = authorizeInput({ deliveryKey: SECOND_DELIVERY, snapshot: SECOND_SNAPSHOT })
+    expect(await service.authorize(contender, OTHER_DAEMON, ORG)).toEqual({
+      authorized: false,
+      attemptId: contender.attemptId,
+      reason: 'ambiguous_locked',
+      retryable: false,
+      lock: { attemptId, fence, recordId, headSha: HEAD, markerSeed: seed }
+    })
+    // Naming the wrong record, or the wrong fence, changes nothing.
+    const object = { kind: 'review' as const, externalId: '4242' }
+    for (const unlock of [
+      { attemptId, fence, recordId: randomUUID(), externalRef: object },
+      { attemptId, fence: String(BigInt(fence) + 1n), recordId, externalRef: object }
+    ]) {
+      expect(await service.authorize({ ...contender, unlock }, OTHER_DAEMON, ORG)).toMatchObject({
+        reason: 'ambiguous_locked'
+      })
+    }
+    expect(leases.outcomes.get(attemptId)).toEqual({ state: 'ambiguous_locked', externalIds: [] })
+
+    // Another daemon found the marked review submitted: it names the object and is admitted in the same ask.
+    const admitted = await service.authorize(
+      { ...contender, unlock: { attemptId, fence, recordId, externalRef: object } },
+      OTHER_DAEMON,
+      ORG
+    )
+    expect(admitted.authorized).toBe(true)
+    expect(leases.outcomes.get(attemptId)).toEqual({ state: 'submitted', externalIds: ['review:4242'] })
+    expect(leases.operations.get(recordId)).toMatchObject({ state: 'settled', responseExternalId: '4242' })
+    expect([...leases.leases.values()][0]).toMatchObject({ attemptId: contender.attemptId, phase: 'open' })
   })
 })
 

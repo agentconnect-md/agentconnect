@@ -22,6 +22,7 @@ import {
   type CodeHostReviewAuthorized,
   type CodeHostReviewLeaseRenew,
   type CodeHostReviewLeaseRenewed,
+  type CodeHostReviewLockCoordinates,
   type CodeHostReviewOpAccepted,
   type CodeHostReviewOpRequest,
   type CodeHostReviewRefusalReason,
@@ -40,6 +41,7 @@ import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placemen
 import type {
   AgentRecord,
   AgentRepo,
+  CodeHostReviewAcquireResult,
   CodeHostReviewLeaseRepo,
   CodeHostReviewOpResult,
   CodeHostReviewSubject,
@@ -139,8 +141,28 @@ function snapshotMatches(run: HookRunRecord, snapshot: HookConfigSnapshot, daemo
 }
 
 /** A typed refusal the adapter classifies; not an error, and not a lease. */
-function refuse(attemptId: string, reason: CodeHostReviewRefusalReason, retryable: boolean): CodeHostReviewAuthorized {
-  return { authorized: false, attemptId, reason, retryable }
+function refuse(
+  attemptId: string,
+  reason: CodeHostReviewRefusalReason,
+  retryable: boolean,
+  lock?: CodeHostReviewLockCoordinates
+): CodeHostReviewAuthorized {
+  return { authorized: false, attemptId, reason, retryable, ...(lock ? { lock } : {}) }
+}
+
+/** The lock exit's durable coordinates, when the locked attempt left a seed and a retained record behind (gitea-integration.md §10.3). */
+function lockCoordinates(
+  acquired: Extract<CodeHostReviewAcquireResult, { outcome: 'locked' }>
+): CodeHostReviewLockCoordinates | undefined {
+  const { lease, retained } = acquired
+  if (!lease.attemptId || !lease.headSha || !lease.markerSeed || !retained) return undefined
+  return {
+    attemptId: lease.attemptId,
+    fence: lease.fence.toString(),
+    recordId: retained.id,
+    headSha: lease.headSha,
+    markerSeed: lease.markerSeed
+  }
 }
 
 export class CodeHostReviewBrokerService {
@@ -251,13 +273,32 @@ export class CodeHostReviewBrokerService {
     if (!publisher) return refuse(input.attemptId, 'binding_unavailable', true)
 
     const now = new Date(this.deps.clock.now())
+    const subject: CodeHostReviewSubject = {
+      provider: input.provider,
+      projectExternalId: projectId,
+      mergeRequestIid: input.mergeRequestIid,
+      serviceAccountExternalId: publisher.serviceAccountExternalId
+    }
+    // The lock's one exit (gitea-integration.md §10.3): a refused daemon found the locked attempt's marked object and names it here.
+    if (input.unlock) {
+      let externalRef: string
+      try {
+        externalRef = encodeExternalRef(input.unlock.externalRef.kind, input.unlock.externalRef.externalId)
+      } catch {
+        denied('unlock named a published object that is not a kind and a numeric id')
+      }
+      await this.deps.leases.identifyLocked({
+        subject,
+        orgId: run.orgId,
+        attemptId: input.unlock.attemptId,
+        fence: BigInt(input.unlock.fence),
+        recordId: input.unlock.recordId,
+        externalRef,
+        now
+      })
+    }
     const acquired = await this.deps.leases.acquire({
-      subject: {
-        provider: input.provider,
-        projectExternalId: projectId,
-        mergeRequestIid: input.mergeRequestIid,
-        serviceAccountExternalId: publisher.serviceAccountExternalId
-      },
+      subject,
       orgId: run.orgId,
       attemptId: input.attemptId,
       daemonId: reportingDaemonId,
@@ -268,12 +309,14 @@ export class CodeHostReviewBrokerService {
       verdict: input.requestedVerdict,
       headSha: input.headSha,
       leaseUntil: new Date(now.getTime() + CODE_HOST_REVIEW_LEASE_TTL_SEC * 1000),
-      now
+      now,
+      ...(input.markerSeed ? { markerSeed: input.markerSeed } : {})
     })
     if (acquired.outcome === 'held') return refuse(input.attemptId, 'lease_held', true)
-    // No timeout and no force unlock: recovery needs a definite outcome from the
-    // old broker or positive provider evidence, so this is never retryable.
-    if (acquired.outcome === 'locked') return refuse(input.attemptId, 'ambiguous_locked', false)
+    // Never retryable (no timeout, no force unlock); the coordinates let the refused daemon look for the one exit's evidence itself.
+    if (acquired.outcome === 'locked') {
+      return refuse(input.attemptId, 'ambiguous_locked', false, lockCoordinates(acquired))
+    }
 
     const lease = acquired.lease
     return {

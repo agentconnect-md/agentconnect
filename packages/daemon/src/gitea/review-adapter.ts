@@ -2,9 +2,9 @@
 import {
   codeHostReviewPublicEffect,
   type CodeHostReviewAuthorized,
-  type CodeHostReviewExternalRef,
   type CodeHostReviewRefusalReason,
-  type CodeHostReviewState
+  type CodeHostReviewState,
+  type CodeHostReviewUnlock
 } from '@agentconnect.md/protocol'
 import type { CodeReviewOperation, HookDispatchContext } from '../github/hook-coords.js'
 import { giteaOpensReviewGeneration } from '../messages/hook-message.js'
@@ -21,7 +21,6 @@ import {
   type CodeHostReviewOutcome,
   type CodeHostReviewTurn,
   type PreLeaseFacts,
-  type ReviewLeaseRef,
   type ReviewSession
 } from '../codehost/review-attempt.js'
 import type { CodeHostReviewControlPlane } from '../codehost/review-outbox.js'
@@ -103,14 +102,6 @@ type SubmitResult =
   | { kind: 'ambiguous_locked' }
   | { kind: 'self_review_forbidden' }
 
-/** An attempt the lock retained, kept so a later reconciliation pass can clear it (§10.3). */
-interface LockedAttempt {
-  ref: ReviewLeaseRef<GiteaReviewTurn>
-  recordId: string
-  event: CodeReviewEvent
-  verdict: GiteaAttempt['req']['verdict']
-}
-
 function reviewRows(parsed: unknown): ReviewRow[] {
   if (!Array.isArray(parsed)) return []
   return parsed.flatMap((row) => {
@@ -135,15 +126,10 @@ function pullHead(parsed: unknown): string | undefined {
   return text(record(record(parsed).head).sha)
 }
 
-function subjectKey(turn: GiteaReviewTurn): string {
-  return `${turn.repoId}#${turn.subjectNumber}`
-}
-
 export class GiteaReviewAdapter extends CodeHostReviewAttemptAdapter<GiteaReviewTurn, GiteaAttempt, GiteaFacts> {
   readonly provider = 'gitea' as const
   protected readonly hostLabel = 'Gitea'
   protected readonly subjectLabel = 'pull-request'
-  private readonly locked = new Map<string, LockedAttempt>()
 
   constructor(deps: GiteaReviewAdapterDeps) {
     super(deps)
@@ -185,14 +171,13 @@ export class GiteaReviewAdapter extends CodeHostReviewAttemptAdapter<GiteaReview
     return turn
   }
 
-  /** A replayed delivery whose attempt the lock retained joins the registry and gets one reconciliation pass now. */
-  override async recoverTurn(turn: GiteaReviewTurn): Promise<void> {
-    await super.recoverTurn(turn)
-    const lock = this.lockedAttemptOf(turn)
-    if (!lock) return
-    this.locked.set(subjectKey(turn), lock)
-    const cp = this.deps.cp()
-    if (cp?.supportsReview() && (await this.reconcileLocked(cp, lock))) this.locked.delete(subjectKey(turn))
+  /** Markers are keyed per attempt so the seed of one attempt can travel to the daemon a lock later refuses (§10.3). */
+  protected override buildSigner(key: Buffer): ReviewMarkerSigner {
+    return ReviewMarkerSigner.derived(key)
+  }
+
+  protected override async markerSeed(attemptId: string): Promise<string> {
+    return ReviewMarkerSigner.seed(await this.deps.markerKey(), attemptId).toString('hex')
   }
 
   protected outcomeSentence(state: CodeHostReviewState): string {
@@ -218,18 +203,32 @@ export class GiteaReviewAdapter extends CodeHostReviewAttemptAdapter<GiteaReview
     return base
   }
 
-  /** The lock's one exit: a refused attempt on the same pull request runs the reconciliation pass, then asks again. */
+  /** The lock's one exit (§10.3): from the CP's durable coordinates, look for the locked attempt's marked review, then ask again naming it. */
   protected override async onRefused(
-    cp: CodeHostReviewControlPlane,
+    _cp: CodeHostReviewControlPlane,
     turn: GiteaReviewTurn,
     _req: SubmitCodeReviewReq,
     answer: Extract<CodeHostReviewAuthorized, { authorized: false }>
-  ): Promise<'refuse' | 'retry'> {
-    if (answer.reason !== 'ambiguous_locked') return 'refuse'
-    const lock = this.locked.get(subjectKey(turn))
-    if (!lock || !(await this.reconcileLocked(cp, lock))) return 'refuse'
-    this.locked.delete(subjectKey(turn))
-    return 'retry'
+  ): Promise<{ unlock: CodeHostReviewUnlock } | undefined> {
+    const lock = answer.reason === 'ambiguous_locked' ? answer.lock : undefined
+    if (!lock) return undefined
+    try {
+      const session: ReviewSession<GiteaReviewTurn> = { turn, token: await this.deps.token(turn) }
+      const signer = ReviewMarkerSigner.forSeed(lock.attemptId, Buffer.from(lock.markerSeed, 'hex'))
+      const found = await this.findSubmittedReview(session, lock.attemptId, lock.headSha, signer)
+      if (!found) return undefined
+      return {
+        unlock: {
+          attemptId: lock.attemptId,
+          fence: lock.fence,
+          recordId: lock.recordId,
+          externalRef: { kind: 'review', externalId: found.id }
+        }
+      }
+    } catch (err) {
+      this.warn(`lock reconciliation deferred (${err instanceof Error ? err.message : err})`)
+      return undefined
+    }
   }
 
   protected async publish(cp: CodeHostReviewControlPlane, attempt: GiteaAttempt): Promise<GiteaReviewOutcome> {
@@ -324,10 +323,7 @@ export class GiteaReviewAdapter extends CodeHostReviewAttemptAdapter<GiteaReview
         await this.settleAndClear(cp, attempt, op.recordId, { kind: 'ambiguous', code: 'publish_unreconciled' }, true)
       }
     }
-    if (!found) {
-      this.rememberLock(attempt, outstanding.at(-1)!.recordId)
-      return await this.settle(cp, attempt, 'ambiguous_locked')
-    }
+    if (!found) return await this.settle(cp, attempt, 'ambiguous_locked')
     attempt.externalIds.push({ kind: 'review', externalId: found.id })
     return await this.settleSubmit(cp, attempt, { kind: 'submitted', review: found })
   }
@@ -427,7 +423,6 @@ export class GiteaReviewAdapter extends CodeHostReviewAttemptAdapter<GiteaReview
       await this.sleep(this.deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS)
     }
     // A pending review carrying this attempt's inline markers proves staging, not submission: still locked.
-    this.rememberLock(attempt, outcome.recordId)
     return { kind: 'ambiguous_locked' }
   }
 
@@ -435,9 +430,10 @@ export class GiteaReviewAdapter extends CodeHostReviewAttemptAdapter<GiteaReview
   private async findSubmittedReview(
     session: ReviewSession<GiteaReviewTurn>,
     attemptId: string,
-    headSha: string
+    headSha: string,
+    by?: ReviewMarkerSigner
   ): Promise<SubmittedReview | undefined> {
-    const signer = await this.markerSigner()
+    const signer = by ?? (await this.markerSigner())
     for (const review of await this.listReviews(session)) {
       if (review.state === undefined || review.state === 'PENDING' || review.state === 'REQUEST_REVIEW') continue
       const marker = signer.read(review.body, headSha)
@@ -462,78 +458,6 @@ export class GiteaReviewAdapter extends CodeHostReviewAttemptAdapter<GiteaReview
       if (!Array.isArray(parsed) || parsed.length < REVIEW_PAGE_SIZE) break
     }
     return rows
-  }
-
-  /** The retained ambiguous submission, kept so a later pass on this pull request can clear the lock. */
-  private rememberLock(attempt: GiteaAttempt, recordId: string): void {
-    this.locked.set(subjectKey(attempt.turn), {
-      ref: {
-        turn: attempt.turn,
-        attemptId: attempt.attemptId,
-        fence: attempt.fence,
-        ...(attempt.orgId ? { orgId: attempt.orgId } : {})
-      },
-      recordId,
-      event: attempt.req.event,
-      verdict: attempt.req.verdict
-    })
-  }
-
-  /** The lock a replayed delivery's durable attempt still holds, if its submission record was retained. */
-  private lockedAttemptOf(turn: GiteaReviewTurn): LockedAttempt | undefined {
-    const attemptRecord = turn.hook.codeReview
-    if (attemptRecord?.state !== 'ambiguous_locked' || !attemptRecord.fence) return undefined
-    const submission = attemptRecord.operations?.find((op) => op.kind === 'bulk_publish' && op.phase === 'started')
-    if (!submission) return undefined
-    const orgId = this.deps.orgForAgent(turn.agentId)
-    return {
-      ref: { turn, attemptId: attemptRecord.attemptId, fence: attemptRecord.fence, ...(orgId ? { orgId } : {}) },
-      recordId: submission.recordId,
-      event: attemptRecord.event,
-      verdict: attemptRecord.verdict
-    }
-  }
-
-  /** The later pass (§10.3): only the marked review found submitted clears a lock — the owner names its object and re-reports submitted. */
-  private async reconcileLocked(cp: CodeHostReviewControlPlane, lock: LockedAttempt): Promise<boolean> {
-    const { ref } = lock
-    try {
-      const session: ReviewSession<GiteaReviewTurn> = { turn: ref.turn, token: await this.deps.token(ref.turn) }
-      const found = await this.findSubmittedReview(session, ref.attemptId, ref.turn.expectedHeadSha)
-      if (!found) return false
-      await cp.operate(
-        {
-          op: 'settle',
-          attemptId: ref.attemptId,
-          fence: ref.fence,
-          recordId: lock.recordId,
-          outcome: { kind: 'deterministic', status: 200, externalId: found.id }
-        },
-        ref.orgId
-      )
-      const externalIds: CodeHostReviewExternalRef[] = [{ kind: 'review', externalId: found.id }]
-      await cp.report(
-        this.resultFrame(ref.turn, ref.attemptId, lock.event, lock.verdict, {
-          headSha: ref.turn.expectedHeadSha,
-          state: 'submitted',
-          externalIds
-        }),
-        ref.orgId
-      )
-      // The durable row follows best-effort: the control plane already holds the definite outcome.
-      const attemptRecord = ref.turn.hook.codeReview
-      if (attemptRecord?.attemptId === ref.attemptId) {
-        attemptRecord.state = 'submitted'
-        attemptRecord.externalIds = externalIds
-        attemptRecord.operations = attemptRecord.operations?.filter((op) => op.recordId !== lock.recordId)
-        delete attemptRecord.resultOwed
-        await ref.turn.persist().catch(() => undefined)
-      }
-      return true
-    } catch (err) {
-      this.warn(`lock reconciliation deferred (${err instanceof Error ? err.message : err})`)
-      return false
-    }
   }
 
   /** Single-line inline comments (§10.3): `RIGHT` → `new_position`, `LEFT` → `old_position`; a range collapses to its end line and names its start first. */

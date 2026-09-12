@@ -2017,6 +2017,9 @@ model CodeHostReviewLease {
   // Short normalized lock category for operator diagnosis. Never provider text.
   lockedReason             String?
   lockedAt                 DateTime? @db.Timestamptz(6)
+  // The owner attempt's per-attempt marker key (hex), so the daemon a lock later refuses can
+  // verify that attempt's markers itself (gitea-integration.md §10.3). Key material, never text.
+  markerSeed               String?
   createdAt                DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt                DateTime  @updatedAt @db.Timestamptz(6)
 

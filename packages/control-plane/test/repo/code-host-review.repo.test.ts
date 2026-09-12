@@ -584,6 +584,67 @@ describe('a result releases the lease only through the ledger (§15.1)', () => {
     )
   })
 
+  it('keeps the owner attempt’s marker seed with the lease', async () => {
+    const s = subject()
+    const seed = 'ab'.repeat(32)
+    const acquired = await repo().acquire(acquire(s, { markerSeed: seed }))
+    expect(acquired.outcome === 'acquired' && acquired.lease.markerSeed).toBe(seed)
+    expect((await repo().bySubject(s))?.markerSeed).toBe(seed)
+  })
+
+  it('lets any daemon of the organization bring the lock exit by naming the retained record and its object (gitea-integration.md §10.3)', async () => {
+    const { s, base, attemptId, recordId } = await withPermit()
+    await repo().startOperation({ ...base, recordId, startToken: randomUUID() })
+    await repo().settleOperation({ ...base, recordId, outcome: { kind: 'ambiguous', code: 'publish_unreconciled' } })
+    await repo().recordOutcome(outcome(s, attemptId, { state: 'ambiguous_locked' }))
+    const later = new Date('2027-09-06T00:00:00.000Z')
+    const locked = await repo().acquire(acquire(s, { daemonId: DAEMON_B, now: later }))
+    expect(locked.outcome).toBe('locked')
+    if (locked.outcome !== 'locked') return
+    // The refusal names the retained record; the seed rides along only when the owner left one.
+    expect(locked.retained?.id).toBe(recordId)
+    expect(locked.lease.markerSeed).toBeNull()
+
+    const identify = {
+      subject: s,
+      orgId: DEFAULT_ORG_ID,
+      attemptId,
+      fence: base.fence,
+      recordId,
+      externalRef: 'review:4242',
+      now: later
+    }
+    // The wrong subject, fence, record, or encoding changes nothing.
+    expect(await repo().identifyLocked({ ...identify, subject: { ...s, mergeRequestIid: 43 } })).toEqual({
+      outcome: 'mismatch'
+    })
+    expect(await repo().identifyLocked({ ...identify, fence: base.fence + 1n })).toEqual({ outcome: 'mismatch' })
+    expect(await repo().identifyLocked({ ...identify, recordId: randomUUID() })).toEqual({ outcome: 'mismatch' })
+    expect(await repo().identifyLocked({ ...identify, externalRef: 'review:not-a-number' })).toEqual({
+      outcome: 'mismatch'
+    })
+    expect(
+      (await prisma.codeHostReviewLease.findFirstOrThrow({ where: { projectExternalId: s.projectExternalId } })).phase
+    ).toBe('ambiguous_locked')
+
+    expect(await repo().identifyLocked(identify)).toEqual({ outcome: 'released' })
+    expect(await prisma.codeHostReviewOperation.findUniqueOrThrow({ where: { id: recordId } })).toMatchObject({
+      state: 'settled',
+      responseStatus: 200,
+      responseExternalId: '4242'
+    })
+    expect(await prisma.codeHostReviewAttemptOutcome.findUniqueOrThrow({ where: { attemptId } })).toMatchObject({
+      state: 'submitted',
+      externalIds: ['review:4242']
+    })
+    expect(
+      await prisma.codeHostReviewLease.findFirstOrThrow({ where: { projectExternalId: s.projectExternalId } })
+    ).toMatchObject({ phase: 'settled', attemptId: null })
+    // Released, the subject is no longer locked: a second identification finds nothing to exit, and the next attempt gets in.
+    expect(await repo().identifyLocked(identify)).toEqual({ outcome: 'not_locked' })
+    expect((await repo().acquire(acquire(s, { daemonId: DAEMON_B, now: later }))).outcome).toBe('acquired')
+  })
+
   it('an attempt that issued no permit at all releases immediately', async () => {
     const s = subject()
     const input = acquire(s)
