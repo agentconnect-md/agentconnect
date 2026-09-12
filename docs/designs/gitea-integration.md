@@ -773,8 +773,10 @@ Each step is one pull request, merged in order.
   disconnect, the repository picker, the five binding states with their repair
   reasons, repair, webhook-secret rotation and unbind — the `gitea` hook kind
   with its two subject families and the commit-status disclosure, the workspace
-  and additional-repository pickers, the agent page's repository rows, the
-  operator guide (`docs/self-hosted-gitea.md`), and the docs index.
+  and additional-repository pickers, and the agent page's repository rows.
+  User- and operator-facing setup lives on the documentation site:
+  https://docs.agentconnect.md/docs/gitea and
+  https://docs.agentconnect.md/docs/deployment-and-configuration#gitea.
 
 ### Probe results (2026-09-12, gitea.com, Gitea 1.27 development build)
 

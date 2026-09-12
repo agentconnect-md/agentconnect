@@ -2191,7 +2191,8 @@ IDs, tokens, and signing secrets.
 > both. GitLab Dedicated, plain HTTP, mTLS, SSH remotes, and instances below
 > the floor stay outside the contract. Platform assumptions verified
 > 2026-08-23. Operator-facing setup is
-> [`docs/self-managed-gitlab.md`](../self-managed-gitlab.md).
+> https://docs.agentconnect.md/docs/deployment-and-configuration#gitlab, and
+> the user-facing page is https://docs.agentconnect.md/docs/gitlab.
 
 A self-managed instance is the same product against a different origin. The
 identity model, credential purposes, webhook verification, event mapping,
