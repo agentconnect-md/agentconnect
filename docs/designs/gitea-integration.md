@@ -758,8 +758,11 @@ Each step is one pull request, merged in order.
   entry, helper path rules, session-key recompute, transport-scope pin, the ack
   reaction, maintenance cleanup, the final poster and effect broker, and the §8
   review-delivery correlation fetched under the turn's lease before the prompt.
-- **G5 — Reviews and run projection.** The Gitea review adapter, the commit
-  status writer, the Console rerun binding.
+- **G5 — Reviews and run projection.** _Landed (#2058)._ The Gitea review adapter
+  over the code-host seam's shared attempt engine, with `ambiguous_locked`
+  cleared only by a later reconciliation finding the marked review submitted;
+  the Control-Plane-written commit status, one per hook, repository, pull
+  request, and head; and the rerun route's Gitea arm.
 - **G6 — Console and docs.** _Landed (#2055)._ The Gitea card — connect, replace token,
   disconnect, the repository picker, the five binding states with their repair
   reasons, repair, webhook-secret rotation and unbind — the `gitea` hook kind
