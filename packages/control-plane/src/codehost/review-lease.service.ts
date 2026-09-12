@@ -14,11 +14,15 @@
  * operation makes serialization a correctness boundary.
  */
 import {
+  codeHostHookMetadataOf,
+  codeHostHookRevisionOf,
   isCodeHostProvider,
+  type CodeHostProvider,
   type CodeHostReviewAuthorize,
   type CodeHostReviewAuthorized,
   type CodeHostReviewLeaseRenew,
   type CodeHostReviewLeaseRenewed,
+  type CodeHostReviewLockCoordinates,
   type CodeHostReviewOpAccepted,
   type CodeHostReviewOpRequest,
   type CodeHostReviewRefusalReason,
@@ -37,6 +41,7 @@ import { PLACEMENT_ONLY, type PlacementResolver } from '../orchestrator/placemen
 import type {
   AgentRecord,
   AgentRepo,
+  CodeHostReviewAcquireResult,
   CodeHostReviewLeaseRepo,
   CodeHostReviewOpResult,
   CodeHostReviewSubject,
@@ -100,6 +105,13 @@ export interface CodeHostReviewBrokerDeps {
 
 const POLICY_RANK = { off: 0, comment: 1, request_changes: 2, full: 3 } as const
 
+/** REQUEST_CHANGES needs the publisher's reviewer record on GitLab (§15 step 7), not on Gitea (gitea-integration.md §2). */
+const REQUEST_CHANGES_NEEDS_REVIEWER: Readonly<Record<CodeHostProvider, boolean>> = {
+  github: false,
+  gitlab: true,
+  gitea: false
+}
+
 const EVENT_RANK: Record<HookReviewEvent, number> = {
   COMMENT: POLICY_RANK.comment,
   REQUEST_CHANGES: POLICY_RANK.request_changes,
@@ -129,8 +141,28 @@ function snapshotMatches(run: HookRunRecord, snapshot: HookConfigSnapshot, daemo
 }
 
 /** A typed refusal the adapter classifies; not an error, and not a lease. */
-function refuse(attemptId: string, reason: CodeHostReviewRefusalReason, retryable: boolean): CodeHostReviewAuthorized {
-  return { authorized: false, attemptId, reason, retryable }
+function refuse(
+  attemptId: string,
+  reason: CodeHostReviewRefusalReason,
+  retryable: boolean,
+  lock?: CodeHostReviewLockCoordinates
+): CodeHostReviewAuthorized {
+  return { authorized: false, attemptId, reason, retryable, ...(lock ? { lock } : {}) }
+}
+
+/** The lock exit's durable coordinates, when the locked attempt left a seed and a retained record behind (gitea-integration.md §10.3). */
+function lockCoordinates(
+  acquired: Extract<CodeHostReviewAcquireResult, { outcome: 'locked' }>
+): CodeHostReviewLockCoordinates | undefined {
+  const { lease, retained } = acquired
+  if (!lease.attemptId || !lease.headSha || !lease.markerSeed || !retained) return undefined
+  return {
+    attemptId: lease.attemptId,
+    fence: lease.fence.toString(),
+    recordId: retained.id,
+    headSha: lease.headSha,
+    markerSeed: lease.markerSeed
+  }
 }
 
 export class CodeHostReviewBrokerService {
@@ -140,17 +172,10 @@ export class CodeHostReviewBrokerService {
     return (this.deps.placement ?? PLACEMENT_ONLY).mayAct(agent, daemonId)
   }
 
-  /**
-   * Persist the provider-neutral start barrier before an accepted GitLab hook turn is prompted
-   * (§17.2). It attaches the started head and turn time to the accepted run, which is what gives
-   * every later review authorization a head to fence against and the §16 ledger its `running` edge.
-   *
-   * The GitHub review broker is deliberately not involved: its fence is repository/pull-shaped and
-   * its claimed-offline recovery belongs to GitHub webhook redelivery, which GitLab has no claim on.
-   */
+  /** The provider-neutral start barrier (§17.2): records the started head and turn time later review authorizations fence on. */
   async start(input: HookStart, reportingDaemonId: DaemonId, reportingOrgId: string): Promise<void> {
-    const gitlab = input.gitlab
-    if (!gitlab) denied('this start barrier carries provider-neutral metadata only')
+    const member = codeHostHookMetadataOf(input)
+    if (!member || member.provider === 'github') denied('this start barrier carries provider-neutral metadata only')
     const hookId = HookId(input.hookId)
     const run = await this.deps.hook.getRun(hookId, input.deliveryKey)
     if (
@@ -163,15 +188,15 @@ export class CodeHostReviewBrokerService {
       denied('start dispatch fence does not match the accepted hook run')
     }
     if (run.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
-    const projectId = BigInt(gitlab.projectId)
+    const projectId = BigInt(member.repo.externalId)
     const hook = await this.deps.hook.getUnscoped(hookId)
     const agent = await this.deps.agent.getUnscoped(run.agentId)
-    if (!this.hookAuthorizes(hook, run, 'gitlab', projectId)) denied('hook is disabled or its project changed')
+    if (!this.hookAuthorizes(hook, run, member.provider, projectId)) denied('hook is disabled or its project changed')
     if (!agent || agent.status !== 'active' || !(await this.serves(agent, reportingDaemonId))) {
       denied('agent is no longer active on the accepted dispatch daemon')
     }
-    // Only a merge request has a revision; an issue or push subject records the turn time alone.
-    const head = gitlab.target.kind === 'merge_request' ? gitlab.target : undefined
+    // Only a pull/merge request has a revision; an issue or push subject records the turn time alone.
+    const head = codeHostHookRevisionOf(member)
     const accepted = await this.deps.hook.recordStart(hookId, reportingDaemonId, {
       deliveryKey: input.deliveryKey,
       agentId: AgentId(input.agentId),
@@ -230,9 +255,12 @@ export class CodeHostReviewBrokerService {
     if (!this.eventAllowed(run, hook!, input.requestedEvent)) {
       return refuse(input.attemptId, 'policy_denied', false)
     }
-    // AgentConnect never assigns itself as a reviewer, so a request-changes attempt
-    // fails before any draft exists rather than after (§15 step 7).
-    if (input.requestedEvent === 'REQUEST_CHANGES' && input.serviceAccountIsReviewer !== true) {
+    // Where the provider needs a reviewer record, a request-changes attempt fails before any draft exists (§15 step 7).
+    if (
+      input.requestedEvent === 'REQUEST_CHANGES' &&
+      REQUEST_CHANGES_NEEDS_REVIEWER[input.provider] &&
+      input.serviceAccountIsReviewer !== true
+    ) {
       return refuse(input.attemptId, 'reviewer_assignment_required', false)
     }
     // A run the start barrier crossed always carries the head it was started on, so this binds for
@@ -245,13 +273,32 @@ export class CodeHostReviewBrokerService {
     if (!publisher) return refuse(input.attemptId, 'binding_unavailable', true)
 
     const now = new Date(this.deps.clock.now())
+    const subject: CodeHostReviewSubject = {
+      provider: input.provider,
+      projectExternalId: projectId,
+      mergeRequestIid: input.mergeRequestIid,
+      serviceAccountExternalId: publisher.serviceAccountExternalId
+    }
+    // The lock's one exit (gitea-integration.md §10.3): a refused daemon found the locked attempt's marked object and names it here.
+    if (input.unlock) {
+      let externalRef: string
+      try {
+        externalRef = encodeExternalRef(input.unlock.externalRef.kind, input.unlock.externalRef.externalId)
+      } catch {
+        denied('unlock named a published object that is not a kind and a numeric id')
+      }
+      await this.deps.leases.identifyLocked({
+        subject,
+        orgId: run.orgId,
+        attemptId: input.unlock.attemptId,
+        fence: BigInt(input.unlock.fence),
+        recordId: input.unlock.recordId,
+        externalRef,
+        now
+      })
+    }
     const acquired = await this.deps.leases.acquire({
-      subject: {
-        provider: input.provider,
-        projectExternalId: projectId,
-        mergeRequestIid: input.mergeRequestIid,
-        serviceAccountExternalId: publisher.serviceAccountExternalId
-      },
+      subject,
       orgId: run.orgId,
       attemptId: input.attemptId,
       daemonId: reportingDaemonId,
@@ -262,12 +309,14 @@ export class CodeHostReviewBrokerService {
       verdict: input.requestedVerdict,
       headSha: input.headSha,
       leaseUntil: new Date(now.getTime() + CODE_HOST_REVIEW_LEASE_TTL_SEC * 1000),
-      now
+      now,
+      ...(input.markerSeed ? { markerSeed: input.markerSeed } : {})
     })
     if (acquired.outcome === 'held') return refuse(input.attemptId, 'lease_held', true)
-    // No timeout and no force unlock: recovery needs a definite outcome from the
-    // old broker or positive provider evidence, so this is never retryable.
-    if (acquired.outcome === 'locked') return refuse(input.attemptId, 'ambiguous_locked', false)
+    // Never retryable (no timeout, no force unlock); the coordinates let the refused daemon look for the one exit's evidence itself.
+    if (acquired.outcome === 'locked') {
+      return refuse(input.attemptId, 'ambiguous_locked', false, lockCoordinates(acquired))
+    }
 
     const lease = acquired.lease
     return {

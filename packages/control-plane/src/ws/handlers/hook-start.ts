@@ -13,33 +13,35 @@ export const handleHookStart: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'organization is required', false)
     return
   }
-  // The provider member routes the barrier (§17.2): the GitLab arm records the started head and opens the §16 `running` edge, with no GitHub review broker in it.
+  // The provider member routes the barrier (§17.2): each arm records the started head and opens its run projection's running edge.
   const host = codeHostHookMetadataOf(frame.payload)
-  if (host?.provider === 'gitlab') {
+  if (host && host.provider !== 'github') {
     if (!deps.codeHostReviewBroker) {
       conn.sendError(frame.id, 'SCOPE_DENIED', 'code-host reviews are not enabled on this control plane', false)
       return
     }
     const hook = await deps.hook.get(orgId, HookId(frame.payload.hookId))
     if (!hook || hook.kind !== host.provider) {
-      conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not a gitlab hook in this organization', false)
+      conn.sendError(frame.id, 'SCOPE_DENIED', `hook is not a ${host.provider} hook in this organization`, false)
       return
     }
     try {
       await deps.codeHostReviewBroker.start(frame.payload, DaemonId(conn.daemonId), orgId)
       // The OK is the daemon's prompt barrier, so the durable start and its projection generation
       // both converge before it is sent; a retry is safe because both writes are idempotent.
-      await deps.codeHostNoteProjection?.afterStart({
+      const edge = {
         hookId: frame.payload.hookId,
         agentId: frame.payload.agentId,
         deliveryKey: frame.payload.deliveryKey,
         orgId,
-        state: 'running',
+        state: 'running' as const,
         ...(frame.payload.sessionId ? { sessionId: frame.payload.sessionId } : {}),
-        gitlab: host.metadata,
         snapshot: frame.payload,
         at: new Date(deps.clock.now())
-      })
+      }
+      if (host.provider === 'gitlab') await deps.codeHostNoteProjection?.afterStart({ ...edge, gitlab: host.metadata })
+      else if (host.provider === 'gitea')
+        await deps.giteaStatusProjection?.afterStart({ ...edge, gitea: host.metadata })
       conn.replyTo(frame, 'hook/start/ok', { accepted: true })
     } catch (error) {
       if (error instanceof CodeHostReviewBrokerError) {

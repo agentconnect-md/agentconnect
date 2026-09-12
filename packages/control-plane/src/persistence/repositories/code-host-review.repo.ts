@@ -28,6 +28,7 @@ import {
   classifyAcquisition,
   isEncodedExternalRef,
   outcomeReconciles,
+  unlocks,
   phaseAfterIssue,
   classifyRelease,
   phaseAfterSettle,
@@ -45,6 +46,8 @@ import type {
   CodeHostReviewAcquireInput,
   CodeHostReviewAcquireResult,
   CodeHostReviewAdvanceInput,
+  CodeHostReviewIdentifyInput,
+  CodeHostReviewIdentifyResult,
   CodeHostReviewIssueInput,
   CodeHostReviewLeaseRecord,
   CodeHostReviewLeaseRepo,
@@ -87,8 +90,27 @@ function toLease(r: CodeHostReviewLease): CodeHostReviewLeaseRecord {
     headSha: r.headSha,
     phase: toPhase(r.phase),
     leaseUntil: r.leaseUntil,
-    lockedReason: (r.lockedReason as CodeHostReviewLockReason | null) ?? null
+    lockedReason: (r.lockedReason as CodeHostReviewLockReason | null) ?? null,
+    markerSeed: r.markerSeed
   }
+}
+
+function subjectOf(r: CodeHostReviewLease): CodeHostReviewSubject {
+  return {
+    provider: r.provider,
+    projectExternalId: r.projectExternalId,
+    mergeRequestIid: r.mergeRequestIid,
+    serviceAccountExternalId: r.serviceAccountExternalId
+  }
+}
+
+function sameSubject(a: CodeHostReviewSubject, b: CodeHostReviewSubject): boolean {
+  return (
+    a.provider === b.provider &&
+    a.projectExternalId === b.projectExternalId &&
+    a.mergeRequestIid === b.mergeRequestIid &&
+    a.serviceAccountExternalId === b.serviceAccountExternalId
+  )
 }
 
 function toOperation(r: CodeHostReviewOperation): CodeHostReviewOperationRecord {
@@ -166,7 +188,8 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
       })
 
       if (decision.kind === 'already_locked') {
-        return { outcome: 'locked', lease: toLease(current!), lock: toLease(current!).lockedReason }
+        const lease = toLease(current!)
+        return { outcome: 'locked', lease, lock: lease.lockedReason, retained: await this.retainedRecord(tx, current!) }
       }
       if (decision.kind === 'held') return { outcome: 'held', lease: toLease(current!) }
       if (decision.kind === 'idempotent') {
@@ -182,7 +205,12 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
           where: { id: current!.id },
           data: { phase: 'ambiguous_locked', lockedReason: decision.lock, lockedAt: input.now }
         })
-        return { outcome: 'locked', lease: toLease(locked), lock: decision.lock }
+        return {
+          outcome: 'locked',
+          lease: toLease(locked),
+          lock: decision.lock,
+          retained: await this.retainedRecord(tx, locked)
+        }
       }
 
       const owner = {
@@ -198,7 +226,8 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
         phase: 'open',
         leaseUntil: input.leaseUntil,
         lockedReason: null,
-        lockedAt: null
+        lockedAt: null,
+        markerSeed: input.markerSeed ?? null
       }
       const lease = current
         ? await tx.codeHostReviewLease.update({
@@ -317,37 +346,43 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
   ): Promise<CodeHostReviewOpResult> {
     const replay = await this.replayTerminalRecord(input, (record) => settleTransition(record, input.outcome))
     if (replay) return replay
-    return this.withOwnedLease(input, async (tx, lease) => {
-      const record = await this.ownedRecord(tx, input)
-      if (!record) return { failure: 'no_record' }
-      const transition = settleTransition(facts(record), input.outcome)
-      if (!transition.ok) return { failure: 'transition', reason: transition.reason }
-      if (!transition.idempotent) {
-        const outcome = input.outcome
-        await tx.codeHostReviewOperation.update({
-          where: { id: record.id },
-          data: {
-            state: transition.next,
-            ...(outcome.kind === 'deterministic'
-              ? {
-                  settledAt: input.now,
-                  responseStatus: outcome.status,
-                  responseExternalId: outcome.externalId ?? null,
-                  resultCode: outcome.code ?? null
-                }
-              : { ambiguousAt: record.ambiguousAt ?? input.now, resultCode: outcome.code })
-          }
-        })
-      }
-      const settled = phaseAfterSettle(toPhase(lease.phase), toOperation(record).kind)
-      if (settled !== toPhase(lease.phase)) {
-        await tx.codeHostReviewLease.update({ where: { id: lease.id }, data: { phase: settled } })
-      }
-      // Settling the last outstanding record is what lets an already-reported outcome release.
-      const phase = await this.releaseIfNowSafe(tx, lease.id, settled, input.now)
-      const after = await tx.codeHostReviewOperation.findUniqueOrThrow({ where: { id: record.id } })
-      return { outcome: 'ok', record: toOperation(after), phase }
-    })
+    // Naming the provider object is §15.1's fourth condition, so it alone may reach a locked lease.
+    const identifies = input.outcome.kind === 'deterministic' && input.outcome.externalId !== undefined
+    return this.withOwnedLease(
+      input,
+      async (tx, lease) => {
+        const record = await this.ownedRecord(tx, input)
+        if (!record) return { failure: 'no_record' }
+        const transition = settleTransition(facts(record), input.outcome)
+        if (!transition.ok) return { failure: 'transition', reason: transition.reason }
+        if (!transition.idempotent) {
+          const outcome = input.outcome
+          await tx.codeHostReviewOperation.update({
+            where: { id: record.id },
+            data: {
+              state: transition.next,
+              ...(outcome.kind === 'deterministic'
+                ? {
+                    settledAt: input.now,
+                    responseStatus: outcome.status,
+                    responseExternalId: outcome.externalId ?? null,
+                    resultCode: outcome.code ?? null
+                  }
+                : { ambiguousAt: record.ambiguousAt ?? input.now, resultCode: outcome.code })
+            }
+          })
+        }
+        const settled = phaseAfterSettle(toPhase(lease.phase), toOperation(record).kind)
+        if (settled !== toPhase(lease.phase)) {
+          await tx.codeHostReviewLease.update({ where: { id: lease.id }, data: { phase: settled } })
+        }
+        // Settling the last outstanding record is what lets an already-reported outcome release.
+        const phase = await this.releaseIfNowSafe(tx, lease.id, settled, input.now)
+        const after = await tx.codeHostReviewOperation.findUniqueOrThrow({ where: { id: record.id } })
+        return { outcome: 'ok', record: toOperation(after), phase }
+      },
+      identifies
+    )
   }
 
   async returnOperationUnused(input: CodeHostReviewAdvanceInput): Promise<CodeHostReviewOpResult> {
@@ -407,7 +442,10 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
         return { outcome: 'conflict' }
       }
       const existing = await tx.codeHostReviewAttemptOutcome.findUnique({ where: { attemptId: input.attemptId } })
-      if (existing && existing.state !== input.state) return { outcome: 'conflict' }
+      // A recorded outcome moves once, and only from proving nothing to proving the effect: the lock's exit.
+      if (existing && existing.state !== input.state && !unlocks(existing.state as CodeHostReviewState, input.state)) {
+        return { outcome: 'conflict' }
+      }
       const outcomeFacts = {
         orgId: lease.orgId,
         hookId: input.hookId,
@@ -429,7 +467,7 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
       // Recording the outcome does NOT by itself clear ownership: the release runs the same
       // classification an acquisition would, so an outstanding record keeps the attempt owned.
       const phase = await this.releaseIfNowSafe(tx, lease.id, toPhase(lease.phase), input.now)
-      return { outcome: existing ? 'idempotent' : 'recorded', phase }
+      return { outcome: existing?.state === input.state ? 'idempotent' : 'recorded', phase }
     })
   }
 
@@ -567,10 +605,88 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     }
   }
 
-  /** Every ledger op runs under the subject lock with the owner and fence re-checked. */
+  /** The lock's one exit (gitea-integration.md §10.3): any daemon of the org that found the locked attempt's object may name it; the subject lock and the record's own state are the fence. */
+  async identifyLocked(input: CodeHostReviewIdentifyInput): Promise<CodeHostReviewIdentifyResult> {
+    if (!isEncodedExternalRef(input.externalRef)) return { outcome: 'mismatch' }
+    const owner = await this.prisma.codeHostReviewLease.findUnique({ where: { attemptId: input.attemptId } })
+    if (!owner) return { outcome: 'not_locked' }
+    return this.prisma.$transaction(async (tx) => {
+      await lockCodeHostReviewSubject(tx, subjectOf(owner))
+      const lease = await tx.codeHostReviewLease.findUnique({ where: { id: owner.id } })
+      if (!lease || lease.attemptId !== input.attemptId || toPhase(lease.phase) !== 'ambiguous_locked') {
+        return { outcome: 'not_locked' }
+      }
+      if (lease.orgId !== input.orgId || lease.fence !== input.fence || !sameSubject(subjectOf(lease), input.subject)) {
+        return { outcome: 'mismatch' }
+      }
+      if (!lease.hookId || !lease.deliveryKey || !lease.event || !lease.verdict || !lease.headSha) {
+        return { outcome: 'mismatch' }
+      }
+      const record = await tx.codeHostReviewOperation.findUnique({ where: { id: input.recordId } })
+      if (
+        !record ||
+        record.attemptId !== lease.attemptId ||
+        record.fence !== lease.fence ||
+        toOpState(record.state) !== 'ambiguous'
+      ) {
+        return { outcome: 'mismatch' }
+      }
+      const existing = await tx.codeHostReviewAttemptOutcome.findUnique({ where: { attemptId: lease.attemptId } })
+      // The recorded outcome moves the one way it may: from proving nothing to proving the effect.
+      if (existing && existing.state !== 'submitted' && !unlocks(existing.state as CodeHostReviewState, 'submitted')) {
+        return { outcome: 'mismatch' }
+      }
+      await tx.codeHostReviewOperation.update({
+        where: { id: record.id },
+        data: {
+          state: 'settled',
+          settledAt: input.now,
+          responseStatus: 200,
+          responseExternalId: input.externalRef.split(':')[1] ?? null,
+          resultCode: null
+        }
+      })
+      const outcomeFacts = {
+        orgId: lease.orgId,
+        hookId: lease.hookId,
+        deliveryKey: lease.deliveryKey,
+        provider: lease.provider,
+        projectExternalId: lease.projectExternalId,
+        mergeRequestIid: lease.mergeRequestIid,
+        event: lease.event,
+        verdict: lease.verdict,
+        headSha: lease.headSha,
+        state: 'submitted',
+        externalIds: [input.externalRef]
+      }
+      await tx.codeHostReviewAttemptOutcome.upsert({
+        where: { attemptId: lease.attemptId },
+        create: { attemptId: lease.attemptId, ...outcomeFacts, recordedAt: input.now },
+        update: outcomeFacts
+      })
+      const phase = await this.releaseIfNowSafe(tx, lease.id, 'ambiguous_locked', input.now)
+      return { outcome: phase === 'settled' ? 'released' : 'retained' }
+    })
+  }
+
+  /** The locked owner's ambiguous record, the one a later positive identification can still settle. */
+  private async retainedRecord(
+    tx: Prisma.TransactionClient,
+    lease: CodeHostReviewLease
+  ): Promise<CodeHostReviewOperationRecord | null> {
+    if (!lease.attemptId) return null
+    const row = await tx.codeHostReviewOperation.findFirst({
+      where: { leaseId: lease.id, attemptId: lease.attemptId, state: 'ambiguous' },
+      orderBy: { ordinal: 'desc' }
+    })
+    return row ? toOperation(row) : null
+  }
+
+  /** Ledger ops re-check owner and fence under the subject lock; only a positive identification reaches a locked lease, nothing a settled one. */
   private async withOwnedLease(
     input: { attemptId: string; orgId: string; fence: bigint; daemonId: DaemonId },
-    run: (tx: Prisma.TransactionClient, lease: CodeHostReviewLease) => Promise<CodeHostReviewOpResult>
+    run: (tx: Prisma.TransactionClient, lease: CodeHostReviewLease) => Promise<CodeHostReviewOpResult>,
+    identifies = false
   ): Promise<CodeHostReviewOpResult> {
     const owner = await this.prisma.codeHostReviewLease.findUnique({ where: { attemptId: input.attemptId } })
     if (!owner) return { failure: 'no_lease' }
@@ -585,7 +701,7 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
       if (!lease || lease.attemptId !== input.attemptId) return { failure: 'no_lease' }
       if (lease.ownerDaemonId !== input.daemonId || lease.orgId !== input.orgId) return { failure: 'not_owner' }
       if (lease.fence !== input.fence) return { failure: 'stale_fence' }
-      if (toPhase(lease.phase) === 'settled' || toPhase(lease.phase) === 'ambiguous_locked') {
+      if (toPhase(lease.phase) === 'settled' || (toPhase(lease.phase) === 'ambiguous_locked' && !identifies)) {
         return { failure: 'lease_closed' }
       }
       return run(tx, lease)

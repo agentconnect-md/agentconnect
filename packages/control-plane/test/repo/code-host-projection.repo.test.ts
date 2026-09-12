@@ -154,6 +154,59 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
     expect(await ledger.supersede(hookId, PROJECT, 42, NEXT_HEAD, LATER)).toBe(0)
   })
 
+  it('ranks heads by acceptance when asked to: an older head’s late edge preempts nothing and its row never revives (gitea-integration.md §10.4)', async () => {
+    const ledger = repo()
+    const subject = await owner()
+    const { hookId } = subject
+    const THIRD_HEAD = 'c'.repeat(40)
+    const accepted = { old: NOW, next: new Date(NOW.getTime() + 30_000), third: new Date(NOW.getTime() - 60_000) }
+    const late = new Date(LATER.getTime() + 60_000)
+    const old = await upsert({ ...subject, headSha: HEAD, desiredState: 'running', queuedAt: accepted.old })
+    const next = await upsert({
+      ...subject,
+      headSha: NEXT_HEAD,
+      currentDeliveryKey: 'delivery-2',
+      currentRunAt: LATER,
+      queuedAt: accepted.next
+    })
+    // The newer head's edge supersedes the older head.
+    expect(await ledger.supersede(hookId, PROJECT, 42, NEXT_HEAD, LATER, accepted.next)).toBe(1)
+    expect((await ledger.get(old.id))!.desiredState).toBe('superseded')
+
+    // The older head's late terminal report ranks by its acceptance: it preempts nothing ...
+    expect(await ledger.supersede(hookId, PROJECT, 42, HEAD, late, accepted.old)).toBe(0)
+    expect((await ledger.get(next.id))!.desiredState).toBe('queued')
+    // ... and its own row refuses the edge, terminal or not.
+    const superseded = (await ledger.get(old.id))!
+    expect(await ledger.setDesired(superseded.id, superseded.generation, 'completed', late)).toBe(false)
+    expect((await ledger.get(old.id))!.desiredState).toBe('superseded')
+    // Mid-write the late edge parks nothing either: draining it would revive the row.
+    expect(
+      await ledger.beginWrite(superseded.id, superseded.generation, DAEMON, randomUUID(), 'update', late, late)
+    ).toBe(true)
+    const parked = await upsert({
+      ...subject,
+      headSha: HEAD,
+      desiredState: 'completed',
+      completedAt: late,
+      currentRunAt: late
+    })
+    expect(parked.pendingIntent).toBeNull()
+    expect(parked.desiredState).toBe('superseded')
+
+    // An older head whose first edge arrives after a newer head was accepted is superseded on arrival, the newer head untouched.
+    const third = await upsert({
+      ...subject,
+      headSha: THIRD_HEAD,
+      currentDeliveryKey: 'delivery-0',
+      currentRunAt: late,
+      queuedAt: accepted.third
+    })
+    expect(await ledger.supersede(hookId, PROJECT, 42, THIRD_HEAD, late, accepted.third)).toBe(1)
+    expect((await ledger.get(third.id))!.desiredState).toBe('superseded')
+    expect((await ledger.get(next.id))!.desiredState).toBe('queued')
+  })
+
   it('holds one write at a time and ignores an older generation settling it', async () => {
     const ledger = repo()
     const base = input(await owner())
@@ -316,6 +369,107 @@ describe('code-host run projection ledger (gitlab-com-integration.md §16)', () 
     const stillHeld = (await ledger.get(opened.id))!
     expect(stillHeld.writeMarker).toBe(second)
     expect(stillHeld.noteId).toBeNull()
+  })
+
+  it('claims due rows of one provider whose lease is free, expired, or its own, and fences the claim on the generation', async () => {
+    const ledger = repo()
+    const WORKER = 'gitea-status-reporter:one'
+    const OTHER = 'gitea-status-reporter:two'
+    const gitea = await upsert({ ...(await owner()), provider: 'gitea' })
+    const gitlab = await upsert({ ...(await owner()), provider: 'gitlab', headSha: NEXT_HEAD })
+    const later = await upsert({ ...(await owner()), provider: 'gitea', headSha: 'c'.repeat(40), nextAttemptAt: LATER })
+
+    // Only the provider's due rows: the gitlab row is another writer's, the future row is not due yet.
+    const first = await ledger.claimDue('gitea', WORKER, NOW, new Date(NOW.getTime() + 30_000))
+    expect(first.map((row) => row.id)).toEqual([gitea.id])
+    expect(first[0]).toMatchObject({ leaseOwner: WORKER })
+    expect((await ledger.get(gitlab.id))!.leaseOwner).toBeNull()
+    // A live lease keeps another worker out, while the owner re-claims freely.
+    expect(await ledger.claimDue('gitea', OTHER, NOW, new Date(NOW.getTime() + 30_000))).toEqual([])
+    expect(
+      (await ledger.claimDue('gitea', WORKER, NOW, new Date(NOW.getTime() + 30_000))).map((row) => row.id)
+    ).toEqual([gitea.id])
+    // Past expiry the row — and the row that came due meanwhile — go to whoever asks.
+    const expired = await ledger.claimDue(
+      'gitea',
+      OTHER,
+      new Date(LATER.getTime() + 60_000),
+      new Date(LATER.getTime() + 90_000)
+    )
+    expect(expired.map((row) => row.id).sort()).toEqual([gitea.id, later.id].sort())
+    expect(expired.every((row) => row.leaseOwner === OTHER)).toBe(true)
+  })
+
+  it('retries release the lease and, unless the write was ambiguous, the mutex; blocks leave the due set', async () => {
+    const ledger = repo()
+    const WORKER = 'gitea-status-reporter:one'
+    const opened = await upsert({ ...(await owner()), provider: 'gitea' })
+    await ledger.claimDue('gitea', WORKER, NOW, LATER)
+    const marker = randomUUID()
+    expect(await ledger.beginWrite(opened.id, 1n, WORKER, marker, 'create', NOW, LATER)).toBe(true)
+
+    // An ambiguous write keeps its marker; the lease goes so a later pass (any worker) may reconcile it.
+    expect(await ledger.retryWrite(opened.id, 1n, WORKER, LATER, 'ambiguous_write', true)).toBe(true)
+    let row = (await ledger.get(opened.id))!
+    expect(row).toMatchObject({ writeMarker: marker, leaseOwner: null, attempts: 1, lastErrorCode: 'ambiguous_write' })
+    expect(row.nextAttemptAt).toEqual(LATER)
+    // Fenced on the generation and the lease owner.
+    expect(await ledger.retryWrite(opened.id, 2n, WORKER, LATER, 'x')).toBe(false)
+    expect(await ledger.retryWrite(opened.id, 1n, 'someone-else', LATER, 'x')).toBe(false)
+
+    // The reconciling worker re-claims, proves absence past the grace window, and releases the mutex.
+    await ledger.claimDue('gitea', WORKER, LATER, new Date(LATER.getTime() + 30_000))
+    expect(await ledger.retryWrite(opened.id, 1n, WORKER, LATER, 'ambiguous_write_reissued', false)).toBe(true)
+    row = (await ledger.get(opened.id))!
+    expect(row).toMatchObject({ writeMarker: null, writePhase: null, attempts: 2 })
+
+    // A definitive refusal leaves the due set for this generation.
+    expect(await ledger.blockWrite(opened.id, 1n, 'gitea_write_denied')).toBe(true)
+    row = (await ledger.get(opened.id))!
+    expect(row).toMatchObject({ nextAttemptAt: null, leaseOwner: null, lastErrorCode: 'gitea_write_denied' })
+    expect(await ledger.blockWrite(opened.id, 2n, 'x')).toBe(false)
+  })
+
+  it('a block keeps a tombstone serialized behind the refused write due, and a settle clears only a quiet row', async () => {
+    const ledger = repo()
+    const WORKER = 'gitea-status-reporter:one'
+    const { hookId, agentId } = await owner()
+    const opened = await upsert({ hookId, agentId, provider: 'gitea' })
+    await ledger.claimDue('gitea', WORKER, NOW, LATER)
+    const marker = randomUUID()
+    await ledger.beginWrite(opened.id, 1n, WORKER, marker, 'create', NOW, LATER)
+    // The hook goes mid-write: the cleanup rides as pending intent behind the held marker.
+    await tombstone([hookId])
+    expect(await ledger.blockWrite(opened.id, 1n, 'repo_authorization')).toBe(true)
+    const parked = (await ledger.get(opened.id))!
+    expect(parked.pendingIntent).toMatchObject({ desiredState: 'skipped', tombstoned: true })
+    expect(parked.nextAttemptAt).toEqual(LATER)
+
+    // A row whose desired state is already observed, with nothing parked or in flight, leaves the due set.
+    const quiet = await upsert({ ...(await owner()), provider: 'gitea', headSha: NEXT_HEAD })
+    await ledger.claimDue('gitea', WORKER, NOW, LATER)
+    const written = randomUUID()
+    await ledger.beginWrite(quiet.id, 1n, WORKER, written, 'create', NOW, LATER)
+    expect(
+      await ledger.completeWrite({
+        projectionId: quiet.id,
+        generation: 1n,
+        leaseOwner: WORKER,
+        writeMarker: written,
+        observedState: 'queued',
+        noteId: '501',
+        recheckAt: LATER
+      })
+    ).toBe(true)
+    // A later edge re-arms the row without changing what it says; the worker finds nothing to write.
+    expect(await ledger.setDesired(quiet.id, 1n, 'queued', LATER)).toBe(true)
+    await ledger.claimDue('gitea', WORKER, LATER, new Date(LATER.getTime() + 30_000))
+    expect(await ledger.settleWrite(quiet.id, 1n, WORKER)).toBe(true)
+    expect((await ledger.get(quiet.id))!).toMatchObject({ nextAttemptAt: null, leaseOwner: null, attempts: 0 })
+    // ...but not while the desired state has moved on: the re-read under the row lock refuses.
+    expect(await ledger.setDesired(quiet.id, 1n, 'running', LATER)).toBe(true)
+    await ledger.claimDue('gitea', WORKER, LATER, new Date(LATER.getTime() + 30_000))
+    expect(await ledger.settleWrite(quiet.id, 1n, WORKER)).toBe(false)
   })
 
   it("drains a parked edge with its OWN placement and credential fence, not the in-flight run's", async () => {

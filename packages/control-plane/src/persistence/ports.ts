@@ -2922,7 +2922,7 @@ export interface CodeHostRunProjectionRepo {
    *  provider mutation is in flight is parked as `pendingIntent` instead of moving the generation.
    *  Null ⇒ the owner is retired: creation is refused under the owner-lifecycle fence. */
   upsert(input: UpsertCodeHostRunProjectionInput): Promise<CodeHostRunProjectionRecord | null>
-  /** Move the desired state within one generation. A non-terminal edge loses to `sealedThrough`. */
+  /** Move the desired state within one generation. A non-terminal edge loses to `sealedThrough`; a superseded row never revives. */
   setDesired(
     projectionId: string,
     generation: bigint,
@@ -2930,13 +2930,14 @@ export interface CodeHostRunProjectionRepo {
     nextAttemptAt: Date,
     reason?: string
   ): Promise<boolean>
-  /** A newer head preempted every older generation on the same merge request (§16). */
+  /** A newer head preempts older generations on the subject (§16); with `acceptedAt`, ranked by run acceptance (`queuedAt`), own rows included. */
   supersede(
     hookId: HookId,
     projectId: bigint,
     mergeRequestIid: number,
     currentHeadSha: string,
-    at: Date
+    at: Date,
+    acceptedAt?: Date
   ): Promise<number>
   /** Take the write for one generation on behalf of `leaseOwner` (a daemon id) and arm the mutex.
    *  Refused while another mutation is in flight — ownership may not move mid-write. */
@@ -2971,6 +2972,31 @@ export interface CodeHostRunProjectionRepo {
     fallbackNextAttemptAt: Date
   ): Promise<CodeHostRunProjectionRecord | null>
   get(projectionId: string): Promise<CodeHostRunProjectionRecord | null>
+}
+
+/** The Control-Plane-written projection's writer members (gitea-integration.md §10.4); the daemon-written GitLab note never claims. */
+export interface CodeHostRunProjectionWriterRepo extends CodeHostRunProjectionRepo {
+  /** Take the lease on every due row of one provider whose lease is free, expired, or already this worker's. */
+  claimDue(
+    provider: string,
+    leaseOwner: string,
+    now: Date,
+    leaseUntil: Date,
+    limit?: number
+  ): Promise<CodeHostRunProjectionRecord[]>
+  /** Release the lease for a later pass, with or without the write mutex (an ambiguous write keeps it). */
+  retryWrite(
+    projectionId: string,
+    generation: bigint,
+    leaseOwner: string,
+    nextAttemptAt: Date,
+    errorCode: string,
+    keepWriteMutex?: boolean
+  ): Promise<boolean>
+  /** A definitive refusal: leave the due set until the next generation, keeping only a serialized cleanup due. */
+  blockWrite(projectionId: string, generation: bigint, errorCode: string, keepWriteMutex?: boolean): Promise<boolean>
+  /** Nothing left to publish: drop the row out of the due set instead of claiming it again and again. */
+  settleWrite(projectionId: string, generation: bigint, leaseOwner: string): Promise<boolean>
 }
 
 /** Per-hook HMAC signing key — read ONLY here, NEVER joined into a DTO
@@ -3979,6 +4005,8 @@ export interface CodeHostReviewLeaseRecord extends CodeHostReviewSubject {
   phase: CodeHostReviewLeasePhase
   leaseUntil: Date | null
   lockedReason: CodeHostReviewLockReason | null
+  /** The owner attempt's marker key material (hex), kept for the lock exit (gitea-integration.md §10.3). */
+  markerSeed: string | null
 }
 
 export interface CodeHostReviewAcquireInput {
@@ -3994,14 +4022,35 @@ export interface CodeHostReviewAcquireInput {
   headSha: string
   leaseUntil: Date
   now: Date
+  markerSeed?: string
 }
 
-/** `held` is ordinary contention; `locked` is the indefinite fail-closed state. */
+/** `held` is ordinary contention; `locked` is the indefinite fail-closed state, with the record it retains. */
 export type CodeHostReviewAcquireResult =
   | { outcome: 'acquired'; lease: CodeHostReviewLeaseRecord; condition: CodeHostReviewTransferCondition | 'fresh' }
   | { outcome: 'idempotent'; lease: CodeHostReviewLeaseRecord }
   | { outcome: 'held'; lease: CodeHostReviewLeaseRecord }
-  | { outcome: 'locked'; lease: CodeHostReviewLeaseRecord; lock: CodeHostReviewLockReason | null }
+  | {
+      outcome: 'locked'
+      lease: CodeHostReviewLeaseRecord
+      lock: CodeHostReviewLockReason | null
+      retained: CodeHostReviewOperationRecord | null
+    }
+
+/** The lock's one exit: the locked owner's retained record, named by a refused daemon that found its object. */
+export interface CodeHostReviewIdentifyInput {
+  subject: CodeHostReviewSubject
+  orgId: string
+  attemptId: string
+  fence: bigint
+  recordId: string
+  /** Already encoded as `"<kind>:<numeric id>"`; the repository refuses anything else. */
+  externalRef: string
+  now: Date
+}
+
+/** `retained` means the effect is recorded but another record still holds the attempt; `mismatch` changed nothing. */
+export type CodeHostReviewIdentifyResult = { outcome: 'released' | 'retained' | 'not_locked' | 'mismatch' }
 
 export interface CodeHostReviewOperationRecord {
   id: string
@@ -4100,6 +4149,8 @@ export interface CodeHostReviewLeaseRepo {
   returnOperationUnused(input: CodeHostReviewAdvanceInput): Promise<CodeHostReviewOpResult>
   /** Persist the terminal classification and release or lock the lease with it. */
   recordOutcome(input: CodeHostReviewOutcomeInput): Promise<CodeHostReviewOutcomeResult>
+  /** The lock's one exit (gitea-integration.md §10.3): settle the retained record by its object and re-record the effect; any daemon of the org may bring it. */
+  identifyLocked(input: CodeHostReviewIdentifyInput): Promise<CodeHostReviewIdentifyResult>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

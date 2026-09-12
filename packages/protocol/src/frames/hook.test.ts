@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   codeHostHookMetadataOf,
+  codeHostHookRevisionOf,
   GiteaHookMetadata,
   GithubHookMetadata,
   GithubReviewAuthorize,
@@ -441,6 +442,27 @@ describe('code-host member view (gitea-integration.md §13)', () => {
     })
     expect(decoded.gitlab).toEqual(gitlab)
     expect(codeHostHookMetadataOf(decoded)?.provider).toBe('gitlab')
+  })
+
+  it('reads the pull/merge-request revision off each member and none off an issue or a push', () => {
+    expect(codeHostHookRevisionOf(codeHostHookMetadataOf({ github })!)).toEqual({
+      headSha: github.headSha,
+      baseSha: github.baseSha
+    })
+    expect(codeHostHookRevisionOf(codeHostHookMetadataOf({ gitlab })!)).toEqual({
+      headSha: gitlab.target.headSha,
+      baseSha: gitlab.target.baseSha
+    })
+    expect(codeHostHookRevisionOf(codeHostHookMetadataOf({ gitea })!)).toEqual({
+      headSha: gitea.target.headSha,
+      baseSha: gitea.target.baseSha
+    })
+    const issue = { ...gitea, target: { kind: 'issue' as const, index: 7 } }
+    expect(codeHostHookRevisionOf(codeHostHookMetadataOf({ gitea: issue })!)).toBeUndefined()
+    const push = { ...gitlab, target: { kind: 'push' as const, ref: 'refs/heads/main' } }
+    expect(codeHostHookRevisionOf(codeHostHookMetadataOf({ gitlab: push })!)).toBeUndefined()
+    const headless = { ...gitea, target: { kind: 'pull' as const, index: 42 } }
+    expect(codeHostHookRevisionOf(codeHostHookMetadataOf({ gitea: headless })!)).toBeUndefined()
   })
 
   it('copies the members forward as they are for a frame that only forwards them', () => {

@@ -56,6 +56,35 @@ export const CodeHostReviewRefusalReason = z.enum([
 ])
 export type CodeHostReviewRefusalReason = z.infer<typeof CodeHostReviewRefusalReason>
 
+/** One published provider object, by kind and numeric id. No URLs, no text. `review` is Gitea's submitted review (gitea-integration.md §10.3). */
+export const CodeHostReviewExternalRef = z.object({
+  kind: z.enum(['note', 'draft_note', 'discussion', 'approval', 'review']),
+  externalId: CodeHostExternalId
+})
+export type CodeHostReviewExternalRef = z.infer<typeof CodeHostReviewExternalRef>
+
+/** Per-attempt marker key material as hex; verifies exactly that attempt's markers and nothing else. */
+export const CodeHostReviewMarkerSeed = z.string().regex(/^[0-9a-f]{64}$/)
+
+/** What a daemon refused by `ambiguous_locked` needs to run the lock's one exit itself (gitea-integration.md §10.3). */
+export const CodeHostReviewLockCoordinates = z.object({
+  attemptId: z.string().uuid(),
+  fence: CodeHostReviewFence,
+  recordId: z.string().uuid(), // the retained ambiguous record
+  headSha: z.string().min(1),
+  markerSeed: CodeHostReviewMarkerSeed
+})
+export type CodeHostReviewLockCoordinates = z.infer<typeof CodeHostReviewLockCoordinates>
+
+/** The locked attempt's object, positively identified by the refused daemon: the one exit from `ambiguous_locked`. */
+export const CodeHostReviewUnlock = z.object({
+  attemptId: z.string().uuid(),
+  fence: CodeHostReviewFence,
+  recordId: z.string().uuid(),
+  externalRef: CodeHostReviewExternalRef
+})
+export type CodeHostReviewUnlock = z.infer<typeof CodeHostReviewUnlock>
+
 /**
  * `codehost/review-authz` (D→C REQ) — authorize ONE formal review attempt on one
  * merge request. The adapter names the exact hook delivery, project, IID, event,
@@ -77,7 +106,11 @@ export const CodeHostReviewAuthorize = z.object({
   baseSha: z.string().min(1).optional(),
   // REQUEST_CHANGES needs a current service-account reviewer record; the adapter
   // reports what it read so the CP can refuse before any draft exists (§15 step 7).
-  serviceAccountIsReviewer: z.boolean().optional()
+  serviceAccountIsReviewer: z.boolean().optional(),
+  // Kept with the lease so a later daemon the lock refuses can verify this attempt's markers.
+  markerSeed: CodeHostReviewMarkerSeed.optional(),
+  // The lock's one exit, carried by the attempt that found the locked attempt's marked object.
+  unlock: CodeHostReviewUnlock.optional()
 })
 export type CodeHostReviewAuthorize = z.infer<typeof CodeHostReviewAuthorize>
 
@@ -100,7 +133,9 @@ export const CodeHostReviewAuthorized = z.discriminatedUnion('authorized', [
     reason: CodeHostReviewRefusalReason,
     // `ambiguous_locked` is never retryable: recovery needs a definite outcome
     // from the old broker or positive provider evidence, not another try.
-    retryable: z.boolean()
+    retryable: z.boolean(),
+    // With `ambiguous_locked`: where the refused daemon can look for that evidence itself.
+    lock: CodeHostReviewLockCoordinates.optional()
   })
 ])
 export type CodeHostReviewAuthorized = z.infer<typeof CodeHostReviewAuthorized>
@@ -272,13 +307,6 @@ const PUBLIC_EFFECT: Record<CodeHostReviewState, CodeHostReviewPublicEffect> = {
 export function codeHostReviewPublicEffect(state: CodeHostReviewState): CodeHostReviewPublicEffect {
   return PUBLIC_EFFECT[state]
 }
-
-/** One published provider object, by kind and numeric id. No URLs, no text. */
-export const CodeHostReviewExternalRef = z.object({
-  kind: z.enum(['note', 'draft_note', 'discussion', 'approval']),
-  externalId: CodeHostExternalId
-})
-export type CodeHostReviewExternalRef = z.infer<typeof CodeHostReviewExternalRef>
 
 /**
  * `codehost/review-result` (D→C REQ) — the body-free terminal classification of

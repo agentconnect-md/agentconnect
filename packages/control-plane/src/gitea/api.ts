@@ -481,3 +481,113 @@ export async function giteaTestWebhook(
 ): Promise<void> {
   await giteaRequest<void>(`${hooksPath(owner, repo)}/${webhookId}/tests`, { method: 'POST', token, client })
 }
+
+// ── pull requests, issues, and commit statuses (§10.4, §16.1) ────────────────
+
+export interface GiteaPullRequest {
+  id?: number
+  number: number
+  state: string
+  merged?: boolean
+  draft?: boolean
+  title?: string
+  head?: { sha?: string; ref?: string; repo_id?: number }
+  base?: { sha?: string; ref?: string }
+  user?: { id?: number; login?: string }
+}
+
+/** One pull request by index (`GET /repos/:owner/:repo/pulls/:index`); null on a definitive 404. */
+export async function giteaPullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  index: number,
+  client: GiteaApiClient
+): Promise<GiteaPullRequest | null> {
+  try {
+    return await giteaRequest<GiteaPullRequest>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${index}`,
+      { token, client }
+    )
+  } catch (e) {
+    if (e instanceof GiteaApiError && e.code === 'NOT_FOUND') return null
+    throw e
+  }
+}
+
+export interface GiteaIssue {
+  id?: number
+  number: number
+  state: string
+  title?: string
+  /** Present when the index names a pull request — issues and pull requests share one index space. */
+  pull_request?: unknown
+}
+
+/** One issue by index (`GET /repos/:owner/:repo/issues/:index`); null on a definitive 404. */
+export async function giteaIssue(
+  token: string,
+  owner: string,
+  repo: string,
+  index: number,
+  client: GiteaApiClient
+): Promise<GiteaIssue | null> {
+  try {
+    return await giteaRequest<GiteaIssue>(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}`,
+      { token, client }
+    )
+  } catch (e) {
+    if (e instanceof GiteaApiError && e.code === 'NOT_FOUND') return null
+    throw e
+  }
+}
+
+/** The states `POST …/statuses/:sha` accepts; `warning` is never written (§10.4). */
+export type GiteaCommitStatusState = 'pending' | 'success' | 'error' | 'failure' | 'warning'
+
+export interface GiteaCommitStatusSpec {
+  context: string
+  state: GiteaCommitStatusState
+  description: string
+  target_url?: string
+}
+
+export interface GiteaCommitStatus {
+  id: number | string
+  /** The wire names the state `status`. */
+  status?: string
+  context?: string
+  description?: string
+  target_url?: string
+  creator?: { id?: number | string }
+  created_at?: string
+}
+
+function statusesPath(owner: string, repo: string, sha: string): string {
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/statuses/${encodeURIComponent(sha)}`
+}
+
+/** Append one commit status (`POST …/statuses/:sha`); Gitea keeps the history and shows the latest per context. */
+export async function giteaCreateCommitStatus(
+  token: string,
+  owner: string,
+  repo: string,
+  sha: string,
+  spec: GiteaCommitStatusSpec,
+  client: GiteaApiClient
+): Promise<GiteaCommitStatus> {
+  return giteaRequest<GiteaCommitStatus>(statusesPath(owner, repo, sha), { method: 'POST', token, body: spec, client })
+}
+
+/** Every status row on one commit (`GET …/statuses/:sha`), all pages — the reconciliation read of §10.4. */
+export async function giteaListCommitStatuses(
+  token: string,
+  owner: string,
+  repo: string,
+  sha: string,
+  client: GiteaApiClient,
+  pageSize: number
+): Promise<GiteaCommitStatus[]> {
+  return giteaPagedGet<GiteaCommitStatus>(statusesPath(owner, repo, sha), { token, client, pageSize })
+}

@@ -111,6 +111,52 @@ describe('codehost review frames (gitlab-com-integration.md §15, §17.2)', () =
     ).toBe(false)
   })
 
+  it('hands a locked refusal the coordinates of the lock exit, and takes the identified object back (gitea-integration.md §10.3)', () => {
+    const seed = 'ab'.repeat(32)
+    const lock = { attemptId: RECORD_ID, fence: '3', recordId: START_TOKEN, headSha: HEAD, markerSeed: seed }
+    const refused = CodeHostReviewAuthorized.safeParse({
+      authorized: false,
+      attemptId: ATTEMPT_ID,
+      reason: 'ambiguous_locked',
+      retryable: false,
+      lock
+    })
+    expect(refused.success).toBe(true)
+    if (refused.success && !refused.data.authorized) expect(refused.data.lock).toEqual(lock)
+    // The seed is hex key material, never free text.
+    expect(
+      CodeHostReviewAuthorized.safeParse({
+        authorized: false,
+        attemptId: ATTEMPT_ID,
+        reason: 'ambiguous_locked',
+        retryable: false,
+        lock: { ...lock, markerSeed: 'not a key' }
+      }).success
+    ).toBe(false)
+    const asking = CodeHostReviewAuthorize.safeParse({
+      ...authorize,
+      markerSeed: seed,
+      unlock: {
+        attemptId: RECORD_ID,
+        fence: '3',
+        recordId: START_TOKEN,
+        externalRef: { kind: 'review', externalId: '4242' }
+      }
+    })
+    expect(asking.success).toBe(true)
+    expect(
+      CodeHostReviewAuthorize.safeParse({
+        ...authorize,
+        unlock: {
+          attemptId: RECORD_ID,
+          fence: '3',
+          recordId: START_TOKEN,
+          externalRef: { kind: 'review', externalId: 'x' }
+        }
+      }).success
+    ).toBe(false)
+  })
+
   it('rejects an authorization that names no head or a non-numeric project', () => {
     expect(CodeHostReviewAuthorize.safeParse({ ...authorize, headSha: '' }).success).toBe(false)
     expect(CodeHostReviewAuthorize.safeParse({ ...authorize, projectId: 'example/project' }).success).toBe(false)
@@ -257,6 +303,15 @@ describe('codehost review frames (gitlab-com-integration.md §15, §17.2)', () =
     expect(CodeHostReviewResultReport.safeParse({ ...result, state: 'not_submitted', externalIds: [] }).success).toBe(
       true
     )
+    // Gitea's submitted review is a published object of its own kind (gitea-integration.md §10.3).
+    expect(
+      CodeHostReviewResultReport.safeParse({
+        ...result,
+        provider: 'gitea',
+        state: 'submitted',
+        externalIds: [{ kind: 'review', externalId: '4242' }]
+      }).success
+    ).toBe(true)
     const decoded = decodeEnvelope(encode(buildEnvelope('codehost/review-result', result, { orgId: 'org-1' })))
     expect(decoded.ok && isFrame('codehost/review-result')(decoded.frame)).toBe(true)
     expect(CodeHostReviewResultOk.safeParse({ accepted: true, phase: 'settled' }).success).toBe(true)

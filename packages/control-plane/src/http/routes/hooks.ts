@@ -1278,20 +1278,15 @@ export function hookRoutes(deps: HttpDeps) {
       }
     )
 
-    // The Console "Run again" action (gitlab-com-integration.md §16.1, §18.2).
-    // GitLab has no native Check button, so this is the replacement start path:
-    // the service revalidates every fence live and reads the subject's CURRENT
-    // head from GitLab, then the relay re-dispatches through the ordinary hook
-    // turn path. Registered unconditionally so the published spec describes it;
-    // a deployment without the GitLab app refuses every call.
+    // Console "Run again" (gitlab §16.1, gitea §10.4): the provider service revalidates every fence live; registered unconditionally.
     r.post(
       '/hooks/:id/rerun',
       {
         schema: {
           tags: [Tag.Hooks],
-          summary: 'Run a GitLab trigger again',
+          summary: 'Run a GitLab or Gitea trigger again',
           description:
-            'Re-dispatches one GitLab trigger turn for a merge request or issue thread. GitLab offers no native re-run control, so this is the console entry point. The enabled trigger, its agent, the managed project binding, and the subject are all revalidated live, and a merge-request rerun targets the head SHA GitLab reports right now — never a stored one. Refusals carry a machine-readable `code`.',
+            'Re-dispatches one GitLab or Gitea trigger turn for a merge/pull request or issue thread. Neither host offers a native re-run control, so this is the console entry point. The enabled trigger, its agent, the managed repository binding, and the subject are all revalidated live, and a merge-request rerun targets the head SHA the host reports right now — never a stored one. Refusals carry a machine-readable `code`. The `merge_request` subject kind names a Gitea pull request by its index.',
           operationId: 'rerunHook',
           params: IdParam,
           body: HookRerunBody,
@@ -1313,15 +1308,30 @@ export function hookRoutes(deps: HttpDeps) {
         if (!hook) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'hook not found' })
         }
-        if (!deps.gitlab) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'this deployment has no GitLab application configured',
-            code: 'GITLAB_NOT_CONFIGURED'
-          })
+        const rerun = async () => {
+          if (hook.kind === 'gitea') {
+            if (!deps.gitea) {
+              return {
+                ok: false as const,
+                status: 409 as const,
+                code: 'GITEA_NOT_CONFIGURED',
+                message: 'this deployment has no Gitea connection surface configured'
+              }
+            }
+            const { kind, iid } = req.body.subject
+            return deps.gitea.hookRerun.rerun(hook, { kind, index: iid })
+          }
+          if (!deps.gitlab) {
+            return {
+              ok: false as const,
+              status: 409 as const,
+              code: 'GITLAB_NOT_CONFIGURED',
+              message: 'this deployment has no GitLab application configured'
+            }
+          }
+          return deps.gitlab.hookRerun.rerun(hook, req.body.subject)
         }
-        const outcome = await deps.gitlab.hookRerun.rerun(hook, req.body.subject)
+        const outcome = await rerun()
         if (!outcome.ok) {
           return reply.code(outcome.status).send({
             error: RERUN_STATUS_TEXT[outcome.status],

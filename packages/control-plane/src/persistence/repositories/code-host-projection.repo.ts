@@ -30,7 +30,7 @@ import type { AgentId, HookId, OrgId } from '../../domain/ids.js'
 import type {
   CodeHostProjectionWriteResultInput,
   CodeHostRunProjectionRecord,
-  CodeHostRunProjectionRepo,
+  CodeHostRunProjectionWriterRepo,
   HookGateMode,
   HookReportingMode,
   HookReviewPolicy,
@@ -172,7 +172,7 @@ function toRecord(r: CodeHostRunProjection): CodeHostRunProjectionRecord {
   }
 }
 
-export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
+export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionWriterRepo {
   constructor(private readonly db: PrismaLike) {}
 
   private transaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
@@ -302,6 +302,8 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
       // A write in flight owns this generation: park the edge rather than move the generation, or
       // rewrite the state, under a mutation whose outcome nobody has settled yet.
       if (current.writePhase !== null) {
+        // A superseded head's own late edge parks nothing: draining it would revive the row.
+        if (sameRun && current.desiredState === 'superseded') return toRecord(current)
         const pending: Prisma.InputJsonValue = {
           desiredState: input.desiredState,
           reason: input.reason ?? null,
@@ -370,6 +372,8 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
         id: projectionId,
         generation,
         tombstonedAt: null,
+        // A superseded head never revives: a newer head owns the subject, whatever its late edges say.
+        desiredState: { not: 'superseded' },
         // Once any terminal authority seals this generation a delayed queued/running edge can no
         // longer regress it, even if its caller held a stale row snapshot.
         ...(terminal ? {} : { sealedThrough: { lt: generation } })
@@ -389,7 +393,8 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
     projectId: bigint,
     mergeRequestIid: number,
     currentHeadSha: string,
-    at: Date
+    at: Date,
+    acceptedAt?: Date
   ): Promise<number> {
     return this.transaction(async (tx) => {
       const candidates = await tx.codeHostRunProjection.findMany({
@@ -397,15 +402,20 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
           hookId,
           projectId,
           mergeRequestIid,
-          headSha: { not: currentHeadSha },
           tombstonedAt: null,
-          desiredState: { notIn: ['superseded'] }
+          desiredState: { notIn: ['superseded'] },
+          ...(acceptedAt ? {} : { headSha: { not: currentHeadSha } })
         },
-        select: { id: true }
+        select: { id: true, headSha: true, queuedAt: true }
       })
+      // With an acceptance time only the newest accepted head stays current, the caller's own rows included; no `queuedAt` ranks oldest.
+      const rank = (row: { headSha: string; queuedAt: Date | null }) =>
+        row.headSha === currentHeadSha ? acceptedAt!.getTime() : (row.queuedAt?.getTime() ?? Number.NEGATIVE_INFINITY)
+      const newest = acceptedAt ? Math.max(acceptedAt.getTime(), ...candidates.map(rank)) : undefined
+      const older = newest === undefined ? candidates : candidates.filter((row) => rank(row) < newest)
       let changed = 0
       // Deterministic id order: supersession overlaps ordinary lifecycle edges on the same subject.
-      for (const { id } of [...candidates].sort((a, b) => a.id.localeCompare(b.id))) {
+      for (const { id } of [...older].sort((a, b) => a.id.localeCompare(b.id))) {
         const row = await this.lockById(tx, id)
         if (!row || row.tombstonedAt !== null || row.desiredState === 'superseded') continue
         // A mutation is in flight for the current generation: park supersession as pending intent
@@ -595,6 +605,108 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
   async get(projectionId: string): Promise<CodeHostRunProjectionRecord | null> {
     const row = await this.db.codeHostRunProjection.findUnique({ where: { id: projectionId } })
     return row ? toRecord(row) : null
+  }
+
+  async claimDue(
+    provider: string,
+    leaseOwner: string,
+    now: Date,
+    leaseUntil: Date,
+    limit = 25
+  ): Promise<CodeHostRunProjectionRecord[]> {
+    return this.transaction(async (tx) => {
+      const free = { OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }, { leaseOwner }] }
+      const candidates = await tx.codeHostRunProjection.findMany({
+        where: { provider, nextAttemptAt: { lte: now }, ...free },
+        orderBy: [{ nextAttemptAt: 'asc' }, { updatedAt: 'asc' }],
+        take: limit
+      })
+      const claimed: CodeHostRunProjectionRecord[] = []
+      for (const row of candidates) {
+        // The generation fences the claim: a row that moved since the read is left for the next pass.
+        const changed = await tx.codeHostRunProjection.updateMany({
+          where: { id: row.id, generation: row.generation, ...free },
+          data: { leaseOwner, leaseUntil }
+        })
+        if (changed.count !== 1) continue
+        const fresh = await tx.codeHostRunProjection.findUnique({ where: { id: row.id } })
+        if (fresh) claimed.push(toRecord(fresh))
+      }
+      return claimed
+    })
+  }
+
+  async retryWrite(
+    projectionId: string,
+    generation: bigint,
+    leaseOwner: string,
+    nextAttemptAt: Date,
+    errorCode: string,
+    keepWriteMutex = false
+  ): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const current = await this.lockById(tx, projectionId)
+      if (!current || current.generation !== generation || current.leaseOwner !== leaseOwner) return false
+      const changed = await tx.codeHostRunProjection.updateMany({
+        where: { id: projectionId, generation, leaseOwner },
+        data: {
+          attempts: { increment: 1 },
+          lastErrorCode: errorCode,
+          nextAttemptAt,
+          leaseOwner: null,
+          leaseUntil: null,
+          // Only a PROVED non-effect releases the mutex; an ambiguous write keeps it for reconciliation.
+          ...(keepWriteMutex ? {} : { writeMarker: null, writePhase: null, writeStartedAt: null })
+        }
+      })
+      return changed.count === 1
+    })
+  }
+
+  async blockWrite(
+    projectionId: string,
+    generation: bigint,
+    errorCode: string,
+    keepWriteMutex = false
+  ): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const current = await this.lockById(tx, projectionId)
+      if (!current || current.generation !== generation) return false
+      // A definitive old-write failure may clear its marker, but cannot strand a tombstone serialized behind it.
+      const cleanupPending = current.tombstonedAt !== null && current.pendingIntent !== null
+      const changed = await tx.codeHostRunProjection.updateMany({
+        where: { id: projectionId, generation },
+        data: {
+          lastErrorCode: errorCode,
+          nextAttemptAt: cleanupPending ? current.tombstonedAt : null,
+          leaseOwner: null,
+          leaseUntil: null,
+          ...(keepWriteMutex ? {} : { writeMarker: null, writePhase: null, writeStartedAt: null })
+        }
+      })
+      return changed.count === 1
+    })
+  }
+
+  async settleWrite(projectionId: string, generation: bigint, leaseOwner: string): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const current = await this.lockById(tx, projectionId)
+      if (!current || current.generation !== generation || current.leaseOwner !== leaseOwner) return false
+      // Re-read under the row lock: a converge landing meanwhile re-armed the row, and clearing its due time would strand that intent.
+      if (
+        current.desiredState !== current.observedState ||
+        current.pendingIntent !== null ||
+        current.writePhase !== null ||
+        current.writeMarker !== null
+      ) {
+        return false
+      }
+      const changed = await tx.codeHostRunProjection.updateMany({
+        where: { id: projectionId, generation, leaseOwner },
+        data: { nextAttemptAt: null, leaseOwner: null, leaseUntil: null, lastErrorCode: null, attempts: 0 }
+      })
+      return changed.count === 1
+    })
   }
 }
 

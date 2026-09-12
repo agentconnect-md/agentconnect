@@ -70,6 +70,7 @@ import type { GitlabAccountService } from '../gitlab/account.service.js'
 import type { GitlabProvisioner } from '../gitlab/provisioner.js'
 import type { GitlabHookRerunService } from '../gitlab/hook-rerun.service.js'
 import type { GiteaConnectionService } from '../gitea/connection.service.js'
+import type { GiteaHookRerunService } from '../gitea/hook-rerun.service.js'
 import type { GiteaProvisioner } from '../gitea/provisioner.js'
 import type { GiteaApiClient } from '../gitea/api.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
@@ -430,6 +431,8 @@ export interface HttpDeps {
   gitea?: {
     connections: GiteaConnectionService
     provisioner: GiteaProvisioner
+    /** The §10.4 Console rerun authorizer. */
+    hookRerun: GiteaHookRerunService
     api: GiteaApiClient
   }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
