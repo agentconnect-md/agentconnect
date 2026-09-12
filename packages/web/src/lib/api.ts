@@ -5824,10 +5824,12 @@ export interface GiteaWebhookRotationDto {
  *  on this deployment, which is an absence to state rather than a failure. */
 export async function fetchGiteaConnections(
   orgId?: string
-): Promise<{ enabled: boolean; connections: GiteaConnectionDto[] }> {
+): Promise<{ enabled: boolean; connections: GiteaConnectionDto[]; instanceUrl?: string }> {
   try {
-    const body = await apiGet<{ connections: GiteaConnectionDto[] }>(`${orgBase(orgId)}/gitea/connections`)
-    return { enabled: true, connections: body.connections }
+    const body = await apiGet<{ connections: GiteaConnectionDto[]; instanceUrl?: string }>(
+      `${orgBase(orgId)}/gitea/connections`
+    )
+    return { enabled: true, connections: body.connections, instanceUrl: body.instanceUrl }
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return { enabled: false, connections: [] }
     throw e

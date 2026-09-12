@@ -91,7 +91,10 @@ describe('POST /gitea/connections (§4.1)', () => {
     const secret = await prisma.giteaConnectionSecret.findUniqueOrThrow({ where: { connectionId: row.id } })
     expect(secret.token).toBe(TOKEN)
     const listed = await a.app.inject({ method: 'GET', url: `${ORG}/gitea/connections` })
-    expect((listed.json() as { connections: unknown[] }).connections).toHaveLength(1)
+    const list = listed.json() as { connections: unknown[]; instanceUrl: string }
+    expect(list.connections).toHaveLength(1)
+    // The deployment's instance rides the list so the card can name it before and after connecting.
+    expect(list.instanceUrl).toMatch(/^https:\/\//)
   })
 
   it('refuses a rejected token and a token missing a required scope, storing nothing', async () => {

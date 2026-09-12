@@ -198,7 +198,7 @@ export function giteaRoutes(deps: HttpDeps) {
       async (req) => {
         const orgId = orgOf(req)
         const rows = await deps.repos.giteaConnection.listForOrg(orgId)
-        return { connections: await Promise.all(rows.map((row) => connectionDto(orgId, row))) }
+        return { connections: await Promise.all(rows.map((row) => connectionDto(orgId, row))), instanceUrl }
       }
     )
 

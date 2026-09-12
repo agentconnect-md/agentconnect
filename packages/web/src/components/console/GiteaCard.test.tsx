@@ -202,6 +202,19 @@ describe('GiteaCard', () => {
     expect(host.querySelector('[data-gitea-connect]')).toBeNull()
   })
 
+  it('names the deployment instance before any connection exists', async () => {
+    // A self-hosted deployment must not tell the operator to create the bot on gitea.com (§3).
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [],
+      instanceUrl: 'https://gitea.example.test'
+    })
+    await render()
+
+    expect(host.textContent).toContain('gitea.example.test')
+    expect(host.textContent).not.toContain('gitea.com')
+  })
+
   it('states every requirement the token must satisfy beside the input', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [] })
     await render()

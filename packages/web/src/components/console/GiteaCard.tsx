@@ -208,6 +208,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
   const { activeOrg } = useOrgs()
   const [enabled, setEnabled] = useState<boolean | null>(null)
   const [connection, setConnection] = useState<GiteaConnectionDto | null>(null)
+  const [deploymentInstanceUrl, setDeploymentInstanceUrl] = useState<string | null>(null)
   const [bindings, setBindings] = useState<GiteaRepositoryBindingDto[]>([])
   const [candidates, setCandidates] = useState<GiteaRepositoryDto[] | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -232,10 +233,11 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
     setEnabled(null)
     setCandidates(null)
     fetchGiteaConnections()
-      .then(async ({ enabled, connections }) => {
+      .then(async ({ enabled, connections, instanceUrl }) => {
         if (!alive) return
         setEnabled(enabled)
         setConnection(connections[0] ?? null)
+        if (instanceUrl) setDeploymentInstanceUrl(instanceUrl)
         if (!enabled) return
         const seq = supersedeReads()
         const rows = await fetchGiteaRepositories()
@@ -254,7 +256,10 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
       fetchGiteaRepositories().catch(() => null)
     ])
     if (seq !== readSeq.current) return
-    if (conns) setConnection(conns.connections[0] ?? null)
+    if (conns) {
+      setConnection(conns.connections[0] ?? null)
+      if (conns.instanceUrl) setDeploymentInstanceUrl(conns.instanceUrl)
+    }
     if (rows) setBindings(rows)
   }
 
@@ -408,9 +413,8 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
     }
   }
 
-  // One deployment, one instance (§3): the instance is the CARD's fact, and before the first
-  // connection there is nothing to link to anyway.
-  const instanceUrl = connection?.instanceUrl ?? GITEA_DEFAULT_INSTANCE_URL
+  // One deployment, one instance (§3): the instance is the CARD's fact, named by the list before any connection exists.
+  const instanceUrl = connection?.instanceUrl ?? deploymentInstanceUrl ?? GITEA_DEFAULT_INSTANCE_URL
   const instanceHint =
     connection?.instanceVersion == null ? instanceUrl : `${instanceUrl} · Gitea ${connection.instanceVersion}`
   const scopes = connection?.requiredScopes ?? ['read:user', 'write:repository', 'write:issue', 'read:organization']
