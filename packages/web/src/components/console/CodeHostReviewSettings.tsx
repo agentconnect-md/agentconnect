@@ -11,10 +11,12 @@ import {
   reviewFormatValue,
   reviewPresetOf,
   withCapability,
+  withStatusMode,
   type CodeHostReviewCapabilities,
   type CodeHostReviewSettingsValue,
   type HookReportingMode,
-  type HookReviewPolicy
+  type HookReviewPolicy,
+  type StatusReportingMode
 } from '@/lib/code-host-review-settings'
 
 /** The four capability labels are shared; only the hover copy differs per host. */
@@ -37,6 +39,7 @@ export function CodeHostReviewSettings({
   onReportingModeChange,
   help,
   statusCheckLabel,
+  statusMode = 'check',
   layout = 'disclosure',
   defaultExpanded = false,
   notices
@@ -47,6 +50,8 @@ export function CodeHostReviewSettings({
   onReportingModeChange: (mode: HookReportingMode) => void
   help: ReviewCapabilityHelp
   statusCheckLabel: string
+  // The reporting mode the status switch stands for on THIS host — Gitea reports a commit status.
+  statusMode?: StatusReportingMode
   layout?: 'disclosure' | 'format'
   defaultExpanded?: boolean
   notices?: ReactNode
@@ -54,7 +59,7 @@ export function CodeHostReviewSettings({
   const [expanded, setExpanded] = useState(defaultExpanded)
   // Custom is a disclosure the value cannot express: an exact Details value the
   // user opened Custom on must keep the checkboxes visible.
-  const [customPinned, setCustomPinned] = useState(() => reviewFormatOf(value) === 'custom')
+  const [customPinned, setCustomPinned] = useState(() => reviewFormatOf(value, statusMode) === 'custom')
   const preset = reviewPresetOf(value)
   const capabilities = codeHostReviewCapabilities(value)
 
@@ -64,7 +69,7 @@ export function CodeHostReviewSettings({
   }
 
   const setCapability = (key: keyof CodeHostReviewCapabilities, enabled: boolean) => {
-    applyValue(codeHostReviewSettingsFromCapabilities(withCapability(capabilities, key, enabled)))
+    applyValue(codeHostReviewSettingsFromCapabilities(withCapability(capabilities, key, enabled), statusMode))
   }
 
   const checkboxes = (
@@ -97,7 +102,7 @@ export function CodeHostReviewSettings({
   )
 
   if (layout === 'format') {
-    const format = customPinned ? 'custom' : reviewFormatOf(value)
+    const format = customPinned ? 'custom' : reviewFormatOf(value, statusMode)
     return (
       <div className="flex flex-col gap-3">
         <div className="fldlbl">Review format</div>
@@ -112,7 +117,7 @@ export function CodeHostReviewSettings({
                 aria-pressed={active}
                 onClick={() => {
                   setCustomPinned(option.id === 'custom')
-                  const next = reviewFormatValue(option.id)
+                  const next = reviewFormatValue(option.id, statusMode)
                   if (next) applyValue(next)
                 }}
                 className={
@@ -154,7 +159,7 @@ export function CodeHostReviewSettings({
                   key={option.id}
                   type="button"
                   aria-pressed={active}
-                  onClick={() => applyValue(option.value)}
+                  onClick={() => applyValue(withStatusMode(option.value, statusMode))}
                   className={
                     active
                       ? 'h-10 rounded-md border border-(--brand) bg-(--brand-soft) font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)'

@@ -232,9 +232,9 @@ describe('AddIntegrationModal, Gitea trigger', () => {
       events: ['merge_request:*'],
       commentFamilies: ['merge_request'],
       mentionOnly: false,
-      // The review format opens on the full set, exactly like the other two panes.
+      // The review format opens on the full set, and Gitea reports the run state as a commit status.
       reviewPolicy: 'full',
-      reportingMode: 'check'
+      reportingMode: 'status'
     })
   })
 
@@ -295,7 +295,7 @@ describe('AddIntegrationModal, Gitea trigger', () => {
       commentFamilies: ['merge_request'],
       mentionOnly: true,
       reviewPolicy: 'full',
-      reportingMode: 'check'
+      reportingMode: 'status'
     })
   })
 

@@ -2,7 +2,10 @@
 // projection, and the preset row. Whatever only one host has stays in that host's own module.
 
 export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
-export type HookReportingMode = 'off' | 'check'
+// One run state, three host transports: `check` is GitHub's Check Run and GitLab's run note,
+// `status` is Gitea's commit status. Which one a host's switch stands for is that host's fact.
+export type HookReportingMode = 'off' | 'check' | 'status'
+export type StatusReportingMode = Exclude<HookReportingMode, 'off'>
 export type HookGateMode = 'informational'
 
 export interface CodeHostReviewSettingsValue {
@@ -23,13 +26,14 @@ export function codeHostReviewCapabilities(value: CodeHostReviewSettingsValue): 
     inlineComments: value.reviewPolicy !== 'off',
     requestChanges: value.reviewPolicy === 'request_changes' || value.reviewPolicy === 'full',
     approve: value.reviewPolicy === 'full',
-    statusCheck: value.reportingMode === 'check'
+    statusCheck: value.reportingMode !== 'off'
   }
 }
 
-/** Collapse capability checkboxes back to the strongest enabled policy. */
+/** Collapse capability checkboxes back to the strongest enabled policy, reporting through `statusMode`. */
 export function codeHostReviewSettingsFromCapabilities(
-  capabilities: CodeHostReviewCapabilities
+  capabilities: CodeHostReviewCapabilities,
+  statusMode: StatusReportingMode = 'check'
 ): CodeHostReviewSettingsValue {
   return {
     reviewPolicy: capabilities.approve
@@ -39,11 +43,12 @@ export function codeHostReviewSettingsFromCapabilities(
         : capabilities.inlineComments
           ? 'comment'
           : 'off',
-    reportingMode: capabilities.statusCheck ? 'check' : 'off'
+    reportingMode: capabilities.statusCheck ? statusMode : 'off'
   }
 }
 
-/** The three presets the disclosure opens on, in display order. */
+/** The three presets the disclosure opens on, in display order; `check` is restated per host
+ *  through `withStatusMode`, so the table names the shape and never a host's transport. */
 export const REVIEW_PRESETS = [
   { id: 'none', label: 'None', value: { reviewPolicy: 'off', reportingMode: 'off' } },
   { id: 'brief', label: 'Brief', value: { reviewPolicy: 'comment', reportingMode: 'off' } },
@@ -67,17 +72,35 @@ export type ReviewFormatId = (typeof REVIEW_FORMATS)[number]['id']
 /** The format row's default: the full set — inline comments, request changes, approve, status check. */
 export const REVIEW_FORMAT_DEFAULT: CodeHostReviewSettingsValue = { reviewPolicy: 'full', reportingMode: 'check' }
 
+/** Restate a preset in the reporting mode this host's run state travels on. */
+export function withStatusMode(
+  value: CodeHostReviewSettingsValue,
+  statusMode: StatusReportingMode
+): CodeHostReviewSettingsValue {
+  return value.reportingMode === 'off' ? value : { ...value, reportingMode: statusMode }
+}
+
 /** Which format tile a value reads as — anything but an exact Brief or Details is custom. */
-export function reviewFormatOf(value: CodeHostReviewSettingsValue): ReviewFormatId {
-  const exact = REVIEW_PRESETS.find(
+export function reviewFormatOf(
+  value: CodeHostReviewSettingsValue,
+  statusMode: StatusReportingMode = 'check'
+): ReviewFormatId {
+  const exact = REVIEW_PRESETS.map((preset) => ({
+    id: preset.id,
+    value: withStatusMode(preset.value, statusMode)
+  })).find(
     (preset) => preset.value.reviewPolicy === value.reviewPolicy && preset.value.reportingMode === value.reportingMode
   )
   return exact?.id === 'brief' || exact?.id === 'details' ? exact.id : 'custom'
 }
 
 /** The value a format tile applies; `custom` applies none. */
-export function reviewFormatValue(id: ReviewFormatId): CodeHostReviewSettingsValue | null {
-  return REVIEW_PRESETS.find((preset) => preset.id === id)?.value ?? null
+export function reviewFormatValue(
+  id: ReviewFormatId,
+  statusMode: StatusReportingMode = 'check'
+): CodeHostReviewSettingsValue | null {
+  const preset = REVIEW_PRESETS.find((entry) => entry.id === id)
+  return preset ? withStatusMode(preset.value, statusMode) : null
 }
 
 /** Which preset a stored value reads as; anything richer than "brief" is details. */

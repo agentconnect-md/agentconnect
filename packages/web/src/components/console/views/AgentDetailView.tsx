@@ -1839,10 +1839,10 @@ export default function AgentDetailView() {
                             {GT_TRIGGER_PILL[giteaTriggerModeOf(h)]}
                           </span>
                         </span>
-                        {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
+                        {(h.reviewPolicy !== 'off' || h.reportingMode !== 'off') && (
                           <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                             {reviewPolicyLabel(h.reviewPolicy)} review
-                            {h.reportingMode === 'check' ? ' · commit status' : ''}
+                            {h.reportingMode === 'status' ? ' · commit status' : ''}
                           </span>
                         )}
                         {addFamilyError?.key === repoKey && addFamilies.length > 0 && (

@@ -10,6 +10,7 @@ import {
   reviewPolicyLabel,
   reviewPresetOf,
   withCapability,
+  withStatusMode,
   type CodeHostReviewSettingsValue
 } from './code-host-review-settings'
 
@@ -70,6 +71,55 @@ describe('withCapability', () => {
       reviewPolicy: 'off',
       reportingMode: 'check'
     })
+  })
+})
+
+describe('the per-host reporting transport', () => {
+  it('reports the switch through the mode its host names', () => {
+    const none = codeHostReviewCapabilities({ reviewPolicy: 'off', reportingMode: 'off' })
+    const on = withCapability(none, 'statusCheck', true)
+    expect(codeHostReviewSettingsFromCapabilities(on, 'status')).toEqual({
+      reviewPolicy: 'off',
+      reportingMode: 'status'
+    })
+    expect(codeHostReviewSettingsFromCapabilities(withCapability(on, 'statusCheck', false), 'status')).toEqual({
+      reviewPolicy: 'off',
+      reportingMode: 'off'
+    })
+  })
+
+  it('projects a commit-status value onto the same checkbox a check value does', () => {
+    expect(codeHostReviewCapabilities({ reviewPolicy: 'full', reportingMode: 'status' })).toEqual({
+      inlineComments: true,
+      requestChanges: true,
+      approve: true,
+      statusCheck: true
+    })
+    expect(reviewPresetOf({ reviewPolicy: 'full', reportingMode: 'status' })).toBe('details')
+  })
+
+  it('round-trips a commit-status value through the capability projection', () => {
+    const value: CodeHostReviewSettingsValue = { reviewPolicy: 'request_changes', reportingMode: 'status' }
+    expect(codeHostReviewSettingsFromCapabilities(codeHostReviewCapabilities(value), 'status')).toEqual(value)
+  })
+
+  it('restates a preset in the host transport, leaving the off value alone', () => {
+    expect(withStatusMode({ reviewPolicy: 'full', reportingMode: 'check' }, 'status')).toEqual({
+      reviewPolicy: 'full',
+      reportingMode: 'status'
+    })
+    expect(withStatusMode({ reviewPolicy: 'comment', reportingMode: 'off' }, 'status')).toEqual({
+      reviewPolicy: 'comment',
+      reportingMode: 'off'
+    })
+  })
+
+  it('reads and writes the format tiles in that transport', () => {
+    expect(reviewFormatValue('details', 'status')).toEqual({ reviewPolicy: 'full', reportingMode: 'status' })
+    expect(reviewFormatValue('brief', 'status')).toEqual({ reviewPolicy: 'comment', reportingMode: 'off' })
+    expect(reviewFormatOf({ reviewPolicy: 'full', reportingMode: 'status' }, 'status')).toBe('details')
+    // A value in the OTHER host's transport is not this host's Details tile.
+    expect(reviewFormatOf({ reviewPolicy: 'full', reportingMode: 'check' }, 'status')).toBe('custom')
   })
 })
 
