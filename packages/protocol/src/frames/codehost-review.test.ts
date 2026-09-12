@@ -257,6 +257,15 @@ describe('codehost review frames (gitlab-com-integration.md §15, §17.2)', () =
     expect(CodeHostReviewResultReport.safeParse({ ...result, state: 'not_submitted', externalIds: [] }).success).toBe(
       true
     )
+    // Gitea's submitted review is a published object of its own kind (gitea-integration.md §10.3).
+    expect(
+      CodeHostReviewResultReport.safeParse({
+        ...result,
+        provider: 'gitea',
+        state: 'submitted',
+        externalIds: [{ kind: 'review', externalId: '4242' }]
+      }).success
+    ).toBe(true)
     const decoded = decodeEnvelope(encode(buildEnvelope('codehost/review-result', result, { orgId: 'org-1' })))
     expect(decoded.ok && isFrame('codehost/review-result')(decoded.frame)).toBe(true)
     expect(CodeHostReviewResultOk.safeParse({ accepted: true, phase: 'settled' }).success).toBe(true)

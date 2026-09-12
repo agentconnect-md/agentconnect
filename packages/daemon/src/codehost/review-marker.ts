@@ -1,17 +1,4 @@
-/**
- * Signed hidden attempt markers for GitLab formal reviews
- * (gitlab-com-integration.md §15.1, §15.2).
- *
- * GitLab's note APIs have no idempotency key and its bulk publish has no attempt
- * identifier, so an ambiguous create or publish is recovered by reading the
- * marker back rather than by guessing from the text. Ordinal 0 is the review
- * summary; 1..n are that attempt's inline diff comments, in creation order.
- *
- * Trust model: the HMAC key is daemon-local and the only claim it has to make is
- * "this daemon's attempt authored this draft", which stops a model-authored body
- * from planting a marker; a marker this daemon cannot verify is unrecognized and
- * fails closed as `review_reconciliation_required`, never as someone else's.
- */
+// Daemon-signed hidden attempt markers for formal reviews (gitlab §15.1, gitea §10.3); ordinal 0 is the summary, 1..n the inline comments.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 
 const MARKER_VERSION = '1'
@@ -38,11 +25,7 @@ export class ReviewMarkerSigner {
     return `<!-- agentconnect-review:${MARKER_VERSION}:${attemptId}:${ordinal}:${signature} -->`
   }
 
-  /**
-   * The verified marker carried by one draft body, or undefined when it carries
-   * none, several, or one this daemon cannot verify. Several is refused because a
-   * body that mentions a marker cannot be allowed to shadow the appended chrome.
-   */
+  /** The verified marker in one body, or undefined when it carries none, several, or one this daemon cannot verify. */
   read(body: string | undefined, headSha: string): ReviewMarker | undefined {
     if (!body) return undefined
     const found = [...body.matchAll(MARKER)]

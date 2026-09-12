@@ -273,9 +273,9 @@ export function codeHostReviewPublicEffect(state: CodeHostReviewState): CodeHost
   return PUBLIC_EFFECT[state]
 }
 
-/** One published provider object, by kind and numeric id. No URLs, no text. */
+/** One published provider object, by kind and numeric id. No URLs, no text. `review` is Gitea's submitted review (gitea-integration.md §10.3). */
 export const CodeHostReviewExternalRef = z.object({
-  kind: z.enum(['note', 'draft_note', 'discussion', 'approval']),
+  kind: z.enum(['note', 'draft_note', 'discussion', 'approval', 'review']),
   externalId: CodeHostExternalId
 })
 export type CodeHostReviewExternalRef = z.infer<typeof CodeHostReviewExternalRef>

@@ -339,7 +339,13 @@ import {
   type GithubReviewHost
 } from './github/review-orchestrator.js'
 import { CodeHostReviewRouter } from './codehost/review-adapter.js'
+import {
+  CodeHostReviewOutbox,
+  type CodeHostReviewControlPlane,
+  type ReviewIntentRow
+} from './codehost/review-outbox.js'
 import { GitlabReviewAdapter, type GitlabReviewAdapterDeps, type GitlabReviewTurn } from './gitlab/review-adapter.js'
+import { GiteaReviewAdapter, type GiteaReviewAdapterDeps, type GiteaReviewTurn } from './gitea/review-adapter.js'
 import {
   collectHookQueueCandidates,
   combineCoordinationWaits,
@@ -1278,8 +1284,12 @@ export class Daemon {
   private readonly activeGithubTurnMeta = new Map<string, ActiveGithubTurnMeta>()
   private readonly activeGithubReplyBatchMeta = new Map<string, ActiveGithubReplyBatchMeta>()
   private readonly githubReviews: GithubReviewOrchestrator
+  /** The owed-frame outbox every formal-review adapter shares (§15.1); one per daemon identity. */
+  private readonly reviewOutbox: CodeHostReviewOutbox
   /** §15 GitLab formal-review adapter and the provider-routing seam both live behind this. */
   private readonly gitlabReviews: GitlabReviewAdapter
+  /** gitea-integration.md §10.3: the Gitea formal-review adapter on the same seam. */
+  private readonly giteaReviews: GiteaReviewAdapter
   private readonly codeReviews = new CodeHostReviewRouter()
   // ── lifecycle (§2.5/§5.3/§7.2/§7.3) ──
   private clock: Clock
@@ -1506,9 +1516,17 @@ export class Daemon {
     this.webchatMcpRevocations = new WebchatMcpRevocations(this.webchatMcpRevocationHost())
     this.commands = new CommandHandlers(this.commandHost())
     this.githubReviews = new GithubReviewOrchestrator(this.githubReviewHost())
+    this.reviewOutbox = new CodeHostReviewOutbox({
+      cp: () => this.codeHostReviewCp(),
+      daemonId: () => this.cfg.daemonId,
+      store: this.reviewIntentStore(),
+      log: { warn: (message: string) => this.log.warn(message) }
+    })
     this.gitlabReviews = new GitlabReviewAdapter(this.gitlabReviewDeps())
+    this.giteaReviews = new GiteaReviewAdapter(this.giteaReviewDeps())
     this.codeReviews.register(this.githubReviews.reviewAdapter)
     this.codeReviews.register(this.gitlabReviews)
+    this.codeReviews.register(this.giteaReviews)
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
       now: () => this.clock.now(),
       ttlMs: PROBE_TTL_MS
@@ -8735,47 +8753,71 @@ export class Daemon {
     return { provider, repoId, ...(repoPath !== undefined ? { repoPath } : {}) }
   }
 
-  /** Everything the GitHub hook-dispatch and formal-review seam reaches back for. */
-  /** §15 GitLab review adapter deps: the CP lease surface plus the never-agent-visible effect PAT. */
-  private gitlabReviewDeps(): GitlabReviewAdapterDeps {
+  /** The provider-neutral review control surface (§15.1), or undefined while the control plane is away. */
+  private codeHostReviewCp(): CodeHostReviewControlPlane | undefined {
+    const client = this.cpClient
+    if (!client) return undefined
     return {
-      cp: () => {
-        const client = this.cpClient
-        if (!client) return undefined
-        return {
-          supportsReview: () => client.supportsServerFeature?.(CODEHOST_REVIEW_V1_FEATURE) === true,
-          authorize: (payload, orgId) => client.authorizeCodeHostReview(payload, orgId),
-          operate: (payload, orgId) => client.operateCodeHostReview(payload, orgId),
-          renew: (payload, orgId) => client.renewCodeHostReviewLease(payload, orgId),
-          report: (payload, orgId) => client.reportCodeHostReviewResult(payload, orgId)
-        }
-      },
-      orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
-      apiBaseUrl: (turn) => this.gitlabApiBase(turn.agentId),
+      supportsReview: () => client.supportsServerFeature?.(CODEHOST_REVIEW_V1_FEATURE) === true,
+      authorize: (payload, orgId) => client.authorizeCodeHostReview(payload, orgId),
+      operate: (payload, orgId) => client.operateCodeHostReview(payload, orgId),
+      renew: (payload, orgId) => client.renewCodeHostReviewLease(payload, orgId),
+      report: (payload, orgId) => client.reportCodeHostReviewResult(payload, orgId)
+    }
+  }
+
+  private reviewIntentStore() {
+    return {
+      recordReviewIntent: (row: ReviewIntentRow, now: number) => this.store.recordReviewIntent(row, now),
+      clearReviewIntent: (intentId: string) => this.store.clearReviewIntent(intentId),
+      listReviewIntents: (daemonId: string) => this.store.listReviewIntents(daemonId)
+    }
+  }
+
+  /** Restart-stable, so a same-attempt recovery can still verify the objects it authored. */
+  private reviewMarkerKey(name: string): () => Promise<Buffer> {
+    return async () =>
+      Buffer.from(
+        await this.store.getOrCreateDaemonSecret(name, () => randomBytes(32).toString('base64'), this.clock.now()),
+        'base64'
+      )
+  }
+
+  /** What every formal-review adapter shares: the CP surface, the outbox, the org lookup, the footer. */
+  private codeHostReviewDeps<Turn extends { agentId: string; sessionId: string }>() {
+    return {
+      cp: () => this.codeHostReviewCp(),
+      orgForAgent: (agentId: string) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       daemonId: () => this.cfg.daemonId,
-      store: {
-        recordReviewIntent: (row, now) => this.store.recordReviewIntent(row, now),
-        clearReviewIntent: (intentId) => this.store.clearReviewIntent(intentId),
-        listReviewIntents: (daemonId) => this.store.listReviewIntents(daemonId)
-      },
-      // Restart-stable, so a same-attempt recovery can still verify the drafts it authored.
-      markerKey: async () =>
-        Buffer.from(
-          await this.store.getOrCreateDaemonSecret(
-            'gitlab-review-marker-key',
-            () => randomBytes(32).toString('base64'),
-            this.clock.now()
-          ),
-          'base64'
-        ),
-      token: async (turn) =>
-        (await this.gitCreds.getGitlabEffectToken(turn.agentId, turn.projectId, turn.hookId)).token,
-      invalidateToken: (turn, token) => this.gitCreds.invalidateGitlabEffect(turn.agentId, turn.projectId, token),
-      attribution: async (turn) =>
+      store: this.reviewIntentStore(),
+      outbox: this.reviewOutbox,
+      attribution: async (turn: Turn) =>
         this.agents.get(turn.agentId)?.output.showFooter
           ? await this.githubReviews.githubCommentAttribution(turn.agentId, turn.sessionId)
           : undefined,
       log: { warn: (message: string) => this.log.warn(message) }
+    }
+  }
+
+  /** §15 GitLab review adapter deps: the CP lease surface plus the never-agent-visible effect PAT. */
+  private gitlabReviewDeps(): GitlabReviewAdapterDeps {
+    return {
+      ...this.codeHostReviewDeps<GitlabReviewTurn>(),
+      apiBaseUrl: (turn) => this.gitlabApiBase(turn.agentId),
+      markerKey: this.reviewMarkerKey('gitlab-review-marker-key'),
+      token: async (turn) => (await this.gitCreds.getGitlabEffectToken(turn.agentId, turn.repoId, turn.hookId)).token,
+      invalidateToken: (turn, token) => this.gitCreds.invalidateGitlabEffect(turn.agentId, turn.repoId, token)
+    }
+  }
+
+  /** gitea-integration.md §10.3: the same seam over the connection token's `gitea_effect` lease. */
+  private giteaReviewDeps(): GiteaReviewAdapterDeps {
+    return {
+      ...this.codeHostReviewDeps<GiteaReviewTurn>(),
+      apiBaseUrl: (turn) => this.giteaApiBase(turn.agentId),
+      markerKey: this.reviewMarkerKey('gitea-review-marker-key'),
+      token: async (turn) => (await this.gitCreds.getGiteaEffectToken(turn.agentId, turn.repoId, turn.hookId)).token,
+      invalidateToken: (turn, token) => this.gitCreds.invalidateGiteaEffect(turn.agentId, turn.repoId, token)
     }
   }
 
@@ -12201,6 +12243,7 @@ export class Daemon {
     github?: ActiveGithubTurnMeta
     githubReplyBatch?: ActiveGithubReplyBatchMeta
     gitlabReview?: GitlabReviewTurn
+    giteaReview?: GiteaReviewTurn
   }> {
     const { entry, key, plan } = run
     const { agentId, callMeta } = entry
@@ -12248,16 +12291,17 @@ export class Daemon {
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
     // §17.2: the provider-neutral start barrier attaches the head this turn runs on to the accepted
     // run before the prompt, which is what a review authorization fences and §16 opens `running` on.
-    const barrier = await this.startGitlabHookTurn(hookContext, sessionId)
+    const barrier = await this.startCodeHostHookTurn(hookContext, sessionId)
     // A refused barrier keeps the ordinary turn but withholds the formal-review surface, exactly as a
     // failed GitHub barrier does: a run whose started head was not recorded must never reach a lease.
+    const reviewTurn = {
+      ...(this.cfg.daemonId ? { daemonId: this.cfg.daemonId } : {}),
+      persist: (required?: boolean) => this.persistHookState(entry, undefined, required)
+    }
     const gitlabReview =
-      barrier === 'failed'
-        ? undefined
-        : this.gitlabReviews.openTurn(key, hookContext, sessionId, {
-            ...(this.cfg.daemonId ? { daemonId: this.cfg.daemonId } : {}),
-            persist: (required) => this.persistHookState(entry, undefined, required)
-          })
+      barrier === 'failed' ? undefined : this.gitlabReviews.openTurn(key, hookContext, sessionId, reviewTurn)
+    const giteaReview =
+      barrier === 'failed' ? undefined : this.giteaReviews.openTurn(key, hookContext, sessionId, reviewTurn)
     // A replayed delivery may still owe the control plane frames a previous incarnation
     // recorded; the ones needing no provider evidence are handed back before the turn runs.
     if (gitlabReview) {
@@ -12265,27 +12309,39 @@ export class Daemon {
         .recoverTurn(gitlabReview)
         .catch((err) => this.log.warn(`gitlab review: turn recovery deferred (${formatErr(err)})`))
     }
+    if (giteaReview) {
+      await this.giteaReviews
+        .recoverTurn(giteaReview)
+        .catch((err) => this.log.warn(`gitea review: turn recovery deferred (${formatErr(err)})`))
+    }
     const activeGithubReplyBatch = plan.githubReplyBatchActive ? { entry, sessionId, called: false } : undefined
     if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
     return {
       ...(activeGithub ? { github: activeGithub } : {}),
       ...(gitlabReview ? { gitlabReview } : {}),
+      ...(giteaReview ? { giteaReview } : {}),
       ...(activeGithubReplyBatch ? { githubReplyBatch: activeGithubReplyBatch } : {})
     }
   }
 
-  /** Cross the gitlab `hook/start` barrier (§17.2): `started` durably recorded the head, `legacy` is a
-   *  control plane that does not serve the barrier, `failed` is an advertised barrier that refused. */
-  private async startGitlabHookTurn(
+  /** The CP feature whose holder routes each provider-neutral arm of `hook/start`; an older CP cannot route the member. */
+  private static readonly HOOK_START_BARRIER_FEATURE: Partial<Record<CodeHostProvider, string>> = {
+    gitlab: CODEHOST_NOTE_PROJECTION_V1_FEATURE,
+    gitea: GITEA_V1_FEATURE
+  }
+
+  /** Cross the hook/start barrier (§17.2): started = head recorded, legacy = CP without the barrier, failed = an advertised barrier refused. */
+  private async startCodeHostHookTurn(
     hook: HookDispatchContext | undefined,
     sessionId: string
   ): Promise<'started' | 'legacy' | 'failed'> {
     const host = hook && codeHostHookMetadataOf(hook)
     const snapshot = hook?.snapshot
-    if (!hook || host?.provider !== 'gitlab' || !snapshot) return 'legacy'
+    const feature = host && Daemon.HOOK_START_BARRIER_FEATURE[host.provider]
+    if (!hook || !feature || !snapshot) return 'legacy'
     const client = this.cpClient
-    // An older CP cannot route the gitlab member of the one-of, so the send waits on its bit.
-    if (!client || client.supportsServerFeature?.(CODEHOST_NOTE_PROJECTION_V1_FEATURE) !== true) return 'legacy'
+    // An older CP cannot route this member of the one-of, so the send waits on its bit.
+    if (!client || client.supportsServerFeature?.(feature) !== true) return 'legacy'
     // A stale dispatch target opens no review turn anyway; the barrier is not this daemon's to cross.
     if (this.cfg.daemonId && snapshot.dispatchDaemonId !== this.cfg.daemonId) return 'legacy'
     const payload = {
@@ -12304,7 +12360,7 @@ export class Daemon {
         return 'started'
       } catch (err) {
         if (attempt === 2) {
-          this.log.warn(`gitlab review: hook/start rejected (${formatErr(err)})`)
+          this.log.warn(`${host.provider} review: hook/start rejected (${formatErr(err)})`)
           return 'failed'
         }
         // The daemon ACK and the relay's accepted report travel on different sockets;
@@ -13247,6 +13303,7 @@ export class Daemon {
       github?: ActiveGithubTurnMeta
       githubReplyBatch?: ActiveGithubReplyBatchMeta
       gitlabReview?: GitlabReviewTurn
+      giteaReview?: GiteaReviewTurn
     }
   ): Promise<void> {
     const { entry, key, plan } = run
@@ -13288,6 +13345,7 @@ export class Daemon {
     const activeGithubReplyBatch = activeTurn.githubReplyBatch
     if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
     if (activeTurn.gitlabReview) this.gitlabReviews.closeTurn(key, activeTurn.gitlabReview)
+    if (activeTurn.giteaReview) this.giteaReviews.closeTurn(key, activeTurn.giteaReview)
     if (activeGithubReplyBatch && this.activeGithubReplyBatchMeta.get(key) === activeGithubReplyBatch) {
       this.activeGithubReplyBatchMeta.delete(key)
     }
@@ -18597,7 +18655,7 @@ export class Daemon {
       drainSessionPurges: () => this.drainSessionPurges(),
       effectiveAgents: () => this.effectiveAgents(),
       noteProjector: () => this.noteProjector,
-      gitlabReviews: () => this.gitlabReviews,
+      codeHostReviews: () => this.reviewOutbox,
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
       cpCrons: () => this.cpCrons,
@@ -19670,7 +19728,7 @@ export class Daemon {
     this.autoMergeWatcher?.stop()
     // The projection resweep runs on its own clock, so it must be disarmed before the store closes.
     this.noteProjector?.stop()
-    this.gitlabReviews?.stop()
+    this.reviewOutbox?.stop()
     if (this.dataPlane) await this.dataPlane.close().catch((e) => errors.push(e))
     else await this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')

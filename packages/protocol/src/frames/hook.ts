@@ -229,6 +229,25 @@ export function codeHostHookMetadataOf(frame: CodeHostHookMembers): CodeHostHook
   return members.length === 1 ? members[0] : undefined
 }
 
+/** The pull/merge-request revision a trusted member carries; undefined for an issue, a push, or a head-less subject. */
+export function codeHostHookRevisionOf(
+  member: CodeHostHookMetadata
+): { headSha: string; baseSha?: string } | undefined {
+  let headSha: string | undefined
+  let baseSha: string | undefined
+  if (member.provider === 'github') {
+    if (member.metadata.subjectKind !== 'pull_request') return undefined
+    ;({ headSha, baseSha } = member.metadata)
+  } else if (member.provider === 'gitlab') {
+    if (member.metadata.target.kind !== 'merge_request') return undefined
+    ;({ headSha, baseSha } = member.metadata.target)
+  } else {
+    if (member.metadata.target.kind !== 'pull') return undefined
+    ;({ headSha, baseSha } = member.metadata.target)
+  }
+  return headSha ? { headSha, ...(baseSha ? { baseSha } : {}) } : undefined
+}
+
 /** A frame's provider members copied forward as they are, for a frame that forwards trusted metadata rather than reading it. */
 export function pickCodeHostHookMembers(frame: CodeHostHookMembers): CodeHostHookMembers {
   return {

@@ -33,7 +33,7 @@ import {
   type GitlabReviewOutcome,
   type ReviewIntentRow
 } from '../src/gitlab/review-adapter.js'
-import { ReviewMarkerSigner } from '../src/gitlab/review-marker.js'
+import { ReviewMarkerSigner } from '../src/codehost/review-marker.js'
 import { hookCoordinates, reviewSubjectLane, type HookQueueCandidate } from '../src/codehost/hook-admission.js'
 import { planRevisionAdmission, planRevisionAdmissionEffects } from '../src/codehost/queue-admission.js'
 import type { QueueEntry } from '../src/daemon/turn-types.js'
