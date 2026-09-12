@@ -43,6 +43,10 @@ jobs:
   # Build only typechecks what each package emits, so the no-emit pass here owns the test surface of
   # every package (plus the tsdown bundles, which never typecheck). Web is left out: `next build`
   # already checks its whole tsconfig, tests included.
+  #
+  # The chart's gate joins them, for a different reason than they joined each other: it duplicated no
+  # setup — helm and ruby are preinstalled, so its 9-16 s was all work — and it simply has nowhere
+  # cheaper to be than ~10 s at the end of a job that already has the checkout it needs.
   build:
     name: Build · Check
     runs-on: ubuntu-latest
@@ -84,22 +88,14 @@ jobs:
         env:
           pnpm_config_enable_pre_post_scripts: false
         run: pnpm build
-
-  # The Helm chart's own gate: lint plus the render contract in
-  # scripts/test-chart-render.rb (both preinstalled on the hosted image — helm, ruby).
-  # It runs unconditionally: chart edits are rare but every release publishes the chart,
-  # so a broken chart must fail the same gate that blocks a broken package.
-  chart:
-    name: Chart
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
+      # The chart's gate, on the same `!cancelled()` terms and for the same reason: chart edits are
+      # rare but every release publishes the chart, so a broken chart fails the gate that blocks a
+      # broken package rather than waiting behind one.
       - name: helm lint
+        if: ${{ !cancelled() }}
         run: helm lint charts/agentconnect
       - name: Render contract
+        if: ${{ !cancelled() }}
         run: ruby scripts/test-chart-render.rb
 
   # Keep the fast, Docker-free suites away from the resource-heavy build group
