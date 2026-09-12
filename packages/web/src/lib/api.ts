@@ -4092,6 +4092,10 @@ export type GitlabCommentFamily = 'issues' | 'merge_request'
  *  each with its own cadence and mention gate, and the family is immutable. */
 export type GithubHookFamily = 'pull_request' | 'issues' | 'push' | 'deployment'
 export type GitlabHookFamily = 'merge_request' | 'issues' | 'push'
+/** Gitea rows speak the GitLab family vocabulary (gitea-integration.md §8): a pull request
+ *  is stored as the `merge_request` family, and the relay maps its event types onto it. */
+export type GiteaHookFamily = GitlabHookFamily
+export type GiteaCommentFamily = GitlabCommentFamily
 /** The stored union across code hosts; each row carries only its own host's subset. */
 export type HookCommentFamily = GithubCommentFamily | GitlabCommentFamily
 export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
@@ -4188,10 +4192,27 @@ export interface CreateGitlabHookInput {
   reportingMode?: HookReportingMode
 }
 
+// gitea kind: the repository must already be a managed binding in the org — the CP
+// validates the numeric id against its own row and derives the path from it.
+export interface CreateGiteaHookInput {
+  agentId: string
+  name: string
+  enabled?: boolean
+  repoId: string // numeric Gitea repository id
+  family: GiteaHookFamily // one row per family; every event pattern must belong to it
+  events: string[] // 'issues:*' / 'merge_request:*' / 'push:*' — at least one
+  commentFamilies?: GiteaCommentFamily[]
+  mentionOnly?: boolean
+  reviewPolicy?: HookReviewPolicy
+  // 'check' publishes the pull request's commit status; no gateMode — a required check is the operator's choice.
+  reportingMode?: HookReportingMode
+}
+
 // The family is immutable, so no update body carries it — changing a row's
 // family is a delete plus a create.
 export type UpdateGithubHookInput = Omit<CreateGithubHookInput, 'family'>
 export type UpdateGitlabHookInput = Omit<CreateGitlabHookInput, 'family'>
+export type UpdateGiteaHookInput = Omit<CreateGiteaHookInput, 'family'>
 
 // A hook is subordinate to its agent (like an Integration), so there is no
 // org-wide hook list — you fetch ONE agent's hooks, gated server-side by that
@@ -4236,6 +4257,19 @@ export async function updateGitlabHook(id: string, input: UpdateGitlabHookInput)
   return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'gitlab', ...input })
 }
 
+// Gitea subscription — no URL, no secret: the managed repository webhook signs its own
+// deliveries. Events ride through the relay, one session per issue/pull-request thread.
+export async function createGiteaHook(input: CreateGiteaHookInput): Promise<CreatedHookDto> {
+  const hook = await apiPost<CreatedHookDto>(`${orgBase()}/hooks`, { kind: 'gitea', ...input })
+  track('hook_created', { org_id: apiOrgId, agent_id: hook.agentId, hook_kind: hook.kind, hook_id: hook.id })
+  return hook
+}
+
+// Update a gitea hook's subscription. Whole-definition PUT, like the other two.
+export async function updateGiteaHook(id: string, input: UpdateGiteaHookInput): Promise<HookDto> {
+  return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'gitea', ...input })
+}
+
 export async function deleteHook(id: string): Promise<void> {
   await apiDelete<void>(`${orgBase()}/hooks/${encodeURIComponent(id)}`)
   track('hook_deleted', { org_id: apiOrgId, hook_id: id })
@@ -4268,6 +4302,27 @@ export async function rerunGitlabHook(
   orgId?: string
 ): Promise<HookRerunDto> {
   return apiPost<HookRerunDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(hookId)}/rerun`, { subject })
+}
+
+/** One Gitea rerun subject — the two thread kinds a session can be keyed to. Gitea gives
+ *  issues and pull requests ONE index space, so the kind discriminates and the index is the
+ *  `iid` the shared route already carries. */
+export interface GiteaRerunSubject {
+  kind: 'pull' | 'issue'
+  index: number
+}
+
+// The "Run again" action for a Gitea trigger thread. Gitea has no native re-run control
+// either, so it reuses the one rerun route: the caller names only the subject, and the
+// Control Plane reads its current state and head itself.
+export async function rerunGiteaHook(
+  hookId: string,
+  subject: GiteaRerunSubject,
+  orgId?: string
+): Promise<HookRerunDto> {
+  return apiPost<HookRerunDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(hookId)}/rerun`, {
+    subject: { kind: subject.kind === 'pull' ? 'merge_request' : 'issue', iid: subject.index }
+  })
 }
 
 // Per-conversation trigger choice (`PATCH /integrations/:id/channels/:channelId`). The CP
@@ -5722,6 +5777,164 @@ export async function fetchGitlabAccounts(
   }
 }
 
+// ── gitea connection and repository bindings ─────────────────────────────────
+// The organization's ONE Gitea bot connection and the repositories it manages
+// (gitea-integration.md §4, §5, §12). Deployment-config opt-in like the GitHub
+// App: without a configured instance the CP registers none of these routes and
+// every call 404s — mapped to `enabled: false` so callers get a tri-state
+// instead of throws. The bot token is write-only: it is verified, sealed and
+// never echoed by any route on this surface.
+
+/** The organization's Gitea bot connection — identity facts only, never the token. */
+export interface GiteaConnectionDto {
+  id: string
+  botUserId: string // numeric Gitea user id, losslessly as a string
+  botUsername: string
+  botDisplayName: string | null
+  state: 'connected' | 'token_rejected' | 'disconnecting'
+  connectedBy: string | null // AgentConnect user id; null after user deletion
+  credentialEpoch: string
+  /** Managed repositories this connection administers; removal walks each one (§6). */
+  boundRepositories: number
+  /** The instance this deployment talks to (§3) — the same for every connection. */
+  instanceUrl: string
+  /** What that instance last reported through this connection, and whether it clears the
+   *  floor the CP enforces. Both null until the first credentialed contact. */
+  instanceVersion: string | null
+  instanceVersionSupported: boolean | null
+  instanceVersionFloor: string
+  /** The token scopes the connect step verifies (§4.1) — shown beside the input. */
+  requiredScopes: string[]
+  lastVerifiedAt: string | null
+  createdAt: string
+}
+
+/** Removal walks every binding first (§6): `removed` is true only once the row itself is gone. */
+export interface GiteaConnectionDeleteDto {
+  removed: boolean
+  /** Bindings still parked in cleanup_pending, whose webhook removal is owed. */
+  pendingRepositories: number
+  connection: GiteaConnectionDto | null
+}
+
+/** One repository the bot ADMINISTERS, for the picker (§4.4, §6) — metadata only. */
+export interface GiteaRepositoryDto {
+  repoId: string // numeric id, losslessly as a string
+  path: string // current owner/repo — display only, renames are expected
+  cloneUrl: string | null
+  defaultBranch: string | null
+  private: boolean
+}
+
+/** The managed webhook's state. `not_needed` is a normal resting state — a repository with
+ *  no enabled trigger wants no ingress — not a condition anyone has to act on. */
+export type GiteaWebhookState = 'not_needed' | 'installed' | 'repairing' | 'failed'
+
+export type GiteaRepositoryBindingState =
+  'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
+
+/** One managed repository — its lifecycle state and non-secret external identity. */
+export interface GiteaRepositoryBindingDto {
+  id: string
+  connectionId: string
+  repoId: string
+  repoPath: string
+  cloneUrl: string | null
+  defaultBranch: string | null
+  state: GiteaRepositoryBindingState
+  /** `token_rejected`, `admin_lost`, `webhook_unverified`, or another bounded repair category. */
+  stateReason: string | null
+  webhookState: GiteaWebhookState
+  /** When the relay last verified a delivery; null until the test delivery arrived. */
+  lastVerifiedDeliveryAt: string | null
+  createdAt: string
+}
+
+/** Removing a repository can leave external cleanup unfinished; the binding then stays
+ *  listed as `cleanup_pending` instead of disappearing (§6). */
+export interface GiteaRepositoryRemovalDto {
+  removed: boolean
+  state?: GiteaRepositoryBindingState
+  stateReason?: string | null
+}
+
+/** The rotation outcome (§7): `promoted` says whether the relay already verified a delivery
+ *  under the successor's key, which is what retires the old webhook. */
+export interface GiteaWebhookRotationDto {
+  rotated: boolean
+  promoted: boolean
+  reason: string | null
+}
+
+/** The connection list doubles as the enabled-probe: 404 ⇒ no Gitea instance is configured
+ *  on this deployment, which is an absence to state rather than a failure. */
+export async function fetchGiteaConnections(
+  orgId?: string
+): Promise<{ enabled: boolean; connections: GiteaConnectionDto[] }> {
+  try {
+    const body = await apiGet<{ connections: GiteaConnectionDto[] }>(`${orgBase(orgId)}/gitea/connections`)
+    return { enabled: true, connections: body.connections }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { enabled: false, connections: [] }
+    throw e
+  }
+}
+
+/** Connect the organization's bot (§4.1). The token is verified against the instance,
+ *  sealed, and never returned; refusals carry a machine `code` the card words itself. */
+export function connectGitea(token: string): Promise<GiteaConnectionDto> {
+  return apiPost<GiteaConnectionDto>(`${orgBase()}/gitea/connections`, { token })
+}
+
+/** Replace the bot's token (§4.3) — the same checks, the same numeric bot user, then an
+ *  atomic switch and a credential-epoch bump. The old token is revoked by a human. */
+export function replaceGiteaToken(id: string, token: string): Promise<GiteaConnectionDto> {
+  return apiPost<GiteaConnectionDto>(`${orgBase()}/gitea/connections/${encodeURIComponent(id)}/token`, { token })
+}
+
+/** Disconnect: every managed repository's removal path runs first (§6), so a binding that
+ *  cannot finish keeps the row until a replacement token or a manual webhook removal clears it. */
+export function disconnectGiteaConnection(id: string): Promise<GiteaConnectionDeleteDto> {
+  return apiDelete<GiteaConnectionDeleteDto>(`${orgBase()}/gitea/connections/${encodeURIComponent(id)}`)
+}
+
+/** The picker's candidates: every repository the bot holds `admin` on, keyed by numeric id. */
+export function fetchGiteaConnectionRepositories(connectionId: string): Promise<GiteaRepositoryDto[]> {
+  return apiGet<{ repositories: GiteaRepositoryDto[] }>(
+    `${orgBase()}/gitea/connections/${encodeURIComponent(connectionId)}/repositories`
+  ).then((r) => r.repositories)
+}
+
+export function fetchGiteaRepositories(orgId?: string): Promise<GiteaRepositoryBindingDto[]> {
+  return apiGet<{ bindings: GiteaRepositoryBindingDto[] }>(`${orgBase(orgId)}/gitea/repositories`).then(
+    (r) => r.bindings
+  )
+}
+
+/** Bind a repository. The server re-fetches it by id and requires the bot to hold `admin`
+ *  right now, so the returned binding — not the picked row — is the truth. */
+export function createGiteaRepository(input: { repoId: string }): Promise<GiteaRepositoryBindingDto> {
+  return apiPost<GiteaRepositoryBindingDto>(`${orgBase()}/gitea/repositories`, input)
+}
+
+/** Re-run convergence: repository facts, the bot's `admin`, and the managed webhook. */
+export function repairGiteaRepository(id: string): Promise<GiteaRepositoryBindingDto> {
+  return apiPost<GiteaRepositoryBindingDto>(`${orgBase()}/gitea/repositories/${encodeURIComponent(id)}/repair`, {})
+}
+
+/** Rotate the managed webhook's signing secret (§7). A webhook's secret is set at creation
+ *  only, so the key is rotated by replacing the webhook under a successor key. */
+export function rotateGiteaWebhookSecret(id: string): Promise<GiteaWebhookRotationDto> {
+  return apiPost<GiteaWebhookRotationDto>(
+    `${orgBase()}/gitea/repositories/${encodeURIComponent(id)}/rotate-webhook-secret`,
+    {}
+  )
+}
+
+export function deleteGiteaRepository(id: string): Promise<GiteaRepositoryRemovalDto> {
+  return apiDelete<GiteaRepositoryRemovalDto>(`${orgBase()}/gitea/repositories/${encodeURIComponent(id)}`)
+}
+
 // ── agent repository authorizations (agent-multi-repo-authorization.md) ──────
 // Explicit non-workspace repo grants on an agent — the detail page's
 // Repositories card. The workspace repo is implicit and never listed here; the
@@ -5760,9 +5973,12 @@ export async function fetchAgentRepos(agentId: string, orgId?: string): Promise<
 // USER_NO_ACCESS) that the add-repo modal words inline.
 export async function createAgentRepo(
   agentId: string,
-  // One arm per host: a GitHub repository by full name, a GitLab project by its
-  // numeric id (the namespaced path is never a match key).
-  input: { repoFullName: string; access: RepoAccess } | { provider: 'gitlab'; projectId: string; access: RepoAccess }
+  // One arm per host: a GitHub repository by full name, a GitLab project or a Gitea
+  // repository by its numeric id (a display path is never a match key).
+  input:
+    | { repoFullName: string; access: RepoAccess }
+    | { provider: 'gitlab'; projectId: string; access: RepoAccess }
+    | { provider: 'gitea'; repoId: string; access: RepoAccess }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos`
   const res = await authenticatedFetch(
