@@ -760,7 +760,7 @@ Each step is one pull request, merged in order.
   review-delivery correlation fetched under the turn's lease before the prompt.
 - **G5 — Reviews and run projection.** The Gitea review adapter, the commit
   status writer, the Console rerun binding.
-- **G6 — Console and docs.** _Landed._ The Gitea card — connect, replace token,
+- **G6 — Console and docs.** _Landed (#2055)._ The Gitea card — connect, replace token,
   disconnect, the repository picker, the five binding states with their repair
   reasons, repair, webhook-secret rotation and unbind — the `gitea` hook kind
   with its two subject families and the commit-status disclosure, the workspace
