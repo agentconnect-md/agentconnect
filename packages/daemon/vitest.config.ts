@@ -1,6 +1,6 @@
 import { defineConfig, configDefaults } from 'vitest/config'
 import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js'
-import { SizeBalancedSequencer } from '../../scripts/vitest-shard-sequencer.js'
+import { weightBalancedSequencer } from '../../scripts/vitest-shard-sequencer.js'
 import { BASE_TEST_TIMEOUT } from '../../scripts/vitest-test-budget.js'
 
 // The files that call `vi.mock`. A mock is registered per FILE but rewires a module in the registry,
@@ -61,6 +61,40 @@ export const WINDOWS_EXCLUDED = [
   'test/daemon-loop-guard-pool.test.ts'
 ]
 
+// Seconds on the Windows runner, the mean of three runs. These 25 files are 78% of the suite's time, which is
+// why weighing them alone balances the shards; everything else is the fallback below, and a new file needs an
+// entry only once it grows into this tail. `test/shard-weights.test.ts` fails when an entry stops naming a file.
+export const SHARD_WEIGHTS: Record<string, number> = {
+  'test/workspace-session-clone.test.ts': 121,
+  'test/workspace-secondary-roots.test.ts': 100,
+  'test/daemon-message-agent.test.ts': 85,
+  'test/daemon-lifecycle.test.ts': 73,
+  'test/daemon-hook.test.ts': 68,
+  'test/reconcile-watch.test.ts': 59,
+  'test/daemon-duty-install.test.ts': 55,
+  'test/cp/cp-agent-reconcile.test.ts': 50,
+  'test/daemon-duty-drain.test.ts': 46,
+  'test/daemon-commands.test.ts': 39,
+  'test/daemon-webchat.test.ts': 39,
+  'test/daemon-agent-mention-routing.test.ts': 31,
+  'test/workspace-git-write.test.ts': 30,
+  'test/daemon-duty-fence.test.ts': 30,
+  'test/linear-ingress.test.ts': 30,
+  'test/daemon-smoke.test.ts': 29,
+  'test/daemon-session-hosts.test.ts': 28,
+  'test/daemon-transcript.test.ts': 23,
+  'test/durable-inbox.test.ts': 21,
+  'test/telegram-threading.test.ts': 18,
+  'test/daemon-duty-replacement.test.ts': 18,
+  'test/session-manager.test.ts': 17,
+  'test/daemon-serial-gate.test.ts': 14,
+  'test/dream-runner.test.ts': 14,
+  'test/orchestration.test.ts': 13
+}
+
+// The unlisted 326 files measured 0.88 s on average, and rounding that up costs the partition nothing.
+export const SHARD_WEIGHT_FALLBACK = 1
+
 const platformExcluded = process.platform === 'win32' ? WINDOWS_EXCLUDED : []
 
 export default defineConfig({
@@ -70,7 +104,7 @@ export default defineConfig({
     // resources. Four on Windows too: the halving there bought time for inline per-test budgets that
     // no longer exist, and the polls those budgets never governed now scale in `test/wait-support.ts`.
     maxWorkers: 4,
-    sequence: { sequencer: SizeBalancedSequencer },
+    sequence: { sequencer: weightBalancedSequencer(SHARD_WEIGHTS, SHARD_WEIGHT_FALLBACK) },
     // The async store pays a microtask hop per statement; on a loaded CI box the IO-heavy store files
     // drift past vitest's 5 s default without being hung. Windows I/O is slower again by enough that
     // the same files need double the budget.
