@@ -31,11 +31,20 @@ concurrency:
   group: test-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Keep builds, static checks, Docker-free unit tests, and the Docker-bound
-# integration suite separate so all four workloads can be scheduled independently.
+# Keep the static gate, the Docker-free unit tests, and the Docker-bound
+# integration suite separate so all three workloads can be scheduled independently.
 jobs:
+  # The static gate: lint, format, typecheck and the workspace build, in one job because they wanted
+  # the same runner state. Separately they each paid a checkout, a pnpm and Node setup, an install
+  # and a `prisma:generate` — about 55 s twice — to reach the same tree, and the build ran 42-85 s of
+  # a 118-153 s job. Merged, one setup carries both and the runner it gives back goes to the suites
+  # that are actually the critical path. Split again if the two ever stop wanting the same state.
+  #
+  # Build only typechecks what each package emits, so the no-emit pass here owns the test surface of
+  # every package (plus the tsdown bundles, which never typecheck). Web is left out: `next build`
+  # already checks its whole tsconfig, tests included.
   build:
-    name: Build
+    name: Build · Check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -62,39 +71,8 @@ jobs:
             ${{ runner.os }}-nextjs-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Install
         run: pnpm install --frozen-lockfile
-      - name: Generate Prisma client
-        run: pnpm -r prisma:generate
-      - name: Build
-        env:
-          pnpm_config_enable_pre_post_scripts: false
-        run: pnpm build
-
-  # Build only typechecks what each package emits, so this no-emit pass owns the
-  # test surface of every package (plus the tsdown bundles, which never typecheck).
-  # Web is left out: `next build` already checks its whole tsconfig, tests included.
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: pnpm/action-setup@v6
-        with:
-          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
-          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
-          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
-          version: 11.19.0
-          cache: true
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .nvmrc
-      - name: Install
-        run: pnpm install --frozen-lockfile
-      # Run before any workspace build so source-checkout export resolution
-      # cannot be accidentally masked by protocol/connection dist artifacts.
+      # Still the first thing after the install, and the Build step below is why: it has to see the
+      # source checkout before protocol/connection dist artifacts can mask export resolution.
       - name: Evaluation config validation · clean checkout
         env:
           PROMPTFOO_DISABLE_TELEMETRY: '1'
@@ -105,6 +83,13 @@ jobs:
         env:
           pnpm_config_enable_pre_post_scripts: false
         run: pnpm --workspace-concurrency=5 run "/^(lint|format:check|typecheck:ci)$/"
+      # Runs even when the static pass failed: one job must not report a lint error in place of a
+      # broken build, which is what the two jobs it replaces would each have said on their own.
+      - name: Build
+        if: ${{ !cancelled() }}
+        env:
+          pnpm_config_enable_pre_post_scripts: false
+        run: pnpm build
 
   # The Helm chart's own gate: lint plus the render contract in
   # scripts/test-chart-render.rb (both preinstalled on the hosted image — helm, ruby).
