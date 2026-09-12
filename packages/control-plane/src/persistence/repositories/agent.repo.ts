@@ -777,6 +777,10 @@ export class PgAgentRepo implements AgentRepo {
           await lockHookReviewAgentRepoScope(tx, agentId, repoId)
         }
         await assertWorkspaceIntegrationCompatible(tx, agentId, affectedRepoIds, workspace, workspaceRepoId)
+        // A rollback onto a gitea workspace is a reference too (§6): it fails closed if the binding went meanwhile.
+        if (workspace.mode === 'git' && workspace.credential?.provider === 'gitea' && workspaceRepoId !== undefined) {
+          await joinGiteaBindingFence(tx, orgId, workspaceRepoId)
+        }
         const a = await tx.agent.update({
           where: {
             id: agentId,

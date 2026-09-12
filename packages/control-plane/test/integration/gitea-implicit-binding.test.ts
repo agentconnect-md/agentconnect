@@ -601,21 +601,28 @@ describe('the reference fence (§6)', () => {
     ).rejects.toBeInstanceOf(GiteaBindingUnavailable)
     const agents = new PgAgentRepo(prisma)
     const agent = (await agents.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    const giteaWorkspace = {
+      mode: 'git' as const,
+      isolation: 'shared' as const,
+      gitRepo: `${BASE}/example-org/example-repo.git`,
+      credential: { provider: 'gitea' as const, access: 'write' as const }
+    }
     await expect(
-      agents.setWorkspace(
+      agents.setWorkspace(OrgId(DEFAULT_ORG_ID), agent.id, agent.lastModifiedAt, 'scratch', giteaWorkspace, REPO)
+    ).rejects.toBeInstanceOf(GiteaBindingUnavailable)
+    // A rollback onto the old gitea workspace is a reference too: it fails closed rather than reviving the binding's authority.
+    await expect(
+      agents.restoreWorkspace(
         OrgId(DEFAULT_ORG_ID),
         agent.id,
         agent.lastModifiedAt,
-        'scratch',
-        {
-          mode: 'git',
-          isolation: 'shared',
-          gitRepo: `${BASE}/example-org/example-repo.git`,
-          credential: { provider: 'gitea', access: 'write' }
-        },
+        agent.workspace,
+        agent.workspaceRepoId,
+        giteaWorkspace,
         REPO
       )
     ).rejects.toBeInstanceOf(GiteaBindingUnavailable)
+    expect((await agents.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!.workspace.mode).toBe('scratch')
     await expect(
       new PgAgentRepoAuthorizationRepo(prisma).create({
         agentId: AgentId(agentId),
