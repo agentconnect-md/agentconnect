@@ -22,7 +22,7 @@ on:
         value: ${{ jobs.unit.outputs.summary }}
       integration_test_summary:
         description: 'Integration test summary markdown'
-        value: ${{ format('{0}{1}', jobs.integration.outputs.summary_1, jobs.integration.outputs.summary_2) }}
+        value: ${{ jobs.integration.outputs.summary }}
 
 # Cancel superseded runs for the same PR (a newer push makes the old one moot).
 # Reusable release-gate calls use a run-scoped group so their tests can proceed
@@ -458,22 +458,18 @@ jobs:
   # control-plane integration tests against a real Postgres booted by
   # Testcontainers. Each Vitest worker gets an isolated database cloned from one
   # migrated template, so files run concurrently without cross-test TRUNCATEs.
-  # Each shard needs Docker, so it gets its own runner off the critical path.
+  # Needs Docker, so it gets its own runner off the critical path.
   # No build needed — the suite resolves workspace deps from source.
+  #
+  # One job, not two shards: the halves' own runs were 114 s and 95 s of a 165 s job, which projects to
+  # ~200 s merged — under the Unit Test job that sets the critical path at ~280 s either way — and buys
+  # back a runner, a duplicated install and one of the two Postgres boots. Re-split by restoring a matrix:
+  # the suite's sequencer already packs shards by cost and does nothing until `--shard` is passed.
   integration:
-    name: Integration tests (${{ matrix.shard }})
+    name: Integration tests
     runs-on: ubuntu-latest
     outputs:
-      summary_1: ${{ steps.export-summary.outputs.summary_1 }}
-      summary_2: ${{ steps.export-summary.outputs.summary_2 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: '1/2'
-            summary_output: summary_1
-          - shard: '2/2'
-            summary_output: summary_2
+      summary: ${{ steps.export-summary.outputs.markdown }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -498,7 +494,7 @@ jobs:
         env:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm --filter @agentconnect.md/control-plane test:int --shard=${{ matrix.shard }}
+        run: GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" pnpm --filter @agentconnect.md/control-plane test:int
       - name: Merge integration test summaries
         if: ${{ !cancelled() }}
         env:
@@ -506,7 +502,7 @@ jobs:
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: |
           GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" node scripts/merge-vitest-summaries.mjs \
-            'Integration test report · shard ${{ matrix.shard }}' \
+            'Integration test report' \
             'control-plane=@agentconnect.md/control-plane'
       - name: Publish integration test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
@@ -520,7 +516,7 @@ jobs:
           CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/integration-test-summary.md
         run: |
           {
-            echo '${{ matrix.summary_output }}<<__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
+            echo 'markdown<<__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
             cat "$CAPTURED_JOB_SUMMARY"
             echo '__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
