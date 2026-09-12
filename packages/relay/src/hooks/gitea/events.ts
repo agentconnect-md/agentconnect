@@ -122,7 +122,8 @@ function labelNames(subject: GiteaIssueRef | undefined): string[] {
 
 /** The owner login a Gitea team mention names. Gitea's `api.Repository.owner` is an `api.User`
  *  with no organization kind in 1.27 (`modules/structs/user.go`), so nothing in the signed payload
- *  gates the form: it is pure text against the owner login, inert where Gitea renders no team. */
+ *  gates the form: it is pure text against the owner login on any repository, and a personal one
+ *  simply has no team to suggest it. */
 function giteaTeamOwner(repository: GiteaPayload['repository']): string | undefined {
   return repository?.owner?.login || repository?.owner?.username || repository?.full_name?.split('/')[0] || undefined
 }
@@ -291,7 +292,8 @@ function normalizeGiteaSubject(eventType: string, payload: GiteaPayload): GiteaM
 }
 
 /** The targeted agent handle in either accepted form: the bare name, or the `@<owner>/<agent-name>`
- *  team an organization creates so the same handle autocompletes in Gitea's comment composer. */
+ *  team an organization creates so Gitea's comment composer suggests the handle to that team's
+ *  members; membership shapes only the suggestion, never this match. */
 function giteaMentionsAgent(body: string | undefined, rule: RcHookAssign, owner: string | undefined): boolean {
   return mentionsGithubHandle(body, rule.gitea?.agentName) || mentionsGithubTeam(body, owner, rule.gitea?.agentName)
 }
