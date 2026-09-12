@@ -209,7 +209,7 @@ describe('gitea hook normalization (§8)', () => {
     expect(review).toContain('REQUEST_CHANGES + fail')
     expect(review.split('\n\n').at(-1)!.length).toBeLessThan(400)
     expect(buildHookText(pull({ reviewPolicy: 'comment' }))).toContain('COMMENT + fail')
-    for (const event of ['merge_request:synchronize', 'merge_request:review_requested', 'merge_request:rerun']) {
+    for (const event of ['merge_request:synchronize', 'merge_request:review_requested']) {
       expect(giteaOpensReviewGeneration(event, pull().gitea, 'full')).toBe(true)
     }
     // An authorized mention opens one on any event; a headless pull request, an issue, or policy off never does.

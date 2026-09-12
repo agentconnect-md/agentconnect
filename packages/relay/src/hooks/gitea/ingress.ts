@@ -27,8 +27,6 @@ import {
   type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
-  type RcHookRerun,
-  type RcHookRerunResult,
   type RcRunReport,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
@@ -359,78 +357,4 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       return reply.code(202).send({ deliveryKey })
     })
   })
-}
-
-/** The deps one Console-initiated rerun needs — the ordinary ingress subset. */
-export type GiteaRerunDeps = Pick<GiteaIngressDeps, 'table' | 'daemons' | 'report' | 'limiter' | 'clock' | 'log'>
-
-/**
- * Re-dispatch one gitea hook turn on the Control Plane's `rc/hook-rerun`
- * (gitea-integration.md §10.4). The CP already revalidated the hook, agent,
- * binding, and live subject; the relay re-checks the frame against its OWN
- * compiled rule — a disable, retarget, or reconfigure since the CP read fails
- * the rerun closed — then reuses the ordinary dispatch path, including its
- * per-hook run budget.
- *
- * The return value IS the admission: only `admitted` means a turn was queued and
- * a run report will follow. Every refusal is definitive and leaves no HookRun
- * row, so the Control Plane is free to ask another relay.
- */
-export function dispatchGiteaRerun(deps: GiteaRerunDeps, rerun: RcHookRerun): RcHookRerunResult {
-  const rule = deps.table.getByHookId(rerun.hookId)
-  // No rule at all reads as an unconverged table: this relay's copy is filled by
-  // the CP's register replay, and the CP only sends a rerun it just compiled.
-  if (!rule) {
-    deps.log.info(`gitea rerun: no rule yet for ${rerun.hookId}:${rerun.deliveryKey}`)
-    return { admitted: false, code: 'replay_pending' }
-  }
-  // The frame is provider-keyed: a member this handler does not own is not a rule mismatch it
-  // can fix, so it refuses definitively and the Control Plane moves on.
-  const gitea = rerun.gitea
-  if (
-    !gitea ||
-    rule.kind !== 'gitea' ||
-    !rule.gitea ||
-    rule.agentId !== rerun.agentId ||
-    rule.gitea.repoId !== gitea.repoId ||
-    rule.configRevision !== rerun.configRevision ||
-    rule.dispatchRevision !== rerun.dispatchRevision
-  ) {
-    deps.log.info(`gitea rerun: ignored stale ${rerun.hookId}:${rerun.deliveryKey}`)
-    return { admitted: false, code: 'rule_mismatch' }
-  }
-  if (!deps.limiter.allow(rule.hookId)) {
-    deps.log.info(`gitea rerun: rate-limited ${rule.hookId}:${rerun.deliveryKey}`)
-    return { admitted: false, code: 'limiter_exhausted' }
-  }
-  const family = gitea.target.kind === 'issue' ? ('issues' as const) : ('merge_request' as const)
-  const msg: RdMsgHook = {
-    source: 'hook',
-    agentId: rule.agentId,
-    sessionKey: giteaSessionKey(rule, gitea.target),
-    msgId: `${rule.hookId}:${rerun.deliveryKey}`,
-    hookId: rule.hookId,
-    deliveryKey: rerun.deliveryKey,
-    firedAt: new Date(deps.clock.now()).toISOString(),
-    ...hookSnapshotForDelivery(rule),
-    event: rerun.event,
-    gitea,
-    // Control-authored envelope: no third-party text, so nothing to fence.
-    context: {
-      source: 'gitea',
-      event: family,
-      action: 'rerun',
-      repo: gitea.repoPath,
-      ...(gitea.target.kind !== 'push' ? { number: gitea.target.index } : {}),
-      truncated: false
-    },
-    ...(rule.target ? { target: rule.target } : {})
-  }
-  void dispatchHookFire(
-    { table: deps.table, daemons: deps.daemons, report: deps.report, clock: deps.clock, log: deps.log },
-    rule,
-    msg
-  )
-  deps.log.info(`gitea rerun: queued ${rule.hookId}:${rerun.deliveryKey} (${rerun.event} ${msg.sessionKey})`)
-  return { admitted: true, deliveryKey: rerun.deliveryKey }
 }

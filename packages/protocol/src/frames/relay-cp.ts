@@ -13,7 +13,6 @@ import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
 import {
-  codeHostHookMetadataOf,
   GiteaHookMetadata,
   GithubHookMetadata,
   GitlabHookMetadata,
@@ -483,70 +482,6 @@ export const RcHookRemove = z.object({
   hookId: z.string().uuid()
 })
 export type RcHookRemove = z.infer<typeof RcHookRemove>
-
-/**
- * C→R REQ → `rc/hook-rerun/ok` — re-dispatch ONE gitlab hook turn the Console
- * asked for (gitlab-com-integration.md §16.1 "Run again", §18.2). GitLab has no
- * native Check button, so the Control Plane is the entry point instead of a
- * signed provider callback; the frame carries only the fences and the freshly
- * read subject metadata, and the relay re-checks its own compiled rule before
- * reusing the ordinary hook dispatch path.
- *
- * Correlated, and NEVER retransmitted: a re-sent rerun is a second agent turn,
- * so an unanswered frame is ambiguous rather than retryable on the same relay.
- * Sent to ONE relay at a time (never broadcast) for the same reason; the CP
- * moves to another eligible relay only on a DEFINITIVE refusal below.
- * Gated on `gitlab-rerun-v1`, not `gitlab-com-v1`: the older bit predates this
- * frame and its holder cannot decode it. The Gitea rerun (gitea-integration.md
- * §10.4) rides the same frame through a `gitea` sibling gated on `gitea-v1`:
- * exactly one provider member carries the freshly read subject metadata, and a
- * relay that holds no rule for the member's provider refuses the frame closed.
- */
-export const RcHookRerun = z
-  .object({
-    hookId: z.string().uuid(),
-    agentId: z.string().uuid(),
-    deliveryKey: z.string().min(1), // Control-Plane-minted; the HookRun/dedup identity
-    configRevision: HookBigIntString,
-    dispatchRevision: HookBigIntString,
-    event: z.string().min(1), // normalized 'family:action', e.g. 'merge_request:rerun'
-    // `gitlab` was required pre-Gitea, so every existing sender stays valid; a relay
-    // without `gitea-v1` never receives the gitea member and keeps requiring this one.
-    gitlab: GitlabHookMetadata.optional(),
-    gitea: GiteaHookMetadata.optional()
-  })
-  .superRefine((rerun, ctx) => {
-    if (codeHostHookMetadataOf(rerun) === undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['gitlab'],
-        message: 'exactly one provider metadata member is required'
-      })
-    }
-  })
-export type RcHookRerun = z.infer<typeof RcHookRerun>
-
-/**
- * Definitive relay-side non-admission reasons. Each means NO turn started and
- * NO HookRun row opened, so the Control Plane may try another eligible relay
- * and must never report the click as accepted.
- *
- *  - `replay_pending`    — this relay holds no rule for the hook yet (its table
- *    is a memory copy filled by the register replay);
- *  - `rule_mismatch`     — it holds one, but the kind/agent/project/revision
- *    fence differs from the frame;
- *  - `limiter_exhausted` — the hook's shared per-hook run budget is spent.
- */
-export const RcHookRerunRefusal = z.enum(['replay_pending', 'rule_mismatch', 'limiter_exhausted'])
-export type RcHookRerunRefusal = z.infer<typeof RcHookRerunRefusal>
-
-/** R→C REP (corr = the `rc/hook-rerun` id). `admitted` is the ONLY proof a turn
- *  was queued: reaching a socket is not acceptance. */
-export const RcHookRerunResult = z.union([
-  z.object({ admitted: z.literal(true), deliveryKey: z.string().min(1) }),
-  z.object({ admitted: z.literal(false), code: RcHookRerunRefusal })
-])
-export type RcHookRerunResult = z.infer<typeof RcHookRerunResult>
 
 /** Definite pre-dispatch unavailability: the relay found no live connection for
  * the assigned daemon, so no agent turn or external review effect could start. */
@@ -1285,8 +1220,6 @@ export const RELAY_CP_SCHEMAS = {
   'rc/pull-request-feedback/ok': RcPullRequestFeedbackResult,
   'rc/hook-assign': RcHookAssign,
   'rc/hook-remove': RcHookRemove,
-  'rc/hook-rerun': RcHookRerun,
-  'rc/hook-rerun/ok': RcHookRerunResult,
   'rc/run-report': RcRunReport,
   'rc/github-installation': RcGithubInstallation,
   'rc/codehost-delivery': RcCodeHostDelivery,
@@ -1339,8 +1272,6 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/pull-request-feedback/ok', RELAY_CP_SCHEMAS['rc/pull-request-feedback/ok']),
   frameSchema('rc/hook-assign', RELAY_CP_SCHEMAS['rc/hook-assign']),
   frameSchema('rc/hook-remove', RELAY_CP_SCHEMAS['rc/hook-remove']),
-  frameSchema('rc/hook-rerun', RELAY_CP_SCHEMAS['rc/hook-rerun']),
-  frameSchema('rc/hook-rerun/ok', RELAY_CP_SCHEMAS['rc/hook-rerun/ok']),
   frameSchema('rc/run-report', RELAY_CP_SCHEMAS['rc/run-report']),
   frameSchema('rc/github-installation', RELAY_CP_SCHEMAS['rc/github-installation']),
   frameSchema('rc/codehost-delivery', RELAY_CP_SCHEMAS['rc/codehost-delivery']),

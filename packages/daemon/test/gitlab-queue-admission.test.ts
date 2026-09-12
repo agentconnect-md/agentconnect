@@ -108,9 +108,9 @@ describe('planRevisionAdmission (gitlab)', () => {
     expect(effects.preemptableActiveLosers).toEqual([])
   })
 
-  it('re-runs the current head an rc/hook-rerun names, preempting the review already generating it', () => {
+  it('re-runs the current head a reviewer re-request names, preempting the review already generating it', () => {
     const opened = entry('opened', 'merge_request:opened', HEAD_A, '2026-08-19T01:24:44.000Z')
-    const rerun = entry('rerun', 'merge_request:rerun', HEAD_A, '2026-08-19T01:26:00.000Z')
+    const rerun = entry('rerun', 'merge_request:review_requested', HEAD_A, '2026-08-19T01:26:00.000Z')
 
     const plan = planRevisionAdmission(KEY, rerun, active(opened))
 
@@ -123,7 +123,7 @@ describe('planRevisionAdmission (gitlab)', () => {
   it('collapses a burst of reviewer re-requests for one head onto the newest delivery', () => {
     const first = entry('first', 'merge_request:review_requested', HEAD_A, '2026-08-19T17:55:42.765Z')
     const second = entry('second', 'merge_request:review_requested', HEAD_A, '2026-08-19T17:55:42.947Z')
-    const third = entry('third', 'merge_request:rerun', HEAD_A, '2026-08-19T17:55:43.456Z')
+    const third = entry('third', 'merge_request:review_requested', HEAD_A, '2026-08-19T17:55:43.456Z')
 
     const plan = planRevisionAdmission(KEY, third, [
       { key: KEY, entry: first, state: 'active' },
@@ -138,7 +138,7 @@ describe('planRevisionAdmission (gitlab)', () => {
 
   it('leaves the head under review alone when a re-run names a stale one', () => {
     const pushed = entry('pushed', 'merge_request:synchronize', HEAD_B, '2026-08-19T01:28:20.000Z')
-    const rerun = entry('rerun', 'merge_request:rerun', HEAD_A, '2026-08-19T01:29:00.000Z')
+    const rerun = entry('rerun', 'merge_request:review_requested', HEAD_A, '2026-08-19T01:29:00.000Z')
 
     const plan = planRevisionAdmission(KEY, rerun, active(pushed))
 

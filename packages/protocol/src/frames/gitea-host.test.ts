@@ -1,7 +1,6 @@
 /**
  * Gitea's wire slice (gitea-integration.md §11): the feature string, the pre-spawn host field, the
- * credential arm, the compiled rule, the forwarded metadata, the rerun frame and the two gitcred
- * purposes. One rule is shared by every reader — absent means gitea.com, so a peer talking to a
+ * credential arm, the compiled rule, the forwarded metadata, and the two gitcred purposes. One rule is shared by every reader — absent means gitea.com, so a peer talking to a
  * control plane that predates this release is correct without a second negotiation.
  */
 import { describe, expect, it } from 'vitest'
@@ -10,7 +9,7 @@ import { CODE_HOST_PROVIDERS, HOOK_KINDS, isCodeHostProvider } from '../code-hos
 import { AgentSpec } from './agent.js'
 import { GiteaHookMetadata } from './hook.js'
 import { GitCredRequest } from './gitcred.js'
-import { RELAY_CP_SCHEMAS, RcCodeHostDelivery, RcHookAssign, RcHookRerun, codeHostHookRuleOf } from './relay-cp.js'
+import { RELAY_CP_SCHEMAS, RcCodeHostDelivery, RcHookAssign, codeHostHookRuleOf } from './relay-cp.js'
 import { RdMsg } from './relay-daemon.js'
 
 const SELF_HOSTED = 'https://gitea.example.test/gitea'
@@ -113,7 +112,7 @@ describe('the compiled gitea rule (§7)', () => {
   })
 })
 
-describe('the forwarded metadata and the rerun frame', () => {
+describe('the forwarded metadata', () => {
   it('round-trips the trusted metadata host the relay forwards', () => {
     expect(GiteaHookMetadata.parse({ ...hookMetadata, host: SELF_HOSTED }).host).toBe(SELF_HOSTED)
     expect(resolve(GiteaHookMetadata.parse(hookMetadata).host)).toBe('https://gitea.com')
@@ -133,23 +132,6 @@ describe('the forwarded metadata and the rerun frame', () => {
       context: { source: 'gitea', event: 'pull_request', action: 'opened', number: 7 }
     })
     expect(parsed.source === 'hook' ? parsed.gitea?.target : undefined).toEqual({ kind: 'pull', index: 7 })
-  })
-
-  it('admits exactly one provider member on rc/hook-rerun', () => {
-    const base = {
-      hookId: HOOK_ID,
-      agentId: AGENT_ID,
-      deliveryKey: 'rerun_1',
-      configRevision: '3',
-      dispatchRevision: '5',
-      event: 'merge_request:rerun'
-    }
-    expect(RcHookRerun.safeParse({ ...base, gitea: hookMetadata }).success).toBe(true)
-    // The pre-Gitea sender stays valid, and neither two members nor none decode.
-    const gitlab = { projectId: '4455667', projectPath: 'g/p', target: { kind: 'issue' as const, iid: 7 } }
-    expect(RcHookRerun.safeParse({ ...base, gitlab }).success).toBe(true)
-    expect(RcHookRerun.safeParse({ ...base, gitlab, gitea: hookMetadata }).success).toBe(false)
-    expect(RcHookRerun.safeParse(base).success).toBe(false)
   })
 })
 

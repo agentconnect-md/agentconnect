@@ -423,8 +423,7 @@ function buildGithubHookText(
 const GITLAB_REVISION_REVIEW_EVENTS = new Set([
   'merge_request:opened',
   'merge_request:synchronize',
-  'merge_request:review_requested',
-  'merge_request:rerun'
+  'merge_request:review_requested'
 ])
 
 /** True only when this delivery opens a formal review generation for the current MR head (§15). */

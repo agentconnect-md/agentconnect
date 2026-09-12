@@ -115,16 +115,16 @@ describe('planRevisionAdmission (gitea)', () => {
     expect(same.preemptableActiveLosers).toEqual([])
   })
 
-  it('pins a reviewer request and a console re-run to the current head, collapsing a burst onto the newest', () => {
+  it('pins a reviewer request to the current head, collapsing a burst onto the newest', () => {
     const opened = entry('opened', 'merge_request:opened', HEAD_A, '2026-09-12T01:24:44.000Z')
-    const rerun = entry('rerun', 'merge_request:rerun', HEAD_A, '2026-09-12T01:26:00.000Z')
+    const rerun = entry('rerun', 'merge_request:review_requested', HEAD_A, '2026-09-12T01:26:00.000Z')
     const plan = planRevisionAdmission(KEY, rerun, active(opened))
     expect(plan?.winner.entry).toBe(rerun)
     expect(planRevisionAdmissionEffects(plan!, rerun).preemptableActiveLosers.map((c) => c.entry)).toEqual([opened])
 
     const first = entry('first', 'merge_request:review_requested', HEAD_A, '2026-09-12T17:55:42.765Z')
     const second = entry('second', 'merge_request:review_requested', HEAD_A, '2026-09-12T17:55:42.947Z')
-    const third = entry('third', 'merge_request:rerun', HEAD_A, '2026-09-12T17:55:43.456Z')
+    const third = entry('third', 'merge_request:review_requested', HEAD_A, '2026-09-12T17:55:43.456Z')
     const burst = planRevisionAdmission(KEY, third, [
       { key: KEY, entry: first, state: 'active' },
       { key: KEY, entry: second, state: 'queued' }
@@ -136,7 +136,7 @@ describe('planRevisionAdmission (gitea)', () => {
 
     // A re-run naming a stale head leaves the head under review alone.
     const pushed = entry('pushed', 'merge_request:synchronize', HEAD_B, '2026-09-12T01:28:20.000Z')
-    const stale = entry('stale', 'merge_request:rerun', HEAD_A, '2026-09-12T01:29:00.000Z')
+    const stale = entry('stale', 'merge_request:review_requested', HEAD_A, '2026-09-12T01:29:00.000Z')
     expect(planRevisionAdmission(KEY, stale, active(pushed))?.superseded).toEqual([])
   })
 
