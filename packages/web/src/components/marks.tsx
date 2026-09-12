@@ -230,9 +230,9 @@ export function GitlabMark({ fillPct = 60 }: { fillPct?: number }) {
   return <IconifyIcon icon={gitlabIcon} ssr style={markBox(fillPct)} aria-hidden />
 }
 
-// Gitea mark — the simple-icons glyph, single-color like GitHub's rather than multi-color, so it
-// takes `color` the same way and reads on both surfaces.
-export function GiteaMark({ color = 'currentColor', fillPct = 60 }: { color?: string; fillPct?: number }) {
+// Gitea mark — the simple-icons glyph in Gitea's brand green; `color` overrides it for a monochrome surface.
+export const GITEA_BRAND_COLOR = '#609926'
+export function GiteaMark({ color = GITEA_BRAND_COLOR, fillPct = 60 }: { color?: string; fillPct?: number }) {
   return <SiGitea style={{ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' }} color={color} aria-hidden />
 }
 
@@ -274,7 +274,7 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
     return <IconifyIcon icon={gitlabIcon} ssr style={sq} aria-hidden />
   }
   if (x.includes('gitea')) {
-    return <SiGitea style={sq} color="currentColor" aria-hidden />
+    return <SiGitea style={sq} color={GITEA_BRAND_COLOR} aria-hidden />
   }
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />
