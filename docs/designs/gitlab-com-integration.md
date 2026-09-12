@@ -1503,7 +1503,11 @@ projection pending rather than creating a second provider egress path.
 
 The durable projection ports the existing generation, lease, pending-intent,
 write-marker, tombstone, and out-of-order completion rules from the
-Control-Plane-owned GitHub Checks writer. Moving the writer to the daemon is a
+Control-Plane-owned GitHub Checks writer. Cross-head supersession is ranked by
+acceptance — a head's rank on the merge request is its run's acceptance time, so
+the Control Plane records the row first and then preempts only strictly older
+heads, and a late terminal report from an older head neither supersedes the
+newer head nor revives its own row. Moving the writer to the daemon is a
 deliberate inversion — GitHub Checks are a dedicated body-free status API the
 Control Plane writes itself, while a GitLab status note lives in the
 merge-request conversation that Section 6.1 keeps the Control Plane out of —

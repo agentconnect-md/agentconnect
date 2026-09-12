@@ -235,15 +235,8 @@ export class CodeHostNoteProjectionService {
     const account = await this.deps.accounts.forAgentBinding(edge.orgId, edge.agentId, binding.id)
     if (!account || account.serviceAccountUserId === null || account.state !== 'ready') return
 
-    // A newer head preempts every older generation on the same merge request before the new one
-    // opens, so exactly one note per head reads current.
-    await this.deps.projections.supersede(
-      HookId(edge.hookId),
-      subject.projectId,
-      subject.mergeRequestIid,
-      subject.headSha,
-      edge.at
-    )
+    // The run's acceptance ranks its head on the merge request: the same on every edge, so a late edge of an older head outranks nothing.
+    const acceptedAt = run.startedAt
     const terminal = edge.state !== 'queued' && edge.state !== 'running'
     const reason = normalizedReason(edge.reason)
     const projection = await this.deps.projections.upsert({
@@ -266,7 +259,7 @@ export class CodeHostNoteProjectionService {
       ...subject,
       ...(reason ? { reason } : {}),
       ...(edge.sessionId ? { sessionId: edge.sessionId } : {}),
-      ...(edge.state === 'queued' ? { queuedAt: edge.at } : {}),
+      queuedAt: acceptedAt,
       ...(edge.state === 'running' ? { startedAt: edge.at } : {}),
       ...(terminal ? { completedAt: edge.at } : {}),
       nextAttemptAt: edge.at
@@ -274,11 +267,22 @@ export class CodeHostNoteProjectionService {
     // Null ⇒ the hook was retired under the lifecycle fence while this edge was in flight; a retired
     // hook needs no projection, so the edge is simply dropped.
     if (!projection || projection.tombstonedAt) return
+    // The row already belongs to a newer run of this head: an older delivery's edge moves nothing.
+    if (projection.currentDeliveryKey !== edge.deliveryKey) return
+    // The newest accepted head preempts every older one, this head's own row included when a newer head is already here.
+    await this.deps.projections.supersede(
+      HookId(edge.hookId),
+      subject.projectId,
+      subject.mergeRequestIid,
+      subject.headSha,
+      edge.at,
+      acceptedAt
+    )
     // The upsert parks an edge that landed mid-write; that intent is dispatched when the in-flight
     // generation settles, not now.
     if (projection.writePhase !== null) return
     // Later edges of the same delivery move the state inside this generation. A late queued/running
-    // one loses here against the terminal authority that already sealed it.
+    // one loses here against the terminal authority that already sealed it; a superseded row refuses every edge.
     const moved = await this.deps.projections.setDesired(
       projection.id,
       projection.generation,

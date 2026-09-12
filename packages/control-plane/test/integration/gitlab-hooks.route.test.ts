@@ -43,6 +43,7 @@ import {
   GITLAB_INSTANCE_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
   type CodeHostNoteDesired,
+  type CodeHostNoteState,
   type RcHookAssign,
   type RcHookRerun,
   type RcHookRerunResult
@@ -1154,10 +1155,11 @@ describe('gitlab hook rerun — the Console "Run again" route (§16.1/§18.2)', 
 describe('gitlab run projection — the fence follows the agent account (§7.2/§16)', () => {
   const PROJECTION_HEAD = 'a'.repeat(40)
 
-  function projectionService(sent: CodeHostNoteDesired[]) {
+  /** `runs` defaults to one accepted run; a test that ranks heads by acceptance passes the real ledger. */
+  function projectionService(sent: CodeHostNoteDesired[], runs?: PgHookRepo) {
     return new CodeHostNoteProjectionService({
       projections: new PgCodeHostRunProjectionRepo(prisma),
-      runs: { getRun: async () => ({ projectionEpoch: 1n }) } as never,
+      runs: runs ?? ({ getRun: async () => ({ projectionEpoch: 1n, startedAt: new Date() }) } as never),
       agents: new PgAgentRepo(prisma),
       bindings: new PgGitlabProjectBindingRepo(prisma),
       accounts: new PgGitlabAgentAccountRepo(prisma),
@@ -1169,13 +1171,19 @@ describe('gitlab run projection — the fence follows the agent account (§7.2/�
     })
   }
 
-  function edge(agentId: string, hookId: string, daemonId: string, headSha = PROJECTION_HEAD) {
+  function edge(
+    agentId: string,
+    hookId: string,
+    daemonId: string,
+    headSha = PROJECTION_HEAD,
+    over: { deliveryKey?: string; state?: CodeHostNoteState } = {}
+  ) {
     return {
       hookId,
       agentId,
-      deliveryKey: `delivery-${randomUUID().slice(0, 8)}`,
+      deliveryKey: over.deliveryKey ?? `delivery-${randomUUID().slice(0, 8)}`,
       orgId: OrgId(DEFAULT_ORG_ID),
-      state: 'queued' as const,
+      state: over.state ?? ('queued' as const),
       gitlab: {
         projectId: PROJECT.toString(),
         projectPath: 'example-group/example-project',
@@ -1242,6 +1250,73 @@ describe('gitlab run projection — the fence follows the agent account (§7.2/�
     // Fail closed, like every other missing-authority early return.
     expect(sent).toHaveLength(0)
     expect(await prisma.codeHostRunProjection.count({ where: { hookId } })).toBe(0)
+  })
+
+  it('keeps the newest head current when an older head reports late', async () => {
+    const NEXT_HEAD = 'b'.repeat(40)
+    const h = await harness()
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    const hookId = (created.json() as { id: string }).id
+    await h.settled()
+    // Two accepted runs on the same merge request, the second one newer: their acceptance is the heads' rank.
+    const accepted = { old: new Date(Date.now() - 60_000), next: new Date(Date.now() - 30_000) }
+    const accept = (deliveryKey: string, startedAt: Date) =>
+      prisma.hookRun.create({
+        data: {
+          hookId,
+          orgId: DEFAULT_ORG_ID,
+          deliveryKey,
+          event: 'merge_request:update',
+          startedAt,
+          agentId: h.agentId,
+          dispatchDaemonId: h.daemonId,
+          projectionEpoch: 1n,
+          repoId: PROJECT,
+          subjectKind: 'merge_request'
+        }
+      })
+    await accept('delivery-old', accepted.old)
+    await accept('delivery-next', accepted.next)
+
+    const sent: CodeHostNoteDesired[] = []
+    const service = projectionService(sent, h.hookRepo)
+    // The daemon owns the note, so every dispatched generation is settled as written before the next edge.
+    const settle = async (desired: CodeHostNoteDesired, noteId: string) =>
+      service.recordResult(
+        {
+          projectionId: desired.projectionId,
+          hookId,
+          generation: desired.generation,
+          writeMarker: desired.writeMarker,
+          outcome: 'written',
+          noteId,
+          observedState: desired.state,
+          observedAt: new Date().toISOString()
+        },
+        h.daemonId,
+        OrgId(DEFAULT_ORG_ID)
+      )
+    const older = (state?: CodeHostNoteState) =>
+      edge(h.agentId, hookId, h.daemonId, PROJECTION_HEAD, { deliveryKey: 'delivery-old', ...(state ? { state } : {}) })
+    const newer = () => edge(h.agentId, hookId, h.daemonId, NEXT_HEAD, { deliveryKey: 'delivery-next' })
+    const row = (headSha: string) => prisma.codeHostRunProjection.findFirstOrThrow({ where: { hookId, headSha } })
+
+    await service.afterAccepted(older() as never)
+    expect(await settle(sent[0]!, '9001')).toBe('settled')
+    await service.afterStart(older('running') as never)
+    expect(await settle(sent[1]!, '9001')).toBe('settled')
+    // The newer head arrives while the older run is still running: it preempts the older head.
+    await service.afterAccepted(newer() as never)
+    expect(await settle(sent[2]!, '9002')).toBe('settled')
+    expect(await row(PROJECTION_HEAD)).toMatchObject({ desiredState: 'superseded' })
+    expect(await row(NEXT_HEAD)).toMatchObject({ desiredState: 'queued', queuedAt: accepted.next })
+    const written = sent.length
+
+    // The older head's run finishes after that: it supersedes nothing, revives nothing, and asks for no write.
+    await service.afterReport(older('completed') as never)
+    expect(sent).toHaveLength(written)
+    expect(await row(PROJECTION_HEAD)).toMatchObject({ desiredState: 'superseded' })
+    expect(await row(NEXT_HEAD)).toMatchObject({ desiredState: 'queued' })
   })
 })
 

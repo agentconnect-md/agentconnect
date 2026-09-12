@@ -25,6 +25,8 @@ import {
 } from './note-projection.service.js'
 
 const NOW = 1_700_000_000_000
+// The accepted run's own time, deliberately earlier than the edge's: it ranks the head, the edge does not.
+const ACCEPTED = NOW - 30_000
 const hookId = HookId('00000000-0000-4000-8000-000000000001')
 const agentId = AgentId('00000000-0000-4000-8000-000000000002')
 const daemonId = DaemonId('00000000-0000-4000-8000-000000000003')
@@ -156,7 +158,10 @@ function harness(
   }
   // The accepted run, whose epoch the projection must spend even after the live hook moves on.
   const runs = {
-    getRun: vi.fn(async () => ({ projectionEpoch: options.runEpoch === undefined ? 1n : options.runEpoch }))
+    getRun: vi.fn(async () => ({
+      projectionEpoch: options.runEpoch === undefined ? 1n : options.runEpoch,
+      startedAt: new Date(ACCEPTED)
+    }))
   }
   // The account's own epoch, deliberately DIFFERENT from the binding's: the two
   // counters advance independently and the daemon fences on the account's.
@@ -278,13 +283,40 @@ describe('CodeHostNoteProjectionService', () => {
     expect(sent).toHaveLength(0)
   })
 
-  it('supersedes older heads on the same merge request before opening the new generation', async () => {
+  it('establishes the row first, then preempts older heads by the run’s acceptance', async () => {
     const { service, projections } = harness()
     await service.afterAccepted(edge({ gitlab: gitlab({ headSha: 'b'.repeat(40) }) }))
-    expect(projections.supersede).toHaveBeenCalledWith(hookId, 4455667n, 42, 'b'.repeat(40), new Date(NOW))
-    expect(projections.supersede.mock.invocationCallOrder[0]!).toBeLessThan(
-      projections.upsert.mock.invocationCallOrder[0]!
+    // The acceptance time, never the edge's: a late edge of an older head must outrank nothing.
+    expect(projections.supersede).toHaveBeenCalledWith(
+      hookId,
+      4455667n,
+      42,
+      'b'.repeat(40),
+      new Date(NOW),
+      new Date(ACCEPTED)
     )
+    expect(projections.upsert.mock.invocationCallOrder[0]!).toBeLessThan(
+      projections.supersede.mock.invocationCallOrder[0]!
+    )
+    // That same acceptance is the row's rank on the subject, on every edge of the run.
+    expect(projections.upsert.mock.calls[0]![0].queuedAt).toEqual(new Date(ACCEPTED))
+  })
+
+  it('ranks every edge of a run by the one acceptance, terminal edges included', async () => {
+    const { service, projections } = harness()
+    await service.afterStart(edge({ state: 'running' }))
+    await service.afterReport(edge({ state: 'completed' }))
+    for (const [input] of projections.upsert.mock.calls) expect(input.queuedAt).toEqual(new Date(ACCEPTED))
+    for (const call of projections.supersede.mock.calls) expect(call[5]).toEqual(new Date(ACCEPTED))
+  })
+
+  it('moves nothing for an edge whose row already belongs to a newer run of the same head', async () => {
+    const { service, projections, sent } = harness({ row: projection({ currentDeliveryKey: 'delivery-9' }) })
+    await service.afterReport(edge({ state: 'completed' }))
+    expect(projections.upsert).toHaveBeenCalledOnce()
+    expect(projections.supersede).not.toHaveBeenCalled()
+    expect(projections.setDesired).not.toHaveBeenCalled()
+    expect(sent).toHaveLength(0)
   })
 
   it('leaves the row pending when the daemon does not advertise the feature', async () => {
