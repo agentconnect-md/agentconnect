@@ -28,6 +28,7 @@ import {
   classifyAcquisition,
   isEncodedExternalRef,
   outcomeReconciles,
+  unlocks,
   phaseAfterIssue,
   classifyRelease,
   phaseAfterSettle,
@@ -317,37 +318,43 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
   ): Promise<CodeHostReviewOpResult> {
     const replay = await this.replayTerminalRecord(input, (record) => settleTransition(record, input.outcome))
     if (replay) return replay
-    return this.withOwnedLease(input, async (tx, lease) => {
-      const record = await this.ownedRecord(tx, input)
-      if (!record) return { failure: 'no_record' }
-      const transition = settleTransition(facts(record), input.outcome)
-      if (!transition.ok) return { failure: 'transition', reason: transition.reason }
-      if (!transition.idempotent) {
-        const outcome = input.outcome
-        await tx.codeHostReviewOperation.update({
-          where: { id: record.id },
-          data: {
-            state: transition.next,
-            ...(outcome.kind === 'deterministic'
-              ? {
-                  settledAt: input.now,
-                  responseStatus: outcome.status,
-                  responseExternalId: outcome.externalId ?? null,
-                  resultCode: outcome.code ?? null
-                }
-              : { ambiguousAt: record.ambiguousAt ?? input.now, resultCode: outcome.code })
-          }
-        })
-      }
-      const settled = phaseAfterSettle(toPhase(lease.phase), toOperation(record).kind)
-      if (settled !== toPhase(lease.phase)) {
-        await tx.codeHostReviewLease.update({ where: { id: lease.id }, data: { phase: settled } })
-      }
-      // Settling the last outstanding record is what lets an already-reported outcome release.
-      const phase = await this.releaseIfNowSafe(tx, lease.id, settled, input.now)
-      const after = await tx.codeHostReviewOperation.findUniqueOrThrow({ where: { id: record.id } })
-      return { outcome: 'ok', record: toOperation(after), phase }
-    })
+    // Naming the provider object is §15.1's fourth condition, so it alone may reach a locked lease.
+    const identifies = input.outcome.kind === 'deterministic' && input.outcome.externalId !== undefined
+    return this.withOwnedLease(
+      input,
+      async (tx, lease) => {
+        const record = await this.ownedRecord(tx, input)
+        if (!record) return { failure: 'no_record' }
+        const transition = settleTransition(facts(record), input.outcome)
+        if (!transition.ok) return { failure: 'transition', reason: transition.reason }
+        if (!transition.idempotent) {
+          const outcome = input.outcome
+          await tx.codeHostReviewOperation.update({
+            where: { id: record.id },
+            data: {
+              state: transition.next,
+              ...(outcome.kind === 'deterministic'
+                ? {
+                    settledAt: input.now,
+                    responseStatus: outcome.status,
+                    responseExternalId: outcome.externalId ?? null,
+                    resultCode: outcome.code ?? null
+                  }
+                : { ambiguousAt: record.ambiguousAt ?? input.now, resultCode: outcome.code })
+            }
+          })
+        }
+        const settled = phaseAfterSettle(toPhase(lease.phase), toOperation(record).kind)
+        if (settled !== toPhase(lease.phase)) {
+          await tx.codeHostReviewLease.update({ where: { id: lease.id }, data: { phase: settled } })
+        }
+        // Settling the last outstanding record is what lets an already-reported outcome release.
+        const phase = await this.releaseIfNowSafe(tx, lease.id, settled, input.now)
+        const after = await tx.codeHostReviewOperation.findUniqueOrThrow({ where: { id: record.id } })
+        return { outcome: 'ok', record: toOperation(after), phase }
+      },
+      identifies
+    )
   }
 
   async returnOperationUnused(input: CodeHostReviewAdvanceInput): Promise<CodeHostReviewOpResult> {
@@ -407,7 +414,10 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
         return { outcome: 'conflict' }
       }
       const existing = await tx.codeHostReviewAttemptOutcome.findUnique({ where: { attemptId: input.attemptId } })
-      if (existing && existing.state !== input.state) return { outcome: 'conflict' }
+      // A recorded outcome moves once, and only from proving nothing to proving the effect: the lock's exit.
+      if (existing && existing.state !== input.state && !unlocks(existing.state as CodeHostReviewState, input.state)) {
+        return { outcome: 'conflict' }
+      }
       const outcomeFacts = {
         orgId: lease.orgId,
         hookId: input.hookId,
@@ -429,7 +439,7 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
       // Recording the outcome does NOT by itself clear ownership: the release runs the same
       // classification an acquisition would, so an outstanding record keeps the attempt owned.
       const phase = await this.releaseIfNowSafe(tx, lease.id, toPhase(lease.phase), input.now)
-      return { outcome: existing ? 'idempotent' : 'recorded', phase }
+      return { outcome: existing?.state === input.state ? 'idempotent' : 'recorded', phase }
     })
   }
 
@@ -567,10 +577,11 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     }
   }
 
-  /** Every ledger op runs under the subject lock with the owner and fence re-checked. */
+  /** Ledger ops re-check owner and fence under the subject lock; only a positive identification reaches a locked lease, nothing a settled one. */
   private async withOwnedLease(
     input: { attemptId: string; orgId: string; fence: bigint; daemonId: DaemonId },
-    run: (tx: Prisma.TransactionClient, lease: CodeHostReviewLease) => Promise<CodeHostReviewOpResult>
+    run: (tx: Prisma.TransactionClient, lease: CodeHostReviewLease) => Promise<CodeHostReviewOpResult>,
+    identifies = false
   ): Promise<CodeHostReviewOpResult> {
     const owner = await this.prisma.codeHostReviewLease.findUnique({ where: { attemptId: input.attemptId } })
     if (!owner) return { failure: 'no_lease' }
@@ -585,7 +596,7 @@ export class PgCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
       if (!lease || lease.attemptId !== input.attemptId) return { failure: 'no_lease' }
       if (lease.ownerDaemonId !== input.daemonId || lease.orgId !== input.orgId) return { failure: 'not_owner' }
       if (lease.fence !== input.fence) return { failure: 'stale_fence' }
-      if (toPhase(lease.phase) === 'settled' || toPhase(lease.phase) === 'ambiguous_locked') {
+      if (toPhase(lease.phase) === 'settled' || (toPhase(lease.phase) === 'ambiguous_locked' && !identifies)) {
         return { failure: 'lease_closed' }
       }
       return run(tx, lease)

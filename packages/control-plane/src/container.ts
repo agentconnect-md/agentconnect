@@ -44,6 +44,8 @@ import { GiteaConnectionService } from './gitea/connection.service.js'
 import { GiteaProvisioner } from './gitea/provisioner.js'
 import { GiteaConvergeSweeper } from './gitea/converge-sweeper.js'
 import { GiteaGitcredService } from './gitea/gitcred.service.js'
+import { GiteaHookRerunService } from './gitea/hook-rerun.service.js'
+import { GiteaStatusCoordinator, GiteaStatusReporter } from './gitea/status-projection.js'
 import { GiteaMembershipAuthzService } from './gitea/membership-authz.service.js'
 import { unionGiteaWebhookEvents } from './gitea/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
@@ -1302,7 +1304,22 @@ export function buildContainer(
     api: giteaApi,
     log: { warn: (obj, msg) => http.log.warn(obj, msg) }
   })
-  const gitea = { connections: giteaConnectionService, provisioner: giteaProvisioner, api: giteaApi }
+  const gitea = {
+    connections: giteaConnectionService,
+    provisioner: giteaProvisioner,
+    // The Console "Run again" action (gitea-integration.md §10.4) — fences here, dispatch on the relay.
+    hookRerun: new GiteaHookRerunService({
+      hooks: repos.hook,
+      agents: repos.agent,
+      bindings: repos.giteaRepositoryBinding,
+      connections: repos.giteaConnection,
+      tokens: giteaConnectionService,
+      hookService,
+      relayControl,
+      api: giteaApi
+    }),
+    api: giteaApi
+  }
   // The §6 convergence sweep, the half of a contended pass's obligation that survives a restart.
   const giteaConvergeSweeper = new GiteaConvergeSweeper({
     provisioner: giteaProvisioner,
@@ -1345,6 +1362,34 @@ export function buildContainer(
         log: { warn: (obj, msg) => http.log.warn(obj, msg) }
       })
     : undefined
+
+  // gitea-integration.md §10.4: Gitea's run projection is a commit status the Control Plane writes itself (coordinator + reporter).
+  const giteaStatusReporterRef: { current?: GiteaStatusReporter } = {}
+  const giteaStatusProjection = new GiteaStatusCoordinator({
+    projections: new PgCodeHostRunProjectionRepo(prisma),
+    runs: repos.hook,
+    agents: repos.agent,
+    bindings: repos.giteaRepositoryBinding,
+    connections: repos.giteaConnection,
+    clock,
+    kick: () => giteaStatusReporterRef.current?.kick()
+  })
+  const giteaStatusReporter = new GiteaStatusReporter({
+    projections: new PgCodeHostRunProjectionRepo(prisma),
+    bindings: repos.giteaRepositoryBinding,
+    connections: repos.giteaConnection,
+    tokens: giteaConnectionService,
+    orgs: repos.org,
+    api: giteaApi,
+    clock,
+    ...(webAppUrl ? { webAppUrl } : {}),
+    log: {
+      info: (o, m) => http.log.info(o, m),
+      warn: (o, m) => http.log.warn(o, m),
+      error: (o, m) => http.log.error(o, m)
+    }
+  })
+  giteaStatusReporterRef.current = giteaStatusReporter
 
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
@@ -1409,29 +1454,33 @@ export function buildContainer(
         placement: placementResolver
       })
     : undefined
-  // Provider-neutral formal reviews (§15.1/§15.2). The publishing identity is the
-  // project binding's service account, so today the broker exists only where GitLab
-  // administration is configured; the frames themselves name no provider.
-  const codeHostReviewBroker = gitlabAppCfg
-    ? new CodeHostReviewBrokerService({
-        leases: new PgCodeHostReviewLeaseRepo(prisma),
-        hook: repos.hook,
-        agent: repos.agent,
-        clock,
-        placement: placementResolver,
-        publisher: async (orgId, provider, projectExternalId, agentId) => {
-          if (provider !== 'gitlab') return null
-          const binding = await repos.gitlabProjectBinding.byProject(orgId, projectExternalId)
-          if (!binding) return null
-          // A binding being repaired or torn down publishes nothing.
-          if (binding.state !== 'ready' && binding.state !== 'admin_degraded') return null
-          // §7.2: the ACTING agent's own account is the coordinator's subject key.
-          const account = await repos.gitlabAgentAccount.forAgentBinding(orgId, agentId, binding.id)
-          if (!account || account.serviceAccountUserId === null) return null
-          return { serviceAccountExternalId: account.serviceAccountUserId, projectPath: binding.projectPath }
-        }
-      })
-    : undefined
+  // Formal reviews (§15.1/§15.2): the publisher is GitLab's per-agent service account or the Gitea connection's bot user (§5).
+  const codeHostReviewBroker = new CodeHostReviewBrokerService({
+    leases: new PgCodeHostReviewLeaseRepo(prisma),
+    hook: repos.hook,
+    agent: repos.agent,
+    clock,
+    placement: placementResolver,
+    publisher: async (orgId, provider, projectExternalId, agentId) => {
+      if (provider === 'gitea') {
+        const binding = await repos.giteaRepositoryBinding.byRepo(orgId, projectExternalId)
+        // A binding mid-removal or waiting on a replacement token publishes nothing.
+        if (!binding || binding.state === 'cleanup_pending' || binding.state === 'runtime_degraded') return null
+        const connection = await repos.giteaConnection.get(orgId, binding.connectionId)
+        if (!connection || connection.state !== 'connected') return null
+        return { serviceAccountExternalId: connection.botUserId, projectPath: binding.repoPath }
+      }
+      if (provider !== 'gitlab' || !gitlabAppCfg) return null
+      const binding = await repos.gitlabProjectBinding.byProject(orgId, projectExternalId)
+      if (!binding) return null
+      // A binding being repaired or torn down publishes nothing.
+      if (binding.state !== 'ready' && binding.state !== 'admin_degraded') return null
+      // §7.2: the ACTING agent's own account is the coordinator's subject key.
+      const account = await repos.gitlabAgentAccount.forAgentBinding(orgId, agentId, binding.id)
+      if (!account || account.serviceAccountUserId === null) return null
+      return { serviceAccountExternalId: account.serviceAccountUserId, projectPath: binding.projectPath }
+    }
+  })
   const githubCommentAuthz = github
     ? new GithubCommentAuthzService({
         hooks: repos.hook,
@@ -2120,9 +2169,10 @@ export function buildContainer(
     // broker must not become a second opinion on when a grant is stale (linear-integration.md §4.4).
     linearTokens: linearTokenService,
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
-    ...(codeHostReviewBroker ? { codeHostReviewBroker } : {}),
+    codeHostReviewBroker,
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
     ...(codeHostNoteProjection ? { codeHostNoteProjection } : {}),
+    giteaStatusProjection,
     relayRoster: () => relayRoster.entries(),
     clock,
     config: {
@@ -2352,6 +2402,26 @@ export function buildContainer(
           http.log.warn({ err, hookId: report.hookId }, 'note projection: delivery convergence failed')
         )
       }
+      // gitea-integration.md §10.4: the same delivery-stage edge for the commit-status projection.
+      if (host?.provider === 'gitea') {
+        void (async () => {
+          const hook = await repos.hook.getUnscoped(HookId(report.hookId))
+          if (hook?.kind !== host.provider) return
+          const edge = {
+            hookId: report.hookId,
+            agentId: report.agentId,
+            deliveryKey: report.deliveryKey,
+            orgId: hook.orgId,
+            state: 'queued' as const,
+            reason: report.reason ?? null,
+            gitea: host.metadata,
+            snapshot: report,
+            at: firedAt
+          }
+          if (report.status === 'accepted') await giteaStatusProjection.afterAccepted(edge)
+          else await giteaStatusProjection.afterDeliveryFailed(edge)
+        })().catch((err) => http.log.warn({ err, hookId: report.hookId }, 'gitea status: delivery convergence failed'))
+      }
     },
     // The in-Slack config modal picked a channel's default agent — persist + recompile
     // the bot's routes. Swallow+log: a store error must not close the shared relay link.
@@ -2459,6 +2529,7 @@ export function buildContainer(
       webchatMcpOperationReaper.start()
       agentMemoryStagingSweeper.start()
       githubRunReporter?.start()
+      giteaStatusReporter.start()
       hookRedeliveryReconciler?.start()
       gitlabRotator?.start()
       gitlabRetirementSweeper?.start()
@@ -2482,6 +2553,7 @@ export function buildContainer(
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       agentMemoryStagingSweeper.stop()
       githubRunReporter?.stop()
+      giteaStatusReporter.stop()
       hookRedeliveryReconciler?.stop()
       gitlabRotator?.stop()
       gitlabRetirementSweeper?.stop()

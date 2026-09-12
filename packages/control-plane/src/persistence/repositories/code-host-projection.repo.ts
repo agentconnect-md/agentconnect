@@ -30,7 +30,7 @@ import type { AgentId, HookId, OrgId } from '../../domain/ids.js'
 import type {
   CodeHostProjectionWriteResultInput,
   CodeHostRunProjectionRecord,
-  CodeHostRunProjectionRepo,
+  CodeHostRunProjectionWriterRepo,
   HookGateMode,
   HookReportingMode,
   HookReviewPolicy,
@@ -172,7 +172,7 @@ function toRecord(r: CodeHostRunProjection): CodeHostRunProjectionRecord {
   }
 }
 
-export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
+export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionWriterRepo {
   constructor(private readonly db: PrismaLike) {}
 
   private transaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
@@ -595,6 +595,108 @@ export class PgCodeHostRunProjectionRepo implements CodeHostRunProjectionRepo {
   async get(projectionId: string): Promise<CodeHostRunProjectionRecord | null> {
     const row = await this.db.codeHostRunProjection.findUnique({ where: { id: projectionId } })
     return row ? toRecord(row) : null
+  }
+
+  async claimDue(
+    provider: string,
+    leaseOwner: string,
+    now: Date,
+    leaseUntil: Date,
+    limit = 25
+  ): Promise<CodeHostRunProjectionRecord[]> {
+    return this.transaction(async (tx) => {
+      const free = { OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }, { leaseOwner }] }
+      const candidates = await tx.codeHostRunProjection.findMany({
+        where: { provider, nextAttemptAt: { lte: now }, ...free },
+        orderBy: [{ nextAttemptAt: 'asc' }, { updatedAt: 'asc' }],
+        take: limit
+      })
+      const claimed: CodeHostRunProjectionRecord[] = []
+      for (const row of candidates) {
+        // The generation fences the claim: a row that moved since the read is left for the next pass.
+        const changed = await tx.codeHostRunProjection.updateMany({
+          where: { id: row.id, generation: row.generation, ...free },
+          data: { leaseOwner, leaseUntil }
+        })
+        if (changed.count !== 1) continue
+        const fresh = await tx.codeHostRunProjection.findUnique({ where: { id: row.id } })
+        if (fresh) claimed.push(toRecord(fresh))
+      }
+      return claimed
+    })
+  }
+
+  async retryWrite(
+    projectionId: string,
+    generation: bigint,
+    leaseOwner: string,
+    nextAttemptAt: Date,
+    errorCode: string,
+    keepWriteMutex = false
+  ): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const current = await this.lockById(tx, projectionId)
+      if (!current || current.generation !== generation || current.leaseOwner !== leaseOwner) return false
+      const changed = await tx.codeHostRunProjection.updateMany({
+        where: { id: projectionId, generation, leaseOwner },
+        data: {
+          attempts: { increment: 1 },
+          lastErrorCode: errorCode,
+          nextAttemptAt,
+          leaseOwner: null,
+          leaseUntil: null,
+          // Only a PROVED non-effect releases the mutex; an ambiguous write keeps it for reconciliation.
+          ...(keepWriteMutex ? {} : { writeMarker: null, writePhase: null, writeStartedAt: null })
+        }
+      })
+      return changed.count === 1
+    })
+  }
+
+  async blockWrite(
+    projectionId: string,
+    generation: bigint,
+    errorCode: string,
+    keepWriteMutex = false
+  ): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const current = await this.lockById(tx, projectionId)
+      if (!current || current.generation !== generation) return false
+      // A definitive old-write failure may clear its marker, but cannot strand a tombstone serialized behind it.
+      const cleanupPending = current.tombstonedAt !== null && current.pendingIntent !== null
+      const changed = await tx.codeHostRunProjection.updateMany({
+        where: { id: projectionId, generation },
+        data: {
+          lastErrorCode: errorCode,
+          nextAttemptAt: cleanupPending ? current.tombstonedAt : null,
+          leaseOwner: null,
+          leaseUntil: null,
+          ...(keepWriteMutex ? {} : { writeMarker: null, writePhase: null, writeStartedAt: null })
+        }
+      })
+      return changed.count === 1
+    })
+  }
+
+  async settleWrite(projectionId: string, generation: bigint, leaseOwner: string): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const current = await this.lockById(tx, projectionId)
+      if (!current || current.generation !== generation || current.leaseOwner !== leaseOwner) return false
+      // Re-read under the row lock: a converge landing meanwhile re-armed the row, and clearing its due time would strand that intent.
+      if (
+        current.desiredState !== current.observedState ||
+        current.pendingIntent !== null ||
+        current.writePhase !== null ||
+        current.writeMarker !== null
+      ) {
+        return false
+      }
+      const changed = await tx.codeHostRunProjection.updateMany({
+        where: { id: projectionId, generation, leaseOwner },
+        data: { nextAttemptAt: null, leaseOwner: null, leaseUntil: null, lastErrorCode: null, attempts: 0 }
+      })
+      return changed.count === 1
+    })
   }
 }
 

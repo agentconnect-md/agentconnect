@@ -526,6 +526,64 @@ describe('a result releases the lease only through the ledger (§15.1)', () => {
     expect('outcome' in returned && returned.phase).toBe('settled')
   })
 
+  it('a locked lease clears only when its owner names the ambiguous object and re-reports the effect (gitea-integration.md §10.3)', async () => {
+    const { s, base, attemptId, recordId } = await withPermit()
+    await repo().startOperation({ ...base, recordId, startToken: randomUUID() })
+    await repo().settleOperation({ ...base, recordId, outcome: { kind: 'ambiguous', code: 'publish_unreconciled' } })
+    expect(await repo().recordOutcome(outcome(s, attemptId, { state: 'ambiguous_locked' }))).toEqual({
+      outcome: 'recorded',
+      phase: 'ambiguous_locked'
+    })
+    // Nothing but a positive identification reaches the locked lease.
+    expect(await repo().renew({ ...base, leaseUntil: new Date(Date.now() + 60_000) })).toBeNull()
+    expect(await repo().issueOperation({ ...base, ...permit, kind: 'bulk_publish', ordinal: 1 })).toEqual({
+      failure: 'lease_closed'
+    })
+    // A settle that names no object identifies nothing: the ambiguous record refuses it before the lease is even asked.
+    expect(
+      await repo().settleOperation({ ...base, recordId, outcome: { kind: 'deterministic', status: 204 } })
+    ).toHaveProperty('failure')
+    expect((await prisma.codeHostReviewOperation.findUniqueOrThrow({ where: { id: recordId } })).state).toBe(
+      'ambiguous'
+    )
+    // A foreign daemon cannot identify it either.
+    expect(
+      await repo().settleOperation({
+        ...base,
+        daemonId: DAEMON_B,
+        recordId,
+        outcome: { kind: 'deterministic', status: 200, externalId: '4242' }
+      })
+    ).toEqual({ failure: 'not_owner' })
+    const later = new Date('2027-09-06T00:00:00.000Z')
+    expect((await repo().acquire(acquire(s, { daemonId: DAEMON_B, now: later }))).outcome).toBe('locked')
+
+    // The owner's later reconciliation pass found the marked review submitted.
+    const identified = await repo().settleOperation({
+      ...base,
+      recordId,
+      outcome: { kind: 'deterministic', status: 200, externalId: '4242' }
+    })
+    expect('outcome' in identified && identified.record.state).toBe('settled')
+    expect('outcome' in identified && identified.phase).toBe('ambiguous_locked')
+    expect(
+      await repo().recordOutcome(outcome(s, attemptId, { state: 'submitted', externalIds: ['review:4242'] }))
+    ).toEqual({ outcome: 'recorded', phase: 'settled' })
+    const stored = await prisma.codeHostReviewAttemptOutcome.findUniqueOrThrow({ where: { attemptId } })
+    expect(stored).toMatchObject({ state: 'submitted', externalIds: ['review:4242'] })
+    const lease = await prisma.codeHostReviewLease.findFirstOrThrow({
+      where: { projectExternalId: s.projectExternalId }
+    })
+    expect(lease.phase).toBe('settled')
+    expect(lease.attemptId).toBeNull()
+    expect((await repo().acquire(acquire(s, { daemonId: DAEMON_B, now: later }))).outcome).toBe('acquired')
+    // A recorded effect never moves again: the released attempt is no owner, and its row stays submitted.
+    expect((await repo().recordOutcome(outcome(s, attemptId, { state: 'ambiguous_locked' }))).outcome).toBe('not_owner')
+    expect((await prisma.codeHostReviewAttemptOutcome.findUniqueOrThrow({ where: { attemptId } })).state).toBe(
+      'submitted'
+    )
+  })
+
   it('an attempt that issued no permit at all releases immediately', async () => {
     const s = subject()
     const input = acquire(s)

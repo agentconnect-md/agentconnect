@@ -73,6 +73,11 @@ export function outcomeReconciles(state: CodeHostReviewState | null): boolean {
   return state !== null && codeHostReviewPublicEffect(state) !== 'unknown'
 }
 
+/** The one re-classification a recorded outcome admits: from proving nothing to proving the effect (§15.1, found after the lock). */
+export function unlocks(recorded: CodeHostReviewState, next: CodeHostReviewState): boolean {
+  return !outcomeReconciles(recorded) && outcomeReconciles(next)
+}
+
 export type CodeHostReviewAcquisition =
   | { kind: 'fresh' }
   | { kind: 'idempotent' }
@@ -219,7 +224,7 @@ export function returnUnusedTransition(record: CodeHostReviewOpFacts): CodeHostR
   return { ok: false, reason: record.state === 'request_started' ? 'already_started' : 'terminal' }
 }
 
-const EXTERNAL_REF = /^(note|draft_note|discussion|approval):(?:0|[1-9]\d*)$/
+const EXTERNAL_REF = /^(note|draft_note|discussion|approval|review):(?:0|[1-9]\d*)$/
 
 /** Encode one published object for the outcome store: `"<kind>:<numeric id>"`. */
 export function encodeExternalRef(kind: string, externalId: string): string {

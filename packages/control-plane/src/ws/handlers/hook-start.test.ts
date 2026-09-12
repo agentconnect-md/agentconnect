@@ -133,6 +133,58 @@ describe('hook/start provider one-of (gitlab-com-integration.md §17.2)', () => 
     )
   })
 
+  it('routes a gitea start through the code-host broker and the commit-status projection only', async () => {
+    const conn = fakeConn()
+    const deps = gitlabDeps({
+      hook: { get: vi.fn(async () => ({ id: HOOK_ID, kind: 'gitea', projectionEpoch: 3n })) },
+      giteaStatusProjection: { afterStart: vi.fn(async () => {}) }
+    })
+    const gitea = {
+      repoId: '556677',
+      repoPath: 'example-org/example-repo',
+      target: { kind: 'pull' as const, index: 12, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) }
+    }
+    const frame = startFrame({ gitea })
+
+    await handleHookStart(frame, conn, deps)
+
+    expect(deps.codeHostReviewBroker!.start).toHaveBeenCalledWith(frame.payload, DAEMON_ID, 'org-a')
+    expect(deps.giteaStatusProjection!.afterStart).toHaveBeenCalledWith({
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'delivery-1',
+      orgId: 'org-a',
+      state: 'running',
+      sessionId: 'acp-gitlab-1',
+      gitea,
+      snapshot: frame.payload,
+      at: new Date(NOW)
+    })
+    expect(deps.codeHostNoteProjection!.afterStart).not.toHaveBeenCalled()
+    expect(deps.githubReviewBroker!.start).not.toHaveBeenCalled()
+    expect(conn.replyTo).toHaveBeenCalledWith(frame, 'hook/start/ok', { accepted: true })
+  })
+
+  it('refuses a gitea start whose hook is a gitlab hook, naming the member provider', async () => {
+    const conn = fakeConn()
+    const deps = gitlabDeps()
+    const gitea = {
+      repoId: '556677',
+      repoPath: 'example-org/example-repo',
+      target: { kind: 'issue' as const, index: 7 }
+    }
+
+    await handleHookStart(startFrame({ gitea }), conn, deps)
+
+    expect(deps.codeHostReviewBroker!.start).not.toHaveBeenCalled()
+    expect(conn.sendError).toHaveBeenCalledWith(
+      expect.any(String),
+      'SCOPE_DENIED',
+      'hook is not a gitea hook in this organization',
+      false
+    )
+  })
+
   it('leaves the github arm on the github broker and its check coordinator', async () => {
     const conn = fakeConn()
     const deps = gitlabDeps()

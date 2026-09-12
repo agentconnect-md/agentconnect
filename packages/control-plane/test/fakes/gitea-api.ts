@@ -64,6 +64,33 @@ export interface FakeGiteaHook {
   active: boolean
 }
 
+/** One pull request as the rerun and status paths read it (§10.4, §16.1). */
+export interface FakeGiteaPull {
+  state: 'open' | 'closed'
+  headSha: string
+  baseSha?: string
+  merged?: boolean
+  draft?: boolean
+  headRepoId?: number
+}
+
+export interface FakeGiteaIssue {
+  state: 'open' | 'closed'
+  /** Issues and pull requests share one index space; a pull request answers the issue read too. */
+  isPull?: boolean
+}
+
+/** One appended commit status; Gitea keeps the history and shows the latest per context. */
+export interface FakeGiteaStatus {
+  id: number
+  sha: string
+  context: string
+  status: string
+  description: string
+  target_url?: string
+  creator: { id: number }
+}
+
 /** Subscription names Gitea knows; anything else is dropped with a 201 (§16). */
 const KNOWN_EVENTS = new Set([
   'create',
@@ -122,6 +149,11 @@ export class FakeGitea {
   repositories: FakeGiteaRepo[]
   permissions: Record<string, 'none' | 'read' | 'write' | 'admin' | 'owner'>
   hooks = new Map<number, FakeGiteaHook>()
+  /** Pull requests and issues by index, for the rerun subject reads; absent ⇒ 404. */
+  pulls = new Map<number, FakeGiteaPull>()
+  issues = new Map<number, FakeGiteaIssue>()
+  /** Every commit status ever written, in order. */
+  statuses: FakeGiteaStatus[] = []
   /** Test deliveries fired, by hook id. */
   tests: number[] = []
   /** Every call the CP made, with the token it presented — WHICH token a check used is part of the contract. */
@@ -170,6 +202,19 @@ export class FakeGitea {
       html_url: `${this.opts.baseUrl}/${repo.full_name}`,
       default_branch: repo.default_branch ?? 'main',
       permissions: { admin: repo.admin, push: true, pull: true }
+    }
+  }
+
+  private statusJson(status: FakeGiteaStatus): Record<string, unknown> {
+    return {
+      id: status.id,
+      status: status.status,
+      context: status.context,
+      description: status.description,
+      target_url: status.target_url ?? '',
+      creator: { id: status.creator.id, login: this.opts.bot.login },
+      created_at: '2026-09-12T00:00:00Z',
+      updated_at: '2026-09-12T00:00:00Z'
     }
   }
 
@@ -323,6 +368,67 @@ export class FakeGitea {
           return Response.json({ message: `user does not exist [uid: 0, name: ${login}]` }, { status: 404 })
         const answer = this.permissions[login] ?? 'none'
         return Response.json({ permission: answer, role_name: answer, user: { id, login, username: login } })
+      }
+
+      const pullRoute = /^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/.exec(route)
+      if (pullRoute && method === 'GET') {
+        const repo = this.repositories.find((candidate) => candidate.full_name === `${pullRoute[1]}/${pullRoute[2]}`)
+        const pull = this.pulls.get(Number(pullRoute[3]))
+        if (!repo || !pull) return Response.json({ message: "The target couldn't be found." }, { status: 404 })
+        return Response.json({
+          id: 7_000_000 + Number(pullRoute[3]),
+          number: Number(pullRoute[3]),
+          state: pull.state,
+          merged: pull.merged === true,
+          ...(pull.draft !== undefined ? { draft: pull.draft } : {}),
+          head: { sha: pull.headSha, ref: 'feature', repo_id: pull.headRepoId ?? repo.id },
+          base: { sha: pull.baseSha ?? 'b'.repeat(40), ref: repo.default_branch ?? 'main' },
+          user: { id: this.opts.users.alice ?? 1, login: 'alice' }
+        })
+      }
+      const issueByIndex = /^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(route)
+      if (issueByIndex && method === 'GET' && this.issues.has(Number(issueByIndex[3]))) {
+        const repo = this.repositories.find(
+          (candidate) => candidate.full_name === `${issueByIndex[1]}/${issueByIndex[2]}`
+        )
+        if (!repo) return Response.json({ message: "The target couldn't be found." }, { status: 404 })
+        const issue = this.issues.get(Number(issueByIndex[3]))!
+        return Response.json({
+          id: 8_000_000 + Number(issueByIndex[3]),
+          number: Number(issueByIndex[3]),
+          state: issue.state,
+          title: 'example issue',
+          ...(issue.isPull ? { pull_request: { merged: false } } : {})
+        })
+      }
+      const statusRoute = /^\/repos\/([^/]+)\/([^/]+)\/statuses\/([^/]+)$/.exec(route)
+      if (statusRoute) {
+        const repo = this.repositories.find(
+          (candidate) => candidate.full_name === `${statusRoute[1]}/${statusRoute[2]}`
+        )
+        if (!repo) return Response.json({ message: "The target couldn't be found." }, { status: 404 })
+        const sha = decodeURIComponent(statusRoute[3]!)
+        if (method === 'POST') {
+          const payload = body()
+          const status: FakeGiteaStatus = {
+            id: ++this.nextId,
+            sha,
+            context: String(payload.context ?? ''),
+            status: String(payload.state ?? ''),
+            description: String(payload.description ?? ''),
+            ...(typeof payload.target_url === 'string' ? { target_url: payload.target_url } : {}),
+            creator: { id: this.opts.bot.id }
+          }
+          this.statuses.push(status)
+          return Response.json(this.statusJson(status), { status: 201 })
+        }
+        // Upstream lists newest first, with X-Total-Count and a Link header.
+        const rows = this.statuses.filter((status) => status.sha === sha).reverse()
+        return page(
+          url,
+          rows.map((status) => this.statusJson(status)),
+          this.opts.maxResponseItems
+        )
       }
 
       // The issue-scoped writes the connect step probes against a nonexistent repository (§4.1).

@@ -291,6 +291,71 @@ describe('provider-neutral hook start (gitlab-com-integration.md §17.2)', () =>
     })
     await expect(service.start(startInput(), DAEMON, ORG)).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
   })
+
+  it('records a gitea pull request head through the same barrier, fenced on the gitea hook (gitea-integration.md §10.3)', async () => {
+    const { service, starts } = build({
+      hook: {
+        getRun: async () => run(),
+        getUnscoped: async () => hook({ kind: 'gitea' }),
+        recordStart: async (_hookId, _daemonId, input) => {
+          starts.push(input)
+          return true
+        }
+      } as CodeHostReviewBrokerDeps['hook']
+    })
+    await service.start(
+      startInput({
+        gitlab: undefined,
+        gitea: {
+          repoId: PROJECT.toString(),
+          repoPath: 'example-org/example-repo',
+          target: { kind: 'pull', index: IID, headSha: HEAD, baseSha: 'b'.repeat(40) }
+        }
+      }),
+      DAEMON,
+      ORG
+    )
+    expect(starts[0]).toMatchObject({ headSha: HEAD, baseSha: 'b'.repeat(40), startedAt: new Date(1_000_000) })
+    // The member must name the hook's own provider: a gitea start against a gitlab hook is refused.
+    const mismatched = build()
+    await expect(
+      mismatched.service.start(
+        startInput({
+          gitlab: undefined,
+          gitea: {
+            repoId: PROJECT.toString(),
+            repoPath: 'example-org/example-repo',
+            target: { kind: 'issue', index: 7 }
+          }
+        }),
+        DAEMON,
+        ORG
+      )
+    ).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+    expect(mismatched.starts).toEqual([])
+  })
+
+  it('refuses a github member on the provider-neutral barrier', async () => {
+    const { service, starts } = build()
+    await expect(
+      service.start(
+        startInput({
+          gitlab: undefined,
+          github: {
+            repoId: '42',
+            repoFullName: 'example-org/example-repo',
+            sourceInstallationId: '77',
+            subjectKind: 'pull_request',
+            pullNumber: 9,
+            headSha: HEAD
+          }
+        }),
+        DAEMON,
+        ORG
+      )
+    ).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+    expect(starts).toEqual([])
+  })
 })
 
 describe('code-host review authorization (gitlab-com-integration.md §15)', () => {
@@ -404,6 +469,25 @@ describe('code-host review authorization (gitlab-com-integration.md §15)', () =
       reason: 'reviewer_assignment_required',
       retryable: false
     })
+  })
+
+  it('grants request-changes to a gitea attempt with no reviewer record — the verdict is native there', async () => {
+    const { service } = build({
+      hook: {
+        getRun: async () => run(),
+        getUnscoped: async () => hook({ kind: 'gitea' }),
+        recordStart: async () => true
+      } as CodeHostReviewBrokerDeps['hook'],
+      publisher: async (_orgId, provider) =>
+        provider === 'gitea' ? { serviceAccountExternalId: 9042n, projectPath: 'example-org/example-repo' } : null
+    })
+    const input = authorizeInput({ provider: 'gitea', requestedEvent: 'REQUEST_CHANGES', requestedVerdict: 'fail' })
+    const answer = await service.authorize(input, DAEMON, ORG)
+    expect(answer.authorized).toBe(true)
+    if (answer.authorized) {
+      expect(answer.lease.serviceAccountUserId).toBe('9042')
+      expect(answer.projectPath).toBe('example-org/example-repo')
+    }
   })
 
   it('fences the head of every run the start barrier crossed', async () => {
@@ -784,6 +868,65 @@ describe('a result releases the lease only through the ledger (§15.1)', () => {
       accepted: true,
       phase: 'settled'
     })
+  })
+
+  it('a locked lease clears on exactly one condition: its owner names the object and re-reports the effect', async () => {
+    const { service, advance, attemptId, fence, recordId, leases } = await withPermit()
+    await service.operate({ op: 'start', attemptId, fence, recordId, startToken: randomUUID() }, DAEMON, ORG)
+    await service.operate(
+      { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'ambiguous', code: 'publish_unreconciled' } },
+      DAEMON,
+      ORG
+    )
+    expect(await service.recordResult(resultInput(attemptId, { state: 'ambiguous_locked' }), DAEMON, ORG)).toEqual({
+      accepted: true,
+      phase: 'ambiguous_locked'
+    })
+    // Nothing but the identification reaches the locked lease: no renewal, no new permit, no other settle.
+    await expect(service.renew({ attemptId, fence }, DAEMON, ORG)).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+    await expect(
+      service.operate(
+        { op: 'issue', attemptId, fence, kind: 'bulk_publish', method: 'POST', target: '/x', ordinal: 1 },
+        DAEMON,
+        ORG
+      )
+    ).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+    await expect(
+      service.operate(
+        { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'deterministic', status: 204 } },
+        DAEMON,
+        ORG
+      )
+    ).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
+    // A newer attempt meets the lock, however long it waits.
+    advance(365 * 24 * 60 * 60 * 1000)
+    const contender = authorizeInput({ deliveryKey: SECOND_DELIVERY, snapshot: SECOND_SNAPSHOT })
+    expect(await service.authorize(contender, OTHER_DAEMON, ORG)).toMatchObject({ reason: 'ambiguous_locked' })
+
+    // The later reconciliation pass found the marked review submitted: identify, then re-report.
+    const identified = await service.operate(
+      { op: 'settle', attemptId, fence, recordId, outcome: { kind: 'deterministic', status: 200, externalId: '4242' } },
+      DAEMON,
+      ORG
+    )
+    expect(identified.state).toBe('settled')
+    // Identification alone proves the record, not the attempt: the recorded outcome still says nothing.
+    expect(identified.phase).toBe('ambiguous_locked')
+    expect(
+      await service.recordResult(
+        resultInput(attemptId, { state: 'submitted', externalIds: [{ kind: 'review', externalId: '4242' }] }),
+        DAEMON,
+        ORG
+      )
+    ).toEqual({ accepted: true, phase: 'settled' })
+    expect(leases.outcomes.get(attemptId)).toEqual({ state: 'submitted', externalIds: ['review:4242'] })
+    expect([...leases.leases.values()][0]?.attemptId).toBeNull()
+    const next = authorizeInput({ deliveryKey: SECOND_DELIVERY, snapshot: SECOND_SNAPSHOT })
+    expect((await service.authorize(next, OTHER_DAEMON, ORG)).authorized).toBe(true)
+    // A recorded effect never moves again, in either direction.
+    await expect(
+      service.recordResult(resultInput(attemptId, { state: 'ambiguous_locked' }), DAEMON, ORG)
+    ).rejects.toBeInstanceOf(CodeHostReviewBrokerError)
   })
 })
 

@@ -98,10 +98,9 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
   }
   try {
     await deps.githubRunCoordinator?.afterReport(HookId(p.hookId), p.deliveryKey)
-    // §16 terminal edge. Only a gitlab hook projects a note; the desired generation is recorded
-    // before the ACK so a daemon that retries its report cannot outrun the ledger.
-    if (host?.provider === 'gitlab' && hook.kind === host.provider) {
-      await deps.codeHostNoteProjection?.afterReport({
+    // The run projection's terminal edge (§16, gitea §10.4) is recorded before the ACK so a retried report cannot outrun the ledger.
+    if (host && hook.kind === host.provider) {
+      const edge = {
         hookId: p.hookId,
         agentId: p.agentId,
         deliveryKey: p.deliveryKey,
@@ -109,10 +108,12 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
         state: reportedNoteState(p.status, p.reason),
         reason: p.reason ?? null,
         ...(p.sessionId ? { sessionId: p.sessionId } : {}),
-        gitlab: host.metadata,
         snapshot: p,
         at: completedAt
-      })
+      }
+      if (host.provider === 'gitlab') await deps.codeHostNoteProjection?.afterReport({ ...edge, gitlab: host.metadata })
+      else if (host.provider === 'gitea')
+        await deps.giteaStatusProjection?.afterReport({ ...edge, gitea: host.metadata })
     }
     conn.replyTo(frame, 'ack', { ok: true })
   } catch {

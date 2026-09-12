@@ -2973,6 +2973,31 @@ export interface CodeHostRunProjectionRepo {
   get(projectionId: string): Promise<CodeHostRunProjectionRecord | null>
 }
 
+/** The Control-Plane-written projection's writer members (gitea-integration.md §10.4); the daemon-written GitLab note never claims. */
+export interface CodeHostRunProjectionWriterRepo extends CodeHostRunProjectionRepo {
+  /** Take the lease on every due row of one provider whose lease is free, expired, or already this worker's. */
+  claimDue(
+    provider: string,
+    leaseOwner: string,
+    now: Date,
+    leaseUntil: Date,
+    limit?: number
+  ): Promise<CodeHostRunProjectionRecord[]>
+  /** Release the lease for a later pass, with or without the write mutex (an ambiguous write keeps it). */
+  retryWrite(
+    projectionId: string,
+    generation: bigint,
+    leaseOwner: string,
+    nextAttemptAt: Date,
+    errorCode: string,
+    keepWriteMutex?: boolean
+  ): Promise<boolean>
+  /** A definitive refusal: leave the due set until the next generation, keeping only a serialized cleanup due. */
+  blockWrite(projectionId: string, generation: bigint, errorCode: string, keepWriteMutex?: boolean): Promise<boolean>
+  /** Nothing left to publish: drop the row out of the due set instead of claiming it again and again. */
+  settleWrite(projectionId: string, generation: bigint, leaseOwner: string): Promise<boolean>
+}
+
 /** Per-hook HMAC signing key — read ONLY here, NEVER joined into a DTO
  *  (BotSecretStore discipline). */
 /**

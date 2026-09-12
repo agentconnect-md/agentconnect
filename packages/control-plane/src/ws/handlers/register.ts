@@ -22,6 +22,7 @@ import {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
+  GITEA_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
@@ -103,6 +104,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       GITCRED_GITHUB_V2_FEATURE,
       // §14.2: …and decodes purpose 'gitlab_effect', the broker's action-time effect lease.
       GITLAB_EFFECT_V1_FEATURE,
+      // gitea-integration.md §11: gitea gitcred purposes, the gitea hook/start arm, and the review and commit-status surfaces.
+      GITEA_V1_FEATURE,
       // §15.1/§17.2: this CP serves the provider-neutral review authorization, the
       // publication lease with its operation ledger, and the body-free result.
       CODEHOST_REVIEW_V1_FEATURE,

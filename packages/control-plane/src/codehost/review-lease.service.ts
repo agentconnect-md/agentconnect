@@ -14,7 +14,10 @@
  * operation makes serialization a correctness boundary.
  */
 import {
+  codeHostHookMetadataOf,
+  codeHostHookRevisionOf,
   isCodeHostProvider,
+  type CodeHostProvider,
   type CodeHostReviewAuthorize,
   type CodeHostReviewAuthorized,
   type CodeHostReviewLeaseRenew,
@@ -100,6 +103,13 @@ export interface CodeHostReviewBrokerDeps {
 
 const POLICY_RANK = { off: 0, comment: 1, request_changes: 2, full: 3 } as const
 
+/** REQUEST_CHANGES needs the publisher's reviewer record on GitLab (§15 step 7), not on Gitea (gitea-integration.md §2). */
+const REQUEST_CHANGES_NEEDS_REVIEWER: Readonly<Record<CodeHostProvider, boolean>> = {
+  github: false,
+  gitlab: true,
+  gitea: false
+}
+
 const EVENT_RANK: Record<HookReviewEvent, number> = {
   COMMENT: POLICY_RANK.comment,
   REQUEST_CHANGES: POLICY_RANK.request_changes,
@@ -140,17 +150,10 @@ export class CodeHostReviewBrokerService {
     return (this.deps.placement ?? PLACEMENT_ONLY).mayAct(agent, daemonId)
   }
 
-  /**
-   * Persist the provider-neutral start barrier before an accepted GitLab hook turn is prompted
-   * (§17.2). It attaches the started head and turn time to the accepted run, which is what gives
-   * every later review authorization a head to fence against and the §16 ledger its `running` edge.
-   *
-   * The GitHub review broker is deliberately not involved: its fence is repository/pull-shaped and
-   * its claimed-offline recovery belongs to GitHub webhook redelivery, which GitLab has no claim on.
-   */
+  /** The provider-neutral start barrier (§17.2): records the started head and turn time later review authorizations fence on. */
   async start(input: HookStart, reportingDaemonId: DaemonId, reportingOrgId: string): Promise<void> {
-    const gitlab = input.gitlab
-    if (!gitlab) denied('this start barrier carries provider-neutral metadata only')
+    const member = codeHostHookMetadataOf(input)
+    if (!member || member.provider === 'github') denied('this start barrier carries provider-neutral metadata only')
     const hookId = HookId(input.hookId)
     const run = await this.deps.hook.getRun(hookId, input.deliveryKey)
     if (
@@ -163,15 +166,15 @@ export class CodeHostReviewBrokerService {
       denied('start dispatch fence does not match the accepted hook run')
     }
     if (run.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
-    const projectId = BigInt(gitlab.projectId)
+    const projectId = BigInt(member.repo.externalId)
     const hook = await this.deps.hook.getUnscoped(hookId)
     const agent = await this.deps.agent.getUnscoped(run.agentId)
-    if (!this.hookAuthorizes(hook, run, 'gitlab', projectId)) denied('hook is disabled or its project changed')
+    if (!this.hookAuthorizes(hook, run, member.provider, projectId)) denied('hook is disabled or its project changed')
     if (!agent || agent.status !== 'active' || !(await this.serves(agent, reportingDaemonId))) {
       denied('agent is no longer active on the accepted dispatch daemon')
     }
-    // Only a merge request has a revision; an issue or push subject records the turn time alone.
-    const head = gitlab.target.kind === 'merge_request' ? gitlab.target : undefined
+    // Only a pull/merge request has a revision; an issue or push subject records the turn time alone.
+    const head = codeHostHookRevisionOf(member)
     const accepted = await this.deps.hook.recordStart(hookId, reportingDaemonId, {
       deliveryKey: input.deliveryKey,
       agentId: AgentId(input.agentId),
@@ -230,9 +233,12 @@ export class CodeHostReviewBrokerService {
     if (!this.eventAllowed(run, hook!, input.requestedEvent)) {
       return refuse(input.attemptId, 'policy_denied', false)
     }
-    // AgentConnect never assigns itself as a reviewer, so a request-changes attempt
-    // fails before any draft exists rather than after (§15 step 7).
-    if (input.requestedEvent === 'REQUEST_CHANGES' && input.serviceAccountIsReviewer !== true) {
+    // Where the provider needs a reviewer record, a request-changes attempt fails before any draft exists (§15 step 7).
+    if (
+      input.requestedEvent === 'REQUEST_CHANGES' &&
+      REQUEST_CHANGES_NEEDS_REVIEWER[input.provider] &&
+      input.serviceAccountIsReviewer !== true
+    ) {
       return refuse(input.attemptId, 'reviewer_assignment_required', false)
     }
     // A run the start barrier crossed always carries the head it was started on, so this binds for

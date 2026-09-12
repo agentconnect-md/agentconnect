@@ -4,6 +4,7 @@ import {
   classifyAcquisition,
   isEncodedExternalRef,
   outcomeReconciles,
+  unlocks,
   phaseAfterIssue,
   classifyRelease,
   phaseAfterSettle,
@@ -203,19 +204,24 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
   ): Promise<CodeHostReviewOpResult> {
     const replay = this.replayTerminalRecord(input, (record) => settleTransition(record, input.outcome))
     if (replay) return replay
-    return this.advance(input, (record, lease) => {
-      const transition = settleTransition(record, input.outcome)
-      if (!transition.ok) return { failure: 'transition', reason: transition.reason }
-      record.state = transition.next
-      if (input.outcome.kind === 'deterministic') {
-        record.responseStatus = input.outcome.status
-        record.responseExternalId = input.outcome.externalId ?? null
-      } else {
-        record.everAmbiguous = true
-      }
-      lease.phase = phaseAfterSettle(lease.phase, record.kind)
-      return { outcome: 'ok', record, phase: this.releaseIfNowSafe(lease) }
-    })
+    const identifies = input.outcome.kind === 'deterministic' && input.outcome.externalId !== undefined
+    return this.advance(
+      input,
+      (record, lease) => {
+        const transition = settleTransition(record, input.outcome)
+        if (!transition.ok) return { failure: 'transition', reason: transition.reason }
+        record.state = transition.next
+        if (input.outcome.kind === 'deterministic') {
+          record.responseStatus = input.outcome.status
+          record.responseExternalId = input.outcome.externalId ?? null
+        } else {
+          record.everAmbiguous = true
+        }
+        lease.phase = phaseAfterSettle(lease.phase, record.kind)
+        return { outcome: 'ok', record, phase: this.releaseIfNowSafe(lease) }
+      },
+      identifies
+    )
   }
 
   async returnOperationUnused(input: CodeHostReviewAdvanceInput): Promise<CodeHostReviewOpResult> {
@@ -242,10 +248,11 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     if (lease.event !== input.event || lease.verdict !== input.verdict || lease.headSha !== input.headSha) {
       return { outcome: 'conflict' }
     }
-    if (existing && existing.state !== input.state) return { outcome: 'conflict' }
+    if (existing && existing.state !== input.state && !unlocks(existing.state, input.state))
+      return { outcome: 'conflict' }
     this.outcomes.set(input.attemptId, { state: input.state, externalIds: input.externalIds })
     // Recording the outcome never clears ownership by itself — the ledger decides.
-    return { outcome: existing ? 'idempotent' : 'recorded', phase: this.releaseIfNowSafe(lease) }
+    return { outcome: existing?.state === input.state ? 'idempotent' : 'recorded', phase: this.releaseIfNowSafe(lease) }
   }
 
   /** The same release classification the Postgres repository runs under the subject lock. */
@@ -273,17 +280,21 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
     return null
   }
 
-  private ownedLease(input: {
-    attemptId: string
-    orgId: string
-    fence: bigint
-    daemonId: CodeHostReviewAcquireInput['daemonId']
-  }): CodeHostReviewLeaseRecord | Extract<CodeHostReviewOpResult, { failure: string }> {
+  private ownedLease(
+    input: {
+      attemptId: string
+      orgId: string
+      fence: bigint
+      daemonId: CodeHostReviewAcquireInput['daemonId']
+    },
+    identifies = false
+  ): CodeHostReviewLeaseRecord | Extract<CodeHostReviewOpResult, { failure: string }> {
     const lease = this.byAttemptSync(input.attemptId)
     if (!lease) return { failure: 'no_lease' }
     if (lease.ownerDaemonId !== input.daemonId || lease.orgId !== input.orgId) return { failure: 'not_owner' }
     if (lease.fence !== input.fence) return { failure: 'stale_fence' }
-    if (lease.phase === 'settled' || lease.phase === 'ambiguous_locked') return { failure: 'lease_closed' }
+    if (lease.phase === 'settled' || (lease.phase === 'ambiguous_locked' && !identifies))
+      return { failure: 'lease_closed' }
     return lease
   }
 
@@ -314,9 +325,10 @@ export class FakeCodeHostReviewLeaseRepo implements CodeHostReviewLeaseRepo {
 
   private advance(
     input: CodeHostReviewAdvanceInput,
-    run: (record: StoredOperation, lease: CodeHostReviewLeaseRecord) => CodeHostReviewOpResult
+    run: (record: StoredOperation, lease: CodeHostReviewLeaseRecord) => CodeHostReviewOpResult,
+    identifies = false
   ): CodeHostReviewOpResult {
-    const lease = this.ownedLease(input)
+    const lease = this.ownedLease(input, identifies)
     if ('failure' in lease) return lease
     const record = this.operations.get(input.recordId)
     if (!record || record.attemptId !== input.attemptId || record.fence !== input.fence) {
