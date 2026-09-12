@@ -5,6 +5,7 @@ import { isCodeHostProvider, type CodeHostProvider } from '@agentconnect.md/prot
 import { useConsoleData } from '@/lib/data-context'
 import type { HookDto } from '@/lib/api'
 import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
+import { giteaFamilyTile, giteaHookFamily } from '@/lib/gitea-events'
 import { githubFamilyTile, githubHookFamily } from '@/lib/github-events'
 import { gitlabFamilyTile, gitlabHookFamily } from '@/lib/gitlab-events'
 import { Button, Icon } from '@/components/ui'
@@ -20,8 +21,10 @@ const CODE_HOST_FAMILY_PILL: Record<CodeHostProvider, (hook: HookDto) => string 
     const fam = gitlabHookFamily(h)
     return fam ? gitlabFamilyTile(fam)?.pill : undefined
   },
-  // G6 gives Gitea its family tiles; until a gitea row can exist there is no pill to read.
-  gitea: () => undefined
+  gitea: (h) => {
+    const fam = giteaHookFamily(h)
+    return fam ? giteaFamilyTile(fam)?.pill : undefined
+  }
 }
 
 // What removing one subscription leaves behind, in each host's own terms.
@@ -37,7 +40,7 @@ const CODE_HOST_REMOVAL_NOTE: Record<CodeHostProvider, string> = {
 // rule — a webhook's inbound URL stops accepting deliveries immediately (senders
 // get a uniform 404); a github subscription stops matching that repo's events;
 // Past runs and their sessions survive. The list re-pulls via the data context.
-// a gitlab subscription stops matching that project's events.
+// a gitlab or gitea subscription stops matching that project's or repository's events.
 // An ARRAY target removes a set in one confirm — one repo's whole family set, or every repo; the repos named decide.
 export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | HookDto[]; onClose: () => void }) {
   const { deleteHook } = useConsoleData()

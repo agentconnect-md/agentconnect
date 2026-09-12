@@ -2,11 +2,12 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { type CodeHostProvider } from '@agentconnect.md/protocol/code-host'
-import { GithubMark, GitlabMark } from '@/components/marks'
+import { GiteaMark, GithubMark, GitlabMark } from '@/components/marks'
 import { CodeHostMark } from '@/components/console/CodeHostMark'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { CODE_HOST_PROJECTION, PICKABLE_CODE_HOST_PROVIDERS } from '@/lib/code-hosts'
 import { featureFlagEnabled } from '@/lib/feature-flags'
+import { GITEA_REPOSITORY_STATE, giteaChoiceSelectable, type GiteaRepositoryChoice } from '@/lib/gitea-repositories'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import type { RepoAccess } from '@/lib/api'
 
@@ -362,6 +363,137 @@ export function GitlabProjectField(props: RepositoryPickerProps) {
       loadingLabel="Loading projects…"
       searchPlaceholder="Search your GitLab projects…"
     />
+  )
+}
+
+export function GiteaRepositoryField(props: RepositoryPickerProps) {
+  return (
+    <RepositoryPickerField
+      {...props}
+      label={props.label ?? 'Gitea repository'}
+      mark={<GiteaMark color="var(--text-secondary)" />}
+      emptyLabel="Pick a repository"
+      loadingLabel="Loading repositories…"
+      searchPlaceholder="Search the repositories the bot administers…"
+    />
+  )
+}
+
+/** One pickable Gitea repository — already added, or one the organization's bot administers.
+ *  Picking an unadded one installs its managed webhook, which is why it says so before the
+ *  click. Transient states are listed and disabled, not hidden: a repository that is mid-setup
+ *  reads as on its way rather than mysteriously absent. */
+export function GiteaRepositoryOption({
+  choice,
+  selected = false,
+  busy = false,
+  onSelect
+}: {
+  choice: GiteaRepositoryChoice
+  selected?: boolean
+  busy?: boolean
+  onSelect: () => void
+}) {
+  const selectable = giteaChoiceSelectable(choice) && !busy
+  const state = choice.binding ? GITEA_REPOSITORY_STATE[choice.binding.state] : null
+  const branch = choice.defaultBranch ? `default branch ${choice.defaultBranch}` : 'no default branch reported'
+  return (
+    <button
+      type="button"
+      className={
+        selectable
+          ? 'fopt min-h-[46px] items-center gap-3 px-2 py-2'
+          : 'fopt min-h-[46px] cursor-not-allowed items-center gap-3 px-2 py-2 opacity-60'
+      }
+      title={choice.repoPath}
+      aria-disabled={!selectable}
+      disabled={!selectable}
+      onClick={() => selectable && onSelect()}
+    >
+      <span className="flex h-4 w-4 flex-none items-center justify-center">
+        <GiteaMark />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+        <span
+          className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)"
+          title={choice.repoPath}
+        >
+          {choice.repoPath}
+        </span>
+        <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          {busy ? 'Installing the repository webhook…' : choice.binding ? branch : `${branch} · sets up on pick`}
+        </span>
+      </span>
+      {state && state.label !== 'ready' && <span className={`badge flex-none ${state.badge}`}>{state.label}</span>}
+      {selected && <Icon name="check" size={17} color="var(--brand)" />}
+    </button>
+  )
+}
+
+/** Nothing to pick: this deployment configures no Gitea instance, the organization has not
+ *  connected its bot, or the bot administers nothing. Connecting is a token paste on the
+ *  Integrations card rather than a browser authorization, so this sends the reader there
+ *  instead of offering a button that could not finish the job here. */
+export function GiteaNoRepositoriesNotice({
+  connected,
+  enabled = true,
+  integrationsHref,
+  onSync,
+  syncing = false
+}: {
+  connected: boolean
+  enabled?: boolean
+  integrationsHref: string
+  onSync?: () => void
+  syncing?: boolean
+}) {
+  if (enabled && !connected) {
+    return (
+      <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] desktop:col-span-2">
+        <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
+          Connect Gitea to watch repositories
+        </div>
+        <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          Your organization needs one Gitea bot user, connected once with its personal access token. Add it under
+          Integrations &rarr; Code hosts, then pick a repository here.
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <a className="lnk font-medium" href={integrationsHref}>
+            Open Integrations
+          </a>
+          {onSync && (
+            <button
+              type="button"
+              className="lnk inline-flex items-center gap-[6px]"
+              onClick={onSync}
+              disabled={syncing}
+            >
+              <Icon
+                name={syncing ? 'loader' : 'refresh-cw'}
+                size={13}
+                className={syncing ? 'animate-spin' : undefined}
+              />
+              I&rsquo;ve connected it — sync
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
+      <span className="mt-[1px] flex h-[14px] w-[14px] flex-none items-center justify-center">
+        <GiteaMark fillPct={100} />
+      </span>
+      {!enabled ? (
+        <span>Gitea is not enabled on this deployment — no Gitea instance is configured.</span>
+      ) : (
+        <span>
+          The connected Gitea bot administers no repository. Give it Admin on one — as a collaborator or through a team
+          — before it can be set up here.
+        </span>
+      )}
+    </div>
   )
 }
 
