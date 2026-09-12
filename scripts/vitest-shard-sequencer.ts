@@ -1,16 +1,21 @@
-import { statSync } from 'node:fs'
 import { BaseSequencer, type TestSpecification } from 'vitest/node'
 
-// Vitest shards by sha1 of the file path, which is a random partition — and a fixed one, so a bad
-// draw stays bad. Over this repo's daemon suite a random half lands at 1.33:1 by median and 2:1 at
-// p90. Greedy longest-processing-time over file size is a weak proxy (0.61 correlation with
-// measured duration) but a far better partition: 1.15:1 on the same suite.
-export class SizeBalancedSequencer extends BaseSequencer {
-  async shard(specs: TestSpecification[]): Promise<TestSpecification[]> {
-    const shard = this.ctx.config.shard
-    if (!shard) return specs
-    const weighed = specs.map((spec) => ({ item: spec, weight: sizeOf(spec.moduleId), key: spec.moduleId }))
-    return balancedBuckets(weighed, shard.count)[shard.index - 1] ?? []
+// Vitest shards by sha1 of the file path, a random partition — and a fixed one, so a bad draw stays bad.
+// Greedy longest-processing-time over a weight partitions far better, and that weight has to be measured:
+// file size mis-weighs `daemon-hook.test.ts` (174 KB) as 0.6 s against 67 s measured on the Windows runner,
+// and the halves it drew over three runs came out 1.61, 1.67 and 2.44 to 1 against 1.01 on all three from a table.
+export function weightBalancedSequencer(weights: Record<string, number>, fallback: number) {
+  return class WeightBalancedSequencer extends BaseSequencer {
+    async shard(specs: TestSpecification[]): Promise<TestSpecification[]> {
+      const shard = this.ctx.config.shard
+      if (!shard) return specs
+      const weighed = specs.map((spec) => ({
+        item: spec,
+        weight: weigh(spec.moduleId, weights, fallback),
+        key: spec.moduleId
+      }))
+      return balancedBuckets(weighed, shard.count)[shard.index - 1] ?? []
+    }
   }
 }
 
@@ -31,11 +36,9 @@ export function balancedBuckets<T>(items: { item: T; weight: number; key: string
   return buckets
 }
 
-/** An unreadable file weighs nothing rather than failing the run — it fails on its own in a moment. */
-function sizeOf(path: string): number {
-  try {
-    return statSync(path).size
-  } catch {
-    return 0
-  }
+// Module ids are absolute and the table's keys are package-relative, so match the suffix; a win32 id carries backslashes.
+function weigh(moduleId: string, weights: Record<string, number>, fallback: number): number {
+  const path = moduleId.replaceAll('\\', '/')
+  for (const [file, weight] of Object.entries(weights)) if (path.endsWith(`/${file}`)) return weight
+  return fallback
 }

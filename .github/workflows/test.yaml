@@ -213,7 +213,7 @@ jobs:
   unit-windows:
     name: Unit Test (Windows) (${{ matrix.shard }})
     runs-on: windows-latest
-    # The daemon balances its halves by file size (`scripts/vitest-shard-sequencer.ts`); the CLI is 6 s, so it keeps Vitest's own split.
+    # The daemon balances its halves by measured seconds (`scripts/vitest-shard-sequencer.ts`); the CLI is 6 s, so it keeps Vitest's own split.
     strategy:
       fail-fast: false
       matrix:
