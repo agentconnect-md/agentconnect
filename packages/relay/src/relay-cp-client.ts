@@ -18,7 +18,6 @@ import {
   GITEA_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
-  GITLAB_RERUN_V1_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   RELAY_CP_SCHEMAS,
@@ -41,8 +40,6 @@ import {
   type RcParticipantAssign,
   type RcHookAssign,
   type RcHookRemove,
-  type RcHookRerun,
-  type RcHookRerunResult,
   type RcRunReport,
   type RcCodeHostDelivery,
   type RcGithubInstallation,
@@ -129,10 +126,6 @@ export interface RelayCpClientDeps {
   onHookAssign?: (rule: RcHookAssign) => void
   /** Called on a CP `rc/hook-remove` EVT — drop one hook rule. */
   onHookRemove?: (hookId: string) => void
-  /** Called on a CP `rc/hook-rerun` REQ — re-dispatch one gitlab hook turn the
-   *  Console asked for (gitlab-com-integration.md §16.1). The returned verdict IS
-   *  the correlated reply: only `admitted` claims a turn was queued. */
-  onHookRerun?: (rerun: RcHookRerun) => RcHookRerunResult
   /** Called on a CP `rc/collab-routes` EVT — FULL-REPLACE the bot-agnostic
    *  collaboration routing snapshot (agent-collaboration §2.3/§6.2). */
   onCollabRoutes?: (snap: RcCollabRoutes) => void
@@ -568,17 +561,13 @@ export class RelayCpClient {
         // gates session-targeted mints on every live relay advertising it.
         // gitlab-com-v1: this relay verifies and routes GitLab project
         // webhooks, so the CP may send it gitlab-kind compiled rules (§17.3).
-        // gitlab-rerun-v1: this relay decodes rc/hook-rerun and answers its
-        // admission REP — strictly newer than gitlab-com-v1 (§17.3).
         // gitlab-instance-v1: this relay carries the compiled rule's host through onto the
         // trusted metadata it forwards, so a self-managed rule is dispatchable here (§24.4).
-        // gitea-v1: this relay verifies and routes Gitea repository webhooks and decodes the
-        // gitea arm of rc/hook-rerun, for gitea.com and a self-hosted address alike
-        // (gitea-integration.md §7, §11).
+        // gitea-v1: this relay verifies and routes Gitea repository webhooks, for gitea.com
+        // and a self-hosted address alike (gitea-integration.md §7, §11).
         features: [
           WEBCHAT_SESSION_CONTINUATION_FEATURE,
           GITLAB_COM_V1_FEATURE,
-          GITLAB_RERUN_V1_FEATURE,
           GITLAB_INSTANCE_V1_FEATURE,
           PULL_REQUEST_FEEDBACK_FEATURE,
           GITEA_V1_FEATURE
@@ -658,16 +647,6 @@ export class RelayCpClient {
       }
       case 'rc/hook-remove': {
         this.deps.onHookRemove?.((frame.payload as RcHookRemove).hookId)
-        return
-      }
-      case 'rc/hook-rerun': {
-        // The CP awaits this REP before it tells the console anything, so an
-        // unwired relay must answer an error rather than a silent non-admission.
-        if (!this.deps.onHookRerun) {
-          this.sendError(frame.id, 'PROTOCOL_STATE', 'rc/hook-rerun is not served by this relay', false)
-          return
-        }
-        this.reply(frame.id, 'rc/hook-rerun/ok', this.deps.onHookRerun(frame.payload as RcHookRerun))
         return
       }
       case 'rc/collab-routes': {

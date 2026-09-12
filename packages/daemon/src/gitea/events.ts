@@ -14,11 +14,8 @@ export const GITEA_PULL_REVISION_EVENTS: ReadonlySet<string> = new Set([
   'merge_request:synchronize'
 ])
 
-/** Deliveries that re-run the head already current: a reviewer request naming the bot, or the console's re-run. */
-export const GITEA_PULL_RERUN_EVENTS: ReadonlySet<string> = new Set([
-  'merge_request:review_requested',
-  'merge_request:rerun'
-])
+/** Deliveries that re-run the head already current: a reviewer request naming the bot. */
+export const GITEA_PULL_RERUN_EVENTS: ReadonlySet<string> = new Set(['merge_request:review_requested'])
 
 /** Deliveries that open a formal review generation for the current head (§10.3). */
 export const GITEA_PULL_REVIEW_GENERATION_EVENTS: ReadonlySet<string> = new Set([

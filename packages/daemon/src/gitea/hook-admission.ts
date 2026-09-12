@@ -1,5 +1,5 @@
 /** Gitea's implementation of the daemon hook-admission contract (gitea-integration.md §8; gitlab-com-integration.md
- *  §12.3): pull-request lanes, the reviewer-request and console re-run pins, and comment coalescing. */
+ *  §12.3): pull-request lanes, the reviewer-request pin, and comment coalescing. */
 import {
   codeHostLane,
   type CodeHostCoordinatedHook,
@@ -25,7 +25,7 @@ function headShaOf(hook: CodeHostCoordinatedHook | undefined): string | undefine
   return target?.kind === 'pull' ? target.headSha : undefined
 }
 
-/** `opened` and `synchronized` establish a head; a reviewer request and the console re-run pin to the head already current. */
+/** `opened` and `synchronized` establish a head; a reviewer request pins to the head already current. */
 function pullRevisionStream(
   hook: CodeHostCoordinatedHook | undefined,
   coords: CodeHostHookCoordinates

@@ -8,7 +8,6 @@ import {
   type RcCodeHostDelivery,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
-  type RcHookRerun,
   type RcRunReport,
   type RdAck,
   type RdMsg,
@@ -16,7 +15,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { HookTable } from '../hook-table.js'
 import { HookRateLimiter } from '../rate-limit.js'
-import { dispatchGiteaRerun, registerGiteaIngress, type GiteaRerunDeps } from './ingress.js'
+import { registerGiteaIngress } from './ingress.js'
 import { giteaRuleVerdict, normalizeGiteaEvent, type GiteaPayload } from './events.js'
 
 // Every identifier below is synthetic. The probe captures that shaped these fixtures carried real
@@ -222,8 +221,6 @@ interface Harness {
   ack: RdAck
   offline: boolean
   giteaSupported: boolean
-  /** The same deps the ingress runs on — the rerun path reuses them verbatim. */
-  deps: GiteaRerunDeps
 }
 
 function makeHarness(): Harness {
@@ -272,7 +269,6 @@ function makeHarness(): Harness {
   h.app = app
   h.table = table
   h.clock = clock
-  h.deps = deps
   return h as Harness
 }
 
@@ -748,120 +744,5 @@ describe('gitea ingress', () => {
     const review = normalizeGiteaEvent('pull_request_review_rejected', reviewPayload() as GiteaPayload)!
     expect(giteaRuleVerdict(rule({}, { events: ['merge_request:*'] }), review)).toBe('no-match')
     expect(giteaRuleVerdict(rule({}, { commentFamilies: ['pull_request'] }), review)).toBe('needs-authz')
-  })
-})
-
-describe('gitea rerun dispatch (§10.4 "Run again")', () => {
-  let h: Harness
-  beforeEach(() => {
-    h = makeHarness()
-  })
-  afterEach(async () => {
-    await h.app.close()
-  })
-
-  const frame = (over: Partial<RcHookRerun> = {}): RcHookRerun => ({
-    hookId: HOOK,
-    agentId: AGENT,
-    deliveryKey: 'rerun_1',
-    configRevision: '3',
-    dispatchRevision: '5',
-    event: 'merge_request:rerun',
-    gitea: {
-      repoId: String(REPO),
-      repoPath: REPO_PATH,
-      target: { kind: 'pull', index: 77, headSha: HEAD_SHA, explicitReviewRequest: true }
-    },
-    ...over
-  })
-
-  it('re-enters the ordinary dispatch path with the §8 key and the frame head', async () => {
-    h.table.upsert(rule())
-    expect(dispatchGiteaRerun(h.deps, frame())).toEqual({ admitted: true, deliveryKey: 'rerun_1' })
-    await flush()
-    const msg = h.sent[0] as RdMsgHook
-    expect(msg.source).toBe('hook')
-    expect(msg.hookId).toBe(HOOK)
-    expect(msg.agentId).toBe(AGENT)
-    expect(msg.sessionKey).toBe(`gitea:${REPO}:pull:77`)
-    expect(msg.msgId).toBe(`${HOOK}:rerun_1`)
-    expect(msg.event).toBe('merge_request:rerun')
-    expect(msg.gitea?.target).toMatchObject({ kind: 'pull', index: 77, headSha: HEAD_SHA })
-    // A control-authored envelope: no third-party excerpt rides it.
-    expect(msg.context).toMatchObject({ source: 'gitea', event: 'merge_request', action: 'rerun', number: 77 })
-    expect(msg.context?.bodyExcerpt).toBeUndefined()
-    expect(h.reports.map((report) => report.status)).toEqual(['accepted'])
-    expect(h.reports[0]?.deliveryKey).toBe('rerun_1')
-  })
-
-  it('lands an issue rerun on the same thread key as the issue events', async () => {
-    h.table.upsert(rule())
-    dispatchGiteaRerun(
-      h.deps,
-      frame({ event: 'issues:rerun', gitea: { ...frame().gitea!, target: { kind: 'issue', index: 42 } } })
-    )
-    await flush()
-    expect((h.sent[0] as RdMsgHook).sessionKey).toBe(`gitea:${REPO}:issue:42`)
-  })
-
-  it('answers rule_mismatch for a frame whose fence no longer matches the compiled rule', async () => {
-    h.table.upsert(rule())
-    const mismatch = { admitted: false, code: 'rule_mismatch' }
-    expect(dispatchGiteaRerun(h.deps, frame({ configRevision: '4' }))).toEqual(mismatch)
-    expect(dispatchGiteaRerun(h.deps, frame({ dispatchRevision: '6' }))).toEqual(mismatch)
-    expect(dispatchGiteaRerun(h.deps, frame({ agentId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }))).toEqual(mismatch)
-    expect(dispatchGiteaRerun(h.deps, frame({ gitea: { ...frame().gitea!, repoId: '999' } }))).toEqual(mismatch)
-    await flush()
-    expect(h.sent).toHaveLength(0)
-    expect(h.reports).toHaveLength(0)
-  })
-
-  it('refuses a rerun whose provider member is not its own', async () => {
-    h.table.upsert(rule())
-    const gitlabRerun: RcHookRerun = {
-      hookId: HOOK,
-      agentId: AGENT,
-      deliveryKey: 'rerun_2',
-      configRevision: '3',
-      dispatchRevision: '5',
-      event: 'merge_request:rerun',
-      gitlab: { projectId: String(REPO), projectPath: REPO_PATH, target: { kind: 'merge_request', iid: 77 } }
-    }
-    expect(dispatchGiteaRerun(h.deps, gitlabRerun)).toEqual({ admitted: false, code: 'rule_mismatch' })
-    await flush()
-    expect(h.sent).toHaveLength(0)
-    expect(h.reports).toHaveLength(0)
-  })
-
-  it('answers replay_pending while its table holds no rule for the hook', async () => {
-    expect(dispatchGiteaRerun(h.deps, frame())).toEqual({ admitted: false, code: 'replay_pending' })
-    await flush()
-    expect(h.sent).toHaveLength(0)
-    expect(h.reports).toHaveLength(0)
-  })
-
-  it('ADMITS a fire the daemon then refuses — the run row is the report, not the verdict', async () => {
-    h.table.upsert(rule())
-    h.giteaSupported = false
-    expect(dispatchGiteaRerun(h.deps, frame({ deliveryKey: 'rerun_2' }))).toEqual({
-      admitted: true,
-      deliveryKey: 'rerun_2'
-    })
-    await flush()
-    expect(h.sent).toHaveLength(0)
-    expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:unsupported' })])
-  })
-
-  it('answers limiter_exhausted once the shared per-hook run budget is spent', async () => {
-    h.table.upsert(rule())
-    const verdicts = Array.from({ length: 7 }, (_, i) => dispatchGiteaRerun(h.deps, frame({ deliveryKey: `r_${i}` })))
-    await flush()
-    // The harness limiter holds five tokens and does not refill.
-    expect(verdicts.filter((v) => v.admitted)).toHaveLength(5)
-    expect(verdicts.slice(5)).toEqual([
-      { admitted: false, code: 'limiter_exhausted' },
-      { admitted: false, code: 'limiter_exhausted' }
-    ])
-    expect(h.sent).toHaveLength(5)
   })
 })

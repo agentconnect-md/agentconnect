@@ -594,11 +594,11 @@ the pull request, re-requesting the bot as reviewer, or an authorized mention.
 
 ## 11. Protocol and Compatibility
 
-- Feature string **`gitea-v1`** on daemon and relay gates placement,
-  spec projection, hook assignment, rerun dispatch, and the relay's dispatch
-  target, with the §24.4 fail-closed-by-omission semantics. There is no
-  separate instance feature: a self-hosted address is the same code path as
-  gitea.com, so one string covers both.
+- Feature string **`gitea-v1`** on daemon and relay gates placement, spec
+  projection, hook assignment, and the relay's dispatch target, with the §24.4
+  fail-closed-by-omission semantics. There is no separate instance feature: a
+  self-hosted address is the same code path as gitea.com, so one string covers
+  both.
 - The agent spec carries `giteaHost`, set whenever the assembled spec has a
   Gitea consumer, absent meaning gitea.com. It is the third pre-spawn host
   field after the GitLab one; §13 records why it is not generalized further
@@ -759,7 +759,7 @@ Each step is one pull request, merged in order.
   step also added the relay's half of that seam: the `rc/codehost-delivery`
   report and verification under a rule's successor key.
 - **G3 — Relay ingress.** `hooks/gitea/`: signature, event mapping, veto and
-  gate table, delivery key, rerun dispatch.
+  gate table, delivery key.
 - **G4 — Daemon credentials, workspace, sessions.** _Landed (#2054)._ Managed-host
   entry, helper path rules, session-key recompute, transport-scope pin, the ack
   reaction, maintenance cleanup, the final poster and effect broker, and the §8
@@ -950,9 +950,8 @@ scopes remains the recommendation to verify at connect time.
   two agents contending for one pull request publish two distinct reviews,
   a failure after staging leaves nothing for the next attempt to absorb, and
   an ambiguous submit is reconciled by marker rather than resubmitted.
-- Fleet: a daemon and relay without `gitea-v1` never receive a Gitea spec,
-  hook, or rerun; an old peer decoding a frame with a `gitea` member degrades
-  per value.
+- Fleet: a daemon and relay without `gitea-v1` never receive a Gitea spec or
+  hook; an old peer decoding a frame with a `gitea` member degrades per value.
 - End to end, against gitea.com and a self-hosted 1.27 instance: issue
   trigger, pull-request open and synchronize, comment mention, reviewer
   request and re-request, formal review with each verdict, bot-authored pull
