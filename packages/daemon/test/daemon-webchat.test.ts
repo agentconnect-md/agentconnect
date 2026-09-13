@@ -1,3 +1,4 @@
+import { withStartupPhase } from '../src/session/startup-progress.js'
 import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -143,7 +144,7 @@ function fakeK8sPlane(bound: boolean) {
   return {
     runsInSandbox: () => bound,
     withSandbox: (_id: string, work: () => Promise<unknown>) => work(),
-    ensureChannel: async () => {},
+    ensureChannel: () => (bound ? Promise.resolve() : withStartupPhase('sandbox', async () => {})),
     workspaceRootFor: () => undefined,
     gitRunnerFor: () => undefined,
     workspaceFsFor: () => undefined,
@@ -288,8 +289,8 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     // Every chunk carries the conversation + turn and a per-turn monotonic index.
     expect(cp.outputs.every((o) => o.conversationId === CONV && o.turnId === turnId)).toBe(true)
-    expect(cp.outputs.map((o) => o.index)).toEqual([0, 1, 2, 3, 4])
-    expect(cp.outputs.filter((o) => o.event).map((o) => o.event)).toEqual([
+    expect(cp.outputs.map((o) => o.index)).toEqual([...cp.outputs.keys()])
+    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toEqual([
       { kind: 'thinking', text: 'let me think' },
       { kind: 'tool_call', toolCallId: 't1', title: 'Read file.ts', status: 'pending' },
       { kind: 'tool_update', toolCallId: 't1', status: 'completed' },
@@ -387,14 +388,18 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     // The notice leads the stream, and the reply's indices continue from it rather than
     // restarting at 0 — a duplicate index is silently dropped by the browser's cursor.
     expect(cp.outputs.filter((o) => o.event).map((o) => o.event)).toEqual([
-      { kind: 'notice', text: '\u23f3 Allocating a sandbox pod\u2026' },
+      { kind: 'notice', text: '⏳ Preparing workspace…' },
+      { kind: 'notice', text: '⏳ Starting sandbox…' },
+      { kind: 'notice', text: '⏳ Preparing workspace…' },
+      { kind: 'notice', text: '⏳ Starting agent…' },
+      { kind: 'notice', text: '' },
       { kind: 'message', text: 'here is the answer' }
     ])
     expect(cp.outputs.map((o) => o.index)).toEqual([...cp.outputs.keys()])
     await daemon.stop()
   })
 
-  it('leaves the webchat stream alone when the agent already has a bound sandbox', async () => {
+  it('skips the sandbox phase when the pod is bound but still reports workspace and runtime preparation', async () => {
     const { factory } = streamingHost([text('here is the answer')])
     const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
     await daemon.start()
@@ -417,7 +422,11 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     }
     await (daemon as any).dispatch(AGENT_ID, msg, undefined, { conversationId: CONV, turnId, sink: cp.sink })
 
-    expect(cp.outputs.some((o) => o.event?.kind === 'notice')).toBe(false)
+    expect(cp.outputs.flatMap((o) => (o.event?.kind === 'notice' ? [o.event.text] : []))).toEqual([
+      '⏳ Preparing workspace…',
+      '⏳ Starting agent…',
+      ''
+    ])
     await daemon.stop()
   })
 
@@ -456,7 +465,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await (daemon as any).dispatch(AGENT_ID, msg, undefined, { conversationId: CONV, turnId, sink: cp.sink })
 
     // The reply + interstitial events stream regardless of `none` …
-    expect(cp.outputs.filter((o) => o.event).map((o) => o.event)).toEqual([
+    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toEqual([
       { kind: 'thinking', text: 'thinking' },
       { kind: 'tool_call', toolCallId: 't1', title: 'Read file.ts', status: 'pending' },
       { kind: 'message', text: 'here is the answer' }
@@ -507,7 +516,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await (daemon as any).dispatch(AGENT_ID, msg, undefined, { conversationId: CONV, turnId, sink: cp.sink })
 
     // Only the non-empty title reaches the live client; the reply follows.
-    expect(cp.outputs.filter((o) => o.event).map((o) => o.event)).toEqual([
+    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toEqual([
       { kind: 'session_info', title: 'Roll back the deploy' },
       { kind: 'message', text: 'done' }
     ])
@@ -583,7 +592,9 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       { conversationId: CONV, turnId, sink: cp.sink }
     )
 
-    expect(cp.outputs.filter((output) => output.event).map((output) => output.event)).toEqual([
+    expect(
+      cp.outputs.filter((output) => output.event && output.event.kind !== 'notice').map((output) => output.event)
+    ).toEqual([
       { kind: 'session_info', title: 'Inspect startup state' },
       { kind: 'message', text: 'done' }
     ])
@@ -1198,6 +1209,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => {
         await sessionGate
+        await withStartupPhase('clone', async () => {})
         return 'acp-wc-cold'
       }),
       modelOptions: vi.fn(() => null),
@@ -1209,6 +1221,8 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
     await daemon.start()
     const cp = fakeCpClient()
+    const output = vi.spyOn(cp.sink, 'output')
+    const done = vi.spyOn(cp.sink, 'done')
 
     const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
       AGENT_ID,
@@ -1220,15 +1234,20 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(ack.accepted).toBe(true)
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
+    expect(cp.outputs.at(-1)?.event).toEqual({ kind: 'notice', text: '⏳ Starting agent…' })
 
     await (daemon as any).webchatTransport.handleWebchatCancel(CONV)
+    expect(cp.outputs.at(-1)?.event).toEqual({ kind: 'notice', text: '' })
+    expect(output.mock.invocationCallOrder.at(-1)).toBeLessThan(done.mock.invocationCallOrder[0]!)
     expect(cp.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
     expect(host.cancel).not.toHaveBeenCalled()
+    const outputsAfterCancel = cp.outputs.length
 
     releaseSession()
     await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     expect(host.prompt).not.toHaveBeenCalled()
     expect(cp.dones).toHaveLength(1)
+    expect(cp.outputs).toHaveLength(outputsAfterCancel)
     await daemon.stop()
   })
 
@@ -1366,7 +1385,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     expect(attempt).toBe(2) // one failed start, one that stuck
     // Clean completion — the reply streamed and the turn closed with NO error field.
-    expect(cp.outputs.filter((o) => o.event).map((o) => o.event)).toEqual([
+    expect(cp.outputs.filter((o) => o.event && o.event.kind !== 'notice').map((o) => o.event)).toEqual([
       { kind: 'message', text: 'recovered reply' }
     ])
     expect(cp.dones).toEqual([{ conversationId: CONV, turnId, stopReason: 'end_turn' }])

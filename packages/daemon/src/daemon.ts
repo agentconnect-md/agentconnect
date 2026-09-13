@@ -674,10 +674,17 @@ import {
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
-  SANDBOX_BOOTSTRAP_NOTICE,
   SEGMENT_BOUNDARY_UPDATES,
   SESSION_RETENTION_SWEEP_INTERVAL_MS
 } from './daemon/constants.js'
+import {
+  observeStartup,
+  withStartupPhase,
+  shareStartup,
+  awaitStartup,
+  type StartupPhase
+} from './session/startup-progress.js'
+import { StartupNotice, type StartupNoticeConnection } from './platforms/startup-notice.js'
 import type {
   DaemonEvaluationOptions,
   DaemonEvaluationTurnInput,
@@ -4722,11 +4729,13 @@ export class Daemon {
     request?: PrepareSessionWorkspaceRequest,
     allowAgentDrain = false
   ): Promise<string> {
-    return this.enqueueAgentWorkspacePreparation(
-      agent,
-      () => this.runAgentWorkspacePreparation(agent, request),
-      expectedWarmHost,
-      allowAgentDrain
+    return withStartupPhase('workspace', () =>
+      this.enqueueAgentWorkspacePreparation(
+        agent,
+        () => this.runAgentWorkspacePreparation(agent, request),
+        expectedWarmHost,
+        allowAgentDrain
+      )
     )
   }
 
@@ -5351,7 +5360,7 @@ export class Daemon {
       }
       this.hostLaunch.set(hostKey, { agentDir: agent.dir, cwd })
       try {
-        await host.start()
+        await withStartupPhase('runtime', () => host.start())
         return host
       } catch (error) {
         lastError = error
@@ -10643,6 +10652,7 @@ export class Daemon {
    * entries. Pass an `error` for reject/cancel/shutdown; omit it for a clean gate-drop.
    */
   private terminateQueuedSink(entry: QueueEntry, error?: string): void {
+    entry.closeStartup?.()
     if (!entry.webchat || entry.webchat.doneSent) return
     entry.webchat.doneSent = true
     entry.webchat.sink.done({
@@ -11559,8 +11569,6 @@ export class Daemon {
       // Read here, not in the planner: the sticky override is live daemon state.
       stickyOutputMode: await this.store.getOutputModeOverride(key),
       hostAlreadyRunning: this.hostStarts.has(this.hostKeyFor(agentId, key)) || this.modelSessions.hasStartedHost(key),
-      // Synchronous and exact: an attached shim session IS the pod being up, so no cluster read.
-      clusterPodBootstrap: this.k8sPlane !== undefined && !this.k8sPlane.runsInSandbox(agentId),
       protectedAddresses: this.compoundMentionAddresses(agentId, msg),
       codexUsageIsPerPrompt: this.isCodexRuntime(agentId),
       features: { turnFinalContextRefresh: this.cfg.features.turnFinalContextRefresh },
@@ -11577,10 +11585,7 @@ export class Daemon {
     // between them, and the turn then holds a lease on a client it never writes to.
     const egressConn = this.platformTurnEgress.get(msg.platform)?.(plan.integrationId)
     const run: TurnRun = { entry, key, plan, agent, replyConn, ...(egressConn ? { egressConn } : {}), evaluation }
-    // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
-    // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally signal
-    // each copy once. Seeded HERE, before `openSession`, because the sandbox-bootstrap notice
-    // below emits on this turn's `index` and must not collide with the reply's.
+    // Startup notices and replies share the queue entry's index and terminal fence from before openSession.
     const pendingWebchat = webchat
       ? Object.assign(webchat, {
           index: 0,
@@ -11603,7 +11608,6 @@ export class Daemon {
     })
     this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
     this.acknowledgeTrigger(run)
-    if (plan.clusterPodBootstrap) this.announceSandboxBootstrap(run, pendingWebchat)
     // Two holds, one release. A platform whose output does NOT go through `replyConn` still
     // needs the reconciler to drain before it stops that transport (§7.5): without a lease the
     // prune pass can stop the client mid-turn and the settling activity is simply lost.
@@ -11613,7 +11617,7 @@ export class Daemon {
       releaseReplyTransport()
       releaseEgressTransport()
     }
-    const opened = await this.openSession(run, releaseReplyConn)
+    const opened = await this.observeSessionStartup(run, pendingWebchat, () => this.openSession(run, releaseReplyConn))
     if (opened.kind === 'cancelled') return null
     const { handled, restoreDeliveryBinding } = opened
     const { sessionId, created } = handled
@@ -11747,27 +11751,80 @@ export class Daemon {
     return typeof likely === 'function' && likely.call(conn)
   }
 
-  /** Say that this turn is waiting on a cluster Sandbox pod, before the wait starts.
-   *  Live-only chrome: nothing is recorded, because the wait is not part of the conversation. */
-  private announceSandboxBootstrap(run: TurnRun, webchat: Pending['webchat']): void {
+  // Startup chrome belongs to this turn, including work shared with another turn or aborted before Pending exists.
+  private async observeSessionStartup<T>(
+    run: TurnRun,
+    webchat: Pending['webchat'],
+    work: () => Promise<T>
+  ): Promise<T> {
     const { plan, entry, replyConn } = run
-    if (webchat) {
-      webchat.sink.output({
-        conversationId: webchat.conversationId,
-        turnId: webchat.turnId,
-        index: webchat.index++,
-        event: { kind: 'notice', text: SANDBOX_BOOTSTRAP_NOTICE }
-      })
+    const labels: Record<StartupPhase, string> = {
+      sandbox: '⏳ Starting sandbox…',
+      workspace: '⏳ Preparing workspace…',
+      clone: '⏳ Cloning repository…',
+      runtime: '⏳ Starting agent…'
     }
-    // Chat origins only: a hook/code-host turn publishes one artifact at the end and must not
-    // grow a second message of its own.
-    if (!replyConn || originKindOf(plan.platform) !== 'chat') return
-    // A pushed status bar carries this turn's `startupActivityLabel` already, so a platform that
-    // shows one never reaches this post — and none that does has chrome metadata to be marked with.
-    if (turnChromeFor(plan.platform).statusSurface === 'turn-bar') return
-    void replyConn
-      .postMessage(plan.channel, SANDBOX_BOOTSTRAP_NOTICE, entry.msg.thread)
-      .catch((err) => this.log.warn(`cluster: sandbox bootstrap notice failed (${formatErr(err)})`))
+    const turnBar = turnChromeFor(plan.platform).statusSurface === 'turn-bar'
+    if (!webchat && (!replyConn || turnBar || originKindOf(plan.platform) !== 'chat')) return await work()
+    const notice =
+      replyConn && !turnBar && originKindOf(plan.platform) === 'chat'
+        ? new StartupNotice(replyConn as StartupNoticeConnection, plan.channel, plan.thread, (error) =>
+            this.log.warn(`session: startup notice failed (${formatErr(error)})`)
+          )
+        : undefined
+    let closed = false
+    let last: StartupPhase | undefined
+    const releaseNotice = notice ? this.holdReplyConnection(replyConn) : () => {}
+    const emit = (text: string): void => {
+      try {
+        if (webchat && !webchat.doneSent)
+          webchat.sink.output({
+            conversationId: webchat.conversationId,
+            turnId: webchat.turnId,
+            index: webchat.index++,
+            event: { kind: 'notice', text }
+          })
+      } catch (error) {
+        this.log.warn(`session: startup notice failed (${formatErr(error)})`)
+      }
+    }
+    const close = (): void => {
+      if (closed) return
+      closed = true
+      if (notice) void notice.close().finally(releaseNotice)
+    }
+    const abort = (): void => {
+      if (closed) return
+      close()
+      if (last) emit('')
+    }
+    entry.closeStartup = abort
+    entry.initAbort.signal.addEventListener('abort', abort, { once: true })
+    try {
+      const result = await observeStartup((phase) => {
+        if (
+          !phase ||
+          closed ||
+          entry.cancelledReason ||
+          entry.initAbort.signal.aborted ||
+          entry.displacedByNewerTurn ||
+          last === phase
+        )
+          return
+        last = phase
+        const text = labels[phase]
+        emit(text)
+        notice?.update(text)
+      }, work)
+      if (last && !closed && !entry.cancelledReason && !entry.displacedByNewerTurn) {
+        emit('')
+      }
+      return result
+    } finally {
+      close()
+      delete entry.closeStartup
+      entry.initAbort.signal.removeEventListener('abort', abort)
+    }
   }
 
   /** §3.3 source gate: bind this session to the inbound envelope's external audience, then — only
@@ -12508,11 +12565,8 @@ export class Daemon {
         })
       }
     }
-    // The pod wait ENDED inside openSession, so its label must not outlive it: a bootstrap turn
-    // transitions to "is thinking…" here even when its host was already running (a suspended pod
-    // drops its channel while `hostStarts` still holds the agent).
-    const podWaitOver = plan.clusterPodBootstrap
-    if (podWaitOver || !plan.hostAlreadyRunning)
+    // Startup observers have settled; a cold host's initial activity now yields to its ordinary turn.
+    if (!plan.hostAlreadyRunning)
       this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
     // Post/refresh the session status bar up front — with the model now known (session
     // created) plus any usage carried over from prior turns — so it sits at the top of
@@ -13543,6 +13597,7 @@ export class Daemon {
     const activeEntry = this.activeGateEntries.get(key)
     if (activeEntry) {
       activeEntry.cancelledReason ??= reason
+      activeEntry.closeStartup?.()
       // Terminalize before cancellation unwinds so a crash cannot replay the head; superseded hooks retain the reason.
       if (reason === 'superseded' && activeEntry.hookContext) {
         await this.emitHookCompletion(activeEntry.hookContext, 'failed', { reason }, activeEntry)
@@ -15262,7 +15317,9 @@ export class Daemon {
       this.hostStartGeneration.set(key, generation)
       const startAbort = new AbortController()
       this.hostStartAborts.set(key, startAbort)
-      p = this.startHostWithRetry(key, generation, startAbort.signal, opts.allowAgentDrain === true, opts.session)
+      p = shareStartup(() =>
+        this.startHostWithRetry(key, generation, startAbort.signal, opts.allowAgentDrain === true, opts.session)
+      )
       this.hostStarts.set(key, p)
       // A total failure (all attempts exhausted) must NOT poison the cache: without
       // this the rejected promise stays memoized and every later message re-awaits the
@@ -15279,7 +15336,7 @@ export class Daemon {
         }
       )
     }
-    return await p
+    return await awaitStartup(p)
   }
 
   /** Launch an agent's ACP host — spawn + the `initialize` handshake — retrying a
@@ -15323,14 +15380,15 @@ export class Daemon {
         bound && bound.cwd === undefined ? bound.workspace : undefined,
         allowAgentDrain
       )
-      if (!this.usesMicrosandbox(agent)) await this.ensureRuntimeInstalled(agent.runtime, true)
+      if (!this.usesMicrosandbox(agent))
+        await withStartupPhase('runtime', () => this.ensureRuntimeInstalled(agent.runtime, true))
       if (this.hostStartGeneration.get(key) !== generation) {
         throw new Error(`host start superseded for ${label}`)
       }
       // Constructs + memoizes into this.hosts, in the session directory for a session-bound host.
       const host = this.ensureHost(key, this.cfg, bound ? (bound.cwd ?? prepared) : undefined)
       try {
-        await host.start()
+        await withStartupPhase('runtime', () => host.start())
         if (this.hostStartGeneration.get(key) !== generation) {
           throw new Error(`host start superseded for ${label}`)
         }

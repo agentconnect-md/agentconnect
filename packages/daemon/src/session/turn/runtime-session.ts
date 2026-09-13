@@ -2,6 +2,7 @@ import type { McpServer } from '@agentclientprotocol/sdk'
 import type { AcpHost } from '../../acp/acp-host.js'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { LocalStore, SessionRecord } from '../../store/local-store.js'
+import { withStartupPhase } from '../startup-progress.js'
 
 /** The store writes the opener owns — the session row plus the ingress-supplied title. */
 type OpenerStore = Pick<LocalStore, 'setSessionState' | 'upsertSession' | 'setSessionTitle'>
@@ -126,7 +127,10 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       const selected = await sessionStartEffort()
       const create = (servers: McpServer[]) =>
         abortable(
-          () => host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories, bindOutward),
+          () =>
+            withStartupPhase('runtime', () =>
+              host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories, bindOutward)
+            ),
           signal
         )
       const sessionId = await withAdditionalMcpFallback(
@@ -148,7 +152,10 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
     const additionalDirectories = await input.workspaceDirectories(cwd)
     const load = (servers: McpServer[]) =>
       abortable(
-        () => host.loadSession(sessionId, cwd, servers, selected.value, systemAppend, additionalDirectories),
+        () =>
+          withStartupPhase('runtime', () =>
+            host.loadSession(sessionId, cwd, servers, selected.value, systemAppend, additionalDirectories)
+          ),
         signal
       )
     await withAdditionalMcpFallback(

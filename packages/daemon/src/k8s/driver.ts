@@ -11,6 +11,7 @@ import { isSandboxReady, type OperatingMode, type SandboxClaim, type SandboxApi 
 import { SandboxLease } from './sandbox-lease.js'
 import { LaunchRegistry, type Launch, type LaunchGenerations } from './launch-registry.js'
 import { ChannelBinder } from './channel-binder.js'
+import { withStartupPhase } from '../session/startup-progress.js'
 import { awaitBoundSandbox, awaitReady, readIfPresent, type SandboxWaitDeps } from './sandbox-waits.js'
 import {
   AC_ANNOTATION_ADMITTED,
@@ -123,6 +124,11 @@ export class K8sDriver implements SpawnDriver {
   // bypass warm-pool adoption; the same labels ride the claim's own metadata so a member can list an
   // agent's session claims without knowing their sessions.
   async ensureSandbox(subject: SandboxSubject, timer?: LaunchTimer): Promise<Launch> {
+    const ensure = () => this.ensureSandboxInner(subject, timer)
+    return this.sessionFor(subject)?.isAttached() ? await ensure() : await withStartupPhase('sandbox', ensure)
+  }
+
+  private async ensureSandboxInner(subject: SandboxSubject, timer?: LaunchTimer): Promise<Launch> {
     const suspending = this.lease.suspensionOf(subject)
     if (suspending) await suspending
     const adopting = this.registry.adoptInFlight(subject)
@@ -465,7 +471,8 @@ export class K8sDriver implements SpawnDriver {
     grants?: ShimCapability[]
   ): Promise<ShimConnection> {
     const launch = await this.ensureSandbox(subject, timer)
-    return await this.binder.bindChannel(subject, launch, timer, grants ?? this.grantsFor(subject))
+    const bind = () => this.binder.bindChannel(subject, launch, timer, grants ?? this.grantsFor(subject))
+    return this.sessionFor(subject)?.isAttached() ? await bind() : await withStartupPhase('sandbox', bind)
   }
 
   /** What this subject's channel may do — decided per agent. */

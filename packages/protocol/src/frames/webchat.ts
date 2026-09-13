@@ -406,8 +406,7 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   // terminal frame: the turn still ends with exactly one `done`, so replay,
   // busy-state, and older browsers (which ignore unknown kinds) stay coherent.
   z.object({ kind: z.literal('superseded'), generation: z.number().int() }),
-  // Live-only chrome for a wait the user cannot otherwise see (a cluster sandbox pod coming up).
-  // Never persisted — a refresh rebuilds from the transcript, which does not record it.
+  // Live-only startup progress: replace this turn's wait notice; empty text clears it. Never persisted.
   // `standing` ⇒ the line is not a wait but something the reader has to keep: an ask this surface
   // could not show, or an answer it would not take (#1794). A wait notice retires the moment
   // output resumes, which would delete exactly those lines; a standing one stays put. An added

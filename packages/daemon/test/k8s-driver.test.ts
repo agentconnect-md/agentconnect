@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { K8sDriver } from '../src/k8s/driver.js'
-import { AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/sandbox-identity.js'
+import { AC_LABEL_AGENT, AC_LABEL_ORG, sessionSandboxSubject } from '../src/k8s/sandbox-identity.js'
+import { observeStartup } from '../src/session/startup-progress.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { fakeGenerations } from './fake-generations.js'
 import { GuardedResumeRejectedError, OperatingModeRejectedError } from '../src/k8s/sandbox-api.js'
@@ -157,6 +158,19 @@ function driver(api: ReturnType<typeof fakeApi>['api'], overrides: Record<string
 }
 
 describe('cluster spawn driver', () => {
+  it('announces a new session pod even when the agent pod is already bound, and skips a warm bind', async () => {
+    const { api } = fakeApi()
+    const { instance } = driver(api)
+    await instance.ensureBoundChannel('agent-a')
+    const report = vi.fn()
+    const subject = sessionSandboxSubject('agent-a', 'session-1')
+    await observeStartup(report, () => instance.ensureBoundChannel(subject))
+    expect(report).toHaveBeenCalledWith('sandbox')
+    report.mockClear()
+    await observeStartup(report, () => instance.ensureBoundChannel(subject))
+    expect(report).not.toHaveBeenCalled()
+  })
+
   it('creates a claim that carries the pool and labels but no per-agent env', async () => {
     const { api, state } = fakeApi()
     const { instance } = driver(api)

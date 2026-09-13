@@ -397,6 +397,43 @@ describe('stream text delta batching', () => {
     ])
   })
 
+  it('replaces and clears only the current turn wait while keeping standing notices and other participants', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+    act(() => {
+      for (const output of [
+        { agentId: 'agent-1', index: 0, event: { kind: 'notice', text: 'Starting sandbox…' } },
+        { agentId: 'agent-2', index: 0, event: { kind: 'notice', text: 'Starting sandbox…' } },
+        { agentId: 'agent-1', index: 1, event: { kind: 'notice', text: 'An approval is unavailable', standing: true } },
+        { agentId: 'agent-1', index: 2, event: { kind: 'notice', text: 'Preparing workspace…' } }
+      ])
+        socket.onmessage?.({ data: JSON.stringify({ type: 'output', output: { turnId, ...output } }) })
+    })
+    act(runFrame)
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      { kind: 'notice', text: 'An approval is unavailable', standing: true },
+      { kind: 'notice', text: 'Preparing workspace…' }
+    ])
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: {
+            turnId,
+            agentId: 'agent-1',
+            index: 3,
+            event: { kind: 'notice', text: '' }
+          }
+        })
+      })
+    })
+    act(runFrame)
+    expect(getLiveSteps('s1').filter((step) => step.kind === 'notice')).toMatchObject([
+      { agentId: 'agent-2', text: 'Starting sandbox…' },
+      { agentId: 'agent-1', text: 'An approval is unavailable', standing: true }
+    ])
+  })
+
   it('retires the notice as soon as the turn streams, so it never stands above the answer', async () => {
     const runFrame = captureAnimationFrames()
     const { socket, turnId } = await openStream()
