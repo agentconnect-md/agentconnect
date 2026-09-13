@@ -121,7 +121,13 @@ side effects. The executor therefore separates two independent gates:
   if the runtime advertises none or the switch is rejected, the dream fails
   rather than running with write access. This is what keeps the executor safe
   on runtimes without a trusted system-prompt channel (Codex has read-only
-  mode), and it is stricter than "staging contains everything."
+  mode), and it is stricter than "staging contains everything." On OpenCode
+  the daemon authors that mode itself: the native `plan` denies only edits
+  (shell stays allowed) and injects a plan-mode reminder that a compliant
+  model honours by never calling `writeMemory`, so the dream host defines a
+  `read-only` agent through `OPENCODE_CONFIG_CONTENT` — an allow-list of read
+  tools plus the daemon's bridge tools — which the gate prefers over `plan`
+  (`runtime-defs/opencode-runtime.ts`).
 - **Trusted system-prompt channel — OBSERVED.** When the runtime carries the system
   prompt via `_meta.systemPrompt` the dream policy rides it; otherwise the
   policy is prepended to the user prompt. Auto-accept is the user's explicit
