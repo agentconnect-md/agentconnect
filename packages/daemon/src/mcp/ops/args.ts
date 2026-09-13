@@ -8,15 +8,13 @@ import { z } from 'zod'
  * That is why the messages are attached per check here instead of relying on zod's defaults.
  */
 
-/** Every issue the schema raised plus the received key names; `executeTool` adds the tool name and shape (#1921). */
+/** Every issue the schema raised; `executeTool` adds the tool name, accepted shape, and the call's keys (#1921). */
 export class ToolArgumentError extends Error {
   readonly issues: readonly string[]
-  readonly receivedKeys: readonly string[]
-  constructor(issues: readonly string[], value: unknown) {
+  constructor(issues: readonly string[]) {
     super(issues.join('; '))
     this.name = 'ToolArgumentError'
     this.issues = issues
-    this.receivedKeys = value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : []
   }
 }
 
@@ -25,7 +23,7 @@ export function parseArgs<T extends z.ZodType>(schema: T, value: unknown): z.out
   const parsed = schema.safeParse(value)
   if (parsed.success) return parsed.data
   const issues = [...new Set(parsed.error.issues.map((issue) => issue.message))]
-  throw new ToolArgumentError(issues.length > 0 ? issues : ['invalid tool arguments'], value)
+  throw new ToolArgumentError(issues.length > 0 ? issues : ['invalid tool arguments'])
 }
 
 /** A required non-empty string argument. */

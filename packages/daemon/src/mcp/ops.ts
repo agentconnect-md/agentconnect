@@ -390,8 +390,8 @@ export async function executeTool(
   try {
     return await executeRegisteredTool(ctx, name, args, deps)
   } catch (err) {
-    if (err instanceof ToolArgumentError)
-      throw rejected(err.issues, err.receivedKeys.length > 0 ? err.receivedKeys : Object.keys(args))
+    // The call's OWN keys: a handler may parse a nested object, whose field names are not this tool's.
+    if (err instanceof ToolArgumentError) throw rejected(err.issues, Object.keys(args))
     throw err
   }
 }

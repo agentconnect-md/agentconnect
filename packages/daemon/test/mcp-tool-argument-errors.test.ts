@@ -48,7 +48,6 @@ describe('parseArgs', () => {
     expect(caught).toBeInstanceOf(ToolArgumentError)
     const error = caught as ToolArgumentError
     expect(error.issues).toEqual(['missing required string argument: a', 'missing required string argument: b'])
-    expect(error.receivedKeys).toEqual(['c'])
     // The joined message keeps every existing `toThrow('argument …')` substring assertion valid.
     expect(error.message).toBe('missing required string argument: a; missing required string argument: b')
   })
@@ -95,6 +94,30 @@ describe('executeTool argument errors', () => {
     const line = debug.mock.calls[0]![0] as string
     expect(line).toContain('tool readMemory: rejected arguments (keys: oldString, newString)')
     expect(line).not.toContain('the secret text')
+  })
+
+  it("reports the call's own keys when a handler rejected a nested object", async () => {
+    // sendMessage parses `toAgent` as its own object; its field names are not sendMessage arguments.
+    const withSend: SessionContext = {
+      ...ctx,
+      tools: [
+        ...MEMORY_TOOLS,
+        {
+          name: 'sendMessage',
+          description: '',
+          inputSchema: obj({ toAgent: { type: 'object' }, message: { type: 'string' } }, ['toAgent', 'message'])
+        }
+      ]
+    }
+    const call = executeTool(
+      withSend,
+      'sendMessage',
+      { toAgent: { agentId: 'peer', needsReply: 123 }, message: 'hi' },
+      deps()
+    )
+    await expect(call).rejects.toThrow(/^sendMessage: invalid arguments — /)
+    await expect(call).rejects.toThrow(/Received keys: toAgent, message\.$/)
+    await expect(call).rejects.not.toThrow(/Not accepted by sendMessage/)
   })
 
   it('still serves a well-formed call', async () => {
