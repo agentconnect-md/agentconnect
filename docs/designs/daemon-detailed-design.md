@@ -359,7 +359,8 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
   "limits": {
     "maxAgents": 32,
     "maxConcurrentSessions": 32,
-    "agentIdleTimeoutMs": 900000 // Reclaim ACP adapter after 15m idle; background-aware reclaim: background-task-aware-reclaim.md.
+    "agentIdleTimeoutMs": 900000, // Reclaim ACP adapter after 15m idle; background-aware reclaim: background-task-aware-reclaim.md.
+    "turnStallTimeoutMs": 1800000 // Stall watchdog: cancel a prompt whose runtime sent nothing for 30m (0 disables); see §7.3.
   }
 }
 ```
@@ -773,9 +774,25 @@ creating --> idle
 idle --(message/cron synthetic message)--> prompting (session/prompt)
 prompting --(streaming session/update)--> idle (turn ends with stopReason)
 idle --(cancel)--> cancelling (session/cancel, 30s forced backstop) --> idle
+prompting --(no runtime signal > turnStallTimeoutMs)--> cancelling (stall watchdog: ⚠️ notice, session/cancel, same backstop) --> idle
 idle --(long inactivity / TTL)--> closed (metadata retained; body in Local Store)
 closed --(new thread message)--> resuming (session/load) --> idle
 ```
+
+**Stall watchdog.** A `session/prompt` can stall at the network layer — a
+live TCP connection to the model API with no bytes arriving — and nothing in
+the runtime errors it. The SDK-lifecycle lease then protects the session from
+the idle sweep precisely because a prompt is running, so without a watchdog
+the turn hangs forever and every later message queues behind it. The idle
+sweep therefore also checks each in-flight prompt's last runtime signal
+(`session/update`, an SDK lifecycle message, or a human answering its card;
+time spent waiting on a permission or elicitation card does not count). Past
+`limits.turnStallTimeoutMs` the daemon logs a warning, posts the same
+`⚠️ Agent failed to respond` notice a failed turn gets, and cancels the turn
+through the `!stop` path: `session/cancel`, the `cancelBackstopMs` force-stop
+if the runtime ignores it, and queued messages fail-stopped. A prompt the
+runtime rejects with "Session not found" also clears the row's `acpSessionId`,
+so the next message opens a fresh session instead of repeating the failure.
 
 ### 7.4 Message-to-Execution Flow
 
@@ -805,7 +822,7 @@ For cron, Scheduler constructs a `source:"cron"` synthetic `NormalizedMessage` a
 | client -> agent | `session/new`                             | Send prepared `cwd` and MCP Tool Server in `mcpServers`.                                                                                            |
 | client -> agent | `session/load`                            | Resume a session/thread.                                                                                                                            |
 | client -> agent | `session/prompt`                          | Deliver user/synthetic content blocks: text/image/resource.                                                                                         |
-| client -> agent | `session/cancel`                          | Cancel current turn, with adapter 30-second forced backstop. `!stop` / `!cancel` map here.                                                          |
+| client -> agent | `session/cancel`                          | Cancel current turn, with adapter 30-second forced backstop. `!stop` / `!cancel` and the stall watchdog (§7.3) map here.                            |
 | agent -> client | `session/update`                          | Streaming deltas: `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`, `plan`, `usage_update`; ACP Host converges output. |
 | agent -> client | `session/request_permission`              | Dangerous-operation authorization mapped to permissions policy / Web confirmation.                                                                  |
 | agent -> client | `fs/read_text_file`, `fs/write_text_file` | Workspace files with Workspace Manager `PathGuard`.                                                                                                 |

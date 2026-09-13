@@ -537,8 +537,20 @@ export class PermissionCoordinator {
       if (a.depth === 0 && a.startedAt !== undefined) {
         a.waitMs += Math.max(0, this.host.clock().now() - a.startedAt)
         delete a.startedAt
+        // The answer restarts the runtime, so the stall watchdog's clock restarts with it (#1915).
+        p.runtimeActivityAt = this.host.clock().now()
       }
     }
+  }
+
+  /** A permission card or elicitation for `sessionId` still awaits a human — that wait is not the runtime's (#1915). */
+  awaitingHuman(owner: HostKey, sessionId: string): boolean {
+    const mine = (pending: { owner: HostKey; sessionId: string }): boolean =>
+      pending.owner === owner && pending.sessionId === sessionId
+    for (const pending of this.pendingChatPermissions.values()) if (mine(pending)) return true
+    for (const pending of this.pendingEditorPermissions.values()) if (mine(pending)) return true
+    for (const pending of this.pendingElicits.values()) if (mine(pending)) return true
+    return false
   }
 
   private async awaitEditorPermission(

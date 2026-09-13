@@ -301,6 +301,8 @@ export const ConfigSchema = z.object({
       // §7.3 force-cancel backstop: after `!stop` we send session/cancel and wait
       // this long; if the turn still hasn't yielded, we force-stop the host.
       cancelBackstopMs: z.number().int().default(30_000),
+      // Stall watchdog (#1915, daemon-detailed-design.md §7.3): cancel a prompt with no runtime signal for this long; checked each idleSweepMs; 0 disables.
+      turnStallTimeoutMs: z.number().int().min(0).default(1_800_000),
       // How many times to (re)try launching an agent's ACP host — spawn + the
       // `initialize` handshake — before giving up and surfacing the failure to the
       // session. Covers transient failures (a resource race, a slow cold start). A
@@ -332,6 +334,7 @@ export const ConfigSchema = z.object({
       shutdownDrainMs: 25_000,
       poolShutdownDrainMs: 300_000,
       cancelBackstopMs: 30_000,
+      turnStallTimeoutMs: 1_800_000,
       agentStartAttempts: 3,
       agentStartBackoffMs: 500,
       maxAttachmentBytes: 8 * 1024 * 1024

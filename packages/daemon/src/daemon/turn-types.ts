@@ -48,6 +48,18 @@ export class FailStopError extends Error {
   }
 }
 
+/** The stall watchdog's turn failure (#1915): the notice for a prompt cancelled after a silent budget. */
+export class TurnStalledError extends Error {
+  readonly reason = 'stalled' as const
+  constructor(silentMs: number) {
+    const minutes = Math.max(1, Math.round(silentMs / 60_000))
+    super(
+      `no activity from the model runtime for ${minutes} minute${minutes === 1 ? '' : 's'} — the turn was cancelled as stalled; send your message again to start a new turn`
+    )
+    this.name = 'TurnStalledError'
+  }
+}
+
 /** Internal fail-closed outcome for a turn whose process cleanup rejected. The raw
  * cleanup rejection is logged once at the lifecycle boundary; this stable sentinel
  * lets the serial gate fail-stop and release its dispatch lease without reporting the
@@ -219,7 +231,15 @@ export interface CallMeta {
  *  stop is a verdict about the work, a handover says nothing about it, and outcome reporting has
  *  to tell them apart. */
 export type TurnInterruptReason =
-  'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown' | 'superseded' | 'handover'
+  | 'pause'
+  | 'loop protection'
+  | 'stop'
+  | 'cancel'
+  | 'shutdown'
+  | 'superseded'
+  | 'handover'
+  // The stall watchdog (#1915): a prompt whose runtime went silent past `limits.turnStallTimeoutMs`.
+  | 'stalled'
 
 /** What an interrupt means for the agent's admitted-but-unrun durable rows. `terminal` ends that
  *  work here (pause, removal, host respawn); `handoff` leaves the rows for the successor holder to
@@ -581,6 +601,8 @@ export interface Pending {
   /** True only while a `session/prompt` for this turn is awaiting the runtime — the window a
    *  same-session arrival can be steered into instead of queued. */
   promptInFlight?: boolean
+  /** Last proof the runtime is alive on this turn (prompt sent, any update, a human's answer) — the stall watchdog's input (#1915). */
+  runtimeActivityAt?: number
   /** `_session/steering` calls this turn has absorbed, bounded by MAX_STEERS_PER_TURN. */
   steerCount?: number
   /** The same session's OUTWARD id (session-concept.md §1.1) — what the console knows it by, so

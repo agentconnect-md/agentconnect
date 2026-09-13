@@ -190,6 +190,11 @@ export function turnFailureReason(err: unknown): string {
   return generic.test(msg) ? detail : `${msg}: ${detail}`
 }
 
+/** The runtime no longer knows the prompted session (claude-agent-acp: -32603 "Session not found"); retrying cannot help (#1915). */
+export function isRuntimeSessionGone(err: unknown): boolean {
+  return failureSignals(err).some((signal) => /\bsession not found\b/i.test(signal))
+}
+
 /**
  * The wrappers runtimes put around a provider's own error sentence, unwrapped so what reaches the person
  * is the sentence the provider wrote — nothing else in it is for them:

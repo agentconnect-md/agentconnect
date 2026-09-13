@@ -107,7 +107,13 @@ import {
   type TranscriptRow,
   type StoredUsage
 } from './store/local-store.js'
-import { AcpHost, turnFailureCode, turnFailureReason, undecorateRuntimeError } from './acp/acp-host.js'
+import {
+  AcpHost,
+  turnFailureCode,
+  turnFailureReason,
+  isRuntimeSessionGone,
+  undecorateRuntimeError
+} from './acp/acp-host.js'
 import {
   probeSandboxHost,
   removeHostSandboxState,
@@ -609,6 +615,7 @@ import type { CodeHostReplyTarget } from './codehost/reply-target.js'
 import { codeHostThreadWorktreeCleanup, turnFinalFor } from './codehost/turn-final.js'
 import {
   FailStopError,
+  TurnStalledError,
   LifecycleCleanupBlockedError,
   pendingSessionKey,
   pendingTurnAcpSessionId,
@@ -12722,6 +12729,8 @@ export class Daemon {
       // Start-fence linearization: no await occurs between queue coalescing above
       // (or the prior regeneration decision) and initiating this ACP request.
       p.promptInFlight = true
+      // The stall watchdog's clock starts with the request, not with the turn's admission.
+      p.runtimeActivityAt = this.clock.now()
       let result: PromptResult
       try {
         result = await host.prompt(sessionId, promptBlocks)
@@ -13187,6 +13196,24 @@ export class Daemon {
     }
   }
 
+  /** The runtime no longer has `sessionId`: drop the host's claim and the row's id so the next message recreates it (#1915). */
+  private async forgetGoneRuntimeSession(p: Pending, sessionId: string): Promise<void> {
+    const key = p.plan.sessionKey
+    ;(p.selectedHost?.host ?? this.hostForOwner(p.hostKey))?.forgetSession(sessionId)
+    const rec = await this.store.getSession(key)
+    if (rec?.acpSessionId !== sessionId) return
+    await this.store.upsertSession({
+      ...rec,
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: this.clock.now()
+    })
+    this.log.warn(
+      `turn: runtime no longer has session ${sessionId} for ${key} — cleared it; the next message opens a fresh session`
+    )
+  }
+
   /** Surface a turn that failed before yielding a clean stop — the agent couldn't start (spawn
    *  failure / ACP handshake), or the prompt itself rejected. Without surfacing it here the
    *  failure is invisible: Slack keeps its "is thinking…" status with no message, and a webchat
@@ -13228,6 +13255,8 @@ export class Daemon {
     settlement.propagatingTurnError = true
     evaluation.failEvaluation(err)
     settlement.finalPhase = 'problem'
+    // "Session not found" would repeat on every later dispatch; forget the id instead (#1915).
+    if (isRuntimeSessionGone(err)) await this.forgetGoneRuntimeSession(p, sessionId)
     if (p.webchat?.continuation) {
       // Continuation: release any held stream text; the platform branch below owns the
       // visible notice + transcript, and the terminal-error `done` waits behind its
@@ -15072,6 +15101,8 @@ export class Daemon {
       return
     }
     const p = this.pending.get(pendingTurnKey(owner, sessionId))
+    // Any update — text, thought, tool call, usage — is proof the runtime is alive on this turn.
+    if (p) p.runtimeActivityAt = this.clock.now()
     this.evalHooks.emit({
       type: 'acp.update',
       agentId,
@@ -16442,6 +16473,9 @@ export class Daemon {
    *  docs/designs/background-task-aware-reclaim.md). */
   private async onSdkLifecycle(owner: HostKey, acpSessionId: string, message: unknown): Promise<void> {
     const agentId = hostKeyAgentId(owner)
+    // A lifecycle message is runtime activity too, even when nothing streams to the surface.
+    const liveTurn = this.pending.get(pendingTurnKey(owner, acpSessionId))
+    if (liveTurn) liveTurn.runtimeActivityAt = this.clock.now()
     const m = message as {
       type?: unknown
       subtype?: unknown
@@ -17461,8 +17495,51 @@ export class Daemon {
     if (this.sessionPurgeDrainRerun) await this.drainSessionPurges()
   }
 
+  /** Stall watchdog (#1915, daemon-detailed-design.md §7.3): cancel a prompt with no runtime signal for `turnStallTimeoutMs`. */
+  private async sweepStalledTurns(now: number): Promise<void> {
+    const budget = this.cfg.limits.turnStallTimeoutMs
+    if (budget <= 0) return
+    for (const p of [...this.pending.values()]) {
+      if (!p.promptInFlight || p.outputSuppressed || p.runtimeActivityAt === undefined) continue
+      // A card the human has not answered is the human's time, not the runtime's.
+      if (p.approval.depth > 0 || this.permissions.awaitingHuman(p.hostKey, p.acpSessionId)) continue
+      const silentMs = now - p.runtimeActivityAt
+      if (silentMs < budget) continue
+      await this.tripStalledTurn(p, silentMs)
+    }
+  }
+
+  /** Notify the conversation first (the interrupt suppresses later output), then cancel the way `!stop` does. */
+  private async tripStalledTurn(p: Pending, silentMs: number): Promise<void> {
+    const { agentId, sessionKey } = p.plan
+    const { msg } = p.entry
+    this.log.warn(
+      `turn watchdog: session ${sessionKey} (${p.acpSessionId}) has had no runtime activity for ` +
+        `${Math.round(silentMs / 60_000)} min — cancelling the stalled turn`
+    )
+    await this.surfaceTurnFailure(new TurnStalledError(silentMs), {
+      agentId,
+      agentName: p.plan.agentName,
+      ...(p.plan.iconUrl ? { iconUrl: p.plan.iconUrl } : {}),
+      platform: msg.platform,
+      isDm: msg.isDm,
+      ...(p.webchat ? { webchat: p.webchat } : {}),
+      ...(p.conn ? { replyConn: p.conn } : {}),
+      ...(p.plan.integrationId !== undefined ? { integrationId: p.plan.integrationId } : {}),
+      channel: msg.channel,
+      sessionKey,
+      transcriptChannel: p.plan.transcriptChannel,
+      thread: msg.thread,
+      statusThread: p.plan.statusThread
+    })
+    if (p.webchat) p.webchat.doneSent = true
+    // session/cancel, the cancelBackstopMs force-stop if ignored, queued messages fail-stopped (§6.9).
+    await this.interruptTurn(agentId, sessionKey, 'stalled', p.acpSessionId)
+  }
+
   private async sweepIdle(): Promise<void> {
     const now = this.clock.now()
+    await this.sweepStalledTurns(now)
     // Probe temp roots re-created by a runtime that outlived its adapter (see
     // sweepStaleProbeRoots) must be reclaimed inside THIS process's lifetime — the
     // startup pass alone would let a long-lived daemon accumulate them indefinitely.
