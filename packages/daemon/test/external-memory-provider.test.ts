@@ -229,6 +229,7 @@ describe('ExternalMemoryProvider', () => {
       'listMemoryEntries',
       'getMemoryEntry',
       'searchMemory',
+      'listMemory',
       'saveMemory',
       'getMemory',
       'updateMemory',
