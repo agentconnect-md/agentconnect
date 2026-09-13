@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { AgentMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
@@ -16,24 +16,24 @@ export function RuntimeSelect({
 }: {
   value: string
   options: readonly string[]
-  /** Ids the daemon reports as needing a login on its host. MARKED, never disabled:
-   *  the flag doesn't mean "can't launch" (see `loginRequiredRuntimeIds`), and placing
-   *  an agent on a logged-out runtime is a supported state — creation and placement
-   *  deliberately don't gate on readiness (docs/designs/preset-agents.md §3.2). */
+  // Login warnings never disable choices; logged-out placement is supported (preset-agents.md §3.2).
   needsLogin?: readonly string[]
   imageBinaryMissing?: readonly string[]
   onChange: (value: string) => void
   ariaLabel?: string
 }) {
   const registry = useAcpRegistry()
-  const rows = options.map((id) => ({
-    id,
-    label: runtimeLabel(id, acpRuntime(registry, id)?.name),
-    warning: runtimeWarning({
-      authRequired: needsLogin?.includes(id),
-      unavailableReason: imageBinaryMissing?.includes(id) ? 'image-binary-missing' : undefined
-    })
-  }))
+  const rows = options
+    .map((id) => ({
+      id,
+      label: runtimeLabel(id, acpRuntime(registry, id)?.name),
+      warning: runtimeWarning({
+        authRequired: needsLogin?.includes(id),
+        unavailableReason: imageBinaryMissing?.includes(id) ? 'image-binary-missing' : undefined
+      })
+    }))
+    .sort((a, b) => Number(a.warning === 'auth-required') - Number(b.warning === 'auth-required'))
+  const loginGroupIndex = rows.findIndex((row) => row.warning === 'auth-required')
   const selectedIndex = Math.max(
     0,
     rows.findIndex((row) => row.id === value)
@@ -138,8 +138,7 @@ export function RuntimeSelect({
               )}
             </>
           ) : (
-            // Deferred exec config (an unplaced preset agent): nothing chosen yet —
-            // never show the first option as if it were selected.
+            // An unplaced agent has no selection; do not display the first option as selected.
             <span className="truncate text-(--text-tertiary)">Select runtime</span>
           )}
         </span>
@@ -168,46 +167,48 @@ export function RuntimeSelect({
               const isSelected = row.id === value
               const isActive = index === activeIndex
               return (
-                <button
-                  key={row.id}
-                  id={`${listboxId}-option-${index}`}
-                  type="button"
-                  role="option"
-                  tabIndex={-1}
-                  aria-selected={isSelected}
-                  title={
-                    row.warning === 'image-binary-missing'
-                      ? IMAGE_BINARY_MISSING_LABEL
-                      : row.warning
-                        ? LOGIN_HINT
-                        : undefined
-                  }
-                  className={`fopt min-h-10 gap-3 rounded-md px-2 py-[6px] text-[13px] ${
-                    isSelected
-                      ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
-                      : isActive
-                        ? 'bg-(--surface-hover)'
-                        : ''
-                  }`}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onClick={() => pick(row.id)}
-                >
-                  <span className="imark h-7 w-7 flex-none rounded-md">
-                    <AgentMark model={row.id} />
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
-                    <span>{row.label}</span>
-                    {row.warning && (
-                      <span className="flex items-start gap-[4px] font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
-                        <Icon name="triangle-alert" size={11} className="mt-[2px] flex-none" />
-                        <span>
-                          {row.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : 'Login required'}
+                <Fragment key={row.id}>
+                  {index === loginGroupIndex && index > 0 && <div className="dmsep" aria-hidden="true" />}
+                  <button
+                    id={`${listboxId}-option-${index}`}
+                    type="button"
+                    role="option"
+                    tabIndex={-1}
+                    aria-selected={isSelected}
+                    title={
+                      row.warning === 'image-binary-missing'
+                        ? IMAGE_BINARY_MISSING_LABEL
+                        : row.warning
+                          ? LOGIN_HINT
+                          : undefined
+                    }
+                    className={`fopt min-h-10 gap-3 rounded-md px-2 py-[6px] text-[13px] ${
+                      isSelected
+                        ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
+                        : isActive
+                          ? 'bg-(--surface-hover)'
+                          : ''
+                    }`}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onClick={() => pick(row.id)}
+                  >
+                    <span className="imark h-7 w-7 flex-none rounded-md">
+                      <AgentMark model={row.id} />
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
+                      <span>{row.label}</span>
+                      {row.warning && (
+                        <span className="flex items-start gap-[4px] font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
+                          <Icon name="triangle-alert" size={11} className="mt-[2px] flex-none" />
+                          <span>
+                            {row.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : 'Login required'}
+                          </span>
                         </span>
-                      </span>
-                    )}
-                  </span>
-                  {isSelected && <Icon name="check" size={16} color="var(--brand)" className="flex-none" />}
-                </button>
+                      )}
+                    </span>
+                    {isSelected && <Icon name="check" size={16} color="var(--brand)" className="flex-none" />}
+                  </button>
+                </Fragment>
               )
             })}
           </div>
