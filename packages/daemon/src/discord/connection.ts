@@ -742,22 +742,6 @@ export class DiscordConnection implements PlatformConnection {
     })
   }
 
-  // Remove transient chrome from the same native channel or thread where it was posted.
-  async deleteMessage(channel: string, messageId: string, threadTs?: string): Promise<boolean> {
-    const target = this.replyTarget(channel, threadTs)
-    return this.queue.enqueue(async () => {
-      try {
-        const ch = await this.sendableChannel(target)
-        if (!ch?.messages) return false
-        await (await ch.messages.fetch(messageId)).delete()
-        return true
-      } catch (err) {
-        this.deps.log?.debug(`discord: delete chrome failed (${(err as Error).message})`)
-        return false
-      }
-    })
-  }
-
   /** Best-effort transient "typing…" indicator (Discord's analog of a status bar).
    *  Not queued — a fire-and-forget hint that expires on its own (~10s). */
   async sendChatAction(channel: string, threadTs?: string): Promise<void> {

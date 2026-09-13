@@ -32,6 +32,7 @@ import {
 } from '../codehost/credentials.js'
 import { formatErr } from '../daemon/text.js'
 import { makeLogger } from '../log.js'
+import { withStartupPhase } from '../session/startup-progress.js'
 import { installSkills, type LocalSkillSource } from '../skills/install-skills.js'
 import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
 import { bundlePathsFromCheckoutRoot, excludeManagedSkillBundles } from './git-exclude.js'
@@ -935,7 +936,7 @@ export class WorkspaceManager {
 
   async convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
     const clone = this.cloneInFlight.get(this.cloneKey(agent.id, cwd))
-    if (clone) await clone
+    if (clone) await withStartupPhase('clone', () => clone)
     if (!existsSync(join(cwd, '.git'))) return
     await this.convergeOriginInPlace(agent, cwd)
   }
@@ -2170,13 +2171,9 @@ export class WorkspaceManager {
     if (root.githubApp) await preWarmGitCred(agentId, 'clone')
     // Run in the target's parent, which names the pod that owns it: a runner with no cwd is the agent pod's.
     const git = this.runnerFor(agentId, dirname(cwd)).withEnv(this.sessionCloneGitEnv(agentId, root))
-    await git.clone(root.cloneUrl, cwd, [
-      '--filter=blob:none',
-      '--no-checkout',
-      '--branch',
-      root.branch,
-      '--single-branch'
-    ])
+    await withStartupPhase('clone', () =>
+      git.clone(root.cloneUrl, cwd, ['--filter=blob:none', '--no-checkout', '--branch', root.branch, '--single-branch'])
+    )
     if (root.githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId, root.managed)
   }
 
@@ -2570,7 +2567,7 @@ export class WorkspaceManager {
     // reattachment would then re-await that dead promise until the daemon restarted.
     const key = this.cloneKey(agent.id, checkout)
     const inflight = this.cloneInFlight.get(key)
-    if (inflight) return await inflight
+    if (inflight) return await withStartupPhase('clone', () => inflight)
     const started = this.cloneInSandbox(agent, root, repository, checkout).finally(() => {
       this.cloneInFlight.delete(key)
     })
@@ -2585,9 +2582,11 @@ export class WorkspaceManager {
       ? { ...workspaceGitEnvBase(repository), ...cloneGitEnv(agent.id, repository, this.managedScopeOf(agent)) }
       : { ...workspaceGitEnvBase(repository), GIT_TERMINAL_PROMPT: '0' }
     try {
-      await this.runnerFor(agent.id, root)
-        .withEnv(env)
-        .clone(repository, SANDBOX_CHECKOUT_DIR, ['--branch', agent.workspace.gitBranch, '--single-branch'])
+      await withStartupPhase('clone', () =>
+        this.runnerFor(agent.id, root)
+          .withEnv(env)
+          .clone(repository, SANDBOX_CHECKOUT_DIR, ['--branch', agent.workspace.gitBranch, '--single-branch'])
+      )
     } catch (err) {
       // A partial checkout would fail the probe above forever after, since git refuses to clone into
       // a non-empty directory. Emptying it is the pod's own job — there is no rmSync to reach it.
@@ -2915,7 +2914,7 @@ export class WorkspaceManager {
   async cloneRootAt(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
     const key = this.cloneKey(agentId, cwd)
     const inflight = this.cloneInFlight.get(key)
-    if (inflight) return inflight
+    if (inflight) return withStartupPhase('clone', () => inflight)
 
     const { cloneUrl, branch, githubApp, managed } = root
 
@@ -2930,7 +2929,7 @@ export class WorkspaceManager {
           })
         : this.runnerFor(agentId).withEnv({ ...workspaceGitEnvBase(cloneUrl), GIT_TERMINAL_PROMPT: '0' })
       try {
-        await git.clone(cloneUrl, cwd, ['--branch', branch, '--single-branch'])
+        await withStartupPhase('clone', () => git.clone(cloneUrl, cwd, ['--branch', branch, '--single-branch']))
       } catch (e) {
         // A failed clone leaves a half-written dir whose stray `.git` would make
         // every later attempt think the checkout exists — clean before rethrowing.

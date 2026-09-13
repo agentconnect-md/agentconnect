@@ -265,6 +265,8 @@ export interface QueueEntry {
   /** Cancels the entire cold SessionManager initialization path after the bounded
    *  host-stop backstop, including non-host awaits such as workspace/history I/O. */
   initAbort: AbortController
+  // Stop startup chrome immediately while uncancellable initialization retains its cleanup fence.
+  closeStartup?: () => void
   integrationId?: string
   webchat?: WebchatTurnContext
   callMeta?: CallMeta

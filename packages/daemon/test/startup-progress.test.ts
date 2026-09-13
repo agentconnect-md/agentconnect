@@ -48,7 +48,7 @@ describe('startup progress lifetime', () => {
     expect(second).toHaveBeenCalledWith('runtime')
   })
 
-  it('does not send queued updates after cancellation and removes a late post', async () => {
+  it('stops queued edits on cancellation and retains a post already sent', async () => {
     const posted = deferred<string>()
     const conn = {
       postMessage: vi.fn(() => posted.promise),
@@ -62,10 +62,11 @@ describe('startup progress lifetime', () => {
     await Promise.resolve()
     expect(conn.postMessage).toHaveBeenCalledOnce()
     notice.update('Starting agent…')
-    notice.close()
+    const closed = notice.close()
     notice.update('late update')
     posted.resolve('notice-id')
-    await vi.waitFor(() => expect(conn.deleteMessage).toHaveBeenCalledWith('channel', 'notice-id', 'thread'))
+    await closed
+    expect(conn.deleteMessage).not.toHaveBeenCalled()
     expect(conn.updateMessage).not.toHaveBeenCalled()
   })
 })

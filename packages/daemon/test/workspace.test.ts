@@ -17,6 +17,7 @@ import { GitTransportError } from '../src/workspace/git-runner.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { configureWorkspaceGitOrigins } from '../src/workspace/git-origin-policy.js'
 import { DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS } from '@agentconnect.md/protocol'
+import { observeStartup } from '../src/session/startup-progress.js'
 
 const { rename: realRename } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
 const renameMock = vi.fn(realRename)
@@ -182,7 +183,7 @@ describe('prepareWorkspace', () => {
     configureWorkspaceGitOrigins(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
   })
 
-  it('single-flights concurrent clones into the same cwd (dedupe)', async () => {
+  it('shares one clone and reports the wait to both callers', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'co')
     let resolveClone!: () => void
     cloneImpl = vi.fn().mockImplementation(
@@ -192,11 +193,17 @@ describe('prepareWorkspace', () => {
         })
     )
     const agent = gitRepoAgent(path)
-    const p1 = workspaces.prepareWorkspace(agent)
-    const p2 = workspaces.prepareWorkspace(agent) // arrives while p1's clone is in flight
+    const first = vi.fn()
+    const second = vi.fn()
+    const p1 = observeStartup(first, () => workspaces.prepareWorkspace(agent))
+    const p2 = observeStartup(second, () => workspaces.prepareWorkspace(agent))
+    expect(first).toHaveBeenLastCalledWith('clone')
+    expect(second).toHaveBeenLastCalledWith('clone')
     resolveClone()
     await Promise.all([p1, p2])
     expect(cloneImpl).toHaveBeenCalledTimes(1)
+    expect(first).toHaveBeenLastCalledWith(undefined)
+    expect(second).toHaveBeenLastCalledWith(undefined)
   })
 
   it('THROWS on clone failure (no on-disk fallback)', async () => {

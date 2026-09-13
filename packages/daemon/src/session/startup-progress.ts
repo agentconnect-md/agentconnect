@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-export type StartupPhase = 'sandbox' | 'workspace' | 'runtime'
+export type StartupPhase = 'sandbox' | 'workspace' | 'clone' | 'runtime'
 type Report = (phase: StartupPhase | undefined) => void
 const context = new AsyncLocalStorage<{ report: Report; phase?: StartupPhase }>()
 const shared = new WeakMap<Promise<unknown>, { phase?: StartupPhase; listeners: Set<Report> }>()
@@ -16,13 +16,14 @@ export async function observeStartup<T>(report: Report, work: () => Promise<T>):
 }
 
 // A nested wait restores its enclosing phase, such as workspace preparation after a sandbox binds.
-export async function withStartupPhase<T>(phase: StartupPhase, work: () => Promise<T>): Promise<T> {
+export function withStartupPhase<T>(phase: StartupPhase, work: () => Promise<T>): Promise<T> {
   const parent = context.getStore()
-  if (!parent) return await work()
+  if (!parent) return work()
   parent.report(phase)
-  const result = await context.run({ report: parent.report, phase }, work)
-  parent.report(parent.phase)
-  return result
+  return context.run({ report: parent.report, phase }, work).then((result) => {
+    parent.report(parent.phase)
+    return result
+  })
 }
 
 // Shared host starts broadcast to their current waiters, including a turn joining an existing start.

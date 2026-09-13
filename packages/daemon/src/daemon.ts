@@ -10652,6 +10652,7 @@ export class Daemon {
    * entries. Pass an `error` for reject/cancel/shutdown; omit it for a clean gate-drop.
    */
   private terminateQueuedSink(entry: QueueEntry, error?: string): void {
+    entry.closeStartup?.()
     if (!entry.webchat || entry.webchat.doneSent) return
     entry.webchat.doneSent = true
     entry.webchat.sink.done({
@@ -11757,12 +11758,14 @@ export class Daemon {
     work: () => Promise<T>
   ): Promise<T> {
     const { plan, entry, replyConn } = run
-    const labels: Record<StartupPhase, [string, string]> = {
-      sandbox: ['is starting a sandbox…', '⏳ Starting sandbox…'],
-      workspace: ['is preparing the workspace…', '⏳ Preparing workspace…'],
-      runtime: ['is starting up…', '⏳ Starting agent…']
+    const labels: Record<StartupPhase, string> = {
+      sandbox: '⏳ Starting sandbox…',
+      workspace: '⏳ Preparing workspace…',
+      clone: '⏳ Cloning repository…',
+      runtime: '⏳ Starting agent…'
     }
     const turnBar = turnChromeFor(plan.platform).statusSurface === 'turn-bar'
+    if (!webchat && (!replyConn || turnBar || originKindOf(plan.platform) !== 'chat')) return await work()
     const notice =
       replyConn && !turnBar && originKindOf(plan.platform) === 'chat'
         ? new StartupNotice(replyConn as StartupNoticeConnection, plan.channel, plan.thread, (error) =>
@@ -11791,26 +11794,35 @@ export class Daemon {
       if (notice) void notice.close().finally(releaseNotice)
     }
     const abort = (): void => {
+      if (closed) return
       close()
       if (last) emit('')
     }
+    entry.closeStartup = abort
     entry.initAbort.signal.addEventListener('abort', abort, { once: true })
     try {
       const result = await observeStartup((phase) => {
-        if (!phase || closed || entry.initAbort.signal.aborted || entry.displacedByNewerTurn || last === phase) return
+        if (
+          !phase ||
+          closed ||
+          entry.cancelledReason ||
+          entry.initAbort.signal.aborted ||
+          entry.displacedByNewerTurn ||
+          last === phase
+        )
+          return
         last = phase
-        const [activity, text] = labels[phase]
-        if (turnBar) this.showActivity(replyConn, plan.channel, plan.statusThread, activity, plan.statusOptions)
+        const text = labels[phase]
         emit(text)
         notice?.update(text)
       }, work)
-      if (last && !closed && !entry.displacedByNewerTurn) {
+      if (last && !closed && !entry.cancelledReason && !entry.displacedByNewerTurn) {
         emit('')
-        this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
       }
       return result
     } finally {
       close()
+      delete entry.closeStartup
       entry.initAbort.signal.removeEventListener('abort', abort)
     }
   }
@@ -13585,6 +13597,7 @@ export class Daemon {
     const activeEntry = this.activeGateEntries.get(key)
     if (activeEntry) {
       activeEntry.cancelledReason ??= reason
+      activeEntry.closeStartup?.()
       // Terminalize before cancellation unwinds so a crash cannot replay the head; superseded hooks retain the reason.
       if (reason === 'superseded' && activeEntry.hookContext) {
         await this.emitHookCompletion(activeEntry.hookContext, 'failed', { reason }, activeEntry)

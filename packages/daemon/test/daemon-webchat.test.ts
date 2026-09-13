@@ -1209,6 +1209,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => {
         await sessionGate
+        await withStartupPhase('clone', async () => {})
         return 'acp-wc-cold'
       }),
       modelOptions: vi.fn(() => null),
@@ -1220,6 +1221,8 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
     await daemon.start()
     const cp = fakeCpClient()
+    const output = vi.spyOn(cp.sink, 'output')
+    const done = vi.spyOn(cp.sink, 'done')
 
     const ack = await (daemon as any).webchatTransport.dispatchWebchatTurn(
       AGENT_ID,
@@ -1231,15 +1234,20 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(ack.accepted).toBe(true)
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledTimes(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
+    expect(cp.outputs.at(-1)?.event).toEqual({ kind: 'notice', text: '⏳ Starting agent…' })
 
     await (daemon as any).webchatTransport.handleWebchatCancel(CONV)
+    expect(cp.outputs.at(-1)?.event).toEqual({ kind: 'notice', text: '' })
+    expect(output.mock.invocationCallOrder.at(-1)).toBeLessThan(done.mock.invocationCallOrder[0]!)
     expect(cp.dones).toEqual([expect.objectContaining({ turnId: ack.turnId, error: 'cancel' })])
     expect(host.cancel).not.toHaveBeenCalled()
+    const outputsAfterCancel = cp.outputs.length
 
     releaseSession()
     await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     expect(host.prompt).not.toHaveBeenCalled()
     expect(cp.dones).toHaveLength(1)
+    expect(cp.outputs).toHaveLength(outputsAfterCancel)
     await daemon.stop()
   })
 

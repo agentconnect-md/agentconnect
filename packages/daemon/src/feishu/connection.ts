@@ -1232,20 +1232,6 @@ export class FeishuConnection implements PlatformConnection {
     })
   }
 
-  // Remove a startup notice after its wait ends, including a post that completed after cancellation.
-  async deleteMessage(channel: string, messageId: string): Promise<boolean> {
-    return this.queue.enqueue(async () => {
-      try {
-        await this.handle.api.deleteMessage(messageId)
-        return true
-      } catch (err) {
-        this.rememberPermissionIssue(err, channel)
-        this.deps.log?.debug(`feishu: delete chrome failed (${(err as Error).message})`)
-        return false
-      }
-    })
-  }
-
   /** No-op — Feishu has no typing / chat-action API. Present for applier parity. */
   async sendChatAction(_channel: string): Promise<void> {
     // intentionally empty

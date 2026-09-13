@@ -8,7 +8,7 @@ import { LocalMemoryFs } from '../src/memory/fs.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
-// Startup phases use one transient surface per turn.
+// Startup phases update the existing notice without adding messages to Slack.
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-sandbox-notice-'))
@@ -85,7 +85,7 @@ function chatMsg(platform: 'slack' | 'telegram', id: string): NormalizedMessage 
 type Dispatchable = { dispatch: (agentId: string, msg: NormalizedMessage) => Promise<unknown> }
 
 describe('session startup notices', () => {
-  it("narrates a cold sandbox on Slack's status bar and posts no message for it", async () => {
+  it('keeps Slack on its existing working indicator without posting phase messages', async () => {
     const daemon = bootDaemon(scaffold())
     await daemon.start()
     coldSandbox(daemon)
@@ -98,10 +98,9 @@ describe('session startup notices', () => {
 
     await (daemon as never as Dispatchable).dispatch('bot-a', chatMsg('slack', '1'))
 
-    expect(statuses).toContain('is starting a sandbox…')
-    // Slack is turn-bar: the label rides the status bar, so no second message says the same thing.
+    expect(statuses.slice(0, 2)).toEqual(['is starting up…', 'is thinking…'])
+    // Slack consumes only the lifecycle state; phase text is not supported there.
     expect(conn.postMessage).not.toHaveBeenCalledWith('C1', '⏳ Starting sandbox…', expect.anything())
-    // The label does not outlive the wait it names — the row retires to "is thinking…".
     expect(statuses.filter((text) => text !== '').at(-1)).toBe('is thinking…')
     await daemon.stop()
   })
@@ -144,7 +143,7 @@ describe('session startup notices', () => {
 
     expect(conn.postMessage).toHaveBeenCalledTimes(1)
     expect(conn.updateMessage).toHaveBeenCalledWith('C1', 'm1', '⏳ Starting agent…', { threadTs: 'T1' })
-    expect(conn.deleteMessage).toHaveBeenCalledWith('C1', 'm1', 'T1')
+    expect(conn.deleteMessage).not.toHaveBeenCalled()
     await daemon.stop()
   })
 })

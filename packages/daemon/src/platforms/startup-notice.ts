@@ -1,10 +1,9 @@
 export interface StartupNoticeConnection {
   postMessage(channel: string, text: string, thread?: string): Promise<string | undefined>
   updateMessage(channel: string, id: string, text: string, options?: { threadTs?: string }): Promise<void>
-  deleteMessage(channel: string, id: string, thread?: string): Promise<unknown>
 }
 
-// One transient message, with serialized edits and removal even when the initial post finishes late.
+// One message, with serialized edits that stop when its turn leaves startup.
 export class StartupNotice {
   private closed = false
   private attempted = false
@@ -39,13 +38,7 @@ export class StartupNotice {
   }
 
   close(): Promise<void> {
-    if (this.closed) return this.writes
     this.closed = true
-    this.writes = this.writes
-      .then(async () => {
-        if (this.id) await this.conn.deleteMessage(this.channel, this.id, this.thread)
-      })
-      .catch(this.failed)
     return this.writes
   }
 }

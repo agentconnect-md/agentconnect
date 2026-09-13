@@ -154,7 +154,7 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
       turnSurfaces.exact(msg.platform)?.elicitCards !== undefined
     ),
     suppressReplyConn,
-    // Actual startup phases replace this initial activity as the turn reaches each wait.
+    // Keep the ordinary cold/warm working indicator; startup notices use their own surface.
     startupActivityLabel: input.hostAlreadyRunning ? 'is thinking…' : 'is starting up…',
     hostAlreadyRunning: input.hostAlreadyRunning,
     turnSurface,

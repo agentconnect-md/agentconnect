@@ -166,20 +166,22 @@ live reply and saved transcript use the same destination.
 
 ## Session startup shows what the turn is waiting for
 
-Before an agent can respond, its turn may need to start a sandbox, prepare a workspace
-(including Git clone and checkout), and start or resume its runtime session. Each real
-wait updates one startup status. Stages that do not run are skipped, including sandbox
-startup when the current session's own sandbox is already bound.
+Before an agent can respond, its turn may need to start a sandbox, prepare a workspace,
+clone a repository, and start or resume its runtime session. Each real wait updates one
+startup notice. Stages that do not run are skipped, including sandbox startup when the
+current session's own sandbox is already bound. Git clone has its own label within
+workspace preparation; checkout and skills installation use the workspace label.
 
-A platform with a pushed status surface shows the phase there. The console replaces
-one live wait notice per agent and turn; other chat platforms post one temporary message
-and edit it as the phase changes. A code-host turn adds no startup comment. Status
-publication is best-effort and never holds up initialization.
+The console replaces one live wait line below the agent's name. Other chat platforms
+edit one message in the existing bootstrap-notice location and retain it in platform
+history. Slack keeps its native working indicator: its lifecycle API accepts a state,
+not phase text. A code-host turn adds no startup comment. Status publication is
+best-effort and never holds up initialization.
 
 Startup notices are not recorded in the AgentConnect transcript. On success or
-cancellation, the console clears the wait and chat platforms remove the temporary
-message. A failed console turn may retain its last phase beside the error. Standing
-notices, such as an unavailable approval, survive startup updates and clearing.
+cancellation, the console clears the wait. A failed console turn may retain its last
+phase beside the error. Standing notices, such as an unavailable approval, survive
+startup updates and clearing.
 
 Each observer belongs to its turn. Turns joining a shared host start see its current
 phase, and a cancelled or displaced turn cannot publish late updates into its successor.
