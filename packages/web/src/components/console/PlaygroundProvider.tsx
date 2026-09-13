@@ -791,14 +791,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           return steps
         }
         if (ev.kind === 'notice') {
-          // Daemon chrome for a wait with nothing else to show (a sandbox pod coming up).
-          // Its own lane, not the work lane: it is not something the agent thought or did,
-          // so it must not be counted or hidden as a reasoning step. `boundary` keeps the
-          // reply chunks that follow from accumulating into it. A `standing` one is not a wait —
-          // it is what the reader was told about an ask this surface could not show, or an answer
-          // it would not take — so it is marked and never retired when output resumes.
+          // One current wait per turn; standing notices survive updates, and empty text clears only the wait.
+          const next = ev.standing ? steps : dropWaitNotices(steps, agentId, turnId)
+          if (!ev.text) return next
           return [
-            ...steps,
+            ...next,
             lane({ kind: 'notice', text: ev.text, ...(ev.standing ? { standing: true } : {}), boundary: true })
           ]
         }

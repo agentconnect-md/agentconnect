@@ -5,6 +5,7 @@ import type { RuntimeDef } from '../config/config-schema.js'
 import { formatErr } from '../daemon/text.js'
 import type { ModelSessionHost, SelectedTurnHost } from '../daemon/turn-types.js'
 import type { Logger } from '../log.js'
+import { shareStartup, awaitStartup } from '../session/startup-progress.js'
 import {
   modelProviderTarget,
   type ModelCredential,
@@ -284,16 +285,18 @@ export class ModelSessionHostPool {
     if (!host) {
       // Publish the start before awaiting it: a concurrent release joins this promise instead
       // of seeing an entry with no host, stopping nothing, and leaking the process it misses.
-      const starting: Promise<AcpHost> = (owner.starting ??= this.host
-        .startRuntime(agent, owner)
-        .then((started) => {
-          owner.host = started
-          return started
-        })
-        .finally(() => {
-          if (owner.starting === starting) owner.starting = undefined
-        }))
-      host = await starting
+      const starting: Promise<AcpHost> = (owner.starting ??= shareStartup(() =>
+        this.host
+          .startRuntime(agent, owner)
+          .then((started) => {
+            owner.host = started
+            return started
+          })
+          .finally(() => {
+            if (owner.starting === starting) owner.starting = undefined
+          })
+      ))
+      host = await awaitStartup(starting)
       if (owner.released || this.entries.get(sessionKey) !== owner) {
         await this.stopRuntime(owner, host).catch(() => {})
         throw new Error(`model session host for ${sessionKey} was released during startup`)

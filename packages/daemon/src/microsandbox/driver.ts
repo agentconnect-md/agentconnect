@@ -9,6 +9,7 @@ import type { SpawnDriver, SpawnedRuntime, SpawnRequest } from '../acp/spawn-dri
 import type { SandboxMount } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import { formatErr } from '../daemon/text.js'
+import { shareStartup, awaitStartup, withStartupPhase } from '../session/startup-progress.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
 import { SinkRelPathSchema } from '../shim/file-sink.js'
@@ -171,7 +172,7 @@ export class MicrosandboxManager {
     })
     state.pending.add(pending)
     try {
-      await state.sandbox
+      await awaitStartup(state.sandbox)
     } finally {
       state.pending.delete(pending)
       release()
@@ -196,8 +197,8 @@ export class MicrosandboxManager {
     })
     state.pending.add(pending)
     try {
+      const sandbox = await awaitStartup(state.sandbox)
       state.shim ??= (async () => {
-        const sandbox = await state.sandbox
         if (!this.options.nextShimGeneration) throw new Error('microsandbox shim generation allocator is unavailable')
         return startMicrosandboxShim({
           sdk: this.options.sdk,
@@ -963,7 +964,12 @@ export class MicrosandboxManager {
       state = {
         environment,
         spec,
-        sandbox: stopping ? stopping.then(() => this.open(environment)) : this.open(environment),
+        sandbox: shareStartup(() =>
+          withStartupPhase('sandbox', async () => {
+            if (stopping) await stopping
+            return await this.open(environment)
+          })
+        ),
         active: 0,
         processes: new Set(),
         pending: new Set(),
@@ -1009,7 +1015,7 @@ export class MicrosandboxManager {
     })
     state.pending.add(pending)
     try {
-      const sandbox = await state.sandbox
+      const sandbox = await awaitStartup(state.sandbox)
       if (this.closed) throw new Error('microsandbox manager is shutting down')
       options.abort?.throwIfAborted()
       if (!this.bridges.has(environment.id))
