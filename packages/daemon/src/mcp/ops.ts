@@ -16,6 +16,7 @@ import {
   DELETE_MEMORY_ENTRY_ARGS
 } from '../memory/entries/tools.js'
 import { z, type ZodType } from 'zod'
+import type { AskDeps } from './ask.js'
 import { MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../memory/tools.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
@@ -153,6 +154,8 @@ export type {
   StartOrchestrationResult
 } from './ops/orchestration.js'
 export type { SessionStatusReq, SessionStatusResult } from './ops/session.js'
+export { askHost, AskRequired } from './ask.js'
+export type { AskDeps, AskOutcome, AskPort, AskSpec } from './ask.js'
 
 /**
  * Everything the daemon bridge tools need, composed from the per-domain deps each
@@ -161,7 +164,9 @@ export type { SessionStatusReq, SessionStatusResult } from './ops/session.js'
  * the slice it uses.
  */
 export interface OpsDeps
+  // MCP-side elicitation (#1965 Gap A): `ask` — a tool asks the agent's own host rather than guessing.
   extends
+    AskDeps,
     SessionOpsDeps,
     MessagingDeps,
     DirectoryDeps,

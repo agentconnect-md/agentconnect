@@ -1210,6 +1210,66 @@ before the session key is minted. See
 [agent-collaboration-implementation.md](agent-collaboration-implementation.md) §2.2/§2.5
 and [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md) §7.7.
 
+### 9.5 A Bridge Tool Asks Its Own Host (MCP-side elicitation)
+
+On the ACP wire we are the CLIENT: the coding agent asks, and every chat surface renders the
+card. On the MCP wire the role is reversed — the daemon is the SERVER — so a tool that lacks
+information can ask the agent's OWN host (Claude Code, Codex), never a chat surface.
+
+`capabilities.elicitation` is a CLIENT capability and no server may declare it: the bridge's
+`{ capabilities: { tools: {} } }` is already correct. What the bridge does instead is READ the
+client's declaration and pass it to the daemon on every `callTool` frame. The capability test
+is the server SDK's own lenient pre-mode rule — a bare `elicitation: {}` counts as form support
+— because the Claude harness declares exactly that; a strict `elicitation.form` read would
+silently disable every ask on that runtime while codex kept working.
+
+The mechanism is a RETURN VALUE, never a daemon→bridge request. `src/mcp/ask.ts` reduces a
+tool's question to MCP's restricted flat-object schema; `askHost` throws `AskRequired`;
+`McpControlServer` answers the frame with an `mcpAsk` marker; the bridge turns that into the
+SDK's `input_required` result, which on this 2025-era connection the SDK's own shim fulfils as
+a server→client `elicitation/create` before re-calling the tool with the answer. The daemon's
+MCP IPC has ONE undiscriminated id space minted only by the bridge, so an inverted direction
+would collide with a live tool call's id.
+
+Four rules the seam enforces:
+
+- **The emitted `requestedSchema` carries no root key beyond `type`/`properties`/`required`.**
+  codex re-parses it with a deny-unknown-fields type, and a root-level `title` alone kills the
+  forward inside codex core before ACP ever sees it. `title`, `description`, `enum` and
+  `oneOf` are property-level, which is where a card renders them from anyway.
+- **The guard against an old bridge is structural, not per-tool.** The in-sandbox bridge is the
+  runtime IMAGE's bundle and ships on the image's cadence, so image skew is the normal case. A
+  tool can only mint an ask through `deps.ask`, and `McpControlServer` creates that port only
+  when THIS frame declared a form-capable host — so an old bridge, which sends no `ask`, can
+  never receive a marker it would JSON.stringify straight to the model.
+- **A tool may only ask BEFORE it does observable work, or must be safe to replay.** The answer
+  arrives on a fresh `tools/call` that re-runs the whole handler: the turn gate, the evaluation
+  dispatch, the memory approval gate and the tool body.
+- **A decline is a usable outcome, not an exception**, and the ask leg's timeout is pinned well
+  under the SDK's 600s default. An ask is human-paced, so the turn can die while it is open;
+  the replayed round then hits the turn gate first and refuses, posting nothing.
+
+This section is the MECHANISM alone: it has no product call site of its own. The guesses the
+audit found are removed by the changes that follow, and the seam is proven end to end here by a
+test-only tool, so nothing in the shipped tool set changes behaviour with this piece landed.
+
+Two of the obvious-looking candidates are not guesses at all. `shareFile` takes NO destination
+by design (§3 of [agent-authored-attachments.md](agent-authored-attachments.md)) — the model
+cannot name one, which is the whole authorization argument for the tool. And `sendMessage`'s
+target channel is required input: a missing one is a loud refusal naming the five valid target
+shapes, not an inference.
+
+`sendMessage` is out of this seam's scope entirely, by product decision. It is the one tool
+here whose effect is visible and irreversible, so putting any card in front of a human to steer
+it is a product question [product-conventions.md](../product-conventions.md) would have to
+admit first; it is filed separately, and the send path raises no card. Search scope stays open.
+
+A third-party MCP server's own elicitation is a separate question and needs no work here: it
+already reaches our chat surfaces. Both harnesses we ship forward it onto the ACP wire, where
+`AcpHost` answers `client/elicitation/create` and the permission coordinator renders the same
+card #1794 built. It is distinguishable from Codex's MCP-tool approval by the frame itself —
+no `toolCallId`, no `_meta.codex_approval_kind`.
+
 ---
 
 ## 10. WebSocket Client Interaction with Control Plane
