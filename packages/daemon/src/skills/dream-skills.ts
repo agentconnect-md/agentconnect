@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto'
 import { constants, promises as fsp, type Stats } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { LocalSkillSource } from './install-skills.js'
-import { inspectLocalSkillSource, snapshotLocalSkillSource } from './skill-source-snapshot.js'
+import { inspectLocalSkillSource, readBoundedFile, snapshotLocalSkillSource } from './skill-source-snapshot.js'
+import { parseSkillManifest } from './local-skill-inventory.js'
 
 export const ACCEPTED_SKILLS_DIRNAME = 'skills'
 const BUNDLES_DIRNAME = '.bundles'
@@ -15,6 +16,8 @@ const MAX_ACCEPTED_SKILLS = 64
 const MAX_INDEX_BYTES = 64 * 1024
 const SKILL_DIR_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/
+/** Cap on one accepted SKILL.md read for its description — the manifest, never the body, reaches a prompt. */
+const MAX_SKILL_MANIFEST_BYTES = 64 * 1024
 
 interface AcceptedSkillRecord {
   name: string
@@ -25,6 +28,12 @@ interface AcceptedSkillRecord {
 interface AcceptedSkillIndex {
   version: 1
   skills: AcceptedSkillRecord[]
+}
+
+/** What the dreamer is told about a skill the agent already has (#1919): name and description only. */
+export interface AcceptedDreamSkillSummary {
+  name: string
+  description: string | null
 }
 
 function under(root: string, candidate: string): boolean {
@@ -68,6 +77,15 @@ async function mkdirPrivate(path: string): Promise<void> {
     throw new Error('accepted skill registry path has another owner')
   }
   await fsp.chmod(path, 0o700)
+}
+
+/** The accepted-skill root WITHOUT creating it: a read that feeds a prompt must leave no `skills/` behind. */
+async function existingAcceptedRoot(agentDir: string): Promise<string | undefined> {
+  const root = join(await fsp.realpath(resolve(agentDir)), ACCEPTED_SKILLS_DIRNAME)
+  const stat = await fsp.lstat(root).catch(() => undefined)
+  if (!stat?.isDirectory() || stat.isSymbolicLink()) return undefined
+  if (typeof process.geteuid === 'function' && stat.uid !== process.geteuid()) return undefined
+  return root
 }
 
 async function readIndex(root: string): Promise<AcceptedSkillIndex | null> {
@@ -177,10 +195,12 @@ export async function publishAcceptedDreamSkill(input: {
    *  so a concurrent writer cannot swap staged bytes between review and capture —
    *  the digest verified is the digest actually pinned and activated. */
   expectedDigest?: string
-}): Promise<{ sourceDir: string; digest: string }> {
+}): Promise<{ sourceDir: string; digest: string; supersededDigest?: string }> {
   if (!SKILL_DIR_RE.test(input.name)) throw new Error('invalid accepted Dream skill name')
   const { root, bundles } = await ensureAcceptedRoots(input.agentDir)
   const records = await activeRecords(root)
+  // Replacement is silent under autoAdopt, so the caller gets the digest it retired and can log both.
+  const previous = records.find((entry) => entry.name === input.name)
   if (!records.some((entry) => entry.name === input.name) && records.length >= MAX_ACCEPTED_SKILLS) {
     throw new Error('too many accepted Dream skills')
   }
@@ -235,7 +255,8 @@ export async function publishAcceptedDreamSkill(input: {
     throw error
   }
   await pruneUnreferencedBundles(root, next).catch(() => undefined)
-  return { sourceDir: target, digest: snapshot.sha256 }
+  const supersededDigest = previous && previous.digest !== snapshot.sha256 ? previous.digest : undefined
+  return { sourceDir: target, digest: snapshot.sha256, ...(supersededDigest ? { supersededDigest } : {}) }
 }
 
 async function pruneUnreferencedBundles(root: string, records: AcceptedSkillRecord[]): Promise<void> {
@@ -267,6 +288,34 @@ export async function acceptedDreamSkillNames(agent: { dir: string }): Promise<s
   } catch {
     return []
   }
+}
+
+/** Accepted skill names + descriptions for the dreamer's duplicate guard (#1919); corrupt state reads as empty. */
+export async function acceptedDreamSkillSummaries(agent: { dir: string }): Promise<AcceptedDreamSkillSummary[]> {
+  let root: string | undefined
+  let records: AcceptedSkillRecord[]
+  try {
+    root = await existingAcceptedRoot(agent.dir)
+    if (!root) return []
+    records = await activeRecords(root)
+  } catch {
+    return []
+  }
+  const summaries: AcceptedDreamSkillSummary[] = []
+  for (const entry of records) {
+    const manifest = join(root, ...entry.directory.split('/'), 'SKILL.md')
+    let description: string | null = null
+    try {
+      const before = await fsp.lstat(manifest)
+      description = parseSkillManifest(
+        (await readBoundedFile(manifest, before, MAX_SKILL_MANIFEST_BYTES)).toString('utf8')
+      ).description
+    } catch {
+      // Missing or unsafe manifest: the name alone still tells the dreamer the skill exists.
+    }
+    summaries.push({ name: entry.name, description })
+  }
+  return summaries
 }
 
 export async function acceptedDreamSkillSources(agent: { dir: string }): Promise<LocalSkillSource[]> {

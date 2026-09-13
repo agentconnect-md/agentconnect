@@ -53,7 +53,7 @@ import {
   type DreamProposal,
   type DreamTranscriptSource
 } from './dreamer.js'
-import { publishAcceptedDreamSkill } from '../skills/dream-skills.js'
+import { acceptedDreamSkillSummaries, publishAcceptedDreamSkill } from '../skills/dream-skills.js'
 import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
 
 /**
@@ -727,10 +727,16 @@ export class DreamRunner {
       // proposal structurally (well-formed targetId + revision); whether that
       // target exists and is current is the CP's authority when the owner accepts
       // (updateKnowledge = getKnowledge + optimistic revision fence).
+      // No tool lists agent-local skills, so the accepted ones are inlined like dismissed names (#1919).
       const prompt = buildDreamExplorationPrompt({
         sessionIds: materializedSessionIds,
         mineSkills,
-        ...(mineSkills ? { dismissedSkills: await this.dismissedSkillNames(agentId) } : {}),
+        ...(mineSkills
+          ? {
+              dismissedSkills: await this.dismissedSkillNames(agentId),
+              existingSkills: await acceptedDreamSkillSummaries({ dir: this.dirFor(agentId) })
+            }
+          : {}),
         ...(dream.instructions ? { instructions: dream.instructions } : {})
       })
       await this.transition(agentId, dreamId, 'pending', { status: 'running' })
@@ -1527,10 +1533,16 @@ export class DreamRunner {
       // preflight inspection), so a concurrent writer cannot swap the staged bytes
       // between inspection and capture — the digest verified is the digest that is
       // actually pinned and published.
+      let published: Awaited<ReturnType<typeof publishAcceptedDreamSkill>> | undefined
       const publish = async (): Promise<void> => {
         const staged = await this.localStagedSkill(agentId, dreamId, name)
         try {
-          await publishAcceptedDreamSkill({ agentDir: dir, sourceDir: staged.path, name, expectedDigest: reviewToken })
+          published = await publishAcceptedDreamSkill({
+            agentDir: dir,
+            sourceDir: staged.path,
+            name,
+            expectedDigest: reviewToken
+          })
         } finally {
           await staged.dispose()
         }
@@ -1541,7 +1553,11 @@ export class DreamRunner {
       const next = await this.setSkillState(agentId, dreamId, name, 'accepted')
       this.emitLifecycle({ type: 'memory.dream.skill_accepted', dream: next, skillName: name })
       await this.sweepReviewedStaging(agentId, next)
-      this.deps.log.info(`dream ${dreamId}: accepted skill "${name}" for agent ${agentId}`)
+      // A same-name acceptance replaces the active revision silently otherwise; name both digests.
+      const replaced = published?.supersededDigest
+        ? ` (revision ${published.digest} replaces ${published.supersededDigest})`
+        : ''
+      this.deps.log.info(`dream ${dreamId}: accepted skill "${name}" for agent ${agentId}${replaced}`)
       return next
     })
   }

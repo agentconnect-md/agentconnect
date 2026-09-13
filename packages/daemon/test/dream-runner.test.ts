@@ -2192,6 +2192,45 @@ describe('DreamRunner skill mining (D-3)', () => {
     expect(withSkillAcceptance).toHaveBeenCalledOnce()
   })
 
+  it('tells the next dream which skills the agent already has, and logs a same-name replacement (#1919)', async () => {
+    const { dir, runner, store, dreamId } = await mining(grounded)
+    await runner.skillAccept('a1', dreamId, 'deploy-staging')
+
+    // The next dream's prompt carries the accepted skill by name + description — the agent-local
+    // counterpart of listOrgSkills, which this path never had.
+    const prompts: string[] = []
+    const info: string[] = []
+    const improved = grounded.replace('1. build\\n2. push', '1. build\\n2. test\\n3. push')
+    expect(improved).not.toBe(grounded)
+    const again = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
+      memoryHomePortsFor: (id) => (id === 'a1' ? home(local(dir)) : undefined),
+      dreamingPolicyFor: () => ({ enabled: true, mineSkills: true }),
+      operationPolicy: 'test-only',
+      store,
+      extract: async (_agentId, _systemPrompt, prompt) => {
+        prompts.push(prompt)
+        return { output: improved }
+      },
+      log: { info: (msg) => void info.push(msg), warn: () => {} }
+    })
+    const second = await again.start('a1', { trigger: 'manual' })
+    const done = await settle(store, second.dreamId)
+    expect(prompts[0]).toContain('Skills this agent ALREADY HAS')
+    expect(prompts[0]).toContain('  - deploy-staging — Deploy to staging')
+
+    // The model kept the name anyway (a material improvement): accepting it replaces the active
+    // revision, and the log names both digests instead of swapping silently.
+    expect(done.skills).toEqual([{ name: 'deploy-staging', description: 'Deploy to staging', state: 'proposed' }])
+    await again.skillAccept('a1', second.dreamId, 'deploy-staging')
+    expect(info).toContainEqual(
+      expect.stringMatching(
+        /accepted skill "deploy-staging" .* \(revision sha256:[a-f0-9]{64} replaces sha256:[a-f0-9]{64}\)/
+      )
+    )
+    expect(await acceptedSkillBody(dir, 'deploy-staging')).toContain('2. test')
+  })
+
   it('binds skill acceptance to the PUBLISHED bytes: wrong token or a post-review mutation is refused', async () => {
     const { dir, runner, dreamId } = await mining(grounded)
     const staged = join(dir, 'memory-dreams', dreamId, 'skills', 'deploy-staging')

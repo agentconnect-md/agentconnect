@@ -2,7 +2,11 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { acceptedDreamSkillSources, publishAcceptedDreamSkill } from '../src/skills/dream-skills.js'
+import {
+  acceptedDreamSkillSources,
+  acceptedDreamSkillSummaries,
+  publishAcceptedDreamSkill
+} from '../src/skills/dream-skills.js'
 
 async function fixture(body: string): Promise<{ agentDir: string; sourceDir: string }> {
   const base = await mkdtemp(join(tmpdir(), 'ac-accepted-skill-'))
@@ -31,6 +35,30 @@ describe('accepted Dream skill registry', () => {
     expect(active).toHaveLength(1)
     expect(active[0]).toMatchObject({ name: 'deploy-staging', contentDigest: second.digest })
     expect(await readFile(join(active[0]!.sourceDir, 'SKILL.md'), 'utf8')).toBe('# version two\n')
+  })
+
+  it('summarizes accepted skills for the dreamer and reports the revision a same-name acceptance retires (#1919)', async () => {
+    const { agentDir, sourceDir } = await fixture(
+      '---\nname: deploy-staging\ndescription: Deploy to staging with rollback\n---\n# v1\n'
+    )
+    const first = await publishAcceptedDreamSkill({ agentDir, sourceDir, name: 'deploy-staging' })
+    expect(first.supersededDigest).toBeUndefined()
+    expect(await acceptedDreamSkillSummaries({ dir: agentDir })).toEqual([
+      { name: 'deploy-staging', description: 'Deploy to staging with rollback' }
+    ])
+
+    // A replacement names what it retired; a manifest without a description still lists the name.
+    await writeFile(join(sourceDir, 'SKILL.md'), '# no frontmatter\n')
+    const second = await publishAcceptedDreamSkill({ agentDir, sourceDir, name: 'deploy-staging' })
+    expect(second.supersededDigest).toBe(first.digest)
+    expect(await acceptedDreamSkillSummaries({ dir: agentDir })).toEqual([
+      { name: 'deploy-staging', description: null }
+    ])
+
+    // No registry yet is no inventory, never a failure — the dream must not die on an empty agent.
+    const fresh = await mkdtemp(join(tmpdir(), 'ac-accepted-skill-'))
+    await mkdir(join(fresh, 'agent'), { mode: 0o700 })
+    expect(await acceptedDreamSkillSummaries({ dir: join(fresh, 'agent') })).toEqual([])
   })
 
   it('fails closed when immutable accepted bytes no longer match the published digest', async () => {

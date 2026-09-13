@@ -395,6 +395,17 @@ review. Per candidate, the user can:
   "previously declined" so the same recommendation doesn't reappear every
   cycle.
 
+**Duplicate guard.** Agent-local skills have no discovery tool (unlike
+`listOrgSkills` for organization skills), so every subsequent dream prompt
+inlines the accepted skills' names and SKILL.md descriptions — never their
+bodies — as "skills this agent already has", with the rule that a skill being
+_used_ in a transcript is not a procedure being re-derived. Without it a
+successful skill re-qualifies for mining on every cycle, because each use puts
+its steps back into the transcripts the fifth phase reads. A same-name
+proposal is allowed only as a material improvement; on acceptance it replaces
+the active revision, and the daemon logs both digests so the replacement is
+not silent.
+
 **Grounding rule.** The prompt requires every candidate to cite the sessions
 it was observed in (session ids from the provided transcript set); the daemon
 drops any candidate citing unknown sessions or fewer than two. This keeps

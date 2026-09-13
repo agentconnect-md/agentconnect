@@ -43,6 +43,32 @@ describe('dream exploration prompt + materialized inputs', () => {
     expect(Buffer.byteLength(prompt)).toBeLessThan(120_000)
   })
 
+  it('inlines the skills the agent already has so the dreamer does not re-mine them (#1919)', () => {
+    const prompt = buildDreamExplorationPrompt({
+      sessionIds: ['sess-1'],
+      mineSkills: true,
+      existingSkills: [
+        { name: 'bugsink-triage', description: 'Triage the daily error digest' },
+        { name: 'cn-ack-access', description: null }
+      ]
+    })
+    expect(prompt).toContain('Skills this agent ALREADY HAS')
+    expect(prompt).toContain('  - bugsink-triage — Triage the daily error digest')
+    expect(prompt).toContain('  - cn-ack-access')
+    expect(prompt).toContain('Do not propose an agentSkills candidate one of these already covers')
+    // The matching rule rides the trusted system policy whenever mining is on, list or no list.
+    expect(dreamSystemPrompt(true)).toContain('ALREADY HAS')
+    expect(dreamSystemPrompt(false)).not.toContain('ALREADY HAS')
+    expect(buildDreamExplorationPrompt({ sessionIds: [], mineSkills: true })).not.toContain('ALREADY HAS')
+    // Bounded like every other inline context: a huge registry cannot crowd out the session index.
+    const flooded = buildDreamExplorationPrompt({
+      sessionIds: ['sess-1'],
+      mineSkills: true,
+      existingSkills: Array.from({ length: 500 }, (_, i) => ({ name: `skill-${i}`, description: 'x'.repeat(5_000) }))
+    })
+    expect(Buffer.byteLength(flooded)).toBeLessThan(40_000)
+  })
+
   it('points at the org knowledge/skill tools instead of inlining existing entries', () => {
     const prompt = buildDreamExplorationPrompt({ sessionIds: [] })
     // Existing org context is no longer pre-stuffed; the model fetches it on demand.
