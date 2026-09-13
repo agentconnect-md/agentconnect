@@ -616,6 +616,7 @@ import { codeHostThreadWorktreeCleanup, turnFinalFor } from './codehost/turn-fin
 import {
   FailStopError,
   TurnStalledError,
+  interruptFailsTurn,
   LifecycleCleanupBlockedError,
   pendingSessionKey,
   pendingTurnAcpSessionId,
@@ -11713,7 +11714,7 @@ export class Daemon {
         sessionId
       })
       if (readyGate) {
-        if (readyGate === 'loop protection') settlement.finalPhase = 'problem'
+        if (interruptFailsTurn(readyGate)) settlement.finalPhase = 'problem'
         return null
       }
       turnModel = await this.captureTurnModel(run, host, sessionId, modelOverride)
@@ -12748,7 +12749,7 @@ export class Daemon {
       this.runtimeFacts.noteAuthFromTurn(agent.runtime, false)
       if (p.outputSuppressed) {
         evaluation.finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
-        if (p.outputSuppressed === 'loop protection') settlement.finalPhase = 'problem'
+        if (interruptFailsTurn(p.outputSuppressed)) settlement.finalPhase = 'problem'
         if (hookContext && this.reportsHookOutcome(entry)) {
           await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
         }
@@ -12804,7 +12805,7 @@ export class Daemon {
       if (p.outputSuppressed) {
         this.discardStagedAttempt(p)
         evaluation.finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
-        if (p.outputSuppressed === 'loop protection') settlement.finalPhase = 'problem'
+        if (interruptFailsTurn(p.outputSuppressed)) settlement.finalPhase = 'problem'
         if (hookContext && this.reportsHookOutcome(entry)) {
           await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
         }
@@ -13242,7 +13243,7 @@ export class Daemon {
       this.runtimeFacts.noteAuthFromTurn(agent.runtime, true)
     if (p.outputSuppressed) {
       evaluation.finishEvaluation('turn.cancelled', { reason: p.outputSuppressed })
-      if (p.outputSuppressed === 'loop protection') settlement.finalPhase = 'problem'
+      if (interruptFailsTurn(p.outputSuppressed)) settlement.finalPhase = 'problem'
       if (hookContext && this.reportsHookOutcome(entry)) {
         await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: p.outputSuppressed }, entry)
       }
@@ -13616,8 +13617,16 @@ export class Daemon {
       handoffInbox?: boolean
       /** The human who raised it, when one did — recorded in the transcript. */
       actor?: InteractionActor
+      /** Interrupt only while THIS turn is still the live one under `acpSessionId` (the stall watchdog's exact target). */
+      only?: Pending
     } = {}
   ): Promise<void> {
+    const exact = (): boolean =>
+      !opts.only ||
+      (acpSessionId !== undefined &&
+        this.pending.get(pendingTurnKey(this.sessionOwnerKey(agentId, key), acpSessionId)) === opts.only)
+    // The target already unwound and the ACP id now belongs to a successor: nothing here is ours to interrupt.
+    if (!exact()) return
     // The force-cancel fallback is host-wide. Hold NEW admissions until this exact
     // dispatch is gone so a quick retry cannot be killed by the old turn's backstop.
     this.beginSafetyDrain(
@@ -13668,6 +13677,8 @@ export class Daemon {
       ? this.pending.get(pendingTurnKey(this.sessionOwnerKey(agentId, key), acpSessionId))
       : [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
     const liveSessionId = acpSessionId ?? live?.acpSessionId
+    // Re-checked after the awaits above; the target's own Pending was suppressed before they began.
+    if (!exact()) return
     if (live) {
       await this.settleStatusBar(live)
       live.outputSuppressed ??= reason
@@ -17509,21 +17520,31 @@ export class Daemon {
     }
   }
 
-  /** Notify the conversation first (the interrupt suppresses later output), then cancel the way `!stop` does. */
+  /** Own the exact turn before anything yields, cancel it the way `!stop` does, then tell the conversation. */
   private async tripStalledTurn(p: Pending, silentMs: number): Promise<void> {
     const { agentId, sessionKey } = p.plan
     const { msg } = p.entry
+    // Synchronous: a prompt that returns inside the window below is dropped as stalled, never delivered.
+    p.outputSuppressed ??= 'stalled'
     this.log.warn(
       `turn watchdog: session ${sessionKey} (${p.acpSessionId}) has had no runtime activity for ` +
         `${Math.round(silentMs / 60_000)} min — cancelling the stalled turn`
     )
-    await this.surfaceTurnFailure(new TurnStalledError(silentMs), {
+    const err = new TurnStalledError(silentMs)
+    // The browser's terminal frame carries the reason; the interrupt would otherwise send a bare one.
+    if (p.webchat && !p.webchat.doneSent) {
+      p.webchat.doneSent = true
+      p.webchat.sink.done({ conversationId: p.webchat.conversationId, turnId: p.webchat.turnId, error: err.message })
+    }
+    // session/cancel, the cancelBackstopMs force-stop if ignored, queued messages fail-stopped (§6.9).
+    await this.interruptTurn(agentId, sessionKey, 'stalled', p.acpSessionId, { only: p })
+    // Notice I/O only after the fence stands: the platform post, failure sinks, and the transcript row.
+    await this.surfaceTurnFailure(err, {
       agentId,
       agentName: p.plan.agentName,
       ...(p.plan.iconUrl ? { iconUrl: p.plan.iconUrl } : {}),
       platform: msg.platform,
       isDm: msg.isDm,
-      ...(p.webchat ? { webchat: p.webchat } : {}),
       ...(p.conn ? { replyConn: p.conn } : {}),
       ...(p.plan.integrationId !== undefined ? { integrationId: p.plan.integrationId } : {}),
       channel: msg.channel,
@@ -17532,9 +17553,6 @@ export class Daemon {
       thread: msg.thread,
       statusThread: p.plan.statusThread
     })
-    if (p.webchat) p.webchat.doneSent = true
-    // session/cancel, the cancelBackstopMs force-stop if ignored, queued messages fail-stopped (§6.9).
-    await this.interruptTurn(agentId, sessionKey, 'stalled', p.acpSessionId)
   }
 
   private async sweepIdle(): Promise<void> {

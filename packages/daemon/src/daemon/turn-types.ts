@@ -48,6 +48,11 @@ export class FailStopError extends Error {
   }
 }
 
+/** Interrupts that are the turn's own failure, not an operator's or a peer's decision: they settle as `failed`. */
+export function interruptFailsTurn(reason: TurnInterruptReason | undefined): boolean {
+  return reason === 'loop protection' || reason === 'stalled'
+}
+
 /** The stall watchdog's turn failure (#1915): the notice for a prompt cancelled after a silent budget. */
 export class TurnStalledError extends Error {
   readonly reason = 'stalled' as const

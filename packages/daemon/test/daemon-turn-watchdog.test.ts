@@ -149,7 +149,45 @@ describe('turn stall watchdog', () => {
         expect.objectContaining({ turnId: ack.turnId, error: expect.stringMatching(/cancelled as stalled/) })
       ])
       const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
-      expect((await (daemon as any).store.getSession(key))?.state).toBe('idle')
+      const rec = await (daemon as any).store.getSession(key)
+      expect(rec?.state).toBe('idle')
+      // A stall is the turn's own failure: a parent reading the child's status must not see `done`.
+      expect(rec?.lastTurnOutcome).toBe('failed')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('restarts the budget when any human card settles, and never interrupts a successor turn', async () => {
+    const { clock, daemon, host } = await startDaemon()
+    const stream = webchatSink()
+    try {
+      await (daemon as any).webchatTransport.dispatchWebchatTurn(
+        AGENT_ID,
+        CONV,
+        'hello',
+        { id: 'alice', name: 'alice' },
+        stream.sink
+      )
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
+      const pending = [...(daemon as any).pending.values()][0] as { hostKey: unknown; runtimeActivityAt?: number }
+
+      // An ordinary elicitation (no approval meter) answered 50s in: the gate closing restamps activity.
+      await advance(clock, 50_000)
+      ;(daemon as any).permissions.syncApprovalActivity(pending.hostKey, 'acp-1', { id: 'q1' })
+      expect(pending.runtimeActivityAt).toBe(clock.now())
+      await advance(clock, 50_000)
+      expect(host.cancel).not.toHaveBeenCalled()
+
+      // A stale target — the interrupt is aimed at a Pending that is no longer the live one — is a no-op.
+      const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+      await (daemon as any).interruptTurn(AGENT_ID, key, 'stalled', 'acp-1', { only: {} })
+      expect(host.cancel).not.toHaveBeenCalled()
+      expect(stream.dones).toEqual([])
+
+      await advance(clock, 20_000)
+      await vi.waitFor(() => expect(host.cancel).toHaveBeenCalledWith('acp-1'), WAIT)
+      await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     } finally {
       await daemon.stop()
     }
