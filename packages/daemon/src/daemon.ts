@@ -206,6 +206,7 @@ import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
+import { applyOpenCodeReadOnlyMode } from './runtime-defs/opencode-runtime.js'
 import {
   DREAM_MODEL_READABLE_CREDENTIALS_REASON,
   DreamRunner,
@@ -5062,6 +5063,8 @@ export class Daemon {
         // A dream host materializes nothing: it has no cleanup path and needs none of these secrets.
         ...(excludeAgentToolCredentials ? {} : { configFileDir: agent.dir }),
         finalizeLaunchEnv: (launchEnv) => {
+          // A dream host on OpenCode carries the daemon-authored `read-only` agent, which the extraction gate prefers over `plan`.
+          if (excludeAgentToolCredentials) applyOpenCodeReadOnlyMode(target, launchEnv)
           if (!this.k8s || !target) return
           if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
           else {
