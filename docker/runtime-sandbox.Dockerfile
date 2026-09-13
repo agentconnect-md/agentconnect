@@ -79,8 +79,8 @@ RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
 
 # Other native harness downloads are independent of Antigravity and agent-browser.
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS full-native-runtimes
-ARG OMP_VERSION=18.1.17
-ARG OMP_SHA256_AMD64=040c254ddeb30f6d592be67d1469dc67fcac14e933fa04dbf690f42820ffd820
+ARG OMP_VERSION=18.1.19
+ARG OMP_SHA256_AMD64=4b5df0c61cc978223bd12f7e8d533554e80bb360a9192491de13da3d53b283ac
 ARG DEVIN_VERSION=3000.10.21
 ARG DEVIN_SHA256_AMD64=7cac6f5739ba3a3e5542f3b7fa07ed902d6dfb96ca22e4c63ae84c03bb7db47c
 ARG TARGETARCH
@@ -126,9 +126,9 @@ ARG PI_VERSION=0.85.1
 ARG OPENCODE_VERSION=1.18.30
 ARG QWEN_CODE_VERSION=0.23.3
 ARG COPILOT_VERSION=1.0.83
-ARG GROK_VERSION=1.0.25
-ARG QODER_VERSION=1.1.49
-ARG QODER_CN_VERSION=1.1.49
+ARG GROK_VERSION=1.0.30
+ARG QODER_VERSION=1.1.51
+ARG QODER_CN_VERSION=1.1.51
 # pi-acp delegates to the separately installed pi CLI; all launches use local executables.
 RUN export HOME=/root \
   && npm install --global --no-fund --no-audit \
