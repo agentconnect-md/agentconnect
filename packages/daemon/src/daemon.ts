@@ -13725,17 +13725,21 @@ export class Daemon {
     // Release any card the user hasn't answered: ACP requires pending permission /
     // elicitation requests to resolve cancelled when a turn is cancelled, and this lets
     // the agent's prompt unwind (it's blocked awaiting our promise) so the finally runs.
+    // Everything from here is keyed by session id, which a successor turn reuses: recheck after every await.
+    if (!exact()) return
     await this.permissions.releaseElicits(live.hostKey, liveSessionId)
     await this.permissions.releaseChatPermissions(live.hostKey, liveSessionId)
     await this.permissions.releaseEditorPermissions(live.hostKey, liveSessionId)
+    if (!exact()) return
     // §7.3 idle→cancelling: send session/cancel, then arm a force backstop. The turn's
     // dispatch finally clears the timer + writes the terminal idle state when the agent
     // yields; if it never does, the backstop force-stops the host.
     await this.store.setSessionState(key, 'cancelling', this.clock.now())
+    if (!exact()) return
     void (live.selectedHost?.host ?? this.hostForOwner(live.hostKey))
       ?.cancel(liveSessionId)
       .catch((err) => this.log.error(`command ${reason}: cancel failed: ${(err as Error).message}`))
-    this.armCancelBackstop(live.hostKey, liveSessionId, key, reason)
+    this.armCancelBackstop(live.hostKey, liveSessionId, key, reason, opts.only)
     await this.recordOperatorInterrupt(agentId, reason, opts.actor, anchor)
   }
 
@@ -13811,7 +13815,7 @@ export class Daemon {
    *  cancel — force-stop its host (the only hard kill available) so the session
    *  can't be stuck in `cancelling` forever. dispatch's finally clears this timer
    *  the moment the turn yields on its own. */
-  private armCancelBackstop(owner: HostKey, acpSessionId: string, key: string, reason: string): void {
+  private armCancelBackstop(owner: HostKey, acpSessionId: string, key: string, reason: string, only?: Pending): void {
     const agentId = hostKeyAgentId(owner)
     this.clearCancelBackstop(owner, acpSessionId)
     const ms = this.cfg.limits.cancelBackstopMs
@@ -13825,7 +13829,8 @@ export class Daemon {
           `${reason}: agent "${agentId}" ignored session/cancel for ${ms}ms — force-stopping host (session ${acpSessionId})`
         )
         const turn = this.pending.get(pendingKey)
-        if (!turn) return
+        // A successor that reused the ACP id is not the turn this backstop was armed for.
+        if (!turn || (only && turn !== only)) return
         // Force-stop the exact process selected for this turn.
         const cleanup = turn.selectedHost?.stop(0) ?? this.stopHost(agentId, 0)
         const stopped = cleanup.catch((err) => {

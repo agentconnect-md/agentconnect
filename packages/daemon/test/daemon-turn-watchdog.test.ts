@@ -185,9 +185,26 @@ describe('turn stall watchdog', () => {
       expect(host.cancel).not.toHaveBeenCalled()
       expect(stream.dones).toEqual([])
 
-      await advance(clock, 20_000)
-      await vi.waitFor(() => expect(host.cancel).toHaveBeenCalledWith('acp-1'), WAIT)
+      // The target unwinds and a successor takes its ACP id DURING the interrupt's own awaits: the
+      // cancel, the state write, and the backstop must all stay off the successor.
+      const map = (daemon as any).pending as Map<string, object>
+      const pendingKey = [...map.keys()][0]!
+      const successor = { ...(pending as object) }
+      vi.spyOn((daemon as any).permissions, 'releaseElicits').mockImplementationOnce(async () => {
+        map.set(pendingKey, successor)
+      })
+      await (daemon as any).interruptTurn(AGENT_ID, key, 'stalled', 'acp-1', { only: pending })
+      expect(host.cancel).not.toHaveBeenCalled()
+      expect((await (daemon as any).store.getSession(key))?.state).not.toBe('cancelling')
+      ;(daemon as any).armCancelBackstop(pending.hostKey, 'acp-1', key, 'stalled', pending)
+      clock.advance(LIMITS.cancelBackstopMs)
+      expect(host.stop).not.toHaveBeenCalled()
+      map.set(pendingKey, pending)
+      // The target itself was owned (suppressed) before the interrupt yielded; let the runtime unwind it.
+      expect((pending as { outputSuppressed?: string }).outputSuppressed).toBe('stalled')
+      await host.cancel('acp-1')
       await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
+      expect(stream.dones).toEqual([expect.objectContaining({ error: 'stalled' })])
     } finally {
       await daemon.stop()
     }
