@@ -107,16 +107,27 @@ export function memoryWriteAsk(tool: string, args: Record<string, unknown>): Mem
   }
 }
 
+/** A stray key here is almost always the sibling file tool's argument; refuse it by name (#1921). */
+const unexpectedKeys: { error: z.core.$ZodErrorMap } = {
+  error: (issue) =>
+    issue.code === 'unrecognized_keys'
+      ? `unexpected argument${issue.keys.length > 1 ? 's' : ''}: ${issue.keys.join(', ')}`
+      : undefined
+}
+
 /** `readMemory` arguments; an omitted `path` reads the MEMORY.md index. */
-export const READ_MEMORY_ARGS = z.object({ path: optionalString('path') })
+export const READ_MEMORY_ARGS = z.strictObject({ path: optionalString('path') }, unexpectedKeys)
 
 /** `writeMemory` arguments — the two modes are separated by the handler, not the schema. */
-export const WRITE_MEMORY_ARGS = z.object({
-  path: optionalString('path'),
-  content: optionalString('content'),
-  oldString: optionalString('oldString'),
-  newString: optionalString('newString')
-})
+export const WRITE_MEMORY_ARGS = z.strictObject(
+  {
+    path: optionalString('path'),
+    content: optionalString('content'),
+    oldString: optionalString('oldString'),
+    newString: optionalString('newString')
+  },
+  unexpectedKeys
+)
 
 /** `searchMemory` arguments (external record memory). */
 export const SEARCH_MEMORY_ARGS = z.object({

@@ -20,6 +20,9 @@ import { MEMORY_WRITE_NO_APPROVER, MEMORY_WRITE_NOT_APPROVED } from '../memory/t
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
+import { ToolArgumentError } from './ops/args.js'
+import { describeToolArgumentFailure } from './ops/argument-error.js'
+import type { Logger } from '../log.js'
 import { listAgents, LIST_AGENTS_ARGS, type DirectoryDeps } from './ops/directory.js'
 import {
   findKnowledge,
@@ -173,6 +176,8 @@ export interface OpsDeps
     ShareFileDeps,
     PlatformReadDeps,
     PlatformActionDeps {
+  /** Rejected tool arguments are logged here at debug, key names only — the sole trace of them (#1921). */
+  log?: Pick<Logger, 'debug'>
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
    *  pause/cancel/loop interrupts terminal even while the runtime is still unwinding. */
   canRun?: (ctx: SessionContext) => boolean | Promise<boolean>
@@ -365,6 +370,39 @@ export async function executeTool(
     const handled = await deps.appTool(ctx, name, args)
     if (handled !== undefined) return handled.result
   }
+  // The rejection is all the model reads (#1921): tool, every issue, accepted shape, received key names.
+  const advertised = ctx.tools.find((tool) => tool.name === name)
+  const rejected = (issues: readonly string[], receivedKeys: readonly string[]): Error => {
+    deps.log?.debug(
+      `tool ${name}: rejected arguments (keys: ${receivedKeys.join(', ') || 'none'}): ${issues.join('; ')}`
+    )
+    return new Error(
+      describeToolArgumentFailure({
+        tool: name,
+        issues,
+        receivedKeys,
+        ...(advertised ? { advertised } : {}),
+        tools: ctx.tools,
+        ...(TOOL_ARG_SCHEMAS.has(name) ? { validator: TOOL_ARG_SCHEMAS.get(name) } : {})
+      })
+    )
+  }
+  try {
+    return await executeRegisteredTool(ctx, name, args, deps)
+  } catch (err) {
+    if (err instanceof ToolArgumentError)
+      throw rejected(err.issues, err.receivedKeys.length > 0 ? err.receivedKeys : Object.keys(args))
+    throw err
+  }
+}
+
+/** The static registry behind {@link executeTool}: memory gate, local handlers, session tools, gateway reads. */
+async function executeRegisteredTool(
+  ctx: SessionContext,
+  name: string,
+  args: Record<string, unknown>,
+  deps: OpsDeps
+): Promise<unknown> {
   // Session-isolation gate for the memory tools (#653), checked at CALL time so a
   // mid-session policy change takes effect immediately.
   const memoryMode = MEMORY_TOOL_ACCESS_MODES[name]

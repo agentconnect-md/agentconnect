@@ -8,12 +8,24 @@ import { z } from 'zod'
  * That is why the messages are attached per check here instead of relying on zod's defaults.
  */
 
-/** Parse tool arguments, surfacing the first issue's message as a plain `Error` — the shape the
- *  MCP bridge turns into an `isError` result. */
+/** Every issue the schema raised plus the received key names; `executeTool` adds the tool name and shape (#1921). */
+export class ToolArgumentError extends Error {
+  readonly issues: readonly string[]
+  readonly receivedKeys: readonly string[]
+  constructor(issues: readonly string[], value: unknown) {
+    super(issues.join('; '))
+    this.name = 'ToolArgumentError'
+    this.issues = issues
+    this.receivedKeys = value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : []
+  }
+}
+
+/** Parse tool arguments; a {@link ToolArgumentError} carries ALL issues so one retry can fix them all. */
 export function parseArgs<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
   const parsed = schema.safeParse(value)
   if (parsed.success) return parsed.data
-  throw new Error(parsed.error.issues[0]?.message ?? 'invalid tool arguments')
+  const issues = [...new Set(parsed.error.issues.map((issue) => issue.message))]
+  throw new ToolArgumentError(issues.length > 0 ? issues : ['invalid tool arguments'], value)
 }
 
 /** A required non-empty string argument. */
