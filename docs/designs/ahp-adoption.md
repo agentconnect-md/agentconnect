@@ -199,9 +199,15 @@ tests.
 ### 7.3 Phase 2 — console live session views
 
 The console's live transcript / tool-body views move from CP-proxied bounded
-reads + SSE pokes to a direct AHP client connection to the owning daemon
-(reusing the same authorization the BFF read path enforces today). CP-side
-metadata lists (sessions, agents, orgs) are unaffected.
+reads + SSE pokes to an AHP client connection to the owning daemon (reusing
+the same authorization the BFF read path enforces today). "Connection to the
+daemon" cannot mean a literal browser→daemon dial: self-hosted daemons sit
+behind NAT and only dial out, and managed-pool daemons are cluster-internal.
+Phase 2 therefore needs an explicit data-plane route — the natural candidate
+is the relay path Phase 1 already rides (the relay stays a content-blind
+forwarder), which preserves the CP-off-the-hot-path invariant in both
+deployment modes. CP-side metadata lists (sessions, agents, orgs) are
+unaffected.
 
 ### 7.4 Explicit non-goals
 
@@ -236,8 +242,9 @@ Phase 1 hardens:
 - **Host-side state retention.** The authoritative AHP state must be bounded
   (the transcript store remains the durable record); snapshot size vs. reducer
   log length needs a policy before Phase 1.
-- **AuthZ at the AHP edge.** Phase 2 reuses the BFF read authorization, but the
-  token flow for a browser dialing the daemon directly (vs. through the CP)
-  needs its own design pass.
+- **AuthZ and reachability at the AHP edge.** Phase 2 reuses the BFF read
+  authorization, but both the token flow and the data-plane route (§7.3 —
+  relay-forwarded, since browsers cannot dial NAT'd or cluster-internal
+  daemons directly) need their own design pass.
 - **Does Phase 2 pay for itself?** If the bounded-read model proves sufficient
   for console UX, Phase 2 can be dropped; Phases 0–1 stand alone.
