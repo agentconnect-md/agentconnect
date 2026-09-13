@@ -68,6 +68,7 @@ export default function DaemonDetailView() {
   // independent toggles, so more than one can be open at once).
   const [expandedRuntimes, setExpandedRuntimes] = useState<Set<string>>(new Set())
   const [runtimeMode, setRuntimeMode] = useState<'host' | 'sandbox'>('host')
+  const [showSandboxOnly, setShowSandboxOnly] = useState(false)
   const toggleRuntime = (rid: string) =>
     setExpandedRuntimes((prev) => {
       const next = new Set(prev)
@@ -146,12 +147,34 @@ export default function DaemonDetailView() {
   // A daemon whose configured sandbox is down reports the capability AND the reason: both mean no sandbox runtimes.
   const sandboxDownReason = daemon.caps.sandboxUnavailable
   const sandboxUnavailable = runtimeEnvironment === 'sandbox' && (!sandboxSupported || !!sandboxDownReason)
-  const runtimes: FleetRuntime[] = sandboxUnavailable ? [] : unionRuntimes([{ ...daemon, runtimeModels }])
+  const sandboxOnlyIds = new Set(
+    runtimeEnvironment === 'sandbox' && !daemon.pool && !sandboxUnavailable
+      ? runtimeModels
+          .filter((rt) => rt.hostAvailable === false && !rt.unavailableReason)
+          .map((rt) => rt.aliasOf ?? rt.runtime)
+      : []
+  )
+  const runtimes: FleetRuntime[] = sandboxUnavailable
+    ? []
+    : unionRuntimes([{ ...daemon, runtimeModels }]).filter((rt) => showSandboxOnly || !sandboxOnlyIds.has(rt.runtime))
   const runtimeEmpty = sandboxDownReason
     ? `Sandbox is unavailable on this daemon. ${sandboxDownReason}`
     : sandboxUnavailable
       ? 'Sandbox is unavailable on this daemon.'
-      : 'No runtimes reported by this daemon.'
+      : sandboxOnlyIds.size > 0
+        ? 'Expand below to see runtimes installed only in the sandbox.'
+        : 'No runtimes reported by this daemon.'
+  const sandboxOnlyControl = sandboxOnlyIds.size > 0 && (
+    <button
+      type="button"
+      aria-expanded={showSandboxOnly}
+      onClick={() => setShowSandboxOnly((shown) => !shown)}
+      className="flex w-full cursor-pointer items-center gap-2 border-0 border-t border-(--border-subtle) bg-transparent px-4 py-3 text-left font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover)"
+    >
+      <Icon name={showSandboxOnly ? 'chevron-up' : 'chevron-down'} size={14} className="flex-none" />
+      {showSandboxOnly ? 'Hide' : 'Show'} runtimes in sandbox but not on host ({sandboxOnlyIds.size})
+    </button>
+  )
   const runtimeModeControl = sandboxRequired ? (
     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">Sandbox</span>
   ) : (
@@ -439,6 +462,7 @@ export default function DaemonDetailView() {
               {runtimeEmpty}
             </div>
           )}
+          {sandboxOnlyControl}
         </div>
 
         {/* agents on this daemon — stacked rows, tap through to the agent page */}
@@ -784,6 +808,7 @@ export default function DaemonDetailView() {
         agents={runtimeAgents}
         empty={runtimeEmpty}
         headerActions={runtimeModeControl}
+        footer={sandboxOnlyControl}
         daemonName={daemon.name}
       />
 

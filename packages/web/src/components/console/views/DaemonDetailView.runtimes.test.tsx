@@ -108,12 +108,22 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
   it.each(['required', 'pool'])('shows only sandbox when policy is %s', async (policy) => {
     if (policy === 'pool') mocks.daemon!.pool = true
     else mocks.daemon!.caps.features.push('sandbox-required')
+    mocks.daemon!.runtimeModels.push({
+      runtime: 'opencode',
+      version: '1',
+      models: [],
+      hostAvailable: false,
+      credentialsConfigured: false,
+      authRequired: true
+    })
     await render()
     expect(control()).toBeNull()
     expect(host.textContent).toContain('Sandbox')
     expect(host.textContent).toContain('v9.0.0')
     expect(host.textContent).not.toContain('v2.0.0')
     expect(host.textContent).toContain('Binary not installed in image')
+    expect(host.textContent?.includes('OpenCode')).toBe(policy === 'pool')
+    expect(host.textContent?.includes('Show runtimes in sandbox but not on host')).toBe(policy !== 'pool')
   })
 
   it('explains an unavailable sandbox while keeping host runtimes visible', async () => {
@@ -170,33 +180,48 @@ describe.each([false, true])('runtime environment view (mobile: %s)', (mobile) =
     )
   })
 
-  it('shows an unconfigured runtime only in the environment with its binary', async () => {
-    mocks.daemon!.runtimeModels = [
-      {
-        runtime: 'opencode',
-        version: '1',
-        models: [],
-        hostAvailable: false,
-        credentialsConfigured: false,
-        authRequired: true
-      },
-      {
-        runtime: 'codex',
-        version: '1',
-        models: [],
-        hostAvailable: true,
-        credentialsConfigured: false,
-        authRequired: true,
-        unavailableReason: 'image-binary-missing'
-      }
-    ]
-    await render()
-    expect(host.textContent).not.toContain('OpenCode')
-    expect(host.textContent).toContain('Codex')
-    await choose('Sandbox')
-    expect(host.textContent).toContain('OpenCode')
-    expect(host.textContent).not.toContain('Codex')
-    expect(host.textContent?.match(/Login required/g)).toHaveLength(1)
-    expect(host.textContent).not.toContain('Binary not installed')
-  })
+  it.each([false, true])(
+    'folds image-only runtimes, preserving saved login state (%s)',
+    async (credentialsConfigured) => {
+      mocks.daemon!.runtimeModels = [
+        {
+          runtime: 'opencode',
+          version: '1',
+          models: [],
+          hostAvailable: false,
+          credentialsConfigured,
+          authRequired: true
+        },
+        {
+          runtime: 'codex',
+          version: '1',
+          models: [],
+          hostAvailable: true,
+          credentialsConfigured: false,
+          authRequired: true,
+          unavailableReason: 'image-binary-missing'
+        }
+      ]
+      await render()
+      expect(host.textContent?.includes('OpenCode')).toBe(credentialsConfigured)
+      expect(host.textContent).toContain('Codex')
+      await choose('Sandbox')
+      expect(host.textContent).not.toContain('OpenCode')
+      expect(host.textContent).not.toContain('Login required')
+      expect(host.textContent).toContain('Expand below to see runtimes installed only in the sandbox.')
+      const disclosure = Array.from(host.querySelectorAll('button')).find((button) =>
+        button.textContent?.includes('Show runtimes in sandbox but not on host (1)')
+      )!
+      expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+      await act(async () => disclosure.click())
+      expect(disclosure.getAttribute('aria-expanded')).toBe('true')
+      expect(host.textContent).toContain('OpenCode')
+      expect(host.textContent).not.toContain('Codex')
+      expect(host.textContent?.match(/Login required/g)).toHaveLength(1)
+      expect(host.textContent).not.toContain('Binary not installed')
+      await act(async () => disclosure.click())
+      expect(host.textContent).not.toContain('OpenCode')
+      expect(mocks.daemon!.runtimeModels[0]!.credentialsConfigured).toBe(credentialsConfigured)
+    }
+  )
 })

@@ -404,6 +404,7 @@ export function FleetRuntimesCard({
   empty,
   note,
   headerActions,
+  footer,
   daemonName
 }: {
   title: string
@@ -414,6 +415,7 @@ export function FleetRuntimesCard({
   /** What the header says the list means — a group's is narrower than a pool's. */
   note?: string
   headerActions?: ReactNode
+  footer?: ReactNode
   /** The one machine these runtimes are on, when the card is a single daemon's — a login command
    *  belongs on a named host, and a set of them has no single one to name. */
   daemonName?: string
@@ -538,6 +540,7 @@ export function FleetRuntimesCard({
       ) : (
         <EmptyTile title={empty} />
       )}
+      {footer}
     </div>
   )
 }

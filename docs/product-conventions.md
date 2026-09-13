@@ -1280,6 +1280,12 @@ an installation in that environment nor a stored login is hidden. Missing binari
 take precedence over login warnings. Enumerating models does not prove that the
 runtime is signed in; expired credentials remain visible and may require login.
 
+On self-hosted daemons, the sandbox view initially folds away runtimes installed in
+the image but not on the host. A **Show runtimes in sandbox but not on host** control
+reveals them with their existing login status. This is presentation only; discovery
+and runtime selection keep the full inventory. Managed pools show their full image
+inventory directly.
+
 Every feature is supported in environments both **with and without** an OS sandbox,
 and a trusted agent may deliberately run unsandboxed. A sandbox is a best-effort
 isolation layer, never a precondition: no feature may fail closed just because the
