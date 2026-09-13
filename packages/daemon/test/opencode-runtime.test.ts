@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -54,6 +54,23 @@ describe('applyOpenCodeReadOnlyMode', () => {
     expect(config.agent.reviewer).toEqual({ mode: 'subagent' })
     expect(config.agent[OPENCODE_READ_ONLY_MODE].permission).toEqual(OPENCODE_READ_ONLY_PERMISSION)
     expect(env.MODEL_TOKEN).toBe('token')
+  })
+
+  it('overlays the inherited daemon config when the launch sets none, and lets an explicit entry win over it', () => {
+    const inherited = JSON.stringify({ provider: { custom: { options: { baseURL: 'https://llm.example.test/v1' } } } })
+    const env: Record<string, string> = {}
+    applyOpenCodeReadOnlyMode(opencode, env, inherited)
+    const overlaid = JSON.parse(env.OPENCODE_CONFIG_CONTENT!)
+    expect(overlaid.provider.custom.options.baseURL).toBe('https://llm.example.test/v1')
+    expect(overlaid.agent[OPENCODE_READ_ONLY_MODE].mode).toBe('primary')
+
+    const explicit: Record<string, string> = {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { openai: { options: { apiKey: '{env:MODEL_TOKEN}' } } } })
+    }
+    applyOpenCodeReadOnlyMode(opencode, explicit, inherited)
+    const config = JSON.parse(explicit.OPENCODE_CONFIG_CONTENT!)
+    expect(config.provider).toEqual({ openai: { options: { apiKey: '{env:MODEL_TOKEN}' } } })
+    expect(config.agent[OPENCODE_READ_ONLY_MODE].permission).toEqual(OPENCODE_READ_ONLY_PERMISSION)
   })
 
   it('leaves every other runtime alone', () => {
@@ -123,5 +140,20 @@ describe('dream host launch (daemon)', () => {
     // The warm host is untouched: its mode list stays the runtime's own, and the console never sees the agent.
     expect((await launchEnv('opencode', false)).OPENCODE_CONFIG_CONTENT).toBeUndefined()
     expect((await launchEnv('claude', true)).OPENCODE_CONFIG_CONTENT).toBeUndefined()
+  })
+
+  it('keeps the providers a self-hosted daemon supplies through its own OPENCODE_CONFIG_CONTENT', async () => {
+    // An unsandboxed launch inherits the daemon environment beneath the explicit env; the overlay must not shadow it.
+    vi.stubEnv(
+      'OPENCODE_CONFIG_CONTENT',
+      JSON.stringify({ provider: { custom: { options: { baseURL: 'https://llm.example.test/v1' } } } })
+    )
+    try {
+      const config = JSON.parse((await launchEnv('opencode', true)).OPENCODE_CONFIG_CONTENT!)
+      expect(config.provider.custom.options.baseURL).toBe('https://llm.example.test/v1')
+      expect(config.agent[OPENCODE_READ_ONLY_MODE].permission).toEqual(OPENCODE_READ_ONLY_PERMISSION)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

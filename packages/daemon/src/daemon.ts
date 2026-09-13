@@ -5064,7 +5064,10 @@ export class Daemon {
         ...(excludeAgentToolCredentials ? {} : { configFileDir: agent.dir }),
         finalizeLaunchEnv: (launchEnv) => {
           // A dream host on OpenCode carries the daemon-authored `read-only` agent, which the extraction gate prefers over `plan`.
-          if (excludeAgentToolCredentials) applyOpenCodeReadOnlyMode(target, launchEnv)
+          // Every launch but a pod inherits this daemon's environment beneath the explicit env, so overlay that value too.
+          if (excludeAgentToolCredentials) {
+            applyOpenCodeReadOnlyMode(target, launchEnv, this.k8s ? undefined : process.env.OPENCODE_CONFIG_CONTENT)
+          }
           if (!this.k8s || !target) return
           if (opts.modelCredential) applyModelCredential(target, launchEnv, opts.modelCredential.credential)
           else {

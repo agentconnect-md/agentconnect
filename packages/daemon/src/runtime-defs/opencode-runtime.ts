@@ -19,10 +19,13 @@ export const OPENCODE_READ_ONLY_PERMISSION = {
 /** Merge the read-only agent into `OPENCODE_CONFIG_CONTENT`, keeping what the provider layer already wrote there. */
 export function applyOpenCodeReadOnlyMode(
   target: Pick<ModelProviderTarget, 'runtime'> | undefined,
-  env: Record<string, string>
+  env: Record<string, string>,
+  // The daemon's own OPENCODE_CONFIG_CONTENT, which a non-pod launch inherits under its explicit env.
+  inherited?: string
 ): void {
   if (target?.runtime !== 'opencode') return
-  const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT, 'OPENCODE_CONFIG_CONTENT')
+  // Overlay the value the child would otherwise see: an explicit entry wins, else the inherited one.
+  const config = objectFromJson(env.OPENCODE_CONFIG_CONTENT ?? inherited, 'OPENCODE_CONFIG_CONTENT')
   const agents = record(config.agent, 'OPENCODE_CONFIG_CONTENT.agent')
   // The daemon's definition replaces a same-named operator agent: on this host the name is a contract.
   env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
