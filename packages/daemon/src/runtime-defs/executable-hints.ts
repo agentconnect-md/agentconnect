@@ -14,10 +14,9 @@ export function isCodexRuntimeDef(runtime: RuntimeDef): boolean {
 
 /** The hints a runtime accepts, shared so the sandbox carves back exactly the executables a launch injects. */
 export function runtimeExecutableHints(runtime: RuntimeDef): RuntimeExecutableHint[] {
+  // No CODEX_PATH: codex-acp's bundled Codex matches its release, and an older global CLI would hide newer models.
   return [
     // The claude-agent-sdk finds its CLI in a bundled OPTIONAL npm dep (often absent under npx) or here.
-    ...(isClaudeRuntimeDef(runtime) ? [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }] : []),
-    // codex-acp reuses an installed Codex CLI at CODEX_PATH instead of its bundled fallback.
-    ...(isCodexRuntimeDef(runtime) ? [{ envVar: 'CODEX_PATH', command: 'codex' }] : [])
+    ...(isClaudeRuntimeDef(runtime) ? [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }] : [])
   ]
 }

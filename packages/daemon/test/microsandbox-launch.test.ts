@@ -543,14 +543,12 @@ describe('prepareMicrosandboxLaunch', () => {
     })
   })
 
-  it.each([
-    ['claude-acp', 'CLAUDE_CODE_EXECUTABLE'],
-    ['codex-acp', 'CODEX_PATH']
-  ])('resolves %s executable hints in the guest unless explicitly configured', (command, envVar) => {
+  it('resolves executable hints in the guest unless explicitly configured', () => {
+    const envVar = 'CLAUDE_CODE_EXECUTABLE'
     const opts = fixture()
     const launchOpts = {
       ...opts,
-      runtime: { command, args: [], env: [] },
+      runtime: { command: 'claude-acp', args: [], env: [] },
       stateSourceEnv: { ...opts.stateSourceEnv, [envVar]: '/host/runtime' }
     }
     expect(prepareMicrosandboxLaunch(launchOpts).env[envVar]).toBeUndefined()

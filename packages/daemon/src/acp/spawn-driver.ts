@@ -108,46 +108,6 @@ export function canonicalizeWindowsSpawnEnv(env: Record<string, string>, platfor
   }
 }
 
-/** Drop TOML overrides that codex-acp's Windows `shell:true` launcher would split into subcommands. */
-export function sanitizeWindowsCodexAdapterEnv(
-  env: Record<string, string>,
-  hints: ExecutableHint[] = [],
-  platform = process.platform
-): boolean {
-  if (platform !== 'win32' || !hints.some((hint) => hint.envVar === 'CODEX_PATH')) return false
-  return delete env.CODEX_ACP_PERMISSION_PROFILE_CONFIG
-}
-
-/** Resolve the native Codex binary behind a global npm `.cmd` shim. */
-export function resolveWindowsCodexNative(
-  resolved: string,
-  platform = process.platform,
-  arch = process.arch,
-  fs: { exists(path: string): boolean; realpath(path: string): string } = {
-    exists: existsSync,
-    realpath: (path) => realpathSync(path)
-  }
-): string | undefined {
-  if (platform !== 'win32' || windowsPath.basename(resolved).toLowerCase() !== 'codex.cmd') return undefined
-  const target = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : arch === 'x64' ? 'x86_64-pc-windows-msvc' : undefined
-  const pkg = arch === 'arm64' ? 'codex-win32-arm64' : arch === 'x64' ? 'codex-win32-x64' : undefined
-  if (!target || !pkg) return undefined
-  const native = windowsPath.join(
-    windowsPath.dirname(resolved),
-    'node_modules',
-    '@openai',
-    'codex',
-    'node_modules',
-    '@openai',
-    pkg,
-    'vendor',
-    target,
-    'bin',
-    'codex.exe'
-  )
-  return fs.exists(native) ? fs.realpath(native) : undefined
-}
-
 /** The ACP runtime as a child process of this daemon: today's only behavior. */
 export class LocalDriver implements SpawnDriver {
   constructor(private opts: { log?: Logger } = {}) {}
@@ -157,16 +117,11 @@ export class LocalDriver implements SpawnDriver {
     for (const file of request.files ?? []) await sink.write(file.root, file.relPath, file.content)
     const env = { ...request.env }
     canonicalizeWindowsSpawnEnv(env)
-    if (sanitizeWindowsCodexAdapterEnv(env, request.hints)) {
-      this.opts.log?.warn(
-        'acp: disabled Codex permission-profile CLI overrides on Windows because codex-acp uses cmd.exe'
-      )
-    }
     for (const hint of request.hints ?? []) {
       if (env[hint.envVar]) continue
       const resolved = resolveCommandPath(hint.command, env)
       if (!resolved) continue
-      env[hint.envVar] = hint.envVar === 'CODEX_PATH' ? (resolveWindowsCodexNative(resolved) ?? resolved) : resolved
+      env[hint.envVar] = resolved
       this.opts.log?.info(`acp: ${hint.envVar} not set — using ${hint.command} on PATH (${resolved})`)
     }
     // Resolve the command to an absolute path (or a path-qualified relative one for

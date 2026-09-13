@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AcpHost } from '../src/acp/acp-host.js'
-import { LocalDriver, resolveWindowsCodexNative, sanitizeWindowsCodexAdapterEnv } from '../src/acp/spawn-driver.js'
+import { LocalDriver } from '../src/acp/spawn-driver.js'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../src/acp/spawn-driver.js'
 
 /**
@@ -17,22 +17,6 @@ interface Rpc {
   method?: string
   params?: any
 }
-
-describe('Windows Codex executable hint', () => {
-  it('resolves the native executable behind the global npm shim', () => {
-    const resolved = resolveWindowsCodexNative('C:\\npm\\codex.CMD', 'win32', 'x64', {
-      exists: () => true,
-      realpath: (path) => path
-    })
-    expect(resolved?.toLowerCase()).toMatch(/codex-win32-x64.+codex\.exe$/)
-  })
-
-  it('removes permission overrides that cmd.exe would split into subcommands', () => {
-    const env = { CODEX_ACP_PERMISSION_PROFILE_CONFIG: '{"configOverrides":["filesystem={ \":root\" = \"write\" }"]}' }
-    expect(sanitizeWindowsCodexAdapterEnv(env, [{ envVar: 'CODEX_PATH', command: 'codex' }], 'win32')).toBe(true)
-    expect(env).not.toHaveProperty('CODEX_ACP_PERMISSION_PROFILE_CONFIG')
-  })
-})
 
 /** A minimal in-memory ACP agent wired to a `SpawnedRuntime` stream pair. */
 function inMemoryRuntime(): { runtime: SpawnedRuntime; stopCalls: number[] } {
@@ -160,7 +144,7 @@ describe('SpawnDriver seam', () => {
     expect(terminal).toBe(1)
   })
 
-  it('asks the driver to resolve installed CLI hints for adapter runtimes', async () => {
+  it('asks the driver to resolve executable hints only for Claude runtimes', async () => {
     const claude = new InMemoryDriver(inMemoryRuntime().runtime)
     const claudeHost = new AcpHost(
       { command: 'claude-code-acp', args: [], env: [] },
@@ -170,20 +154,17 @@ describe('SpawnDriver seam', () => {
     expect(claude.requests[0]?.hints).toEqual([{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }])
     await claudeHost.stop(10)
 
-    const other = new InMemoryDriver(inMemoryRuntime().runtime)
-    const otherHost = new AcpHost({ command: 'codex-acp', args: [], env: [] }, { driver: other, onUpdate: () => {} })
-    await otherHost.start()
-    expect(other.requests[0]?.hints).toEqual([{ envVar: 'CODEX_PATH', command: 'codex' }])
-    await otherHost.stop(10)
-
-    const npx = new InMemoryDriver(inMemoryRuntime().runtime)
-    const npxHost = new AcpHost(
-      { command: 'npx', args: ['-y', '@agentclientprotocol/codex-acp@1.6.2'], env: [] },
-      { driver: npx, onUpdate: () => {} }
-    )
-    await npxHost.start()
-    expect(npx.requests[0]?.hints).toEqual([{ envVar: 'CODEX_PATH', command: 'codex' }])
-    await npxHost.stop(10)
+    // A global Codex CLI older than the adapter's bundled one hides models the account can use.
+    for (const runtime of [
+      { command: 'codex-acp', args: [], env: [] },
+      { command: 'npx', args: ['-y', '@agentconnect.md/codex-acp@agentconnect'], env: [] }
+    ]) {
+      const codex = new InMemoryDriver(inMemoryRuntime().runtime)
+      const codexHost = new AcpHost(runtime, { driver: codex, onUpdate: () => {} })
+      await codexHost.start()
+      expect(codex.requests[0]?.hints).toBeUndefined()
+      await codexHost.stop(10)
+    }
   })
 })
 
