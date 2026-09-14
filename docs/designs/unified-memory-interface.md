@@ -1,6 +1,6 @@
 # Design: Unified Memory Operations and Context
 
-**Status:** Implementation in progress. Common reads, conditional managed mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh and compatibility retirement remain pending. This design does not change the plugin ABI by itself.
+**Status:** Implementation in progress. Common reads, conditional managed mutations, external record mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh and compatibility retirement remain pending. This design does not change the plugin ABI by itself.
 
 **Related:** [Memory evolution](memory-evolution.md), [managed memory](memory-system-plan.md), [Dream](memory-dreaming.md), [product conventions](../product-conventions.md).
 
@@ -393,7 +393,8 @@ rollout, not the final retirement of legacy tools.
 The descriptor is stable across managed homes; callers use
 `describeMemoryEntries` for live operations and limits before choosing a write.
 Strong mutations still require the atomic home/capture ports, and external/native
-providers gain no new mutation capability. Ordinary model calls bind `tool` source
+providers gained no new mutation capability in this slice (external record
+mutations arrived later, below). Ordinary model calls bind `tool` source
 and the trusted source turn internally. Every mutation goes through the existing
 write-access/approval gate, and the entry service rechecks access before resolving
 the live provider. A one-call approval permits that payload while a subsequent
@@ -524,3 +525,33 @@ runtimes. Until a supported mechanism passes those checks, new/native-resumed
 sessions receive the bounded observation and live sessions retrieve current
 entries through the common tools. Compatibility retirement is also still pending;
 this audit does not close the overall unified-memory implementation task.
+
+### External entry mutation projection
+
+External v1 connections now project their declared `create`, `update`, and
+`delete` operations through the same entry service, adapter port, model tools,
+admin routes, and console browser. Capabilities stay truthful:
+`writeConsistency: 'last-write-wins'`, `exactCreate: false`, and
+`exactEdit: false`, because a v1 manifest proves neither atomic conditional
+writes nor verbatim storage of authored text. A record backend takes no label (a
+supplied label is refused, never dropped), stores plain text, forwards optional
+metadata, and treats omitted metadata as preserve. Exact edits are refused with
+`UNSUPPORTED`; empty text is refused rather than treated as deletion.
+
+A supplied revision travels to the backend as its optional `version`; a reported
+conflict returns `CONFLICT` with the current revision when `get` can supply it.
+Without a revision the write is last-write-wins, as advertised. Core assigns the
+operation ID before egress. A lost or malformed reply after egress is
+`AMBIGUOUS_WRITE`, never a blind replay, because the profile has no
+operation-status lookup for record writes. Connection loss before egress,
+oversized payloads, and a backend `deleted: false` map to `UNAVAILABLE`,
+`TOO_LARGE`, and `NOT_FOUND`.
+
+Mutations are projected only for callers that carry write provenance (`tool` for
+ordinary sessions, `console` for the authorized BFF); read-only views advertise no
+write operation and mark entries non-editable. The private-session write gate and
+approval card apply unchanged; the approval pre-check compares a revision only
+when the request supplies one, since conditional homes still require it at write
+time. Legacy `saveMemory`/`updateMemory`/`deleteMemory` keep their record-id
+contracts for warm sessions. External Dream, channel scope, and capture remain
+unchanged.

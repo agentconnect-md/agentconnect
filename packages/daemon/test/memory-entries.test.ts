@@ -15,6 +15,8 @@ import { ExternalMemoryEntries } from '../src/memory/entries/external.js'
 import { memoryContinuations, memoryEntryTokens } from '../src/memory/entries/state.js'
 import type { MemoryEntriesView } from '../src/memory/entries/contract.js'
 import type { MemoryRecord, RecordMemoryAdmin } from '../src/memory/types.js'
+import type { MemoryProvider, MemoryScope } from '../src/memory/provider.js'
+import { MemoryConflictError, type MemoryWriteSource } from '../src/memory/store.js'
 import type { LocalStore } from '../src/store/local-store.js'
 import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
 
@@ -31,13 +33,23 @@ async function store() {
   cleanup.push(() => db.close())
   return { db, dir, path }
 }
-async function service(db: LocalStore, resolve: () => Promise<MemoryEntriesView>, agent = 'a') {
-  return new MemoryEntries(resolve, await memoryEntryTokens(db), memoryContinuations(db, agent))
+async function service(db: LocalStore, resolve: () => Promise<MemoryEntriesView>, agent = 'a', write = false) {
+  return new MemoryEntries(
+    resolve,
+    await memoryEntryTokens(db),
+    memoryContinuations(db, agent),
+    Date.now,
+    write ? async () => {} : undefined
+  )
 }
-async function fixture(kind: 'managed' | 'external', count = 37) {
+const LIMITS = { maxItemBytes: 131072, maxPageItems: 7 }
+async function fixture(kind: 'managed' | 'external', count = 37, options: { write?: boolean } = {}) {
   const { db, dir, path } = await store()
   const records = new Map<string, MemoryRecord>()
   const requests: { cursor?: string; limit: number }[] = []
+  const mutations: Record<string, unknown>[] = []
+  const recordScope = { kind: 'agent' as const, key: 'ac:agent:a' }
+  let sequence = 0
   const root = new LocalMemoryFs(dir)
   const provider = new ManagedMemoryProvider(() => localMemoryHome(root))
   for (let i = 0; i < count; i++) {
@@ -46,9 +58,10 @@ async function fixture(kind: 'managed' | 'external', count = 37) {
     records.set(id, { id, text, scope: { kind: 'agent', key: 'ac:agent:a' } })
     if (kind === 'managed') await root.writeFile(`memory/${id}`, text)
   }
+  // A versioned in-memory backend: conditional when a version is supplied, last-write-wins otherwise.
   const admin: RecordMemoryAdmin = {
     shape: 'records',
-    capabilities: new Set(['list', 'get']),
+    capabilities: new Set(options.write ? ['list', 'get', 'create', 'update', 'delete'] : ['list', 'get']),
     async list(_scope, request) {
       requests.push(request)
       const rows = [...records.values()]
@@ -64,25 +77,51 @@ async function fixture(kind: 'managed' | 'external', count = 37) {
     async search() {
       throw new Error('unsupported')
     },
-    async create() {
-      throw new Error('unsupported')
+    async create(_scope, request) {
+      mutations.push(request)
+      const record: MemoryRecord = {
+        id: `record-${++sequence}`,
+        text: request.text,
+        scope: recordScope,
+        version: '1',
+        ...(request.metadata ? { metadata: request.metadata } : {})
+      }
+      records.set(record.id, record)
+      return record
     },
-    async update() {
-      throw new Error('unsupported')
+    async update(_scope, request) {
+      mutations.push(request)
+      const current = records.get(request.id)
+      if (!current) throw new Error('backend rejected the update')
+      if (request.version && request.version !== current.version) throw new MemoryConflictError('stale version')
+      const record: MemoryRecord = {
+        ...current,
+        text: request.text,
+        version: String(Number(current.version ?? 0) + 1),
+        ...(request.metadata ? { metadata: request.metadata } : {})
+      }
+      records.set(record.id, record)
+      return record
     },
-    async delete() {
-      throw new Error('unsupported')
+    async delete(_scope, request) {
+      mutations.push(request)
+      const current = records.get(request.id)
+      if (!current) return false
+      if (request.version && request.version !== current.version) throw new MemoryConflictError('stale version')
+      records.delete(request.id)
+      return true
     },
     async history() {
       throw new Error('unsupported')
     }
   }
   let binding = 'binding-1'
+  const writeContext = options.write ? { source: 'tool' as const } : undefined
   const resolve = async () =>
     kind === 'managed'
       ? provider.entryView({ agentId: binding })
-      : new ExternalMemoryEntries(admin, { agentId: 'a' }, binding, { maxItemBytes: 131072, maxPageItems: 7 })
-  const api = await service(db, resolve)
+      : new ExternalMemoryEntries(admin, { agentId: 'a' }, binding, LIMITS, writeContext)
+  const api = await service(db, resolve, 'a', options.write)
   return {
     path,
     api,
@@ -92,6 +131,7 @@ async function fixture(kind: 'managed' | 'external', count = 37) {
     records,
     admin,
     requests,
+    mutations,
     resolve,
     replaceBinding() {
       binding = 'binding-2'
@@ -447,5 +487,104 @@ it('pins synthetic MCP reads to the Dream draft even after the live provider cha
   expect(page.entries.map((entry) => entry.label)).toEqual(['draft'])
   expect(await executeTool(ctx, 'getMemoryEntry', { ref: page.entries[0]!.ref }, deps)).toMatchObject({
     text: 'only the staged proposal'
+  })
+})
+
+describe('unified external mutations', () => {
+  it('projects declared record mutations with last-write-wins receipts, refusing what v1 cannot express', async () => {
+    const f = await fixture('external', 2, { write: true })
+    expect(await f.api.describe()).toMatchObject({
+      operations: ['list', 'get', 'create', 'update', 'delete'],
+      writeConsistency: 'last-write-wins',
+      exactCreate: false,
+      exactEdit: false
+    })
+    const created = await f.api.create({
+      text: 'Deploy on Fridays only after the smoke test',
+      metadata: { topic: 'ops' }
+    })
+    expect(created).toMatchObject({ state: 'completed', entry: { format: 'text', editable: true, revision: '1' } })
+    expect(f.mutations.at(-1)).toMatchObject({ operationId: created.operationId, metadata: { topic: 'ops' } })
+    const ref = created.entry!.ref
+    expect(await f.api.get({ ref })).toMatchObject({
+      text: 'Deploy on Fridays only after the smoke test',
+      metadata: { topic: 'ops' },
+      complete: true
+    })
+    await expect(f.api.create({ label: 'named', text: 'x' })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' })
+    await expect(f.api.create({ text: '' })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' })
+    await expect(f.api.create({ text: 'x'.repeat(LIMITS.maxItemBytes + 1) })).rejects.toMatchObject({
+      code: 'TOO_LARGE'
+    })
+    await expect(
+      f.api.update({ ref, revision: '1', edit: { oldText: 'Fridays', newText: 'Mondays' } })
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    // Omitted metadata is forwarded as omitted, so the backend keeps what it holds.
+    const updated = await f.api.update({ ref, revision: '1', text: 'Deploy on Mondays' })
+    expect(updated.entry).toMatchObject({ revision: '2', label: 'Deploy on Mondays' })
+    expect(f.mutations.at(-1)).not.toHaveProperty('metadata')
+    expect(await f.api.get({ ref })).toMatchObject({ text: 'Deploy on Mondays', metadata: { topic: 'ops' } })
+    await expect(f.api.update({ ref, revision: '1', text: 'stale' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+      currentRevision: '2'
+    })
+    expect(await f.api.get({ ref })).toMatchObject({ text: 'Deploy on Mondays' })
+    // Without a revision the write is last-write-wins, exactly as advertised.
+    expect((await f.api.update({ ref, text: 'Deploy on Tuesdays' })).entry).toMatchObject({ revision: '3' })
+    await expect(f.api.delete({ ref, revision: '2' })).rejects.toMatchObject({ code: 'CONFLICT', currentRevision: '3' })
+    expect(await f.api.delete({ ref, revision: '3' })).toMatchObject({ state: 'completed', deletedRef: ref })
+    expect(await f.api.get({ ref })).toBeNull()
+    await expect(f.api.delete({ ref })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    // A backend rejection after egress cannot be told from a lost apply, so it is never replayed.
+    await expect(f.api.update({ ref, text: 'gone' })).rejects.toMatchObject({ code: 'AMBIGUOUS_WRITE' })
+    expect(f.records.size).toBe(2)
+  })
+
+  it('keeps record mutations behind the write gate and the declared capability set', async () => {
+    const readOnly = await fixture('external', 1)
+    await expect(readOnly.api.create({ text: 'x' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect((await readOnly.api.list({ limit: 1 })).entries[0]).toMatchObject({ editable: false })
+    const f = await fixture('external', 1, { write: true })
+    ;(f.admin.capabilities as Set<string>).delete('update')
+    expect((await f.api.describe()).operations).toEqual(['list', 'get', 'create', 'delete'])
+    const page = await f.api.list({ limit: 1 })
+    expect(page.entries[0]).toMatchObject({ editable: false })
+    await expect(f.api.update({ ref: page.entries[0]!.ref, text: 'x' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    expect(f.mutations).toHaveLength(0)
+  })
+
+  it('publishes external record mutations for console callers with bounded typed outcomes', async () => {
+    const f = await fixture('external', 1, { write: true })
+    const { createMemoryEntriesWriter } = await import('../src/cp/memory-entries.js')
+    const provider = {
+      entryView: async (scope: MemoryScope, writeSource?: MemoryWriteSource) =>
+        new ExternalMemoryEntries(
+          f.admin,
+          scope,
+          'binding-1',
+          LIMITS,
+          writeSource ? { source: writeSource } : undefined
+        )
+    } as unknown as MemoryProvider
+    const write = createMemoryEntriesWriter(provider, f.db, (id) => id === 'a')
+    const created = await write({ agentId: 'a', operation: 'create', request: { text: 'Console fact' } })
+    expect(created).toMatchObject({
+      operation: 'completed',
+      result: { state: 'completed', entry: { editable: true, format: 'text', revision: '1' } }
+    })
+    if (created.operation !== 'completed') throw new Error('expected completion')
+    const ref = created.result.entry!.ref
+    expect(
+      await write({ agentId: 'a', operation: 'update', request: { ref, revision: 'stale', text: 'x' } })
+    ).toMatchObject({ operation: 'error', code: 'CONFLICT', currentRevision: '1' })
+    expect(await write({ agentId: 'a', operation: 'delete', request: { ref, revision: '1' } })).toMatchObject({
+      operation: 'completed',
+      result: { deletedRef: ref }
+    })
+    expect(await write({ agentId: 'foreign', operation: 'create', request: { text: 'x' } })).toMatchObject({
+      operation: 'error',
+      code: 'FORBIDDEN'
+    })
+    expect(f.mutations).toHaveLength(3)
   })
 })

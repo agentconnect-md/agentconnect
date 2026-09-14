@@ -40,27 +40,35 @@ const get = descriptor(
   'Read a durable memory entry by the opaque ref from listMemoryEntries. Follow nextContentCursor as cursor using the same ref and maxBytes; complete=false means this is only a slice. Missing entries return null. Never use a ref as a legacy file path or record id.',
   GET_MEMORY_ENTRY_ARGS
 )
-
-export function memoryEntryTools(operations: ReadonlySet<string>): ToolDescriptor[] {
-  return [describe, ...(operations.has('list') ? [list] : []), ...(operations.has('get') ? [get] : [])]
-}
 const create = descriptor(
   'createMemoryEntry',
-  'Create a new durable Markdown memory entry; never overwrites an existing label. First check describeMemoryEntries for create support. Put frontmatter in text; separate metadata is unsupported for managed memory.',
+  'Create a new durable memory entry from text; never overwrites an existing entry. Check describeMemoryEntries first. Managed memory stores Markdown named by the label (put frontmatter in text; separate metadata is unsupported). A record backend stores plain text, accepts optional metadata, and takes no label.',
   CREATE_MEMORY_ENTRY_ARGS
 )
 const update: ToolDescriptor = {
   name: 'updateMemoryEntry',
   description:
-    'Update an editable memory entry using its opaque ref and current revision from listMemoryEntries/getMemoryEntry. Supply either full text or one literal exact edit, never both. On CONFLICT re-read before deciding; on AMBIGUOUS_WRITE inspect state before retrying. Check describeMemoryEntries for update support.',
+    'Update an editable memory entry using its opaque ref from listMemoryEntries/getMemoryEntry, with its current revision when describeMemoryEntries reports conditional writes. Supply either full text or one literal exact edit (only when exactEdit is true), never both. On CONFLICT re-read before deciding; on AMBIGUOUS_WRITE inspect state before retrying.',
   inputSchema: unionOf(
     UPDATE_MEMORY_ENTRY_ARGS.options.map((schema) => descriptor('', '', schema).inputSchema as ObjectToolSchema)
   )
 }
 const remove = descriptor(
   'deleteMemoryEntry',
-  'Delete an editable memory entry using its opaque ref and current revision. Check describeMemoryEntries for delete support. Inherited entries cannot be deleted; deleting a channel override may reveal inherited memory. On AMBIGUOUS_WRITE inspect state before retrying.',
+  'Delete an editable memory entry using its opaque ref, with its current revision when available. Check describeMemoryEntries for delete support. Inherited entries cannot be deleted; deleting a channel override may reveal inherited memory. On AMBIGUOUS_WRITE inspect state before retrying.',
   DELETE_MEMORY_ENTRY_ARGS
 )
+
+// One descriptor set for every provider; each session projects only the operations its view declares.
+export function memoryEntryTools(operations: ReadonlySet<string>): ToolDescriptor[] {
+  return [
+    describe,
+    ...(operations.has('list') ? [list] : []),
+    ...(operations.has('get') ? [get] : []),
+    ...(operations.has('create') ? [create] : []),
+    ...(operations.has('update') ? [update] : []),
+    ...(operations.has('delete') ? [remove] : [])
+  ]
+}
 export const MEMORY_ENTRY_WRITE_TOOLS = [create, update, remove]
 export const MEMORY_ENTRY_TOOLS = memoryEntryTools(new Set(['list', 'get']))

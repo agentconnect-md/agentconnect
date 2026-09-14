@@ -288,7 +288,7 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
             <>
               {mode === 'create' && (
                 <label className="mb-2 block">
-                  Name
+                  Name (optional)
                   <input
                     aria-label="Memory name"
                     value={label}

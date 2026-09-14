@@ -9,7 +9,7 @@ import type {
 import { randomUUID } from 'node:crypto'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
 import { externalMemoryTools } from '../tools.js'
-import { MemoryConflictError, MemoryTooLargeError } from '../store.js'
+import { MemoryConflictError, MemoryTooLargeError, type MemoryWriteSource } from '../store.js'
 import { canonicalAgentMemoryKey } from '../keys.js'
 import type {
   EnqueueMemoryCapture,
@@ -85,7 +85,8 @@ export class ExternalMemoryProvider implements MemoryProvider {
     throw new Error('ExternalMemoryProvider.runtimeEnv must not be called — use memoryProviderFor at spawn')
   }
 
-  async entryView(scope: MemoryScope) {
+  // Declared record mutations are projected only for a caller that carries write provenance.
+  async entryView(scope: MemoryScope, writeSource?: MemoryWriteSource) {
     const { client, spec } = this.connection()
     return new ExternalMemoryEntries(
       this.adminSurface(),
@@ -94,7 +95,8 @@ export class ExternalMemoryProvider implements MemoryProvider {
       {
         maxItemBytes: Math.min(128 * 1024, client.manifest.limits.maxRecordBytes),
         maxPageItems: client.manifest.limits.maxBatchItems
-      }
+      },
+      writeSource ? { source: writeSource } : undefined
     )
   }
 

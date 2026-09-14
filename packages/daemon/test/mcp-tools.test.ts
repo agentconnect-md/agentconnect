@@ -518,13 +518,16 @@ describe('toolsForIntegrations', () => {
     expect(externalMemoryTools(new Set(['recall', 'capture', 'get', 'delete'])).map((tool) => tool.name)).toEqual([
       'describeMemoryEntries',
       'getMemoryEntry',
+      'deleteMemoryEntry',
       'searchMemory',
       'getMemory',
       'deleteMemory'
     ])
     for (const tool of externalMemoryTools(new Set(['recall', 'create', 'get', 'update', 'delete']))) {
       expect(tool.name).not.toMatch(/^agentconnect_memory_/)
-      expect(tool.inputSchema).toMatchObject({ type: 'object', additionalProperties: false })
+      // A union descriptor closes each branch; every other descriptor closes its one object.
+      const branches = 'oneOf' in tool.inputSchema ? tool.inputSchema.oneOf : [tool.inputSchema]
+      for (const branch of branches) expect(branch).toMatchObject({ type: 'object', additionalProperties: false })
     }
   })
 

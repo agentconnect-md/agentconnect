@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   MEMORY_PLUGIN_PROFILE,
   type ExternalMemoryBinding,
   type MemoryConnectionSpec,
+  type MemoryEntryMutationReceipt,
   type MemoryPluginManifest
 } from '@agentconnect.md/protocol'
 import { ExternalMemoryProvider, createMemoryProvider, type ExternalMemoryRuntimeDeps } from '../src/memory/provider.js'
@@ -228,6 +232,9 @@ describe('ExternalMemoryProvider', () => {
       'describeMemoryEntries',
       'listMemoryEntries',
       'getMemoryEntry',
+      'createMemoryEntry',
+      'updateMemoryEntry',
+      'deleteMemoryEntry',
       'searchMemory',
       'saveMemory',
       'getMemory',
@@ -264,6 +271,88 @@ describe('ExternalMemoryProvider', () => {
       )
     ).rejects.toBeInstanceOf(MemoryConflictError)
     expect(h.markDegraded).not.toHaveBeenCalled()
+  })
+
+  it('projects declared record mutations through the unified entry view with truthful capabilities', async () => {
+    const h = harness(['recall', 'capture', 'list', 'get', 'create', 'update', 'delete'])
+    const provider = new ExternalMemoryProvider(binding(), h.deps)
+    const readOnly = await provider.entryView({ agentId: 'bot-a' })
+    expect(readOnly.capabilities.operations).toEqual(['list', 'get'])
+    const view = await provider.entryView({ agentId: 'bot-a' }, 'console')
+    expect(view.capabilities).toMatchObject({
+      operations: ['list', 'get', 'create', 'update', 'delete'],
+      writeConsistency: 'last-write-wins',
+      exactCreate: false,
+      exactEdit: false
+    })
+    const coordinate = { partition: 'agent', id: 'record-1' }
+    const created = await view.create({ text: 'deploy safely', metadata: { source: 'runbook' } })
+    expect(h.client.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: created.operationId,
+        text: 'deploy safely',
+        metadata: { source: 'runbook' }
+      })
+    )
+    expect(created.entry).toMatchObject({
+      coordinate: { partition: 'agent', id: 'record-new' },
+      format: 'text',
+      editable: true
+    })
+    const updated = await view.update(coordinate, { text: 'deploy safely', revision: 'v1' })
+    expect(h.client.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'record-1', version: 'v1', operationId: updated.operationId })
+    )
+    expect(updated.entry).toMatchObject({ revision: 'v2' })
+    vi.mocked(h.client.update).mockRejectedValueOnce(new MemoryPluginConflictError())
+    await expect(view.update(coordinate, { text: 'x', revision: 'stale' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+      currentRevision: 'v1'
+    })
+    vi.mocked(h.client.delete).mockRejectedValueOnce(new Error('socket closed after the request left'))
+    await expect(view.delete(coordinate, {})).rejects.toMatchObject({ code: 'AMBIGUOUS_WRITE' })
+    expect(h.markDegraded).toHaveBeenCalledWith(connectionA, 'admin_delete_unavailable')
+    vi.mocked(h.client.delete).mockResolvedValueOnce({ deleted: false })
+    await expect(view.delete(coordinate, {})).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(view.delete(coordinate, { revision: 'v2' })).resolves.toMatchObject({
+      operationId: expect.any(String)
+    })
+    expect(h.client.delete).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'record-1', version: 'v2' }))
+  })
+
+  it('routes unified mutation tools for an external session through the write gate', async () => {
+    const h = harness(['recall', 'capture', 'list', 'get', 'create', 'update', 'delete'])
+    const provider = new ExternalMemoryProvider(binding(), h.deps)
+    const { executeTool } = await import('../src/mcp/ops.js')
+    const { openTestStore } = await import('./store-support.js')
+    const dir = await mkdtemp(join(tmpdir(), 'external-entries-'))
+    const db = await openTestStore(join(dir, 'state.sqlite'))
+    try {
+      const ctx = {
+        agentId: 'bot-a',
+        platform: 'slack',
+        isDm: false,
+        channel: 'C',
+        thread: 'T',
+        tools: provider.toolsForAgent()
+      }
+      const deps = { memory: provider, memoryEntryStore: db } as unknown as import('../src/mcp/ops.js').OpsDeps
+      const receipt = (await executeTool(
+        ctx,
+        'createMemoryEntry',
+        { text: 'deploy safely' },
+        deps
+      )) as MemoryEntryMutationReceipt
+      expect(receipt).toMatchObject({ state: 'completed', entry: { label: 'deploy safely', editable: true } })
+      expect(h.client.create).toHaveBeenCalledWith(expect.objectContaining({ operationId: receipt.operationId }))
+      await expect(
+        executeTool(ctx, 'createMemoryEntry', { text: 'x' }, { ...deps, memoryAccessDecision: () => 'deny' })
+      ).rejects.toThrow()
+      expect(h.client.create).toHaveBeenCalledTimes(1)
+    } finally {
+      await db.close()
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('maps a locally rejected record payload to bad input without degrading the connection', async () => {
