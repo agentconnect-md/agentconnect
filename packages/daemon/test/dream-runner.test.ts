@@ -140,6 +140,16 @@ async function writeStagedProposal(
   return files.map((file) => file.path)
 }
 
+/** Staged files once the post-cancel cleanup lands: it trails the status flip, so poll rather than sleep. */
+async function stagedAfterCleanup(runner: DreamRunner, agentId: string, dreamId: string) {
+  let staged = await runner.stagedFiles(agentId, dreamId)
+  for (let i = 0; i < 200 && staged !== null; i++) {
+    await new Promise((r) => setTimeout(r, 5))
+    staged = await runner.stagedFiles(agentId, dreamId)
+  }
+  return staged
+}
+
 async function setup(opts: {
   /** Files the fake model writes into the staged store; `null` writes nothing. */
   stagedFiles?: { path: string; content: string }[] | null
@@ -564,14 +574,7 @@ describe('DreamRunner pipeline', () => {
     const started = await runner.start('a1', { trigger: 'manual' })
     const done = await settle(store, started.dreamId)
     expect(done.status).toBe('canceled') // NOT overwritten to completed
-    // The staging removal in run() runs a tick after the status flips settle()
-    // observes; poll until it lands (stagedFiles tolerates the concurrent rm).
-    let staged = await runner.stagedFiles('a1', started.dreamId)
-    for (let i = 0; i < 50 && staged !== null; i++) {
-      await new Promise((r) => setTimeout(r, 5))
-      staged = await runner.stagedFiles('a1', started.dreamId)
-    }
-    expect(staged).toBeNull() // partial output dropped
+    expect(await stagedAfterCleanup(runner, 'a1', started.dreamId)).toBeNull() // partial output dropped
   })
 
   it('cancel during extraction wins: the late output is never staged', async () => {
@@ -584,9 +587,9 @@ describe('DreamRunner pipeline', () => {
     const canceled = await runner.cancel('a1', started.dreamId)
     expect(canceled.status).toBe('canceled')
     release(PROPOSAL)
-    await new Promise((r) => setTimeout(r, 20))
+    // The fixture stages prefs.md only after the gate opens; a fixed sleep raced the runner's cleanup in CI.
+    expect(await stagedAfterCleanup(runner, 'a1', started.dreamId)).toBeNull()
     expect(store.dreams.get(started.dreamId)?.status).toBe('canceled')
-    expect(await runner.stagedFiles('a1', started.dreamId)).toBeNull()
   })
 
   it('backstops a runtime that ignores cancel: abandons the extraction and frees the agent', async () => {
