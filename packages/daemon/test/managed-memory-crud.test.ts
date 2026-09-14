@@ -191,7 +191,7 @@ describe('common managed entry mutations', () => {
     })
     expect(f.commits).toHaveLength(1)
     const readonly = await f.service('agent', undefined, false)
-    expect((await readonly.describe()).operations).toEqual(['list', 'get'])
+    expect((await readonly.describe()).operations).toEqual(['list', 'get', 'search'])
   })
 
   it('refuses inherited updates and reveals the base after deleting a channel override', async () => {
@@ -257,7 +257,7 @@ describe('common managed entry mutations', () => {
       canRead: () => true,
       write: { source: 'console', canWrite: () => true }
     })
-    expect((await api.describe()).operations).toEqual(['list', 'get'])
+    expect((await api.describe()).operations).toEqual(['list', 'get', 'search'])
     await expect(api.create({ label: 'topic', text: 'new' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
     expect(await local.readFile('memory/topic.md')).toBeNull()
   })
@@ -285,7 +285,7 @@ it('executes conditional MCP writes with trusted scope, approvals and synthetic-
   } as unknown as import('../src/mcp/ops.js').OpsDeps
   const invoke = (name: string, args: Record<string, unknown>) => executeTool(ctx, name, args, deps)
   expect(await invoke('describeMemoryEntries', {})).toMatchObject({
-    operations: ['list', 'get', 'create', 'update', 'delete']
+    operations: ['list', 'get', 'search', 'create', 'update', 'delete']
   })
   const created = (await invoke('createMemoryEntry', {
     label: 'model',
@@ -377,7 +377,10 @@ it('admin mutations use console origin, reject lost ownership and expose conditi
   expect(f.commits[0]).toMatchObject({ source: 'console' })
   expect(f.commits[0]!.sourceTurnId).toBeUndefined()
   expect(await read({ agentId: 'agent', operation: 'describe' })).toMatchObject({
-    result: { operations: ['list', 'get', 'create', 'update', 'delete'], limits: { maxMutationRequestBytes: 196608 } }
+    result: {
+      operations: ['list', 'get', 'search', 'create', 'update', 'delete'],
+      limits: { maxMutationRequestBytes: 196608 }
+    }
   })
   const ref = created.result.entry!.ref
   const revision = created.result.entry!.revision
