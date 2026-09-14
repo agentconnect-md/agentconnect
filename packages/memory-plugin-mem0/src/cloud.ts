@@ -326,8 +326,9 @@ export class Mem0CloudClient {
     const response = ListResponse.parse(raw)
     const records: CanonicalMemoryRecord[] = []
     const ids = new Set<string>()
+    // Emit the whole requested page: a cap below `page_size` would drop records with no continuation to recover them.
     for (const item of response.results) {
-      if (records.length >= input.limit || records.length >= 20) break
+      if (records.length >= input.limit) break
       const record = recordFromResult(item, input.context.scope)
       if (!record || ids.has(record.id)) continue
       ids.add(record.id)

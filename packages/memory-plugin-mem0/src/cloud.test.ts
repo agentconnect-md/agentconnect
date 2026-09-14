@@ -227,6 +227,28 @@ describe('Mem0 Cloud V3 plugin contract', () => {
     await client.close()
   })
 
+  it('emits the whole requested list page and derives continuation only from upstream', async () => {
+    const results = Array.from({ length: 30 }, (_, i) => ({
+      id: `memory-${i}`,
+      memory: `fact ${i}`,
+      created_at: '2026-07-16T00:00:00Z',
+      updated_at: '2026-07-16T00:01:00Z'
+    }))
+    const pageSizes: string[] = []
+    const upstream = await startUpstream((req, res) => {
+      pageSizes.push(new URL(req.url ?? '/', 'http://localhost').searchParams.get('page_size') ?? '')
+      send(res, 200, { count: 30, next: null, previous: null, results })
+    })
+    const client = new Mem0CloudClient({ baseUrl: upstream.url })
+    const page = await client.list({ context, limit: 50 }, 'secret')
+    expect(page.records.map((record) => record.id)).toEqual(results.map((result) => result.id))
+    expect(page).not.toHaveProperty('nextCursor')
+    // The page size on the wire is the caller's limit, so the upstream page and the emitted page agree.
+    const listed = await client.list({ context, limit: 10 }, 'secret')
+    expect(listed.records).toHaveLength(10)
+    expect(pageSizes).toEqual(['50', '10'])
+  })
+
   it('never deletes a record outside the trusted scope or at a stale version', async () => {
     const foreign = await startUpstream((_req, res) =>
       send(res, 200, {
