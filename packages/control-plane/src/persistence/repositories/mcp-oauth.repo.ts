@@ -47,6 +47,7 @@ function toRecord(row: McpProviderOauth): McpProviderOauthRecord {
     scopes: row.scopes,
     clientId: row.clientId,
     clientSource: row.clientSource as McpOauthClientSource,
+    issParameterSupported: row.issParameterSupported,
     status: row.status as McpProviderOauthStatus,
     connectedByUserId: row.connectedByUserId,
     accessExpiresAt: row.accessExpiresAt,
@@ -93,7 +94,8 @@ export class PgMcpProviderOauthRepo implements McpProviderOauthRepo {
       registrationEndpoint: input.registrationEndpoint ?? null,
       scopes: input.scopes,
       clientId: input.clientId,
-      clientSource: input.clientSource
+      clientSource: input.clientSource,
+      issParameterSupported: input.issParameterSupported
     }
     return this.prisma.$transaction(async (tx) => {
       const row = await tx.mcpProviderOauth.upsert({

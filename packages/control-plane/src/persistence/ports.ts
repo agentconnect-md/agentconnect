@@ -5826,6 +5826,8 @@ export interface McpProviderOauthRecord {
   scopes: string[]
   clientId: string
   clientSource: McpOauthClientSource
+  /** RFC 9207: when true, an authorization response that omits `iss` must be rejected. */
+  issParameterSupported: boolean
   status: McpProviderOauthStatus
   connectedByUserId: string | null
   accessExpiresAt: Date | null
@@ -5853,6 +5855,7 @@ export interface PrepareMcpProviderOauthInput {
   scopes: string[]
   clientId: string
   clientSource: McpOauthClientSource
+  issParameterSupported: boolean
   sealedClientSecret?: string
 }
 

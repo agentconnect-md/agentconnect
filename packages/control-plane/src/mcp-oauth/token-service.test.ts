@@ -26,6 +26,7 @@ function record(over: Partial<McpProviderOauthRecord> = {}): McpProviderOauthRec
     scopes: ['files:read'],
     clientId: 'client-1',
     clientSource: 'dynamic',
+    issParameterSupported: true,
     status: 'connected',
     connectedByUserId: null,
     accessExpiresAt: new Date(NOW + 3600_000),

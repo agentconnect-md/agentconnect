@@ -42,6 +42,7 @@ const PREPARED: PrepareMcpProviderOauthInput = {
   scopes: ['files:read'],
   clientId: 'client-1',
   clientSource: 'dynamic',
+  issParameterSupported: true,
   sealedClientSecret: 'client-secret-1'
 }
 

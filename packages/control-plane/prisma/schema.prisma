@@ -3268,6 +3268,9 @@ model McpProviderOauth {
   scopes                String[]  @default([])
   clientId              String
   clientSource          String // preregistered | dynamic — what the console explains on failure
+  // RFC 9207 `authorization_response_iss_parameter_supported`, recorded from the validated
+  // metadata: it decides whether an authorization response that omits `iss` may be acted on.
+  issParameterSupported Boolean   @default(false)
   // pending (never authorized, or disconnected) | connected | reauth_required (the grant is
   // dead upstream and only a fresh authorization can repair it).
   status                String    @default("pending")

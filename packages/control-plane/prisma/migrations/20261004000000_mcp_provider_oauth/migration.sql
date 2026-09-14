@@ -16,6 +16,7 @@ CREATE TABLE "mcp_provider_oauth" (
     "scopes" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "clientId" TEXT NOT NULL,
     "clientSource" TEXT NOT NULL,
+    "issParameterSupported" BOOLEAN NOT NULL DEFAULT false,
     "status" TEXT NOT NULL DEFAULT 'pending',
     "connectedByUserId" TEXT,
     "accessExpiresAt" TIMESTAMPTZ(6),
