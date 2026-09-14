@@ -330,7 +330,13 @@ export const McpAppCard = z.object({
    */
   html: z.string().min(1).max(MCP_APP_HTML_MAX_BYTES).optional(),
   /** Set when the template is chunked: the assembled length in CHARACTERS, so the browser knows
-   *  when it has the whole document and can tell "still arriving" from "never arrived". */
+   *  when it has the whole document, and can distinguish a template still arriving from one that
+   *  never arrived at all.
+   *
+   *  (Worded to keep `from` away from a following quote on purpose: the daemon's
+   *  `scripts/assert-self-contained.mjs` scans the built bundle for import specifiers with a regex
+   *  that does not skip comments, so a comment placing that word directly before a quoted string
+   *  is read as a bare import and fails the build.) */
   htmlBytes: z.number().int().min(1).max(MCP_APP_HTML_MAX_BYTES).optional(),
   /** The call's arguments, handed to the view as `ui/notifications/tool-input`. */
   toolInput: z.record(z.string(), z.unknown()).optional(),
