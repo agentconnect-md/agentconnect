@@ -15,7 +15,8 @@ this chart is the production shape.
 The chart is published to GHCR as an OCI artifact on every AgentConnect release. The
 chart version tracks the release (`1.2.3`, `1.2.3-rc.4`), and `appVersion` is that
 release's image tag — so an install that sets no `image.tag` runs the release whose
-chart it picked.
+chart it picked. Release candidates, charts and images alike, may be pruned from GHCR
+after 14 days, so install a stable version.
 
 ```bash
 kubectl create namespace agentconnect

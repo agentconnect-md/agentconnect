@@ -1,0 +1,40 @@
+name: GHCR Cleanup
+
+# Prunes aged-out release candidates and unreferenced manifests from the packages this repository publishes.
+
+on:
+  schedule:
+    # Daily keeps each run within the GITHUB_TOKEN rate limit and the action's manifest cache warm.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+# The action is not safe to run twice against the same package.
+concurrency:
+  group: ghcr-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Prune GHCR packages
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Prune release candidates and unreferenced manifests
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          # prisma-cli is pushed by hand under the tag compose.yaml pins, so it is left out.
+          packages: control-plane,web,relay,daemon,memory-plugin-mem0,mem0-server,runtime-sandbox,runtime-sandbox-full,charts/agentconnect
+          use-regex: true
+          # Kept forever: stable releases, latest, build caches and the digest-pinned runtime bases; other tags age out.
+          exclude-tags: '^(v?\d+\.\d+\.\d+|latest|buildcache.*|base-.*)$'
+          # Every rule only sees versions older than this, so a release still pushing never loses a fresh manifest.
+          older-than: 14 days
+          # An alias tag keeps its build's original timestamp, so a component's current build can look old; keep the newest.
+          keep-n-tagged: 20
+          # Only unreferenced manifests: the action never selects a kept index's platform or attestation manifests.
+          delete-untagged: true
+          # Report-only until a logged deletion list has been reviewed.
+          dry-run: true
