@@ -1214,7 +1214,11 @@ and [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md) §7.7.
 
 On the ACP wire we are the CLIENT: the coding agent asks, and every chat surface renders the
 card. On the MCP wire the role is reversed — the daemon is the SERVER — so a tool that lacks
-information can ask the agent's OWN host (Claude Code, Codex), never a chat surface.
+information can ask the agent's OWN host (Claude Code, Codex) instead of guessing. The ROLE
+reverses; the renderer does not. Both harnesses we ship forward any MCP server's elicitation
+onto the ACP wire, ours included, so the ask comes back to the daemon that issued it and lands
+on the same card #1794 built — measured under our own reserved server name in
+[mcp-elicitation.md](mcp-elicitation.md) §5.6, which also records what that costs.
 
 `capabilities.elicitation` is a CLIENT capability and no server may declare it: the bridge's
 `{ capabilities: { tools: {} } }` is already correct. What the bridge does instead is READ the
@@ -1265,10 +1269,11 @@ it is a product question [product-conventions.md](../product-conventions.md) wou
 admit first; it is filed separately, and the send path raises no card. Search scope stays open.
 
 A third-party MCP server's own elicitation is a separate question and needs no work here: it
-already reaches our chat surfaces. Both harnesses we ship forward it onto the ACP wire, where
-`AcpHost` answers `client/elicitation/create` and the permission coordinator renders the same
-card #1794 built. It is distinguishable from Codex's MCP-tool approval by the frame itself —
-no `toolCallId`, no `_meta.codex_approval_kind`.
+already reaches our chat surfaces by the same route, where `AcpHost` answers
+`client/elicitation/create` and the permission coordinator renders the card. It is
+distinguishable from Codex's MCP-tool approval by the frame itself — no `toolCallId`, no
+`_meta.codex_approval_kind` — but NOT from our own bridge's ask: the forwarded frame carries no
+server identity at all, so nothing downstream may branch on which server asked.
 
 ---
 
