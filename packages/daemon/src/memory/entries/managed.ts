@@ -13,15 +13,18 @@ import {
   MAX_MEMORY_FILE_BYTES,
   MEMORY_DIRNAME,
   MEMORY_INDEX,
+  memoryNeighbors,
   memoryTopicName,
   withMemoryDirLock,
-  type MemoryFs
+  type MemoryFs,
+  type MemoryNeighbor
 } from '../store.js'
 import { parseMemoryFrontmatter } from '../frontmatter.js'
 import {
   MemoryEntriesError,
   type EntryCoordinate,
   type EntryDocument,
+  type EntryLink,
   type EntryPage,
   type EntrySearchPage,
   type EntrySummary,
@@ -77,7 +80,7 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
     exactEdit: false,
     exactCreate: false,
     enumeration: 'live',
-    graph: false,
+    graph: true,
     limits: { maxItemBytes: MAX_MEMORY_FILE_BYTES, maxPageItems: 100 }
   }
   readonly identity: string
@@ -122,7 +125,35 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
   }
 
   async get(coordinate: EntryCoordinate): Promise<EntryDocument | null> {
-    return this.lock(() => this.read(coordinate))
+    return this.lock(async () => {
+      const document = await this.read(coordinate)
+      if (!document) return null
+      const graph = await this.graph(coordinate.id)
+      return graph ? { ...document, ...graph } : document
+    })
+  }
+
+  // One hop of the [[name]] graph across the overlay; omitted, never truncated, beyond the scan budget.
+  private async graph(topic: string): Promise<Pick<EntryDocument, 'links' | 'backlinks'> | undefined> {
+    const inventory = await this.inventory()
+    if (
+      inventory.length > MAX_SNAPSHOT_ITEMS ||
+      inventory.reduce((sum, row) => sum + row.size, 0) > MAX_SNAPSHOT_READ_BYTES
+    )
+      return undefined
+    const layers = new Map(inventory.map((row) => [row.name, row.layer]))
+    const neighbors = await memoryNeighbors([...this.roots], topic)
+    const link = (neighbor: MemoryNeighbor): EntryLink => {
+      const layer = layers.get(neighbor.topic)
+      return {
+        label: neighbor.name,
+        exists: neighbor.exists,
+        ...(neighbor.exists && layer !== undefined
+          ? { coordinate: { partition: String(layer), id: neighbor.topic } }
+          : {})
+      }
+    }
+    return { links: neighbors.links.slice(0, 20).map(link), backlinks: neighbors.backlinks.slice(0, 20).map(link) }
   }
 
   // A bounded scan in topic order; exhausting the scan budget is reported, never hidden.

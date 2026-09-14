@@ -6,6 +6,7 @@ import {
   MemoryEntryCapabilities,
   MemoryEntryContent,
   MemoryEntryGetRequest,
+  MemoryEntryLink,
   MemoryEntryListRequest,
   MemoryEntryListResult,
   MemoryEntrySearchRequest,
@@ -19,6 +20,7 @@ import {
 import {
   MemoryEntriesError,
   type EntryCoordinate,
+  type EntryLink,
   type EntrySummary,
   type MemoryContinuationStore,
   type MemoryEntriesView
@@ -245,11 +247,18 @@ export class MemoryEntries {
         throw new MemoryEntriesError('CONFLICT', 'memory changed between content pages; read it again')
       const bytes = Buffer.from(document.text)
       const offset = prior?.offset ?? 0
+      const link = (edge: EntryLink): MemoryEntryLink => ({
+        label: preview(edge.label, 512),
+        exists: edge.exists,
+        ...(edge.coordinate ? { ref: this.tokens.ref(view.identity, edge.coordinate) } : {})
+      })
       const result: MemoryEntryContent = {
         entry: { ...this.summary(view, document.summary), ref: req.ref },
         text: '',
         complete: false,
-        ...(document.metadata ? { metadata: document.metadata } : {})
+        ...(document.metadata ? { metadata: document.metadata } : {}),
+        ...(document.links?.length ? { links: document.links.slice(0, 20).map(link) } : {}),
+        ...(document.backlinks?.length ? { backlinks: document.backlinks.slice(0, 20).map(link) } : {})
       }
       if (memoryJsonBytes(result) > MEMORY_ENTRY_FRAME_BYTES - CURSOR_RESERVE)
         throw new MemoryEntriesError('TOO_LARGE', 'memory metadata exceeds the response budget')

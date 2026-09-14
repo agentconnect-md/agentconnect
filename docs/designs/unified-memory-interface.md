@@ -587,3 +587,23 @@ negotiated `memory-entries-search-v1` feature; the Control Plane answers
 `UNSUPPORTED` for an older daemon without sending the frame, and read-only
 callers receive hits with editability removed. Legacy `searchMemory` and the
 record search route remain for warm sessions and older peers.
+
+### Managed graph annotations and console rendering
+
+Managed memory now advertises `graph: true`. A unified `get` annotates the
+entry with one hop of the existing `[[name]]` graph: `links` and `backlinks`
+carry the neighbor's display label, whether it exists, and a ref minted from the
+current authorized view for a target inside that view. Under channel scope the
+walk crosses both overlay layers, so an edge from a channel topic to a shared
+base topic resolves to the layer the overlay would actually serve. A dangling
+link keeps its label with `exists: false` and no ref. Annotations are never
+spliced into `text`, stay bounded to 20 per direction, and are omitted (not
+truncated) when the catalog exceeds the enumeration scan budget. Summaries and
+lists remain free of graph reads; external and native entries advertise no graph.
+
+The unified console reader renders `markdown` entries with the shared Markdown
+view used by the file preview, keeping the raw stored text, frontmatter
+included, as the editable draft; `text` entries stay in the plain block. Link
+and backlink annotations render as in-place actions, and a relative Markdown link
+opens a sibling only through a ref the read already annotated, never by guessing
+a ref or a file path.

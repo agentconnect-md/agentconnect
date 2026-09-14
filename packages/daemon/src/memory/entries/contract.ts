@@ -25,10 +25,18 @@ export interface EntryCoordinate {
 export interface EntrySummary extends Omit<MemoryEntrySummary, 'ref'> {
   coordinate: EntryCoordinate
 }
+// A read-side graph annotation; a target inside the view carries a coordinate, a dangling one only a label.
+export interface EntryLink {
+  label: string
+  coordinate?: EntryCoordinate
+  exists: boolean
+}
 export interface EntryDocument {
   summary: EntrySummary
   text: string
   metadata?: Record<string, unknown>
+  links?: EntryLink[]
+  backlinks?: EntryLink[]
 }
 export interface EntryPage {
   order: 'topic' | 'backend'

@@ -24,6 +24,23 @@ vi.mock('@/lib/api', () => {
     deleteAgentMemoryEntry: vi.fn()
   }
 })
+// The lazy Markdown view renders as a marked stub; its own behavior is covered by MarkdownView tests.
+vi.mock('next/dynamic', () => ({
+  default:
+    () =>
+    (props: {
+      content: string
+      resolveLink?: (href: string) => { kind: string; onActivate?: () => void } | undefined
+    }) => (
+      <div data-testid="markdown">
+        {props.content}
+        <button type="button" onClick={() => props.resolveLink?.('oncall.md')?.onActivate?.()}>
+          follow oncall.md
+        </button>
+        <span data-testid="stray">{props.resolveLink?.('stray.md')?.kind}</span>
+      </div>
+    )
+}))
 import * as api from '@/lib/api'
 import { UnifiedMemoryPanel } from './UnifiedMemoryPanel'
 const entry = {
@@ -233,4 +250,35 @@ it('searches only when advertised, shows what a hit can prove, and opens a hit l
   await click('Clear search')
   expect(host.textContent).toContain('Topic')
   expect(host.textContent).not.toContain('Deploy on Fridays')
+})
+it('renders Markdown entries with annotated links, follows only annotated targets, and keeps text entries raw', async () => {
+  vi.mocked(api.getAgentMemoryEntry).mockResolvedValue({
+    entry,
+    text: '# Deploy',
+    complete: true,
+    links: [
+      { label: 'oncall', ref: 'oncall-ref', exists: true },
+      { label: 'missing', exists: false }
+    ],
+    backlinks: [{ label: 'rota', ref: 'rota-ref', exists: true }]
+  })
+  await render()
+  await click('Topic')
+  expect(host.querySelector('[data-testid="markdown"]')?.textContent).toContain('# Deploy')
+  expect(host.querySelector('pre')).toBeNull()
+  expect(host.textContent).toContain('Links: oncall, missing (missing)')
+  expect(host.textContent).toContain('Backlinks: rota')
+  expect(host.querySelector('[data-testid="stray"]')?.textContent).toBe('blocked')
+  await click('rota')
+  expect(api.getAgentMemoryEntry).toHaveBeenLastCalledWith('agent', 'rota-ref', 'one', undefined)
+  await click('follow oncall.md')
+  expect(api.getAgentMemoryEntry).toHaveBeenLastCalledWith('agent', 'oncall-ref', 'one', undefined)
+  vi.mocked(api.getAgentMemoryEntry).mockResolvedValue({
+    entry: { ...entry, format: 'text' },
+    text: 'plain record',
+    complete: true
+  })
+  await click('Topic')
+  expect(host.querySelector('pre')?.textContent).toBe('plain record')
+  expect(host.querySelector('[data-testid="markdown"]')).toBeNull()
 })

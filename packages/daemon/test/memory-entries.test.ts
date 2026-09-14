@@ -663,3 +663,34 @@ describe('unified search', () => {
     })
   })
 })
+
+it('annotates managed reads with one hop of wiki links as refs, never spliced into the text', async () => {
+  const f = await fixture('managed', 0)
+  // The writer pins a header name to its topic slug, so links name slugs.
+  const deployText = '---\nname: deploy\ndescription: Release rules\n---\nSee [[oncall]] and [[missing]].\n'
+  await f.root.writeFile('memory/deploy.md', deployText)
+  await f.root.writeFile('memory/oncall.md', 'Page the [[deploy]] owner.\n')
+  await f.root.writeFile('channels/c1/memory/rota.md', 'Channel rota links to [[deploy]].\n')
+  expect((await f.api.describe()).graph).toBe(true)
+  const page = await f.api.list({ limit: 10 })
+  const deploy = page.entries.find((entry) => entry.label === 'deploy')!
+  const content = (await f.api.get({ ref: deploy.ref }))!
+  expect(content.text).toBe(deployText)
+  expect(content.links).toEqual([
+    { label: 'oncall', ref: expect.any(String), exists: true },
+    { label: 'missing', exists: false }
+  ])
+  expect(content.backlinks).toEqual([{ label: 'oncall', ref: expect.any(String), exists: true }])
+  expect(await f.api.get({ ref: content.links![0]!.ref! })).toMatchObject({ entry: { label: 'oncall' } })
+  await expect(f.api.get({ ref: content.links![0]!.ref!, agentId: 'x' })).rejects.toMatchObject({
+    code: 'INVALID_ARGUMENT'
+  })
+  // The channel view sees the overlay edge and mints refs into its own partition.
+  const overlay = await service(f.db, () => f.provider.entryView({ agentId: 'binding-1', channelKey: 'c1' }))
+  const base = (await overlay.list({ limit: 10 })).entries.find((entry) => entry.label === 'deploy')!
+  const viewed = (await overlay.get({ ref: base.ref }))!
+  expect(viewed.backlinks?.map((edge) => edge.label).sort()).toEqual(['oncall', 'rota'])
+  const rota = viewed.backlinks!.find((edge) => edge.label === 'rota')!
+  expect(await overlay.get({ ref: rota.ref! })).toMatchObject({ entry: { label: 'rota', origin: 'active' } })
+  await expect(f.api.get({ ref: rota.ref! })).rejects.toMatchObject({ code: 'STALE_BINDING' })
+})

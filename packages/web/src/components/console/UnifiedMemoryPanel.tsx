@@ -1,9 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import dynamic from 'next/dynamic'
 import type {
   MemoryEntryCapabilities,
   MemoryEntryContent,
+  MemoryEntryLink,
   MemoryEntrySearchHit,
   MemoryEntrySummary
 } from '@agentconnect.md/protocol'
@@ -19,6 +21,14 @@ import {
 } from '@/lib/api'
 import { readCompleteMemoryEntry } from '@/lib/memory-entry-content'
 import { Button } from '@/components/ui'
+import { memoryFileFromHref } from '@/components/console/memory-links'
+import { resolveFileBrowserMarkdownLink } from '@/components/console/file-browser-links'
+
+// Loaded lazily like the file preview so react-markdown never ships in the main console bundle.
+const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
+  ssr: false,
+  loading: () => <p className="text-(--text-tertiary)">Rendering…</p>
+})
 
 interface Props {
   agentId: string
@@ -42,6 +52,12 @@ function errorMessage(error: unknown) {
     if (error.status === 503) return 'Memory is temporarily unavailable. Try loading it again.'
   }
   return error instanceof Error ? error.message : 'Memory is unavailable.'
+}
+// A Markdown link opens a sibling only through a ref the read already annotated; refs are never guessed.
+function linkedRef(document: MemoryEntryContent, name: string): string | undefined {
+  const label = name.replace(/\.md$/, '')
+  return [...(document.links ?? []), ...(document.backlinks ?? [])].find((edge) => edge.ref && edge.label === label)
+    ?.ref
 }
 function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props) {
   const generation = useRef(0)
@@ -144,7 +160,7 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
       if (id === generation.current) setBusy(false)
     }
   }
-  async function open(entry: MemoryEntrySummary) {
+  async function open(entry: Pick<MemoryEntrySummary, 'ref'>) {
     const id = ++detailRequest.current
     setReading(true)
     setDocument(null)
@@ -424,9 +440,57 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
           ) : document ? (
             <>
               <h4 className="mt-0 break-words">{document.entry.label ?? 'Memory'}</h4>
-              <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-(--surface-sunken) p-3 font-mono text-[12px] leading-[1.5]">
-                {document.text}
-              </pre>
+              {document.entry.format === 'markdown' ? (
+                <div className="max-h-96 overflow-auto rounded-sm bg-(--surface-sunken) px-3 py-2">
+                  <MarkdownView
+                    content={document.text}
+                    resolveLink={(href) =>
+                      resolveFileBrowserMarkdownLink(
+                        href,
+                        (candidate) => {
+                          const name = memoryFileFromHref(candidate)
+                          const ref = name ? linkedRef(document, name) : undefined
+                          return name && ref ? { path: name, name, ref } : null
+                        },
+                        (target) => void open({ ref: target.ref })
+                      )
+                    }
+                  />
+                </div>
+              ) : (
+                <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-(--surface-sunken) p-3 font-mono text-[12px] leading-[1.5]">
+                  {document.text}
+                </pre>
+              )}
+              {(
+                [
+                  ['Links', document.links],
+                  ['Backlinks', document.backlinks]
+                ] as Array<[string, MemoryEntryLink[] | undefined]>
+              ).map(([title, edges]) =>
+                edges?.length ? (
+                  <p key={title} className="my-2 text-[12px]">
+                    <span className="font-semibold">{title}:</span>{' '}
+                    {edges.map((edge, index) => (
+                      <span key={`${edge.label}:${index}`}>
+                        {index > 0 ? ', ' : ''}
+                        {edge.ref ? (
+                          <button
+                            type="button"
+                            className="underline"
+                            disabled={saving || (!!mode && !blocked)}
+                            onClick={() => void open({ ref: edge.ref! })}
+                          >
+                            {edge.label}
+                          </button>
+                        ) : (
+                          <span className="text-(--text-tertiary)">{edge.label} (missing)</span>
+                        )}
+                      </span>
+                    ))}
+                  </p>
+                ) : null
+              )}
               <div className="flex flex-wrap gap-2">
                 {supports('update') && editable && (
                   <Button

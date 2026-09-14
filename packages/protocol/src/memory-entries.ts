@@ -76,6 +76,7 @@ export type MemoryEntryGetRequest = z.infer<typeof MemoryEntryGetRequest>
 export const MemoryEntryLink = z
   .object({ label: z.string().max(512), ref: MemoryEntryRef.optional(), exists: z.boolean() })
   .strict()
+export type MemoryEntryLink = z.infer<typeof MemoryEntryLink>
 export const MemoryEntryContent = z
   .object({
     entry: MemoryEntrySummary,
