@@ -178,6 +178,9 @@ export function connectorRoutes(deps: HttpDeps) {
             createdBy: provider.createdByUserId,
             canEdit: canEdit(provider, ctxOf(req)),
             canManageSharing: canManageSharing(provider, ctxOf(req)),
+            // An open-connector connection is never daemon-hosted: its tools are OpenAPI actions
+            // the relay synthesizes, not an MCP server that could ship a `ui://` interface.
+            ui: provider.ui,
             headerNames: headers.map((h) => h.name),
             createdAt: provider.createdAt.toISOString(),
             grantKey: grant.key

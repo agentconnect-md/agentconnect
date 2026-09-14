@@ -2602,7 +2602,9 @@ export class Daemon {
     // templates. Warmed without waiting — tool composition is synchronous, and a third party's
     // handshake must not be on the path of starting a session.
     this.appsHost = new McpAppsHost({
-      defs: () => this.mcpServerDefs,
+      // Org-scoped: daemon-local config overlaid with what the CP pushed for that organization,
+      // which is the same view `resolveAgentMcpServers` resolves against.
+      defs: (orgId) => this.cpMcpDefs?.effective(orgId) ?? this.mcpServerDefs,
       log: this.log,
       version: DAEMON_VERSION,
       resolveStdioCommand: (command, entries) =>
@@ -2612,7 +2614,9 @@ export class Daemon {
         })
     })
     this.appSurface = new AppSurface({ turnFor: (key) => this.appTurnFor(key), log: () => this.log })
-    this.appsHost.warm()
+    // CP definitions have not arrived at construction time (they land with register/ok), so only
+    // the daemon-local ones can be warmed here; `onMcpDefsChanged` warms the rest as they arrive.
+    this.appsHost.warm(undefined)
   }
 
   /** Phase 15 — the memory-plugin connection registry the pumps and sessions below bind to. */
@@ -3283,7 +3287,7 @@ export class Daemon {
         // see `_meta.ui` on the way back. `resolveAgentMcpServers` below skips the same servers,
         // so each of their tools has exactly one call path. Read from connections already up: a
         // server still dialing contributes to the next session rather than delaying this one.
-        tools.push(...this.appsHost.cachedToolsFor(agent.mcpServers))
+        tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), agent.mcpServers))
         // Bind the bridge token to the exact integration that delivered this turn.
         // Falling back to agent.integrations[0] can send a title/message through the
         // wrong bot when one agent has multiple integrations. A memory-only session
@@ -3317,7 +3321,7 @@ export class Daemon {
             // Withhold a `ui` server from the runtime only when this daemon really hosts it: the
             // Apps host reads daemon-local config, so a CP-pushed `ui` flag names a server nothing
             // would carry (webchat-mcp-apps.md §4).
-            hostsUiServer: (name) => this.appsHost.isUiServer(name),
+            hostsUiServer: (name) => this.appsHost.isUiServer(this.orgForAgent(agent.id), name),
             ...(this.agentRunsInSandbox(agent)
               ? {
                   resolveStdioCommand: (command: string, entries: { name: string; value: string }[]) =>
@@ -14106,8 +14110,9 @@ export class Daemon {
     args: Record<string, unknown>
   ): Promise<{ result: unknown } | undefined> {
     const split = splitAppToolName(name)
-    if (!split || !this.appsHost.isUiServer(split.server)) return undefined
-    const call = await this.appsHost.call(split.server, split.tool, args)
+    const orgId = this.orgForAgent(ctx.agentId)
+    if (!split || !this.appsHost.isUiServer(orgId, split.server)) return undefined
+    const call = await this.appsHost.call(orgId, split.server, split.tool, args)
     if (!call.card) {
       // A tool that declared an interface we could not produce is DECLINED out loud, on whatever
       // surface this turn has (webchat-mcp-apps.md §6/§7.4): the reader was going to be shown
@@ -14167,6 +14172,7 @@ export class Daemon {
         agentId: ctx.agentId,
         sessionKey: key,
         server: split.server,
+        ...(orgId ? { orgId } : {}),
         toolName: name,
         openedAt: Date.now(),
         stream: posted.stream,
@@ -14238,12 +14244,12 @@ export class Daemon {
           // The SERVER is the card's, always; the name is resolved against that server's own tool
           // list. A view calls its tool by the name its server gave it (`refresh`) and has no
           // business knowing the `<server>__<tool>` namespace an operator's config produced.
-          const tool = await this.appsHost.resolveViewTool(app.server, rpc.name)
+          const tool = await this.appsHost.resolveViewTool(app.orgId, app.server, rpc.name)
           if (tool === undefined) {
             answer({ ok: false, error: APP_RPC_REFUSALS.unknown_tool })
             return
           }
-          const call = await this.appsHost.callForView(app.server, tool, rpc.args ?? {})
+          const call = await this.appsHost.callForView(app.orgId, app.server, tool, rpc.args ?? {})
           // The RAW upstream result, structured content included: that payload is what the view
           // asked for and what it has to render, and the model's half of it would be no use here.
           answer({
@@ -14257,7 +14263,7 @@ export class Daemon {
           return
         }
         case 'resources/read':
-          answer({ ok: true, result: await this.appsHost.readResource(app.server, rpc.uri) })
+          answer({ ok: true, result: await this.appsHost.readResource(app.orgId, app.server, rpc.uri) })
           return
         case 'ui/message': {
           // The frame speaking into the conversation. It becomes the READER's turn, under the
@@ -19676,8 +19682,15 @@ export class Daemon {
     return Object.entries(this.mcpServerDefs).map(([name, def]) => ({ name, transport: def.transport }))
   }
 
+  /** The organization an agent belongs to — the scope its MCP definitions and its Apps-host
+   *  connections are resolved in. Undefined for a daemon with no CP, whose only definitions are
+   *  the local ones. */
+  private orgForAgent(agentId: string): string | undefined {
+    return this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+  }
+
   private mcpDefsForAgent(agentId: string): Record<string, import('./config/config-schema.js').McpServerDef> {
-    return this.cpMcpDefs?.effective(this.cpAgents?.orgForAgent(agentId)) ?? this.mcpServerDefs
+    return this.cpMcpDefs?.effective(this.orgForAgent(agentId)) ?? this.mcpServerDefs
   }
 
   /**
@@ -19687,6 +19700,10 @@ export class Daemon {
    */
   private onMcpDefsChanged(): void {
     this.runtimeFacts.emitFacts()
+    // A CP push is the only way a `ui: true` definition reaches this daemon, so it is also the
+    // moment its connection can first be opened. Warming per known org keeps the dial off the path
+    // of the next session's tool composition, which is synchronous.
+    for (const orgId of this.cpMcpDefs?.orgs() ?? []) this.appsHost.warm(orgId)
   }
 
   private externalMemoryAdmission(agentId: string): { assertReady(connectionId: string): void } {

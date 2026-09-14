@@ -150,6 +150,7 @@ function toDto(p: McpProviderRecord, ctx: ViewCtx, headers: McpHeader[]): McpPro
     ...(service ? { service } : {}),
     visibility: p.visibility,
     sharedWith: p.sharedWith,
+    ui: p.ui,
     createdBy: p.createdByUserId,
     canEdit: canEdit(p, ctx),
     canManageSharing: canManageSharing(p, ctx),
@@ -251,6 +252,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
             orgId: orgOf(req),
             name: req.body.name,
             url: req.body.url,
+            ...(req.body.ui !== undefined ? { ui: req.body.ui } : {}),
             ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
             ...(sharedWith ? { sharedWith } : {}),
             ...(req.principal ? { createdByUserId: req.principal.userId } : {})
@@ -311,11 +313,15 @@ export function mcpProviderRoutes(deps: HttpDeps) {
           if (blocked) return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: blocked })
         }
         // Name is immutable (see UpdateMcpProviderBody): agents bind by name and there's
-        // no atomic rename, so only the url may change the row here.
+        // no atomic rename, so only the url and the daemon-hosting flag may change the row here.
+        // The re-push below carries whichever changed, so a flipped `ui` converges on every owning
+        // daemon without a separate signal.
+        const patch = {
+          ...(req.body.url !== undefined ? { url: req.body.url } : {}),
+          ...(req.body.ui !== undefined ? { ui: req.body.ui } : {})
+        }
         const provider =
-          req.body.url !== undefined
-            ? await deps.repos.mcpProvider.update(orgOf(req), existing.id, { url: req.body.url })
-            : existing
+          Object.keys(patch).length > 0 ? await deps.repos.mcpProvider.update(orgOf(req), existing.id, patch) : existing
         if (req.body.headers !== undefined)
           await deps.repos.mcpProviderSecret.put(provider.orgId, provider.id, req.body.headers)
         const headers = req.body.headers ?? (await deps.repos.mcpProviderSecret.get(provider.orgId, provider.id)) ?? []

@@ -5680,6 +5680,10 @@ export interface McpProviderRecord extends Shareable {
   kind: McpProviderKind
   transport: McpTransport
   url: string
+  /** MCP Apps (docs/designs/webchat-mcp-apps.md §4): the owning daemon hosts this provider itself
+   *  rather than handing it to the runtime, so it can advertise the UI extension, read the
+   *  server's `ui://` templates and render them in webchat. */
+  ui: boolean
   createdByUserId: string | null
   createdAt: Date
   updatedAt: Date
@@ -5691,6 +5695,7 @@ export interface CreateMcpProviderInput {
   url: string
   kind?: McpProviderKind // default 'custom'
   transport?: McpTransport // default 'http'
+  ui?: boolean // default false — runtime-attached, which is what every provider was before the flag
   visibility?: ResourceVisibility // default 'org'
   sharedWith?: string[] // complete app_user.id audience when visibility='restricted'
   createdByUserId?: string
@@ -5700,6 +5705,9 @@ export interface UpdateMcpProviderInput {
   name?: string
   url?: string
   transport?: McpTransport
+  /** Flipping this re-homes the provider: hosted by the daemon instead of attached to the runtime,
+   *  which also renames its tools. The definition is re-pushed so every owning daemon converges. */
+  ui?: boolean
 }
 
 export interface McpProviderRepo {

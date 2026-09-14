@@ -78,6 +78,17 @@ describe('mcpProxyDef', () => {
     'https://relay.example.com'
   )
 
+  it('carries the daemon-hosting flag only when the provider sets it', () => {
+    const grant = { key: 'oct_secret', createdAt: new Date(1_700_000_000_000) }
+    const hosted = mcpProxyDef({ ...provider, ui: true }, grant, 'https://relay.example.com')
+    expect(hosted.ui).toBe(true)
+    expect(() => McpServerSpec.parse(hosted)).not.toThrow()
+    // Absent rather than `false` on an ordinary provider: its definition stays byte-identical to
+    // what it was before the flag existed, so nothing downstream re-orders or re-versions.
+    expect('ui' in def).toBe(false)
+    expect(McpServerSpec.parse(def).ui).toBeUndefined()
+  })
+
   it('orders itself by the instant its grant was issued', () => {
     expect(def.issuedAt).toBe(1_700_000_000_000)
   })

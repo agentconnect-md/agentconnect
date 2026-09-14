@@ -31,6 +31,11 @@ export interface LiveApp {
    *  a `tools/call` naming anything else is refused, which is what keeps one app's frame from
    *  driving another server's tools. */
   readonly server: string
+  /** The organization the card's server was resolved in. Held because a server NAME alone does not
+   *  identify a connection: a CP-pushed definition is org-scoped, so two organizations may each
+   *  have a `charts` pointing at different proxies under different grants. Without this a view's
+   *  forwarded call could reach the other org's connection. */
+  readonly orgId?: string
   /** The tool that opened the card, namespaced as the bridge exposes it. */
   readonly toolName: string
   /** When the card was opened, for the call budget below. */

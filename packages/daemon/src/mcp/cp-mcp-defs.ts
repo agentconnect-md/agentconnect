@@ -78,6 +78,12 @@ export class CpMcpDefs {
     return { ...this.local, ...Object.fromEntries([...scoped].map(([name, entry]) => [name, entry.def])) }
   }
 
+  /** Every organization this daemon currently holds CP definitions for — what the Apps host warms
+   *  over when a push lands, since a CP definition's connection cannot be opened before it exists. */
+  orgs(): string[] {
+    return [...this.cp.keys()]
+  }
+
   localDefinitions(): Record<string, McpServerDef> {
     return { ...this.local }
   }

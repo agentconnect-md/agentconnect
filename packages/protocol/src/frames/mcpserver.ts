@@ -48,7 +48,22 @@ export const McpServerSpec = z
     args: z.array(z.string()).default([]),
     env: NameValueList,
     url: z.string().optional(),
-    headers: NameValueList
+    headers: NameValueList,
+    /**
+     * MCP Apps (webchat-mcp-apps.md §4): this server is hosted by the DAEMON rather than attached
+     * to the runtime, so the daemon can advertise the `io.modelcontextprotocol/ui` extension, read
+     * the server's `ui://` templates, and render them in webchat.
+     *
+     * Explicit rather than probed, and it has to be: the flag decides whether the daemon connects
+     * at ALL, while detecting whether an upstream ships interfaces requires having connected and
+     * listed its tools. The probe cannot precede the decision it would inform. Flipping it also
+     * renames the server's tools (`<server>__<tool>`) and moves who owns the connection, neither
+     * of which may happen silently.
+     *
+     * Optional so a CP predating it pushes definitions that decode unchanged, and absent reads as
+     * `false` — the runtime-attached behavior every existing definition already has.
+     */
+    ui: z.boolean().optional()
   })
   .superRefine((def, ctx) => {
     if (def.transport === 'stdio' && !def.command)

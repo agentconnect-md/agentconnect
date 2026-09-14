@@ -10,6 +10,7 @@ const provider: McpProviderRecord = {
   name: 'linear',
   kind: 'custom',
   transport: 'http',
+  ui: false,
   url: 'https://mcp.linear.app/sse',
   visibility: 'org',
   sharedWith: [],

@@ -968,6 +968,10 @@ export const CreateMcpProviderBody = z
       .refine((n) => n !== RESERVED_MCP_SERVER_NAME, { message: `"${RESERVED_MCP_SERVER_NAME}" is reserved` }),
     url: z.string().min(1),
     transport: z.enum(['http', 'sse']).optional(), // v1: http only (route rejects sse)
+    // MCP Apps (webchat-mcp-apps.md §4): host this provider on the DAEMON rather than attaching it
+    // to the runtime, so its `ui://` interfaces render in webchat. Absent ⇒ false, which is what
+    // every provider was before the flag existed.
+    ui: z.boolean().optional(),
     // Initial console visibility (absent ⇒ 'org', visible to all members); `sharedWith`
     // is intersected with current org members and only meaningful when 'restricted'.
     visibility: ResourceVisibilityEnum.optional(),
@@ -984,10 +988,13 @@ export const CreateMcpProviderBody = z
 export const UpdateMcpProviderBody = z
   .object({
     url: z.string().min(1).optional(),
-    headers: z.array(McpHeaderBody).max(50).optional()
+    headers: z.array(McpHeaderBody).max(50).optional(),
+    // Re-homes the provider: hosted by the daemon rather than attached to the runtime. Also renames
+    // its tools (`<server>__<tool>`), which is why it is set deliberately and never inferred.
+    ui: z.boolean().optional()
   })
   .strict()
-  .refine((b) => b.url !== undefined || b.headers !== undefined, {
+  .refine((b) => b.url !== undefined || b.headers !== undefined || b.ui !== undefined, {
     message: 'no fields to update'
   })
 
@@ -1004,6 +1011,10 @@ export const McpProviderDto = z.object({
   service: z.string().optional(),
   visibility: z.string(), // 'org' | 'restricted'
   sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
+  // MCP Apps (webchat-mcp-apps.md §4): the owning daemon hosts this provider itself so it can
+  // render the server's `ui://` interfaces in webchat. Explicit rather than probed — see the
+  // wire field's own note; flipping it also renames the provider's tools.
+  ui: z.boolean(),
   createdBy: z.string().nullable(), // immutable creator audit; null when unknown
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
   canManageSharing: z.boolean(), // whether THIS caller may change the provider's sharing

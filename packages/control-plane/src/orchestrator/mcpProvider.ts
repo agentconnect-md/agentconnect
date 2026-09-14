@@ -23,6 +23,9 @@ interface ProviderView {
   orgId: string
   name: string
   url: string
+  /** Daemon-hosted (MCP Apps, webchat-mcp-apps.md §4). Carried through to the pushed definition so
+   *  the owning daemon connects to the proxy itself instead of handing it to the runtime. */
+  ui?: boolean
 }
 
 /**
@@ -109,7 +112,10 @@ export function mcpProxyDef(provider: ProviderView, grant: GrantView, relayBaseU
     url: `${relayBaseUrl}/mcp/${provider.id}`,
     headers: [{ name: 'Authorization', value: `Bearer ${grant.key}` }],
     args: [],
-    env: []
+    env: [],
+    // Emitted only when set, so a definition for an ordinary provider is byte-identical to what it
+    // was before this flag existed and cannot re-order or re-version anything downstream.
+    ...(provider.ui ? { ui: true } : {})
   }
 }
 

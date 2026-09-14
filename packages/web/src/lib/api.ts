@@ -4757,6 +4757,9 @@ export interface McpProviderDto {
   canEdit: boolean // whether THIS caller may change non-sharing provider settings
   canManageSharing: boolean // whether THIS caller may change the provider's sharing
   url: string
+  /** MCP Apps: the owning daemon hosts this provider itself so it can render the server's
+   *  `ui://` interfaces in webchat, instead of handing it to the runtime. */
+  ui: boolean
   /** Upstream auth header keys; values are secret and never returned. */
   headerNames: string[]
   createdAt: string // ISO-8601
@@ -4779,6 +4782,8 @@ export interface CreateMcpProviderInput {
   name: string
   url: string
   headers: McpHeaderInput[]
+  /** Host this provider on the daemon so its `ui://` interfaces render in webchat. Absent ⇒ false. */
+  ui?: boolean
   // Initial visibility; absent ⇒ 'org'. `sharedWith` only bites when 'restricted'.
   visibility?: ResourceVisibility
   sharedWith?: string[]
@@ -4790,6 +4795,9 @@ export interface CreateMcpProviderInput {
 export interface UpdateMcpProviderInput {
   url?: string
   headers?: McpHeaderInput[]
+  /** Re-homes the provider: hosted by the daemon rather than attached to the runtime. Also renames
+   *  its tools, so it is a deliberate change rather than something inferred. */
+  ui?: boolean
 }
 
 export async function fetchMcpProviders(orgId?: string): Promise<McpProviderDto[]> {

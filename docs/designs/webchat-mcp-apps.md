@@ -105,10 +105,16 @@ A server definition gains one optional flag (`daemon/src/config/config-schema.ts
 }
 ```
 
-`ui: true` moves the server from **runtime-attached** to **daemon-hosted**. It is
-opt-in rather than probed, and deliberately so: hosting a server daemon-side changes
-who holds its transport credentials and who its tool calls are attributed to, which is
-an operator decision, not an autodetection. `resolveAgentMcpServers` therefore skips a
+`ui: true` moves the server from **runtime-attached** to **daemon-hosted**. It is set
+explicitly rather than probed, and the reason is not that detection is impossible — a
+daemon could dial a provider once and read `_meta.ui` off its tool list. It is that the
+flag decides **who connects**, and connecting is what renames the server's tools to
+`<server>__<tool>`. Detection would let an upstream's later change silently re-home a
+server and rename its tools underneath an agent whose prompt names them.
+
+Detection still has a place, and it is the natural follow-up: probe at registration,
+offer the result as the field's DEFAULT, and keep the stored value authoritative. That
+design needs this column either way — it is what stops the decision moving on its own. `resolveAgentMcpServers` therefore skips a
 `ui` server (it must not be handed to the runtime as well, or its tools would be
 callable on two paths with only one of them rendering), and the daemon's own
 `listTools` merges it in.
@@ -117,10 +123,32 @@ Tool names are namespaced `<server>__<tool>` on the bridge, so a UI server canno
 shadow a daemon-native tool, and a name collision between two UI servers is impossible
 rather than last-one-wins.
 
-**Daemon-local definitions only, in v1.** `mcpDefsForAgent` overlays CP-pushed
-definitions per organization, so hosting one would mean a connection per organization
-and a credential boundary between them. Until that exists, a `ui` server must be
-configured on the daemon that hosts it; a CP-pushed `ui` flag is simply not read.
+**Daemon-local and CP-pushed definitions both.** A CP-managed provider carries the same
+flag (`mcp_provider.ui`, projected onto `McpServerSpec.ui`), so an organization can turn
+a provider into a rendered one from the console.
+
+The earlier revision of this section claimed CP definitions were withheld partly because
+hosting one would move a **credential boundary**. That was wrong and is corrected here: a
+CP provider is pushed as a _relay proxy_ def — `url` points at the relay, `headers` carry
+a scoped grant key, and the upstream url and upstream secrets never leave the relay. The
+daemon already holds that grant key today, because it hands it to the runtime. Hosting the
+provider itself exposes nothing new.
+
+What was real is that a CP definition is **org-scoped**, so a connection may not be keyed
+by server name alone: two organizations can each have a `charts` pointing at different
+proxies under different grants, and one map keyed by name would let one org's connection
+answer the other's calls. Connections are therefore keyed by `(orgId, name)`, and every
+host method takes the org the call was resolved in — including the view bridge, which
+reads it off the card (`LiveApp.orgId`).
+
+Two consequences of the org scope worth stating:
+
+- Definitions arrive with `register/ok`, not at construction, so only daemon-local servers
+  can be warmed at startup. `onMcpDefsChanged` warms the rest as they land, keeping the
+  dial off the path of the next session's (synchronous) tool composition.
+- The relay proxy forwards JSON-RPC **verbatim, with no method allowlist**, so
+  `resources/read`, the `initialize` extension negotiation and `_meta.ui` all pass through
+  unchanged. Nothing about MCP Apps needed a relay change.
 
 Connections are dialed at startup and not waited on. Tool composition is synchronous,
 so a session takes the tools of whichever UI servers have connected by then — a server

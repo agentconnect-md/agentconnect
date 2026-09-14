@@ -42,6 +42,7 @@ function toProviderRecord(p: McpProvider): McpProviderRecord {
     kind: p.kind as McpProviderKind,
     transport: p.transport as McpTransport,
     url: p.url,
+    ui: p.ui,
     visibility: p.visibility as ResourceVisibility,
     sharedWith: p.sharedWith,
     createdByUserId: p.createdByUserId,
@@ -68,6 +69,7 @@ export class PgMcpProviderRepo implements McpProviderRepo {
           url: input.url,
           ...(input.kind ? { kind: input.kind } : {}),
           ...(input.transport ? { transport: input.transport } : {}),
+          ...(input.ui !== undefined ? { ui: input.ui } : {}),
           ...(input.visibility ? { visibility: input.visibility } : {}),
           ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
           ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
@@ -133,7 +135,8 @@ export class PgMcpProviderRepo implements McpProviderRepo {
       data: {
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.url !== undefined ? { url: patch.url } : {}),
-        ...(patch.transport !== undefined ? { transport: patch.transport } : {})
+        ...(patch.transport !== undefined ? { transport: patch.transport } : {}),
+        ...(patch.ui !== undefined ? { ui: patch.ui } : {})
       }
     })
     return toProviderRecord(p)

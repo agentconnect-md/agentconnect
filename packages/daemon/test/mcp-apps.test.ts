@@ -23,7 +23,8 @@ import {
   type AppStream,
   type AppTurn
 } from '../src/mcp/apps/surface.js'
-import { splitAppToolName } from '../src/mcp/apps/host.js'
+import { McpAppsHost, splitAppToolName } from '../src/mcp/apps/host.js'
+import type { McpServerDef } from '../src/config/config-schema.js'
 import {
   appCsp,
   appDimensions,
@@ -165,6 +166,36 @@ describe('resolveAgentMcpServers — a daemon-hosted server is not handed to the
     const servers = resolveAgentMcpServers({ enabled: ['charts'], defs: DEFS, warn })
     expect(servers.map((s) => s.name)).toEqual(['charts'])
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('without its interface'))
+  })
+})
+
+describe('McpAppsHost — org scoping of CP-pushed definitions', () => {
+  const log = () => ({ warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() }) as never
+  const defsByOrg: Record<string, Record<string, McpServerDef>> = {
+    'org-a': {
+      charts: { transport: 'http', url: 'https://a.example.test/mcp', args: [], env: [], headers: [], ui: true }
+    },
+    'org-b': { charts: { transport: 'http', url: 'https://b.example.test/mcp', args: [], env: [], headers: [] } }
+  }
+  const host = new McpAppsHost({
+    defs: (orgId) => (orgId ? (defsByOrg[orgId] ?? {}) : {}),
+    log: { warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() } as never
+  })
+
+  it('reads the SAME name differently per organization', () => {
+    // The case a daemon-wide map could not represent: one org hosts `charts`, the other attaches
+    // it to the runtime, and both are correct.
+    expect(host.isUiServer('org-a', 'charts')).toBe(true)
+    expect(host.isUiServer('org-b', 'charts')).toBe(false)
+    expect(host.uiServers('org-a')).toEqual(['charts'])
+    expect(host.uiServers('org-b')).toEqual([])
+  })
+
+  it('offers a hosted server only to the org that has it, and none to a daemon with no CP', () => {
+    expect(host.cachedToolsFor('org-b', ['charts'])).toEqual([])
+    // Undefined org = daemon-local only, which here has nothing.
+    expect(host.isUiServer(undefined, 'charts')).toBe(false)
+    expect(host.uiServers(undefined)).toEqual([])
   })
 })
 

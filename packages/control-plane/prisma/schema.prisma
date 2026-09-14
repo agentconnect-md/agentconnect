@@ -3186,6 +3186,11 @@ model McpProvider {
   // already enabled a provider keeps reaching it regardless (never crosses the wire).
   visibility      ResourceVisibility @default(org)
   sharedWith      String[]           @default([]) // complete app_user.id audience when visibility='restricted'
+  // MCP Apps (docs/designs/webchat-mcp-apps.md §4): the owning daemon hosts this provider itself
+  // instead of handing it to the runtime, so it can advertise the UI extension, read the server's
+  // `ui://` templates and render them in webchat. Explicit rather than probed — the flag decides
+  // whether the daemon connects at all, and detecting interfaces requires having connected.
+  ui              Boolean            @default(false)
   createdByUserId String?
   createdAt       DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime           @updatedAt @db.Timestamptz(6)

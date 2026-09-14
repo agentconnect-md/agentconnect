@@ -108,18 +108,28 @@ export interface AppToolCall {
 }
 
 export interface McpAppsHostDeps {
-  /** The daemon's configured servers, already validated — read through a function so a config
-   *  reload is picked up without rebuilding the host. Only `ui` ones are ever dialed.
+  /**
+   * The servers visible to ONE ORGANIZATION — daemon-local config overlaid with whatever the CP
+   * pushed for that org — read through a function so a config reload or a CP push is picked up
+   * without rebuilding the host. Only `ui` ones are ever dialed.
    *
-   *  DAEMON-LOCAL definitions only, in v1. A CP-pushed definition is org-scoped, so hosting one
-   *  would mean a connection per organization and a credential boundary between them; until that
-   *  exists, a `ui` server must be configured on the daemon that hosts it. */
-  defs: () => Record<string, McpServerDef>
+   * Org-scoped rather than daemon-wide because a CP definition is: two organizations may each
+   * have a server named `charts` pointing at different relay proxies under different grants, and a
+   * single map keyed by name alone would let one org's connection answer the other's calls.
+   * `undefined` is the daemon-local-only view, which is what a session with no CP org has.
+   */
+  defs: (orgId: string | undefined) => Record<string, McpServerDef>
   log?: Logger
   /** The host's own version, sent as client info. */
   version?: string
   /** Normalize a trusted stdio command the way runtime launches do (sandbox path rewriting). */
   resolveStdioCommand?: (command: string, env: McpServerDef['env']) => string
+}
+
+/** The key one connection is held under: an org and a server name together, never a name alone.
+ *  `\0` cannot occur in either half, so the pair cannot be spelled two ways. */
+function connKey(orgId: string | undefined, server: string): string {
+  return `${orgId ?? ''}\u0000${server}`
 }
 
 /** One live upstream connection, or the reason there isn't one. */
@@ -135,17 +145,18 @@ export class McpAppsHost {
 
   constructor(private readonly deps: McpAppsHostDeps) {}
 
-  /** The configured servers that are daemon-hosted rather than runtime-attached. */
-  uiServers(): string[] {
-    return Object.entries(this.deps.defs())
+  /** The servers one organization has that are daemon-hosted rather than runtime-attached. */
+  uiServers(orgId: string | undefined): string[] {
+    return Object.entries(this.deps.defs(orgId))
       .filter(([, def]) => def.ui === true)
       .map(([name]) => name)
   }
 
-  /** Whether one configured name is a daemon-hosted UI server — what `resolveAgentMcpServers`
-   *  asks so it never hands the same server to the runtime as well. */
-  isUiServer(name: string): boolean {
-    return this.deps.defs()[name]?.ui === true
+  /** Whether one name is a daemon-hosted UI server FOR THIS ORG — what `resolveAgentMcpServers`
+   *  asks so it never hands the same server to the runtime as well. The org matters: the same
+   *  name can be an ordinary server in one organization and a hosted one in another. */
+  isUiServer(orgId: string | undefined, name: string): boolean {
+    return this.deps.defs(orgId)[name]?.ui === true
   }
 
   /**
@@ -154,8 +165,8 @@ export class McpAppsHost {
    * {@link cachedToolsFor} answers from whatever has connected by then, and a server that comes up
    * late contributes its tools to the next session rather than delaying this one.
    */
-  warm(): void {
-    for (const name of this.uiServers()) void this.connect(name)
+  warm(orgId: string | undefined): void {
+    for (const name of this.uiServers(orgId)) void this.connect(orgId, name)
   }
 
   /**
@@ -164,11 +175,11 @@ export class McpAppsHost {
    * one that is down, contributes nothing; the warn from {@link dial} is where the reason is said,
    * so this never fails a session for a third party being slow.
    */
-  cachedToolsFor(enabled: readonly string[]): ToolDescriptor[] {
+  cachedToolsFor(orgId: string | undefined, enabled: readonly string[]): ToolDescriptor[] {
     const out: ToolDescriptor[] = []
     for (const name of enabled) {
-      const conn = this.conns.get(name)
-      if (!conn || !this.isUiServer(name)) continue
+      const conn = this.conns.get(connKey(orgId, name))
+      if (!conn || !this.isUiServer(orgId, name)) continue
       for (const tool of conn.tools.values()) out.push(tool.descriptor)
     }
     return out
@@ -178,11 +189,11 @@ export class McpAppsHost {
    * The bridge-visible descriptors for the UI servers this agent enabled, dialing what is not up
    * yet. The awaiting peer of {@link cachedToolsFor}, for a caller that can afford to wait.
    */
-  async toolsFor(enabled: readonly string[]): Promise<ToolDescriptor[]> {
+  async toolsFor(orgId: string | undefined, enabled: readonly string[]): Promise<ToolDescriptor[]> {
     const out: ToolDescriptor[] = []
     for (const name of enabled) {
-      if (!this.isUiServer(name)) continue
-      const conn = await this.connect(name)
+      if (!this.isUiServer(orgId, name)) continue
+      const conn = await this.connect(orgId, name)
       if (!conn) continue
       for (const tool of conn.tools.values()) out.push(tool.descriptor)
     }
@@ -197,8 +208,13 @@ export class McpAppsHost {
    * leaves a perfectly good tool result, and a reader who is never shown a frame leaves an agent
    * that still has words to answer with (§6).
    */
-  async call(server: string, tool: string, args: Record<string, unknown>): Promise<AppToolCall> {
-    const conn = await this.connect(server)
+  async call(
+    orgId: string | undefined,
+    server: string,
+    tool: string,
+    args: Record<string, unknown>
+  ): Promise<AppToolCall> {
+    const conn = await this.connect(orgId, server)
     if (!conn) throw new Error(`MCP server "${server}" is not reachable`)
     const upstream = conn.tools.get(tool)
     if (!upstream) throw new Error(`MCP server "${server}" does not expose a tool named "${tool}"`)
@@ -217,7 +233,7 @@ export class McpAppsHost {
 
     const title = upstream.title ?? tool
     if (!upstream.templateUri || isError) return { content, isError, title }
-    const template = await this.template(server, upstream.templateUri)
+    const template = await this.template(orgId, server, upstream.templateUri)
     if (!template) {
       this.deps.log?.warn(
         `mcp apps: tool "${server}${APP_TOOL_SEPARATOR}${tool}" declares ${upstream.templateUri} but its template could not be read — declining it`
@@ -260,8 +276,8 @@ export class McpAppsHost {
    * cross-server call impossible rather than merely detected — a name like `secrets__read` is
    * looked up on this card's server, does not exist there, and is refused.
    */
-  async resolveViewTool(server: string, name: string): Promise<string | undefined> {
-    const conn = await this.connect(server)
+  async resolveViewTool(orgId: string | undefined, server: string, name: string): Promise<string | undefined> {
+    const conn = await this.connect(orgId, server)
     if (!conn) return undefined
     if (conn.tools.has(name)) return name
     const prefix = `${server}${APP_TOOL_SEPARATOR}`
@@ -280,11 +296,12 @@ export class McpAppsHost {
    * back instead leaves the interface with nothing to render.
    */
   async callForView(
+    orgId: string | undefined,
     server: string,
     tool: string,
     args: Record<string, unknown>
   ): Promise<{ content: unknown[]; structuredContent?: Record<string, unknown>; isError: boolean }> {
-    const conn = await this.connect(server)
+    const conn = await this.connect(orgId, server)
     if (!conn) throw new Error(`MCP server "${server}" is not reachable`)
     if (!conn.tools.has(tool)) throw new Error(`MCP server "${server}" does not expose a tool named "${tool}"`)
     const raw = (await conn.client.callTool(
@@ -299,16 +316,16 @@ export class McpAppsHost {
   }
 
   /** Serve a view's `resources/read`, restricted to the card's own server. */
-  async readResource(server: string, uri: string): Promise<unknown> {
-    const conn = await this.connect(server)
+  async readResource(orgId: string | undefined, server: string, uri: string): Promise<unknown> {
+    const conn = await this.connect(orgId, server)
     if (!conn) throw new Error(`MCP server "${server}" is not reachable`)
     return await conn.client.readResource({ uri }, { timeout: READ_TIMEOUT_MS, maxTotalTimeout: READ_TIMEOUT_MS })
   }
 
   /** Whether a tool of this server declares an interface — what the decline path asks before it
    *  bothers a reader with a notice about a frame they were never going to see. */
-  async declaresInterface(server: string, tool: string): Promise<boolean> {
-    const conn = await this.connect(server)
+  async declaresInterface(orgId: string | undefined, server: string, tool: string): Promise<boolean> {
+    const conn = await this.connect(orgId, server)
     return conn?.tools.get(tool)?.templateUri !== undefined
   }
 
@@ -324,8 +341,8 @@ export class McpAppsHost {
   /** Read one template, cached. Undefined when the read failed, returned something that is not a
    *  single `text/html;profile=mcp-app` document, or exceeded the byte cap — which is DECLINED
    *  rather than truncated, because half a document renders as a broken page (§7.4). */
-  private async template(server: string, uri: string): Promise<Template | undefined> {
-    const conn = await this.connect(server)
+  private async template(orgId: string | undefined, server: string, uri: string): Promise<Template | undefined> {
+    const conn = await this.connect(orgId, server)
     if (!conn) return undefined
     const cached = conn.templates.get(uri)
     if (cached) return cached
@@ -356,18 +373,19 @@ export class McpAppsHost {
   }
 
   /** Dial one configured UI server, at most once concurrently. */
-  private async connect(server: string): Promise<Conn | undefined> {
-    const existing = this.conns.get(server)
+  private async connect(orgId: string | undefined, server: string): Promise<Conn | undefined> {
+    const key = connKey(orgId, server)
+    const existing = this.conns.get(key)
     if (existing) return existing
-    const inflight = this.dialing.get(server)
+    const inflight = this.dialing.get(key)
     if (inflight) return await inflight
-    const attempt = this.dial(server).finally(() => this.dialing.delete(server))
-    this.dialing.set(server, attempt)
+    const attempt = this.dial(orgId, server).finally(() => this.dialing.delete(key))
+    this.dialing.set(key, attempt)
     return await attempt
   }
 
-  private async dial(server: string): Promise<Conn | undefined> {
-    const def = this.deps.defs()[server]
+  private async dial(orgId: string | undefined, server: string): Promise<Conn | undefined> {
+    const def = this.deps.defs(orgId)[server]
     if (!def || def.ui !== true) return undefined
     let client: Client | undefined
     try {
@@ -410,7 +428,7 @@ export class McpAppsHost {
           raw: tool
         })
       }
-      this.conns.set(server, conn)
+      this.conns.set(connKey(orgId, server), conn)
       const withUi = [...conn.tools.values()].filter((t) => t.templateUri).length
       this.deps.log?.info(`mcp apps: hosting "${server}" — ${conn.tools.size} tools, ${withUi} with an interface`)
       return conn

@@ -16,6 +16,7 @@
 
 import { useRef, useState } from 'react'
 import useSWR from 'swr'
+import { CompactToggleField } from '@/components/console/CompactToggleField'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import {
@@ -301,6 +302,26 @@ function HeadersEditor({
   )
 }
 
+/**
+ * The daemon-hosting toggle (docs/designs/webchat-mcp-apps.md §4).
+ *
+ * Explicit rather than detected, and the wording says why in the reader's terms: turning it on
+ * moves who connects to this server, and with it the names its tools are called by. The console
+ * cannot detect the answer either — only the daemon learns whether an upstream ships interfaces,
+ * and only once it has connected, which is the very thing this decides.
+ */
+function McpAppsField({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <CompactToggleField
+      label="Interactive interfaces"
+      checked={checked}
+      onChange={onChange}
+      status={checked ? 'Rendered in chat' : 'Off'}
+      detail="Let this server show interactive interfaces in the web console. The daemon connects to it directly instead of the agent runtime, and its tools are renamed to server__tool."
+    />
+  )
+}
+
 // Drop blank rows and shape into the API's header input list.
 function cleanHeaders(rows: HeaderRow[]): McpHeaderInput[] {
   return rows.filter((r) => r.name.trim() && r.value.length > 0).map((r) => ({ name: r.name.trim(), value: r.value }))
@@ -323,6 +344,7 @@ export function CreateMcpProviderModal({
   const [url, setUrl] = useState('')
   const [headers, setHeaders] = useState<HeaderRow[]>([{ name: '', value: '' }])
   const [sharing, setSharing] = useState<SharingValue>({ visibility: 'org', sharedWith: [] })
+  const [ui, setUi] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -337,6 +359,7 @@ export function CreateMcpProviderModal({
         name: name.trim(),
         url: url.trim(),
         headers: cleanHeaders(headers),
+        ...(ui ? { ui: true } : {}),
         // Atomic restricted-create: the CP intersects sharedWith with org members.
         ...(sharing.visibility === 'restricted'
           ? { visibility: 'restricted' as const, sharedWith: sharing.sharedWith }
@@ -388,6 +411,7 @@ export function CreateMcpProviderModal({
             </span>
           </div>
           <HeadersEditor rows={headers} onChange={setHeaders} />
+          <McpAppsField checked={ui} onChange={setUi} />
           <VisibilityField value={sharing} onChange={setSharing} />
         </div>
         {err && <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}

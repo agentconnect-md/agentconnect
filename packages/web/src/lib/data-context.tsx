@@ -670,6 +670,7 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     canManageSharing: true,
     url: 'https://mcp.example.test/grafana/sse',
     headerNames: ['Authorization'],
+    ui: false,
     createdAt: '2026-07-14T00:00:00Z'
   },
   {
@@ -685,6 +686,7 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     canManageSharing: true,
     url: 'https://connectors.example.test/mcp',
     headerNames: ['x-oomol-connector-id'],
+    ui: false,
     createdAt: '2026-07-16T00:00:00Z'
   },
   {
@@ -700,6 +702,7 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     canManageSharing: true,
     url: 'https://connectors.example.test/mcp',
     headerNames: ['x-oomol-connector-id'],
+    ui: false,
     createdAt: '2026-07-18T00:00:00Z'
   },
   {
@@ -714,6 +717,7 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     canManageSharing: true,
     url: 'https://mcp.example.test/deepseek',
     headerNames: [],
+    ui: false,
     createdAt: '2026-07-16T00:00:00Z'
   }
 ]
