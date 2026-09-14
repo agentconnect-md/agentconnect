@@ -1244,8 +1244,12 @@ export interface SessionStep {
     appId: string
     title: string
     toolName: string
-    /** The template, present only on a LIVE card. A persisted row carries none: see McpAppBody. */
+    /** The template, present only on a LIVE card. A persisted row carries none: see McpAppBody.
+     *  A large template arrives as `app_template` chunks, so this grows until it reaches
+     *  {@link htmlBytes} — the renderer waits for that before arming a frame. */
     html?: string
+    /** Set when the template is chunked: the assembled length to expect, in characters. */
+    htmlBytes?: number
     toolInput?: Record<string, unknown>
     toolResult?: { content?: unknown[]; structuredContent?: Record<string, unknown>; isError?: boolean }
     csp?: McpAppCsp

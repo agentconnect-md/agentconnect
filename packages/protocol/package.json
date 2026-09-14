@@ -47,6 +47,12 @@
       "types": "./dist/user-turn-body.d.ts",
       "import": "./dist/user-turn-body.js",
       "default": "./dist/user-turn-body.js"
+    },
+    "./mcp-app": {
+      "development": "./src/mcp-app.ts",
+      "types": "./dist/mcp-app.d.ts",
+      "import": "./dist/mcp-app.js",
+      "default": "./dist/mcp-app.js"
     }
   },
   "main": "dist/index.js",

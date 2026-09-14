@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { SessionKey } from './route.js'
-import { ElicitCard, PlanEntry, WebchatImageAttachment } from './webchat.js'
+import { ElicitCard, McpAppOutcome, PlanEntry, WebchatImageAttachment } from './webchat.js'
 
 /**
  * Session read-back (C→D REQ → REP) — the console's on-demand pulls.
@@ -122,6 +122,33 @@ export const ElicitBody = ElicitCard.extend({
   answerLabel: z.string().optional()
 })
 export type ElicitBody = z.infer<typeof ElicitBody>
+
+/**
+ * An `app` row: one MCP App card as the transcript KEEPS it (webchat-mcp-apps.md §8).
+ *
+ * Deliberately the live card MINUS its template. A persisted app is the record of a decision, not
+ * a page to re-run against a session that has moved on: history shows what was opened, which tool
+ * opened it, what it reported and how it ended, and never re-arms a frame whose bridge stopped
+ * answering. Dropping the template is also what keeps a 300 KiB document out of every transcript
+ * read.
+ *
+ * `outcome` absent while the card was live; a row that STAYS absent is a card whose daemon died
+ * holding it, which reads as unfinished rather than as falsely closed.
+ */
+export const McpAppBody = z.object({
+  appId: z.string().min(1).max(200),
+  title: z.string().max(200),
+  toolName: z.string().min(1).max(200),
+  toolResult: z
+    .object({
+      content: z.array(z.unknown()).max(64).optional(),
+      structuredContent: z.record(z.string(), z.unknown()).optional(),
+      isError: z.boolean().optional()
+    })
+    .optional(),
+  outcome: McpAppOutcome.optional()
+})
+export type McpAppBody = z.infer<typeof McpAppBody>
 
 // The user-turn body schemas live in a bundler-safe leaf (the console validates with them);
 // re-exported here so every wire consumer keeps finding them beside the tool and plan bodies.

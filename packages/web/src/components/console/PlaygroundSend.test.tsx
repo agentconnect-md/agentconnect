@@ -1599,6 +1599,25 @@ describe('MCP App card lifetime (webchat-mcp-apps.md §7.3)', () => {
     ])
   })
 
+  it('reassembles a chunked template in order and only then has a usable card', async () => {
+    const { socket, turnId } = await openStream()
+    const template = '<!doctype html><html><head></head><body>hi</body></html>'
+    const half = template.slice(0, 20)
+    act(() => {
+      send(socket, turnId, 0, { ...CARD, html: undefined, htmlBytes: template.length })
+      send(socket, turnId, 1, { kind: 'app_template', appId: 'app-1', seq: 0, chunk: half })
+    })
+    let step = getLiveSteps('s1').find((s) => s.kind === 'app')
+    // Still short of the declared length — the renderer treats this as "arriving", not as a page.
+    expect(step?.app?.html).toBe(half)
+    expect((step?.app?.html?.length ?? 0) < (step?.app?.htmlBytes ?? 0)).toBe(true)
+
+    act(() => send(socket, turnId, 2, { kind: 'app_template', appId: 'app-1', seq: 1, chunk: template.slice(20) }))
+    step = getLiveSteps('s1').find((s) => s.kind === 'app')
+    expect(step?.app?.html).toBe(template)
+    expect(step?.app?.html?.length).toBe(step?.app?.htmlBytes)
+  })
+
   it('settles a card AFTER its opening turn has finished — a frame outlives the turn cursor', async () => {
     const { socket, turnId } = await openStream()
     act(() => send(socket, turnId, 0, CARD))

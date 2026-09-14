@@ -71,10 +71,9 @@ import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/conso
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { McpAppCard } from '@/components/console/McpAppCard'
-import type { McpAppRpc } from '@agentconnect.md/protocol'
 import { UserTurnDetails } from '../UserTurnDetails'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
-import type { UserTurnBody } from '@agentconnect.md/protocol'
+import type { McpAppRpc, UserTurnBody } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -108,6 +107,7 @@ import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
   elicitCard,
+  mcpAppCard,
   APP_LANE,
   ELICIT_LANE,
   elicitStepKey,
@@ -449,6 +449,27 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
   // just without an `onAnswer` — a reader loading the conversation later sees the question, what
   // was offered and what was answered, with every control inert. A row whose body cannot be read
   // falls through to plain text, which is at least the question itself.
+  // A recorded MCP App card (webchat-mcp-apps.md §8). It renders through the SAME component a live
+  // card does, without an `onRpc` — so the reader sees what was opened, what it reported and how it
+  // ended, with no frame armed against a bridge that stopped answering.
+  if (k === 'app') {
+    const card = mcpAppCard(m.body)
+    if (card)
+      return {
+        lane: APP_LANE,
+        laneColor: 'var(--text-tertiary)',
+        dot: 'var(--text-disabled)',
+        weight: 400,
+        textColor: 'var(--text-primary)',
+        codeColor: 'var(--text-secondary)',
+        text: m.text,
+        code: '',
+        files: [],
+        app: card,
+        time: formatTranscriptRowTime(m),
+        ...(platform ? { platform } : {})
+      }
+  }
   if (k === 'elicit') {
     const card = elicitCard(m.body)
     if (card)

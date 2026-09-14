@@ -14,6 +14,7 @@
 import { randomUUID } from 'node:crypto'
 import {
   MCP_APP_CARD_MAX_BYTES,
+  MCP_APP_TEMPLATE_CHUNK_CHARS,
   type McpAppCard,
   type McpAppOutcome,
   type McpAppRpcResult,
@@ -105,7 +106,14 @@ export class AppSurface {
    * never be recorded as live — a bridge answering for a frame nobody has is a bridge answering
    * nobody.
    */
-  open(sessionKey: string, card: McpAppCard): { shown: true; stream: AppStream } | { shown: false } {
+  open(
+    sessionKey: string,
+    card: McpAppCard,
+    /** The template, when it is too large to ride the card's own frame. Sent as ordered
+     *  `app_template` chunks straight after the card, on the same stream and the same counter, so
+     *  the browser assembles them in order and arms the frame only once it has all of it. */
+    chunkedTemplate?: string
+  ): { shown: true; stream: AppStream } | { shown: false } {
     const turn = this.host.turnFor(sessionKey)
     const wc = turn?.webchat
     if (!turn || !wc) {
@@ -128,6 +136,16 @@ export class AppSurface {
         index: wc.index++,
         event: { kind: 'app', ...fitted }
       })
+      if (chunkedTemplate !== undefined) {
+        for (let seq = 0, at = 0; at < chunkedTemplate.length; seq++, at += MCP_APP_TEMPLATE_CHUNK_CHARS) {
+          this.emit(wc, {
+            kind: 'app_template',
+            appId: card.appId,
+            seq,
+            chunk: chunkedTemplate.slice(at, at + MCP_APP_TEMPLATE_CHUNK_CHARS)
+          })
+        }
+      }
       return { shown: true, stream: wc }
     } catch (err) {
       // An undelivered card can never be opened, and this sink is the only thing that speaks to
@@ -163,6 +181,12 @@ export class AppSurface {
       // transcript, and a card it cannot reach renders settled.
       this.host.log().debug(`mcp apps: ${event.kind} not delivered: ${(err as Error).message}`)
     }
+  }
+
+  /** Say the decline without ever having had a card to post — a tool whose declared interface
+   *  could not be produced at all. Same words, same two surfaces, no card lifecycle. */
+  declineOnly(sessionKey: string, title: string): void {
+    this.decline(this.host.turnFor(sessionKey), title)
   }
 
   /**

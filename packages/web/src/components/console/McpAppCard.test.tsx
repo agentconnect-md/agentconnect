@@ -72,6 +72,21 @@ describe('McpAppCard — what renders', () => {
     expect(host.textContent).toContain('not replayed here')
   })
 
+  it('waits for a chunked template to finish before arming a frame', () => {
+    // Half a document handed to an iframe renders a broken page. The card says it is still
+    // arriving instead, and arms only once the assembled length reaches what was declared.
+    const partial = { ...APP, html: '<p>fra', htmlBytes: 12 }
+    render(<McpAppCard step={{ app: partial }} onRpc={async () => ({ ok: true, result: {} })} />)
+    expect(host.querySelector('iframe')).toBeNull()
+    expect(host.textContent).toContain('Loading the interface')
+
+    act(() => root.unmount())
+    root = createRoot(host)
+    const complete = { ...APP, html: '<p>frame</p>', htmlBytes: 12 }
+    render(<McpAppCard step={{ app: complete }} onRpc={async () => ({ ok: true, result: {} })} />)
+    expect(host.querySelector('iframe')).not.toBeNull()
+  })
+
   it('renders a settled card inert, saying how it ended instead of showing a dead page', () => {
     render(
       <McpAppCard step={{ app: { ...APP, outcome: 'superseded' } }} onRpc={async () => ({ ok: true, result: {} })} />

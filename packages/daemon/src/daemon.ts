@@ -59,7 +59,8 @@ import {
   RD_ACK_NOT_HOLDER,
   RuntimeCommand,
   SessionImageAttachment as SessionImageAttachmentSchema,
-  WEBCHAT_IMAGE_MAX_BYTES
+  WEBCHAT_IMAGE_MAX_BYTES,
+  MCP_APP_INLINE_TEMPLATE_MAX_BYTES
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -200,7 +201,16 @@ import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-
 import { DAEMON_VERSION } from './version.js'
 import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
 import { AppSurface, newAppId, type AppTurn } from './mcp/apps/surface.js'
-import { APP_RPC_REFUSALS, CLOSED, EXPIRED, LiveAppRegistry, SUPERSEDED, appContextBlock } from './mcp/apps/cards.js'
+import {
+  APP_RPC_REFUSALS,
+  CLOSED,
+  EXPIRED,
+  LiveAppRegistry,
+  SUPERSEDED,
+  appContextBlock,
+  type AppRow,
+  type LiveApp
+} from './mcp/apps/cards.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE } from './dream/dreamer.js'
@@ -577,7 +587,9 @@ import type {
   TaskListReq,
   McpAppRpc,
   McpAppRpcResult,
-  CodeHostProvider
+  CodeHostProvider,
+  McpAppBody,
+  McpAppOutcome
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { isBuiltinSystemToolCall, type ApprovalRequestParts } from './daemon/tool-classification.js'
@@ -9046,7 +9058,7 @@ export class Daemon {
         const resolved = this.liveApps.resolve({ appId: op.appId, conversationId: msg.chatId })
         if ('app' in resolved) {
           this.liveApps.settle(op.appId)
-          this.appSurface.settle(resolved.app.stream, op.appId, CLOSED)
+          this.settleAppCard(resolved.app, CLOSED)
         }
         return { msgId: msg.msgId, accepted: true }
       }
@@ -14101,21 +14113,59 @@ export class Daemon {
     const split = splitAppToolName(name)
     if (!split || !this.appsHost.isUiServer(split.server)) return undefined
     const call = await this.appsHost.call(split.server, split.tool, args)
-    if (!call.card) return { result: { mcpContent: call.content, ...(call.isError ? { mcpIsError: true } : {}) } }
+    if (!call.card) {
+      // A tool that declared an interface we could not produce is DECLINED out loud, on whatever
+      // surface this turn has (webchat-mcp-apps.md §6/§7.4): the reader was going to be shown
+      // something and will not be, and saying nothing is the silence #1794 exists to end. A tool
+      // with no interface at all is the ordinary case and says nothing.
+      if (call.interfaceUnavailable) {
+        this.appSurface.declineOnly(
+          sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope),
+          call.title
+        )
+      }
+      return { result: { mcpContent: call.content, ...(call.isError ? { mcpIsError: true } : {}) } }
+    }
 
     const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
     const appId = newAppId()
-    const posted = this.appSurface.open(key, {
-      appId,
-      title: split.tool,
-      toolName: name,
-      html: call.card.html,
-      ...(Object.keys(args).length > 0 ? { toolInput: args } : {}),
-      toolResult: call.card.toolResult,
-      ...(call.card.csp ? { csp: call.card.csp } : {}),
-      ...(call.card.dimensions ? { dimensions: call.card.dimensions } : {})
-    })
+    // A template that fits the card's own frame rides it; a real app's does not, and is sent as
+    // ordered chunks straight after the card (webchat-mcp-apps.md §5). The threshold is the CARD
+    // budget, so the decision is made against the thing that actually has to encode.
+    const inline = Buffer.byteLength(call.card.html, 'utf8') <= MCP_APP_INLINE_TEMPLATE_MAX_BYTES
+    const posted = this.appSurface.open(
+      key,
+      {
+        appId,
+        title: call.title,
+        toolName: name,
+        ...(inline ? { html: call.card.html } : { htmlBytes: call.card.html.length }),
+        ...(Object.keys(args).length > 0 ? { toolInput: args } : {}),
+        toolResult: call.card.toolResult,
+        ...(call.card.csp ? { csp: call.card.csp } : {}),
+        ...(call.card.dimensions ? { dimensions: call.card.dimensions } : {})
+      },
+      inline ? undefined : call.card.html
+    )
     if (posted.shown) {
+      // The card's transcript row, written at open and rewritten at settlement (§8). Without it a
+      // reloaded conversation shows nothing at all — which is what shipped, because the row was
+      // designed and never written.
+      const p = [...this.pending.values()].find((t) => t.plan.sessionKey === key)
+      const row = p
+        ? {
+            channel: p.plan.transcriptChannel,
+            thread: p.plan.statusThread,
+            // The monotonic internal-event clock, as every other non-conversational row uses: it
+            // keeps the card where it was opened and cannot collide with a second card's row.
+            ts: monotonicTs(),
+            sender: p.plan.agentId,
+            title: call.title,
+            toolName: name,
+            ...(call.card.toolResult ? { toolResult: call.card.toolResult } : {})
+          }
+        : undefined
+      if (row) this.writeAppRow(row)
       const superseded = this.liveApps.open({
         appId,
         conversationId: ctx.channel,
@@ -14124,11 +14174,12 @@ export class Daemon {
         server: split.server,
         toolName: name,
         openedAt: Date.now(),
-        stream: posted.stream
+        stream: posted.stream,
+        ...(row ? { row } : {})
       })
       // A superseded frame the browser was never told about would keep an armed bridge that has
       // already stopped being served, so the settlement is sent before this call returns.
-      for (const gone of superseded) this.appSurface.settle(gone.stream, gone.appId, SUPERSEDED)
+      for (const gone of superseded) this.settleAppCard(gone, SUPERSEDED)
     }
     // The model is told an interface opened even when the body was the interface's alone
     // (`visibility: ["app"]`), so an agent never reads a withheld payload as a failed call.
@@ -14139,8 +14190,8 @@ export class Daemon {
             {
               type: 'text',
               text: posted.shown
-                ? `Opened the "${split.tool}" interface for the user; its result is shown there.`
-                : `The "${split.tool}" interface cannot be shown on this surface, and the user has been told so.`
+                ? `Opened the "${call.title}" interface for the user; its result is shown there.`
+                : `The "${call.title}" interface cannot be shown on this surface, and the user has been told so.`
             }
           ]
     return { result: { mcpContent: content, ...(call.isError ? { mcpIsError: true } : {}) } }
@@ -14245,6 +14296,37 @@ export class Daemon {
     }
   }
 
+  /** Tell the browser a card settled AND record the same verdict on its transcript row, so a
+   *  reader who loads the conversation later sees the card as it ended rather than as it opened. */
+  private settleAppCard(app: LiveApp, outcome: McpAppOutcome): void {
+    this.appSurface.settle(app.stream, app.appId, outcome)
+    if (app.row) this.writeAppRow(app.row, app.appId, outcome)
+  }
+
+  /** Write (or rewrite) one app card's row. Best effort by construction: a card that renders and
+   *  works but does not persist is a smaller failure than a turn that breaks over a store write. */
+  private writeAppRow(row: AppRow, appId?: string, outcome?: McpAppOutcome): void {
+    const body: McpAppBody = {
+      appId: appId ?? '',
+      title: row.title,
+      toolName: row.toolName,
+      ...(row.toolResult ? { toolResult: row.toolResult } : {}),
+      ...(outcome ? { outcome } : {})
+    }
+    void this.store
+      .upsertApp({
+        channel: row.channel,
+        thread: row.thread,
+        ts: row.ts,
+        sender: row.sender,
+        text: row.title,
+        body: JSON.stringify(body)
+      })
+      .catch((err: unknown) => {
+        this.log.warn(`mcp apps: card row not recorded for "${row.toolName}": ${formatErr(err)}`)
+      })
+  }
+
   /** Settle every app card a session or a conversation held, telling each frame's browser — so no
    *  frame outlives the bridge that served it, and no bridge answers for a frame nobody has. The
    *  settlement is best effort (a closed conversation has no stream left to hear it); dropping the
@@ -14254,7 +14336,7 @@ export class Daemon {
       'sessionKey' in scope
         ? this.liveApps.expireSession(scope.sessionKey)
         : this.liveApps.expireConversation(scope.conversationId)
-    for (const app of gone) this.appSurface.settle(app.stream, app.appId, EXPIRED)
+    for (const app of gone) this.settleAppCard(app, EXPIRED)
   }
 
   private sessionLinkSource(platform: string, integrationId?: string): string | undefined {

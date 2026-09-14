@@ -38,6 +38,21 @@ export interface LiveApp {
   /** The reply stream the card was posted on, held for the card's whole life — a frame outlives
    *  its turn, so the stream to answer it on cannot be re-derived from a live turn later. */
   readonly stream: AppStream
+  /** Where this card's transcript row lives, so a settlement can rewrite the very row the open
+   *  wrote (webchat-mcp-apps.md §8). Absent ⇒ the row could not be written and history will show
+   *  nothing — the card still works, it just does not survive a reload. */
+  readonly row?: AppRow
+}
+
+/** One app card's transcript row coordinates plus the body fields a settlement re-writes. */
+export interface AppRow {
+  readonly channel: string
+  readonly thread: string
+  readonly ts: string
+  readonly sender: string
+  readonly title: string
+  readonly toolName: string
+  readonly toolResult?: { content?: unknown[]; structuredContent?: Record<string, unknown>; isError?: boolean }
 }
 
 /** A view's per-card call budget. An app is an interface, not a loop: a frame that wants more

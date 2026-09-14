@@ -63,15 +63,39 @@ export function buildMcpAppCsp(csp?: McpAppCsp): string {
 }
 
 /**
- * The document actually loaded into the frame: the policy first, then the template verbatim.
+ * The document actually loaded into the frame: the template with our policy injected into its
+ * `<head>`.
  *
- * Prepended rather than injected into the template's own `<head>`, and that is load-bearing — a
- * parser-driven insertion would have to understand a document the host did not write, while a
- * meta element before anything else is applied to everything after it. The template's own markup
- * is never rewritten: a host that edits an app's HTML is a host that can break it invisibly.
+ * WHERE the meta goes is the whole correctness of this function, and getting it wrong is silent.
+ * A real app template is a COMPLETE document (`<!doctype html><html><head>…`), and simply
+ * prepending the meta breaks it two ways at once: the doctype is no longer the first thing in the
+ * file, so the parser drops it and the page renders in quirks mode; and the meta lands outside
+ * `<head>`, where browsers do not honor `http-equiv="Content-Security-Policy"` at all. The policy
+ * would then be decoration — present in the bytes, enforced by nobody — on exactly the templates
+ * it exists for.
+ *
+ * So the meta is inserted INTO the head, and the three shapes a template can take are handled
+ * explicitly. The template's own markup is otherwise never rewritten: a host that edits an app's
+ * HTML is a host that can break it invisibly.
  */
 export function buildMcpAppDocument(html: string, csp?: McpAppCsp): string {
-  return `<meta http-equiv="Content-Security-Policy" content="${buildMcpAppCsp(csp).replace(/"/g, '&quot;')}">\n${html}`
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${buildMcpAppCsp(csp).replace(/"/g, '&quot;')}">`
+  // 1. It has a head — the ordinary case for a complete document. Straight after the opening tag,
+  //    so the policy is in force before anything the head goes on to load.
+  const head = /<head\b[^>]*>/i.exec(html)
+  if (head) return `${html.slice(0, head.index + head[0].length)}${meta}${html.slice(head.index + head[0].length)}`
+  // 2. A document with no head of its own: give it one, after `<html>` so the doctype keeps its
+  //    place at the front of the file.
+  const htmlTag = /<html\b[^>]*>/i.exec(html)
+  if (htmlTag) {
+    const at = htmlTag.index + htmlTag[0].length
+    return `${html.slice(0, at)}<head>${meta}</head>${html.slice(at)}`
+  }
+  // 3. A bare fragment, which is what a hand-written template usually is. It gets WRAPPED rather
+  //    than prepended to: a meta that merely leads the markup is parsed into `<body>`, where
+  //    http-equiv CSP is ignored exactly as it is in case 1's failure mode. Wrapping also gives a
+  //    fragment a doctype it never had, so it renders in standards mode instead of quirks.
+  return `<!doctype html><html><head>${meta}</head><body>${html}</body></html>`
 }
 
 /** Whether a `ui/open-link` destination may be opened for the reader. Only `http`/`https`, which

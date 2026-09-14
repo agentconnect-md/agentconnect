@@ -1,5 +1,5 @@
 import type { PlanBody } from '@/lib/api'
-import type { ElicitBody, ElicitFieldSpec } from '@/lib/data'
+import type { ElicitBody, ElicitFieldSpec, McpAppBody } from '@/lib/data'
 
 // 2b chat style: an agent turn shows its spoken answer (MSG/DONE lanes) as plain
 // text and collapses its "work" — reasoning (THINK/PLAN), tool calls (TOOL), and
@@ -26,6 +26,9 @@ export const ELICIT_LANE = 'ELICIT'
  *  as ELICIT: it is a surface handed to the reader, so collapsing it behind the work toggle would
  *  hide the one thing in the turn they are meant to touch. */
 export const APP_LANE = 'APP'
+
+/** The settlements a persisted app row may carry — anything else is a body we do not trust. */
+const MCP_APP_OUTCOMES = new Set(['closed', 'superseded', 'expired'])
 
 export type PlanEntry = PlanBody['entries'][number]
 
@@ -59,6 +62,30 @@ const ELICIT_OUTCOMES = new Set(['accepted', 'dismissed', 'cancelled', 'complete
  *  readable card — no body at all (a daemon or control plane predating the row), malformed JSON,
  *  a payload with no request id — and the caller then falls back to rendering the row's own text,
  *  which is at least the question, rather than a card with nothing in it. */
+/** Parse an `app` row's body into the card history shows (webchat-mcp-apps.md §8). A row that
+ *  cannot be read yields null and the caller falls back to plain text — the card's title, which is
+ *  at least what was opened. There is never an `html` here: a persisted app is a record, not a
+ *  page, so the renderer shows the header and the outcome and arms nothing. */
+export function mcpAppCard(body: string | undefined): McpAppBody | null {
+  if (!body) return null
+  try {
+    const parsed = JSON.parse(body) as Partial<McpAppBody>
+    if (typeof parsed?.appId !== 'string' || !parsed.appId) return null
+    if (typeof parsed.toolName !== 'string' || !parsed.toolName) return null
+    const outcome =
+      typeof parsed.outcome === 'string' && MCP_APP_OUTCOMES.has(parsed.outcome) ? parsed.outcome : undefined
+    return {
+      appId: parsed.appId,
+      title: typeof parsed.title === 'string' ? parsed.title : parsed.toolName,
+      toolName: parsed.toolName,
+      ...(parsed.toolResult ? { toolResult: parsed.toolResult } : {}),
+      ...(outcome ? { outcome } : {})
+    }
+  } catch {
+    return null
+  }
+}
+
 export function elicitCard(body: string | undefined): ElicitBody | null {
   if (!body) return null
   try {

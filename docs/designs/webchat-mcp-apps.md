@@ -134,16 +134,16 @@ optional-field-over-new-kind discipline the elicitation card records, for the sa
 reason (a relay or browser predating it drops one frame at most, and a daemon predating
 it never sends one).
 
-| field        | meaning                                                                                          |
-| ------------ | ------------------------------------------------------------------------------------------------ |
-| `appId`      | Unguessable id every RPC from this view carries back. The card's identity, like `requestId`.     |
-| `title`      | The tool's own title — the words above the frame, and the words a decline uses.                  |
-| `html`       | The `ui://` template's text, capped (§7.4). Inlined rather than linked: the CP stores no bodies. |
-| `toolName`   | Which tool opened it, for the card header and the transcript row.                                |
-| `toolInput`  | The call's arguments, delivered to the view as `ui/notifications/tool-input`.                    |
-| `toolResult` | `{ content?, structuredContent? }` — delivered as `ui/notifications/tool-result`.                |
-| `csp`        | The domain allowlists the server declared (`connect`/`resource`/`frame`/`baseUri`).              |
-| `dimensions` | `containerDimensions` — fixed, or which axis is flexible.                                        |
+| field        | meaning                                                                                                                                                                                                 |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appId`      | Unguessable id every RPC from this view carries back. The card's identity, like `requestId`.                                                                                                            |
+| `title`      | The tool's own title — the words above the frame, and the words a decline uses.                                                                                                                         |
+| `html`       | The `ui://` template's text, when small enough to ride this frame. Absent ⇒ it arrives as ordered `app_template` chunks and `htmlBytes` says how much to expect. Never linked: the CP stores no bodies. |
+| `toolName`   | Which tool opened it, for the card header and the transcript row.                                                                                                                                       |
+| `toolInput`  | The call's arguments, delivered to the view as `ui/notifications/tool-input`.                                                                                                                           |
+| `toolResult` | `{ content?, structuredContent? }` — delivered as `ui/notifications/tool-result`.                                                                                                                       |
+| `csp`        | The domain allowlists the server declared (`connect`/`resource`/`frame`/`baseUri`).                                                                                                                     |
+| `dimensions` | `containerDimensions` — fixed, or which axis is flexible.                                                                                                                                               |
 
 `app_resolved` is its settlement, keyed by `appId`: `closed` (the reader dismissed
 it), `superseded` (the same tool opened a new one), `expired` (the session ended).
@@ -265,12 +265,17 @@ correct only once there is no band.
 
 ### 7.4 Bounds
 
-- One template ≤ 96 KiB of HTML, and one whole card ≤ 160 KiB encoded. Both numbers come from
-  the wire rather than from taste: the card rides the same `rd/chat` frame every reply chunk
-  does, and that frame is capped at 256 KiB (`MAX_FRAME_BYTES`) — with JSON escaping, a
-  quote-dense HTML document can approach 2× on the way in. An oversized template is declined
-  with a notice, never truncated; an oversized CARD sheds its `toolResult` first (the model
-  already received that) and is declined only if it still will not fit.
+- One template ≤ 1 MiB of HTML, and one whole card ≤ 160 KiB encoded. These bound different
+  things on purpose. The CARD rides one `rd/chat` frame, capped at 256 KiB
+  (`MAX_FRAME_BYTES`), so it sheds its `toolResult` first (the model already received that) and
+  is declined only if it still will not fit. The TEMPLATE does not ride that frame at all past
+  48 KiB: a genuine app — one that inlines the official SDK — is several hundred KiB on its own,
+  so it arrives as ordered `app_template` chunks of 48 KiB and is reassembled by the browser,
+  which is why its cap can describe what a page may reasonably be rather than what one frame
+  happens to hold. A template past the cap is declined with a notice, never truncated.
+- A template still arriving is not a page. The card declares `htmlBytes`, and the frame is armed
+  only once that much has been reassembled — handing an iframe half a document renders a broken
+  page, which is the outcome the cap exists to avoid in the first place.
 - At most 4 live app cards per conversation; opening a fifth settles the oldest as
   `superseded`.
 - A view's `tools/call` is rate-limited per `appId`, and every call is a real tool call
@@ -285,10 +290,15 @@ correct only once there is no band.
 
 Unchanged, and worth stating because an app looks like content: the CP stores no app
 HTML, no `structuredContent`, and no view RPC. The card is streamed relay-to-browser,
-persisted in the **daemon's** transcript as an `app` row (header, tool, final result —
-not the template), and an authorized BFF history read proxies that row from the owning
-daemon like any other. A reloaded conversation shows the settled card, never a re-armed
-iframe.
+persisted in the **daemon's** transcript as an `app` row — header, tool, final result and the
+settlement, but **not the template** — and an authorized BFF history read proxies that row from
+the owning daemon like any other. A reloaded conversation shows the settled card, never a
+re-armed iframe.
+
+The row is written at open and rewritten at settlement (`LocalStore.upsertApp`, the peer of
+`upsertElicit`). Dropping the template from it is what keeps a several-hundred-KiB document out
+of every transcript read, and it is the same decision §7.1 makes: history is the record of a
+decision, not a page to re-run against a session that has moved on.
 
 ## 9. Plan
 

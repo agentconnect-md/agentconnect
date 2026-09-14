@@ -388,6 +388,13 @@ function elicitRowId(ts: string): string {
   return `elicit:${ts}`
 }
 
+/** The same trick for an MCP App card's row, keyed by its minted `ts` for the same reason: an
+ *  `appId` is a per-process uuid, and a card re-opened after a restart must not rewrite an
+ *  older one's row. */
+function appRowId(ts: string): string {
+  return `app:${ts}`
+}
+
 export interface TranscriptEntry {
   channel: string
   thread: string
@@ -4206,6 +4213,68 @@ export class LocalStore {
     ])
     // An unchanged re-write changes neither statement and must not bump the revision a live
     // console polls on — the same rule the plan upsert follows.
+    if (written.changes.some((changed) => changed > 0)) {
+      this.transcriptRevision = written.revision
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
+    }
+  }
+
+  /**
+   * Write (or rewrite) one MCP App card's transcript row — the peer of {@link upsertElicit}, and
+   * the thing that makes a card survive a reload (webchat-mcp-apps.md §8).
+   *
+   * `body` is a {@link McpAppBody}: the card WITHOUT its template. History shows what was opened
+   * and how it ended; it never re-arms the frame, and a 300 KiB document never enters a transcript
+   * read.
+   */
+  upsertApp(e: {
+    channel: string
+    thread: string
+    ts: string
+    sender: string
+    text: string
+    body: string
+  }): Promise<void> {
+    const orgId = this.orgFor(e.sender)
+    return this.transcriptMutex.run(() => this.upsertAppLocked(e, orgId))
+  }
+
+  private async upsertAppLocked(
+    e: { channel: string; thread: string; ts: string; sender: string; text: string; body: string },
+    orgId: string
+  ): Promise<void> {
+    const revision = this.transcriptRevision + 1
+    const written = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
+      {
+        kind: 'run',
+        sql: `INSERT OR IGNORE INTO transcript
+           (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
+         VALUES (@orgId, @channel, @thread, @ts, @sender, 'app', @text, @cardId, @body, @eventTimeUs, @revision)`,
+        params: [
+          {
+            orgId,
+            channel: e.channel,
+            thread: e.thread,
+            ts: e.ts,
+            sender: e.sender,
+            text: e.text,
+            cardId: appRowId(e.ts),
+            body: e.body,
+            eventTimeUs: transcriptEventTimeUs(e.ts),
+            revision
+          }
+        ]
+      },
+      {
+        kind: 'run',
+        sql: `UPDATE transcript SET text = ?, body = ?, revision = ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = 'app'
+           AND (text IS NOT ? OR body IS NOT ?)`,
+        params: [e.text, e.body, revision, orgId, e.channel, e.thread, e.sender, appRowId(e.ts), e.text, e.body]
+      }
+    ])
+    // An unchanged re-write must not bump the revision a live console polls on — the same rule
+    // the elicit and plan upserts follow.
     if (written.changes.some((changed) => changed > 0)) {
       this.transcriptRevision = written.revision
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)

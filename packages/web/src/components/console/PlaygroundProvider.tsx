@@ -308,6 +308,7 @@ type WebchatEvent =
       label?: string
     }
   | ({ kind: 'app' } & McpAppCard)
+  | { kind: 'app_template'; appId: string; seq: number; chunk: string }
   | { kind: 'app_resolved'; appId: string; outcome: McpAppOutcome }
   | { kind: 'app_rpc_result'; appId: string; callId: string; outcome: McpAppRpcResult }
 
@@ -757,7 +758,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 appId: ev.appId,
                 title: ev.title,
                 toolName: ev.toolName,
-                html: ev.html,
+                ...(ev.html !== undefined ? { html: ev.html } : {}),
+                ...(ev.htmlBytes !== undefined ? { htmlBytes: ev.htmlBytes } : {}),
                 ...(ev.toolInput ? { toolInput: ev.toolInput } : {}),
                 ...(ev.toolResult ? { toolResult: ev.toolResult } : {}),
                 ...(ev.csp ? { csp: ev.csp } : {}),
@@ -766,6 +768,19 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               boundary: true
             })
           ]
+        }
+        if (ev.kind === 'app_template') {
+          // One ordered slice of a card's template. Appended to the card it names; the renderer
+          // arms the frame only once the assembled length reaches the `htmlBytes` the card
+          // declared, so a partial document is never handed to an iframe.
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i]!
+            const body = step.kind === 'app' ? step.app : undefined
+            if (!body || body.appId !== ev.appId) continue
+            if ((step.agentId ?? undefined) !== agentId) continue
+            return replaceAt(i, { ...step, app: { ...body, html: (body.html ?? '') + ev.chunk }, observedAtMs })
+          }
+          return steps
         }
         if (ev.kind === 'app_resolved') {
           // Settle the frame in place, scanned across the whole transcript and matched on lane

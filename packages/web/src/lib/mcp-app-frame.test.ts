@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * The rules an MCP App frame is built under (webchat-mcp-apps.md §7). These are security
  * decisions, so they are tested as such: what the sandbox withholds, what the policy refuses to
@@ -55,10 +57,42 @@ describe('buildMcpAppCsp', () => {
     expect(buildMcpAppCsp({ resource: ['cdn.example.test'] })).toContain('https://cdn.example.test')
   })
 
-  it('puts the policy in front of the template and leaves the template itself untouched', () => {
+  it('injects into the head of a COMPLETE document, keeping the doctype first', () => {
+    // The shape every real MCP App template takes. Prepending the meta would drop the doctype
+    // (quirks mode) and land the policy outside <head>, where browsers ignore http-equiv CSP
+    // entirely — the policy would be present in the bytes and enforced by nobody.
+    const doc = buildMcpAppDocument(
+      '<!doctype html>\n<html lang="en"><head><title>t</title></head><body>hi</body></html>'
+    )
+    expect(doc.startsWith('<!doctype html>')).toBe(true)
+    expect(doc).toContain('<head><meta http-equiv="Content-Security-Policy"')
+    const parsed = new DOMParser().parseFromString(doc, 'text/html')
+    expect(parsed.doctype).not.toBeNull()
+    expect(parsed.querySelector('meta[http-equiv="Content-Security-Policy"]')?.parentElement?.tagName).toBe('HEAD')
+  })
+
+  it('gives a document with no head one, rather than displacing its doctype', () => {
+    const doc = buildMcpAppDocument('<!doctype html><html><body>hi</body></html>')
+    expect(doc.startsWith('<!doctype html>')).toBe(true)
+    const parsed = new DOMParser().parseFromString(doc, 'text/html')
+    expect(parsed.doctype).not.toBeNull()
+    expect(parsed.querySelector('meta[http-equiv="Content-Security-Policy"]')?.parentElement?.tagName).toBe('HEAD')
+  })
+
+  it('wraps a bare fragment, because a leading meta would parse into body and be ignored', () => {
     const doc = buildMcpAppDocument('<div id="app">hi</div>', { connect: ['https://api.example.test'] })
-    expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('<div id="app">'))
     expect(doc).toContain('<div id="app">hi</div>')
+    const parsed = new DOMParser().parseFromString(doc, 'text/html')
+    expect(parsed.querySelector('meta[http-equiv="Content-Security-Policy"]')?.parentElement?.tagName).toBe('HEAD')
+    // And the wrapper gives it a doctype it never had, so it is standards mode rather than quirks.
+    expect(parsed.doctype).not.toBeNull()
+    expect(parsed.querySelector('#app')?.parentElement?.tagName).toBe('BODY')
+  })
+
+  it('leaves the template markup itself untouched in every shape', () => {
+    for (const tpl of ['<!doctype html><html><head></head><body><b>x</b></body></html>', '<p>x</p>']) {
+      expect(buildMcpAppDocument(tpl)).toContain(tpl.includes('<b>') ? '<b>x</b>' : '<p>x</p>')
+    }
   })
 
   it('escapes a quote in the policy so a declaration cannot break out of the meta attribute', () => {

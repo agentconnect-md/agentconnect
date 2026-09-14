@@ -3,6 +3,7 @@ import {
   ELICIT_FORM_WIRE_FIELD_CAP,
   MCP_APP_CONTEXT_MAX_CHARS,
   MCP_APP_HTML_MAX_BYTES,
+  MCP_APP_TEMPLATE_CHUNK_CHARS,
   McpAppRpc,
   WebchatOutput,
   WebchatStatus
@@ -314,15 +315,41 @@ describe('McpAppCard — the MCP Apps wire (webchat-mcp-apps.md §5)', () => {
     expect(rich.success).toBe(true)
   })
 
-  it('refuses a template past the wire guard, and an app event with no template at all', () => {
+  it('refuses a template past the wire guard', () => {
     const oversized = { ...card, html: 'x'.repeat(MCP_APP_HTML_MAX_BYTES + 1) }
     expect(WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 0, event: oversized }).success).toBe(
       false
     )
-    const { html: _html, ...noTemplate } = card
-    expect(WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 0, event: noTemplate }).success).toBe(
-      false
-    )
+  })
+
+  it('accepts a card with NO template — the chunked case, described by htmlBytes', () => {
+    // A real app's template is several hundred KiB and cannot ride this frame, so it arrives as
+    // `app_template` chunks. The card then carries the expected length instead of the document.
+    const { html: _html, ...chunked } = card
+    const r = WebchatOutput.safeParse({
+      conversationId: CONV,
+      turnId: TURN,
+      index: 0,
+      event: { ...chunked, htmlBytes: 335_950 }
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('carries one ordered template chunk, and refuses one past the chunk size', () => {
+    const chunk = { kind: 'app_template', appId: 'app-1', seq: 0, chunk: 'x'.repeat(1000) }
+    expect(WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 1, event: chunk }).success).toBe(true)
+    // A chunk is sized against the relay frame; one past it would be a frame that cannot encode.
+    expect(
+      WebchatOutput.safeParse({
+        conversationId: CONV,
+        turnId: TURN,
+        index: 1,
+        event: { ...chunk, chunk: 'x'.repeat(MCP_APP_TEMPLATE_CHUNK_CHARS + 1) }
+      }).success
+    ).toBe(false)
+    // `seq` is what makes it ordered; a chunk without one is not placeable.
+    const { seq: _seq, ...noSeq } = chunk
+    expect(WebchatOutput.safeParse({ conversationId: CONV, turnId: TURN, index: 1, event: noSeq }).success).toBe(false)
   })
 
   it('settles a card by appId, and refuses an outcome it has no verdict for', () => {

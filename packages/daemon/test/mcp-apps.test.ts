@@ -7,7 +7,7 @@
  * says instead of rendering.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { MCP_APP_CARD_MAX_BYTES, type McpAppCard } from '@agentconnect.md/protocol'
+import { MCP_APP_CARD_MAX_BYTES, MCP_APP_TEMPLATE_CHUNK_CHARS, type McpAppCard } from '@agentconnect.md/protocol'
 import {
   APP_RPC_REFUSALS,
   LiveAppRegistry,
@@ -369,6 +369,29 @@ describe('AppSurface — webchat renders; every other surface says so', () => {
 
   it('leaves a card that already fits exactly as it is', () => {
     expect(fitAppCard(CARD)).toEqual(CARD)
+  })
+
+  it('chunks a template too large for the card frame, in order, after the card', () => {
+    const stream = fakeStream()
+    const surface = new AppSurface({ turnFor: () => ({ webchat: stream }), log })
+    const template = 'x'.repeat(MCP_APP_TEMPLATE_CHUNK_CHARS * 2 + 7)
+    const posted = surface.open('sk-1', { ...CARD, html: undefined, htmlBytes: template.length }, template)
+    expect(posted.shown).toBe(true)
+    const kinds = stream.sent.map((e) => e.kind)
+    expect(kinds[0]).toBe('app')
+    expect(kinds.slice(1)).toEqual(['app_template', 'app_template', 'app_template'])
+    const chunks = stream.sent.slice(1) as unknown as { seq: number; chunk: string }[]
+    expect(chunks.map((c) => c.seq)).toEqual([0, 1, 2])
+    // Reassembling in sequence order returns the template byte for byte — a chunk that is
+    // meaningless out of order must also be complete in order.
+    expect(chunks.map((c) => c.chunk).join('')).toBe(template)
+    expect(chunks.at(-1)!.chunk.length).toBe(7)
+  })
+
+  it('sends no chunks at all when the template rode the card', () => {
+    const stream = fakeStream()
+    new AppSurface({ turnFor: () => ({ webchat: stream }), log }).open('sk-1', CARD)
+    expect(stream.sent.map((e) => e.kind)).toEqual(['app'])
   })
 
   it('says in the decline that the interface needs the console and the report is in the chat', () => {

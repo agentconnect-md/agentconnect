@@ -70,9 +70,13 @@ export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
   const [height, setHeight] = useState<number>(() => clampAppHeight(app?.dimensions?.height ?? MCP_APP_DEFAULT_HEIGHT))
   const [minimized, setMinimized] = useState(false)
   const settled = app?.outcome ? APP_OUTCOME[app.outcome] : undefined
+  // A large template arrives as ordered chunks, so it is only usable once the assembled length
+  // reaches what the card declared. Handing an iframe half a document renders a broken page —
+  // the one outcome worse than saying the interface is still arriving.
+  const assembling = app?.htmlBytes !== undefined && (app.html?.length ?? 0) < app.htmlBytes
   // A persisted card carries no template (§8), so history shows the header and the result and
   // never re-arms a frame against a session that has moved on.
-  const live = !settled && !!app?.html && !!onRpc
+  const live = !settled && !!app?.html && !assembling && !!onRpc
 
   const doc = useMemo(() => (app?.html ? buildMcpAppDocument(app.html, app.csp) : ''), [app?.html, app?.csp])
 
@@ -266,6 +270,11 @@ export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
               className="block w-full border-0 bg-(--surface-app)"
               style={{ height }}
             />
+          ) : assembling ? (
+            <span className="flex min-w-0 items-center gap-[7px] px-[14px] py-[11px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+              <Icon name="loader" size={13} color="var(--text-tertiary)" />
+              <span className="min-w-0 truncate">Loading the interface…</span>
+            </span>
           ) : (
             // A card read back from history: the frame is not re-armed, and saying so is more
             // honest than showing a page whose buttons would do nothing.

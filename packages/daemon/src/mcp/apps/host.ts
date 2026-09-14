@@ -61,6 +61,10 @@ export function splitAppToolName(name: string): { server: string; tool: string }
  *  only the host cares about — whether it has an interface, and who its result is for. */
 interface UpstreamTool {
   descriptor: ToolDescriptor
+  /** The tool's own human title (MCP `Tool.title`), when it declares one. The card's heading is
+   *  shown to a READER, and `get-time` is an identifier where "Get Time" is a name. Absent ⇒ the
+   *  card falls back to the tool name, which is all a server that declares no title gives us. */
+  title?: string
   /** The `ui://` template this tool declares, if any. Its presence is what makes a call open a card. */
   templateUri?: string
   /** `_meta.ui.visibility` includes `model`. False ⇒ the body is the interface's, not the model's. */
@@ -84,6 +88,17 @@ export interface AppToolCall {
   /** The upstream result's content blocks, for the model. Empty when the result is app-only. */
   content: unknown[]
   isError: boolean
+  /** The reader-facing name of the tool that ran — its declared `title`, else its name. */
+  title: string
+  /**
+   * Set when the tool DECLARED an interface that could not be produced — the template would not
+   * read, was not one `text/html;profile=mcp-app` document, or exceeded the byte cap.
+   *
+   * Distinct from `card` merely being absent, and the distinction is what the reader hears: a tool
+   * with no interface at all is the ordinary case and says nothing, while an interface that was
+   * promised and then could not be shown is exactly the silence #1794 set out to end.
+   */
+  interfaceUnavailable?: true
   card?: {
     html: string
     csp?: McpAppCsp
@@ -200,13 +215,14 @@ export class McpAppsHost {
     const content = Array.isArray(raw.content) ? raw.content : []
     const isError = raw.isError === true
 
-    if (!upstream.templateUri || isError) return { content, isError }
+    const title = upstream.title ?? tool
+    if (!upstream.templateUri || isError) return { content, isError, title }
     const template = await this.template(server, upstream.templateUri)
     if (!template) {
       this.deps.log?.warn(
-        `mcp apps: tool "${server}${APP_TOOL_SEPARATOR}${tool}" declares ${upstream.templateUri} but its template could not be read — rendering nothing`
+        `mcp apps: tool "${server}${APP_TOOL_SEPARATOR}${tool}" declares ${upstream.templateUri} but its template could not be read — declining it`
       )
-      return { content, isError }
+      return { content, isError, title, interfaceUnavailable: true }
     }
     return {
       // An app-only result is withheld from the model on the tool's own say-so, and the card
@@ -214,6 +230,7 @@ export class McpAppsHost {
       // one-line acknowledgement — so an agent never reads silence as a failure.
       content: upstream.resultVisibleToModel ? content : [],
       isError,
+      title,
       card: {
         html: template.html,
         ...(template.csp ? { csp: template.csp } : {}),
@@ -386,6 +403,9 @@ export class McpAppsHost {
             inputSchema: tool.inputSchema as ToolDescriptor['inputSchema']
           },
           ...(templateUri ? { templateUri } : {}),
+          ...(typeof (tool as { title?: unknown }).title === 'string' && (tool as { title: string }).title.trim()
+            ? { title: (tool as { title: string }).title }
+            : {}),
           resultVisibleToModel: appResultVisibleToModel(tool),
           raw: tool
         })

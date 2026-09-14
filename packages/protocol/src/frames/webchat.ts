@@ -231,18 +231,31 @@ export type ElicitCard = z.infer<typeof ElicitCard>
 /**
  * The most HTML one MCP App template may carry.
  *
- * The number comes from the wire, not from taste. The template is INLINED on the event rather
- * than linked, because the CP stores no bodies (webchat-mcp-apps.md §8), so it rides the same
- * `rd/chat` frame every reply chunk does — and that frame is capped at {@link MAX_FRAME_BYTES}
- * (256 KiB). A template is then JSON-escaped into it, and HTML is quote-dense enough that the
- * escape can approach 2×, so the cap is set at 96 KiB: under half the frame budget even before
- * the card's other fields and the envelope, which leaves a quote-heavy document room to fit
- * rather than encoding to something the relay would refuse.
+ * A real bound on a real document, not a transport artifact. The transport is handled separately:
+ * a template does NOT ride the card event as one blob past {@link MCP_APP_INLINE_TEMPLATE_MAX_BYTES},
+ * because the `rd/chat` frame it would ride is capped at {@link MAX_FRAME_BYTES} (256 KiB) and a
+ * genuine app — one that inlines the official SDK — is comfortably past that on its own. Templates
+ * therefore arrive as ordered `app_template` chunks and are reassembled by the browser, which is
+ * why this cap can describe what a page may reasonably be instead of what one frame happens to hold.
  *
- * A larger template is DECLINED with a notice rather than truncated — half a document renders as
- * a broken page, which is the one outcome worse than saying the interface could not be shown.
+ * A larger template is DECLINED with a notice rather than truncated — half a document renders as a
+ * broken page, which is the one outcome worse than saying the interface could not be shown.
  */
-export const MCP_APP_HTML_MAX_BYTES = 96 * 1024
+export const MCP_APP_HTML_MAX_BYTES = 1024 * 1024
+
+/**
+ * How much template one `app_template` chunk carries, in characters.
+ *
+ * Chosen against the frame rather than for tidiness: {@link MAX_FRAME_BYTES} is 256 KiB, and JSON
+ * escaping can roughly double quote-dense HTML on the way in, so 48 KiB of template stays under
+ * the cap even at that worst case with the envelope on top.
+ */
+export const MCP_APP_TEMPLATE_CHUNK_CHARS = 48 * 1024
+
+/** Under this, a template simply rides the card's own frame and no chunks are sent. Set well below
+ *  {@link MCP_APP_CARD_MAX_BYTES} so the card still fits once its result and metadata are on top —
+ *  the decision is made against the thing that has to encode, not against the template alone. */
+export const MCP_APP_INLINE_TEMPLATE_MAX_BYTES = 48 * 1024
 
 /** The most one card's whole encoded payload may take, including the tool result it carries
  *  through. Checked where the card is assembled, because the template cap alone does not bound a
@@ -306,12 +319,19 @@ export const McpAppCard = z.object({
   title: z.string().max(200),
   /** The tool that opened the frame, namespaced `<server>__<tool>` as the bridge exposes it. */
   toolName: z.string().min(1).max(200),
-  /** The `ui://` template's own text (`text/html;profile=mcp-app`). The BYTE cap
-   *  ({@link MCP_APP_HTML_MAX_BYTES}) is enforced where the bytes are — the daemon reads the
-   *  resource and declines an oversized one before a card exists. What rides here is the cheap
-   *  guard a decoder can afford on every frame: the same number counted in characters, which
-   *  cannot admit anything the byte cap rejects for ASCII and stays a hard ceiling regardless. */
-  html: z.string().min(1).max(MCP_APP_HTML_MAX_BYTES),
+  /**
+   * The `ui://` template's own text (`text/html;profile=mcp-app`), when it is small enough to ride
+   * this frame whole. ABSENT ⇒ it arrives as `app_template` chunks; {@link htmlBytes} says how much
+   * to expect, and the frame is armed only once that much has been reassembled.
+   *
+   * Optional rather than always-chunked so a small first-party template stays one frame and one
+   * code path — and so a reader that never receives its chunks renders a card that is honestly
+   * unarmed rather than one that half-works.
+   */
+  html: z.string().min(1).max(MCP_APP_HTML_MAX_BYTES).optional(),
+  /** Set when the template is chunked: the assembled length in CHARACTERS, so the browser knows
+   *  when it has the whole document and can tell "still arriving" from "never arrived". */
+  htmlBytes: z.number().int().min(1).max(MCP_APP_HTML_MAX_BYTES).optional(),
   /** The call's arguments, handed to the view as `ui/notifications/tool-input`. */
   toolInput: z.record(z.string(), z.unknown()).optional(),
   /** The call's result, handed to the view as `ui/notifications/tool-result`. `structuredContent`
@@ -447,6 +467,15 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   // waits on a reader who was never shown anything. An elicitation could not take that trade,
   // which is why `multi`/`text`/`url` went on the card as optional fields instead.
   McpAppCard.extend({ kind: z.literal('app') }),
+  // One ordered slice of a card's template. Rides the ordinary reply stream, so it takes the
+  // turn's own cursor and arrives in order — unlike `app_rpc_result`/`app_resolved`, which are
+  // correlated and idempotent and may bypass it, a chunk is meaningless out of sequence.
+  z.object({
+    kind: z.literal('app_template'),
+    appId: z.string().min(1).max(200),
+    seq: z.number().int().min(0),
+    chunk: z.string().min(1).max(MCP_APP_TEMPLATE_CHUNK_CHARS)
+  }),
   // The same card, settled — append-only, keyed by `appId`, exactly as `elicitation_resolved` is.
   z.object({ kind: z.literal('app_resolved'), appId: z.string().min(1).max(200), outcome: McpAppOutcome }),
   // One view RPC's answer, correlated by the `callId` the browser minted on the `app_rpc` op.
