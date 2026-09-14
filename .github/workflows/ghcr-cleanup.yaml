@@ -23,7 +23,7 @@ jobs:
       packages: write
     steps:
       - name: Prune release candidates and unreferenced manifests
-        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        uses: dataaxiom/ghcr-cleanup-action@v1.2.2
         with:
           # prisma-cli is pushed by hand under the tag compose.yaml pins, so it is left out.
           packages: control-plane,web,relay,daemon,memory-plugin-mem0,mem0-server,runtime-sandbox,runtime-sandbox-full,charts/agentconnect
