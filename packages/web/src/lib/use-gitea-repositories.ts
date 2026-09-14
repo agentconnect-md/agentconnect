@@ -44,7 +44,7 @@ function absentAsEmpty(e: unknown): GiteaRepositoryBindingDto[] {
 }
 
 export interface GiteaRepositoryPicker {
-  /** This deployment has a Gitea instance configured at all. */
+  /** The control plane serves Gitea at all (gitea.com unless another instance is set). */
   enabled: boolean
   /** Added repositories merged with the ones the bot could still add. */
   choices: GiteaRepositoryChoice[]

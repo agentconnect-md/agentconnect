@@ -6,7 +6,6 @@
 // arrive by first use: a trigger, a workspace or a grant that names one the bot administers
 // binds it, and "Add repository" here binds one ahead of that. Each row keeps Repair, rotate
 // and Remove; Remove is refused, naming the reference, while anything still points at it.
-// Deployment-config opt-in: with no Gitea instance configured these routes 404 and the card says so.
 // Connections and repositories are org-level infrastructure — visible to all, writable by non-viewers.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -474,7 +473,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
       {enabled === null && <LoadingState size={22} padding={20} />}
       {enabled === false && (
         <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          Not enabled on this deployment — no Gitea instance is configured.
+          Not enabled on this deployment — its control plane predates Gitea support.
         </div>
       )}
 

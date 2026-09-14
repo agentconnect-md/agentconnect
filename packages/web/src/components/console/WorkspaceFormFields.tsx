@@ -484,7 +484,7 @@ export function GiteaNoRepositoriesNotice({
         <GiteaMark fillPct={100} />
       </span>
       {!enabled ? (
-        <span>Gitea is not enabled on this deployment — no Gitea instance is configured.</span>
+        <span>Gitea is not enabled on this deployment — its control plane predates Gitea support.</span>
       ) : (
         <span>
           The connected Gitea bot administers no repository. Give it Admin on one — as a collaborator or through a team

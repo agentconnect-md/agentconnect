@@ -248,7 +248,7 @@ describe('AddAgentRepoModal, Gitea repositories', () => {
     await act(async () => buttonsNamed('Gitea')[0]?.click())
 
     expect(document.body.textContent).toContain(
-      'Gitea is not enabled on this deployment — no Gitea instance is configured.'
+      'Gitea is not enabled on this deployment — its control plane predates Gitea support.'
     )
     expect(mocks.fetchGiteaConnectionRepositories).not.toHaveBeenCalled()
   })

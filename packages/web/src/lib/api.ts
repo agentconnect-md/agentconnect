@@ -5820,8 +5820,7 @@ export interface GiteaWebhookRotationDto {
   reason: string | null
 }
 
-/** The connection list doubles as the enabled-probe: 404 ⇒ no Gitea instance is configured
- *  on this deployment, which is an absence to state rather than a failure. */
+/** The connection list doubles as the enabled-probe: 404 ⇒ a control plane without Gitea support. */
 export async function fetchGiteaConnections(
   orgId?: string
 ): Promise<{ enabled: boolean; connections: GiteaConnectionDto[]; instanceUrl?: string }> {

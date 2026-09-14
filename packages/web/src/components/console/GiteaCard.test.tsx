@@ -181,10 +181,8 @@ beforeEach(() => {
 })
 
 describe('GiteaCard', () => {
-  it('states the absence, and asks for no repositories, on a deployment with no Gitea instance', async () => {
-    // The card mounts everywhere and learns availability from the API: an unconfigured control
-    // plane 404s the whole surface, which is an absence to state — never a load error, and never
-    // a second request.
+  it('states the absence, and asks for no repositories, on a control plane without Gitea support', async () => {
+    // A 404 on the connection list is an absence to state — never a load error or a second request.
     mocks.fetchConnections.mockResolvedValue({ enabled: false, connections: [] })
     await render()
 

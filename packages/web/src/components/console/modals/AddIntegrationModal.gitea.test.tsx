@@ -196,7 +196,7 @@ describe('AddIntegrationModal, Gitea trigger', () => {
 
     await act(async () => tileNamed('Gitea')?.click())
     expect(document.body.textContent).toContain(
-      'Gitea is not enabled on this deployment — no Gitea instance is configured.'
+      'Gitea is not enabled on this deployment — its control plane predates Gitea support.'
     )
     expect(document.body.textContent).not.toContain('Couldn’t load your Gitea repositories')
     expect(mocks.fetchGiteaConnectionRepositories).not.toHaveBeenCalled()

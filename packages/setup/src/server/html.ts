@@ -274,7 +274,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <section id="gitea-section" class="panel setup-section" aria-labelledby="gitea-heading">
         <div class="provider-head">
           <div><h3 id="gitea-heading">Gitea</h3><p class="muted">The Gitea instance this deployment addresses. Gitea registers no application, so the address is the whole setting.</p></div>
-          <span id="gitea-match" class="badge">Not configured</span>
+          <span id="gitea-match" class="badge">Default</span>
         </div>
         <dl class="credentials">
           <dt>Instance</dt><dd class="value-line"><code id="gitea-instance">https://gitea.com</code><button class="edit-configuration" data-provider="gitea">Edit</button></dd>
@@ -726,8 +726,8 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('gitea-probe').hidden = true;
       el('gitea-status').textContent = gitea
         ? ((gitea.baseUrl || 'https://gitea.com') + ' is configured.')
-        : 'Save the instance address to let organizations connect Gitea. Empty means gitea.com.';
-      match('gitea-match', gitea ? 'warn' : '', gitea ? "Can't verify automatically" : 'Not configured');
+        : 'Organizations can connect gitea.com without saving anything. Save an address only for a self-hosted instance.';
+      match('gitea-match', gitea ? 'warn' : '', gitea ? "Can't verify automatically" : 'Default');
       el('gitea-config-controls').hidden = Boolean(gitea);
       el('save-gitea').hidden = Boolean(gitea);
       el('cancel-gitea-configuration').hidden = true;
