@@ -1,4 +1,4 @@
-import type { MemoryPluginOperation } from '@agentconnect.md/protocol'
+import { MEMORY_PLUGIN_CURSOR_MAX_LENGTH, type MemoryPluginOperation } from '@agentconnect.md/protocol'
 import { obj, type ToolDescriptor } from '../tool-schema/descriptor.js'
 
 /** Refusal surfaced to the model when an isolated session tries to access agent memory shared with other users. */
@@ -83,12 +83,12 @@ const EXTERNAL_MEMORY_TOOLS: Readonly<
   list: {
     name: 'listMemory',
     description:
-      'List your durable external memory records, newest first, one page at a time. Use this to see WHAT you have stored when no particular query describes it — searchMemory only finds records that match a topic, so it cannot answer "what do I remember?". The daemon supplies your trusted agent scope automatically.',
+      'List your durable external memory records one page at a time, in the order your memory provider returns them. Use this to see WHAT you have stored when no particular query describes it — searchMemory only finds records that match a topic, so it cannot answer "what do I remember?". The daemon supplies your trusted agent scope automatically.',
     inputSchema: obj({
       cursor: {
         type: 'string',
         minLength: 1,
-        maxLength: 4096,
+        maxLength: MEMORY_PLUGIN_CURSOR_MAX_LENGTH,
         description: 'Opaque cursor from a previous page; omit for the first page.'
       },
       limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Optional page size; defaults to 50.' }

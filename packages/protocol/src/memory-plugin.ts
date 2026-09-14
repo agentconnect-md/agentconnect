@@ -240,7 +240,10 @@ export type MemoryPluginOperationStatusInput = z.infer<typeof MemoryPluginOperat
 export const MemoryPluginOperationStatusOutput = CaptureReceipt.strict()
 export type MemoryPluginOperationStatusOutput = z.infer<typeof MemoryPluginOperationStatusOutput>
 
-const OptionalCursor = z.string().min(1).max(2048).optional()
+/** Longest opaque paging cursor a plugin may mint; the daemon's model-facing tools enforce the same bound. */
+export const MEMORY_PLUGIN_CURSOR_MAX_LENGTH = 2048
+
+const OptionalCursor = z.string().min(1).max(MEMORY_PLUGIN_CURSOR_MAX_LENGTH).optional()
 
 export const MemoryPluginListInput = z
   .object({

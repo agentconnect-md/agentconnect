@@ -29,6 +29,7 @@ import {
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import { createMemoryReader, MemoryViolationError } from '../src/cp/memory-reader.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
+import { MEMORY_PLUGIN_CURSOR_MAX_LENGTH } from '@agentconnect.md/protocol'
 import { MEMORY_TOOLS } from '../src/memory/tools.js'
 import { executeTool, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
 
@@ -797,6 +798,15 @@ describe('memory MCP tools (executeTool)', () => {
 
     // The model cannot ask for an unbounded page.
     await expect(executeTool(ctx, 'listMemory', { limit: 101 }, deps)).rejects.toThrow()
+
+    // The cursor bound is the plugin contract's: its longest cursor passes, one more character fails here.
+    const longest = 'c'.repeat(MEMORY_PLUGIN_CURSOR_MAX_LENGTH)
+    await expect(executeTool(ctx, 'listMemory', { cursor: longest }, deps)).resolves.toEqual({ records: [record] })
+    expect(listReq).toEqual({ cursor: longest, limit: 50 })
+    await expect(executeTool(ctx, 'listMemory', { cursor: `${longest}c` }, deps)).rejects.toThrow(
+      /cursor must be at most 2048 characters/
+    )
+    await expect(executeTool(ctx, 'listMemory', { cursor: '' }, deps)).rejects.toThrow(/cursor/)
   })
 })
 

@@ -36,6 +36,16 @@ export function optionalString(key: string) {
     .transform((value) => value ?? undefined)
 }
 
+/** An optional non-empty string of at most `max` characters; `null` reads as absent. */
+export function optionalBoundedString(key: string, max: number) {
+  return z
+    .string(`argument ${key} must be a string`)
+    .min(1, `argument ${key} must be a non-empty string`)
+    .max(max, `argument ${key} must be at most ${max} characters`)
+    .nullish()
+    .transform((value) => value ?? undefined)
+}
+
 /** An optional finite number. */
 export function optionalNumber(key: string) {
   const message = `argument ${key} must be a finite number`

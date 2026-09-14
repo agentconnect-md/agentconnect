@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { MEMORY_PLUGIN_CURSOR_MAX_LENGTH } from '@agentconnect.md/protocol'
 import type { SessionContext } from './context.js'
 import {
   optionalBoundedInt,
+  optionalBoundedString,
   optionalObject,
   optionalString,
   parseArgs,
@@ -51,9 +53,9 @@ export const SEARCH_MEMORY_ARGS = z.object({
   maxBytes: optionalBoundedInt('maxBytes', 1, 32_768)
 })
 
-/** `listMemory` arguments: an opaque cursor and a page size, both optional. */
+/** `listMemory` arguments: an opaque cursor (bounded like the plugin contract) and a page size, both optional. */
 export const LIST_MEMORY_ARGS = z.object({
-  cursor: optionalString('cursor'),
+  cursor: optionalBoundedString('cursor', MEMORY_PLUGIN_CURSOR_MAX_LENGTH),
   limit: optionalBoundedInt('limit', 1, 100)
 })
 
