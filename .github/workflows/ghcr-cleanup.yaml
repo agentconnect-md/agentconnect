@@ -36,5 +36,4 @@ jobs:
           keep-n-tagged: 20
           # Only unreferenced manifests: the action never selects a kept index's platform or attestation manifests.
           delete-untagged: true
-          # Report-only until a logged deletion list has been reviewed.
-          dry-run: true
+          dry-run: false
