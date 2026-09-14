@@ -199,12 +199,28 @@ principled fix and the follow-up; until it exists, `allow-same-origin` stays off
 
 ### 7.2 CSP
 
-The frame carries a host-built `Content-Security-Policy` meta, restrictive by default:
+The frame carries a host-built `Content-Security-Policy` meta **inside the template's `<head>`**,
+restrictive by default:
 
 ```
-default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
-img-src 'self' data:; connect-src 'none'; frame-src 'none'; base-uri 'none'
+default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none';
+base-uri 'none'; form-action 'none'
 ```
+
+Where the meta goes is the whole of whether any of this works, and every wrong answer is silent.
+Prepending it to the template displaces the doctype (quirks mode) and lands the policy outside
+`<head>`, where browsers do not honor `http-equiv` CSP at all. Inserting it at a `<head>` located
+by a text scan is worse: that match may sit inside a comment, a quoted attribute or RCDATA, and
+the policy is then commented out or inert text — the frame runs with no declared-domain
+restriction whatever.
+
+So the document is **parsed, not scanned**. It is about to be parsed by the browser regardless, so
+`buildMcpAppDocument` parses it, inserts into the real `<head>`, and emits the doctype
+unconditionally; a fragment needs no special case because the parser supplies the elements it
+implies. The markup is re-serialized rather than passed through byte for byte, which is the
+accepted cost — what comes out is the parser's own normalization of what went in, which is what
+the frame would have rendered either way.
 
 `connectDomains`, `resourceDomains`, `frameDomains` and `baseUriDomains` declared on the
 resource widen exactly their own directive and nothing else. Per the spec, the host **may
