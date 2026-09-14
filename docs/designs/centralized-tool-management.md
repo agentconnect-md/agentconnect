@@ -178,6 +178,7 @@ authentication, substitutes headers, and forwards bytes or response streams:
 1. Read the grant key from the header → hash it → **look up locally** the delivered binding (§5.2) to obtain `{ upstreamUrl, headers }`.
 2. **Replace** the agent-side `Authorization` value, inject the real upstream headers, and forward `GET`, `POST`, or `DELETE` unchanged to `upstreamUrl`. Stream the response back unchanged; do not parse JSON-RPC.
 3. Return 401 if providerId does not match the grant, the grant has been revoked, or no binding exists.
+4. **Contain an upstream 3xx and an upstream 401/403** as an opaque `502 upstream authorization failed`, stripping `WWW-Authenticate` and `Proxy-Authenticate` from the response. Both statuses let the upstream route the caller past this boundary: a `Location` takes the agent around the §5.3 egress guard, and an auth challenge takes the agent's MCP client into the **upstream's own** OAuth discovery against the proxy URL — which reveals the upstream identity the proxy exists to hide, and whose eventual `Authorization` the relay strips along with the grant key, permanently breaking the provider for that session. The injected credential is the binding's, so an upstream rejection is the CP's to repair, never the caller's. The relay's own 401s (step 3) stay 401 so the two remain distinguishable.
 
 An `open_connector` provider uses the same authenticated route and grant
 binding, but the relay terminates MCP and translates supported JSON-RPC
@@ -348,6 +349,6 @@ remains (per-harness coverage, not a new component).
 
 - Protocol codec: zod round-trips for `mcpserver/*` and `rc/mcp-assign/unassign`.
 - CP `test:unit`: placement filtering (enable→deliver, disable→remove, follow moves), stored-key/hash handling, correct dual-push payloads, no header values in DTOs, static `url` SSRF validation rejecting private/metadata addresses, console visibility enforcement, `http`-only transport validation, and correct unassign + definition updates during revocation and rotation.
-- Relay proxy unit tests: valid grants substitute headers and forward; invalid/revoked grants make the **next call** return 401; SSE streams transparently; binding convergence; **no CP calls**. **SSRF tests** reject private, loopback, `169.254.169.254`, DNS rebinding (public during validation, private on connect), and cross-host redirects; allow only matching allowlist entries.
+- Relay proxy unit tests: valid grants substitute headers and forward; invalid/revoked grants make the **next call** return 401; SSE streams transparently; binding convergence; **no CP calls**. **SSRF tests** reject private, loopback, `169.254.169.254`, DNS rebinding (public during validation, private on connect), and cross-host redirects; allow only matching allowlist entries. An upstream 401/403 becomes an opaque 502 with no `WWW-Authenticate`, while the relay's own grant-key 401 stays 401.
 - Daemon: `CpMcpDefs` upsert/remove/full-replace behavior and local/CP precedence. The existing resolver tests cover injection of effective definitions.
 - Review invariant: **upstream headers never enter DTOs, reach daemons, or appear in logs**.

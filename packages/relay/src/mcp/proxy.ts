@@ -32,7 +32,16 @@ const STRIP_REQUEST_HEADERS = new Set([
   'authorization', // replaced by the upstream's injected headers
   'content-length' // recomputed by the outbound request
 ])
-const STRIP_RESPONSE_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'trailer', 'upgrade'])
+// Hop-by-hop + the upstream's own auth challenge, which must never reach the caller (see the 401/403 arm).
+const STRIP_RESPONSE_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'transfer-encoding',
+  'trailer',
+  'upgrade',
+  'www-authenticate',
+  'proxy-authenticate'
+])
 
 export interface McpProxyDeps {
   bindings: McpBindingTable
@@ -156,6 +165,9 @@ async function serveOpenConnector(
  * the agent bearer for the real upstream headers, and streams the exchange through (SSE
  * passthrough). The relay does NOT parse MCP — it is a byte/stream reverse proxy.
  * Supports Streamable HTTP (single endpoint) only; legacy HTTP+SSE is out of scope.
+ * Two upstream statuses are contained rather than relayed — 3xx and 401/403 — because each
+ * lets the upstream route the caller past this boundary (around the SSRF gate, or into the
+ * upstream's own OAuth). Both surface as an opaque 502; the relay's own 401s stay 401.
  */
 function registerGrantProxy(app: FastifyInstance, deps: GrantProxyDeps): void {
   void app.register(async (scope) => {
@@ -239,6 +251,16 @@ function registerGrantProxy(app: FastifyInstance, deps: GrantProxyDeps): void {
               if (status >= 300 && status < 400) {
                 upstreamRes.resume()
                 void reply.code(502).send({ error: 'upstream redirect rejected' })
+                resolve()
+                return
+              }
+              // Never relayed (as with 3xx): the upstream challenge would pull the caller's MCP client into
+              // the upstream's own OAuth against this proxy url, and the token it wins is stripped as the
+              // grant key. The rejected credential is the binding's — the CP repairs it, never the caller.
+              if (status === 401 || status === 403) {
+                upstreamRes.resume()
+                deps.log.warn(`${deps.logPrefix}: upstream rejected the binding credential (${status})`)
+                void reply.code(502).send({ error: 'upstream authorization failed' })
                 resolve()
                 return
               }

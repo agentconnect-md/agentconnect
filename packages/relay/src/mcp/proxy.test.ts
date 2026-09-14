@@ -28,6 +28,15 @@ function fakeUpstream(): Promise<{
         res.end()
         return
       }
+      // The RFC 9728 challenge an OAuth-protected MCP server answers an unauthorized call with.
+      if (req.url === '/unauthorized' || req.url === '/forbidden') {
+        res.writeHead(req.url === '/unauthorized' ? 401 : 403, {
+          'www-authenticate': `Bearer resource_metadata="http://${req.headers.host}/.well-known/oauth-protected-resource"`,
+          'content-type': 'application/json'
+        })
+        res.end(JSON.stringify({ error: 'invalid_token', upstream_hint: 'secret-ish' }))
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, echoed: body }))
     })
@@ -179,6 +188,52 @@ describe('registerMcpProxy — MCP reverse proxy route', () => {
       })
       expect(res.status).toBe(502)
       expect(await res.json()).toEqual({ error: 'upstream redirect rejected' })
+    } finally {
+      await relay.close()
+    }
+  })
+
+  it.each([
+    ['/unauthorized', 401],
+    ['/forbidden', 403]
+  ])('contains an upstream %s (%i) so its auth challenge never reaches the MCP client', async (path) => {
+    const relay = await startRelay(['127.0.0.1'])
+    relay.bindings.assign({
+      providerId: PID,
+      upstreamUrl: `${upstream.url}${path}`,
+      headers: [{ name: 'authorization', value: 'Bearer stale-upstream-token' }],
+      grantKeyHashes: [hash('good-grant')]
+    })
+    try {
+      const res = await fetch(`${relay.base}/mcp/${PID}`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer good-grant' },
+        body: '{}'
+      })
+      expect(res.status).toBe(502)
+      expect(res.headers.get('www-authenticate')).toBeNull()
+      expect(await res.json()).toEqual({ error: 'upstream authorization failed' })
+    } finally {
+      await relay.close()
+    }
+  })
+
+  it('keeps a grant-key 401 distinguishable from a contained upstream rejection', async () => {
+    const relay = await startRelay(['127.0.0.1'])
+    relay.bindings.assign({
+      providerId: PID,
+      upstreamUrl: `${upstream.url}/unauthorized`,
+      headers: [],
+      grantKeyHashes: [hash('good-grant')]
+    })
+    try {
+      const res = await fetch(`${relay.base}/mcp/${PID}`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer wrong-grant' },
+        body: '{}'
+      })
+      expect(res.status).toBe(401)
+      expect(await res.json()).toEqual({ error: 'unknown provider or invalid grant key' })
     } finally {
       await relay.close()
     }
