@@ -23,6 +23,7 @@ import {
   type EntryCoordinate,
   type EntryDocument,
   type EntryPage,
+  type EntrySearchPage,
   type EntrySummary,
   type MemoryEntriesView
 } from './contract.js'
@@ -30,12 +31,47 @@ import { memoryDigest, memoryUtf8Prefix } from './service.js'
 
 const MAX_SNAPSHOT_ITEMS = 2048
 const MAX_SNAPSHOT_READ_BYTES = 16 * 1024 * 1024
+const SNIPPET_CHARS = 240
+
+// Deterministic substring matching of every whitespace-separated term over label, description and body.
+function lexicalMatch(terms: string[], document: EntryDocument): { score: number; snippet: string } | undefined {
+  const label = document.summary.label.toLowerCase()
+  const description = (document.summary.description ?? '').toLowerCase()
+  const body = parseMemoryFrontmatter(document.text).body
+  const haystack = body.toLowerCase()
+  let score = 0
+  let first = -1
+  for (const term of terms) {
+    const inLabel = label.includes(term)
+    const inDescription = description.includes(term)
+    const at = haystack.indexOf(term)
+    if (!inLabel && !inDescription && at < 0) return undefined
+    score +=
+      (inLabel ? 3 : 0) +
+      (inDescription ? 2 : 0) +
+      (at >= 0 ? 1 + Math.min(haystack.split(term).length - 1, 9) / 10 : 0)
+    if (at >= 0 && (first < 0 || at < first)) first = at
+  }
+  // Case folding can change string length; only a same-length fold can index the original text.
+  return { score, snippet: snippetAround(body, haystack.length === body.length ? first : -1) }
+}
+
+function snippetAround(body: string, at: number): string {
+  const start = at < 0 ? 0 : Math.max(0, at - Math.floor(SNIPPET_CHARS / 3))
+  const window = body.slice(start, start + SNIPPET_CHARS)
+  const text = window
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[\uD800-\uDBFF]$/, '')
+  return `${start > 0 ? '…' : ''}${text}${start + SNIPPET_CHARS < body.length ? '…' : ''}`
+}
 
 // Roots are resolved by core, most specific first; a draft supplies only its own root.
 export class ManagedMemoryEntries implements MemoryEntriesView {
   readonly capabilities: MemoryEntryCapabilities = {
     version: 1,
-    operations: ['list', 'get'],
+    operations: ['list', 'get', 'search'],
+    searchKind: 'lexical',
     supportedScopes: ['agent', 'channel'],
     writeConsistency: 'last-write-wins',
     exactEdit: false,
@@ -56,7 +92,7 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
     if (writeContext && roots[0]!.atomicTransaction && roots[0]!.stageTransactionFile && roots[0]!.captureStatus) {
       this.capabilities = {
         ...this.capabilities,
-        operations: ['list', 'get', 'create', 'update', 'delete'],
+        operations: ['list', 'get', 'search', 'create', 'update', 'delete'],
         writeConsistency: 'conditional',
         exactCreate: true,
         exactEdit: true
@@ -87,6 +123,47 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
 
   async get(coordinate: EntryCoordinate): Promise<EntryDocument | null> {
     return this.lock(() => this.read(coordinate))
+  }
+
+  // A bounded scan in topic order; exhausting the scan budget is reported, never hidden.
+  async search(request: { query: string; limit: number }): Promise<EntrySearchPage> {
+    const terms = [...new Set(request.query.toLowerCase().split(/\s+/).filter(Boolean))]
+    if (terms.length === 0) return { hits: [], kind: 'lexical', coverage: 'complete' }
+    return this.lock(async () => {
+      const scored: Array<{ entry: EntrySummary; snippet: string; score: number }> = []
+      let coverage: EntrySearchPage['coverage'] = 'complete'
+      let scanned = 0
+      let bytes = 0
+      for (const row of await this.inventory()) {
+        if (scanned >= MAX_SNAPSHOT_ITEMS || bytes + row.size > MAX_SNAPSHOT_READ_BYTES) {
+          coverage = 'partial'
+          break
+        }
+        scanned++
+        bytes += row.size
+        let document: EntryDocument | null
+        try {
+          document = await this.read({ partition: String(row.layer), id: row.name })
+        } catch (error) {
+          if (!(error instanceof MemoryEntriesError) || error.code !== 'TOO_LARGE') throw error
+          coverage = 'partial'
+          continue
+        }
+        if (!document) continue
+        const match = lexicalMatch(terms, document)
+        if (match) scored.push({ entry: document.summary, ...match })
+      }
+      scored.sort(
+        (a, b) =>
+          b.score - a.score ||
+          (a.entry.coordinate.id < b.entry.coordinate.id ? -1 : a.entry.coordinate.id > b.entry.coordinate.id ? 1 : 0)
+      )
+      return {
+        hits: scored.slice(0, request.limit).map(({ entry, snippet }) => ({ entry, snippet })),
+        kind: 'lexical',
+        coverage
+      }
+    })
   }
 
   async context(request: { maxBytes: number }): Promise<MemoryContextResult> {

@@ -36,6 +36,11 @@ export interface EntryPage {
   nextCursor?: string
   catalogRevision?: string
 }
+export interface EntrySearchPage {
+  hits: Array<{ entry: EntrySummary; snippet: string }>
+  kind: 'lexical' | 'semantic' | 'hybrid' | 'unknown'
+  coverage: 'complete' | 'partial' | 'unknown'
+}
 
 // The caller resolves this view from authenticated context on every operation, including continuation.
 export interface MemoryEntriesView {
@@ -43,6 +48,7 @@ export interface MemoryEntriesView {
   capabilities: MemoryEntryCapabilities
   list?(request: { cursor?: string; limit: number }): Promise<EntryPage>
   get?(coordinate: EntryCoordinate): Promise<EntryDocument | null>
+  search?(request: { query: string; limit: number }): Promise<EntrySearchPage>
   create?(request: MemoryEntryCreateRequest): Promise<EntryMutationResult>
   update?(
     coordinate: EntryCoordinate,

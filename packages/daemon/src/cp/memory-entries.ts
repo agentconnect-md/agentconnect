@@ -40,6 +40,8 @@ export function createMemoryEntriesReader(
           return { operation: 'list', result: await entries.list(req.request) }
         case 'get':
           return { operation: 'get', result: await entries.get(req.request) }
+        case 'search':
+          return { operation: 'search', result: await entries.search(req.request) }
       }
     } catch (error) {
       if (error instanceof MemoryEntriesError)

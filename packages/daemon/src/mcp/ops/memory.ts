@@ -159,6 +159,7 @@ export const MEMORY_TOOL_ACCESS_MODES: Record<string, 'read' | 'write'> = {
   describeMemoryEntries: 'read',
   listMemoryEntries: 'read',
   getMemoryEntry: 'read',
+  searchMemoryEntries: 'read',
   createMemoryEntry: 'write',
   updateMemoryEntry: 'write',
   deleteMemoryEntry: 'write',

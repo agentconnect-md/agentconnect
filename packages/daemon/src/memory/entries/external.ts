@@ -19,6 +19,7 @@ import {
   type EntryDocument,
   type EntryMutationResult,
   type EntryPage,
+  type EntrySearchPage,
   type EntrySummary,
   type MemoryEntriesView
 } from './contract.js'
@@ -45,8 +46,10 @@ export class ExternalMemoryEntries implements MemoryEntriesView {
       operations: [
         ...(admin.capabilities.has('list') ? ['list' as const] : []),
         ...(admin.capabilities.has('get') ? ['get' as const] : []),
+        ...(admin.capabilities.has('recall') ? ['search' as const] : []),
         ...(writeContext ? WRITE_OPERATIONS.filter((operation) => admin.capabilities.has(operation)) : [])
       ],
+      // A v1 manifest does not declare its retrieval kind, so no lexical/semantic claim is made.
       supportedScopes: ['agent'],
       // A v1 plugin proves neither atomic conditional writes nor exact storage of authored text.
       writeConsistency: 'last-write-wins',
@@ -80,6 +83,32 @@ export class ExternalMemoryEntries implements MemoryEntriesView {
       summary: this.summary(record),
       text: record.text,
       ...(record.metadata ? { metadata: record.metadata } : {})
+    }
+  }
+
+  async search(request: { query: string; limit: number }): Promise<EntrySearchPage> {
+    if (!this.capabilities.operations.includes('search'))
+      throw new MemoryEntriesError('UNSUPPORTED', 'memory search is unavailable')
+    let records: MemoryRecord[]
+    try {
+      records = await this.admin.search(this.scope, {
+        turnId: randomUUID(),
+        query: request.query,
+        topK: Math.min(request.limit, 20),
+        maxBytes: 16_384,
+        timeoutMs: 3_000
+      })
+    } catch (error) {
+      if (error instanceof MemoryTooLargeError) throw new MemoryEntriesError('TOO_LARGE', error.message)
+      throw new MemoryEntriesError('UNAVAILABLE', 'memory search is temporarily unavailable')
+    }
+    return {
+      kind: 'unknown',
+      coverage: 'unknown',
+      hits: records.slice(0, request.limit).map((record) => ({
+        entry: this.summary(record),
+        snippet: memoryUtf8Prefix(record.text.replace(/\s+/g, ' ').trim(), 240)
+      }))
     }
   }
 

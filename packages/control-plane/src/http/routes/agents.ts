@@ -7,6 +7,8 @@ import {
   MemoryEntryCapabilities,
   MemoryEntryListRequest,
   MemoryEntryListResult,
+  MemoryEntrySearchRequest,
+  MemoryEntrySearchResult,
   MemoryEntryGetRequest,
   MemoryEntryContent,
   MemoryEntryErrorCode,
@@ -1014,6 +1016,11 @@ export function agentRoutes(deps: HttpDeps) {
             })
           if (answer.operation === 'get' && answer.result)
             return reply.send({ ...answer.result, entry: { ...answer.result.entry, editable: false } })
+          if (answer.operation === 'search')
+            return reply.send({
+              ...answer.result,
+              hits: answer.result.hits.map((hit) => ({ ...hit, entry: { ...hit.entry, editable: false } }))
+            })
         }
         return reply.send(answer.result)
       } catch (err) {
@@ -1096,6 +1103,28 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
+    r.post(
+      '/agents/:id/memory/entries/search',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Search unified memory entries',
+          description:
+            'Returns bounded hits with snippets for a query through a daemon supporting memory-entries-search-v1. The result names the search kind and coverage; it is never an enumeration.',
+          operationId: 'searchAgentMemoryEntries',
+          params: IdParam,
+          querystring: entryScopeQuery,
+          body: MemoryEntrySearchRequest,
+          response: { 200: MemoryEntrySearchResult, ...entryErrors }
+        }
+      },
+      (req, reply) =>
+        entryCall(req, reply, req.params.id, {
+          operation: 'search',
+          ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
+          request: req.body
+        })
+    )
     r.post(
       '/agents/:id/memory/entries',
       {

@@ -48,6 +48,9 @@ export async function listMemoryEntries(ctx: SessionContext, args: Record<string
 export async function getMemoryEntry(ctx: SessionContext, args: Record<string, unknown>, deps: MemoryOpsDeps) {
   return call(ctx, deps, (service) => service.get(args))
 }
+export async function searchMemoryEntries(ctx: SessionContext, args: Record<string, unknown>, deps: MemoryOpsDeps) {
+  return call(ctx, deps, (service) => service.search(args))
+}
 
 export async function createMemoryEntry(ctx: SessionContext, args: Record<string, unknown>, deps: MemoryOpsDeps) {
   return call(ctx, deps, (service) => service.create(args))

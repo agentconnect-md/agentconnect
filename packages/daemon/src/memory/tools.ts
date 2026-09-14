@@ -162,8 +162,9 @@ const EXTERNAL_MEMORY_TOOLS: Readonly<Record<'recall' | 'create' | 'get' | 'upda
 const EXTERNAL_MEMORY_TOOL_OPERATIONS = ['recall', 'create', 'get', 'update', 'delete'] as const
 
 export function externalMemoryTools(capabilities: ReadonlySet<MemoryPluginOperation>): ToolDescriptor[] {
+  // The plugin profile calls retrieval `recall`; the common family projects it as `search`.
   return [
-    ...memoryEntryTools(capabilities),
+    ...memoryEntryTools(new Set([...capabilities, ...(capabilities.has('recall') ? ['search'] : [])])),
     ...EXTERNAL_MEMORY_TOOL_OPERATIONS.filter((operation) => capabilities.has(operation)).map(
       (operation) => EXTERNAL_MEMORY_TOOLS[operation]
     )

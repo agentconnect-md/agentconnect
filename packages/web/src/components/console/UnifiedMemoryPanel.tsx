@@ -1,12 +1,18 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { MemoryEntryCapabilities, MemoryEntryContent, MemoryEntrySummary } from '@agentconnect.md/protocol'
+import type {
+  MemoryEntryCapabilities,
+  MemoryEntryContent,
+  MemoryEntrySearchHit,
+  MemoryEntrySummary
+} from '@agentconnect.md/protocol'
 import {
   ApiError,
   describeAgentMemoryEntries,
   listAgentMemoryEntries,
   getAgentMemoryEntry,
+  searchAgentMemoryEntries,
   createAgentMemoryEntry,
   updateAgentMemoryEntry,
   deleteAgentMemoryEntry
@@ -44,6 +50,9 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
   const [legacy, setLegacy] = useState(false)
   const [entries, setEntries] = useState<MemoryEntrySummary[]>([])
   const [cursor, setCursor] = useState<string>()
+  const [query, setQuery] = useState('')
+  const [hits, setHits] = useState<MemoryEntrySearchHit[] | null>(null)
+  const [searchNote, setSearchNote] = useState<string>()
   const [busy, setBusy] = useState(true)
   const [reading, setReading] = useState(false)
   const [error, setError] = useState<string>()
@@ -62,6 +71,8 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
       setReading(false)
       setBusy(true)
       setError(undefined)
+      setHits(null)
+      setSearchNote(undefined)
       try {
         const caps = await describeAgentMemoryEntries(agentId, channelKey)
         if (id !== generation.current) return
@@ -107,6 +118,26 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
       if (id !== generation.current) return
       setEntries((old) => [...old, ...page.entries])
       setCursor(page.nextCursor)
+    } catch (err) {
+      if (id === generation.current) setError(errorMessage(err))
+    } finally {
+      if (id === generation.current) setBusy(false)
+    }
+  }
+  // A search is retrieval over the authorized view, never a listing; the note says what it can prove.
+  async function search() {
+    const id = generation.current
+    const text = query.trim()
+    if (!text) return
+    setBusy(true)
+    setError(undefined)
+    try {
+      const result = await searchAgentMemoryEntries(agentId, text, channelKey)
+      if (id !== generation.current) return
+      setHits(result.hits)
+      setSearchNote(
+        `${result.hits.length} ${result.hits.length === 1 ? 'hit' : 'hits'} · ${result.kind} search · ${result.coverage} coverage. A search is not a complete listing.`
+      )
     } catch (err) {
       if (id === generation.current) setError(errorMessage(err))
     } finally {
@@ -251,6 +282,46 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
           </Button>
         </div>
       </div>
+      {capabilities?.operations.includes('search') && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <input
+            aria-label="Search memory"
+            placeholder="Search memory"
+            value={query}
+            maxLength={2048}
+            disabled={busy || saving}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void search()
+              }
+            }}
+            className="min-w-0 flex-1 rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2"
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy || saving || !query.trim()}
+            onClick={() => void search()}
+          >
+            Search
+          </Button>
+          {hits && (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy || saving}
+              onClick={() => {
+                setHits(null)
+                setSearchNote(undefined)
+              }}
+            >
+              Clear search
+            </Button>
+          )}
+        </div>
+      )}
       {notice && <p role="status">{notice}</p>}
       {error && (
         <p role="alert" className="text-(--text-secondary)">
@@ -260,22 +331,36 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
       <div className="grid gap-4 desktop:grid-cols-[240px_minmax(0,1fr)]">
         <div className="flex flex-col gap-2">
           {busy && <p role="status">Loading memory…</p>}
-          {!busy && !error && entries.length === 0 && <p>No memory entries on this page.</p>}
-          {entries.map((entry, index) => (
+          {hits && searchNote && <p className="text-[11px] text-(--text-secondary)">{searchNote}</p>}
+          {!busy && !error && hits && hits.length === 0 && <p>No memory matched this search.</p>}
+          {hits?.map((hit, index) => (
             <button
-              key={`${entry.ref}:${index}`}
+              key={`${hit.entry.ref}:${index}`}
               className="rounded-sm border border-(--border-subtle) p-2 text-left text-(--text-primary) hover:bg-(--surface-hover) disabled:opacity-50"
               disabled={saving || (!!mode && !blocked)}
-              onClick={() => void open(entry)}
+              onClick={() => void open(hit.entry)}
             >
-              <span className="block break-words font-semibold">{entry.label ?? 'Untitled memory'}</span>
-              <span className="text-[11px] text-(--text-secondary)">
-                {entry.origin === 'active' ? '' : 'Inherited · '}
-                {entry.byteSize} bytes
-              </span>
+              <span className="block break-words font-semibold">{hit.entry.label ?? 'Untitled memory'}</span>
+              <span className="block break-words text-[11px] text-(--text-secondary)">{hit.snippet}</span>
             </button>
           ))}
-          {cursor && (
+          {!busy && !error && !hits && entries.length === 0 && <p>No memory entries on this page.</p>}
+          {!hits &&
+            entries.map((entry, index) => (
+              <button
+                key={`${entry.ref}:${index}`}
+                className="rounded-sm border border-(--border-subtle) p-2 text-left text-(--text-primary) hover:bg-(--surface-hover) disabled:opacity-50"
+                disabled={saving || (!!mode && !blocked)}
+                onClick={() => void open(entry)}
+              >
+                <span className="block break-words font-semibold">{entry.label ?? 'Untitled memory'}</span>
+                <span className="text-[11px] text-(--text-secondary)">
+                  {entry.origin === 'active' ? '' : 'Inherited · '}
+                  {entry.byteSize} bytes
+                </span>
+              </button>
+            ))}
+          {!hits && cursor && (
             <Button variant="secondary" size="sm" disabled={busy || saving} onClick={() => void more()}>
               Load more
             </Button>

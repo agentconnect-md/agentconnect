@@ -232,6 +232,7 @@ describe('ExternalMemoryProvider', () => {
       'describeMemoryEntries',
       'listMemoryEntries',
       'getMemoryEntry',
+      'searchMemoryEntries',
       'createMemoryEntry',
       'updateMemoryEntry',
       'deleteMemoryEntry',
@@ -277,10 +278,11 @@ describe('ExternalMemoryProvider', () => {
     const h = harness(['recall', 'capture', 'list', 'get', 'create', 'update', 'delete'])
     const provider = new ExternalMemoryProvider(binding(), h.deps)
     const readOnly = await provider.entryView({ agentId: 'bot-a' })
-    expect(readOnly.capabilities.operations).toEqual(['list', 'get'])
+    expect(readOnly.capabilities.operations).toEqual(['list', 'get', 'search'])
+    expect(readOnly.capabilities).not.toHaveProperty('searchKind')
     const view = await provider.entryView({ agentId: 'bot-a' }, 'console')
     expect(view.capabilities).toMatchObject({
-      operations: ['list', 'get', 'create', 'update', 'delete'],
+      operations: ['list', 'get', 'search', 'create', 'update', 'delete'],
       writeConsistency: 'last-write-wins',
       exactCreate: false,
       exactEdit: false
@@ -318,6 +320,35 @@ describe('ExternalMemoryProvider', () => {
       operationId: expect.any(String)
     })
     expect(h.client.delete).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'record-1', version: 'v2' }))
+  })
+
+  it('projects recall as unified search with unknown kind and coverage, and bounded snippets', async () => {
+    const h = harness(['recall', 'capture', 'get'])
+    const provider = new ExternalMemoryProvider(binding(), h.deps)
+    const view = await provider.entryView({ agentId: 'bot-a' })
+    const page = await view.search({ query: 'where do we deploy', limit: 3 })
+    expect(h.recall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: 'where do we deploy',
+        topK: 3,
+        context: expect.objectContaining({ scope: { kind: 'agent', key: 'ac:agent:bot-a' } })
+      }),
+      expect.objectContaining({ timeoutMs: 3_000 })
+    )
+    expect(page).toMatchObject({
+      kind: 'unknown',
+      coverage: 'unknown',
+      hits: [
+        { entry: { coordinate: { partition: 'agent', id: 'record-1' }, format: 'text' }, snippet: 'deploy in sea' }
+      ]
+    })
+    h.recall.mockRejectedValueOnce(new Error('backend body that must not leak'))
+    await expect(view.search({ query: 'q', limit: 1 })).rejects.toMatchObject({ code: 'UNAVAILABLE' })
+    const noRecall = await new ExternalMemoryProvider(binding(), harness(['capture', 'get']).deps).entryView({
+      agentId: 'bot-a'
+    })
+    expect(noRecall.capabilities.operations).toEqual(['get'])
+    await expect(noRecall.search({ query: 'q', limit: 1 })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
   })
 
   it('routes unified mutation tools for an external session through the write gate', async () => {

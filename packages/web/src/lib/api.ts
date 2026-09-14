@@ -6249,6 +6249,12 @@ export function getAgentMemoryEntry(agentId: string, ref: string, channelKey?: s
     })
   )
 }
+export function searchAgentMemoryEntries(agentId: string, query: string, channelKey?: string) {
+  return apiPost<import('@agentconnect.md/protocol').MemoryEntrySearchResult>(
+    memoryEntryUrl(agentId, 'entries/search', channelKey),
+    { query, limit: 20 }
+  )
+}
 export function createAgentMemoryEntry(
   agentId: string,
   request: import('@agentconnect.md/protocol').MemoryEntryCreateRequest,

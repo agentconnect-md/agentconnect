@@ -89,6 +89,22 @@ export const MemoryEntryContent = z
   .strict()
 export type MemoryEntryContent = z.infer<typeof MemoryEntryContent>
 
+export const MemoryEntrySearchRequest = z
+  .object({ query: z.string().min(1).max(2048), limit: z.number().int().min(1).max(20).default(5) })
+  .strict()
+export type MemoryEntrySearchRequest = z.infer<typeof MemoryEntrySearchRequest>
+export const MemoryEntrySearchHit = z.object({ entry: MemoryEntrySummary, snippet: z.string().max(1024) }).strict()
+export type MemoryEntrySearchHit = z.infer<typeof MemoryEntrySearchHit>
+// Search is retrieval, never enumeration: the kind and coverage say what the hits can and cannot prove.
+export const MemoryEntrySearchResult = z
+  .object({
+    hits: z.array(MemoryEntrySearchHit).max(20),
+    kind: z.enum(['lexical', 'semantic', 'hybrid', 'unknown']),
+    coverage: z.enum(['complete', 'partial', 'unknown'])
+  })
+  .strict()
+export type MemoryEntrySearchResult = z.infer<typeof MemoryEntrySearchResult>
+
 export const MemoryContextRequest = z
   .object({
     seenRevision: z.string().max(512).optional(),

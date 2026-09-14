@@ -1,6 +1,7 @@
 import { memorySourceTurnId } from './memory/source-turn.js'
 import {
   MEMORY_ENTRIES_V1_FEATURE,
+  MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
   AgentActivate as AgentActivateSchema,
   AgentSkillEntry as AgentSkillEntrySchema,
@@ -5279,6 +5280,7 @@ export class Daemon {
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       MEMORY_ENTRIES_V1_FEATURE,
+      MEMORY_ENTRIES_SEARCH_V1_FEATURE,
       MEMORY_ENTRIES_WRITE_V1_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
       ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),

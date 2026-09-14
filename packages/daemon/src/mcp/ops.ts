@@ -3,6 +3,7 @@ import {
   describeMemoryEntries,
   listMemoryEntries,
   getMemoryEntry,
+  searchMemoryEntries,
   createMemoryEntry,
   updateMemoryEntry,
   deleteMemoryEntry
@@ -11,6 +12,7 @@ import {
   DESCRIBE_MEMORY_ENTRIES_ARGS,
   LIST_MEMORY_ENTRIES_ARGS,
   GET_MEMORY_ENTRY_ARGS,
+  SEARCH_MEMORY_ENTRIES_ARGS,
   CREATE_MEMORY_ENTRY_ARGS,
   UPDATE_MEMORY_ENTRY_ARGS,
   DELETE_MEMORY_ENTRY_ARGS
@@ -226,6 +228,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['describeMemoryEntries', describeMemoryEntries],
   ['listMemoryEntries', listMemoryEntries],
   ['getMemoryEntry', getMemoryEntry],
+  ['searchMemoryEntries', searchMemoryEntries],
   ['createMemoryEntry', createMemoryEntry],
   ['updateMemoryEntry', updateMemoryEntry],
   ['deleteMemoryEntry', deleteMemoryEntry],
@@ -292,6 +295,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['describeMemoryEntries', DESCRIBE_MEMORY_ENTRIES_ARGS],
   ['listMemoryEntries', LIST_MEMORY_ENTRIES_ARGS],
   ['getMemoryEntry', GET_MEMORY_ENTRY_ARGS],
+  ['searchMemoryEntries', SEARCH_MEMORY_ENTRIES_ARGS],
   ['createMemoryEntry', CREATE_MEMORY_ENTRY_ARGS],
   ['updateMemoryEntry', UPDATE_MEMORY_ENTRY_ARGS],
   ['deleteMemoryEntry', DELETE_MEMORY_ENTRY_ARGS],

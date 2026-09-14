@@ -588,3 +588,78 @@ describe('unified external mutations', () => {
     expect(f.mutations).toHaveLength(3)
   })
 })
+
+describe('unified search', () => {
+  it('managed lexical search matches every term over label, description and body, in a deterministic order', async () => {
+    const f = await fixture('managed', 0)
+    await f.root.writeFile(
+      'memory/deploy.md',
+      '---\nname: Deployment rules\ndescription: How releases reach production\n---\nDeploy on Fridays only after the smoke test passes.\n'
+    )
+    await f.root.writeFile(
+      'memory/oncall.md',
+      '---\nname: On-call\n---\nThe on-call engineer approves every Friday deploy.\n'
+    )
+    await f.root.writeFile('memory/lunch.md', 'Team lunch happens on Fridays.\n')
+    expect(await f.api.describe()).toMatchObject({ operations: ['list', 'get', 'search'], searchKind: 'lexical' })
+    const page = await f.api.search({ query: 'friday DEPLOY' })
+    expect(page).toMatchObject({ kind: 'lexical', coverage: 'complete' })
+    expect(page.hits.map((hit) => hit.entry.label)).toEqual(['Deployment rules', 'On-call'])
+    expect(page.hits[0]!.snippet).toBe('Deploy on Fridays only after the smoke test passes.')
+    expect(page.hits[0]!.snippet).not.toContain('name:')
+    expect(await f.api.get({ ref: page.hits[0]!.entry.ref })).toMatchObject({ entry: { label: 'Deployment rules' } })
+    expect((await f.api.search({ query: 'production' })).hits.map((hit) => hit.entry.label)).toEqual([
+      'Deployment rules'
+    ])
+    expect((await f.api.search({ query: 'nothing-like-this' })).hits).toEqual([])
+    expect((await f.api.search({ query: 'fridays', limit: 1 })).hits).toHaveLength(1)
+    await expect(f.api.search({ query: '' })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' })
+    await expect(f.api.search({ query: 'x', limit: 21 })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' })
+  })
+
+  it('managed search sees the channel overlay and keeps the generated index out of hits', async () => {
+    const f = await fixture('managed', 0)
+    await f.root.writeFile('memory/MEMORY.md', '# Index\n- shared secret phrase\n')
+    await f.root.writeFile('memory/topic.md', 'base shared secret phrase\n')
+    await f.root.writeFile('channels/c1/memory/topic.md', 'channel override without the phrase\n')
+    await f.root.writeFile('channels/c1/memory/extra.md', 'channel-only shared secret phrase\n')
+    const view = () => f.provider.entryView({ agentId: 'binding-1', channelKey: 'c1' })
+    const api = await service(f.db, view)
+    const page = await api.search({ query: 'shared secret phrase' })
+    expect(page.hits.map((hit) => [hit.entry.label, hit.entry.origin])).toEqual([['extra', 'active']])
+  })
+
+  it('external search projects recall hits and never claims lexical kind or complete coverage', async () => {
+    const f = await fixture('external', 3)
+    ;(f.admin.capabilities as Set<string>).add('recall')
+    f.admin.search = async (_scope, request) =>
+      [...f.records.values()].filter((record) => record.text.includes(request.query)).slice(0, request.topK)
+    expect((await f.api.describe()).operations).toEqual(['list', 'get', 'search'])
+    const page = await f.api.search({ query: 'Fact 1', limit: 2 })
+    expect(page).toMatchObject({ kind: 'unknown', coverage: 'unknown' })
+    expect(page.hits.map((hit) => hit.snippet)).toEqual(['Fact 1'])
+    expect(await f.api.get({ ref: page.hits[0]!.entry.ref })).toMatchObject({ text: 'Fact 1' })
+  })
+
+  it('projects search through MCP and the admin reader with the same bounded result', async () => {
+    const f = await fixture('managed', 0)
+    await f.root.writeFile('memory/deploy.md', 'Deploy on Fridays.\n')
+    const { executeTool } = await import('../src/mcp/ops.js')
+    const { MEMORY_TOOLS } = await import('../src/memory/tools.js')
+    const ctx = { agentId: 'a', platform: 'slack', isDm: false, channel: 'C', thread: 'T', tools: MEMORY_TOOLS }
+    const deps = { memory: f.provider, memoryEntryStore: f.db } as unknown as import('../src/mcp/ops.js').OpsDeps
+    expect(await executeTool(ctx, 'searchMemoryEntries', { query: 'fridays' }, deps)).toMatchObject({
+      kind: 'lexical',
+      hits: [{ entry: { label: 'deploy' }, snippet: 'Deploy on Fridays.' }]
+    })
+    await expect(
+      executeTool(ctx, 'searchMemoryEntries', { query: 'fridays' }, { ...deps, memoryAccessDecision: () => 'deny' })
+    ).rejects.toThrow()
+    const { createMemoryEntriesReader } = await import('../src/cp/memory-entries.js')
+    const read = createMemoryEntriesReader(f.provider, f.db, (id) => id === 'a')
+    expect(await read({ agentId: 'a', operation: 'search', request: { query: 'fridays', limit: 5 } })).toMatchObject({
+      operation: 'search',
+      result: { kind: 'lexical', coverage: 'complete', hits: [{ snippet: 'Deploy on Fridays.' }] }
+    })
+  })
+})

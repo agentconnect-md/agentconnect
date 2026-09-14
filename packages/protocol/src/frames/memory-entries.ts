@@ -9,21 +9,27 @@ import {
   MemoryEntryErrorCode,
   MemoryEntryGetRequest,
   MemoryEntryListRequest,
-  MemoryEntryListResult
+  MemoryEntryListResult,
+  MemoryEntrySearchRequest,
+  MemoryEntrySearchResult
 } from '../memory-entries.js'
 
 export const MEMORY_ENTRIES_V1_FEATURE = 'memory-entries-v1'
+// The search operation rides the read frame; a daemon without this feature never receives it.
+export const MEMORY_ENTRIES_SEARCH_V1_FEATURE = 'memory-entries-search-v1'
 const scope = z.object({ agentId: z.string().uuid(), channelKey: z.string().min(1).max(256).optional() })
 export const MemoryEntriesReadReq = z.discriminatedUnion('operation', [
   scope.extend({ operation: z.literal('describe') }).strict(),
   scope.extend({ operation: z.literal('list'), request: MemoryEntryListRequest }).strict(),
-  scope.extend({ operation: z.literal('get'), request: MemoryEntryGetRequest }).strict()
+  scope.extend({ operation: z.literal('get'), request: MemoryEntryGetRequest }).strict(),
+  scope.extend({ operation: z.literal('search'), request: MemoryEntrySearchRequest }).strict()
 ])
 export type MemoryEntriesReadReq = z.infer<typeof MemoryEntriesReadReq>
 export const MemoryEntriesReadResult = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('describe'), result: MemoryEntryCapabilities }).strict(),
   z.object({ operation: z.literal('list'), result: MemoryEntryListResult }).strict(),
   z.object({ operation: z.literal('get'), result: MemoryEntryContent.nullable() }).strict(),
+  z.object({ operation: z.literal('search'), result: MemoryEntrySearchResult }).strict(),
   z.object({ operation: z.literal('error'), code: MemoryEntryErrorCode, message: z.string().max(512) }).strict()
 ])
 export type MemoryEntriesReadResult = z.infer<typeof MemoryEntriesReadResult>

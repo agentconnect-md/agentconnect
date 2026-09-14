@@ -395,6 +395,7 @@ describe('toolsForIntegrations', () => {
       'describeMemoryEntries',
       'listMemoryEntries',
       'getMemoryEntry',
+      'searchMemoryEntries',
       'createMemoryEntry',
       'updateMemoryEntry',
       'deleteMemoryEntry',
@@ -518,6 +519,7 @@ describe('toolsForIntegrations', () => {
     expect(externalMemoryTools(new Set(['recall', 'capture', 'get', 'delete'])).map((tool) => tool.name)).toEqual([
       'describeMemoryEntries',
       'getMemoryEntry',
+      'searchMemoryEntries',
       'deleteMemoryEntry',
       'searchMemory',
       'getMemory',
@@ -526,8 +528,9 @@ describe('toolsForIntegrations', () => {
     for (const tool of externalMemoryTools(new Set(['recall', 'create', 'get', 'update', 'delete']))) {
       expect(tool.name).not.toMatch(/^agentconnect_memory_/)
       // A union descriptor closes each branch; every other descriptor closes its one object.
-      const branches = 'oneOf' in tool.inputSchema ? tool.inputSchema.oneOf : [tool.inputSchema]
-      for (const branch of branches) expect(branch).toMatchObject({ type: 'object', additionalProperties: false })
+      const schema = tool.inputSchema as { type: string; oneOf?: Array<Record<string, unknown>> }
+      for (const branch of schema.oneOf ?? [schema])
+        expect(branch).toMatchObject({ type: 'object', additionalProperties: false })
     }
   })
 

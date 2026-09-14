@@ -1,5 +1,6 @@
 import {
   MEMORY_ENTRIES_V1_FEATURE,
+  MEMORY_ENTRIES_SEARCH_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
   memoryEntryMutationFits,
   type MemoryEntriesWriteReq,
@@ -738,6 +739,9 @@ export class ControlSender {
     const c = this.must(daemonId)
     if (!c.capabilities?.features?.includes(MEMORY_ENTRIES_V1_FEATURE)) {
       return { operation: 'error', code: 'UNSUPPORTED', message: 'this daemon does not support unified memory reads' }
+    }
+    if (req.operation === 'search' && !c.capabilities.features.includes(MEMORY_ENTRIES_SEARCH_V1_FEATURE)) {
+      return { operation: 'error', code: 'UNSUPPORTED', message: 'this daemon does not support unified memory search' }
     }
     return c.conn.request<MemoryEntriesReadResult>('memory/entries/read/v1', req, { epoch: c.sessionEpoch })
   }

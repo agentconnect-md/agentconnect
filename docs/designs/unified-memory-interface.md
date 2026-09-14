@@ -1,6 +1,6 @@
 # Design: Unified Memory Operations and Context
 
-**Status:** Implementation in progress. Common reads, conditional managed mutations, external record mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh and compatibility retirement remain pending. This design does not change the plugin ABI by itself.
+**Status:** Implementation in progress. Common reads, bounded search, conditional managed mutations, external record mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh and compatibility retirement remain pending. This design does not change the plugin ABI by itself.
 
 **Related:** [Memory evolution](memory-evolution.md), [managed memory](memory-system-plan.md), [Dream](memory-dreaming.md), [product conventions](../product-conventions.md).
 
@@ -555,3 +555,35 @@ when the request supplies one, since conditional homes still require it at write
 time. Legacy `saveMemory`/`updateMemory`/`deleteMemory` keep their record-id
 contracts for warm sessions. External Dream, channel scope, and capture remain
 unchanged.
+
+### Unified search projection
+
+`searchMemoryEntries`, `POST /agents/:id/memory/entries/search`, and the console
+search box project one bounded retrieval operation over the authorized view. A
+request carries a query and a hit limit (default 5, at most 20); a result carries
+hits with an entry summary and a snippet, the search `kind` (`lexical`,
+`semantic`, `hybrid`, or `unknown`) and `coverage` (`complete`, `partial`, or
+`unknown`). Search is never enumeration: the tool description, the console note,
+and the result fields all say so, and hits resolve through the same refs as
+`listMemoryEntries`.
+
+Managed memory advertises `searchKind: 'lexical'`: every whitespace-separated
+term must occur, case-insensitively, in the topic label, description, or body
+(frontmatter excluded), scored by where it matched and ordered
+deterministically by score then topic name. The scan runs under the store lock
+in topic order across the channel overlay and the same catalog budget as
+enumeration; exhausting that budget or skipping an oversized topic reports
+`partial` coverage rather than hiding it. Snippets are bounded windows around the
+first body match. No index, vector store, or semantic claim is involved.
+
+External v1 connections that declare `recall` advertise `search` without a
+`searchKind`, because the manifest does not state the backend's retrieval kind;
+results report `unknown` kind and coverage, with the record text prefix as the
+snippet. The recall call is bounded by hit count, byte budget, and timeout, and
+a backend failure is `UNAVAILABLE`, never an empty result.
+
+The search operation rides the `memory/entries/read/v1` frame behind the
+negotiated `memory-entries-search-v1` feature; the Control Plane answers
+`UNSUPPORTED` for an older daemon without sending the frame, and read-only
+callers receive hits with editability removed. Legacy `searchMemory` and the
+record search route remain for warm sessions and older peers.

@@ -8,6 +8,8 @@ import {
   MemoryEntryGetRequest,
   MemoryEntryListRequest,
   MemoryEntryListResult,
+  MemoryEntrySearchRequest,
+  MemoryEntrySearchResult,
   MemoryEntrySummary,
   MemoryEntryCreateRequest,
   MemoryEntryUpdateRequest,
@@ -188,6 +190,28 @@ export class MemoryEntries {
       state.pending = state.pending.slice(consumed)
       if (state.pending.length || state.backendCursor) result.nextCursor = await this.saveCursor(state)
       return MemoryEntryListResult.parse(result)
+    })
+  }
+
+  async search(request: unknown): Promise<MemoryEntrySearchResult> {
+    const req = this.parse(MemoryEntrySearchRequest, request)
+    return this.call(async () => {
+      const view = await this.resolve()
+      if (!view.capabilities.operations.includes('search') || !view.search)
+        throw new MemoryEntriesError('UNSUPPORTED', 'memory search is unavailable')
+      const page = await view.search({ query: req.query, limit: req.limit })
+      const result: MemoryEntrySearchResult = { hits: [], kind: page.kind, coverage: page.coverage }
+      for (const hit of page.hits.slice(0, req.limit)) {
+        const candidate = { entry: this.summary(view, hit.entry), snippet: preview(hit.snippet, 1024) }
+        if (memoryJsonBytes({ ...result, hits: [...result.hits, candidate] }) > MEMORY_ENTRY_FRAME_BYTES) {
+          if (result.hits.length === 0)
+            throw new MemoryEntriesError('TOO_LARGE', 'memory search hit exceeds the response budget')
+          result.coverage = 'partial'
+          break
+        }
+        result.hits.push(candidate)
+      }
+      return MemoryEntrySearchResult.parse(result)
     })
   }
 
