@@ -100,9 +100,11 @@ The daemon resolves the agent identity and path; the model cannot
 select an arbitrary filesystem location.
 
 External memory uses record-oriented recall and capture rather than pretending
-records are files. Recall runs for each activation with a trusted scope and
-bounded query, result count, byte budget, and timeout. Capture is queued after
-the response so it does not delay delivery to the user.
+records are files. Its declared record operations are also projected through the
+common entry tools and browser with last-write-wins consistency; the core record
+tools remain the compatibility contract. Recall runs for each activation with a
+trusted scope and bounded query, result count, byte budget, and timeout. Capture
+is queued after the response so it does not delay delivery to the user.
 
 ## 5. Daemon, Protocol, and Console Flow
 

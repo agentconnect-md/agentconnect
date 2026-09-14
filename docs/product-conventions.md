@@ -904,7 +904,8 @@ The serialized boundary body, including any truncation notice, must remain withi
 standing index's byte budget and may not split an XML entity or UTF-8 code point.
 
 For targeted `writeMemory` edits, `oldString` must come from the decoded bounded file
-content or verbatim from a current `readMemory` result. The injected index is only a
+content or verbatim from a current `readMemory` result; an `updateMemoryEntry` exact
+edit likewise sources `oldText` from a complete current `getMemoryEntry` result. The injected index is only a
 start-of-session snapshot, so instructions and replace-failure feedback must direct the
 agent to `readMemory` after another write, when provenance is uncertain, or before
 retrying a failed replacement.
@@ -915,10 +916,12 @@ Present storage backends in the order `Managed`, `Native`, `External`, followed 
 visually separated `Off` choice. `Off` is the user-facing label for the protocol's
 `none` value: it is the absence of persistent memory, not another storage backend.
 
-Until narrower memory scopes are supported, the agent Memory page displays `Scope` as
-a fixed, read-only `Agent` value. Its help text must explain that an agent's memory is
-shared across every user who interacts with that agent; the console must not imply that
-memories are isolated per user.
+The agent Memory page offers a `Scope` choice only for managed memory: `Agent`, one
+memory shared by everyone who talks to the agent, or `Channel`, a per-channel overlay
+over that shared base with Dreaming turned off. External and native memory stay
+agent-scoped and show no scope selector. The help text must explain that agent-scoped
+memory is shared across every user who interacts with that agent; the console must not
+imply that memories are isolated per user.
 
 An existing agent's memory settings are edited as one explicit draft. Selecting a
 backend, changing managed distillation, switching an external connection, or editing

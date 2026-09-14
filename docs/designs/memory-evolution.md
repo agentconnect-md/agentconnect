@@ -7,7 +7,7 @@
 
 ---
 
-The [unified memory interface](unified-memory-interface.md) implements common reads, conditional managed mutations, model/admin projections, and a capability-driven console on this lifecycle. New/native-resumed sessions have bounded catalog delivery; continuously live refresh is still pending. The plugin ABI and storage choices are unchanged. File/record tools remain compatibility contracts pending old-client drainage and preservation of legacy index workflows.
+The [unified memory interface](unified-memory-interface.md) implements common reads, conditional managed mutations, external record mutations, model/admin projections, and a capability-driven console on this lifecycle. New/native-resumed sessions have bounded catalog delivery; continuously live refresh is still pending. The plugin ABI and storage choices are unchanged. File/record tools remain compatibility contracts pending old-client drainage and preservation of legacy index workflows.
 
 ## 1. Background and Current State
 
@@ -16,9 +16,14 @@ The daemon provides **directory-based, per-agent long-term memory**
 `<agent-root>/memory/`, outside the workspace, contains a `MEMORY.md` index and
 one or more `<topic>.md` files. The daemon injects only the index into each
 session, capped at 25 KB, and topics are read on demand. The agent maintains
-memory **manually** through the `readMemory`/`writeMemory` MCP tools. The console
-proxies reads and writes through CP
-`GET/PUT /agents/:id/memory[/file]`, while the CP does not persist content. A
+memory explicitly through the common entry tools (`describeMemoryEntries`,
+`listMemoryEntries`, `getMemoryEntry`, `createMemoryEntry`, `updateMemoryEntry`,
+`deleteMemoryEntry`), with `readMemory`/`writeMemory` retained as the file
+compatibility tools. The console opens the common entry browser over
+`GET /agents/:id/memory/{capabilities,entries}` and the matching mutation routes,
+and keeps `GET/PUT /agents/:id/memory[/file]` for older peers and index/history
+workflows. The CP persists no content unless the binding chose the
+`control-plane` home (M-8). A
 unified capability registry in
 [`memory/runtime/capabilities.ts`](../../packages/daemon/src/memory/runtime/capabilities.ts)
 disables or redirects runtime-native memory to prevent duplicate memory stores.
@@ -124,16 +129,20 @@ interface MemoryProvider {
 `search/list/get/create/update/delete/history(id,version)`. CP, wire, and web
 layers recognize three **representation shapes** — `files | records | none` —
 but no concrete backend such as `mem0`. This avoids inventing filenames and
-prevents backend-specific fields from spreading into the product surface.
+prevents backend-specific fields from spreading into the product surface. The
+common `memory/entries/read/v1` and `memory/entries/write/v1` frames and the
+shared entry browser now sit in front of this split through `entryView()`; the
+shapes remain the compatibility surface for older peers and provider-specific
+workflows.
 
 Responsibilities of the four providers:
 
-|              | runtimeEnv                                                    | Session standing context | Per-turn recall                   | recordTurn                  | Model tools                  | Console |
-| ------------ | ------------------------------------------------------------- | ------------------------ | --------------------------------- | --------------------------- | ---------------------------- | ------- |
-| **none**     | Disable runtime-native memory through verified switches       | Empty                    | Empty                             | No-op                       | Empty                        | none    |
-| **native**   | Point the runtime memory directory at the agent root          | Empty (runtime loads it) | Empty                             | No-op (runtime records)     | Empty (use runtime-native)   | files   |
-| **managed**  | Disable native memory for known runtimes                      | `MEMORY.md` index        | Empty in v1 (future local search) | Distill + append (optional) | `read/writeMemory`           | files   |
-| **external** | **Same as managed: disable native memory; never leave blank** | Empty                    | Call plugin every activation      | Capture into local outbox   | Core-defined record tool set | records |
+|              | runtimeEnv                                                    | Session standing context | Per-turn recall                   | recordTurn                  | Model tools                                             | Console                    |
+| ------------ | ------------------------------------------------------------- | ------------------------ | --------------------------------- | --------------------------- | ------------------------------------------------------- | -------------------------- |
+| **none**     | Disable runtime-native memory through verified switches       | Empty                    | Empty                             | No-op                       | Empty                                                   | none                       |
+| **native**   | Point the runtime memory directory at the agent root          | Empty (runtime loads it) | Empty                             | No-op (runtime records)     | Empty (use runtime-native)                              | files                      |
+| **managed**  | Disable native memory for known runtimes                      | `MEMORY.md` index        | Empty in v1 (future local search) | Distill + append (optional) | Common entry tools + `read/writeMemory` (compatibility) | entries (files fallback)   |
+| **external** | **Same as managed: disable native memory; never leave blank** | Empty                    | Call plugin every activation      | Capture into local outbox   | Common entry tools + core record tools (compatibility)  | entries (records fallback) |
 
 The daemon sequence is therefore: merge `runtimeEnv()` at spawn; build standing
 context for a fresh session; call `recallForTurn()` on each turn after composing
@@ -703,13 +712,18 @@ fields on canonical `MemoryRecord` are `id/text/scope` (`id`, `text`, and
 Backend-specific payload belongs in size-bounded metadata/provenance and cannot
 drive core branching.
 
-- Managed/native continue using `readMemory`/`writeMemory` and the file console.
-- For external memory, core exposes entry tools with stable names according to
-  capability: `searchMemory`, `saveMemory`, `getMemory`, `updateMemory`, and
-  `deleteMemory`. Plugin tool names/descriptions are not passed through.
-- The console reads `adminSurface`/capabilities, then presents record search,
-  pagination, ID, text, scope, timestamps, and history. It does not render an
-  update/delete action when the capability is absent.
+- Managed sessions use the common entry tools and the common entry browser;
+  `readMemory`/`writeMemory` and the file console remain the compatibility path.
+  Native keeps its runtime-owned tools and the file view.
+- External memory receives the common entry tools for its declared
+  list/get/create/update/delete operations (last-write-wins, no exact edit), plus
+  core record tools with stable names as the compatibility contract:
+  `searchMemory`, `saveMemory`, `getMemory`, `updateMemory`, and `deleteMemory`.
+  Plugin tool names/descriptions are not passed through.
+- The console opens the common entry browser first. The record view (search,
+  pagination, ID, text, scope, timestamps, history) stays behind “More memory
+  tools” and serves older peers. Neither renders an update/delete action when the
+  capability is absent.
 - Record-shaped CP↔daemon frames and REST endpoints route files or records
   according to the active provider. The CP may proxy an administrative request
   transiently, like the current memory console, but does not persist bodies or
@@ -806,7 +820,8 @@ Inspired by Mem0 v2.0.11's **single additive pass**. Note: the widely reported
 3. **Write**: append to the target scope's topic, or create a topic and update
    the index.
 4. `memory.autoDistill` is **opt-in**, disabled by default to avoid an extra LLM
-   cost on every turn. Manual `writeMemory` is always available.
+   cost on every turn. Explicit writes through `createMemoryEntry` /
+   `updateMemoryEntry`, or the compatibility `writeMemory`, are always available.
 
 ### 4.2 Scopes (Solves M2)
 
@@ -950,7 +965,7 @@ invariant in
 | **M-4 · managed extract→append (complete, default off)** | Additive distillation + deduplication; current post-turn queue remains gated by managed/autoDistill.                                                                                                                                                                                                                                                                                                                                           | ✅                                                                         | None (existing LLM)          |
 | **M-5P · plugin profile (complete)**                     | Canonical schema, manifest/version/capability, daemon internal MCP client, fake remote plugin conformance tests; provider port adds per-turn recall + record admin surface, and post-turn queue becomes provider-neutral.                                                                                                                                                                                                                      | ✅ (fake/local fixture only)                                               | None                         |
 | **M-5A · connection data plane (complete)**              | Installation/connection/binding model, SecretCipher, per-connection relay grant/SSRF, connection snapshot/upsert, probe facts/placement, and egress UX.                                                                                                                                                                                                                                                                                        | ⚠️ Probe reaches plugin                                                    | Reuse relay/MCP proxy        |
-| **M-5B · Mem0 Cloud plugin (complete)**                  | Agent-only per-turn recall, capture outbox, Cloud V3 event polling, failures/metrics; CRUD console deferred.                                                                                                                                                                                                                                                                                                                                   | ⚠️ Content leaves daemon for third party by explicit user choice           | External plugin + Mem0       |
+| **M-5B · Mem0 Cloud plugin (complete)**                  | Agent-only per-turn recall, capture outbox, Cloud V3 event polling, failures/metrics; the CRUD console landed with M-5C.                                                                                                                                                                                                                                                                                                                       | ⚠️ Content leaves daemon for third party by explicit user choice           | External plugin + Mem0       |
 | **M-5C · record product surface (complete)**             | Core entry tools + provider-aware record REST/frames/console, with CRUD/history driven by capability.                                                                                                                                                                                                                                                                                                                                          | ⚠️ Same as above                                                           | None                         |
 | **M-5D · dialect/runtime expansion (complete)**          | Mem0 OSS adapter; operator-installed stdio host + daemon-private secret lease.                                                                                                                                                                                                                                                                                                                                                                 | OSS/local depends on deployment                                            | stdio host                   |
 | **M-6 · shared scope (through data plane)**              | Depends on shared-bot relay; `memory-sync` payload; managed shared-scope sync + conflict semantics; external reuses canonical shared policy.                                                                                                                                                                                                                                                                                                   | ✅ / explicit external egress                                              | Reuse relay                  |
