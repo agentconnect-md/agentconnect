@@ -2,9 +2,10 @@
 
 **Status:** Audit + design record. **No Gap A code has shipped.** This document closes the first
 checkbox of issue [#1965](https://github.com/agentconnect-md/agentconnect/issues/1965) (the audit),
-corrects two claims in that issue, records a live check against the two harnesses this repo pins,
-and retires Gap B as a non-goal for the elicitation use case. Every `file:line` citation below was
-re-derived by opening the file at commit `2b1163b2`; nothing is carried over from the issue text.
+corrects two claims in that issue and one of its own, records a live check against the two harnesses
+this repo pins, and retires Gap B as a non-goal for the elicitation use case. Every `file:line`
+citation below was re-derived by opening the file at this branch's base, `f981677c`; nothing is
+carried over from the issue text.
 
 Prior art: [#1794](https://github.com/agentconnect-md/agentconnect/issues/1794) closed elicitation
 on the **ACP** wire, where the daemon is the client and every chat surface renders the ask. The
@@ -14,14 +15,20 @@ live there. This document is the **MCP** wire, where our protocol role is revers
 
 ## 1. Two wires, two roles
 
-| Wire                         | Our role   | Who renders an ask                        | Owning document                                            |
-| ---------------------------- | ---------- | ----------------------------------------- | ---------------------------------------------------------- |
-| ACP (daemon ↔ agent harness) | client     | our chat surfaces + webchat               | #1794, [`slack-approval-dm.md`](slack-approval-dm.md) §6.4 |
-| MCP (harness ↔ our bridge)   | **server** | the agent's own host (Claude Code, Codex) | this document                                              |
+| Wire                         | Our role   | Who renders an ask                                   | Owning document                                            |
+| ---------------------------- | ---------- | ---------------------------------------------------- | ---------------------------------------------------------- |
+| ACP (daemon ↔ agent harness) | client     | our chat surfaces + webchat                          | #1794, [`slack-approval-dm.md`](slack-approval-dm.md) §6.4 |
+| MCP (harness ↔ our bridge)   | **server** | **also our chat surfaces** — the harness forwards it | this document, §5.6                                        |
+
+The two roles are reversed, but the **renderer is the same one**. A bridge-issued MCP ask does not
+stop at the agent's own host: both pinned harnesses forward any MCP server's elicitation onto the
+ACP wire, our bridge included, so it lands back at the daemon that asked it and renders on the same
+chat card #1794 built. §5.6 is that measurement, run against a server carrying our own reserved
+name. An earlier draft of this document said the opposite; it was wrong.
 
 The bridge is `packages/daemon/src/mcp/bridge.ts` — a stdio MCP server that relays `tools/list` and
 `tools/call` to the daemon over a Unix-domain control socket
-(`packages/daemon/src/mcp/control-server.ts`), where `executeTool` (`packages/daemon/src/mcp/ops.ts:334`)
+(`packages/daemon/src/mcp/control-server.ts`), where `executeTool` (`packages/daemon/src/mcp/ops.ts:350`)
 does the real work. Two entries reach it: the daemon's hidden `mcp-bridge` subcommand where the
 runtime shares the filesystem, and the runtime image's own bundle
 (`packages/daemon/src/shim/mcp-bridge.ts`, built by `build:shim`) where it does not.
@@ -104,7 +111,7 @@ none of this: the ask is issued by the bridge process, on the MCP connection it 
 | Candidate                    | Verdict                                 | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `shareFile` destination      | **REFUTED by construction**             | The tool takes no coordinates at all — `packages/daemon/src/mcp/ops/share-file.ts:13-15`: _"this tool takes NO coordinates at all … no new authorization question exists because the model cannot name a destination."_ The destination is read from the trusted turn at `:119`, `deps.shareTarget?.(ctx)`. It is also a stated user-facing convention — [`product-conventions.md`](../product-conventions.md)`:371-380`, _"every coordinate comes from the trusted active turn."_ There is nothing to ask, and asking would _introduce_ the authorization question the design removed.                                                                                                                                                                                                                         |
-| search scope                 | **REFUTED**                             | `searchPublicMessages` has no platform, integration, or channel selector, and its own comment says why — `packages/daemon/src/mcp/ops/platform-actions.ts:104-107`: _"Not because the search is scoped to one conversation … but because none of those selectors would mean anything. The session decides the gateway and the credential, and the provider honours no channel narrowing at all."_ The handler (`:322-345`) resolves the gateway from `ctx.integrationId` and applies **no** channel filter (`:345`, which also records the reverted attempt). `searchMemory` is the same shape: args are `query`/`topK`/`maxBytes` only (`packages/daemon/src/mcp/ops/memory.ts:122-126`) and the scope comes from `recordSurface(ctx, deps)` at `:320`. Neither tool has a scope a model could be asked about. |
+| search scope                 | **REFUTED**                             | `searchPublicMessages` has no platform, integration, or channel selector, and its own comment says why — `packages/daemon/src/mcp/ops/platform-actions.ts:104-107`: _"Not because the search is scoped to one conversation … but because none of those selectors would mean anything. The session decides the gateway and the credential, and the provider honours no channel narrowing at all."_ The handler (`:322-345`) resolves the gateway from `ctx.integrationId` and applies **no** channel filter (`:345`, which also records the reverted attempt). `searchMemory` is the same shape: args are `query`/`topK`/`maxBytes` only (`packages/daemon/src/mcp/ops/memory.ts:133-137`) and the scope comes from `recordSurface(ctx, deps)` at `:322`. Neither tool has a scope a model could be asked about. |
 | `sendMessage` target channel | **REAL — deferred by product decision** | See §4.3.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 ### 4.2 The candidates the audit found that the issue missed
@@ -112,11 +119,36 @@ none of this: the ask is issued by the bridge process, on the MCP connection it 
 Two of these are _fail/suppress_ cases an ask would improve; one is the bridge's only **silent wrong
 answer**, which an ask would fix.
 
-| Site                                                                                      | What it does today                                                                                                                                                                                            | Shape of the ask                                                                                                                                                              |
-| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/daemon/src/mcp/ops/platform-reads.ts:117` (`listKnownUsers`, from `:110`)       | With >1 bot on the platform, returns `{ users: [] }` plus `MULTI_INTEGRATION_NOTE` — a _suppression_, because the local session store pools history by agent+platform and ids cannot be attributed to one bot | "Which bot?" — a bounded enum of the agent's own integrations on that platform, from the trusted snapshot                                                                     |
-| `packages/daemon/src/mcp/ops/platform-reads.ts:142` (`listChannels`, from `:127`)         | The same suppression for the observed-history fallback (the live path returns `[]` on a platform whose bot API cannot enumerate chats — `:136-138`)                                                           | The same bounded enum                                                                                                                                                         |
-| **`packages/daemon/src/mcp/ops/gateway.ts:52`** (`resolveGatewayForPlatform`, from `:42`) | With no `integrationId` and no match on the session's own integration, **silently picks `candidates[0]`**                                                                                                     | The same bounded enum — and this is the highest-value ask in the bridge, because it is the one place a tool returns a confident answer that may simply be about the wrong bot |
+| Site                                                                                      | What it does today                                                                                                                                                                          | Shape of the ask                                                                                                                                                              |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/daemon/src/mcp/ops/platform-reads.ts:117` (`listKnownUsers`, from `:110`)       | With >1 bot on the platform, returns `{ users: [] }` plus `MULTI_INTEGRATION_NOTE` — a _suppression_, because the daemon's wrapper declines to pick which bot's history to read (see below) | "Which bot?" — a bounded enum of the agent's own integrations on that platform, from the trusted snapshot                                                                     |
+| `packages/daemon/src/mcp/ops/platform-reads.ts:142` (`listChannels`, from `:127`)         | The same suppression for the observed-history fallback, reached only after the live gateway call returns `[]` on a platform whose bot API cannot enumerate chats (`:136-138`)               | The same bounded enum — but see the ordering note below: on this path the bot has already been picked                                                                         |
+| **`packages/daemon/src/mcp/ops/gateway.ts:52`** (`resolveGatewayForPlatform`, from `:42`) | With no `integrationId` and no match on the session's own integration, **silently picks `candidates[0]`**                                                                                   | The same bounded enum — and this is the highest-value ask in the bridge, because it is the one place a tool returns a confident answer that may simply be about the wrong bot |
+
+**This is a selection gap, not an attribution gap** — and the difference decides whether an ask is
+worth building. The store has been scoped per physical bot since
+[#224](https://github.com/agentconnect-md/agentconnect/pull/224) ("scope observed chats to physical
+bots"): `LocalStore.observedChannels(agentId, platform, transportScope)` and `observedUsers` beside
+it both filter `WHERE agentId = ? AND platform = ? AND transportScope = ?`
+(`packages/daemon/src/store/local-store.ts:2059` and `:2080`), and `transportScope` is
+`` `${platform}:${sha256(platform\0connectionIdentityFor(integration))}` `` (`daemon.ts:15525-15531`) —
+one value per physical bot. What refuses is the daemon's wrapper: it computes a scope only when the
+agent has exactly one integration on the platform and returns `[]` otherwise
+(`daemon.ts:2840-2851`). So a chosen bot _does_ disambiguate the history; nothing has to be
+re-attributed first, and the ask needs no storage prerequisite.
+
+**Two comments still assert the older, pooled shape** and will mislead the next reader:
+`platform-reads.ts:102-109` ("The local session store is keyed by agent+platform, NOT by
+integration") with its ponytail suggesting a new `sessions.integrationId` column, and
+`MULTI_INTEGRATION_NOTE` itself ("observed history is not tracked per bot", `gateway.ts:12-15`).
+Both describe the pre-#224 shape and are stale, like the `coordinator.ts` comment in §5.1. Flagged, not
+fixed here — this is a docs change.
+
+**Ordering note for `listChannels`.** Its suppression sits _after_ `resolveGatewayForPlatform`, so by
+the time that branch is reached a bot has already been picked — silently, by `candidates[0]`, if the
+session's own integration did not match (`gateway.ts:52`). One ask at gateway resolution therefore
+covers both this row and the gateway row itself; a second ask at the fallback would be asking about a
+decision already made.
 
 `MULTI_INTEGRATION_NOTE` (`gateway.ts:12-15`) already tells the model to "pass a specific
 `integrationId`", which is exactly the information an elicitation would collect from a human instead
@@ -140,9 +172,9 @@ It is nevertheless **deferred**, for three reasons the next person should not ha
    (Telegram — `platform-reads.ts:136-138`), so the ask degrades to a free-text box on exactly the
    platforms where a mistyped id is least recoverable.
 2. **The effect is visible and irreversible.** Every visible `sendMessage` lands at a channel
-   **root** ([`product-conventions.md`](../product-conventions.md)`:336-340`) — in front of a whole
+   **root** ([`product-conventions.md`](../product-conventions.md)`:377-378`) — in front of a whole
    channel. A wrong answer is not a wasted read; it is a post.
-3. **It needs a product amendment first.** `product-conventions.md:336` states what `sendMessage` is
+3. **It needs a product amendment first.** `product-conventions.md:340` states what `sendMessage` is
    for as a user-facing invariant. Adding "and it may ask you which channel" changes that contract,
    and belongs in that document before it belongs in code.
 
@@ -160,12 +192,14 @@ it onto the ACP wire, where the code #1794 landed picks it up.
 flowchart TD
   S["third-party stdio MCP server<br/>elicitation/create"] --> H["agent harness<br/>claude-agent-acp / codex-acp"]
   H -->|"ACP elicitation/create<br/>sessionId, mode: form"| A["acp-host.ts:818<br/>onRequest(client.elicitation.create)"]
-  A -->|"acp-host.ts:835"| D["daemon.ts:5025<br/>onElicit → permissions.onAcpElicit"]
+  A -->|"acp-host.ts:835"| D["daemon.ts:5156<br/>onElicit → permissions.onAcpElicit"]
   D --> C["coordinator.ts:1446<br/>onAcpElicit"]
   C --> W["webchat in-stream card<br/>coordinator.ts:1482"]
   C --> P["platform ElicitCardFacet<br/>coordinator.ts:1491"]
   C --> E["Agent-editor queue<br/>console / approval DM"]
 ```
+
+Our own bridge enters at the same top node, and §5.6 is the measurement that says so.
 
 The gate is exactly the capability `acp-host.ts:878` already declares —
 `elicitation: { form: {}, url: {} }`. The frame carries a `sessionId`, **no** `toolCallId` and no
@@ -237,13 +271,14 @@ max-rounds knobs are the shim's.
 
 The check is narrower than "it works". Stated plainly, with the next experiment for each:
 
-| Gap                                               | What is actually known                                                                                                                                                                                                                                 | Next experiment                                                                                                                                                |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **No full daemon-to-chat round trip**             | The **ACP frame** was observed arriving at a test ACP client that declares the same capability the daemon declares. The daemon half was read from source (`acp-host.ts:818` → `daemon.ts:5025` → `coordinator.ts:1446`), not executed.                 | Run a real daemon with a Slack (or webchat) turn, register the fixture as a session MCP server, and capture the card plus the answer's return path end to end. |
-| **§5.3.2 full-access auto-cancel is source-only** | The branch and its condition were read in the shipped bundle. No run exercised a permission-profile / full-access session.                                                                                                                             | Launch codex-acp under a permission profile with an HTTP MCP server configured, issue a non-approval form ask, and confirm 0 ACP frames + `action=cancel`.     |
-| **URL mode unprobed**                             | Every run used `mode: "form"`. The daemon declares `url: {}` (`acp-host.ts:878`), the coordinator has a distinct consent path for it (`coordinator.ts:1481-1491`), and codex gates it on `clientSupportsUrlElicitation` (`dist/index.js:26303-26304`). | Have the fixture issue a URL-mode elicitation; check both harnesses forward it and that the URL never enters model context or a card body.                     |
-| **Timeout/abandonment against a real harness**    | The fixture has a 20 s watchdog and a `--hang` self-test, but no run left a harness ask unanswered to its own deadline.                                                                                                                                | Answer nothing; observe what each harness does at its own timeout and what the tool receives.                                                                  |
-| **In-sandbox (image shim) bridge unprobed**       | All runs used a local stdio server. The in-sandbox bridge ships on the _image's_ cadence, not the daemon's (§7 rule 3).                                                                                                                                | Repeat run 4 inside a runtime-sandbox pod against the image's own `mcp-bridge.js`.                                                                             |
+| Gap                                               | What is actually known                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Next experiment                                                                                                                                                                                                                  |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **No full daemon-to-chat round trip**             | The **ACP frame** was observed arriving at a test ACP client that declares the same capability the daemon declares. The daemon half was read from source (`acp-host.ts:818` → `daemon.ts:5156` → `coordinator.ts:1446`), not executed.                                                                                                                                                                                                                                                                                                                     | Run a real daemon with a Slack (or webchat) turn, register the fixture as a session MCP server, and capture the card plus the answer's return path end to end.                                                                   |
+| **Daemon as both asker and renderer, unproven**   | §5.6 proves the routing; it does not prove the **loop closes**. Every run used a standalone ACP client, so no run had the daemon issuing the ask (blocked bridge tool call) _and_ servicing the same session's `elicitation/create` on a live turn. Nothing structural forbids it — `acp-host.ts:818` is an ordinary concurrent `onRequest`, not serialized behind the in-flight `session/prompt`, and `askMemoryWriteApproval` already blocks a bridge tool call while its turn renders a card — but "no deadlock found by reading" is not a measurement. | Same experiment as the row above, with the ask issued by the **bridge** rather than a side-loaded fixture: assert the card appears, the answer returns, and the replayed tool completes rather than hanging to `roundTimeoutMs`. |
+| **§5.3.2 full-access auto-cancel is source-only** | The branch and its condition were read in the shipped bundle. No run exercised a permission-profile / full-access session.                                                                                                                                                                                                                                                                                                                                                                                                                                 | Launch codex-acp under a permission profile with an HTTP MCP server configured, issue a non-approval form ask, and confirm 0 ACP frames + `action=cancel`.                                                                       |
+| **URL mode unprobed**                             | Every run used `mode: "form"`. The daemon declares `url: {}` (`acp-host.ts:878`), the coordinator has a distinct consent path for it (`coordinator.ts:1481-1491`), and codex gates it on `clientSupportsUrlElicitation` (`dist/index.js:26303-26304`).                                                                                                                                                                                                                                                                                                     | Have the fixture issue a URL-mode elicitation; check both harnesses forward it and that the URL never enters model context or a card body.                                                                                       |
+| **Timeout/abandonment against a real harness**    | The fixture has a 20 s watchdog and a `--hang` self-test, but no run left a harness ask unanswered to its own deadline.                                                                                                                                                                                                                                                                                                                                                                                                                                    | Answer nothing; observe what each harness does at its own timeout and what the tool receives.                                                                                                                                    |
+| **In-sandbox (image shim) bridge unprobed**       | All runs used a local stdio server. The in-sandbox bridge ships on the _image's_ cadence, not the daemon's (§7 rule 3).                                                                                                                                                                                                                                                                                                                                                                                                                                    | Repeat run 4 inside a runtime-sandbox pod against the image's own `mcp-bridge.js`.                                                                                                                                               |
 
 ### 5.5 Harness coverage
 
@@ -264,6 +299,54 @@ per-harness verification is the only thing that counts here.
 A harness that does not forward is not a correctness problem for us, because both non-forwarding
 outcomes we observed are graceful: `action: cancel` or `action: decline`, re-entered into the handler,
 with the tool free to return a usable result. Preserving that is §7 rule 6.
+
+### 5.6 Our own bridge is not exempt: a Gap A ask renders on our cards
+
+§5.1-§5.5 measured a _third-party_ server. The question Gap A actually turns on is whether the
+`agentconnect` bridge is treated differently — and it is not. **Neither pinned harness filters an
+elicitation by which MCP server issued it**, so an ask our bridge returns is forwarded onto ACP like
+any other, arrives at the daemon that asked it, and renders on the chat card #1794 built.
+
+**Measured, not inferred.** The §5.2 fixture was re-registered under `agentconnect` —
+`RESERVED_MCP_SERVER_NAME` (`packages/protocol/src/frames/agent.ts:127`), the exact name
+`buildMcpServers` hands to ACP `session/new` (`packages/daemon/src/mcp/inject.ts:33`) — and driven by
+the same ACP clients, which declare what the daemon declares.
+
+| Run | Harness                         | Server name    | Result                                                                                                                                                                                          |
+| --- | ------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1  | claude-agent-acp 0.76.0         | `agentconnect` | **Full round trip.** ACP `elicitation/create` reached the client; accept `{colour:"green"}`; the tool — surfaced to the model as `mcp__agentconnect__ask_a_question` — returned `ROUND-TRIP OK` |
+| N2  | codex-acp 1.11.0-agentconnect.1 | `agentconnect` | **Full round trip.** One `elicitation/create` out, accept, `outcome: answered` (fixture obeying §5.3.1)                                                                                         |
+| N3  | codex-acp 1.11.0-agentconnect.1 | `ac1965`       | Control. With the root-`title` fixture, **not forwarded** — the same §5.3.1 rejection, logged ``unknown field `title` … server_name="ac1965"``                                                  |
+
+N3 is the control that matters: the original name fails on exactly the input the reserved name fails
+on, and succeeds on exactly the input it succeeds on. **The variable is the schema, never the name.**
+Artifacts, including the verbatim frame taps, are in the session scratchpad under `1965-gapA/`.
+
+**Why, in source.** claude-agent-acp attaches **one** `onElicitation` callback for the whole query
+(`dist/acp-agent.js:5988` → `handleMcpElicitation` at `:5352`), covering every entry of `mcpServers`
+— ours included — and gates only on mode versus what the ACP client advertised. codex-acp's
+`handleElicitation` (`dist/index.js:26151`) reads `params.serverName` only to test membership of the
+full-access HTTP set and to mint a standalone tool-call id, never to exclude; its gate is
+`shouldUseAcpElicitation` (`:26298-26307`) — mode plus client capability. Neither bundle contains our
+server name at all.
+
+**The daemon cannot tell its own ask apart, and must not try.** The forwarded ACP frame carries no
+server identity in either direction — observed as `sessionId`, `message`, `mode`, `requestedSchema`,
+`_meta: null`, and no `toolCallId`. That is also what keeps `isMcpToolApprovalElicitation`
+(`packages/daemon/src/daemon/tool-classification.ts:78-80`) false, so the frame takes `onElicit` →
+`onAcpElicit` (`coordinator.ts:1446`) and the ordinary card path, exactly as §5.1 describes.
+
+Two consequences for a Gap A implementation:
+
+- **The §4.2 asks are worth _more_ on a chat turn than the earlier draft claimed** — a real card in
+  the conversation, not a prompt in a TUI nobody is watching — and correspondingly little on an
+  unattended one: with no live turn `onAcpElicit` returns `undefined`, the host declines, and the
+  tool reads that decline (§7 rule 6).
+- **The mechanism is now a genuine choice, not a given.** Routed this way, an ask makes three extra
+  hops and replays the whole tool (§7 rule 4) to reach a card the daemon can already raise directly:
+  `askMemoryWriteApproval` (`coordinator.ts:1517`) is the shipped precedent — the daemon's own ask,
+  on the same surfaces, blocking a bridge tool call without ever leaving the daemon. Which of the two
+  Gap A should use is §8.
 
 ## 6. Gap B, corrected
 
@@ -295,28 +378,29 @@ elicitation non-goal is recorded beside it, pointing here.
 These are properties of the surrounding code, not style preferences. Each has already cost someone an
 investigation.
 
-1. **Do not spread `SessionContext` per call.** `packages/daemon/src/mcp/ops/memory.ts:175` keys a
+1. **Do not spread `SessionContext` per call.** `packages/daemon/src/mcp/ops/memory.ts:184` keys a
    provenance ledger with `new WeakMap<SessionContext, Set<string>>`, and
    `McpControlServer.writtenMemoryTopics(token)` reads it back through the **original** object from
    the sessions map (`control-server.ts:46-48`, populated at `:36`). A `{ ...ctx, elicit }` built per
    call silently orphans that ledger.
-2. **`OpsDeps` is declared in `packages/daemon/src/mcp/ops.ts:163`**, not in `ops/context.ts`. A new
-   per-call deps member belongs beside `canRun` (`:178`) and `evaluationTool` (`:190`). A change that
+2. **`OpsDeps` is declared in `packages/daemon/src/mcp/ops.ts:166`**, not in `ops/context.ts`. A new
+   per-call deps member belongs beside `canRun` (`:183`) and `evaluationTool` (`:195`). A change that
    edits only `ops/context.ts` does not typecheck.
 3. **A guard against an old bridge must be structural.** The in-sandbox bridge is the runtime
    **image's** own bundle (`packages/daemon/src/shim/mcp-bridge.ts`, built by `build:shim`), so it
    ships on the image's cadence, not the daemon's — **image skew is the normal case**. An old bridge
    receiving an ask marker inside a tool result would `JSON.stringify` it straight to the model
-   (`bridge.ts:124-125`). The guard therefore belongs in `executeTool` (`ops.ts:334`) or
+   (`bridge.ts:124-125`). The guard therefore belongs in `executeTool` (`ops.ts:350`) or
    `McpControlServer.handle` (`control-server.ts:106`), where one place decides — never in a line each
    op remembers.
 4. **Re-entry replays the whole tool.** The SDK re-invokes the same handler, so `executeTool` runs
-   from the top every round: the turn gate (`ops.ts:340`), the evaluation-tool dispatch (`:346-349`),
-   the memory access/approval gate (`:352-372`) and the tool body — including any I/O the tool already
+   from the top every round: the turn gate (`ops.ts:356`), the evaluation-tool dispatch (`:362-365`),
+   the memory access/approval gate it delegates to (`executeRegisteredTool`, `:408-425`) and the tool
+   body — including any I/O the tool already
    did before it decided to ask. **Rule: a tool may only ask before it does observable work, or must
    be safe to replay.** The §4.2 asks satisfy this trivially (they ask before any gateway call); a tool
    that has already posted a message does not.
-5. **The turn gate races a human-paced ask.** `ops.ts:340` fails closed with
+5. **The turn gate races a human-paced ask.** `ops.ts:356` fails closed with
    `this agent turn has been stopped`, so a user can answer and _still_ get that error if the turn was
    cancelled meanwhile. That is arguably the right outcome, but it must be a chosen one: pin
    `roundTimeoutMs` explicitly rather than inheriting the SDK's 600 s default
@@ -336,10 +420,18 @@ investigation.
 
 ## 8. Open questions
 
-- **Who renders a bridge-issued ask?** The agent's own host (Claude Code, Codex TUI) — **not** our
-  chat cards. None of #1794's facets are involved on this half, which makes the §4.2 asks worth less
-  to a headless or webhook turn than they first look. Whether an unattended turn should ask at all, or
-  keep today's suppression note, is unresolved.
+- **Should an unattended turn ask at all?** _Who_ renders is no longer open — §5.6 measured it, and
+  the answer is our own cards through #1794's facets, not the host's TUI. What remains is the product
+  question underneath: `onAcpElicit` declines when no turn is live, so a headless or webhook turn
+  falls back to today's suppression note either way, and deciding it should instead wait for a human
+  is a product call, not a mechanism one.
+- **Should Gap A use the MCP return-value mechanism at all?** §5.6 turned this into a real choice.
+  Routed through the harness, an ask costs three hops and a whole tool replay (§7 rule 4) to raise a
+  card `askMemoryWriteApproval` (`coordinator.ts:1517`) already raises directly from inside the
+  daemon. The MCP route buys the SDK's own mechanism and one shape shared with every third-party
+  server; the direct route buys no replay and no dependence on per-harness forwarding (§5.5). Decide
+  this before writing the first ask, and settle §5.4's "daemon as both asker and renderer" row first —
+  the MCP route is the one that has not been shown to close.
 - **Should a §4.2 bot disambiguation be remembered for the rest of the turn?** The MCP round trip has
   no natural place to cache it, and `executeTool` deliberately re-evaluates its gates per call (rule
   4). A per-turn memo would be new state with its own invalidation story.
