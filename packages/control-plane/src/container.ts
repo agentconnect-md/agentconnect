@@ -215,6 +215,13 @@ import { ConnectionRegistry } from './ws/registry.js'
 import { RelayRegistry } from './ws/relay-registry.js'
 import { RelayControlSender } from './orchestrator/relayControl.js'
 import { replayMcpTo } from './orchestrator/mcpReplay.js'
+import { makeMcpPush } from './http/mcp-push.js'
+import { makeOauthRebind } from './http/provider-chain.js'
+import { McpProviderOauthService } from './mcp-oauth/service.js'
+import { McpProviderTokenService } from './mcp-oauth/token-service.js'
+import { McpOauthRefresher } from './mcp-oauth/refresher.js'
+import { guardedRequest } from './net/guarded-fetch.js'
+import type { Dial } from './mcp-oauth/discovery.js'
 import { replayMemoryConnectionsTo, syncMemoryConnectionsToDaemons } from './orchestrator/memoryConnectionReplay.js'
 import { relayHttpOrigin } from './orchestrator/mcpProvider.js'
 import { CollabRoutesService } from './orchestrator/collabRoutes.service.js'
@@ -1749,12 +1756,70 @@ export function buildContainer(
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }
+  // ── MCP provider OAuth (mcp-provider-oauth.md) ──────────────────────────────
+  // Assembled AFTER `httpDeps` and assigned back onto it: the funnel's `onConnected`
+  // re-binds through the same push helper and provider chain the routes use, so the
+  // service cannot be constructed before the bundle it pushes through exists.
+  const mcpPush = makeMcpPush(httpDeps)
+  // The CP's own outbound allowlist — never the relay's; the two egress permissions are
+  // separate by design (see `net/guarded-fetch.ts`).
+  const mcpOutboundAllowlist = new Set(
+    (config.CP_ALLOWED_OUTBOUND_HOSTS ?? '')
+      .split(',')
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean)
+  )
+  const mcpOauthDial: Dial = (url, init) => guardedRequest(url, { ...init, allowlist: mcpOutboundAllowlist })
+  const mcpTokenService = new McpProviderTokenService({
+    oauth: repos.mcpProviderOauth,
+    secrets: repos.mcpProviderOauthSecret,
+    cipher: secretCipher,
+    dial: mcpOauthDial,
+    clock
+  })
+  const mcpOauthRebind = makeOauthRebind(httpDeps, mcpPush, mcpTokenService)
+  const rebindProvider = async (orgId: OrgId, providerId: string): Promise<void> => {
+    const provider = await repos.mcpProvider.get(orgId, providerId)
+    if (provider) await mcpOauthRebind(orgId, providerId, provider.name)
+  }
+  httpDeps.mcpProviderOauth = new McpProviderOauthService({
+    providers: repos.mcpProvider,
+    oauth: repos.mcpProviderOauth,
+    secrets: repos.mcpProviderOauthSecret,
+    states: repos.mcpProviderOauthState,
+    cipher: secretCipher,
+    dial: mcpOauthDial,
+    clock,
+    ...(config.PUBLIC_CP_URL ? { publicCpUrl: config.PUBLIC_CP_URL } : {}),
+    ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
+    onConnected: rebindProvider
+  })
+  // A disconnected grant stops being projected: drop the whole binding rather than
+  // re-pushing a credential that no longer exists.
+  httpDeps.mcpOauthUnbind = async (orgId, provider) => {
+    await mcpPush.pushUnassign(provider, orgId)
+  }
+
   const http = buildHttpServer(httpDeps, opts.fastify)
 
   // Reconciler for orphaned schedule runs: fails `running` cron_run rows whose
   // completion report was lost so the console self-heals (design §3.14). Built
   // here so the graph is whole; armed only by `startBackground()` (never in
   // tests). Uses the Fastify logger, hence constructed after `http`.
+  // §Refresh sweep: renews an OAuth provider's access token before expiry and re-pushes
+  // the relay binding, which is the only thing that keeps `auth: oauth2` working. Built
+  // here so the graph is whole; armed only by `startBackground()`.
+  const mcpOauthRefresher = new McpOauthRefresher({
+    providers: repos.mcpProvider,
+    oauth: repos.mcpProviderOauth,
+    grants: repos.mcpGrant,
+    states: repos.mcpProviderOauthState,
+    tokens: mcpTokenService,
+    pushBinding: mcpOauthRebind,
+    clock,
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+
   const cronRunReaper = new CronRunReaper(
     repos.cron,
     clock,
@@ -2271,6 +2336,7 @@ export function buildContainer(
           providers: repos.mcpProvider,
           secrets: repos.mcpProviderSecret,
           grants: repos.mcpGrant,
+          tokens: mcpTokenService,
           log: http.log
         }).catch((err) => http.log.error({ err }, 'relay: mcp binding replay on register failed'))
       )
@@ -2525,6 +2591,7 @@ export function buildContainer(
       githubRunReporter?.start()
       giteaStatusReporter.start()
       hookRedeliveryReconciler?.start()
+      mcpOauthRefresher.start()
       gitlabRotator?.start()
       gitlabRetirementSweeper?.start()
       gitlabConvergeSweeper?.start()
@@ -2549,6 +2616,7 @@ export function buildContainer(
       githubRunReporter?.stop()
       giteaStatusReporter.stop()
       hookRedeliveryReconciler?.stop()
+      mcpOauthRefresher.stop()
       gitlabRotator?.stop()
       gitlabRetirementSweeper?.stop()
       gitlabConvergeSweeper?.stop()

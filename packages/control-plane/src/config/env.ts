@@ -143,6 +143,10 @@ const CoreConfigShape = {
   // Externally-reachable CP origin used to render the daemon start command on
   // onboarding (C2). Unset ⇒ the command URL falls back to HOST:PORT.
   PUBLIC_CP_URL: z.string().url().optional(),
+  // Hosts the deployment lets the CP dial even though they resolve to a private address
+  // (mcp-provider-oauth.md). Comma-separated. Deliberately NOT the relay's
+  // RELAY_MCP_ALLOWED_UPSTREAMS: CP egress and relay egress are separate permissions.
+  CP_ALLOWED_OUTBOUND_HOSTS: z.string().optional(),
   // ── Preset agents (docs/designs/preset-agents.md §3) — default ON ──
   // Every org is born with the `agentconnect` general preset (org-creation seam)
   // and existing orgs are backfilled once at boot. 'false' turns BOTH off for

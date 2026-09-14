@@ -13,11 +13,14 @@
 import type { McpProviderRepo, McpProviderSecretStore, McpGrantRepo } from '../persistence/ports.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
 import { mcpRcAssign } from './mcpProvider.js'
+import { resolveUpstreamHeaders, type McpTokenResolver } from './mcpUpstreamHeaders.js'
 
 export interface McpReplayDeps {
   providers: McpProviderRepo
   secrets: McpProviderSecretStore
   grants: McpGrantRepo
+  /** OAuth token custody. Replay always resolves CACHED-ONLY — see below. */
+  tokens?: McpTokenResolver
   log?: { warn(obj: object, msg: string): void }
 }
 
@@ -27,7 +30,10 @@ export async function replayMcpTo(ch: RelayChannel, deps: McpReplayDeps): Promis
     try {
       const keys = (await deps.grants.activeForProvider(p.orgId, p.id)).map((g) => g.key)
       if (keys.length === 0) continue // no active grant ⇒ nothing callable to bind
-      const headers = (await deps.secrets.get(p.orgId, p.id)) ?? []
+      // Cached-only: this replay is awaited inside relay registration, so a network
+      // resolve here would couple relay convergence to third-party authorization servers.
+      const headers = await resolveUpstreamHeaders(deps, p, p.orgId, { allowNetwork: false })
+      if (headers === null) continue // nothing callable to bind (never authorized, or swept)
       ch.send('rc/mcp-assign', mcpRcAssign(p, headers, keys))
     } catch (err) {
       deps.log?.warn({ providerId: p.id, err }, 'mcp replay: send failed — skipped')

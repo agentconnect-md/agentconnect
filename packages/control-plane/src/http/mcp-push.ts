@@ -17,6 +17,12 @@ export interface McpPush {
    *  ordering marker, and that must come from the same grant as the key. */
   pushAssign(provider: McpProviderRecord, headers: McpHeader[], grant: GrantView, orgId: OrgId): Promise<void>
   pushUnassign(provider: McpProviderRecord, orgId: OrgId): Promise<void>
+  /** Relay-only re-bind: replaces a provider's injected credential and its WHOLE grant-hash
+   *  allowlist, without touching the daemon def. What a token refresh uses — the proxy url
+   *  and the grant key the agent holds do not change, so re-pushing the def is pure churn,
+   *  and pushing only the current grant would retire the other one during a rotation's
+   *  grace window. The caller supplies every active key for that reason. */
+  pushBinding(provider: McpProviderRecord, headers: McpHeader[], grantKeys: string[]): void
 }
 
 export function makeMcpPush(deps: HttpDeps): McpPush {
@@ -55,6 +61,10 @@ export function makeMcpPush(deps: HttpDeps): McpPush {
           // daemon offline — reconcile carries the def on its next register
         }
       }
+    },
+    pushBinding(provider, headers, grantKeys) {
+      if (grantKeys.length === 0) return // a keyless binding is never callable
+      deps.relayControl.mcpAssign(mcpRcAssign(provider, headers, grantKeys))
     },
     async pushUnassign(provider, orgId) {
       deps.relayControl.mcpUnassign({ providerId: provider.id })

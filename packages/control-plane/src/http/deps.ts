@@ -31,6 +31,7 @@ import type {
   DutyGroupRepo,
   McpProviderSecretStore,
   McpGrantRepo,
+  McpProviderRecord,
   McpProviderOauthRepo,
   McpProviderOauthSecretStore,
   McpProviderOauthStateStore,
@@ -67,6 +68,8 @@ import type {
 import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
+import type { McpProviderOauthService } from '../mcp-oauth/service.js'
+import type { OrgId } from '../domain/ids.js'
 import type { GitlabOauthService } from '../gitlab/oauth.service.js'
 import type { GitlabApiClient } from '../gitlab/api.js'
 import type { GitlabAccountService } from '../gitlab/account.service.js'
@@ -424,6 +427,10 @@ export interface HttpDeps {
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService
+  /** The MCP-provider authorization funnel (mcp-provider-oauth.md); absent ⇒ routes 404. */
+  mcpProviderOauth?: McpProviderOauthService
+  /** Stop projecting a disconnected grant into the relay pool. Joins the provider chain. */
+  mcpOauthUnbind?: (orgId: OrgId, provider: McpProviderRecord) => Promise<void>
   /** GitLab OAuth surface (gitlab-com-integration.md §9); absent ⇒ routes 404.
    *  `api` is the base-bound GitLab edge the admin routes share with the service. */
   gitlab?: {

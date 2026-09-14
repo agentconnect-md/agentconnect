@@ -19,13 +19,18 @@ import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
-import type { McpProviderRecord, McpHeader, McpGrantRepo } from '../../persistence/ports.js'
+import type { McpProviderRecord, McpHeader, McpGrantRepo, McpProviderOauthRecord } from '../../persistence/ports.js'
 import type { OrgId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import { blockedUpstreamUrl, currentMcpGrant, grantKeyHash, type GrantView } from '../../orchestrator/mcpProvider.js'
 import { makeMcpPush } from '../mcp-push.js'
+import { serializeByProvider, serializeByProviderNames } from '../provider-chain.js'
+
+// Re-exported at the shape callers already import (routes/agents.ts, tests) after the chain
+// moved to `provider-chain.ts` so the refresher could join it without importing a route.
+export { serializeByProvider, serializeByProviderNames }
 import { CONNECTOR_SERVICE_HEADER } from '../../connectors/index.js'
 import {
   CreateMcpProviderBody,
@@ -63,61 +68,6 @@ export function rotateProviderGrant(
   )
 }
 
-/**
- * Serialize binding-mutating operations per provider. `rc/mcp-assign` ships the WHOLE
- * grant-hash allowlist (the relay replaces it), so any two ops that read the active grant
- * and push a binding can race: two rotations leave >1 active DB grant; a rotation racing a
- * PATCH/DELETE can republish the just-revoked key (or re-bind a torn-down provider), so the
- * relay ends up rejecting the key the caller was handed. Chaining every such op makes each
- * read-active→push a critical section, so the last push always reflects the current
- * active grant.
- *
- * Chains are keyed by (orgId, name) — the DURABLE binding key — not the provider row id:
- * agents store the NAME, so lifecycle events on different rows under the same name (drop
- * A, create B) must serialize with each other and with agent enable-list writes; an
- * id-keyed chain dies with its row and lets a same-name recreate slip into the window.
- * ponytail: in-process lock, sufficient because the CP is a single Fastify process; swap
- * to pg_advisory_xact_lock (see persistence/repositories/hook.repo.ts) if it goes
- * multi-instance.
- */
-const providerChains = new Map<string, Promise<unknown>>()
-
-const providerChainKey = (orgId: string, name: string) => `${orgId}\0${name}`
-
-export function serializeByProvider<T>(orgId: string, name: string, run: () => Promise<T>): Promise<T> {
-  const key = providerChainKey(orgId, name)
-  const prev = providerChains.get(key) ?? Promise.resolve()
-  const result = prev.then(run, run)
-  const settled = result.then(
-    () => undefined,
-    () => undefined
-  )
-  providerChains.set(key, settled)
-  void settled.finally(() => {
-    if (providerChains.get(key) === settled) providerChains.delete(key)
-  })
-  return result
-}
-
-/**
- * Serialize one operation across SEVERAL provider-name chains — how an agent
- * enable-list write (routes/agents.ts) joins the chain of every name its submitted
- * list contains, so it cannot interleave with a DELETE between that delete's
- * reference check and its row drop, nor with a same-name provider create. Names are
- * chained whether or not they currently resolve to a registry row (the name IS the
- * durable key; a daemon-local name today may be a provider name in the same
- * breath). Chains are entered in sorted order so two multi-name writers can't
- * deadlock waiting on each other's tails.
- */
-export function serializeByProviderNames<T>(
-  orgId: string,
-  names: readonly string[],
-  run: () => Promise<T>
-): Promise<T> {
-  const sorted = [...new Set(names)].sort()
-  return sorted.reduceRight<() => Promise<T>>((inner, n) => () => serializeByProvider(orgId, n, inner), run)()
-}
-
 async function rotateOnce(
   provider: McpProviderRecord,
   headers: McpHeader[],
@@ -136,7 +86,12 @@ async function rotateOnce(
   return fresh.key
 }
 
-function toDto(p: McpProviderRecord, ctx: ViewCtx, headers: McpHeader[]): McpProviderDtoT {
+function toDto(
+  p: McpProviderRecord,
+  ctx: ViewCtx,
+  headers: McpHeader[],
+  oauth?: McpProviderOauthRecord | null
+): McpProviderDtoT {
   // For open_connector providers the service slug rides as a non-secret binding
   // header — surface it so the console can render the provider's icon.
   const service =
@@ -155,6 +110,19 @@ function toDto(p: McpProviderRecord, ctx: ViewCtx, headers: McpHeader[]): McpPro
     canEdit: canEdit(p, ctx),
     canManageSharing: canManageSharing(p, ctx),
     headerNames: headers.map((h) => h.name), // NEVER the values
+    auth: p.auth,
+    // Non-secret state only — the tokens and the client secret never leave the store.
+    ...(oauth
+      ? {
+          oauth: {
+            status: oauth.status,
+            issuer: oauth.issuer,
+            scopes: oauth.scopes,
+            clientSource: oauth.clientSource,
+            expiresAt: oauth.accessExpiresAt?.toISOString() ?? null
+          }
+        }
+      : {}),
     createdAt: p.createdAt.toISOString()
   }
 }
@@ -181,7 +149,14 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         const rows = await deps.repos.mcpProvider.listForOrg(orgOf(req), ctx)
         return Promise.all(
-          rows.map(async (p) => toDto(p, ctx, (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? []))
+          rows.map(async (p) =>
+            toDto(
+              p,
+              ctx,
+              (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? [],
+              p.auth === 'oauth2' ? await deps.repos.mcpProviderOauth.get(p.orgId, p.id) : null
+            )
+          )
         )
       }
     )
@@ -206,7 +181,12 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         if (!p || !canView(p, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
-        return toDto(p, ctxOf(req), (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? [])
+        return toDto(
+          p,
+          ctxOf(req),
+          (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? [],
+          p.auth === 'oauth2' ? await deps.repos.mcpProviderOauth.get(p.orgId, p.id) : null
+        )
       }
     )
 
@@ -235,6 +215,16 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         if (blocked) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: blocked })
         }
+        // An oauth2 provider's credential comes from the authorization funnel, so there is
+        // nothing for a static header to be: accepting both would leave two sources of
+        // truth for the same injected Authorization.
+        if (req.body.auth === 'oauth2' && req.body.headers.length > 0) {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            statusCode: 400,
+            message: 'an oauth2 provider takes no upstream headers — connect it instead'
+          })
+        }
         // sharedWith only bites when restricted; intersect with real org members.
         const sharedWith =
           req.body.visibility === 'restricted' && req.body.sharedWith
@@ -253,6 +243,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
             name: req.body.name,
             url: req.body.url,
             ...(req.body.ui !== undefined ? { ui: req.body.ui } : {}),
+            ...(req.body.auth ? { auth: req.body.auth } : {}),
             ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
             ...(sharedWith ? { sharedWith } : {}),
             ...(req.principal ? { createdByUserId: req.principal.userId } : {})
@@ -260,7 +251,10 @@ export function mcpProviderRoutes(deps: HttpDeps) {
           await deps.repos.mcpProviderSecret.put(provider.orgId, provider.id, req.body.headers)
           // Exactly one active grant per provider (v1). Plaintext returned once.
           const grant = await deps.repos.mcpGrant.mintFor(provider.orgId, provider.id)
-          await pushAssign(provider, req.body.headers, grant, orgOf(req))
+          // An oauth2 provider has no credential yet, so there is nothing callable to bind:
+          // the relay binding lands when the authorization funnel completes. Minting the
+          // grant now still matters — the agent-facing proxy url and key never change.
+          if (provider.auth !== 'oauth2') await pushAssign(provider, req.body.headers, grant, orgOf(req))
           return { provider, grant }
         })
         if (!created) {

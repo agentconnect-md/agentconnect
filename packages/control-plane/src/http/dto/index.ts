@@ -976,6 +976,10 @@ export const CreateMcpProviderBody = z
     // is intersected with current org members and only meaningful when 'restricted'.
     visibility: ResourceVisibilityEnum.optional(),
     sharedWith: z.array(z.string()).optional(),
+    // `oauth2` defers the credential to the authorization funnel: the row is created with
+    // no upstream credential at all and only becomes callable once a grant lands, so
+    // `headers` must be empty for it (the route 400s otherwise).
+    auth: z.enum(['headers', 'oauth2']).optional(),
     headers: z.array(McpHeaderBody).max(50).default([])
   })
   .strict()
@@ -1019,6 +1023,18 @@ export const McpProviderDto = z.object({
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
   canManageSharing: z.boolean(), // whether THIS caller may change the provider's sharing
   headerNames: z.array(z.string()), // upstream auth header keys; values are secret and never returned
+  auth: z.string(), // 'headers' | 'oauth2'
+  // Present only for auth='oauth2'. Non-secret state the console needs to explain the
+  // provider: NEVER the tokens, and never the client secret.
+  oauth: z
+    .object({
+      status: z.string(), // 'pending' | 'connected' | 'reauth_required'
+      issuer: z.string(),
+      scopes: z.array(z.string()),
+      clientSource: z.string(), // 'preregistered' | 'dynamic'
+      expiresAt: z.string().nullable() // ISO-8601 access-token expiry, when advertised
+    })
+    .optional(),
   createdAt: z.string() // ISO-8601
 })
 export const McpProviderListDto = z.array(McpProviderDto)
@@ -1029,6 +1045,19 @@ export type McpProviderDtoT = z.infer<typeof McpProviderDto>
 export const McpProviderCreatedDto = McpProviderDto.extend({
   grantKey: z.string()
 })
+
+/** `POST /mcp-providers/:id/oauth/start` — begin the authorization funnel. Supplying a
+ *  `clientId` selects pre-registration over dynamic registration for this provider. */
+export const StartMcpProviderOauthBody = z
+  .object({
+    returnPath: z.string().max(512).optional(),
+    clientId: z.string().min(1).max(512).optional(),
+    clientSecret: z.string().min(1).max(2048).optional()
+  })
+  .strict()
+
+/** The URL the console opens in a popup. The funnel continues on the CP's public origin. */
+export const McpProviderOauthStartDto = z.object({ url: z.string() })
 
 // ── shared-skills sources (docs/designs/shared-skills.md) ────────────────────
 

@@ -35,6 +35,7 @@ import { webchatMcpOperationRoutes } from './routes/webchat-mcp-operations.js'
 import { integrationRoutes } from './routes/integrations.js'
 import { botRoutes } from './routes/bots.js'
 import { mcpProviderRoutes } from './routes/mcp-providers.js'
+import { mcpProviderOauthPublicRoutes, mcpProviderOauthRoutes } from './routes/mcp-provider-oauth.js'
 import { skillSourceRoutes } from './routes/skill-sources.js'
 import { organizationKnowledgeRoutes } from './routes/organization-knowledge.js'
 import { organizationEnvironmentRoutes } from './routes/organization-environment.js'
@@ -281,6 +282,10 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       // Unauthenticated GitLab OAuth begin/callback hops (browser redirects; the
       // one-shot state row carries the org) — version root, outside the org subtree.
       await api.register(gitlabOauthRoutes(deps))
+      // The MCP-provider authorization begin/callback hops, same shape and same reason:
+      // the callback url is registered with a third-party authorization server in its
+      // PUBLIC form, so it must route under both prefixes (mounted again at `/v1` below).
+      await api.register(mcpProviderOauthPublicRoutes(deps))
       // Unauthenticated PLATFORM callbacks from the registry (§9
       // `installRoutes('public-callback')`) — browser redirects whose state
       // rides the OAuth exchange: today the Slack quick-install callback and its
@@ -323,6 +328,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           for (const plugin of platformRoutes('org')) await scope.register(plugin)
           await scope.register(botRoutes(deps))
           await scope.register(mcpProviderRoutes(deps))
+          await scope.register(mcpProviderOauthRoutes(deps))
           await scope.register(skillSourceRoutes(deps))
           await scope.register(organizationKnowledgeRoutes(deps))
           await scope.register(organizationEnvironmentRoutes(deps))
@@ -377,6 +383,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     async (pub) => {
       await pub.register(githubCallbackRoutes(deps))
       await pub.register(gitlabOauthRoutes(deps))
+      await pub.register(mcpProviderOauthPublicRoutes(deps))
       // The SAME platform callback plugins as the `/api/v1` mount above — the
       // deliberate double mount (§9: "core mounts this scope twice"), so a
       // callback URL handed out in the public form routes in both shapes.
