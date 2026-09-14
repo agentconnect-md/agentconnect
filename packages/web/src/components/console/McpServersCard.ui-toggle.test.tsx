@@ -41,6 +41,7 @@ const PROVIDER: McpProviderDto = {
   canEdit: true,
   canManageSharing: true,
   ui: false,
+  auth: 'headers',
   headerNames: [],
   createdAt: '2026-09-14T00:00:00Z'
 }

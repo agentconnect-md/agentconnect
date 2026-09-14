@@ -22,6 +22,8 @@ import { useProfile } from '@/lib/profile'
 import {
   fetchConnectorCatalog,
   fmtDate,
+  startMcpProviderOauth,
+  disconnectMcpProviderOauth,
   type McpProviderDto,
   type McpProviderCreatedDto,
   type McpHeaderInput,
@@ -212,6 +214,15 @@ function ProviderTile({
       action={
         canWrite ? (
           <>
+            {p.auth === 'oauth2' && p.oauth?.status !== 'connected' && (
+              <button
+                className="iconbtn h-6 w-6"
+                title={p.oauth?.status === 'reauth_required' ? 'Reconnect' : 'Connect'}
+                onClick={() => void beginProviderOauth(p.id)}
+              >
+                <Icon name="plug" size={12} />
+              </button>
+            )}
             <button className="iconbtn h-6 w-6" title="Edit" onClick={onEdit}>
               <Icon name="pencil" size={12} />
             </button>
@@ -224,12 +235,102 @@ function ProviderTile({
       footer={
         <div className="flex min-w-0 items-center gap-2">
           <VisibilityValue visibility={p.visibility} sharedWith={p.sharedWith} />
+          <OauthStatusBadge provider={p} />
           <span className="mono ml-auto flex-none text-[10.5px] text-(--text-disabled)">
             added {fmtDate(p.createdAt)}
           </span>
         </div>
       }
     />
+  )
+}
+
+/**
+ * An OAuth provider edits its CONNECTION, not a credential: the token is the CP's and is
+ * replaced on every refresh, so there is nothing here for an operator to type. Reconnect
+ * re-runs the funnel (the only repair for `reauth_required`); Disconnect drops the grant
+ * while leaving the provider and its grant key alone, so no agent has to re-select it.
+ */
+function OauthConnectionField({ provider }: { provider: McpProviderDto }) {
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const status = provider.oauth?.status ?? 'pending'
+
+  const run = async (what: 'connect' | 'disconnect') => {
+    if (busy) return
+    setBusy(true)
+    setNote(null)
+    try {
+      if (what === 'connect') {
+        await beginProviderOauth(provider.id)
+        setNote('Complete the sign-in in the popup window…')
+      } else {
+        await disconnectMcpProviderOauth(provider.id)
+        setNote('Disconnected. Reconnect to make this server usable again.')
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fld">
+      <span className="fldlbl">Connection</span>
+      <div className="flex items-center justify-between gap-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px]">
+        <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+          {status === 'connected'
+            ? `Signed in to ${provider.oauth?.issuer ?? 'the authorization server'}.`
+            : status === 'reauth_required'
+              ? 'The stored authorization is no longer accepted.'
+              : 'Not connected yet.'}
+        </span>
+        <div className="flex flex-none items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void run('connect')}
+            className="inline-flex w-fit cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--brand)"
+          >
+            <Icon name="plug" size={14} />
+            {status === 'connected' ? 'Reconnect' : 'Connect'}
+          </button>
+          {status === 'connected' && (
+            <button
+              type="button"
+              onClick={() => void run('disconnect')}
+              className="inline-flex w-fit cursor-pointer items-center border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)"
+            >
+              Disconnect
+            </button>
+          )}
+        </div>
+      </div>
+      <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+        {note ?? 'The access token is held by the control plane and refreshed automatically.'}
+      </span>
+    </div>
+  )
+}
+
+/** The one thing a viewer must be able to see at a glance: whether this provider can
+ *  currently reach its upstream at all. `reauth_required` means the grant is dead and only
+ *  a fresh authorization repairs it — a refresh will not. */
+function OauthStatusBadge({ provider }: { provider: McpProviderDto }) {
+  if (provider.auth !== 'oauth2') return null
+  const status = provider.oauth?.status ?? 'pending'
+  if (status === 'connected') return null
+  return (
+    <span
+      className="flex-none font-sans text-[10.5px] font-medium leading-normal text-(--status-error)"
+      title={
+        status === 'reauth_required'
+          ? 'The stored authorization is no longer accepted — reconnect to repair it.'
+          : 'Not connected yet — authorize this server to make it usable.'
+      }
+    >
+      {status === 'reauth_required' ? 'Reconnect needed' : 'Not connected'}
+    </span>
   )
 }
 
@@ -352,6 +453,9 @@ export function CreateMcpProviderModal({
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
   const [headers, setHeaders] = useState<HeaderRow[]>([{ name: '', value: '' }])
+  const [auth, setAuth] = useState<'headers' | 'oauth2'>('headers')
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
   const [sharing, setSharing] = useState<SharingValue>({ visibility: 'org', sharedWith: [] })
   const [ui, setUi] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -367,13 +471,23 @@ export function CreateMcpProviderModal({
       const created = await createMcpProvider({
         name: name.trim(),
         url: url.trim(),
-        headers: cleanHeaders(headers),
+        auth,
+        // An oauth2 provider has no credential to store: the funnel supplies it.
+        headers: auth === 'oauth2' ? [] : cleanHeaders(headers),
         ...(ui ? { ui: true } : {}),
         // Atomic restricted-create: the CP intersects sharedWith with org members.
         ...(sharing.visibility === 'restricted'
           ? { visibility: 'restricted' as const, sharedWith: sharing.sharedWith }
           : {})
       })
+      // An oauth2 provider is not usable until it is connected, so go straight there
+      // rather than leaving the operator on a tile that silently does nothing.
+      if (auth === 'oauth2') {
+        await beginProviderOauth(created.id, {
+          ...(clientId.trim() ? { clientId: clientId.trim() } : {}),
+          ...(clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {})
+        })
+      }
       onCreated?.(created)
       onClose()
     } catch (e) {
@@ -419,7 +533,57 @@ export function CreateMcpProviderModal({
               The upstream MCP endpoint (http transport). Agents never see this — the relay dials it.
             </span>
           </div>
-          <HeadersEditor rows={headers} onChange={setHeaders} />
+          <div className="fld">
+            <span className="fldlbl">Authentication</span>
+            <div className="flex gap-2">
+              {(
+                [
+                  ['headers', 'API key / headers'],
+                  ['oauth2', 'OAuth']
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  className={auth === value ? 'chip border-(--brand) bg-(--brand-soft) text-(--brand)' : 'chip'}
+                  onClick={() => setAuth(value)}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+              {auth === 'oauth2'
+                ? 'AgentConnect signs in to the server and keeps the token refreshed. You will be asked to authorize after adding.'
+                : 'The credential you enter is stored by the control plane and injected by the relay.'}
+            </span>
+          </div>
+          {auth === 'headers' ? (
+            <HeadersEditor rows={headers} onChange={setHeaders} />
+          ) : (
+            <details className="fld">
+              <summary className="fldlbl cursor-pointer">Advanced — existing OAuth client (optional)</summary>
+              <div className="mt-2 flex flex-col gap-2">
+                <input
+                  className="inp mn"
+                  placeholder="client_id"
+                  value={clientId}
+                  onChange={(e) => setClientId(e.target.value)}
+                />
+                <input
+                  className="inp mn"
+                  placeholder="client_secret"
+                  type="password"
+                  value={clientSecret}
+                  onChange={(e) => setClientSecret(e.target.value)}
+                />
+                <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                  Leave blank to register automatically. Fill these in only if you registered an OAuth app with the
+                  server yourself.
+                </span>
+              </div>
+            </details>
+          )}
           <McpAppsField checked={ui} onChange={setUi} />
           <VisibilityField value={sharing} onChange={setSharing} />
         </div>
@@ -523,7 +687,9 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
             <span className="fldlbl">URL</span>
             <input className="inp mn" value={url} onChange={(e) => setUrl(e.target.value)} />
           </div>
-          {replaceHeaders ? (
+          {provider.auth === 'oauth2' ? (
+            <OauthConnectionField provider={provider} />
+          ) : replaceHeaders ? (
             <HeadersEditor rows={headers} onChange={setHeaders} valuePlaceholder="new value" />
           ) : (
             <div className="fld">
@@ -849,6 +1015,22 @@ function authLabel(type: ConnectorAuthDefinition['type']): string {
   if (type === 'oauth2') return 'OAuth'
   if (type === 'custom_credential') return 'Custom'
   return 'No auth'
+}
+
+/**
+ * Open the CP's authorization funnel in a popup. The url runs on the CP's PUBLIC origin —
+ * the browser hop that binds this window to the grant — and finally redirects back to the
+ * console carrying `?mcpOauth=<outcome>`, so there is nothing to poll here.
+ */
+async function beginProviderOauth(
+  providerId: string,
+  client: { clientId?: string; clientSecret?: string } = {}
+): Promise<void> {
+  const { url } = await startMcpProviderOauth(providerId, {
+    returnPath: `${window.location.pathname}${window.location.search}`,
+    ...client
+  })
+  window.open(url, 'mcp_provider_oauth', oauthPopupFeatures())
 }
 
 // Centered OAuth popup window features (mirrors ConnectorsModal.oauthPopupFeatures).

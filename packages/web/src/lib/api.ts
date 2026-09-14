@@ -4762,6 +4762,17 @@ export interface McpProviderDto {
   ui: boolean
   /** Upstream auth header keys; values are secret and never returned. */
   headerNames: string[]
+  /** 'headers' = the operator's own credential; 'oauth2' = a CP-held OAuth grant. */
+  auth: string
+  /** Present only for auth='oauth2'. Non-secret state — never the tokens. */
+  oauth?: {
+    /** 'pending' (not connected yet, or disconnected) | 'connected' | 'reauth_required'. */
+    status: string
+    issuer: string
+    scopes: string[]
+    clientSource: string // 'preregistered' | 'dynamic'
+    expiresAt: string | null // ISO-8601 access-token expiry, when the server advertises one
+  }
   createdAt: string // ISO-8601
 }
 
@@ -4781,6 +4792,8 @@ export interface McpHeaderInput {
 export interface CreateMcpProviderInput {
   name: string
   url: string
+  /** 'oauth2' defers the credential to the authorization funnel — `headers` must be empty. */
+  auth?: 'headers' | 'oauth2'
   headers: McpHeaderInput[]
   /** Host this provider on the daemon so its `ui://` interfaces render in webchat. Absent ⇒ false. */
   ui?: boolean
@@ -4822,6 +4835,23 @@ export async function updateMcpProvider(id: string, patch: UpdateMcpProviderInpu
 
 export async function deleteMcpProvider(id: string): Promise<void> {
   await apiDelete<void>(`${orgBase()}/mcp-providers/${encodeURIComponent(id)}`)
+}
+
+// Start the OAuth funnel for an `auth: 'oauth2'` provider. The returned url is opened in
+// a popup: it continues on the CP's public origin and finally redirects back to the console
+// with `?mcpOauth=<outcome>`. Supplying a clientId uses a pre-registered OAuth client
+// instead of dynamic registration.
+export async function startMcpProviderOauth(
+  id: string,
+  body: { returnPath?: string; clientId?: string; clientSecret?: string } = {}
+): Promise<{ url: string }> {
+  return apiPost<{ url: string }>(`${orgBase()}/mcp-providers/${encodeURIComponent(id)}/oauth/start`, body)
+}
+
+// Drop the stored grant and stop projecting it. The provider and its grant key stay, so
+// re-authorizing later does not disturb any agent's selection.
+export async function disconnectMcpProviderOauth(id: string): Promise<void> {
+  await apiPost<void>(`${orgBase()}/mcp-providers/${encodeURIComponent(id)}/oauth/disconnect`, {})
 }
 
 // Set a provider's visibility + share set (PUT /mcp-providers/:id/sharing). Separate
