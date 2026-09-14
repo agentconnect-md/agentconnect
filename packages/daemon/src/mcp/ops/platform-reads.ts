@@ -116,7 +116,7 @@ function hasHistoryAnswer(deps: PlatformReadDeps, tool: HistoryRead): boolean {
 
 /** Whose observed history a read may see. */
 interface HistoryBot {
-  /** The bot to read; undefined ⇒ the agent's only bot on the platform, which the daemon resolves. */
+  /** The bot to read, and the id a successful result reports back so a follow-up call can name the same one; undefined ⇒ the agent's only bot on the platform, which the daemon resolves and an unqualified follow-up picks anyway. */
   integrationId?: string
   /** Set only when a HUMAN named it, so an empty result can say whose history was empty instead of inviting the same card again. */
   chosen?: string
@@ -177,7 +177,13 @@ export async function listKnownUsers(
   if (!bot) return { platform, users: [], note: MULTI_INTEGRATION_NOTE }
   const users = (await deps.observedUsers?.(ctx.agentId, platform, bot.integrationId)) ?? []
   const note = bot.chosen !== undefined && users.length === 0 ? emptyHistoryNote(platform, bot.chosen) : undefined
-  return { platform, users, ...(note ? { note } : {}) }
+  // Naming the bot read is what lets the answer outlive this call: the ask lives in the SDK's per-call state, so without it a follow-up would resolve to another bot and find these ids unreachable.
+  return {
+    platform,
+    ...(bot.integrationId ? { integrationId: bot.integrationId } : {}),
+    users,
+    ...(note ? { note } : {})
+  }
 }
 
 // Platform-neutral READ tools: like the send path they route by a `platform` argument (defaulting to the current session's) to ANY platform the agent is connected to, so an agent handling a Telegram chat can discover Slack channel/user ids to cross-post — resolved BEFORE the session-gateway gate so the target need not be the integration that triggered this session. SECURITY: the candidate set comes from the trusted session snapshot, never tool input.
@@ -195,6 +201,8 @@ export async function listChannels(
     const note = bot.chosen !== undefined && channels.length === 0 ? emptyHistoryNote(platform, bot.chosen) : undefined
     return {
       platform,
+      // The bot these ids belong to, so a follow-up call can name it instead of resolving to another bot (the ask itself lives only in this call's state).
+      ...(bot.integrationId ? { integrationId: bot.integrationId } : {}),
       channels,
       // Where the returned list came from: an empty fallback leaves the (equally empty) live answer standing, and the answering round below never ran one.
       source: channels.length > 0 || !ranLive ? 'observed' : 'live',

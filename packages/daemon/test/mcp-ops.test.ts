@@ -955,7 +955,7 @@ describe('executeTool: read tools', () => {
     }
 
     const res = (await executeTool(dual, 'listChannels', {}, d)) as Record<string, unknown>
-    expect(res).toEqual({ platform: 'telegram', channels: observed, source: 'observed' })
+    expect(res).toEqual({ platform: 'telegram', integrationId: 'int-tg', channels: observed, source: 'observed' })
   })
 
   it('listKnownUsers returns observed users and needs no live gateway', async () => {
@@ -968,7 +968,7 @@ describe('executeTool: read tools', () => {
       integrations: [{ id: 'int-tg', platform: 'telegram' }]
     }
     const res = (await executeTool(dual, 'listKnownUsers', {}, d)) as Record<string, unknown>
-    expect(res).toEqual({ platform: 'telegram', users })
+    expect(res).toEqual({ platform: 'telegram', integrationId: 'int-tg', users })
     // Rejects a platform the agent isn't connected to.
     await expect(executeTool(dual, 'listKnownUsers', { platform: 'discord' }, d)).rejects.toThrow(
       /no discord integration/
@@ -1009,9 +1009,14 @@ describe('executeTool: read tools', () => {
     const gwEmpty = fakeGateway({ listChannels: vi.fn(async () => []) })
     const d2: OpsDeps = { ...d, gatewayFor: () => gwEmpty }
     const chans = (await executeTool(twoBots, 'listChannels', {}, d2)) as Record<string, unknown>
-    expect(chans).toEqual({ platform: 'slack', channels: [{ id: 'C_HIST' }], source: 'observed' })
+    expect(chans).toEqual({
+      platform: 'slack',
+      integrationId: 'int-a',
+      channels: [{ id: 'C_HIST' }],
+      source: 'observed'
+    })
     const kus = (await executeTool(twoBots, 'listKnownUsers', {}, d2)) as Record<string, unknown>
-    expect(kus).toEqual({ platform: 'slack', users: [{ id: 'U_HIST' }] })
+    expect(kus).toEqual({ platform: 'slack', integrationId: 'int-a', users: [{ id: 'U_HIST' }] })
     expect(observedChannels).toHaveBeenCalledWith('bot-a', 'slack', 'int-a')
     expect(observedUsers).toHaveBeenCalledWith('bot-a', 'slack', 'int-a')
   })
@@ -2470,6 +2475,7 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
     const { observedUsers, d } = readDeps({ ask: port({ 'listKnownUsers.integrationId': accept('tg-b') }) })
     expect(await executeTool(crossPlatform, 'listKnownUsers', tg, d)).toEqual({
       platform: 'telegram',
+      integrationId: 'tg-b',
       users: observed.users
     })
     // The prerequisite this PR carries: without the third argument the answer would be inert.
@@ -2499,7 +2505,7 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
       observedUsers: async () => []
     })
     const res = (await executeTool(crossPlatform, 'listKnownUsers', tg, d)) as Record<string, unknown>
-    expect(res).toMatchObject({ platform: 'telegram', users: [] })
+    expect(res).toMatchObject({ platform: 'telegram', integrationId: 'tg-b', users: [] })
     expect(res.note).toMatch(/`tg-b` Telegram bot has no observed history/)
     expect(res.note).not.toBe(MULTI_INTEGRATION_NOTE)
   })
@@ -2516,6 +2522,7 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
     answers['listChannels.integrationId'] = accept('tg-b')
     expect(await executeTool(crossPlatform, 'listChannels', tg, d)).toEqual({
       platform: 'telegram',
+      integrationId: 'tg-b',
       channels: observed.channels,
       source: 'observed'
     })
@@ -2530,7 +2537,12 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
       string,
       unknown
     >
-    expect(res).toEqual({ platform: 'telegram', channels: observed.channels, source: 'observed' })
+    expect(res).toEqual({
+      platform: 'telegram',
+      integrationId: 'tg-b',
+      channels: observed.channels,
+      source: 'observed'
+    })
     expect(res).not.toHaveProperty('note')
     expect(observedChannels).toHaveBeenCalledWith('bot-a', 'telegram', 'tg-b')
     expect(gw.listChannels).toHaveBeenCalledTimes(1)
@@ -2543,6 +2555,7 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
     const { observedUsers, d } = readDeps({ ask: port() })
     expect(await executeTool(sameBot, 'listKnownUsers', {}, d)).toEqual({
       platform: 'telegram',
+      integrationId: 'tg-a',
       users: observed.users
     })
     expect(observedUsers).toHaveBeenCalledWith('bot-a', 'telegram', 'tg-a')
@@ -2570,6 +2583,28 @@ describe('executeTool: a history-backed read asks which bot (#1965 Gap A)', () =
       users: observed.users
     })
     expect(solo.observedUsers).toHaveBeenCalledWith('bot-a', 'telegram', undefined)
+  })
+
+  // The answer lives only in the SDK's per-call state, so a result that did not name the bot left the model with ids and no way to reach them: the next unqualified call resolves to `tg-a` and cannot see a chat `tg-b` was in.
+  it('names the chosen bot so a follow-up call can route back through it', async () => {
+    const gwA = fakeGateway({ listChannels: vi.fn(async () => []) })
+    const gwB = fakeGateway({ listChannels: vi.fn(async () => []) })
+    const { d } = readDeps({
+      ask: port({ 'listChannels.integrationId': accept('tg-b') }),
+      gatewayFor: (id: string) => (id === 'tg-b' ? gwB : gwA)
+    })
+    const res = (await executeTool(crossPlatform, 'listChannels', tg, d)) as Record<string, unknown>
+    expect(res.integrationId).toBe('tg-b')
+
+    const sent = (await executeTool(
+      crossPlatform,
+      'sendMessage',
+      { platform: 'telegram', integrationId: res.integrationId, channel: '-100', message: 'hi' },
+      d
+    )) as { post: Record<string, unknown> }
+    expect(sent.post).toMatchObject({ platform: 'telegram', integrationId: 'tg-b', channel: '-100' })
+    expect(gwB.postMessage).toHaveBeenCalled()
+    expect(gwA.postMessage).not.toHaveBeenCalled()
   })
 
   // The ask is human-paced, so the turn can die while the card is open: the answering round meets the turn gate first and refuses, the documented outcome rather than a read of stale history.

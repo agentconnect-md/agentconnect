@@ -1288,8 +1288,11 @@ replayed round would otherwise spend a second platform API call on a list the as
 found empty, with the guard unchanged by the answer; and an answer lives only in the SDK's per-call
 state, so a later `tools/call` asks the same human again — accepted, and softened by reporting an
 empty human-disambiguated read as _that bot's_ empty history rather than as a platform-wide `[]`
-the model would want to retry. Where the ask cannot be made or is declined, both reads fall through
-to the exact suppressed result, note included.
+the model would want to retry. That last consequence is also why a result scoped to one bot names it
+back as `integrationId`: the answer itself dies with the call, so without the id in the result the
+model would hold chat ids it could only reach through a bot the next unqualified call does not pick.
+Where the ask cannot be made or is declined, both reads fall through to the exact suppressed result,
+note included.
 
 A third-party MCP server's own elicitation is a separate question and needs no work here: it
 already reaches our chat surfaces by the same route, where `AcpHost` answers

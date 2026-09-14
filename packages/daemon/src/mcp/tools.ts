@@ -370,7 +370,9 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
         'the result `source` is "live" or "observed" accordingly. That history belongs to one bot at a time: the bot ' +
         '`integrationId` names, else the one that owns this conversation, else — a platform where this agent has ' +
         'several bots and none of them owns this conversation — one a human is asked to choose; with no answer the ' +
-        'fallback is suppressed and the result carries a `note`.',
+        'fallback is suppressed and the result carries a `note`. A result scoped to one bot names it back as ' +
+        '`integrationId`: pass that id to sendMessage/listChannelMembers/getUserProfile, or the ids it returned may ' +
+        'not be reachable by the bot those calls pick.',
       inputSchema: obj({ platform, integrationId })
     },
     ...(offered('channelHistory')
@@ -404,7 +406,9 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
         'search (Telegram/Discord). Pass `platform` to target a connected platform (defaults to the current one). ' +
         'That history belongs to one bot at a time: the bot that owns this conversation, else — a platform where ' +
         'this agent has several bots and none of them owns this conversation — one a human is asked to choose; with ' +
-        'no answer the result is an empty list with a `note`.',
+        'no answer the result is an empty list with a `note`. A result scoped to one bot names it back as ' +
+        '`integrationId`: pass that id to sendMessage/listChannels/getUserProfile, or the ids it returned may not be ' +
+        'reachable by the bot those calls pick.',
       inputSchema: obj({ platform })
     },
     {
