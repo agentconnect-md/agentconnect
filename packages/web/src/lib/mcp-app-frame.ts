@@ -63,70 +63,41 @@ export function buildMcpAppCsp(csp?: McpAppCsp): string {
 }
 
 /**
- * A copy of `html` with every region a tag CANNOT legally start in blanked to spaces — HTML
- * comments, and the raw-text bodies of `<script>` and `<style>`.
- *
- * Same length as the input, deliberately: offsets found here address the ORIGINAL string, so the
- * template is still inserted into byte-for-byte rather than rebuilt from a parse.
- *
- * This exists because a naive search for `<head>` finds one written inside a comment — and a
- * conditional or legacy comment before the real head is ordinary in hand-written HTML. Inserting
- * the policy there does not misplace it, it COMMENTS IT OUT: the meta never reaches the DOM and
- * the frame runs with no declared-domain restriction at all.
- */
-function maskUninsertable(html: string): string {
-  const blank = (m: string) => ' '.repeat(m.length)
-  return html
-    .replace(/<!--[\s\S]*?(?:-->|$)/g, blank)
-    .replace(
-      /(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>|$)/gi,
-      (_m, open: string, body: string, close: string) => open + blank(body) + close
-    )
-    .replace(
-      /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>|$)/gi,
-      (_m, open: string, body: string, close: string) => open + blank(body) + close
-    )
-}
-
-/**
  * The document actually loaded into the frame: the template with our policy injected into its
  * `<head>`.
  *
- * WHERE the meta goes is the whole correctness of this function, and getting it wrong is silent
- * in both directions. A real app template is a COMPLETE document (`<!doctype html><html><head>…`).
- * Prepending the meta breaks it two ways at once — the doctype is no longer first, so the parser
- * drops it and the page renders in quirks mode, and the meta lands outside `<head>`, where
- * browsers do not honor `http-equiv="Content-Security-Policy"` at all. Inserting it at a `<head>`
- * found by a naive scan breaks it a third way, because that `<head>` may be inside a comment and
- * the policy is then commented out. Either way the policy is decoration: present in the bytes,
- * enforced by nobody, on exactly the templates §7.2 exists for.
+ * PARSED, NOT SCANNED, and that is the whole correctness of this function. Two earlier attempts
+ * here were silently wrong in opposite directions. Prepending the meta drops the doctype (quirks
+ * mode) and lands the policy outside `<head>`, where browsers do not honor `http-equiv` CSP at
+ * all. Inserting it at a `<head>` found by regex is worse: that match may be inside a comment, a
+ * quoted attribute, or RCDATA, and the policy is then commented out or inert text — so the frame
+ * runs with no declared-domain restriction whatever. Both failures are invisible, on exactly the
+ * templates §7.2 exists for.
  *
- * So the insertion point is located on a masked copy (above) and applied to the original, and the
- * three shapes a template can take are handled explicitly. The template's own markup is otherwise
- * never rewritten: a host that edits an app's HTML is a host that can break it invisibly.
+ * Masking those regions well enough to scan safely means writing an HTML tokenizer. There is no
+ * need to: this document is about to be parsed by the browser regardless, so parsing it here and
+ * inserting into the real `<head>` gives the same tree the frame would have built, with the policy
+ * provably in the one place it is honored. A fragment needs no special case either — the parser
+ * supplies the `<html>`/`<head>`/`<body>` it implies — and emitting the doctype unconditionally
+ * keeps every template in standards mode.
+ *
+ * The cost is honest and accepted: the markup is re-serialized rather than passed through byte for
+ * byte. What comes out is the parser's own normalization of what was going in, which is what the
+ * frame would have rendered either way.
  */
 export function buildMcpAppDocument(html: string, csp?: McpAppCsp): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${buildMcpAppCsp(csp).replace(/"/g, '&quot;')}">`
-  const scan = maskUninsertable(html)
-  // 1. It has a head — the ordinary case for a complete document. Straight after the opening tag,
-  //    so the policy is in force before anything the head goes on to load.
-  const head = /<head\b[^>]*>/i.exec(scan)
-  if (head) {
-    const at = head.index + head[0].length
-    return `${html.slice(0, at)}${meta}${html.slice(at)}`
+  // Server-side render has no DOM. `srcdoc` only means anything in a browser and the card arms a
+  // frame only against a live bridge, so this value is never the one a reader's frame loads; the
+  // wrap keeps the policy structurally inside a head regardless.
+  if (typeof DOMParser === 'undefined') {
+    return `<!doctype html><html><head>${meta}</head><body>${html}</body></html>`
   }
-  // 2. A document with no head of its own: give it one, after `<html>` so the doctype keeps its
-  //    place at the front of the file.
-  const htmlTag = /<html\b[^>]*>/i.exec(scan)
-  if (htmlTag) {
-    const at = htmlTag.index + htmlTag[0].length
-    return `${html.slice(0, at)}<head>${meta}</head>${html.slice(at)}`
-  }
-  // 3. A bare fragment, which is what a hand-written template usually is. It gets WRAPPED rather
-  //    than prepended to: a meta that merely leads the markup is parsed into `<body>`, where
-  //    http-equiv CSP is ignored exactly as it is in case 1's failure mode. Wrapping also gives a
-  //    fragment a doctype it never had, so it renders in standards mode instead of quirks.
-  return `<!doctype html><html><head>${meta}</head><body>${html}</body></html>`
+  const parsed = new DOMParser().parseFromString(html, 'text/html')
+  const head = parsed.head ?? parsed.createElement('head')
+  if (!parsed.head) parsed.documentElement.prepend(head)
+  head.insertAdjacentHTML('afterbegin', meta)
+  return `<!doctype html>${parsed.documentElement.outerHTML}`
 }
 
 /** Whether a `ui/open-link` destination may be opened for the reader. Only `http`/`https`, which

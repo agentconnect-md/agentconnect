@@ -104,6 +104,23 @@ describe('buildMcpAppCsp', () => {
     expect(meta?.getAttribute('content')).toContain('https://api.example.test')
   })
 
+  it('is not fooled by a <head> in a quoted attribute or in RCDATA', () => {
+    // The two cases a comment-masking scanner still got wrong: the policy became inert text and
+    // the frame ran with no declared-domain restriction at all.
+    for (const tpl of [
+      '<!doctype html><html data-x="<head>"><head><title>t</title></head><body>x</body></html>',
+      '<!doctype html><html><head><title>t</title></head><body><textarea><head></textarea></body></html>'
+    ]) {
+      const parsed = new DOMParser().parseFromString(
+        buildMcpAppDocument(tpl, { connect: ['https://a.example.test'] }),
+        'text/html'
+      )
+      const meta = parsed.querySelector('meta[http-equiv="Content-Security-Policy"]')
+      expect(meta?.parentElement?.tagName).toBe('HEAD')
+      expect(meta?.getAttribute('content')).toContain('https://a.example.test')
+    }
+  })
+
   it('ignores a <head> or <html> written inside a script or style body', () => {
     const tpl =
       '<!doctype html><html><head><script>var s = "<head>"</script><title>t</title></head><body>x</body></html>'
