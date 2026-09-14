@@ -89,6 +89,38 @@ describe('buildMcpAppCsp', () => {
     expect(parsed.querySelector('#app')?.parentElement?.tagName).toBe('BODY')
   })
 
+  it('never injects into a <head> written inside a COMMENT, which would comment the policy out', () => {
+    // A conditional or legacy comment before the real head is ordinary hand-written HTML. Insert
+    // there and the meta never reaches the DOM at all — the frame then runs with no
+    // declared-domain restriction, which is strictly worse than misplacing it.
+    const tpl =
+      '<!doctype html>\n<html>\n<!-- legacy: <head> was here -->\n<head><title>t</title></head>\n<body>hi</body></html>'
+    const doc = buildMcpAppDocument(tpl, { connect: ['https://api.example.test'] })
+    expect(doc).toContain('<!-- legacy: <head> was here -->')
+    const parsed = new DOMParser().parseFromString(doc, 'text/html')
+    const meta = parsed.querySelector('meta[http-equiv="Content-Security-Policy"]')
+    expect(meta).not.toBeNull()
+    expect(meta?.parentElement?.tagName).toBe('HEAD')
+    expect(meta?.getAttribute('content')).toContain('https://api.example.test')
+  })
+
+  it('ignores a <head> or <html> written inside a script or style body', () => {
+    const tpl =
+      '<!doctype html><html><head><script>var s = "<head>"</script><title>t</title></head><body>x</body></html>'
+    const doc = buildMcpAppDocument(tpl)
+    const parsed = new DOMParser().parseFromString(doc, 'text/html')
+    // The real head comes first here, so the policy lands there and the script body is untouched.
+    expect(parsed.querySelector('meta[http-equiv="Content-Security-Policy"]')?.parentElement?.tagName).toBe('HEAD')
+    expect(doc).toContain('var s = "<head>"')
+  })
+
+  it('wraps a fragment whose only <head> is inside a comment, rather than injecting into it', () => {
+    const doc = buildMcpAppDocument('<!-- <head> --><div id="app">hi</div>')
+    const parsed = new DOMParser().parseFromString(doc, 'text/html')
+    expect(parsed.querySelector('meta[http-equiv="Content-Security-Policy"]')?.parentElement?.tagName).toBe('HEAD')
+    expect(parsed.querySelector('#app')).not.toBeNull()
+  })
+
   it('leaves the template markup itself untouched in every shape', () => {
     for (const tpl of ['<!doctype html><html><head></head><body><b>x</b></body></html>', '<p>x</p>']) {
       expect(buildMcpAppDocument(tpl)).toContain(tpl.includes('<b>') ? '<b>x</b>' : '<p>x</p>')

@@ -63,30 +63,61 @@ export function buildMcpAppCsp(csp?: McpAppCsp): string {
 }
 
 /**
+ * A copy of `html` with every region a tag CANNOT legally start in blanked to spaces — HTML
+ * comments, and the raw-text bodies of `<script>` and `<style>`.
+ *
+ * Same length as the input, deliberately: offsets found here address the ORIGINAL string, so the
+ * template is still inserted into byte-for-byte rather than rebuilt from a parse.
+ *
+ * This exists because a naive search for `<head>` finds one written inside a comment — and a
+ * conditional or legacy comment before the real head is ordinary in hand-written HTML. Inserting
+ * the policy there does not misplace it, it COMMENTS IT OUT: the meta never reaches the DOM and
+ * the frame runs with no declared-domain restriction at all.
+ */
+function maskUninsertable(html: string): string {
+  const blank = (m: string) => ' '.repeat(m.length)
+  return html
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, blank)
+    .replace(
+      /(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>|$)/gi,
+      (_m, open: string, body: string, close: string) => open + blank(body) + close
+    )
+    .replace(
+      /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>|$)/gi,
+      (_m, open: string, body: string, close: string) => open + blank(body) + close
+    )
+}
+
+/**
  * The document actually loaded into the frame: the template with our policy injected into its
  * `<head>`.
  *
- * WHERE the meta goes is the whole correctness of this function, and getting it wrong is silent.
- * A real app template is a COMPLETE document (`<!doctype html><html><head>…`), and simply
- * prepending the meta breaks it two ways at once: the doctype is no longer the first thing in the
- * file, so the parser drops it and the page renders in quirks mode; and the meta lands outside
- * `<head>`, where browsers do not honor `http-equiv="Content-Security-Policy"` at all. The policy
- * would then be decoration — present in the bytes, enforced by nobody — on exactly the templates
- * it exists for.
+ * WHERE the meta goes is the whole correctness of this function, and getting it wrong is silent
+ * in both directions. A real app template is a COMPLETE document (`<!doctype html><html><head>…`).
+ * Prepending the meta breaks it two ways at once — the doctype is no longer first, so the parser
+ * drops it and the page renders in quirks mode, and the meta lands outside `<head>`, where
+ * browsers do not honor `http-equiv="Content-Security-Policy"` at all. Inserting it at a `<head>`
+ * found by a naive scan breaks it a third way, because that `<head>` may be inside a comment and
+ * the policy is then commented out. Either way the policy is decoration: present in the bytes,
+ * enforced by nobody, on exactly the templates §7.2 exists for.
  *
- * So the meta is inserted INTO the head, and the three shapes a template can take are handled
- * explicitly. The template's own markup is otherwise never rewritten: a host that edits an app's
- * HTML is a host that can break it invisibly.
+ * So the insertion point is located on a masked copy (above) and applied to the original, and the
+ * three shapes a template can take are handled explicitly. The template's own markup is otherwise
+ * never rewritten: a host that edits an app's HTML is a host that can break it invisibly.
  */
 export function buildMcpAppDocument(html: string, csp?: McpAppCsp): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${buildMcpAppCsp(csp).replace(/"/g, '&quot;')}">`
+  const scan = maskUninsertable(html)
   // 1. It has a head — the ordinary case for a complete document. Straight after the opening tag,
   //    so the policy is in force before anything the head goes on to load.
-  const head = /<head\b[^>]*>/i.exec(html)
-  if (head) return `${html.slice(0, head.index + head[0].length)}${meta}${html.slice(head.index + head[0].length)}`
+  const head = /<head\b[^>]*>/i.exec(scan)
+  if (head) {
+    const at = head.index + head[0].length
+    return `${html.slice(0, at)}${meta}${html.slice(at)}`
+  }
   // 2. A document with no head of its own: give it one, after `<html>` so the doctype keeps its
   //    place at the front of the file.
-  const htmlTag = /<html\b[^>]*>/i.exec(html)
+  const htmlTag = /<html\b[^>]*>/i.exec(scan)
   if (htmlTag) {
     const at = htmlTag.index + htmlTag[0].length
     return `${html.slice(0, at)}<head>${meta}</head>${html.slice(at)}`
