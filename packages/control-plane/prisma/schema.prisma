@@ -3172,12 +3172,24 @@ enum McpProviderKind {
   open_connector
 }
 
+// How the relay authenticates to a provider's upstream. `headers` = the operator typed the
+// credential (api key etc.) and it is stored verbatim in McpProviderSecret. `oauth2` = the CP
+// holds an OAuth grant for the upstream and projects its CURRENT access token as the injected
+// Authorization header, so the binding's credential changes on every refresh while the agent's
+// proxy url and grant key never do. Only `custom` providers may be `oauth2`: an open_connector
+// connection's OAuth is owned by open-connector, not by this CP.
+enum McpProviderAuth {
+  headers
+  oauth2
+}
+
 model McpProvider {
   // uuid (not cuid): providerId rides the wire as rc/mcp-assign.providerId (z.string().uuid()).
   id              String             @id @default(uuid()) @db.Uuid
   orgId           String
   name            String // reference key; the agent enable-list + probe facts key on it
   kind            McpProviderKind    @default(custom) // custom upstream vs open-connector connection
+  auth            McpProviderAuth    @default(headers) // static headers vs a CP-held OAuth grant
   transport       McpTransport       @default(http) // v1 accepts http (Streamable HTTP) only
   url             String // upstream endpoint (non-secret; may appear in DTOs)
   // Console visibility — same Shareable model as Agent/Daemon/Cron
@@ -3198,6 +3210,7 @@ model McpProvider {
   org       Org                @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdBy User?              @relation("McpProviderCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   secret    McpProviderSecret?
+  oauth     McpProviderOauth?
   grants    McpGrant[]
 
   @@unique([orgId, name])
@@ -3236,6 +3249,78 @@ model McpGrant {
 
   @@index([mcpProviderId])
   @@map("mcp_grant")
+}
+
+// The CP's OAuth grant for one `auth: oauth2` provider (docs/designs/mcp-provider-oauth.md).
+// Non-secret discovery results and client identity live here; the sealed client secret and
+// token pair live in McpProviderOauthSecret, which list/DTO queries never join —
+// GitlabConnection / GitlabConnectionSecret discipline.
+model McpProviderOauth {
+  mcpProviderId         String    @id @db.Uuid
+  // The RFC 8707 audience EXACTLY as the protected-resource metadata published it. Kept apart
+  // from McpProvider.url (what the operator typed) because the authorization server matches the
+  // string it published, byte for byte — a re-canonicalized form silently fails to bind.
+  resource              String
+  issuer                String // the authorization server this client identity belongs to
+  authorizationEndpoint String
+  tokenEndpoint         String
+  registrationEndpoint  String?
+  scopes                String[]  @default([])
+  clientId              String
+  clientSource          String // preregistered | dynamic — what the console explains on failure
+  // pending (never authorized, or disconnected) | connected | reauth_required (the grant is
+  // dead upstream and only a fresh authorization can repair it).
+  status                String    @default("pending")
+  connectedByUserId     String? // plain column, like gitlab_oauth_state.userId — display only
+  accessExpiresAt       DateTime? @db.Timestamptz(6)
+  // Refresh single-writer: one process claims the lease, refreshes, and commits the sealed
+  // pair under a tokenVersion CAS; a loser reloads rather than spending the refresh token
+  // twice. Same shape and the same reason as GitlabConnection.
+  tokenVersion          BigInt    @default(1)
+  refreshLeaseOwner     String?
+  refreshLeaseUntil     DateTime? @db.Timestamptz(6)
+  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(6)
+
+  provider McpProvider             @relation(fields: [mcpProviderId], references: [id], onDelete: Cascade)
+  secret   McpProviderOauthSecret?
+
+  // The refresher's sweep: rows due for renewal.
+  @@index([status, accessExpiresAt])
+  @@map("mcp_provider_oauth")
+}
+
+// Sealed client secret + token pair, 1:1 with McpProviderOauth. Read ONLY via
+// McpProviderOauthSecretStore; never in a DTO, never in a log, never pushed to a daemon.
+model McpProviderOauthSecret {
+  mcpProviderId String  @id @db.Uuid
+  clientSecret  String? // stored SecretCipher representation; absent for a public client
+  accessToken   String? // stored SecretCipher representation
+  refreshToken  String? // stored SecretCipher representation
+
+  oauth McpProviderOauth @relation(fields: [mcpProviderId], references: [mcpProviderId], onDelete: Cascade)
+
+  @@map("mcp_provider_oauth_secret")
+}
+
+// One-shot authorization state for the start -> begin -> callback hops. Structurally the same
+// row as gitlab_oauth_state, for the same reasons: the verifier is sealed, the browser is bound
+// exactly once at `begin`, and the expected issuer is recorded BEFORE the redirect so the
+// RFC 9207 `iss` check has an authentic value to compare against.
+model McpProviderOauthState {
+  nonce          String   @id // random 128-bit, base64url
+  mcpProviderId  String   @db.Uuid
+  orgId          String
+  userId         String
+  browserHash    String? // sha256 of the begin-hop browser cookie nonce; null until begin
+  returnPath     String // allowlisted local console path for the final redirect
+  verifier       String // sealed PKCE verifier (SecretCipher representation)
+  expectedIssuer String // recorded pre-redirect; the RFC 9207 comparison target
+  expiresAt      DateTime @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("mcp_provider_oauth_state")
 }
 
 // ───────────────────────────────────────────────────────────────────────

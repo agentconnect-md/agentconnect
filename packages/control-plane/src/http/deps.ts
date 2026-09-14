@@ -31,6 +31,9 @@ import type {
   DutyGroupRepo,
   McpProviderSecretStore,
   McpGrantRepo,
+  McpProviderOauthRepo,
+  McpProviderOauthSecretStore,
+  McpProviderOauthStateStore,
   SkillSourceRepo,
   OrganizationEnvironmentRepo,
   OrganizationEnvironmentResolver,
@@ -212,6 +215,13 @@ export interface HttpDeps {
     mcpProviderSecret: McpProviderSecretStore
     /** Plaintext bearer grant keys for MCP providers (store-only, echoed once on create). */
     mcpGrant: McpGrantRepo
+    /** The CP's OAuth grant per `auth: 'oauth2'` provider — non-secret state, the refresh
+     *  lease, and every transaction that writes a sealed pair atomically with its version. */
+    mcpProviderOauth: McpProviderOauthRepo
+    /** The ONLY read path for an OAuth provider's sealed client secret and token pair. */
+    mcpProviderOauthSecret: McpProviderOauthSecretStore
+    /** One-shot start → begin → callback rows (sealed PKCE verifier, recorded issuer). */
+    mcpProviderOauthState: McpProviderOauthStateStore
     /** Org-level shared-skills sources (metadata only; content stays daemon-side). */
     skillSource: SkillSourceRepo
     /** Accepted organization Knowledge, managed-skill revisions, and pending suggestion metadata. */

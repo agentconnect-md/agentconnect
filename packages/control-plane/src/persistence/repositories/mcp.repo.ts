@@ -25,6 +25,7 @@ import type {
   McpGrantRecord,
   McpTransport,
   McpProviderKind,
+  McpProviderAuthMode,
   ResourceVisibility,
   ViewCtx
 } from '../ports.js'
@@ -40,6 +41,7 @@ function toProviderRecord(p: McpProvider): McpProviderRecord {
     orgId: OrgId(p.orgId),
     name: p.name,
     kind: p.kind as McpProviderKind,
+    auth: p.auth as McpProviderAuthMode,
     transport: p.transport as McpTransport,
     url: p.url,
     ui: p.ui,
@@ -68,6 +70,7 @@ export class PgMcpProviderRepo implements McpProviderRepo {
           name: input.name,
           url: input.url,
           ...(input.kind ? { kind: input.kind } : {}),
+          ...(input.auth ? { auth: input.auth } : {}),
           ...(input.transport ? { transport: input.transport } : {}),
           ...(input.ui !== undefined ? { ui: input.ui } : {}),
           ...(input.visibility ? { visibility: input.visibility } : {}),

@@ -5668,6 +5668,12 @@ export type McpTransport = 'http' | 'sse'
  *  Display + create-flow discriminator only — the relay/daemon wire is identical. */
 export type McpProviderKind = 'custom' | 'open_connector'
 
+/** How the relay authenticates to the upstream. `headers` = the operator's own credential,
+ *  stored verbatim in {@link McpProviderSecretStore}. `oauth2` = the CP holds an OAuth grant
+ *  and projects its CURRENT access token as the injected header, so the binding's credential
+ *  changes on every refresh while the agent's proxy url and grant key never do. */
+export type McpProviderAuthMode = 'headers' | 'oauth2'
+
 /** Domain view of an `mcp_provider` row. A Shareable (visibility + complete
  *  Selected audience), so the same OSS authorization policy as agents applies.
  *  `url` is the non-secret upstream endpoint (may appear in DTOs); the upstream auth
@@ -5678,6 +5684,7 @@ export interface McpProviderRecord extends Shareable {
   orgId: OrgId
   name: string // reference key (unique per org); the agent enable-list keys on it
   kind: McpProviderKind
+  auth: McpProviderAuthMode
   transport: McpTransport
   url: string
   /** MCP Apps (docs/designs/webchat-mcp-apps.md §4): the owning daemon hosts this provider itself
@@ -5694,6 +5701,7 @@ export interface CreateMcpProviderInput {
   name: string
   url: string
   kind?: McpProviderKind // default 'custom'
+  auth?: McpProviderAuthMode // default 'headers'
   transport?: McpTransport // default 'http'
   ui?: boolean // default false — runtime-attached, which is what every provider was before the flag
   visibility?: ResourceVisibility // default 'org'
@@ -5784,6 +5792,144 @@ export interface McpGrantRepo {
   activeForProvider(orgId: OrgId, providerId: string): Promise<McpGrantRecord[]>
   /** Mark a grant revoked (idempotent). No value is opened, so no scope needed. */
   revoke(grantId: string): Promise<void>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// MCP provider OAuth (docs/designs/mcp-provider-oauth.md)
+//   The CP's OAuth grant for one `auth: 'oauth2'` provider. Three ports, the same
+//   split as GitlabConnection — and for the same reason: the sealed material must
+//   be unreachable from any read that can reach a DTO.
+//   - McpProviderOauthRepo        — non-secret discovery/client state + the lease,
+//                                   version CAS, and every transaction that writes
+//                                   a sealed pair atomically with its version
+//   - McpProviderOauthSecretStore — read-only view of the sealed material
+//   - McpProviderOauthStateStore  — one-shot start → begin → callback rows
+// ───────────────────────────────────────────────────────────────────────────
+
+/** `pending` — never authorized, or disconnected. `connected` — a usable grant.
+ *  `reauth_required` — the grant is dead upstream; only a fresh authorization repairs it. */
+export type McpProviderOauthStatus = 'pending' | 'connected' | 'reauth_required'
+
+/** Where the client_id came from — what the console explains when authorization fails. */
+export type McpOauthClientSource = 'preregistered' | 'dynamic'
+
+/** Domain view of an `mcp_provider_oauth` row. Carries NO secret: the client secret and
+ *  the token pair live in {@link McpProviderOauthSecretStore}. */
+export interface McpProviderOauthRecord {
+  mcpProviderId: string
+  /** The RFC 8707 audience exactly as the resource published it — never re-canonicalized. */
+  resource: string
+  issuer: string
+  authorizationEndpoint: string
+  tokenEndpoint: string
+  registrationEndpoint: string | null
+  scopes: string[]
+  clientId: string
+  clientSource: McpOauthClientSource
+  status: McpProviderOauthStatus
+  connectedByUserId: string | null
+  accessExpiresAt: Date | null
+  tokenVersion: bigint
+  createdAt: Date
+  updatedAt: Date
+}
+
+/** A sealed (SecretCipher representation) access+refresh pair. Both are required: a grant
+ *  with no refresh token dies at first expiry with nothing able to repair it, so the
+ *  callback refuses one rather than binding a provider that will fail silently in an hour. */
+export interface McpSealedTokenPair {
+  accessToken: string
+  refreshToken: string
+}
+
+/** What the start hop records before redirecting: discovery results plus the client identity
+ *  it resolved (and that client's sealed secret, when the authorization server issued one). */
+export interface PrepareMcpProviderOauthInput {
+  resource: string
+  issuer: string
+  authorizationEndpoint: string
+  tokenEndpoint: string
+  registrationEndpoint?: string
+  scopes: string[]
+  clientId: string
+  clientSource: McpOauthClientSource
+  sealedClientSecret?: string
+}
+
+/** Child of `McpProvider`: rows are keyed by provider id and carry no org, so this port
+ *  fences through its parent (org-scoped-data-layer.md §3.6) exactly like
+ *  {@link McpProviderSecretStore}. */
+export interface McpProviderOauthRepo {
+  /** Start-hop upsert, atomic with the sealed client secret. Resets the row to `pending` and
+   *  advances `tokenVersion`, so a refresh already in flight loses its CAS rather than
+   *  committing a pair against a client identity that has just been replaced. */
+  prepare(orgId: OrgId, providerId: string, input: PrepareMcpProviderOauthInput): Promise<McpProviderOauthRecord>
+  get(orgId: OrgId, providerId: string): Promise<McpProviderOauthRecord | null>
+  /** Callback commit: `connected`, the expiry, and the sealed pair land in ONE transaction
+   *  with a version bump — a reader can never observe the new status with an old pair. */
+  connect(
+    orgId: OrgId,
+    providerId: string,
+    input: { accessExpiresAt: Date | null; connectedByUserId: string | null; sealedPair: McpSealedTokenPair }
+  ): Promise<McpProviderOauthRecord>
+  /** Elect the one durable refresher. A refresh token is a cross-restart resource, so the
+   *  in-process single-flight is not enough on its own — see the token service. */
+  claimRefreshLease(providerId: string, owner: string, until: Date, now: Date): Promise<boolean>
+  releaseRefreshLease(providerId: string, owner: string): Promise<void>
+  /** One atomic refresh commit: the version CAS and the sealed pair together, or neither.
+   *  False ⇒ this flight lost (a reconnect, a disconnect, or a peer refreshed first) and
+   *  MUST NOT retry — the refresh token it holds has already been spent. */
+  commitRefresh(
+    providerId: string,
+    expectedVersion: bigint,
+    accessExpiresAt: Date | null,
+    sealedPair: McpSealedTokenPair
+  ): Promise<boolean>
+  /** Version-fenced failure transition, so a stale outcome cannot overwrite newer intent
+   *  such as a completed reconnect. */
+  markReauthRequired(providerId: string, expectedVersion: bigint): Promise<boolean>
+  /** Atomic disconnect: back to `pending`, version bumped (defeating an in-flight CAS), and
+   *  the sealed material deleted. The row stays so the console can still explain the state. */
+  disconnect(orgId: OrgId, providerId: string): Promise<boolean>
+  /** The refresher's sweep: `connected` rows whose access token expires at or before `due`.
+   *  Carries the provider's org and name because the re-push must join that provider's
+   *  serialization chain, which is keyed by (orgId, name). System-tier, like `listAll`. */
+  dueForRefresh(due: Date, limit: number): Promise<Array<{ orgId: OrgId; mcpProviderId: string; providerName: string }>>
+}
+
+/** The ONLY read path for `mcp_provider_oauth_secret`. Store-only: NEVER in a DTO, NEVER
+ *  logged, NEVER pushed to a daemon. Writes go through {@link McpProviderOauthRepo}, which
+ *  owns the transactions that keep a pair atomic with the version it was committed at. */
+export interface McpProviderOauthSecretStore {
+  get(
+    orgId: OrgId,
+    providerId: string
+  ): Promise<{ clientSecret: string | null; accessToken: string | null; refreshToken: string | null } | null>
+}
+
+/** One-shot authorization state. Structurally {@link GitlabOauthStateRecord} plus the
+ *  provider it belongs to and the issuer recorded for the RFC 9207 `iss` comparison. */
+export interface McpProviderOauthStateRecord {
+  nonce: string
+  mcpProviderId: string
+  orgId: string
+  userId: string
+  browserHash: string | null
+  returnPath: string
+  verifier: string // sealed PKCE verifier
+  expectedIssuer: string
+  expiresAt: Date
+}
+
+export interface McpProviderOauthStateStore {
+  put(row: Omit<McpProviderOauthStateRecord, 'browserHash'>): Promise<void>
+  /** Stamp the browser binding EXACTLY once. Null ⇒ unknown, expired, or already begun —
+   *  one uniform failure, so a replayed begin link cannot be told from a forged one. */
+  bindBrowser(nonce: string, browserHash: string, now: Date): Promise<McpProviderOauthStateRecord | null>
+  /** Consume exactly once. Null ⇒ unknown, expired, or already consumed. */
+  consume(nonce: string, now: Date): Promise<McpProviderOauthStateRecord | null>
+  /** Bound how long a sealed verifier for an abandoned funnel lingers. */
+  reapExpired(now: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

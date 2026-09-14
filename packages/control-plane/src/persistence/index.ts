@@ -60,6 +60,11 @@ export {
   PgIntegrationChannelRepo
 } from './repositories/integration.repo.js'
 export { PgMcpProviderRepo, PgMcpProviderSecretStore, PgMcpGrantRepo } from './repositories/mcp.repo.js'
+export {
+  PgMcpProviderOauthRepo,
+  PgMcpProviderOauthSecretStore,
+  PgMcpProviderOauthStateStore
+} from './repositories/mcp-oauth.repo.js'
 export { PgSkillSourceRepo } from './repositories/skill-source.repo.js'
 export { PgOrganizationKnowledgeRepo } from './repositories/organization-knowledge.repo.js'
 export {
