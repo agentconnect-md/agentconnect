@@ -760,6 +760,27 @@ describe('unified history', () => {
     expect(older.nextCursor).toBeUndefined()
   })
 
+  it('retains a budget-cut remainder in the continuation instead of re-reading a live page', async () => {
+    const f = await fixture('managed', 0)
+    const scope = { agentId: 'binding-1' }
+    // Six quote-only versions: each event's two snapshots escape to ~16 KiB, so a five-event page exceeds the budget.
+    for (let version = 0; version < 6; version++)
+      await f.provider.write(scope, 'big.md', `${version}${'"'.repeat(4000)}`, undefined, 'tool')
+    const ref = (await f.api.list({ limit: 10 })).entries.find((entry) => entry.label === 'big')!.ref
+    const first = await f.api.history({ ref, limit: 5 })
+    expect(first.events.length).toBeGreaterThan(0)
+    expect(first.events.length).toBeLessThan(5)
+    expect(first.nextCursor).toBeTruthy()
+    // A write landing between pages must neither repeat nor hide an event the first fetch already covered.
+    await f.provider.write(scope, 'big.md', 'seventh', undefined, 'tool')
+    const second = await f.api.history({ ref, limit: 5, cursor: first.nextCursor })
+    const versions = [...first.events, ...second.events].map((event) => event.after!.slice(0, 1))
+    expect(versions).toEqual(['5', '4', '3', '2', '1'])
+    const third = await f.api.history({ ref, limit: 5, cursor: second.nextCursor })
+    expect(third.events.map((event) => [event.kind, event.after!.slice(0, 1)])).toEqual([['create', '0']])
+    expect(third.nextCursor).toBeUndefined()
+  })
+
   it('serves history to admin callers and refuses it through the model tool surface', async () => {
     const f = await fixture('managed', 0)
     await f.provider.write({ agentId: 'binding-1' }, 'deploy.md', 'Deploy on Fridays.', undefined, 'console')

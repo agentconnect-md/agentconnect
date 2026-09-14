@@ -51,14 +51,15 @@ interface ContentContinuation {
   offset: number
   maxBytes: number
 }
-// A history page re-fetches the same backend page and skips what an earlier, budget-cut page already returned.
+// A budget-cut history page keeps its unreturned remainder here, so a later append cannot shift or repeat events.
 interface HistoryContinuation {
   operation: 'history'
   view: string
   coordinate: EntryCoordinate
   limit: number
+  order: 'newest-first' | 'backend'
+  pending: MemoryEntryHistoryEvent[]
   backendCursor?: string
-  skip: number
 }
 type Continuation = ListContinuation | ContentContinuation | HistoryContinuation
 
@@ -259,7 +260,8 @@ export class MemoryEntries {
         view: view.identity,
         coordinate,
         limit: req.limit,
-        skip: 0
+        order: 'newest-first',
+        pending: []
       }
       if (req.cursor) {
         const decoded = await this.cursor(req.cursor, view.identity)
@@ -271,29 +273,35 @@ export class MemoryEntries {
           throw new MemoryEntriesError('INVALID_ARGUMENT', 'history cursor does not match this request')
         state = decoded
       }
-      const page = await view.history(coordinate, {
-        ...(state.backendCursor ? { cursor: state.backendCursor } : {}),
-        limit: req.limit
-      })
-      const pending = page.events.slice(state.skip)
-      const result: MemoryEntryHistoryResult = { events: [], order: page.order }
-      for (const event of pending) {
-        const candidate = boundedHistoryEvent(event)
+      // A retained remainder is served before the backend is asked for anything newer or older.
+      if (!req.cursor || (state.pending.length === 0 && state.backendCursor)) {
+        const page = await view.history(coordinate, {
+          ...(state.backendCursor ? { cursor: state.backendCursor } : {}),
+          limit: req.limit
+        })
+        state = {
+          ...state,
+          pending: page.events.map(boundedHistoryEvent),
+          order: page.order,
+          backendCursor: page.nextCursor
+        }
+      }
+      const result: MemoryEntryHistoryResult = { events: [], order: state.order }
+      let consumed = 0
+      for (const event of state.pending) {
         if (
-          memoryJsonBytes({ ...result, events: [...result.events, candidate] }) >
+          memoryJsonBytes({ ...result, events: [...result.events, event] }) >
           MEMORY_ENTRY_FRAME_BYTES - CURSOR_RESERVE
         ) {
-          if (result.events.length === 0)
+          if (consumed === 0)
             throw new MemoryEntriesError('TOO_LARGE', 'memory history event exceeds the response budget')
           break
         }
-        result.events.push(candidate)
+        result.events.push(event)
+        consumed++
       }
-      const consumed = result.events.length
-      if (consumed < pending.length)
-        result.nextCursor = await this.saveCursor({ ...state, skip: state.skip + consumed })
-      else if (page.nextCursor)
-        result.nextCursor = await this.saveCursor({ ...state, backendCursor: page.nextCursor, skip: 0 })
+      state.pending = state.pending.slice(consumed)
+      if (state.pending.length || state.backendCursor) result.nextCursor = await this.saveCursor(state)
       return MemoryEntryHistoryResult.parse(result)
     })
   }

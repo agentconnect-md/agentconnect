@@ -618,8 +618,9 @@ event carries its kind (`create`, `update`, `delete`), an optional time and
 writer source, and bounded before/after snapshots with a `truncated` flag; the
 result names its `order` (`newest-first` for a managed change log, `backend` for
 a record backend). Cursors are view-bound continuations: a page cut by the
-response byte budget re-fetches the same backend page and skips what it already
-returned, so nothing is lost or duplicated at the budget edge.
+response byte budget retains its unreturned remainder in the continuation, as
+enumeration does, so a write landing between pages can neither repeat nor hide
+an event at the budget edge.
 
 Managed memory advertises `history` when the entry's home pages its change log
 through the daemon. A `daemon` home pages the sidecar it already keeps. A
