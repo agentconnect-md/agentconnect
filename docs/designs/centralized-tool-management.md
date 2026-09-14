@@ -67,7 +67,9 @@ upstream secrets **never reach a daemon or agent**.
 
 **Non-goals (§10)**: call-side per-agent isolation (console visibility may still
 be restricted; see §6), per-agent/per-user upstream identities (the current
-implementation shares one identity per provider), private-network upstreams
+implementation shares one identity per provider — OAuth-authorized providers
+share one org-level connection for the same reason, see
+[mcp-provider-oauth.md](mcp-provider-oauth.md)), private-network upstreams
 unless an operator explicitly allowlists the host (§5.3), per-tool allow/deny
 controls, **legacy HTTP+SSE upstreams** (the current proxy supports only
 Streamable HTTP; §5.1), stdio upstreams, and adding daemon built-in bridge tools
