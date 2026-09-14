@@ -2605,6 +2605,10 @@ export class Daemon {
       // Org-scoped: daemon-local config overlaid with what the CP pushed for that organization,
       // which is the same view `resolveAgentMcpServers` resolves against.
       defs: (orgId) => this.cpMcpDefs?.effective(orgId) ?? this.mcpServerDefs,
+      // A daemon-local server is one server every organization shares; only a CP-pushed one is
+      // that organization's alone. Keying them the same way would dial a local server once per
+      // org and hide the warmed one from every session that did not warm it.
+      orgScoped: (orgId, name) => this.cpMcpDefs?.isOrgScoped(orgId, name) === true,
       log: this.log,
       version: DAEMON_VERSION,
       resolveStdioCommand: (command, entries) =>

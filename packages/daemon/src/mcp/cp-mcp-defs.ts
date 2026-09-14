@@ -78,6 +78,13 @@ export class CpMcpDefs {
     return { ...this.local, ...Object.fromEntries([...scoped].map(([name, entry]) => [name, entry.def])) }
   }
 
+  /** Whether THIS org's view of `name` comes from a CP push rather than daemon-local config.
+   *  A local definition is one server shared by every organization on this daemon; a CP one is
+   *  that organization's alone. The Apps host keys its connections on the difference. */
+  isOrgScoped(orgId: string | undefined, name: string): boolean {
+    return orgId !== undefined && this.cp.get(orgId)?.has(name) === true
+  }
+
   /** Every organization this daemon currently holds CP definitions for — what the Apps host warms
    *  over when a push lands, since a CP definition's connection cannot be opened before it exists. */
   orgs(): string[] {

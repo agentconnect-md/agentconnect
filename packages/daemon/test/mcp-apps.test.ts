@@ -23,7 +23,7 @@ import {
   type AppStream,
   type AppTurn
 } from '../src/mcp/apps/surface.js'
-import { McpAppsHost, splitAppToolName } from '../src/mcp/apps/host.js'
+import { McpAppsHost, connFingerprint, connKey, connScope, splitAppToolName } from '../src/mcp/apps/host.js'
 import type { McpServerDef } from '../src/config/config-schema.js'
 import {
   appCsp,
@@ -189,6 +189,52 @@ describe('McpAppsHost — org scoping of CP-pushed definitions', () => {
     expect(host.isUiServer('org-b', 'charts')).toBe(false)
     expect(host.uiServers('org-a')).toEqual(['charts'])
     expect(host.uiServers('org-b')).toEqual([])
+  })
+
+  it('keys a daemon-local server in ONE shared bucket and a CP one per org', () => {
+    // The bug this prevents is silent in both directions. Key a local server per org and a session
+    // that warmed it under one scope cannot find it under another, so a CP-managed agent loses its
+    // local UI tools. Key a CP server without one and two organizations share a connection
+    // authorized for only one of them.
+    expect(connScope(false, 'org-a')).toBeUndefined()
+    expect(connScope(false, 'org-b')).toBeUndefined()
+    expect(connKey(connScope(false, 'org-a'), 'clock')).toBe(connKey(connScope(false, 'org-b'), 'clock'))
+    expect(connScope(true, 'org-a')).toBe('org-a')
+    expect(connKey(connScope(true, 'org-a'), 'charts')).not.toBe(connKey(connScope(true, 'org-b'), 'charts'))
+  })
+
+  it('re-dials when a definition changes underneath a live connection', () => {
+    const base = {
+      transport: 'http' as const,
+      url: 'https://relay.example.test/mcp/p1',
+      args: [],
+      env: [],
+      headers: [{ name: 'Authorization', value: 'Bearer old' }]
+    }
+    // A rotated grant keeps the name and the url and replaces only the bearer, which is exactly
+    // the change a connection cached by name alone would never notice.
+    const rotated = { ...base, headers: [{ name: 'Authorization', value: 'Bearer new' }] }
+    expect(connFingerprint(base)).not.toBe(connFingerprint(rotated))
+    expect(connFingerprint(base)).toBe(connFingerprint({ ...base }))
+  })
+
+  it('resolves a daemon-local hosted server for every org, CP-managed or not', () => {
+    // A local server is one server every organization sees. Keying its connection by the caller's
+    // org would dial it once per org and leave a session that warmed it under one scope unable to
+    // find it under another — so a CP-managed agent would silently lose local UI tools.
+    const local: Record<string, McpServerDef> = {
+      clock: { transport: 'http', url: 'https://local.example.test/mcp', args: [], env: [], headers: [], ui: true }
+    }
+    const shared = new McpAppsHost({
+      defs: () => local,
+      // Nothing is org-scoped here: `clock` is daemon-local for every organization.
+      orgScoped: () => false,
+      log: { warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() } as never
+    })
+    for (const org of ['org-a', 'org-b', undefined]) {
+      expect(shared.isUiServer(org, 'clock')).toBe(true)
+      expect(shared.uiServers(org)).toEqual(['clock'])
+    }
   })
 
   it('offers a hosted server only to the org that has it, and none to a daemon with no CP', () => {

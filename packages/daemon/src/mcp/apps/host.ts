@@ -119,6 +119,16 @@ export interface McpAppsHostDeps {
    * `undefined` is the daemon-local-only view, which is what a session with no CP org has.
    */
   defs: (orgId: string | undefined) => Record<string, McpServerDef>
+  /**
+   * Whether this org's view of `name` is that ORG'S OWN definition rather than daemon-local config.
+   *
+   * It decides what a connection is keyed by, and getting it wrong is invisible: a daemon-local
+   * server is ONE server every organization shares, so keying it per org would dial it once per
+   * org and — worse — leave a session that warmed it under one scope unable to find it under
+   * another. A CP definition genuinely is per-org and must not be shared. Absent ⇒ everything is
+   * treated as local, which is a daemon with no CP.
+   */
+  orgScoped?: (orgId: string | undefined, name: string) => boolean
   log?: Logger
   /** The host's own version, sent as client info. */
   version?: string
@@ -126,15 +136,41 @@ export interface McpAppsHostDeps {
   resolveStdioCommand?: (command: string, env: McpServerDef['env']) => string
 }
 
-/** The key one connection is held under: an org and a server name together, never a name alone.
- *  `\0` cannot occur in either half, so the pair cannot be spelled two ways. */
-function connKey(orgId: string | undefined, server: string): string {
-  return `${orgId ?? ''}\u0000${server}`
+/** The key one connection is held under. `\0` cannot occur in either half, so the pair cannot be
+ *  spelled two ways. The scope is the definition's OWNER — an org for a CP-pushed definition,
+ *  nothing for a daemon-local one, which every organization shares. */
+export function connKey(scope: string | undefined, server: string): string {
+  return `${scope ?? ''}\u0000${server}`
+}
+
+/**
+ * Which scope a connection for (org, name) belongs to — the decision the key above is built from,
+ * exported because it is the whole of what separates "one server every org shares" from "that
+ * org's own server", and getting it wrong is silent in both directions: key a local server per org
+ * and a session that warmed it under one scope cannot find it under another; key a CP server
+ * without one and two organizations share a connection authorized for only one of them.
+ */
+export function connScope(orgScoped: boolean, orgId: string | undefined): string | undefined {
+  return orgScoped ? orgId : undefined
+}
+
+/**
+ * What makes one live connection the RIGHT connection for a definition.
+ *
+ * A proxied definition's bearer is rotated by the CP: the name and the url stay put while the
+ * grant behind them is replaced, so a connection cached by name alone keeps presenting a
+ * credential the relay has already retired, and every later call fails — in new sessions too,
+ * because the connection outlives them. Comparing the definition is what makes a rotation re-dial.
+ */
+export function connFingerprint(def: McpServerDef): string {
+  return JSON.stringify([def.transport, def.command, def.args, def.env, def.url, def.headers])
 }
 
 /** One live upstream connection, or the reason there isn't one. */
 interface Conn {
   client: Client
+  /** The definition this connection was dialed for; a change means re-dial (see fingerprint). */
+  fingerprint: string
   tools: Map<string, UpstreamTool>
   templates: Map<string, Template>
 }
@@ -144,6 +180,24 @@ export class McpAppsHost {
   private readonly dialing = new Map<string, Promise<Conn | undefined>>()
 
   constructor(private readonly deps: McpAppsHostDeps) {}
+
+  /** The scope a connection for (org, name) is held under — see {@link McpAppsHostDeps.orgScoped}. */
+  private scopeOf(orgId: string | undefined, server: string): string | undefined {
+    return connScope(this.deps.orgScoped?.(orgId, server) === true, orgId)
+  }
+
+  /**
+   * What makes one live connection the RIGHT connection for a definition.
+   *
+   * A proxied definition's bearer is rotated by the CP: the name and the url stay put while the
+   * grant behind them is replaced, so a connection cached by name alone keeps presenting a
+   * credential the relay has already retired, and every later call fails — in new sessions too,
+   * because the connection outlives them. Comparing the definition itself is what makes a rotation
+   * re-dial instead.
+   */
+  private static fingerprint(def: McpServerDef): string {
+    return connFingerprint(def)
+  }
 
   /** The servers one organization has that are daemon-hosted rather than runtime-attached. */
   uiServers(orgId: string | undefined): string[] {
@@ -178,7 +232,7 @@ export class McpAppsHost {
   cachedToolsFor(orgId: string | undefined, enabled: readonly string[]): ToolDescriptor[] {
     const out: ToolDescriptor[] = []
     for (const name of enabled) {
-      const conn = this.conns.get(connKey(orgId, name))
+      const conn = this.conns.get(connKey(this.scopeOf(orgId, name), name))
       if (!conn || !this.isUiServer(orgId, name)) continue
       for (const tool of conn.tools.values()) out.push(tool.descriptor)
     }
@@ -374,9 +428,16 @@ export class McpAppsHost {
 
   /** Dial one configured UI server, at most once concurrently. */
   private async connect(orgId: string | undefined, server: string): Promise<Conn | undefined> {
-    const key = connKey(orgId, server)
+    const key = connKey(this.scopeOf(orgId, server), server)
     const existing = this.conns.get(key)
-    if (existing) return existing
+    if (existing) {
+      const def = this.deps.defs(orgId)[server]
+      if (def && McpAppsHost.fingerprint(def) === existing.fingerprint) return existing
+      // The definition moved underneath it — a rotated grant, a changed url. Drop the connection
+      // so the dial below presents what the CP is actually expecting now.
+      this.conns.delete(key)
+      void existing.client.close().catch(() => undefined)
+    }
     const inflight = this.dialing.get(key)
     if (inflight) return await inflight
     const attempt = this.dial(orgId, server).finally(() => this.dialing.delete(key))
@@ -407,7 +468,7 @@ export class McpAppsHost {
       if (tools.length > MAX_TOOLS_PER_SERVER) {
         throw new Error(`exposes ${tools.length} tools, past the ${MAX_TOOLS_PER_SERVER} cap`)
       }
-      const conn: Conn = { client, tools: new Map(), templates: new Map() }
+      const conn: Conn = { client, fingerprint: McpAppsHost.fingerprint(def), tools: new Map(), templates: new Map() }
       for (const tool of tools) {
         const templateUri = appTemplateUri(tool)
         conn.tools.set(tool.name, {
@@ -428,7 +489,7 @@ export class McpAppsHost {
           raw: tool
         })
       }
-      this.conns.set(connKey(orgId, server), conn)
+      this.conns.set(connKey(this.scopeOf(orgId, server), server), conn)
       const withUi = [...conn.tools.values()].filter((t) => t.templateUri).length
       this.deps.log?.info(`mcp apps: hosting "${server}" — ${conn.tools.size} tools, ${withUi} with an interface`)
       return conn

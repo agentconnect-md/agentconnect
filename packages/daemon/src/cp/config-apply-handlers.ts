@@ -315,13 +315,21 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
     host.gitCreds()?.clearDenied(agentId)
   }
   // Reconnect full-replaces tenant-scoped CP definitions; daemon-local definitions remain unchanged.
-  host
-    .cpMcpDefs()
-    ?.converge(
-      (snap.mcpServers ?? [])
-        .filter((s) => s.name !== RESERVED_MCP_SERVER_NAME)
-        .flatMap(({ orgId, name, issuedAt, ...def }) => (orgId ? [[orgId, name, def, issuedAt] as const] : []))
-    )
+  // The change hook fires here for the same reason the live upsert fires it: this is the path EVERY
+  // daemon start takes, and a `ui: true` definition that arrives without it is one whose connection
+  // is never opened — its tools would then be missing from every session until some later,
+  // unrelated push happened to announce a change.
+  if (
+    host
+      .cpMcpDefs()
+      ?.converge(
+        (snap.mcpServers ?? [])
+          .filter((s) => s.name !== RESERVED_MCP_SERVER_NAME)
+          .flatMap(({ orgId, name, issuedAt, ...def }) => (orgId ? [[orgId, name, def, issuedAt] as const] : []))
+      )
+  ) {
+    host.onMcpDefsChanged()
+  }
   host.cpCollab().replace(snap.collabRoutes) // baseline collaboration routing snapshot (P2 terminal-verify)
   host.convergeRelays(snap.relays) // connect ingress only after its organization authority is installed
   host.cpRouting()?.converge({
