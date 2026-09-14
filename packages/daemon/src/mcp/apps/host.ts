@@ -177,7 +177,9 @@ interface Conn {
 
 export class McpAppsHost {
   private readonly conns = new Map<string, Conn>()
-  private readonly dialing = new Map<string, Promise<Conn | undefined>>()
+  /** In-flight dials, each remembering WHICH definition it is dialing. A dial is only joinable by
+   *  a caller wanting that same definition — see {@link connect}. */
+  private readonly dialing = new Map<string, { fingerprint: string | undefined; promise: Promise<Conn | undefined> }>()
 
   constructor(private readonly deps: McpAppsHostDeps) {}
 
@@ -429,20 +431,43 @@ export class McpAppsHost {
   /** Dial one configured UI server, at most once concurrently. */
   private async connect(orgId: string | undefined, server: string): Promise<Conn | undefined> {
     const key = connKey(this.scopeOf(orgId, server), server)
+    const def = this.deps.defs(orgId)[server]
+    const wanted = def ? McpAppsHost.fingerprint(def) : undefined
+
     const existing = this.conns.get(key)
     if (existing) {
-      const def = this.deps.defs(orgId)[server]
-      if (def && McpAppsHost.fingerprint(def) === existing.fingerprint) return existing
+      if (wanted !== undefined && existing.fingerprint === wanted) return existing
       // The definition moved underneath it — a rotated grant, a changed url. Drop the connection
       // so the dial below presents what the CP is actually expecting now.
       this.conns.delete(key)
       void existing.client.close().catch(() => undefined)
     }
+
+    // A dial already running may be dialing the OLD definition. Joining it would be wrong twice
+    // over: its result carries a credential the CP has already replaced, and — the case that
+    // actually strands a provider — if the retired grant is refused, the fresh definition never
+    // gets a dial of its own and the server stays absent from every later session. So a running
+    // attempt is joinable only by a caller wanting the very definition it is dialing.
     const inflight = this.dialing.get(key)
-    if (inflight) return await inflight
-    const attempt = this.dial(orgId, server).finally(() => this.dialing.delete(key))
+    if (inflight && inflight.fingerprint === wanted) return await inflight.promise
+
+    const attempt: { fingerprint: string | undefined; promise: Promise<Conn | undefined> } = {
+      fingerprint: wanted,
+      promise: Promise.resolve(undefined)
+    }
+    attempt.promise = this.dial(orgId, server).then((conn) => {
+      // Install only while this is still the current attempt. A superseded dial that succeeds
+      // anyway must not overwrite the fresher connection — and must not be left open either.
+      if (this.dialing.get(key) !== attempt) {
+        if (conn) void conn.client.close().catch(() => undefined)
+        return undefined
+      }
+      this.dialing.delete(key)
+      if (conn) this.conns.set(key, conn)
+      return conn
+    })
     this.dialing.set(key, attempt)
-    return await attempt
+    return await attempt.promise
   }
 
   private async dial(orgId: string | undefined, server: string): Promise<Conn | undefined> {
@@ -489,7 +514,6 @@ export class McpAppsHost {
           raw: tool
         })
       }
-      this.conns.set(connKey(this.scopeOf(orgId, server), server), conn)
       const withUi = [...conn.tools.values()].filter((t) => t.templateUri).length
       this.deps.log?.info(`mcp apps: hosting "${server}" — ${conn.tools.size} tools, ${withUi} with an interface`)
       return conn

@@ -203,6 +203,55 @@ describe('McpAppsHost — org scoping of CP-pushed definitions', () => {
     expect(connKey(connScope(true, 'org-a'), 'charts')).not.toBe(connKey(connScope(true, 'org-b'), 'charts'))
   })
 
+  it('does not join an in-flight dial that is dialing the OLD definition', async () => {
+    // The race that strands a provider: a fresh definition arrives while the retired grant is
+    // still dialing. Joining that attempt means the fresh definition never gets a dial of its own,
+    // so when the retired grant is refused the server is absent from every later session.
+    const def = (bearer: string): McpServerDef => ({
+      transport: 'http',
+      url: 'https://relay.example.test/mcp/p1',
+      args: [],
+      env: [],
+      headers: [{ name: 'Authorization', value: `Bearer ${bearer}` }],
+      ui: true
+    })
+    let current = def('old')
+    const host = new McpAppsHost({
+      defs: () => ({ charts: current }),
+      orgScoped: () => false,
+      log: { warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() } as never
+    })
+
+    // `dial` has no injection seam in production and does not need one — overriding it on the
+    // instance is enough to drive the ordering this race needs.
+    const dialed: string[] = []
+    const settle: Array<(conn: unknown) => void> = []
+    ;(host as never as { dial: (o: unknown, s: string) => Promise<unknown> }).dial = (_o, server) => {
+      dialed.push(`${server}:${(current.headers ?? [])[0]?.value ?? ''}`)
+      return new Promise((resolve) => settle.push(resolve))
+    }
+
+    const first = host.toolsFor(undefined, ['charts'])
+    expect(dialed).toHaveLength(1)
+
+    current = def('new') // the CP rotated the grant while the first dial is still open
+    const second = host.toolsFor(undefined, ['charts'])
+    expect(dialed).toEqual(['charts:Bearer old', 'charts:Bearer new'])
+
+    // The retired grant is refused, exactly as it would be once revoked.
+    settle[0]!(undefined)
+    await first
+    // The fresh dial is still its own attempt and still installs.
+    settle[1]!({
+      client: { close: async () => undefined },
+      fingerprint: connFingerprint(current),
+      tools: new Map(),
+      templates: new Map()
+    })
+    await second
+    expect(host.cachedToolsFor(undefined, ['charts'])).toEqual([])
+  })
+
   it('re-dials when a definition changes underneath a live connection', () => {
     const base = {
       transport: 'http' as const,
