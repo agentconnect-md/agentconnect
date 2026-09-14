@@ -85,10 +85,14 @@ export class ManagedMemoryProvider implements MemoryProvider {
   }
 
   entryView(scope: MemoryScope, writeSource?: MemoryWriteSource) {
+    // A staged draft logs to the sidecar inside it; a live root pages the home's own change log.
+    const historyFor = (root: MemoryFs) =>
+      scope.root ? sidecarMemoryHistory(root) : this.portsFor(scope.agentId).historyFor(root)
     return managedMemoryEntries(
       this.readRoots(scope),
       scope.agentId,
-      writeSource ? { source: writeSource, sourceTurnId: scope.sourceTurnId } : undefined
+      writeSource ? { source: writeSource, sourceTurnId: scope.sourceTurnId } : undefined,
+      historyFor
     )
   }
 

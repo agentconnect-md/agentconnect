@@ -9,6 +9,8 @@ import {
   MemoryEntryListResult,
   MemoryEntrySearchRequest,
   MemoryEntrySearchResult,
+  MemoryEntryHistoryRequest,
+  MemoryEntryHistoryResult,
   MemoryEntryGetRequest,
   MemoryEntryContent,
   MemoryEntryErrorCode,
@@ -1103,6 +1105,32 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
+    r.get(
+      '/agents/:id/memory/entries/:ref/history',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List unified memory entry history',
+          description:
+            'Returns one bounded page of change events for an entry, newest first where the home orders them, through a daemon supporting memory-entries-history-v1. A Control-Plane home pages its own change log back through the daemon.',
+          operationId: 'listAgentMemoryEntryHistory',
+          params: IdParam.extend({ ref: MemoryEntryHistoryRequest.shape.ref }),
+          querystring: entryScopeQuery.extend({
+            ...MemoryEntryHistoryRequest.omit({ ref: true }).shape,
+            limit: z.coerce.number().int().min(1).max(5).default(5)
+          }),
+          response: { 200: MemoryEntryHistoryResult, ...entryErrors }
+        }
+      },
+      (req, reply) => {
+        const { channelKey, ...request } = req.query
+        return entryCall(req, reply, req.params.id, {
+          operation: 'history',
+          ...(channelKey ? { channelKey } : {}),
+          request: { ...request, ref: req.params.ref }
+        })
+      }
+    )
     r.post(
       '/agents/:id/memory/entries/search',
       {

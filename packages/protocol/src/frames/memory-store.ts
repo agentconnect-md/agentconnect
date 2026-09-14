@@ -121,6 +121,28 @@ export type MemoryHistoryAppendReq = z.infer<typeof MemoryHistoryAppendReq>
 export const MemoryHistoryAppendOk = z.object({ accepted: z.literal(true) })
 export type MemoryHistoryAppendOk = z.infer<typeof MemoryHistoryAppendOk>
 
+/** A CP that pages a `control-plane` home's change log back to its daemon over `memory/history/read`. */
+export const AGENT_MEMORY_HISTORY_READ_V1_FEATURE = 'agent-memory-history-read-v1'
+
+// D→C REQ `memory/history/read`: one newest-first page of one file's change log in a CP-homed store (`root` as in
+// `memory/history/append`), so the daemon can answer the common entry history for every home. Error REPs as `memory/store`.
+export const MemoryHistoryReadReq = z
+  .object({
+    agentId: z.string().uuid(),
+    root: MemoryFsRoot,
+    path: z.string().min(1).max(255),
+    cursor: z.string().uuid().optional(),
+    limit: z.number().int().positive().max(5).default(5)
+  })
+  .strict()
+export type MemoryHistoryReadReq = z.infer<typeof MemoryHistoryReadReq>
+
+/** C→D REP `memory/history/read/ok`: the page in the sidecar's shape; `nextCursor` is the next not-yet-returned record. */
+export const MemoryHistoryReadOk = z
+  .object({ events: z.array(MemoryFileHistoryEvent).max(5), nextCursor: z.string().uuid().optional() })
+  .strict()
+export type MemoryHistoryReadOk = z.infer<typeof MemoryHistoryReadOk>
+
 // D→C REQ `memory/home/migrated`: the one-way `daemon` → `control-plane` copy of this agent's tree is complete.
 // Not a store op, because it is not a file operation. Error REPs: `SCOPE_DENIED`, `CONFLICT` (home is no longer the CP).
 export const MemoryHomeMigratedReq = z.object({ agentId: z.string().uuid() }).strict()

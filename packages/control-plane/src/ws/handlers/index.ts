@@ -1,6 +1,7 @@
 import {
   handleMemoryTransaction,
   handleMemoryHistoryAppend,
+  handleMemoryHistoryRead,
   handleMemoryHomeMigrated,
   handleMemoryStore
 } from './memory-store.js'
@@ -124,6 +125,7 @@ export class FrameRouter {
       'memory/transaction/v1': handleMemoryTransaction,
       'memory/store': handleMemoryStore,
       'memory/history/append': handleMemoryHistoryAppend,
+      'memory/history/read': handleMemoryHistoryRead,
       'memory/home/migrated': handleMemoryHomeMigrated,
       ...overrides
     }
@@ -173,5 +175,6 @@ export {
   handleManagedSkillRead,
   handleMemoryStore,
   handleMemoryHistoryAppend,
+  handleMemoryHistoryRead,
   handleMemoryHomeMigrated
 }

@@ -9,6 +9,8 @@ import { WireError } from '@agentconnect.md/connection'
 import {
   MEMORY_HISTORY_APPEND_MAX_RECORDS,
   MemoryHistoryAppendReq,
+  type MemoryHistoryReadOk,
+  type MemoryHistoryReadReq,
   REPLY_BUDGET,
   type MemoryHistoryAppendOk
 } from '@agentconnect.md/protocol'
@@ -150,6 +152,23 @@ const sinkOver = (link: FakeLink, root?: string) =>
   new CpMemoryHistorySink(link, AGENT, root, { warn: (msg) => link.warnings.push(msg) })
 
 describe('CpMemoryHistorySink (the sink over the CP connection)', () => {
+  it('pages the log back only while the CP advertises reading, naming the same root the batches used', async () => {
+    const pages: unknown[] = []
+    const memoryHistoryRead = async (req: MemoryHistoryReadReq): Promise<MemoryHistoryReadOk> => {
+      pages.push(req)
+      return { events: [], nextCursor: 'e0e0e0e0-0000-4000-8000-000000000001' }
+    }
+    expect(sinkOver(fakeLink({ memoryHistoryRead }), 'channels/c1').list).toBeUndefined()
+    const reading = fakeLink({ memoryHistoryRead, supportsServerFeature: () => true })
+    const sink = sinkOver(reading, 'channels/c1')
+    const page = await sink.list!('deploy.md', undefined, 3)
+    expect(pages[0]).toEqual({ agentId: AGENT, root: 'channels/c1/memory', path: 'deploy.md', limit: 3 })
+    expect(page).toEqual({ events: [], nextCursor: 'e0e0e0e0-0000-4000-8000-000000000001' })
+    expect(
+      sinkOver(fakeLink({ memoryHistoryRead, supportsServerFeature: () => true, connected: () => false })).list
+    ).toBeUndefined()
+  })
+
   it('names the agent and the directory holding the store — memory/ under the agent tree, or under a channel store', async () => {
     const link = fakeLink()
     await sinkOver(link).append([record('notes.md', 'v1')])

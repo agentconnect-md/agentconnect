@@ -22,6 +22,7 @@ import {
 import { readCompleteMemoryEntry } from '@/lib/memory-entry-content'
 import { Button } from '@/components/ui'
 import { memoryFileFromHref } from '@/components/console/memory-links'
+import { UnifiedMemoryHistory } from '@/components/console/UnifiedMemoryHistory'
 import { resolveFileBrowserMarkdownLink } from '@/components/console/file-browser-links'
 
 // Loaded lazily like the file preview so react-markdown never ships in the main console bundle.
@@ -79,6 +80,7 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
   const [saving, setSaving] = useState(false)
   const [blocked, setBlocked] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [notice, setNotice] = useState<string>()
   const reload = useCallback(
     async (reconcileEmpty = false) => {
@@ -166,6 +168,7 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
     setDocument(null)
     setError(undefined)
     setConfirmDelete(false)
+    setShowHistory(false)
     try {
       const result = await readCompleteMemoryEntry(
         (cursor) => getAgentMemoryEntry(agentId, entry.ref, channelKey, cursor),
@@ -515,7 +518,15 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
                     Delete memory
                   </Button>
                 )}
+                {capabilities?.operations.includes('history') && (
+                  <Button variant="secondary" size="sm" onClick={() => setShowHistory((open) => !open)}>
+                    {showHistory ? 'Hide history' : 'History'}
+                  </Button>
+                )}
               </div>
+              {showHistory && (
+                <UnifiedMemoryHistory agentId={agentId} entryRef={document.entry.ref} channelKey={channelKey} />
+              )}
               {confirmDelete && (
                 <div className="mt-3 rounded-sm border border-(--border-subtle) p-3">
                   <p>

@@ -9,7 +9,9 @@ import type {
 } from '@agentconnect.md/protocol'
 import {
   listMemory,
+  listMemoryHistory,
   MemoryConflictError,
+  MemoryHistoryNotLocalError,
   MAX_MEMORY_FILE_BYTES,
   MEMORY_DIRNAME,
   MEMORY_INDEX,
@@ -17,13 +19,16 @@ import {
   memoryTopicName,
   withMemoryDirLock,
   type MemoryFs,
+  type MemoryHistorySink,
   type MemoryNeighbor
 } from '../store.js'
+import { MemoryHomeUnavailableError, MemoryPathError } from '../fs.js'
 import { parseMemoryFrontmatter } from '../frontmatter.js'
 import {
   MemoryEntriesError,
   type EntryCoordinate,
   type EntryDocument,
+  type EntryHistoryPage,
   type EntryLink,
   type EntryPage,
   type EntrySearchPage,
@@ -88,7 +93,8 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
   constructor(
     private readonly roots: readonly MemoryFs[],
     bindingGeneration: string,
-    private readonly writeContext?: { source: MemoryWriteSource; sourceTurnId?: string }
+    private readonly writeContext?: { source: MemoryWriteSource; sourceTurnId?: string },
+    private readonly historyFor?: (root: MemoryFs) => MemoryHistorySink
   ) {
     if (roots.length < 1 || roots.length > 2) throw new Error('managed memory requires one root or an overlay')
     this.identity = memoryDigest(['managed', bindingGeneration, roots.map((root) => root.key)])
@@ -101,6 +107,55 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
         exactEdit: true
       }
     }
+    // History is a console read over the home's change log; a home that pages it nowhere advertises none.
+    if (historyFor?.(roots[0]!).list)
+      this.capabilities = { ...this.capabilities, operations: [...this.capabilities.operations, 'history'] }
+  }
+
+  async history(coordinate: EntryCoordinate, request: { cursor?: string; limit: number }): Promise<EntryHistoryPage> {
+    const { layer, name } = this.locate(coordinate)
+    const sink = this.historyFor?.(this.roots[layer]!)
+    if (!sink?.list || !this.capabilities.operations.includes('history'))
+      throw new MemoryEntriesError('UNSUPPORTED', 'this memory home does not page its change log here')
+    try {
+      const page = await listMemoryHistory(sink, name, request.cursor, request.limit)
+      return {
+        order: 'newest-first',
+        events: page.events.map((event) => ({
+          ...(event.id ? { id: event.id } : {}),
+          kind: event.event === 'add' ? ('create' as const) : event.event,
+          at: event.at,
+          source: event.source,
+          ...(event.before !== undefined ? { before: event.before } : {}),
+          after: event.after,
+          ...(event.truncated ? { truncated: true } : {})
+        })),
+        ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
+      }
+    } catch (error) {
+      if (error instanceof MemoryEntriesError) throw error
+      if (error instanceof MemoryHistoryNotLocalError)
+        throw new MemoryEntriesError('UNSUPPORTED', 'this memory home does not page its change log here')
+      if (error instanceof MemoryPathError) throw new MemoryEntriesError('INVALID_ARGUMENT', error.message)
+      if (error instanceof MemoryHomeUnavailableError) throw new MemoryEntriesError('UNAVAILABLE', error.message)
+      throw new MemoryEntriesError('UNAVAILABLE', 'memory history is temporarily unavailable')
+    }
+  }
+
+  // The layer and validated topic a coordinate names inside this view; the generated overview is never an entry.
+  private locate(coordinate: EntryCoordinate): { layer: number; name: string } {
+    const layer = Number(coordinate.partition)
+    if (!Number.isInteger(layer) || String(layer) !== coordinate.partition || layer < 0 || layer >= this.roots.length)
+      throw new MemoryEntriesError('STALE_BINDING', 'memory partition is outside this view')
+    let name: string
+    try {
+      name = memoryTopicName(coordinate.id)
+    } catch {
+      throw new MemoryEntriesError('INVALID_ARGUMENT', 'invalid memory topic')
+    }
+    if (name !== coordinate.id || name === MEMORY_INDEX)
+      throw new MemoryEntriesError('INVALID_ARGUMENT', 'the generated overview is not a memory entry')
+    return { layer, name }
   }
 
   async list(): Promise<EntryPage> {
@@ -218,17 +273,7 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
   }
 
   private async read(coordinate: EntryCoordinate): Promise<EntryDocument | null> {
-    const layer = Number(coordinate.partition)
-    if (!Number.isInteger(layer) || String(layer) !== coordinate.partition || layer < 0 || layer >= this.roots.length)
-      throw new MemoryEntriesError('STALE_BINDING', 'memory partition is outside this view')
-    let name: string
-    try {
-      name = memoryTopicName(coordinate.id)
-    } catch {
-      throw new MemoryEntriesError('INVALID_ARGUMENT', 'invalid memory topic')
-    }
-    if (name !== coordinate.id || name === MEMORY_INDEX)
-      throw new MemoryEntriesError('INVALID_ARGUMENT', 'the generated overview is not a memory entry')
+    const { layer, name } = this.locate(coordinate)
     if (layer > 0 && (await this.roots[0]!.readFile(`${MEMORY_DIRNAME}/${name}`))) return null
     const file = await this.roots[layer]!.readFile(`${MEMORY_DIRNAME}/${name}`)
     if (!file) return null
@@ -336,7 +381,8 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
 export async function managedMemoryEntries(
   roots: readonly MemoryFs[],
   bindingGeneration: string,
-  writeContext?: { source: MemoryWriteSource; sourceTurnId?: string }
+  writeContext?: { source: MemoryWriteSource; sourceTurnId?: string },
+  historyFor?: (root: MemoryFs) => MemoryHistorySink
 ): Promise<ManagedMemoryEntries> {
   const lineages: string[] = []
   for (const root of roots) {
@@ -358,5 +404,5 @@ export async function managedMemoryEntries(
       })
     )
   }
-  return new ManagedMemoryEntries(roots, memoryDigest([bindingGeneration, lineages]), writeContext)
+  return new ManagedMemoryEntries(roots, memoryDigest([bindingGeneration, lineages]), writeContext, historyFor)
 }

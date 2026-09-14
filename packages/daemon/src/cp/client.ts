@@ -68,6 +68,8 @@ import type {
   MemoryFsReply,
   MemoryHistoryAppendReq,
   MemoryHistoryAppendOk,
+  MemoryHistoryReadReq,
+  MemoryHistoryReadOk,
   MemoryHomeMigratedReq,
   MemoryHomeMigratedOk,
   OrgSkillsReq,
@@ -90,6 +92,7 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
   checkInboundFrameOrg,
@@ -1207,6 +1210,23 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected memory/history/append/ok, got ${rep.type}`, false)
     }
     return rep.payload as MemoryHistoryAppendOk
+  }
+
+  // `memory/history/read` (D→C REQ): one page of a CP-homed store's change log, read back for the common entry history.
+  async memoryHistoryRead(payload: MemoryHistoryReadReq): Promise<MemoryHistoryReadOk> {
+    this.requireReady('memory/history/read')
+    if (!this.supportsServerFeature(AGENT_MEMORY_HISTORY_READ_V1_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not page the memory change log', false)
+    }
+    const frame = this.scopedFrame('memory/history/read', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: MEMORY_STORE_TIMEOUT_MS
+    })
+    if (rep.type !== 'memory/history/read/ok') {
+      throw new WireError('INTERNAL', `expected memory/history/read/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as MemoryHistoryReadOk
   }
 
   // `memory/home/migrated` (D→C REQ): the one-way copy of this agent's tree is complete — one send on one deadline, like

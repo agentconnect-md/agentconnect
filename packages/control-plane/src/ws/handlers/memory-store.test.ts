@@ -9,6 +9,7 @@ import { MemoryStoreTooLargeError } from '../../agent-memory/paths.js'
 import {
   handleMemoryTransaction,
   handleMemoryHistoryAppend,
+  handleMemoryHistoryRead,
   handleMemoryHomeMigrated,
   handleMemoryStore
 } from './memory-store.js'
@@ -47,7 +48,7 @@ function deps(overrides: Partial<Record<keyof DaemonWsDeps, unknown>> = {}): Dae
       settleMemoryHomeMigration: vi.fn(async () => 'cleared')
     },
     agentMemoryStore: { apply: vi.fn(async () => ({ ok: true, value: { exists: false } })) },
-    agentMemoryHistory: { append: vi.fn(async () => undefined) },
+    agentMemoryHistory: { append: vi.fn(async () => undefined), page: vi.fn(async () => ({ records: [] })) },
     ...overrides
   } as unknown as DaemonWsDeps
 }
@@ -196,7 +197,7 @@ describe('handleMemoryHistoryAppend', () => {
       c,
       d
     )
-    const append = (d.agentMemoryHistory as { append: ReturnType<typeof vi.fn> }).append
+    const append = (d.agentMemoryHistory as unknown as { append: ReturnType<typeof vi.fn> }).append
     expect(append).toHaveBeenCalledOnce()
     const [agentId, orgId, root, rows, retention] = append.mock.calls[0]!
     expect([agentId, orgId, root]).toEqual([AGENT, ORG, 'memory'])
@@ -226,7 +227,7 @@ describe('handleMemoryHistoryAppend', () => {
       c,
       d
     )
-    const append = (d.agentMemoryHistory as { append: ReturnType<typeof vi.fn> }).append
+    const append = (d.agentMemoryHistory as unknown as { append: ReturnType<typeof vi.fn> }).append
     expect(append.mock.calls[0]![2]).toBe('memory')
 
     const bad = conn()
@@ -314,5 +315,84 @@ describe('handleMemoryTransaction', () => {
     await handleMemoryTransaction(request, c, foreign)
     expect(c.sendError).toHaveBeenCalledWith(request.id, 'SCOPE_DENIED', expect.any(String), false)
     expect(apply).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('handleMemoryHistoryRead', () => {
+  it('pages the change log for a CP-homed agent this daemon serves, in the sidecar shape', async () => {
+    const at = new Date('2026-09-14T12:00:00.000Z')
+    const page = vi.fn(async () => ({
+      records: [
+        {
+          id: 'e0e0e0e0-0000-4000-8000-000000000002',
+          path: 'deploy.md',
+          event: 'update',
+          before: 'a',
+          after: 'b',
+          at,
+          source: 'console',
+          truncated: false
+        }
+      ],
+      nextCursor: 'e0e0e0e0-0000-4000-8000-000000000001'
+    }))
+    const d = deps({ agentMemoryHistory: { append: vi.fn(), page } })
+    const c = conn()
+    await handleMemoryHistoryRead(
+      frame('memory/history/read', {
+        agentId: AGENT,
+        root: './channels/c1/memory',
+        path: 'deploy.md',
+        cursor: 'e0e0e0e0-0000-4000-8000-000000000003',
+        limit: 2
+      }),
+      c,
+      d
+    )
+    expect(page).toHaveBeenCalledWith(
+      AGENT,
+      'channels/c1/memory',
+      'deploy.md',
+      'e0e0e0e0-0000-4000-8000-000000000003',
+      2
+    )
+    expect(c.replyTo).toHaveBeenCalledWith(expect.anything(), 'memory/history/read/ok', {
+      events: [
+        {
+          id: 'e0e0e0e0-0000-4000-8000-000000000002',
+          path: 'deploy.md',
+          event: 'update',
+          before: 'a',
+          after: 'b',
+          at: '2026-09-14T12:00:00.000Z',
+          scope: 'agent',
+          source: 'console',
+          truncated: false
+        }
+      ],
+      nextCursor: 'e0e0e0e0-0000-4000-8000-000000000001'
+    })
+  })
+
+  it('refuses an agent whose home is not the Control Plane', async () => {
+    const d = deps({
+      agent: {
+        get: async () => ({
+          id: AGENT,
+          orgId: ORG,
+          placementKind: 'daemon',
+          daemonId: DAEMON,
+          memory: { provider: 'managed', home: 'daemon' }
+        })
+      }
+    })
+    const c = conn()
+    await handleMemoryHistoryRead(
+      frame('memory/history/read', { agentId: AGENT, root: 'memory', path: 'deploy.md', limit: 5 }),
+      c,
+      d
+    )
+    expect(c.sendError).toHaveBeenCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
+    expect(c.replyTo).not.toHaveBeenCalled()
   })
 })

@@ -5,6 +5,7 @@ import {
   type MemoryEntriesWriteReq,
   MEMORY_ENTRIES_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
+  MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE
 } from '@agentconnect.md/protocol'
 import { describe, expect, it, vi } from 'vitest'
@@ -77,6 +78,15 @@ describe('ControlSender.memoryEntriesRead', () => {
     await sender.memoryEntriesRead(DAEMON, req)
     expect(sent).toEqual([{ type: 'memory/entries/read/v1', payload: req, ext: { epoch: 7 }, budget: undefined }])
     await expect(sender.memoryEntriesRead(OFFLINE, req)).rejects.toBeInstanceOf(NoConnection)
+  })
+  it('sends history only to a daemon that negotiated the history feature', async () => {
+    const req = { agentId: DAEMON, operation: 'history' as const, request: { ref: 'opaque-ref', limit: 5 } }
+    const old = senderWith([MEMORY_ENTRIES_V1_FEATURE, MEMORY_ENTRIES_SEARCH_V1_FEATURE])
+    expect(await old.sender.memoryEntriesRead(DAEMON, req)).toMatchObject({ operation: 'error', code: 'UNSUPPORTED' })
+    expect(old.sent).toEqual([])
+    const live = senderWith([MEMORY_ENTRIES_V1_FEATURE, MEMORY_ENTRIES_HISTORY_V1_FEATURE])
+    await live.sender.memoryEntriesRead(DAEMON, req)
+    expect(live.sent).toEqual([{ type: 'memory/entries/read/v1', payload: req, ext: { epoch: 7 }, budget: undefined }])
   })
   it('sends search only to a daemon that negotiated the search feature', async () => {
     const req = { agentId: DAEMON, operation: 'search' as const, request: { query: 'deploy', limit: 5 } }

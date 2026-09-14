@@ -135,7 +135,7 @@ describe('managed memory home frames', () => {
   })
 
   it('keeps the family org-scoped and behind its own server feature', () => {
-    for (const type of ['memory/store', 'memory/history/append', 'memory/home/migrated']) {
+    for (const type of ['memory/store', 'memory/history/append', 'memory/history/read', 'memory/home/migrated']) {
       expect(isInstallWideFrameType(type)).toBe(false)
     }
     // The console's page request keeps its name; the daemon's batch is a different frame.

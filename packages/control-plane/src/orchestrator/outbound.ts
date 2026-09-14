@@ -1,6 +1,7 @@
 import {
   MEMORY_ENTRIES_V1_FEATURE,
   MEMORY_ENTRIES_SEARCH_V1_FEATURE,
+  MEMORY_ENTRIES_HISTORY_V1_FEATURE,
   MEMORY_ENTRIES_WRITE_V1_FEATURE,
   memoryEntryMutationFits,
   type MemoryEntriesWriteReq,
@@ -742,6 +743,9 @@ export class ControlSender {
     }
     if (req.operation === 'search' && !c.capabilities.features.includes(MEMORY_ENTRIES_SEARCH_V1_FEATURE)) {
       return { operation: 'error', code: 'UNSUPPORTED', message: 'this daemon does not support unified memory search' }
+    }
+    if (req.operation === 'history' && !c.capabilities.features.includes(MEMORY_ENTRIES_HISTORY_V1_FEATURE)) {
+      return { operation: 'error', code: 'UNSUPPORTED', message: 'this daemon does not support unified memory history' }
     }
     return c.conn.request<MemoryEntriesReadResult>('memory/entries/read/v1', req, { epoch: c.sessionEpoch })
   }

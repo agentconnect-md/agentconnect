@@ -1,6 +1,6 @@
 # Design: Unified Memory Operations and Context
 
-**Status:** Implementation in progress. Common reads, bounded search, conditional managed mutations, external record mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh and compatibility retirement remain pending. This design does not change the plugin ABI by itself.
+**Status:** Implementation in progress. Common reads, bounded search, console history, conditional managed mutations, external record mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh and compatibility retirement remain pending. This design does not change the plugin ABI by itself.
 
 **Related:** [Memory evolution](memory-evolution.md), [managed memory](memory-system-plan.md), [Dream](memory-dreaming.md), [product conventions](../product-conventions.md).
 
@@ -607,3 +607,33 @@ included, as the editable draft; `text` entries stay in the plain block. Link
 and backlink annotations render as in-place actions, and a relative Markdown link
 opens a sibling only through a ref the read already annotated, never by guessing
 a ref or a file path.
+
+### Unified history projection
+
+History stays a console operation, as §3 keeps it: `GET
+/agents/:id/memory/entries/:ref/history` and a history view in the unified
+reader project one bounded page of change events per entry (at most 5,
+newest first where the home orders them), and no model tool is advertised. An
+event carries its kind (`create`, `update`, `delete`), an optional time and
+writer source, and bounded before/after snapshots with a `truncated` flag; the
+result names its `order` (`newest-first` for a managed change log, `backend` for
+a record backend). Cursors are view-bound continuations: a page cut by the
+response byte budget re-fetches the same backend page and skips what it already
+returned, so nothing is lost or duplicated at the budget edge.
+
+Managed memory advertises `history` when the entry's home pages its change log
+through the daemon. A `daemon` home pages the sidecar it already keeps. A
+`control-plane` home, whose log lives in the Control Plane's table and was so
+far written but never read from the daemon, now pages it back over the new
+`memory/history/read` request behind the `agent-memory-history-read-v1` server
+feature, under the same serving-daemon and home checks as `memory/history/append`;
+until the CP advertises that feature the sink keeps no `list`, the adapter
+advertises no history, and the legacy console route keeps answering from the
+table directly. Under channel scope an inherited base entry pages the base
+store's log. External connections that declare `history` project their record
+events in backend order with the event's record text as the bounded snapshot.
+
+The operation rides the `memory/entries/read/v1` frame behind the negotiated
+`memory-entries-history-v1` feature; an older daemon never receives it. Legacy
+file and record history routes remain for older peers and the compatibility
+views.

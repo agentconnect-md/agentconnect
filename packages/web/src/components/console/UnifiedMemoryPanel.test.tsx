@@ -19,6 +19,7 @@ vi.mock('@/lib/api', () => {
     listAgentMemoryEntries: vi.fn(),
     getAgentMemoryEntry: vi.fn(),
     searchAgentMemoryEntries: vi.fn(),
+    listAgentMemoryEntryHistory: vi.fn(),
     createAgentMemoryEntry: vi.fn(),
     updateAgentMemoryEntry: vi.fn(),
     deleteAgentMemoryEntry: vi.fn()
@@ -281,4 +282,34 @@ it('renders Markdown entries with annotated links, follows only annotated target
   await click('Topic')
   expect(host.querySelector('pre')?.textContent).toBe('plain record')
   expect(host.querySelector('[data-testid="markdown"]')).toBeNull()
+})
+
+it('offers history only when advertised and pages the entry change log by ref', async () => {
+  await render()
+  await click('Topic')
+  expect(host.textContent).not.toContain('History')
+  vi.mocked(api.describeAgentMemoryEntries).mockResolvedValue({ ...caps, operations: [...caps.operations, 'history'] })
+  vi.mocked(api.listAgentMemoryEntryHistory)
+    .mockResolvedValueOnce({
+      order: 'newest-first',
+      nextCursor: 'older',
+      events: [{ id: 'e2', kind: 'update', at: '2026-09-14T12:00:00.000Z', source: 'console', before: 'a', after: 'b' }]
+    })
+    .mockResolvedValueOnce({
+      order: 'newest-first',
+      events: [{ id: 'e1', kind: 'create', at: '2026-09-13T12:00:00.000Z', source: 'tool', after: 'a' }]
+    })
+  await render('two')
+  await click('Topic')
+  await click('History')
+  expect(api.listAgentMemoryEntryHistory).toHaveBeenCalledWith('agent', 'opaque-ref', 'two', undefined)
+  expect(host.textContent).toContain('Updated')
+  expect(host.textContent).toContain('Console')
+  await click('Load older changes')
+  expect(api.listAgentMemoryEntryHistory).toHaveBeenLastCalledWith('agent', 'opaque-ref', 'two', 'older')
+  expect(host.textContent).toContain('Created')
+  expect(host.textContent).toContain('Agent tool')
+  expect(host.textContent).not.toContain('Load older changes')
+  await click('Hide history')
+  expect(host.textContent).not.toContain('Updated')
 })

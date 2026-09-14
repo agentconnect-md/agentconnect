@@ -2,11 +2,14 @@
 // it AFTER the write as a best-effort `memory/history/append` batch — provenance never fails the write — and never
 // reads the log back, since the CP answers the console from its own table. `resolveMemoryHomePorts` selects it beside `CpMemoryFs`.
 import {
+  AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
   MEMORY_HISTORY_APPEND_MAX_RECORDS,
   REPLY_BUDGET,
   type MemoryHistoryAppendOk,
-  type MemoryHistoryAppendReq
+  type MemoryHistoryAppendReq,
+  type MemoryHistoryReadOk,
+  type MemoryHistoryReadReq
 } from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
@@ -18,6 +21,8 @@ export interface CpMemoryHistoryLink {
   connected(): boolean
   supportsServerFeature(feature: string): boolean
   memoryHistoryAppend(req: MemoryHistoryAppendReq): Promise<MemoryHistoryAppendOk>
+  /** Absent on an older client; the sink then keeps no `list`, and the CP answers the legacy console route itself. */
+  memoryHistoryRead?(req: MemoryHistoryReadReq): Promise<MemoryHistoryReadOk>
 }
 
 /** Pack records, in order, into requests the wire accepts: `MEMORY_HISTORY_APPEND_MAX_RECORDS` at most, under `REPLY_BUDGET`. */
@@ -98,4 +103,21 @@ export class CpMemoryHistorySink implements MemoryHistorySink {
 
   /** Nothing lives inside a CP-homed store to carry: the table outlives the swap on its own. */
   async carryInto(): Promise<void> {}
+
+  // Paging is offered only while the CP advertises it, so a home that cannot answer keeps refusing as not-local.
+  get list(): MemoryHistorySink['list'] {
+    const page = this.link.memoryHistoryRead?.bind(this.link)
+    if (!page || !this.link.connected() || !this.link.supportsServerFeature(AGENT_MEMORY_HISTORY_READ_V1_FEATURE))
+      return undefined
+    return async (relPath, cursor, limit) => {
+      const reply = await page({
+        agentId: this.agentId,
+        root: this.root,
+        path: relPath,
+        ...(cursor ? { cursor } : {}),
+        limit: Math.min(limit, 5)
+      })
+      return { events: reply.events, ...(reply.nextCursor ? { nextCursor: reply.nextCursor } : {}) }
+    }
+  }
 }

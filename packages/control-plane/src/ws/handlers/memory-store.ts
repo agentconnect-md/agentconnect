@@ -8,7 +8,7 @@ import { AgentId } from '../../domain/ids.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import type { AgentRecord } from '../../persistence/ports.js'
 import { HISTORY_RETENTION } from '../../agent-memory/limits.js'
-import { normalizeMemoryHistoryRoot, toHistoryInput } from '../../agent-memory/history.js'
+import { normalizeMemoryHistoryRoot, toHistoryEvent, toHistoryInput } from '../../agent-memory/history.js'
 import { memoryHomedInControlPlane } from '../../agent-memory/home.js'
 import { MemoryStorePathError, MemoryStoreTooLargeError } from '../../agent-memory/paths.js'
 import { frameOrgId } from './frame-org.js'
@@ -84,6 +84,42 @@ export const handleMemoryHistoryAppend: Handler = async (frame, conn, deps) => {
     }
     deps.log.error({ err, agentId: agent.id }, 'memory/history/append: batch failed')
     conn.sendError(frame.id, 'INTERNAL', 'memory history append failed', true)
+  }
+}
+
+// The change log pages back to the daemon that serves the agent, so the common entry history has one path for every home.
+export const handleMemoryHistoryRead: Handler = async (frame, conn, deps) => {
+  if (!isFrame('memory/history/read')(frame)) return
+  const history = deps.agentMemoryHistory
+  if (!history) {
+    conn.sendError(frame.id, 'INTERNAL', 'the memory home is unavailable', true)
+    return
+  }
+  const verdict = await homedAgent(frame, frame.payload.agentId, conn, deps)
+  if ('denied' in verdict) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', verdict.denied, false)
+    return
+  }
+  const { agent } = verdict
+  try {
+    const page = await history.page(
+      AgentId(agent.id),
+      normalizeMemoryHistoryRoot(frame.payload.root),
+      frame.payload.path,
+      frame.payload.cursor,
+      frame.payload.limit
+    )
+    conn.replyTo(frame, 'memory/history/read/ok', {
+      events: page.records.map(toHistoryEvent),
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
+    })
+  } catch (err) {
+    if (err instanceof MemoryStorePathError) {
+      conn.sendError(frame.id, 'BAD_PAYLOAD', err.message, false)
+      return
+    }
+    deps.log.error({ err, agentId: agent.id }, 'memory/history/read: page failed')
+    conn.sendError(frame.id, 'INTERNAL', 'memory history page failed', true)
   }
 }
 

@@ -601,7 +601,10 @@ describe('unified search', () => {
       '---\nname: On-call\n---\nThe on-call engineer approves every Friday deploy.\n'
     )
     await f.root.writeFile('memory/lunch.md', 'Team lunch happens on Fridays.\n')
-    expect(await f.api.describe()).toMatchObject({ operations: ['list', 'get', 'search'], searchKind: 'lexical' })
+    expect(await f.api.describe()).toMatchObject({
+      operations: ['list', 'get', 'search', 'history'],
+      searchKind: 'lexical'
+    })
     const page = await f.api.search({ query: 'friday DEPLOY' })
     expect(page).toMatchObject({ kind: 'lexical', coverage: 'complete' })
     expect(page.hits.map((hit) => hit.entry.label)).toEqual(['Deployment rules', 'On-call'])
@@ -693,4 +696,85 @@ it('annotates managed reads with one hop of wiki links as refs, never spliced in
   const rota = viewed.backlinks!.find((edge) => edge.label === 'rota')!
   expect(await overlay.get({ ref: rota.ref! })).toMatchObject({ entry: { label: 'rota', origin: 'active' } })
   await expect(f.api.get({ ref: rota.ref! })).rejects.toMatchObject({ code: 'STALE_BINDING' })
+})
+
+describe('unified history', () => {
+  it('pages a managed entry change log newest first through the home sink, with view-bound cursors', async () => {
+    const f = await fixture('managed', 0)
+    const scope = { agentId: 'binding-1' }
+    await f.provider.write(scope, 'deploy.md', 'Deploy on Fridays.', undefined, 'console')
+    await f.provider.write(scope, 'deploy.md', 'Deploy on Mondays.', undefined, 'tool')
+    await f.provider.write(scope, 'deploy.md', 'Deploy on Tuesdays.', undefined, 'tool')
+    expect((await f.api.describe()).operations).toContain('history')
+    const deploy = (await f.api.list({ limit: 10 })).entries.find((entry) => entry.label === 'deploy')!
+    const first = await f.api.history({ ref: deploy.ref, limit: 2 })
+    expect(first.order).toBe('newest-first')
+    expect(first.events.map((event) => [event.kind, event.source, event.after])).toEqual([
+      ['update', 'tool', 'Deploy on Tuesdays.'],
+      ['update', 'tool', 'Deploy on Mondays.']
+    ])
+    expect(first.events[0]!.before).toBe('Deploy on Mondays.')
+    expect(first.nextCursor).toBeTruthy()
+    const rest = await f.api.history({ ref: deploy.ref, limit: 2, cursor: first.nextCursor })
+    expect(rest.events.map((event) => [event.kind, event.source])).toEqual([['create', 'console']])
+    expect(rest.nextCursor).toBeUndefined()
+    await expect(f.api.history({ ref: deploy.ref, limit: 1, cursor: first.nextCursor })).rejects.toMatchObject({
+      code: 'INVALID_ARGUMENT'
+    })
+    await expect(f.api.history({ ref: 'deploy.md' })).rejects.toMatchObject({ code: 'STALE_BINDING' })
+    f.replaceBinding()
+    await expect(f.api.history({ ref: deploy.ref })).rejects.toMatchObject({ code: 'STALE_BINDING' })
+  })
+
+  it('projects external record history in backend order with bounded snapshots, or none when undeclared', async () => {
+    const f = await fixture('external', 1)
+    expect((await f.api.describe()).operations).not.toContain('history')
+    const ref = (await f.api.list({ limit: 1 })).entries[0]!.ref
+    await expect(f.api.history({ ref })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    ;(f.admin.capabilities as Set<string>).add('history')
+    const calls: unknown[] = []
+    f.admin.history = async (_scope, request) => {
+      calls.push(request)
+      return {
+        events: [
+          {
+            id: 'ev-2',
+            event: 'update',
+            at: '2026-09-14T12:00:00.000Z',
+            record: { id: 'topic-000.md', text: 'x'.repeat(5000), scope: { kind: 'agent', key: 'ac:agent:a' } }
+          },
+          { id: 'ev-1', event: 'create', at: '2026-09-13T12:00:00.000Z' }
+        ],
+        ...(request.cursor ? {} : { nextCursor: 'backend-2' })
+      }
+    }
+    const page = await f.api.history({ ref, limit: 5 })
+    expect(calls[0]).toMatchObject({ id: 'topic-000.md', limit: 5 })
+    expect(page.order).toBe('backend')
+    expect(page.events.map((event) => event.kind)).toEqual(['update', 'create'])
+    expect(page.events[0]!.after!.length).toBeLessThanOrEqual(4001)
+    expect(page.events[0]!.truncated).toBe(true)
+    expect(page.events[1]).not.toHaveProperty('after')
+    const older = await f.api.history({ ref, limit: 5, cursor: page.nextCursor })
+    expect(calls[1]).toMatchObject({ cursor: 'backend-2' })
+    expect(older.nextCursor).toBeUndefined()
+  })
+
+  it('serves history to admin callers and refuses it through the model tool surface', async () => {
+    const f = await fixture('managed', 0)
+    await f.provider.write({ agentId: 'binding-1' }, 'deploy.md', 'Deploy on Fridays.', undefined, 'console')
+    const { createMemoryEntriesReader } = await import('../src/cp/memory-entries.js')
+    const read = createMemoryEntriesReader(f.provider, f.db, (id) => id === 'binding-1')
+    const list = await read({ agentId: 'binding-1', operation: 'list', request: { limit: 1 } })
+    if (list.operation !== 'list') throw new Error('expected list')
+    expect(
+      await read({
+        agentId: 'binding-1',
+        operation: 'history',
+        request: { ref: list.result.entries[0]!.ref, limit: 5 }
+      })
+    ).toMatchObject({ operation: 'history', result: { events: [{ kind: 'create', source: 'console' }] } })
+    const { MEMORY_TOOLS } = await import('../src/memory/tools.js')
+    expect(MEMORY_TOOLS.map((tool) => tool.name)).not.toContain('historyMemoryEntries')
+  })
 })

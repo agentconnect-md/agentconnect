@@ -155,8 +155,8 @@ export interface DaemonWsDeps {
   /** The `control-plane` memory home's op set (memory-evolution.md §3.2.1); absent ⇒ `memory/store` answers INTERNAL. */
   agentMemoryTransaction?: Pick<AgentMemoryTransactionService, 'apply'>
   agentMemoryStore?: Pick<AgentMemoryStoreService, 'apply'>
-  /** The change-log table behind `memory/history/append`; absent ⇒ INTERNAL. */
-  agentMemoryHistory?: Pick<AgentMemoryHistoryRepo, 'append'>
+  /** The change-log table behind `memory/history/append` and `memory/history/read`; absent ⇒ INTERNAL. */
+  agentMemoryHistory?: Pick<AgentMemoryHistoryRepo, 'append' | 'page'>
   /** github-app workspaces façade; absent ⇒ gitcred/request answers SCOPE_DENIED. */
   github?: GithubService
   /** gitcred v2 GitLab grants (§13.1); absent ⇒ gitlab workspaces disabled. */

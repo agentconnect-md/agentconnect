@@ -386,7 +386,11 @@ it('serves unified entries through the admitted Mem0 HTTP plugin without changin
   )
   const capabilities = await entries.describe()
   // Declared recall projects as search, but a v1 manifest never claims a retrieval kind.
-  expect(capabilities).toMatchObject({ operations: ['list', 'get', 'search'], enumeration: 'live', exactCreate: false })
+  expect(capabilities).toMatchObject({
+    operations: ['list', 'get', 'search', 'history'],
+    enumeration: 'live',
+    exactCreate: false
+  })
   expect(capabilities).not.toHaveProperty('searchKind')
   const page = await entries.list({ limit: 100 })
   expect(page.entries).toHaveLength(1)

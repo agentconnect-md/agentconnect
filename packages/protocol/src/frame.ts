@@ -166,6 +166,8 @@ import {
   MemoryFsReplySchema,
   MemoryHistoryAppendOk,
   MemoryHistoryAppendReq,
+  MemoryHistoryReadOk,
+  MemoryHistoryReadReq,
   MemoryHomeMigratedOk,
   MemoryHomeMigratedReq,
   MemoryStoreReq
@@ -452,6 +454,8 @@ export const FRAME_SCHEMAS = {
   'memory/store/ok': MemoryFsReplySchema,
   'memory/history/append': MemoryHistoryAppendReq,
   'memory/history/append/ok': MemoryHistoryAppendOk,
+  'memory/history/read': MemoryHistoryReadReq,
+  'memory/history/read/ok': MemoryHistoryReadOk,
   'memory/home/migrated': MemoryHomeMigratedReq,
   'memory/home/migrated/ok': MemoryHomeMigratedOk,
   // ── memory dreaming (managed-store consolidation jobs; REPs carry DreamState) ──
@@ -728,6 +732,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('memory/store/ok', FRAME_SCHEMAS['memory/store/ok']),
   frame('memory/history/append', FRAME_SCHEMAS['memory/history/append']),
   frame('memory/history/append/ok', FRAME_SCHEMAS['memory/history/append/ok']),
+  frame('memory/history/read', FRAME_SCHEMAS['memory/history/read']),
+  frame('memory/history/read/ok', FRAME_SCHEMAS['memory/history/read/ok']),
   frame('memory/home/migrated', FRAME_SCHEMAS['memory/home/migrated']),
   frame('memory/home/migrated/ok', FRAME_SCHEMAS['memory/home/migrated/ok']),
   frame('memory/dream/start', FRAME_SCHEMAS['memory/dream/start']),

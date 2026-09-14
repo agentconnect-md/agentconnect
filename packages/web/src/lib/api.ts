@@ -6255,6 +6255,14 @@ export function searchAgentMemoryEntries(agentId: string, query: string, channel
     { query, limit: 20 }
   )
 }
+export function listAgentMemoryEntryHistory(agentId: string, ref: string, channelKey?: string, cursor?: string) {
+  return apiGet<import('@agentconnect.md/protocol').MemoryEntryHistoryResult>(
+    memoryEntryUrl(agentId, `entries/${encodeURIComponent(ref)}/history`, channelKey, {
+      limit: '5',
+      ...(cursor ? { cursor } : {})
+    })
+  )
+}
 export function createAgentMemoryEntry(
   agentId: string,
   request: import('@agentconnect.md/protocol').MemoryEntryCreateRequest,

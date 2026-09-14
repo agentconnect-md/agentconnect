@@ -12,11 +12,12 @@ import {
   type MemoryScope,
   type RecordMemoryAdmin
 } from '../types.js'
-import { MemoryConflictError, MemoryTooLargeError, type MemoryWriteSource } from '../store.js'
+import { clampMemoryHistoryValue, MemoryConflictError, MemoryTooLargeError, type MemoryWriteSource } from '../store.js'
 import {
   MemoryEntriesError,
   type EntryCoordinate,
   type EntryDocument,
+  type EntryHistoryPage,
   type EntryMutationResult,
   type EntryPage,
   type EntrySearchPage,
@@ -47,7 +48,8 @@ export class ExternalMemoryEntries implements MemoryEntriesView {
         ...(admin.capabilities.has('list') ? ['list' as const] : []),
         ...(admin.capabilities.has('get') ? ['get' as const] : []),
         ...(admin.capabilities.has('recall') ? ['search' as const] : []),
-        ...(writeContext ? WRITE_OPERATIONS.filter((operation) => admin.capabilities.has(operation)) : [])
+        ...(writeContext ? WRITE_OPERATIONS.filter((operation) => admin.capabilities.has(operation)) : []),
+        ...(admin.capabilities.has('history') ? ['history' as const] : [])
       ],
       // A v1 manifest does not declare its retrieval kind, so no lexical/semantic claim is made.
       supportedScopes: ['agent'],
@@ -109,6 +111,36 @@ export class ExternalMemoryEntries implements MemoryEntriesView {
         entry: this.summary(record),
         snippet: memoryUtf8Prefix(record.text.replace(/\s+/g, ' ').trim(), 240)
       }))
+    }
+  }
+
+  // Backend events in backend order; a snapshot is the record text the event carried, bounded like a managed one.
+  async history(coordinate: EntryCoordinate, request: { cursor?: string; limit: number }): Promise<EntryHistoryPage> {
+    this.checkPartition(coordinate)
+    if (!this.capabilities.operations.includes('history'))
+      throw new MemoryEntriesError('UNSUPPORTED', 'memory history is unavailable')
+    let page: Awaited<ReturnType<RecordMemoryAdmin['history']>>
+    try {
+      page = await this.admin.history(this.scope, {
+        id: coordinate.id,
+        ...(request.cursor ? { cursor: request.cursor } : {}),
+        limit: request.limit
+      })
+    } catch {
+      throw new MemoryEntriesError('UNAVAILABLE', 'memory history is temporarily unavailable')
+    }
+    return {
+      order: 'backend',
+      events: page.events.map((event) => {
+        const snapshot = event.record?.id === coordinate.id ? clampMemoryHistoryValue(event.record.text) : undefined
+        return {
+          id: event.id,
+          kind: event.event,
+          at: event.at,
+          ...(snapshot ? { after: snapshot.value, ...(snapshot.truncated ? { truncated: true } : {}) } : {})
+        }
+      }),
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
     }
   }
 

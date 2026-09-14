@@ -106,6 +106,36 @@ export const MemoryEntrySearchResult = z
   .strict()
 export type MemoryEntrySearchResult = z.infer<typeof MemoryEntrySearchResult>
 
+export const MemoryEntryHistoryRequest = z
+  .object({
+    ref: MemoryEntryRef,
+    cursor: MemoryEntryCursor.optional(),
+    limit: z.number().int().min(1).max(5).default(5)
+  })
+  .strict()
+export type MemoryEntryHistoryRequest = z.infer<typeof MemoryEntryHistoryRequest>
+// A console-side audit view: what changed, by whom, with bounded snapshots; never model-readable authority.
+export const MemoryEntryHistoryEvent = z
+  .object({
+    id: z.string().max(512).optional(),
+    kind: z.enum(['create', 'update', 'delete']),
+    at: z.string().optional(),
+    source: z.enum(['tool', 'console', 'distill', 'dream']).optional(),
+    before: z.string().max(4001).optional(),
+    after: z.string().max(4001).optional(),
+    truncated: z.boolean().optional()
+  })
+  .strict()
+export type MemoryEntryHistoryEvent = z.infer<typeof MemoryEntryHistoryEvent>
+export const MemoryEntryHistoryResult = z
+  .object({
+    events: z.array(MemoryEntryHistoryEvent).max(5),
+    nextCursor: MemoryEntryCursor.optional(),
+    order: z.enum(['newest-first', 'backend'])
+  })
+  .strict()
+export type MemoryEntryHistoryResult = z.infer<typeof MemoryEntryHistoryResult>
+
 export const MemoryContextRequest = z
   .object({
     seenRevision: z.string().max(512).optional(),

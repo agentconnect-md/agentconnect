@@ -49,6 +49,20 @@ export interface EntrySearchPage {
   kind: 'lexical' | 'semantic' | 'hybrid' | 'unknown'
   coverage: 'complete' | 'partial' | 'unknown'
 }
+export interface EntryHistoryEvent {
+  id?: string
+  kind: 'create' | 'update' | 'delete'
+  at?: string
+  source?: 'tool' | 'console' | 'distill' | 'dream'
+  before?: string
+  after?: string
+  truncated?: boolean
+}
+export interface EntryHistoryPage {
+  events: EntryHistoryEvent[]
+  nextCursor?: string
+  order: 'newest-first' | 'backend'
+}
 
 // The caller resolves this view from authenticated context on every operation, including continuation.
 export interface MemoryEntriesView {
@@ -57,6 +71,7 @@ export interface MemoryEntriesView {
   list?(request: { cursor?: string; limit: number }): Promise<EntryPage>
   get?(coordinate: EntryCoordinate): Promise<EntryDocument | null>
   search?(request: { query: string; limit: number }): Promise<EntrySearchPage>
+  history?(coordinate: EntryCoordinate, request: { cursor?: string; limit: number }): Promise<EntryHistoryPage>
   create?(request: MemoryEntryCreateRequest): Promise<EntryMutationResult>
   update?(
     coordinate: EntryCoordinate,
