@@ -310,12 +310,21 @@ function HeadersEditor({
  * cannot detect the answer either — only the daemon learns whether an upstream ships interfaces,
  * and only once it has connected, which is the very thing this decides.
  */
-function McpAppsField({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function McpAppsField({
+  checked,
+  onChange,
+  disabled
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  disabled?: boolean
+}) {
   return (
     <CompactToggleField
       label="Interactive interfaces"
       checked={checked}
       onChange={onChange}
+      {...(disabled ? { disabled } : {})}
       status={checked ? 'Rendered in chat' : 'Off'}
       detail="Let this server show interactive interfaces in the web console. The daemon connects to it directly instead of the agent runtime, and its tools are renamed to server__tool."
     />
@@ -436,13 +445,14 @@ export function CreateMcpProviderModal({
 }
 
 // ── edit dialog (url + headers; headers are write-only — blank keeps them) ─────
-function EditMcpProviderModal({ provider, onClose }: { provider: McpProviderDto; onClose: () => void }) {
+export function EditMcpProviderModal({ provider, onClose }: { provider: McpProviderDto; onClose: () => void }) {
   const { updateMcpProvider, saveSharing } = useConsoleData()
   const [url, setUrl] = useState(provider.url)
   // Start empty: the stored values are never returned, so a blank editor means
   // "keep the current headers". Adding rows REPLACES the whole set on save.
   const [headers, setHeaders] = useState<HeaderRow[]>([])
   const [replaceHeaders, setReplaceHeaders] = useState(false)
+  const [ui, setUi] = useState(provider.ui)
   const [sharing, setSharing] = useState<SharingValue>({
     visibility: provider.visibility,
     sharedWith: provider.sharedWith
@@ -463,7 +473,7 @@ function EditMcpProviderModal({ provider, onClose }: { provider: McpProviderDto;
     setBusy(true)
     setErr(null)
     try {
-      const contentChanged = url.trim() !== provider.url || replaceHeaders
+      const contentChanged = url.trim() !== provider.url || replaceHeaders || ui !== provider.ui
       if (contentChanged) {
         await updateMcpProvider(provider.id, {
           // Name is the agent-binding key and there's no atomic rename yet
@@ -471,7 +481,10 @@ function EditMcpProviderModal({ provider, onClose }: { provider: McpProviderDto;
           // here — recreate under a new name to change it. (centralized-tool-management v1)
           ...(url.trim() !== provider.url ? { url: url.trim() } : {}),
           // Only touch headers when the user opted to replace them.
-          ...(replaceHeaders ? { headers: cleanHeaders(headers) } : {})
+          ...(replaceHeaders ? { headers: cleanHeaders(headers) } : {}),
+          // Sent only on a real change: flipping this re-homes the provider and renames its
+          // tools, so an edit that did not touch it must not restate it.
+          ...(ui !== provider.ui ? { ui } : {})
         })
       }
       // Sharing rides its own gated endpoint (canManageSharing).
@@ -535,6 +548,7 @@ function EditMcpProviderModal({ provider, onClose }: { provider: McpProviderDto;
               </span>
             </div>
           )}
+          <McpAppsField checked={ui} onChange={setUi} disabled={!provider.canEdit} />
           <VisibilityField value={sharing} onChange={setSharing} disabled={!provider.canManageSharing} />
         </div>
         {err && <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
