@@ -224,6 +224,7 @@ Tools **call the CP service layer directly or reuse route-handler logic**, prese
 | `getUsage`                                                     | GET /usage                                                 | –       |
 | `listIntegrations` / `setChannelTrigger` / `removeIntegration` | GET · PATCH channels/:channelId · DELETE                   | –/✎(🔥) |
 | `listBots` / `listMembers` / `listAgentHooks` / `listHookRuns` | GET (metadata only, no secret)                             | –       |
+| `getGithubApp`                                                 | GET /github/app (mints the org-bound install link)         | –       |
 | `listGithubInstallations` / `listGithubRepositories`           | GET /github/installations(/:id/repositories)               | –       |
 | `getGithubRepositoryAccess`                                    | GET /github/installations/:id/repositories/:o/:r/access    | –       |
 | `getOperation` / `listOperations`                              | GET /agents/:id/webchat/:conversationId/mcp-operations(…)  | –       |
