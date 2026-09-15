@@ -32,7 +32,7 @@ import type {
   McpProviderOauthStateStore,
   McpProviderRepo
 } from '../persistence/ports.js'
-import type { McpProviderTokenService } from './token-service.js'
+import { refreshDue, type McpProviderTokenService } from './token-service.js'
 
 /** Swept often enough to stay ahead of the shortest token lifetime worth accepting. */
 export const SWEEP_INTERVAL_MS = 60_000
@@ -41,6 +41,13 @@ const FIRST_SWEEP_DELAY_MS = 15_000
 const SWEEP_JITTER_MS = 10_000
 /** One sweep's ceiling — a backlog drains over several passes rather than in one burst. */
 const SWEEP_BATCH = 50
+/**
+ * How far ahead of expiry a row is even CONSIDERED. Selecting only already-expired rows would
+ * renew strictly too late — every provider would serve 502s from expiry until the next sweep
+ * and token exchange finished. The window has to cover the largest margin the predicate can
+ * ask for, which is half a token's lifetime, so it is generous; `refreshDue` then decides.
+ */
+export const SWEEP_HORIZON_MS = 24 * 60 * 60 * 1000
 
 export interface McpOauthRefresherDeps {
   providers: McpProviderRepo
@@ -93,9 +100,13 @@ export class McpOauthRefresher {
 
   /** One pass. Returns how many grants were renewed and re-pushed. */
   async refreshDueConnections(): Promise<number> {
-    const due = await this.deps.oauth.dueForRefresh(new Date(this.deps.clock.now()), SWEEP_BATCH)
+    const now = this.deps.clock.now()
+    const candidates = await this.deps.oauth.dueForRefresh(new Date(now + SWEEP_HORIZON_MS), SWEEP_BATCH)
     let renewed = 0
-    for (const row of due) {
+    for (const row of candidates) {
+      // The candidate window is deliberately wide; this is the renewal decision, and it is
+      // the same predicate `resolve()` uses so the two can never disagree.
+      if (!refreshDue(row, now)) continue
       try {
         // Outside the chain on purpose: an upstream round-trip must not block this
         // provider's CRUD for its duration.

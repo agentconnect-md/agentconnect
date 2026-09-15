@@ -61,6 +61,8 @@ export type McpOauthResultCode =
   | 'exchange_failed'
   /** A grant with no refresh token would die at first expiry with nothing able to repair it. */
   | 'no_refresh_token'
+  /** A disconnect or a newer authorization landed while this exchange was in flight. */
+  | 'superseded'
 
 /** A start-hop refusal the console shows directly. `reason` is safe to display. */
 export class McpOauthDenied extends Error {
@@ -180,7 +182,7 @@ export class McpProviderOauthService {
     const clientSource =
       reusable && input.clientId === undefined && existing ? existing.clientSource : client.value.source
 
-    await this.deps.oauth.prepare(input.orgId, input.providerId, {
+    const prepared = await this.deps.oauth.prepare(input.orgId, input.providerId, {
       resource,
       issuer: metadata.issuer,
       authorizationEndpoint: metadata.authorizationEndpoint,
@@ -207,6 +209,9 @@ export class McpProviderOauthService {
       // Recorded BEFORE the redirect: the RFC 9207 comparison is only meaningful against a
       // value that came from metadata this hop validated.
       expectedIssuer: metadata.issuer,
+      // The generation this funnel owns. Disconnect and a re-prepare both advance it, so a
+      // callback that arrives after either one commits nothing.
+      expectedVersion: prepared.tokenVersion,
       expiresAt: new Date(this.clock.now() + MCP_OAUTH_STATE_TTL_MS)
     })
     const base = this.deps.publicCpUrl!.replace(/\/$/, '')
@@ -299,7 +304,8 @@ export class McpProviderOauthService {
     if (!redeemed.ok) return fail('exchange_failed', returnPath)
     if (redeemed.grant.refreshToken === undefined) return fail('no_refresh_token', returnPath)
 
-    await this.deps.oauth.connect(orgId, row.mcpProviderId, {
+    const committed = await this.deps.oauth.connect(orgId, row.mcpProviderId, {
+      expectedVersion: row.expectedVersion,
       accessExpiresAt: redeemed.grant.expiresAt,
       connectedByUserId: row.userId,
       sealedPair: {
@@ -307,6 +313,9 @@ export class McpProviderOauthService {
         refreshToken: await this.deps.cipher.seal(redeemed.grant.refreshToken, scope)
       }
     })
+    // Superseded while the exchange was in flight — a disconnect, or a newer authorization.
+    // Their intent is the current one; publishing this grant would undo it.
+    if (!committed) return fail('superseded', returnPath)
     await this.deps.onConnected?.(orgId, row.mcpProviderId)
     return { redirectPath: returnPath, result: 'connected' }
   }

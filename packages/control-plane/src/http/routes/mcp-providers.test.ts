@@ -171,7 +171,7 @@ describe('rotateProviderGrant', () => {
         active.delete(id)
       }
     }
-    const pushAssign = async (_p: McpProviderRecord, _h: McpHeader[], grant: GrantView, _org: OrgId) => {
+    const pushAssign = async (_p: McpProviderRecord, _h: McpHeader[] | null, grant: GrantView, _org: OrgId) => {
       await yieldTick()
       published = grant.key
     }

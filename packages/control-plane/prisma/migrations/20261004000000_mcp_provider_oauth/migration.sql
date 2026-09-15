@@ -56,6 +56,7 @@ CREATE TABLE "mcp_provider_oauth_state" (
     "returnPath" TEXT NOT NULL,
     "verifier" TEXT NOT NULL,
     "expectedIssuer" TEXT NOT NULL,
+    "expectedVersion" BIGINT NOT NULL,
     "expiresAt" TIMESTAMPTZ(6) NOT NULL,
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 

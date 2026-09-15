@@ -59,13 +59,17 @@ async function makeProvider(name = `oauth-${randomUUID().slice(0, 8)}`): Promise
 /** Prepare + connect, the ordinary path a completed funnel takes. */
 async function connected(): Promise<{ providerId: string; version: bigint }> {
   const providerId = await makeProvider()
-  await repo().prepare(ORG, providerId, PREPARED)
-  const row = await repo().connect(ORG, providerId, {
-    accessExpiresAt: new Date(Date.now() + 3600_000),
-    connectedByUserId: null,
-    sealedPair: { accessToken: 'access-1', refreshToken: 'refresh-1' }
-  })
-  return { providerId, version: row.tokenVersion }
+  const prepared = await repo().prepare(ORG, providerId, PREPARED)
+  expect(
+    await repo().connect(ORG, providerId, {
+      expectedVersion: prepared.tokenVersion,
+      accessExpiresAt: new Date(Date.now() + 3600_000),
+      connectedByUserId: null,
+      sealedPair: { accessToken: 'access-1', refreshToken: 'refresh-1' }
+    })
+  ).toBe(true)
+  const row = await repo().get(ORG, providerId)
+  return { providerId, version: row!.tokenVersion }
 }
 
 describe('PgMcpProviderOauthRepo', () => {
@@ -161,8 +165,9 @@ describe('PgMcpProviderOauthRepo', () => {
   it('sweeps connected rows due for renewal, with the org and name the re-push needs', async () => {
     const { providerId } = await connected()
     const soon = await makeProvider()
-    await repo().prepare(ORG, soon, PREPARED)
+    const prepared = await repo().prepare(ORG, soon, PREPARED)
     await repo().connect(ORG, soon, {
+      expectedVersion: prepared.tokenVersion,
       accessExpiresAt: new Date(Date.now() + 30_000),
       connectedByUserId: null,
       sealedPair: { accessToken: 'a', refreshToken: 'r' }
@@ -191,6 +196,7 @@ describe('PgMcpProviderOauthStateStore', () => {
     returnPath: '/tools',
     verifier: 'sealed-verifier',
     expectedIssuer: ISSUER,
+    expectedVersion: 1n,
     expiresAt
   })
 

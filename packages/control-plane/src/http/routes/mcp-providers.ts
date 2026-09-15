@@ -26,6 +26,7 @@ import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authoriz
 import { resolveShareSet } from '../sharing.js'
 import { blockedUpstreamUrl, currentMcpGrant, grantKeyHash, type GrantView } from '../../orchestrator/mcpProvider.js'
 import { makeMcpPush } from '../mcp-push.js'
+import { resolveUpstreamHeaders } from '../../orchestrator/mcpUpstreamHeaders.js'
 import { serializeByProvider, serializeByProviderNames } from '../provider-chain.js'
 
 // Re-exported at the shape callers already import (routes/agents.ts, tests) after the chain
@@ -57,10 +58,10 @@ import {
  */
 export function rotateProviderGrant(
   provider: McpProviderRecord,
-  headers: McpHeader[],
+  headers: UpstreamHeaders,
   orgId: OrgId,
   grants: McpGrantRepo,
-  pushAssign: (p: McpProviderRecord, h: McpHeader[], grant: GrantView, org: OrgId) => Promise<void>,
+  pushAssign: (p: McpProviderRecord, h: McpHeader[] | null, grant: GrantView, org: OrgId) => Promise<void>,
   unassignHash: (providerId: string, hash: string) => void
 ): Promise<string> {
   return serializeByProvider(orgId, provider.name, () =>
@@ -68,17 +69,25 @@ export function rotateProviderGrant(
   )
 }
 
+/** Either a fixed header set, or a resolver called inside the chain. An oauth2 provider's
+ *  credential is the CP's current access token, so it must be read at push time — a set
+ *  captured earlier is the static (empty) one, and pushing it unbinds a working provider. */
+export type UpstreamHeaders = McpHeader[] | (() => Promise<McpHeader[] | null>)
+
+const readUpstream = (h: UpstreamHeaders): Promise<McpHeader[] | null> =>
+  typeof h === 'function' ? h() : Promise.resolve(h)
+
 async function rotateOnce(
   provider: McpProviderRecord,
-  headers: McpHeader[],
+  headers: UpstreamHeaders,
   orgId: OrgId,
   grants: McpGrantRepo,
-  pushAssign: (p: McpProviderRecord, h: McpHeader[], grant: GrantView, org: OrgId) => Promise<void>,
+  pushAssign: (p: McpProviderRecord, h: McpHeader[] | null, grant: GrantView, org: OrgId) => Promise<void>,
   unassignHash: (providerId: string, hash: string) => void
 ): Promise<string> {
   const prior = await grants.activeForProvider(provider.orgId, provider.id) // before mint — both would read active otherwise
   const fresh = await grants.mintFor(provider.orgId, provider.id)
-  await pushAssign(provider, headers, fresh, orgId) // new binding + proxy def in place first
+  await pushAssign(provider, await readUpstream(headers), fresh, orgId) // new binding + proxy def in place first
   for (const g of prior) {
     await grants.revoke(g.id)
     unassignHash(provider.id, grantKeyHash(g.key))
@@ -133,6 +142,17 @@ export function mcpProviderRoutes(deps: HttpDeps) {
 
     // Shared relay+daemon push (also used by the connectors create flow).
     const { pushAssign, pushUnassign } = makeMcpPush(deps)
+
+    // Every LIVE publication resolves the injected credential the same way. Reading the static
+    // header set would publish an oauth2 provider's binding with no Authorization at all —
+    // its credential is the CP's current access token, not something stored alongside it.
+    const upstreamFor = (provider: McpProviderRecord, orgId: OrgId) => () =>
+      resolveUpstreamHeaders(
+        { secrets: deps.repos.mcpProviderSecret, ...(deps.mcpTokenResolver ? { tokens: deps.mcpTokenResolver } : {}) },
+        provider,
+        orgId,
+        { allowNetwork: false }
+      )
 
     r.get(
       '/mcp-providers',
@@ -324,7 +344,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         // per-provider lock, so a concurrent rotation can't leave us pushing its revoked key.
         await serializeByProvider(orgOf(req), provider.name, async () => {
           const grant = currentMcpGrant(await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))
-          if (grant) await pushAssign(provider, headers, grant, orgOf(req))
+          if (grant) await pushAssign(provider, await upstreamFor(provider, orgOf(req))(), grant, orgOf(req))
         })
         return toDto(provider, ctxOf(req), headers)
       }
@@ -352,7 +372,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         const headers = (await deps.repos.mcpProviderSecret.get(provider.orgId, provider.id)) ?? []
         const grantKey = await rotateProviderGrant(
           provider,
-          headers,
+          upstreamFor(provider, orgOf(req)),
           orgOf(req),
           deps.repos.mcpGrant,
           pushAssign,

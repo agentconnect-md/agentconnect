@@ -1,16 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
 import { McpOauthRefresher } from './refresher.js'
 import { OrgId } from '../domain/ids.js'
-import type { McpProviderOauthRepo, McpProviderOauthStateStore } from '../persistence/ports.js'
+import type {
+  McpOauthRefreshCandidate,
+  McpProviderOauthRepo,
+  McpProviderOauthStateStore
+} from '../persistence/ports.js'
 import type { McpProviderTokenService } from './token-service.js'
 
 const ORG = OrgId('org-1')
 const NOW = new Date('2026-09-14T12:00:00Z').getTime()
 
-function harness(
-  due: Array<{ orgId: OrgId; mcpProviderId: string; providerName: string }>,
-  refresh: McpProviderTokenService['refresh']
-) {
+function harness(due: McpOauthRefreshCandidate[], refresh: McpProviderTokenService['refresh']) {
   const pushed: string[] = []
   const reaped: Date[] = []
   const oauth = { dueForRefresh: async () => due } as unknown as McpProviderOauthRepo
@@ -39,21 +40,45 @@ function harness(
 
 const rotated = async () => ({ ok: true as const, accessToken: 'a2', expiresAt: new Date(NOW), rotated: true })
 
+/** A candidate as the sweep reads it: expiry plus the instant the current pair was committed. */
+const candidate = (id: string, expiresInMs: number, lifetimeMs = 3600_000) => ({
+  orgId: ORG,
+  mcpProviderId: id,
+  providerName: id,
+  accessExpiresAt: new Date(NOW + expiresInMs),
+  updatedAt: new Date(NOW + expiresInMs - lifetimeMs)
+})
+
 describe('McpOauthRefresher', () => {
   it('renews each due grant and re-pushes its relay binding', async () => {
-    const { refresher, pushed } = harness(
-      [
-        { orgId: ORG, mcpProviderId: 'p1', providerName: 'linear' },
-        { orgId: ORG, mcpProviderId: 'p2', providerName: 'notion' }
-      ],
-      rotated
-    )
+    const { refresher, pushed } = harness([candidate('p1', 60_000), candidate('p2', 60_000)], rotated)
     expect(await refresher.refreshDueConnections()).toBe(2)
     expect(pushed).toEqual(['p1', 'p2'])
   })
 
+  it('renews BEFORE expiry, not after — a token inside its margin is due', async () => {
+    // 30s left on a one-hour token: well inside the 30-minute margin, and the whole point is
+    // that it is renewed now rather than after it has already started failing calls.
+    const { refresher, pushed } = harness([candidate('p1', 30_000)], rotated)
+    expect(await refresher.refreshDueConnections()).toBe(1)
+    expect(pushed).toEqual(['p1'])
+  })
+
+  it('leaves a token that has not entered its margin alone', async () => {
+    // 50 minutes left on a one-hour token — inside the candidate window, outside the margin.
+    const { refresher, pushed } = harness([candidate('p1', 50 * 60_000)], rotated)
+    expect(await refresher.refreshDueConnections()).toBe(0)
+    expect(pushed).toEqual([])
+  })
+
+  it('never renews a grant whose server advertised no expiry', async () => {
+    const { refresher, pushed } = harness([{ ...candidate('p1', 0), accessExpiresAt: null }], rotated)
+    expect(await refresher.refreshDueConnections()).toBe(0)
+    expect(pushed).toEqual([])
+  })
+
   it('does not re-push when nothing actually rotated', async () => {
-    const { refresher, pushed } = harness([{ orgId: ORG, mcpProviderId: 'p1', providerName: 'linear' }], async () => ({
+    const { refresher, pushed } = harness([candidate('p1', 60_000)], async () => ({
       ok: true,
       accessToken: 'a1',
       expiresAt: new Date(NOW),
@@ -64,7 +89,7 @@ describe('McpOauthRefresher', () => {
   })
 
   it.each([['unreachable'], ['reauth_required']] as const)('leaves the binding alone on %s', async (reason) => {
-    const { refresher, pushed } = harness([{ orgId: ORG, mcpProviderId: 'p1', providerName: 'linear' }], async () => ({
+    const { refresher, pushed } = harness([candidate('p1', 60_000)], async () => ({
       ok: false,
       reason
     }))
@@ -74,16 +99,10 @@ describe('McpOauthRefresher', () => {
 
   it('keeps sweeping when one provider throws', async () => {
     let seen = 0
-    const { refresher, pushed } = harness(
-      [
-        { orgId: ORG, mcpProviderId: 'bad', providerName: 'linear' },
-        { orgId: ORG, mcpProviderId: 'good', providerName: 'notion' }
-      ],
-      async () => {
-        if (seen++ === 0) throw new Error('upstream exploded')
-        return { ok: true, accessToken: 'a2', expiresAt: new Date(NOW), rotated: true }
-      }
-    )
+    const { refresher, pushed } = harness([candidate('bad', 60_000), candidate('good', 60_000)], async () => {
+      if (seen++ === 0) throw new Error('upstream exploded')
+      return { ok: true, accessToken: 'a2', expiresAt: new Date(NOW), rotated: true }
+    })
     expect(await refresher.refreshDueConnections()).toBe(1)
     expect(pushed).toEqual(['good'])
   })

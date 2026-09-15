@@ -111,12 +111,18 @@ function fakeWorld(providerOver: Partial<McpProviderRecord> = {}) {
       return row
     },
     get: async () => row,
-    connect: async (_o: OrgId, id: string, input: { accessExpiresAt: Date | null }) => {
+    connect: async (_o: OrgId, id: string, input: { expectedVersion: bigint; accessExpiresAt: Date | null }) => {
+      // The real repo's CAS: a callback whose generation has moved on commits nothing.
+      if (row === null || input.expectedVersion !== row.tokenVersion) return false
       connected.push({ providerId: id, accessExpiresAt: input.accessExpiresAt })
-      row = { ...row!, status: 'connected', accessExpiresAt: input.accessExpiresAt }
-      return row
+      row = { ...row, status: 'connected', accessExpiresAt: input.accessExpiresAt, tokenVersion: row.tokenVersion + 1n }
+      return true
     },
-    disconnect: async () => true
+    disconnect: async () => {
+      // Disconnect advances the generation, exactly as the repo does.
+      if (row) row = { ...row, status: 'pending', tokenVersion: row.tokenVersion + 1n }
+      return true
+    }
   } as unknown as McpProviderOauthRepo
   const store: McpProviderOauthSecretStore = { get: async () => secrets }
   const states: McpProviderOauthStateStore = {
@@ -415,6 +421,47 @@ describe('McpProviderOauthService — callback validation', () => {
     const { dial } = fakeDial({ [`${ISSUER}/token`]: ok(200, { access_token: 'a1', expires_in: 3600 }) })
     const { result } = await walk(world, dial)
     expect(result).toEqual({ redirectPath: '/tools', result: 'no_refresh_token' })
+    expect(world.connected).toHaveLength(0)
+  })
+
+  it('does not resurrect a grant that was disconnected while the exchange was in flight', async () => {
+    const world = fakeWorld()
+    const { dial } = fakeDial()
+    const svc = service(world, dial)
+    const { url } = await svc.start({ orgId: ORG, providerId: PROVIDER, userId: USER, returnPath: '/tools' })
+    const nonce = new URL(url).searchParams.get('state')!
+    const begun = await svc.begin(nonce)
+    // The operator disconnects before the authorization server's response comes back.
+    await world.oauth.disconnect(ORG, PROVIDER)
+    const result = await svc.callback({
+      state: nonce,
+      code: 'code-1',
+      iss: ISSUER,
+      error: undefined,
+      browserNonce: begun!.browserNonce
+    })
+    expect(result).toEqual({ redirectPath: '/tools', result: 'superseded' })
+    expect(world.connected).toHaveLength(0)
+    expect(world.read()?.status).toBe('pending')
+  })
+
+  it('does not let an older callback overwrite a newer authorization attempt', async () => {
+    const world = fakeWorld()
+    const { dial } = fakeDial()
+    const svc = service(world, dial)
+    const first = await svc.start({ orgId: ORG, providerId: PROVIDER, userId: USER, returnPath: '/tools' })
+    const firstNonce = new URL(first.url).searchParams.get('state')!
+    const firstBegun = await svc.begin(firstNonce)
+    // A second attempt re-prepares the provider, advancing the generation.
+    await svc.start({ orgId: ORG, providerId: PROVIDER, userId: USER, returnPath: '/tools' })
+    const stale = await svc.callback({
+      state: firstNonce,
+      code: 'code-1',
+      iss: ISSUER,
+      error: undefined,
+      browserNonce: firstBegun!.browserNonce
+    })
+    expect(stale).toEqual({ redirectPath: '/tools', result: 'superseded' })
     expect(world.connected).toHaveLength(0)
   })
 

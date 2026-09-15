@@ -132,6 +132,16 @@ organization holding a credential the server has already invalidated.
   minute). A fixed skew tuned for a two-hour token is useless for a five-minute one, and
   short-lived tokens are common among MCP servers.
 
+The callback commit is **fenced on the generation the funnel started at**, exactly like a
+refresh. A token exchange takes real time, and a disconnect or a second authorization attempt
+can complete inside it; without the fence, a late response would resurrect a grant the operator
+had just revoked or replaced. `prepare` and `disconnect` both advance that generation, and the
+state row records the one its funnel owns.
+
+The retained refresh token is **re-sealed**, not written back as read. The secret store opens
+everything it returns, so a server that declines to rotate hands back a plaintext value; writing
+it straight through would silently strip its at-rest encryption on the first such refresh.
+
 A grant arriving with **no refresh token is refused** at the callback rather than stored. It
 would work for an hour and then fail with nothing able to repair it, and the operator would
 have no way to distinguish that from the server being down.
@@ -171,6 +181,22 @@ land after a concurrent `DELETE` and **resurrect a binding for a provider that n
 exists** — callable pool-wide, holding a live grant hash, with nothing left that would ever
 unassign it. That is a revocation bypass, not a cosmetic ordering problem. The chain moved
 to `http/provider-chain.ts` for this second consumer.
+
+The sweep selects a **candidate window** and then applies the same `refreshDue` predicate the
+resolve path uses. Selecting only already-expired rows would renew strictly too late — every
+provider would serve 502s from expiry until the next sweep and exchange finished — and the
+margin is per-token, so it cannot be expressed as one SQL bound.
+
+**Every** live publication resolves the injected header through that one resolver, not just
+replay and the refresher. A grant rotation or a `PATCH` that read the static header set would
+republish an OAuth provider's binding with no `Authorization` at all; an unauthorized provider
+publishes its daemon definition and **no** binding, because a binding with an empty credential
+is worse than none.
+
+**Disconnect drops the relay binding only.** The daemon definition is the agent-facing proxy url
+and grant key, neither of which a disconnect changes — and since a later reconnect republishes
+only the binding, removing the definition would leave every enabling daemon without the server
+until some unrelated definition sync happened to run.
 
 A refresh re-pushes the **relay binding only**, carrying **every** active grant hash.
 Re-pushing the daemon def would be churn (the proxy URL and grant key do not change), and

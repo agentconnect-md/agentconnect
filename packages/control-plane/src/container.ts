@@ -1777,6 +1777,7 @@ export function buildContainer(
     dial: mcpOauthDial,
     clock
   })
+  httpDeps.mcpTokenResolver = mcpTokenService
   const mcpOauthRebind = makeOauthRebind(httpDeps, mcpPush, mcpTokenService)
   const rebindProvider = async (orgId: OrgId, providerId: string): Promise<void> => {
     const provider = await repos.mcpProvider.get(orgId, providerId)
@@ -1794,10 +1795,11 @@ export function buildContainer(
     ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
     onConnected: rebindProvider
   })
-  // A disconnected grant stops being projected: drop the whole binding rather than
-  // re-pushing a credential that no longer exists.
-  httpDeps.mcpOauthUnbind = async (orgId, provider) => {
-    await mcpPush.pushUnassign(provider, orgId)
+  // A disconnected grant stops being projected — but only the RELAY binding goes. The
+  // daemon definition is the agent-facing proxy url and grant key, neither of which a
+  // disconnect changes, and a later reconnect republishes only the binding.
+  httpDeps.mcpOauthUnbind = async (_orgId, provider) => {
+    mcpPush.unbindRelay(provider)
   }
 
   const http = buildHttpServer(httpDeps, opts.fastify)

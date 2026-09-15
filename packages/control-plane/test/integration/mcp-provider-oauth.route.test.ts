@@ -19,6 +19,7 @@ import { PgMcpProviderOauthRepo, PgMcpProviderOauthSecretStore } from '../../src
 import { PgMcpProviderOauthStateStore, PgMcpProviderRepo } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { McpProviderOauthService } from '../../src/mcp-oauth/service.js'
+import { McpProviderTokenService } from '../../src/mcp-oauth/token-service.js'
 import type { Dial } from '../../src/mcp-oauth/discovery.js'
 import type { GuardedResult } from '../../src/net/guarded-fetch.js'
 import { OrgId } from '../../src/domain/ids.js'
@@ -59,6 +60,20 @@ function fakeUpstream(over: Record<string, GuardedResult> = {}): Dial {
   return async (url) => table[url] ?? { ok: false, failure: 'unreachable' }
 }
 
+/** Captures what the CP actually broadcasts to the relay pool, so a test can assert the
+ *  binding a rotation or a PATCH publishes rather than trusting the route's return value. */
+function captureRelay(app: HttpApp): Array<{ frame: string; body: Record<string, unknown> }> {
+  const seen: Array<{ frame: string; body: Record<string, unknown> }> = []
+  app.relayReg.add({
+    relayId: 'relay-test',
+    send: (frame: string, body: unknown) => {
+      seen.push({ frame, body: body as Record<string, unknown> })
+    },
+    close: () => {}
+  } as never)
+  return seen
+}
+
 function makeApp(dial: Dial): { app: HttpApp; bound: Array<{ providerId: string; headers: unknown }> } {
   const cipher = new PlaintextSecretCipher()
   const bound: Array<{ providerId: string; headers: unknown }> = []
@@ -76,7 +91,21 @@ function makeApp(dial: Dial): { app: HttpApp; bound: Array<{ providerId: string;
       bound.push({ providerId, headers: [{ name: 'Authorization', value: `Bearer ${sealed?.accessToken}` }] })
     }
   })
-  const app = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP }, undefined, undefined, { mcpProviderOauth: oauth })
+  // Mirrors the container's own assembly: token custody is what every live publication
+  // resolves an oauth2 provider's header through, and disconnect drops only the binding.
+  const tokens = new McpProviderTokenService({
+    oauth: new PgMcpProviderOauthRepo(prisma),
+    secrets: new PgMcpProviderOauthSecretStore(prisma, cipher),
+    cipher,
+    dial
+  })
+  const app = buildHttpApp(prisma, { PUBLIC_CP_URL: PUBLIC_CP }, undefined, undefined, {
+    mcpProviderOauth: oauth,
+    mcpTokenResolver: tokens,
+    mcpOauthUnbind: async (_orgId, provider) => {
+      app.deps.relayControl.mcpUnassign({ providerId: provider.id })
+    }
+  })
   opened.push(app)
   return { app, bound }
 }
@@ -220,6 +249,69 @@ describe('MCP provider OAuth funnel', () => {
       }
     })
     expect(res.statusCode).toBe(400)
+  })
+
+  it('keeps the OAuth credential on the binding across a grant rotation', async () => {
+    // The regression: a rotation read the STATIC header set — empty for an oauth2 provider —
+    // and republished the binding with no Authorization at all, silently breaking it.
+    const { app } = makeApp(fakeUpstream())
+    const providerId = await createOauthProvider(app)
+    await walk(app, providerId, '/api/v1')
+    const relay = captureRelay(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers/${providerId}/grant/rotate`,
+      payload: {}
+    })
+    expect(res.statusCode).toBe(200)
+    const assign = relay.filter((f) => f.frame === 'rc/mcp-assign').at(-1)
+    expect(assign?.body.headers).toEqual([{ name: 'Authorization', value: 'Bearer access-1' }])
+  })
+
+  it('keeps the OAuth credential on the binding across a PATCH', async () => {
+    const { app } = makeApp(fakeUpstream())
+    const providerId = await createOauthProvider(app)
+    await walk(app, providerId, '/api/v1')
+    const relay = captureRelay(app)
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/mcp-providers/${providerId}`,
+      payload: { url: 'https://mcp.example.test/mcp?v=2' }
+    })
+    expect(res.statusCode).toBe(200)
+    const assign = relay.filter((f) => f.frame === 'rc/mcp-assign').at(-1)
+    expect(assign?.body.headers).toEqual([{ name: 'Authorization', value: 'Bearer access-1' }])
+  })
+
+  it('publishes no binding for a provider that has never been authorized', async () => {
+    const { app } = makeApp(fakeUpstream())
+    const providerId = await createOauthProvider(app)
+    const relay = captureRelay(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers/${providerId}/grant/rotate`,
+      payload: {}
+    })
+    expect(res.statusCode).toBe(200)
+    // A binding with an empty credential is worse than none: it would answer calls that then
+    // fail upstream, and it would overwrite a real one later.
+    expect(relay.filter((f) => f.frame === 'rc/mcp-assign')).toHaveLength(0)
+  })
+
+  it('disconnect drops the relay binding but keeps the daemon definition', async () => {
+    // The regression: disconnect sent `mcpserver/remove` to every enabling daemon, while a
+    // later reconnect republishes only the binding — so the server stayed missing.
+    const { app } = makeApp(fakeUpstream())
+    const providerId = await createOauthProvider(app)
+    await walk(app, providerId, '/api/v1')
+    const relay = captureRelay(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers/${providerId}/oauth/disconnect`,
+      payload: {}
+    })
+    expect(res.statusCode).toBe(204)
+    expect(relay.filter((f) => f.frame === 'rc/mcp-unassign')).toHaveLength(1)
   })
 
   it('disconnects without disturbing the provider or its agent-facing identity', async () => {

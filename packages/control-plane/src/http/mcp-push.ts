@@ -15,7 +15,11 @@ import { mcpProxyDef, mcpRcAssign, relayHttpOrigin, type GrantView } from '../or
 export interface McpPush {
   /** Takes the grant ROW: the daemon def carries its issuance instant as the
    *  ordering marker, and that must come from the same grant as the key. */
-  pushAssign(provider: McpProviderRecord, headers: McpHeader[], grant: GrantView, orgId: OrgId): Promise<void>
+  /** `headers: null` means there is no callable upstream credential yet (an oauth2 provider
+   *  that has not been authorized): the daemon definition is still published, because the
+   *  agent-facing proxy url and grant key are real, but no relay binding is — binding with an
+   *  empty credential is how a working OAuth binding gets overwritten by a rotation or a PATCH. */
+  pushAssign(provider: McpProviderRecord, headers: McpHeader[] | null, grant: GrantView, orgId: OrgId): Promise<void>
   pushUnassign(provider: McpProviderRecord, orgId: OrgId): Promise<void>
   /** Relay-only re-bind: replaces a provider's injected credential and its WHOLE grant-hash
    *  allowlist, without touching the daemon def. What a token refresh uses — the proxy url
@@ -23,6 +27,12 @@ export interface McpPush {
    *  and pushing only the current grant would retire the other one during a rotation's
    *  grace window. The caller supplies every active key for that reason. */
   pushBinding(provider: McpProviderRecord, headers: McpHeader[], grantKeys: string[]): void
+  /** Relay-only unbind: drop the proxy binding while LEAVING the daemon definition in place.
+   *  What an OAuth disconnect uses — the agent-facing proxy url and grant key are unchanged by
+   *  it, so removing the def would make every enabling daemon lose the server until some other
+   *  definition sync happened, and a later reconnect (which republishes only the binding)
+   *  would not bring it back. */
+  unbindRelay(provider: McpProviderRecord): void
 }
 
 export function makeMcpPush(deps: HttpDeps): McpPush {
@@ -50,7 +60,7 @@ export function makeMcpPush(deps: HttpDeps): McpPush {
     // UPSTREAM secret headers; the daemon proxy def carries the grant key + relay URL.
     // NEVER logged. Swallows NoConnection per daemon (reconcile is the backstop).
     async pushAssign(provider, headers, grant, orgId) {
-      deps.relayControl.mcpAssign(mcpRcAssign(provider, headers, [grant.key]))
+      if (headers !== null) deps.relayControl.mcpAssign(mcpRcAssign(provider, headers, [grant.key]))
       const base = await relayBaseUrl()
       if (!base) return
       const spec = mcpProxyDef(provider, grant, base)
@@ -65,6 +75,9 @@ export function makeMcpPush(deps: HttpDeps): McpPush {
     pushBinding(provider, headers, grantKeys) {
       if (grantKeys.length === 0) return // a keyless binding is never callable
       deps.relayControl.mcpAssign(mcpRcAssign(provider, headers, grantKeys))
+    },
+    unbindRelay(provider) {
+      deps.relayControl.mcpUnassign({ providerId: provider.id })
     },
     async pushUnassign(provider, orgId) {
       deps.relayControl.mcpUnassign({ providerId: provider.id })

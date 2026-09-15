@@ -50,6 +50,16 @@ export function refreshMarginMs(issuedAt: number, expiresAt: Date | null): numbe
   return Math.max(MIN_REFRESH_MARGIN_MS, Math.floor(lifetime / 2))
 }
 
+/**
+ * Whether a grant has entered its renewal margin. The ONE definition of "due": the resolve
+ * path and the refresher sweep both ask this, so a token can never be due for one and not
+ * the other. A grant with no advertised expiry is never due — there is nothing to pre-empt.
+ */
+export function refreshDue(grant: { accessExpiresAt: Date | null; updatedAt: Date }, now: number): boolean {
+  if (grant.accessExpiresAt === null) return false
+  return grant.accessExpiresAt.getTime() - now <= refreshMarginMs(grant.updatedAt.getTime(), grant.accessExpiresAt)
+}
+
 export type TokenResolution =
   | { ok: true; accessToken: string; expiresAt: Date | null; rotated: boolean }
   | {
@@ -126,9 +136,7 @@ export class McpProviderTokenService {
   }
 
   private due(row: McpProviderOauthRecord): boolean {
-    if (row.accessExpiresAt === null) return false // no expiry advertised — nothing to pre-empt
-    const now = this.clock.now()
-    return row.accessExpiresAt.getTime() - now <= refreshMarginMs(row.updatedAt.getTime(), row.accessExpiresAt)
+    return refreshDue(row, this.clock.now())
   }
 
   private async refreshOnce(orgId: OrgId, providerId: string, row: McpProviderOauthRecord): Promise<TokenResolution> {
@@ -187,9 +195,11 @@ export class McpProviderTokenService {
     scope: ReturnType<typeof orgScope>
   ): Promise<TokenResolution> {
     const sealed = await this.deps.secrets.get(orgId, providerId)
-    const keptRefresh = grant.refreshToken ?? null
-    const sealedRefresh =
-      keptRefresh === null ? (sealed?.refreshToken ?? null) : await this.deps.cipher.seal(keptRefresh, scope)
+    // The store OPENS everything it returns, so the retained token is plaintext here. It has
+    // to be re-sealed like a fresh one — writing it back as-is would silently strip its
+    // at-rest encryption the first time a server declines to rotate.
+    const keptRefresh = grant.refreshToken ?? sealed?.refreshToken ?? null
+    const sealedRefresh = keptRefresh === null ? null : await this.deps.cipher.seal(keptRefresh, scope)
     if (sealedRefresh === null) {
       // Nothing left to renew with next time: better to say so now than to hand back a
       // token that will expire into a provider nobody can repair without noticing.

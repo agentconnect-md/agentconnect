@@ -3319,6 +3319,10 @@ model McpProviderOauthState {
   returnPath     String // allowlisted local console path for the final redirect
   verifier       String // sealed PKCE verifier (SecretCipher representation)
   expectedIssuer String // recorded pre-redirect; the RFC 9207 comparison target
+  // The mcp_provider_oauth.tokenVersion this funnel started at. Disconnect and a re-prepare
+  // both advance that version, so a callback arriving after either one no longer matches and
+  // cannot resurrect a grant the operator has revoked or replaced.
+  expectedVersion BigInt
   expiresAt      DateTime @db.Timestamptz(6)
   createdAt      DateTime @default(now()) @db.Timestamptz(6)
 

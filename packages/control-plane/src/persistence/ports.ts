@@ -5870,11 +5870,19 @@ export interface McpProviderOauthRepo {
   get(orgId: OrgId, providerId: string): Promise<McpProviderOauthRecord | null>
   /** Callback commit: `connected`, the expiry, and the sealed pair land in ONE transaction
    *  with a version bump — a reader can never observe the new status with an old pair. */
+  /** Callback commit, FENCED on the generation the funnel started at. False ⇒ a disconnect or
+   *  a newer authorization landed while the token exchange was in flight, and this result must
+   *  not resurrect the grant they retired. */
   connect(
     orgId: OrgId,
     providerId: string,
-    input: { accessExpiresAt: Date | null; connectedByUserId: string | null; sealedPair: McpSealedTokenPair }
-  ): Promise<McpProviderOauthRecord>
+    input: {
+      expectedVersion: bigint
+      accessExpiresAt: Date | null
+      connectedByUserId: string | null
+      sealedPair: McpSealedTokenPair
+    }
+  ): Promise<boolean>
   /** Elect the one durable refresher. A refresh token is a cross-restart resource, so the
    *  in-process single-flight is not enough on its own — see the token service. */
   claimRefreshLease(providerId: string, owner: string, until: Date, now: Date): Promise<boolean>
@@ -5894,10 +5902,23 @@ export interface McpProviderOauthRepo {
   /** Atomic disconnect: back to `pending`, version bumped (defeating an in-flight CAS), and
    *  the sealed material deleted. The row stays so the console can still explain the state. */
   disconnect(orgId: OrgId, providerId: string): Promise<boolean>
-  /** The refresher's sweep: `connected` rows whose access token expires at or before `due`.
-   *  Carries the provider's org and name because the re-push must join that provider's
-   *  serialization chain, which is keyed by (orgId, name). System-tier, like `listAll`. */
-  dueForRefresh(due: Date, limit: number): Promise<Array<{ orgId: OrgId; mcpProviderId: string; providerName: string }>>
+  /** The refresher's sweep: `connected` rows whose access token expires at or before `horizon`.
+   *  That is a CANDIDATE window, not the renewal decision — whether a row is actually due
+   *  depends on its own lifetime, so `accessExpiresAt` and `updatedAt` come back with it and
+   *  the caller applies the one margin predicate the resolve path uses. Carries the provider's
+   *  org and name because the re-push must join that provider's serialization chain, which is
+   *  keyed by (orgId, name). System-tier, like `listAll`. */
+  dueForRefresh(horizon: Date, limit: number): Promise<McpOauthRefreshCandidate[]>
+}
+
+/** One row the sweep may renew, with everything the margin predicate and the re-push need. */
+export interface McpOauthRefreshCandidate {
+  orgId: OrgId
+  mcpProviderId: string
+  providerName: string
+  accessExpiresAt: Date | null
+  /** When the current pair was committed — the start of the lifetime the margin halves. */
+  updatedAt: Date
 }
 
 /** The ONLY read path for `mcp_provider_oauth_secret`. Store-only: NEVER in a DTO, NEVER
@@ -5921,6 +5942,8 @@ export interface McpProviderOauthStateRecord {
   returnPath: string
   verifier: string // sealed PKCE verifier
   expectedIssuer: string
+  /** The grant generation this funnel started at; the callback commit is fenced on it. */
+  expectedVersion: bigint
   expiresAt: Date
 }
 

@@ -170,6 +170,32 @@ describe('McpProviderTokenService.resolve', () => {
     expect(store.readSecrets()).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-1' })
   })
 
+  it('RE-SEALS a retained refresh token instead of writing back the opened one', async () => {
+    // The store opens everything it returns, so a retained token arrives as plaintext. Writing
+    // it straight back would silently strip its at-rest encryption under a real cipher.
+    const store = fakeStore(record({ accessExpiresAt: new Date(NOW + 30_000) }))
+    const sealed: string[] = []
+    const cipher = {
+      seal: async (v: string) => {
+        sealed.push(v)
+        return `sealed(${v})`
+      },
+      open: async (v: string) => (v.startsWith('sealed(') ? v.slice(7, -1) : v)
+    }
+    const svc = new McpProviderTokenService({
+      oauth: store.oauth,
+      secrets: store.store,
+      cipher: cipher as never,
+      dial: (async () => tokenResponse({ access_token: 'access-2', expires_in: 600 })) as unknown as Dial,
+      clock: { now: () => NOW } as never,
+      owner: 'cp-test'
+    })
+    expect(await svc.resolve(ORG, PROVIDER)).toMatchObject({ ok: true, rotated: true })
+    // Both halves of the committed pair went through the cipher, not just the fresh one.
+    expect(sealed).toContain('refresh-1')
+    expect(store.readSecrets()).toMatchObject({ refreshToken: 'sealed(refresh-1)' })
+  })
+
   it('collapses concurrent callers into one upstream refresh', async () => {
     const store = fakeStore(record({ accessExpiresAt: new Date(NOW + 30_000) }))
     let dials = 0

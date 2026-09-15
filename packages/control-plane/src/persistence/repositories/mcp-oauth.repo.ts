@@ -22,6 +22,7 @@
 import type { PrismaLike } from '../prisma.js'
 import type {
   McpOauthClientSource,
+  McpOauthRefreshCandidate,
   McpProviderOauthRecord,
   McpProviderOauthRepo,
   McpProviderOauthSecretStore,
@@ -67,6 +68,7 @@ function toStateRecord(row: McpProviderOauthState): McpProviderOauthStateRecord 
     returnPath: row.returnPath,
     verifier: row.verifier,
     expectedIssuer: row.expectedIssuer,
+    expectedVersion: row.expectedVersion,
     expiresAt: row.expiresAt
   }
 }
@@ -124,12 +126,19 @@ export class PgMcpProviderOauthRepo implements McpProviderOauthRepo {
   async connect(
     orgId: OrgId,
     providerId: string,
-    input: { accessExpiresAt: Date | null; connectedByUserId: string | null; sealedPair: McpSealedTokenPair }
-  ): Promise<McpProviderOauthRecord> {
-    if (!(await this.inOrg(orgId, providerId))) throw new Error('mcp provider not found in org')
+    input: {
+      expectedVersion: bigint
+      accessExpiresAt: Date | null
+      connectedByUserId: string | null
+      sealedPair: McpSealedTokenPair
+    }
+  ): Promise<boolean> {
+    if (!(await this.inOrg(orgId, providerId))) return false
     return this.prisma.$transaction(async (tx) => {
-      const row = await tx.mcpProviderOauth.update({
-        where: { mcpProviderId: providerId },
+      // Fenced exactly like commitRefresh, and for the same reason: a token exchange takes
+      // real time, and a disconnect or a newer authorization can complete inside it.
+      const res = await tx.mcpProviderOauth.updateMany({
+        where: { mcpProviderId: providerId, tokenVersion: input.expectedVersion },
         data: {
           status: 'connected',
           accessExpiresAt: input.accessExpiresAt,
@@ -139,11 +148,12 @@ export class PgMcpProviderOauthRepo implements McpProviderOauthRepo {
           refreshLeaseUntil: null
         }
       })
+      if (res.count !== 1) return false
       await tx.mcpProviderOauthSecret.update({
         where: { mcpProviderId: providerId },
         data: { accessToken: input.sealedPair.accessToken, refreshToken: input.sealedPair.refreshToken }
       })
-      return toRecord(row)
+      return true
     })
   }
 
@@ -225,20 +235,24 @@ export class PgMcpProviderOauthRepo implements McpProviderOauthRepo {
     })
   }
 
-  async dueForRefresh(
-    due: Date,
-    limit: number
-  ): Promise<Array<{ orgId: OrgId; mcpProviderId: string; providerName: string }>> {
+  async dueForRefresh(horizon: Date, limit: number): Promise<McpOauthRefreshCandidate[]> {
     const rows = await this.prisma.mcpProviderOauth.findMany({
-      where: { status: 'connected', accessExpiresAt: { not: null, lte: due } },
+      where: { status: 'connected', accessExpiresAt: { not: null, lte: horizon } },
       orderBy: { accessExpiresAt: 'asc' },
       take: limit,
-      select: { mcpProviderId: true, provider: { select: { orgId: true, name: true } } }
+      select: {
+        mcpProviderId: true,
+        accessExpiresAt: true,
+        updatedAt: true,
+        provider: { select: { orgId: true, name: true } }
+      }
     })
     return rows.map((r) => ({
       orgId: OrgId(r.provider.orgId),
       mcpProviderId: r.mcpProviderId,
-      providerName: r.provider.name
+      providerName: r.provider.name,
+      accessExpiresAt: r.accessExpiresAt,
+      updatedAt: r.updatedAt
     }))
   }
 }
