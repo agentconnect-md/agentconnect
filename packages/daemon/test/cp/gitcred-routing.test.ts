@@ -220,6 +220,35 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     expect(gets[1]).toEqual({ agentId: 'a1', opts: { plane: 'git', repo: 'example-group/other', provider: 'gitlab' } })
   })
 
+  it('does not fold a private GitHub skill source onto a gitlab workspace that shares its path', async () => {
+    // A gitlab workspace `acme/tools` and a private GitHub source `acme/tools` (a mirror) are two
+    // repositories on two hosts. Folding by path alone would classify the GitHub acquisition ask as
+    // the workspace ask and return the gitlab credential to the GitHub helper.
+    const { sockPath, gets, erases, capability } = await boot('acme/tools', {
+      providerOf: () => 'gitlab',
+      workspaceRepoIdOf: () => '4455668',
+      privateGithubSkillRepoOf: (_agentId: string, repoFullName: string) => repoFullName.toLowerCase() === 'acme/tools'
+    })
+    const res = await roundtrip(sockPath, { op: 'get', agentId: 'a1', capability, repoFullName: 'acme/tools' })
+    expect(res.ok).toBe(true)
+    expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: 'acme/tools' } }])
+
+    // The gitlab helper's own ask for the workspace still folds onto the repo-less workspace key.
+    const ws = await roundtrip(sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability,
+      repoFullName: 'acme/tools',
+      provider: 'gitlab'
+    })
+    expect(ws.ok).toBe(true)
+    expect(gets[1]).toEqual({ agentId: 'a1', opts: { plane: 'git', provider: 'gitlab', externalRepoId: '4455668' } })
+
+    // Erase from the GitHub helper reaches the key the GitHub get used, not the workspace's.
+    await roundtrip(sockPath, { op: 'erase', agentId: 'a1', capability, repoFullName: 'acme/tools', password: 'x' })
+    expect(erases).toEqual([{ agentId: 'a1', password: 'x', opts: { plane: 'git', repo: 'acme/tools' } }])
+  })
+
   it('does not let a skill repository answer an explicit gitlab host hint', async () => {
     const { sockPath, gets, capability } = await boot(undefined, {
       providerOf: () => 'gitlab',

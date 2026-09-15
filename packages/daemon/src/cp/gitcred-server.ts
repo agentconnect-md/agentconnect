@@ -10,7 +10,7 @@
  *   { op: 'get',   agentId, capability, repoFullName?, plane? }  → { ok, username, password } | { ok:false, error }
  *   { op: 'erase', agentId, capability, password?, repoFullName?, plane? } → { ok: true }
  *
- * `repoFullName` ("owner/repo") routes to that repo's token; absent — or equal
+ * `repoFullName` ("owner/repo") routes to that repo's token; absent — or equal, on the workspace's own host,
  * to the agent's workspace repo, which is NORMALIZED onto the repo-less key so
  * the helper path and the pre-warm/spawn paths share one cache entry — ⇒ the
  * workspace token. `plane: 'gh'` picks the widened GH_TOKEN capability set.
@@ -206,14 +206,7 @@ export class GitCredServer {
       return reply({ ok: false, error: 'local credential capability required' })
     }
     const plane: CredPlane = req.plane === 'gh' ? 'gh' : req.plane === 'glab' ? 'glab' : 'git'
-    // Workspace normalization: a request naming the workspace repo folds onto
-    // the repo-less key (one cache entry with pre-warm/spawn; and old CPs that
-    // strip the wire field keep serving the workspace unchanged).
     let repo = typeof req.repoFullName === 'string' && req.repoFullName.includes('/') ? req.repoFullName : undefined
-    if (repo !== undefined) {
-      const workspace = this.workspaceRepoOf?.(req.agentId)
-      if (workspace && workspace.toLowerCase() === repo.toLowerCase()) repo = undefined
-    }
     // The SPEC decides the provider; a helper whose host hint disagrees is
     // asking for another host's credential and gets a clean denial (§13.2).
     // A named repository the spec lists as an additional authorization on another host (§8.3) is the
@@ -225,14 +218,28 @@ export class GitCredServer {
     // Deriving erase from the workspace would invalidate the wrong entry and leave the rejected
     // token live to TTL.
     const workspaceProvider = this.providerOf?.(req.agentId) ?? IMPLICIT_CREDENTIAL_PROVIDER
-    const named = repo !== undefined ? this.qualifiedRepoOf?.(req.agentId, repo) : undefined
+    // The host the REQUEST is for: the helper names every provider but the implicit one.
+    const requestProvider: string = req.provider ?? IMPLICIT_CREDENTIAL_PROVIDER
     // A private GitHub skill source the spec enables is GitHub by construction: the daemon's own
     // acquisition asks for it under the implicit provider, and the workspace's provider (gitlab,
-    // gitea) must not capture that ask. An explicit non-GitHub host hint is still a mismatch below.
+    // gitea) must not capture that ask. Classified on the NAMED path, before the workspace fold
+    // below: a gitlab/gitea workspace may share `owner/repo` with a private GitHub source (a
+    // mirror), and folding first would hand that workspace's credential to the GitHub helper.
+    // An explicit non-GitHub host hint is still a mismatch below.
     const privateSkill =
       repo !== undefined &&
-      (req.provider === undefined || req.provider === IMPLICIT_CREDENTIAL_PROVIDER) &&
+      requestProvider === IMPLICIT_CREDENTIAL_PROVIDER &&
       this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
+    // Workspace normalization: a request naming the workspace repo folds onto
+    // the repo-less key (one cache entry with pre-warm/spawn; and old CPs that
+    // strip the wire field keep serving the workspace unchanged) — only when the
+    // ask is for the workspace's own host. The same path on another host is
+    // another repository, never the workspace.
+    if (repo !== undefined && requestProvider === workspaceProvider) {
+      const workspace = this.workspaceRepoOf?.(req.agentId)
+      if (workspace && workspace.toLowerCase() === repo.toLowerCase()) repo = undefined
+    }
+    const named = repo !== undefined ? this.qualifiedRepoOf?.(req.agentId, repo) : undefined
     const provider: CodeHostProvider = privateSkill
       ? IMPLICIT_CREDENTIAL_PROVIDER
       : named !== undefined && (req.provider === named.provider || workspaceProvider === named.provider)
