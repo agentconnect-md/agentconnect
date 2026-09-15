@@ -452,7 +452,8 @@ import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
 import { localWorkspaceFs } from './workspace/workspace-fs.js'
-import { ATTACHMENT_UPLOADS_DIR, type SaveAttachmentResult } from './mcp/ops/platform-reads.js'
+import type { SaveAttachmentResult } from './mcp/ops/platform-reads.js'
+import { saveAttachmentTo, type SaveAttachmentTarget } from './mcp/ops/save-attachment.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import {
@@ -3140,43 +3141,19 @@ export class Daemon {
           (await scope.location(ctx.agentId).catch(() => undefined))
         if (!location) return { ok: false, reason: 'no-workspace' }
 
-        // Digest-suffixed on collision (design §2.1): the same bytes under the same name are
-        // reused; different bytes under a taken name get `<stem>-<sha8>.<ext>`, never clobbered.
-        const sha8 = createHash('sha256').update(bytes).digest('hex').slice(0, 8)
-        const candidates = [name, name.replace(/(\.[A-Za-z0-9]{1,10})?$/, (ext) => `-${sha8}${ext}`)]
-
+        // Pod arm: the sandbox volume over the fd-anchored channel, whose descent is the
+        // containment. Local arm: the daemon's disk, with realpath re-verification of `uploads/`
+        // (the pod-side guarantee the daemon has to supply itself). Anything the seam THROWS
+        // past the helper is the channel (pod) or the disk (local).
         const pod = this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined
-        const placement = pod ? this.k8sPlane?.workspaceFsFor(ctx.agentId) : { fs: localWorkspaceFs }
-        if (!placement) return { ok: false, reason: 'sandboxed' }
-        let dir: string
+        const placement = pod ? this.k8sPlane?.workspaceFsFor(ctx.agentId) : undefined
+        if (pod && !placement) return { ok: false, reason: 'sandboxed' }
+        const target: SaveAttachmentTarget = placement
+          ? { fs: placement.fs, root: location.root }
+          : { fs: localWorkspaceFs, root: location.root, canonicalDir: canonicalWorkspacePath }
         try {
-          dir = containedWorkspacePath(location.root, ATTACHMENT_UPLOADS_DIR)
+          return await saveAttachmentTo(target, name, bytes)
         } catch (err) {
-          return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'write-failed' }
-        }
-        try {
-          await placement.fs.mkdir(dir)
-          for (const candidate of candidates) {
-            const rel = `${ATTACHMENT_UPLOADS_DIR}/${candidate}`
-            let resolved: string
-            try {
-              resolved = containedWorkspacePath(location.root, rel)
-            } catch (err) {
-              return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'write-failed' }
-            }
-            const kind = await placement.fs.stat(resolved)
-            if (kind === 'file') {
-              const existing = await placement.fs.readFileBytes(resolved, bytes.byteLength)
-              if (existing && 'bytes' in existing && existing.bytes.equals(bytes)) return { ok: true, path: rel }
-              continue
-            }
-            if (kind !== 'missing') continue
-            await placement.fs.writeFile(resolved, bytes)
-            return { ok: true, path: rel }
-          }
-          return { ok: false, reason: 'write-failed', detail: 'both candidate names are taken' }
-        } catch (err) {
-          // On the pod arm anything the seam THROWS is the channel; locally it is the disk.
           if (pod) return { ok: false, reason: 'sandboxed' }
           return { ok: false, reason: 'write-failed', detail: err instanceof Error ? err.message : String(err) }
         }

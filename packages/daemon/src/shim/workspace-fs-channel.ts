@@ -14,8 +14,13 @@
  */
 import { isAbsolute, relative, sep } from 'node:path'
 import { z } from 'zod'
-import { MemoryPathError } from '../memory/fs.js'
-import type { WorkspaceFs, WorkspaceFsKind } from '../workspace/workspace-fs.js'
+import { MemoryConflictError, MemoryPathError } from '../memory/fs.js'
+import {
+  WorkspaceFileExistsError,
+  type WorkspaceFs,
+  type WorkspaceFsKind,
+  type WorkspaceWriteOptions
+} from '../workspace/workspace-fs.js'
 import { MemoryFsStatReplySchema } from '@agentconnect.md/protocol'
 import { ShimMemoryFs, requestMemoryFs, type ShimMemoryChannel } from './memory-fs-channel.js'
 
@@ -74,10 +79,17 @@ export class ShimWorkspaceFs implements WorkspaceFs {
     }
   }
 
-  async writeFile(path: string, content: string | Uint8Array, options: { mode?: number } = {}): Promise<void> {
-    // Staged as appended chunks beside the target and published by one rename, on the pod.
-    // Bytes travel base64-chunked; ShimMemoryFs already knows both shapes.
-    await this.files.writeFile(this.rel(path), content, options)
+  async writeFile(path: string, content: string | Uint8Array, options: WorkspaceWriteOptions = {}): Promise<void> {
+    // Staged as appended chunks beside the target and published by one rename — or, for
+    // `ifAbsent`, by one hard link (`memory-create-commit`), which the pod refuses with a
+    // conflict when the name is taken. Bytes travel base64-chunked; ShimMemoryFs knows both shapes.
+    const { ifAbsent, ...rest } = options
+    try {
+      await this.files.writeFile(this.rel(path), content, { ...rest, ...(ifAbsent ? { ifAbsent: true } : {}) })
+    } catch (err) {
+      if (ifAbsent && err instanceof MemoryConflictError) throw new WorkspaceFileExistsError(path)
+      throw err
+    }
   }
 
   async rename(from: string, to: string): Promise<void> {
