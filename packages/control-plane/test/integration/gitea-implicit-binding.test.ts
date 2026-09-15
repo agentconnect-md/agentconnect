@@ -124,7 +124,13 @@ const trigger = (agentId: string, over: Record<string, unknown> = {}) => ({
   ...over
 })
 const ISSUES_TRIGGER = { family: 'issues', events: ['issues:*'], commentFamilies: ['issues'] }
-const PR_EVENTS = ['pull_request', 'pull_request_sync', 'pull_request_review_request', 'pull_request_comment']
+const PR_EVENTS = [
+  'pull_request',
+  'pull_request_sync',
+  'pull_request_label',
+  'pull_request_review_request',
+  'pull_request_comment'
+]
 
 /** Webhook creates the fake saw — the count that must stay at one however many agents subscribe. */
 const webhookCreates = (h: Harness) =>

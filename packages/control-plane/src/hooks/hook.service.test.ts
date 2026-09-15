@@ -492,6 +492,7 @@ describe('HookService.compile — gitea (gitea-integration.md §7)', () => {
       events: ['merge_request:*'],
       // The stored merge_request scope is the pull_request SUBJECT on the wire.
       commentFamilies: ['pull_request'],
+      labelFilter: [],
       mentionOnly: false,
       agentName: 'review-agent',
       botUserId: '9042',

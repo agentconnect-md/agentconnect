@@ -291,13 +291,13 @@ manual webhook removal clears it.
 true` (the API default is inactive), no `branch_filter`, and the event union
 of the enabled hooks on the repository:
 
-| Product family             | Gitea webhook events                                                                      |
-| -------------------------- | ----------------------------------------------------------------------------------------- |
-| `issues:*`                 | `issues`                                                                                  |
-| issue conversation comment | `issue_comment`                                                                           |
-| `merge_request:*`          | `pull_request`, `pull_request_sync`, `pull_request_review_request`, `pull_request_review` |
-| pull-request comment       | `issue_comment`, `pull_request_comment`, `pull_request_review`                            |
-| `push:*`                   | `push`                                                                                    |
+| Product family             | Gitea webhook events                                                                                            |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `issues:*`                 | `issues`                                                                                                        |
+| issue conversation comment | `issue_comment`                                                                                                 |
+| `merge_request:*`          | `pull_request`, `pull_request_sync`, `pull_request_label`, `pull_request_review_request`, `pull_request_review` |
+| pull-request comment       | `issue_comment`, `pull_request_comment`, `pull_request_review`                                                  |
+| `push:*`                   | `push`                                                                                                          |
 
 Comment events are over-subscribed for the same reason GitLab over-subscribes
 `note`: a per-thread session opened by an issue or pull-request trigger
@@ -312,7 +312,9 @@ therefore reads the created hook's `events` array back and reconciles it
 against the intended union instead of trusting the status code. The reply also
 expands the umbrella names — `issues` stores `issue_assign`, `issue_label`,
 `issue_milestone`, and `issue_comment` alongside itself — so the comparison is
-by subset, not equality.
+by subset, not equality. `pull_request` does not expand the same way, so the
+label filter's entry event on a pull request, `pull_request_label`, is asked
+for by name.
 
 **Verification.** The relay enforces HTTPS and the 1 MiB raw-body limit, parses
 only enough bounded JSON to read `repository.id`, looks up the compiled rules

@@ -24,11 +24,12 @@ describe('unionGiteaWebhookEvents', () => {
     expect(unionGiteaWebhookEvents([hook()], REPO)).toEqual(['issues', 'issue_comment'])
   })
 
-  it('subscribes the pull-request family to every review and comment name (§7 table)', () => {
+  it('subscribes the pull-request family to every label, review and comment name (§7 table)', () => {
     expect(unionGiteaWebhookEvents([hook({ events: ['merge_request:opened'] })], REPO)).toEqual([
       'issue_comment',
       'pull_request',
       'pull_request_sync',
+      'pull_request_label',
       'pull_request_review_request',
       'pull_request_comment',
       'pull_request_review'
@@ -46,6 +47,7 @@ describe('unionGiteaWebhookEvents', () => {
       'issue_comment',
       'pull_request',
       'pull_request_sync',
+      'pull_request_label',
       'pull_request_review_request',
       'pull_request_comment',
       'pull_request_review',

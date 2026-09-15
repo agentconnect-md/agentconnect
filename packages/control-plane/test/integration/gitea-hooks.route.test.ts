@@ -136,6 +136,7 @@ describe('gitea hooks — routes, compile, webhook converge (§7)', () => {
     for (const event of [
       'pull_request',
       'pull_request_sync',
+      'pull_request_label',
       'pull_request_review_request',
       'pull_request_comment',
       'pull_request_review',

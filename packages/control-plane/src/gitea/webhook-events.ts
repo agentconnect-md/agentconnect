@@ -12,6 +12,7 @@ export const GITEA_WEBHOOK_EVENTS = [
   'issue_comment',
   'pull_request',
   'pull_request_sync',
+  'pull_request_label',
   'pull_request_review_request',
   'pull_request_comment',
   'pull_request_review',
@@ -19,10 +20,12 @@ export const GITEA_WEBHOOK_EVENTS = [
 ] as const
 export type GiteaWebhookEvent = (typeof GITEA_WEBHOOK_EVENTS)[number]
 
+// `issues` expands to its label variant on Gitea's side; `pull_request` does not, so the label filter's entry event is asked for by name.
 const ISSUE_EVENTS: readonly GiteaWebhookEvent[] = ['issues', 'issue_comment']
 const MERGE_REQUEST_EVENTS: readonly GiteaWebhookEvent[] = [
   'pull_request',
   'pull_request_sync',
+  'pull_request_label',
   'pull_request_review_request',
   'pull_request_review',
   'issue_comment',
