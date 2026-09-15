@@ -388,6 +388,15 @@ and `SUDO_UID` (or `--service-user`) is what identifies the account — under su
 `/root/.agentconnect`. Running as real root with neither is refused: `User=root`
 would hand every agent root on the host.
 
+Both root-written files are `chmod`ed to 0644 after the write rather than relying
+on `writeFileSync`'s `mode`, which the umask masks: under `umask 077` the unit
+would land 0600 — unreadable by the daemon account, and skipped by the instance
+lister, which then reports the service as not installed — and the polkit rule
+would be invisible to `polkitd`, which runs unprivileged, so the grant would
+silently never apply. An elevated install also hands `<root>` and its two pointer
+files back to the daemon account, since the cli-entry self-heal runs on every
+invocation and would otherwise leave a freshly created root owned by root at 0700.
+
 `install-service` drops `/etc/polkit-1/rules.d/49-<unit>.rules`, scoped to one
 unit name, one account, and `start`/`stop`/`restart`/`try-restart`/
 `reload-or-restart`. `enable`/`disable` are deliberately outside it — boot

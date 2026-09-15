@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { assertAccountName, currentAccount, lookupAccount, sudoAccountName } from '../src/service/account.js'
+import {
+  assertAccountName,
+  currentAccount,
+  lookupAccount,
+  repairRootOwnership,
+  rootOwnershipPaths,
+  sudoAccountName
+} from '../src/service/account.js'
 import {
   buildPolkitRule,
   POLKIT_VERBS,
@@ -83,6 +90,73 @@ describe('polkit rule', () => {
   it('detects a host with no rules.d backend', () => {
     expect(polkitRulesSupported(tmp('ac-polkit-'))).toBe(true)
     expect(polkitRulesSupported(join(tmp('ac-polkit-'), 'absent'))).toBe(false)
+  })
+
+  posix('lands world-readable even under a restrictive umask', () => {
+    // polkitd runs as the unprivileged `polkitd` user, and writeFileSync's `mode`
+    // is masked by the umask — a 0600 rule is silently never consulted.
+    const previous = process.umask(0o077)
+    try {
+      const path = writePolkitRule({ unitLabel: 'agentconnect.service', user: 'agent', dir: tmp('ac-polkit-') })
+      expect((statSync(path).mode & 0o777).toString(8)).toBe('644')
+    } finally {
+      process.umask(previous)
+    }
+  })
+})
+
+describe('root ownership after an elevated install', () => {
+  const ACCT = { user: 'agent', uid: 1000, gid: 1000, home: '/home/agent' }
+
+  it('names the root itself plus the two pointer files', () => {
+    expect(rootOwnershipPaths('/home/agent/.agentconnect')).toEqual([
+      '/home/agent/.agentconnect',
+      join('/home/agent/.agentconnect', 'cli-entry'),
+      join('/home/agent/.agentconnect', 'service.json')
+    ])
+  })
+
+  it('hands back only what this elevated process left root-owned', () => {
+    const chowned: Array<[string, number, number]> = []
+    // The root was created by the elevated cli-entry self-heal (0700, uid 0); the
+    // pointer file predates this install and already belongs to the account.
+    const owners: Record<string, number> = {
+      '/r': 0,
+      [join('/r', 'cli-entry')]: 1000,
+      [join('/r', 'service.json')]: 0
+    }
+    const repaired = repairRootOwnership('/r', ACCT, {
+      chown: (p, uid, gid) => chowned.push([p, uid, gid]),
+      ownerOf: (p) => owners[p]
+    })
+    expect(repaired).toEqual(['/r', join('/r', 'service.json')])
+    expect(chowned).toEqual([
+      ['/r', 1000, 1000],
+      [join('/r', 'service.json'), 1000, 1000]
+    ])
+  })
+
+  it('does nothing when the daemon account IS root', () => {
+    const chowned: string[] = []
+    const repaired = repairRootOwnership(
+      '/r',
+      { ...ACCT, uid: 0, gid: 0 },
+      {
+        chown: (p) => chowned.push(p),
+        ownerOf: () => 0
+      }
+    )
+    expect([repaired, chowned]).toEqual([[], []])
+  })
+
+  it('skips a path it cannot chown rather than failing the install', () => {
+    const repaired = repairRootOwnership('/r', ACCT, {
+      chown: () => {
+        throw new Error('EPERM')
+      },
+      ownerOf: () => 0
+    })
+    expect(repaired).toEqual([])
   })
 })
 

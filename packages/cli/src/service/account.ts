@@ -1,8 +1,9 @@
 /** The unix account a Linux system unit runs as (`User=`) — resolved from `SUDO_UID`
  *  when the CLI is elevated, since under sudo `os.homedir()`/`getuid()` describe root. */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { chownSync, lstatSync, readFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
+import { join } from 'node:path'
 
 export interface ServiceAccount {
   user: string
@@ -81,4 +82,44 @@ export function resolveServiceAccount(opts: { serviceUser?: string } = {}): Serv
   throw new Error(
     'running as root with no sudo context — pass `--service-user <name>` to say which account the daemon should run as (installing it as root would give every agent root on this host)'
   )
+}
+
+/** Artifacts an elevated CLI can create under `<root>` before the daemon ever runs:
+ *  the root itself (0700 via the cli-entry self-heal) and the two pointer files. */
+export function rootOwnershipPaths(root: string): string[] {
+  return [root, join(root, 'cli-entry'), join(root, 'service.json')]
+}
+
+export interface OwnershipDeps {
+  chown?: (path: string, uid: number, gid: number) => void
+  ownerOf?: (path: string) => number | undefined
+}
+
+/** Hand `<root>` back to the daemon account after an elevated install. The
+ *  cli-entry self-heal runs on every invocation and creates `<root>` mode 0700 —
+ *  as root that leaves the configured non-root daemon unable to read its own root.
+ *  Only paths this process left root-owned are touched; returns what was repaired. */
+export function repairRootOwnership(root: string, account: ServiceAccount, deps: OwnershipDeps = {}): string[] {
+  if (account.uid === 0) return []
+  const chown = deps.chown ?? chownSync
+  const ownerOf =
+    deps.ownerOf ??
+    ((path: string) => {
+      try {
+        return lstatSync(path).uid
+      } catch {
+        return undefined // absent — nothing to repair
+      }
+    })
+  const repaired: string[] = []
+  for (const path of rootOwnershipPaths(root)) {
+    if (ownerOf(path) !== 0) continue
+    try {
+      chown(path, account.uid, account.gid)
+      repaired.push(path)
+    } catch {
+      // best-effort: a path we cannot chown is reported by its absence from the list
+    }
+  }
+  return repaired
 }

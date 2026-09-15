@@ -7,6 +7,7 @@ import {
   findUserScopeUnit,
   installService,
   isElevated,
+  repairRootOwnership,
   retireUserScopeUnit,
   serviceAccountFor,
   shouldBakeRootEnv,
@@ -14,6 +15,7 @@ import {
   type ControllerTarget,
   type ElevateDeps,
   type Exec,
+  type OwnershipDeps,
   type InstallOpts,
   type ServiceController
 } from './service/index.js'
@@ -37,6 +39,7 @@ export interface ServiceCommandParams {
   systemUnitDir?: string
   polkitDir?: string
   elevateDeps?: ElevateDeps
+  ownershipDeps?: OwnershipDeps
 }
 
 /** `delegated` means sudo ran a second CLI that did the work; its code is the result. */
@@ -101,6 +104,13 @@ export async function performInstallService(p: ServiceCommandParams): Promise<Se
     if (!outcome.elevated) return { kind: 'delegated', code: outcome.code }
   }
   const controller = await installService({ ...targetOf(p), ...(account ? { account } : {}) }, opts)
+  // Elevated, everything written under <root> so far belongs to root — including
+  // the root directory itself when this install created it.
+  if (account && isElevated()) {
+    const repaired = repairRootOwnership(p.root, account, p.ownershipDeps ?? {})
+    if (repaired.length > 0)
+      log(`agentconnect: handed ${repaired.length} path(s) under ${p.root} back to ${account.user}`)
+  }
   return { kind: 'done', controller, unprivilegedControl: hasUnprivilegedControl(controller) }
 }
 

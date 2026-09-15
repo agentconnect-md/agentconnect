@@ -27,8 +27,11 @@ export {
   currentAccount,
   isElevated,
   lookupAccount,
+  repairRootOwnership,
   resolveServiceAccount,
+  rootOwnershipPaths,
   sudoAccountName,
+  type OwnershipDeps,
   type ServiceAccount
 } from './account.js'
 export { defaultElevateDeps, elevate, manualSudoCommand, type ElevateDeps, type ElevationRequest } from './elevate.js'

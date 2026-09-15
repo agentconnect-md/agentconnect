@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -216,6 +216,19 @@ describe('SystemdController (system scope)', () => {
     expect(rule).toContain("subject.user === 'agent'")
     // enable/disable stay root-only; the rule grants lifecycle verbs alone.
     expect(rule).not.toContain("'enable'")
+  })
+
+  it('writes the unit world-readable even under a restrictive umask', async () => {
+    // A 0600 unit is unreadable by the daemon account, which also makes the
+    // instance lister skip it and report the service as not installed.
+    const { c, sd } = build()
+    const previous = process.umask(0o077)
+    try {
+      await c.install({ execPath: '/usr/bin/node', includeRootEnv: false })
+    } finally {
+      process.umask(previous)
+    }
+    expect((statSync(join(sd, 'agentconnect.service')).mode & 0o777).toString(8)).toBe('644')
   })
 
   it('refuses to write a system unit with no resolved account', async () => {

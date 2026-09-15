@@ -1,6 +1,6 @@
 /** The polkit rule that lets the daemon's own account start/stop its system unit
  *  without sudo. Install writes it as root; uninstall removes exactly its own file. */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { assertAccountName } from './account.js'
 
@@ -43,7 +43,11 @@ export function polkitRulesSupported(dir: string = POLKIT_RULES_DIR): boolean {
 export function writePolkitRule(a: { unitLabel: string; user: string; dir?: string }): string {
   const path = polkitRulePath(a.unitLabel, a.dir ?? POLKIT_RULES_DIR)
   mkdirSync(a.dir ?? POLKIT_RULES_DIR, { recursive: true })
-  writeFileSync(path, buildPolkitRule({ unitLabel: a.unitLabel, user: a.user }), { mode: 0o644 })
+  writeFileSync(path, buildPolkitRule({ unitLabel: a.unitLabel, user: a.user }))
+  // `writeFileSync`'s `mode` is masked by the umask, and polkitd runs as the
+  // unprivileged `polkitd` user — under umask 077 the rule would land 0600 and
+  // be silently unreadable, so the grant would never apply. chmod explicitly.
+  chmodSync(path, 0o644)
   return path
 }
 

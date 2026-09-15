@@ -2,7 +2,7 @@
  *  `/etc/systemd/system/<unit>` with `User=` so the unit outlives every login
  *  session; `user` drives the legacy `~/.config/systemd/user` units still installed
  *  on existing hosts, unchanged, so they stay stoppable and removable. */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { currentDistEntry, defaultRoot } from '../paths.js'
 import type { ServiceAccount } from './account.js'
@@ -207,6 +207,10 @@ export class SystemdController implements ServiceController {
         ...(opts.envPath ? { envPath: opts.envPath } : {})
       })
     )
+    // The umask masks `writeFileSync`'s mode, so under umask 077 the unit would
+    // land 0600 and the daemon account could not read it — which also makes the
+    // instance lister skip it and report the service as not installed.
+    chmodSync(this.unitPath, 0o644)
     await this.systemctl(['daemon-reload'])
     if (this.scope !== 'system' || !account) return
     const enabled = await this.systemctl(['enable', this.label])
