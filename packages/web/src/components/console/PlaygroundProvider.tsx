@@ -791,10 +791,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             const body = step.kind === 'app' ? step.app : undefined
             if (!body || body.appId !== ev.appId) continue
             if ((step.agentId ?? undefined) !== agentId) continue
-            // The template is dropped with the settlement: a settled frame is never re-armed, and
-            // keeping its document alive in memory would only invite one that is.
-            const { html: _html, ...rest } = body
-            return replaceAt(i, { ...step, app: { ...rest, outcome: ev.outcome }, observedAtMs })
+            // The template SURVIVES a bridge settlement, because the page does (§8): `superseded`
+            // and `expired` end an arming, and the card still shows what the reader was looking
+            // at. Dropping it here would blank the card in place — the persisted row that also
+            // holds the template steps aside while this live copy stands, so there would be
+            // nothing left to render. A reader-`closed` card hides its page either way, so its
+            // document is dropped rather than held.
+            const settled = ev.outcome === 'closed' ? (({ html: _html, ...rest }) => rest)(body) : body
+            return replaceAt(i, { ...step, app: { ...settled, outcome: ev.outcome }, observedAtMs })
           }
           return steps
         }

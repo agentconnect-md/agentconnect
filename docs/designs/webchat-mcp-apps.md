@@ -376,6 +376,11 @@ A card in a RUNNING turn now exists twice over: as its row, written at open, and
 `liveElicitKeys`) — it is the one the registry is serving and the one a settlement reaches.
 Without that, a second tab on a running conversation renders one card as two armed frames.
 
+That makes the live copy responsible for the page, so an `app_resolved` no longer drops its
+template: a `superseded` or `expired` card would otherwise blank in place, with the persisted row
+that still holds the template standing aside for it. A reader-`closed` card hides its page either
+way, so that one is still dropped.
+
 The verdict for every view RPC goes back on **the connection the RPC arrived on**, not on the
 stream the card was opened on. A card outlives its turn, and after a reload that turn's stream
 reaches a browser that is gone — which is a button that hangs rather than one that is refused. The
