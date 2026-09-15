@@ -201,6 +201,42 @@ function transcriptPageCursor(page: unknown): number | undefined {
  *   were not persisted on the session itself (Slack workspace permalinks today).
  *   Absent (or returning undefined) leaves `threadUrl` unset.
  */
+/**
+ * One app card's row, shed until it fits a transcript page (webchat-mcp-apps.md §8).
+ *
+ * Dropping the template is usually enough, but not always: a tool that answered with tens of KiB
+ * of `structuredContent` leaves a card that is still too large with its page already gone. What
+ * must survive is the card's IDENTITY — without `appId` and `toolName` the console cannot read the
+ * row as a card at all, and a row it cannot read renders as a line of text, which is the card
+ * vanishing. So the heavy parts go in order of what the reader can most afford to wait for, and
+ * the identity is kept whatever happens; the full body is one fetch away in every case.
+ *
+ * Null ⇒ the body could not be parsed, and the row's title stands alone. Pure.
+ */
+function previewAppBody(body: string): string | null {
+  let card: Record<string, unknown>
+  try {
+    card = JSON.parse(body) as Record<string, unknown>
+  } catch {
+    return null
+  }
+  // Heaviest first: the page, then the result the model already received, then the arguments.
+  for (const shed of [['html'], ['html', 'toolResult'], ['html', 'toolResult', 'toolInput']]) {
+    const lean = { ...card }
+    for (const key of shed) delete lean[key]
+    const encoded = JSON.stringify(lean)
+    if (Buffer.byteLength(encoded) <= PREVIEW_CAP) return encoded
+  }
+  // Nothing but the card itself. Bounded by the wire schema (three 200-char fields and an enum),
+  // so this always fits — a card can be rendered, and everything else is behind the fetch.
+  return JSON.stringify({
+    appId: card.appId,
+    title: card.title,
+    toolName: card.toolName,
+    ...(card.outcome !== undefined ? { outcome: card.outcome } : {})
+  })
+}
+
 export function createSessionReader(
   store: LocalStore,
   threadUrlFor?: (session: SessionRecord) => string | undefined,
@@ -387,9 +423,9 @@ export function createSessionReader(
         }
         // An app card's body is the card WITH its template, which is the whole reason a reloaded
         // page can be shown again (webchat-mcp-apps.md §8) and also why it must not ride a page:
-        // one card is hundreds of KiB. Oversized, the template alone is dropped and the row is
-        // marked truncated, so the console pulls the whole card back through the same on-demand
-        // daemon read an oversized tool body uses — which is keyed by the `toolCallId` below.
+        // one card is hundreds of KiB. What rides is a preview SHED down to fit, marked truncated,
+        // and the console pulls the whole card back through the same on-demand daemon read an
+        // oversized tool body uses — keyed by the `toolCallId` below.
         if (r.kind === 'app') {
           base.toolCallId = r.tool_call_id ?? undefined
           const bytes = Buffer.byteLength(r.body)
@@ -397,16 +433,11 @@ export function createSessionReader(
             base.body = r.body
             return base
           }
-          try {
-            const { html: _html, ...lean } = JSON.parse(r.body) as { html?: unknown }
-            const shrunk = JSON.stringify(lean)
-            if (Buffer.byteLength(shrunk) <= PREVIEW_CAP) {
-              base.body = shrunk
-              base.bodyTruncated = true
-              base.bodyBytes = bytes
-            }
-          } catch {
-            // unparseable body → the row's title stands alone
+          const preview = previewAppBody(r.body)
+          if (preview) {
+            base.body = preview
+            base.bodyTruncated = true
+            base.bodyBytes = bytes
           }
           return base
         }

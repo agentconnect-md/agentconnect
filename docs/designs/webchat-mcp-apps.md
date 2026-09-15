@@ -343,10 +343,19 @@ The row is written at open and rewritten at settlement (`LocalStore.upsertApp`, 
 
 Keeping the template is what makes a reload show the interface, and it is also what would put a
 several-hundred-KiB document into every transcript read, so the two are separated rather than
-traded: the history projection strips `html` from an oversized row and marks it truncated, and the
-console pulls the whole card back through the same on-demand `session/tool-body` read an oversized
-tool body uses (keyed by the row's `app:<appId>`). One card, one row, one fetch — and a transcript
-page that is the size it always was.
+traded: the history projection sheds an oversized row down to a preview and marks it truncated, and
+the console pulls the whole card back through the same on-demand `session/tool-body` read an
+oversized tool body uses (keyed by the row's `app:<appId>`). One card, one row, one fetch — and a
+transcript page that is the size it always was.
+
+The shed is ordered and has a floor. Dropping the template is usually enough; a tool that answered
+with tens of KiB of `structuredContent` leaves a card still over the cap with its page already
+gone, so `toolResult` goes next and `toolInput` after it. What never goes is the card's IDENTITY —
+`appId`, `title`, `toolName`, `outcome` — because a row the console cannot read AS A CARD renders
+as a line of text, which is the card vanishing, which is the failure this whole section exists to
+prevent. The console then REPLACES the preview with the fetched card rather than lending it a
+template: a card that shed its result as well as its page would otherwise arm a frame and hand it
+no `tool-result` to render.
 
 ### 8.1 Re-arming a reloaded card
 

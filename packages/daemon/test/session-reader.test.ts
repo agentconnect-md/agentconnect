@@ -597,6 +597,54 @@ describe('SessionReader', () => {
     await s.close()
   })
 
+  it('keeps an app card READABLE when even its template-less body is oversized', async () => {
+    // The shape that shipped broken: a `get_defi_positions` card whose own tool result is ~57 KiB,
+    // so dropping the 500 KiB template still leaves a body over the page cap. Giving up there sent
+    // the console a row with no body at all, which it cannot read as a card — so the card vanished
+    // on reload, which is the whole bug this feature exists to fix.
+    const s = await store()
+    await seedHistorySession(s)
+    const card = {
+      appId: 'app-3',
+      title: 'DeFi positions',
+      toolName: 'charts__get_defi_positions',
+      server: 'charts',
+      conversationId: 'C1',
+      outcome: 'expired',
+      toolInput: { chain: 'eth' },
+      toolResult: { structuredContent: { positions: Array.from({ length: 900 }, (_, i) => `position-${i}`) } }
+    }
+    const body = JSON.stringify({ ...card, html: `<p>${'x'.repeat(200 * 1024)}</p>` })
+    await s.upsertApp({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: AGENT,
+      appId: 'app-3',
+      text: 'DeFi positions',
+      body
+    })
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    const row = messages[0]!
+    const preview = JSON.parse(row.body!) as Record<string, unknown>
+    // The identity survives whatever else is shed — that is what makes it a card and not a line.
+    expect(preview).toMatchObject({ appId: 'app-3', title: 'DeFi positions', toolName: 'charts__get_defi_positions' })
+    expect(preview.outcome).toBe('expired')
+    expect(preview.html).toBeUndefined()
+    expect(Buffer.byteLength(row.body!)).toBeLessThanOrEqual(32 * 1024)
+    expect(row.bodyTruncated).toBe(true)
+    expect(row.bodyBytes).toBe(Buffer.byteLength(body))
+    // And the whole card — template and result — is still one fetch away under the same key.
+    const full = await createSessionReader(s).toolBody({
+      agentId: AGENT,
+      sessionId: 'acp-1',
+      toolCallId: 'app:app-3',
+      offset: 0
+    })
+    expect(full.totalBytes).toBe(Buffer.byteLength(body))
+    await s.close()
+  })
+
   it('binds session and tool-body reads to the authorized agent in a shared thread', async () => {
     const s = await store()
     seedHistorySession(s)
