@@ -23,6 +23,7 @@ import { McpProviderTokenService } from '../../src/mcp-oauth/token-service.js'
 import type { Dial } from '../../src/mcp-oauth/discovery.js'
 import type { GuardedResult } from '../../src/net/guarded-fetch.js'
 import { OrgId } from '../../src/domain/ids.js'
+import { serializeByProvider } from '../../src/http/provider-chain.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -312,6 +313,45 @@ describe('MCP provider OAuth funnel', () => {
     })
     expect(res.statusCode).toBe(204)
     expect(relay.filter((f) => f.frame === 'rc/mcp-unassign')).toHaveLength(1)
+  })
+
+  it('serializes disconnect with the provider chain, so a racing rebind cannot outlive it', async () => {
+    // The hazard: a refresher rebind re-reads this provider INSIDE the chain. If disconnect
+    // ran outside it, a rebind that had already read a live credential could publish its
+    // binding after the unbind, leaving a callable binding for a revoked grant.
+    const { app } = makeApp(fakeUpstream())
+    const providerId = await createOauthProvider(app)
+    await walk(app, providerId, '/api/v1')
+    const provider = await new PgMcpProviderRepo(prisma).get(OrgId(DEFAULT_ORG_ID), providerId)
+
+    let releaseChain: () => void = () => {}
+    const held = new Promise<void>((resolve) => {
+      releaseChain = resolve
+    })
+    const order: string[] = []
+    // Hold the provider's chain, exactly as an in-flight rebind does.
+    const holder = serializeByProvider(DEFAULT_ORG_ID, provider!.name, async () => {
+      await held
+      order.push('rebind')
+    })
+
+    const disconnecting = app.app
+      .inject({ method: 'POST', url: `${ORG}/mcp-providers/${providerId}/oauth/disconnect`, payload: {} })
+      .then((r) => {
+        order.push('disconnect')
+        return r
+      })
+
+    // Give the request every chance to finish early; it must not, because it now queues.
+    await new Promise((r) => setTimeout(r, 150))
+    expect(order).toEqual([])
+
+    releaseChain()
+    await holder
+    const res = await disconnecting
+    expect(res.statusCode).toBe(204)
+    // The disconnect ran strictly after the chain holder — never interleaved with it.
+    expect(order).toEqual(['rebind', 'disconnect'])
   })
 
   it('disconnects without disturbing the provider or its agent-facing identity', async () => {

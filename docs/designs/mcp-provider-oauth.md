@@ -193,6 +193,11 @@ republish an OAuth provider's binding with no `Authorization` at all; an unautho
 publishes its daemon definition and **no** binding, because a binding with an empty credential
 is worse than none.
 
+**Disconnect runs inside the chain too**, both halves as one critical section. A refresher
+rebind re-reads the provider inside that chain; with the disconnect outside it, a rebind that
+had already read a live credential could publish its binding after the unbind, leaving a
+callable binding for a grant the database has revoked.
+
 **Disconnect drops the relay binding only.** The daemon definition is the agent-facing proxy url
 and grant key, neither of which a disconnect changes — and since a later reconnect republishes
 only the binding, removing the definition would leave every enabling daemon without the server

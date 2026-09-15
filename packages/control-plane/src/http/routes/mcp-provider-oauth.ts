@@ -22,6 +22,7 @@ import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canEdit } from '../../authorization/policy.js'
 import { ErrorDto, IdParam, McpProviderOauthStartDto, StartMcpProviderOauthBody } from '../dto/index.js'
 import { McpOauthDenied, MCP_OAUTH_BROWSER_COOKIE } from '../../mcp-oauth/service.js'
+import { serializeByProvider } from '../provider-chain.js'
 
 /** The one-shot browser-binding cookie, read back at the callback. */
 function browserCookie(req: FastifyRequest): string | undefined {
@@ -98,8 +99,14 @@ export function mcpProviderOauthRoutes(deps: HttpDeps) {
         if (!provider || !canEdit(provider, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
-        await oauth.disconnect(orgOf(req), req.params.id)
-        await deps.mcpOauthUnbind?.(orgOf(req), provider)
+        // BOTH halves inside the provider's chain, as one critical section. A refresher
+        // rebind re-reads this provider inside the same chain, so running the state change
+        // and the unbind outside it lets a rebind that read a live credential land AFTER the
+        // unbind and republish a callable binding for a grant the database has revoked.
+        await serializeByProvider(orgOf(req), provider.name, async () => {
+          await oauth.disconnect(orgOf(req), req.params.id)
+          await deps.mcpOauthUnbind?.(orgOf(req), provider)
+        })
         return reply.code(204).send(undefined)
       }
     )
