@@ -38,8 +38,9 @@ export interface WorkspaceFs {
    *  absent/unreadable answers undefined. The binary sibling of {@link readFile}, added for the
    *  outbound file share (agent-authored-attachments.md §6). */
   readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined>
-  /** Atomic: staged beside the target, then published by one rename. */
-  writeFile(path: string, content: string, options?: { mode?: number }): Promise<void>
+  /** Atomic: staged beside the target, then published by one rename. Text or raw BYTES: the
+   *  binary arm lands an inbound attachment in the workspace (inbound-file-attachments.md §2). */
+  writeFile(path: string, content: string | Uint8Array, options?: { mode?: number }): Promise<void>
   rename(from: string, to: string): Promise<void>
   /**
    * Remove a directory ONLY if it is empty, answering whether it went.
@@ -110,7 +111,7 @@ export class LocalWorkspaceFs implements WorkspaceFs {
     }
   }
 
-  async writeFile(path: string, content: string, options: { mode?: number } = {}): Promise<void> {
+  async writeFile(path: string, content: string | Uint8Array, options: { mode?: number } = {}): Promise<void> {
     // A per-write temp name rather than a fixed `.tmp`: two writers publishing the same marker must
     // not stage into one another's file, and the rename is what makes either one whole.
     const temp = `${path}.${randomUUID()}.tmp`
@@ -167,7 +168,7 @@ export class RoutedWorkspaceFs implements WorkspaceFs {
   async readFileBytes(path: string, maxBytes: number): ReturnType<WorkspaceFs['readFileBytes']> {
     return (await this.route(path)).readFileBytes(path, maxBytes)
   }
-  async writeFile(path: string, content: string, options?: { mode?: number }): Promise<void> {
+  async writeFile(path: string, content: string | Uint8Array, options?: { mode?: number }): Promise<void> {
     return (await this.route(path)).writeFile(path, content, options)
   }
   async rename(from: string, to: string): Promise<void> {

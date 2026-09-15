@@ -451,6 +451,8 @@ import { WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
 import { canonicalWorkspacePath, containedWorkspacePath, WorkspaceViolationError } from './workspace/workspace-files.js'
+import { localWorkspaceFs } from './workspace/workspace-fs.js'
+import { ATTACHMENT_UPLOADS_DIR, type SaveAttachmentResult } from './mcp/ops/platform-reads.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import {
@@ -3117,6 +3119,67 @@ export class Daemon {
           return { ok: false, reason: 'too-large', detail: `${bytes.byteLength} bytes > ${cap}-byte cap` }
         }
         return imageOf(bytes)
+      },
+      // read*File (inbound-file-attachments.md §2): a downloaded non-image binary lands under
+      // `uploads/` at the session's working root, so the agent's own tools can open it. The same
+      // location resolution as readWorkspaceImage above; the write goes through the WorkspaceFs
+      // seam so a cluster agent's sandbox volume is reached over the fd-anchored channel.
+      saveAttachment: async (ctx, name, bytes): Promise<SaveAttachmentResult> => {
+        const scope = createWorkspaceScope({
+          workspaces: this.workspaces,
+          agentOf: (id) => this.agents.get(id),
+          sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
+          runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
+        })
+        const row = await this.store
+          .getSession(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
+          .catch(() => undefined)
+        const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
+        const location =
+          (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
+          (await scope.location(ctx.agentId).catch(() => undefined))
+        if (!location) return { ok: false, reason: 'no-workspace' }
+
+        // Digest-suffixed on collision (design §2.1): the same bytes under the same name are
+        // reused; different bytes under a taken name get `<stem>-<sha8>.<ext>`, never clobbered.
+        const sha8 = createHash('sha256').update(bytes).digest('hex').slice(0, 8)
+        const candidates = [name, name.replace(/(\.[A-Za-z0-9]{1,10})?$/, (ext) => `-${sha8}${ext}`)]
+
+        const pod = this.k8sPlane?.workspaceRootFor(ctx.agentId) !== undefined
+        const placement = pod ? this.k8sPlane?.workspaceFsFor(ctx.agentId) : { fs: localWorkspaceFs }
+        if (!placement) return { ok: false, reason: 'sandboxed' }
+        let dir: string
+        try {
+          dir = containedWorkspacePath(location.root, ATTACHMENT_UPLOADS_DIR)
+        } catch (err) {
+          return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'write-failed' }
+        }
+        try {
+          await placement.fs.mkdir(dir)
+          for (const candidate of candidates) {
+            const rel = `${ATTACHMENT_UPLOADS_DIR}/${candidate}`
+            let resolved: string
+            try {
+              resolved = containedWorkspacePath(location.root, rel)
+            } catch (err) {
+              return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'write-failed' }
+            }
+            const kind = await placement.fs.stat(resolved)
+            if (kind === 'file') {
+              const existing = await placement.fs.readFileBytes(resolved, bytes.byteLength)
+              if (existing && 'bytes' in existing && existing.bytes.equals(bytes)) return { ok: true, path: rel }
+              continue
+            }
+            if (kind !== 'missing') continue
+            await placement.fs.writeFile(resolved, bytes)
+            return { ok: true, path: rel }
+          }
+          return { ok: false, reason: 'write-failed', detail: 'both candidate names are taken' }
+        } catch (err) {
+          // On the pod arm anything the seam THROWS is the channel; locally it is the disk.
+          if (pod) return { ok: false, reason: 'sandboxed' }
+          return { ok: false, reason: 'write-failed', detail: err instanceof Error ? err.message : String(err) }
+        }
       },
       chargeShareBudget: (ctx, bytes) => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)

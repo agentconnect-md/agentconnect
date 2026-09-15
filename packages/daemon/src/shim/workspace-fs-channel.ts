@@ -74,8 +74,9 @@ export class ShimWorkspaceFs implements WorkspaceFs {
     }
   }
 
-  async writeFile(path: string, content: string, options: { mode?: number } = {}): Promise<void> {
+  async writeFile(path: string, content: string | Uint8Array, options: { mode?: number } = {}): Promise<void> {
     // Staged as appended chunks beside the target and published by one rename, on the pod.
+    // Bytes travel base64-chunked; ShimMemoryFs already knows both shapes.
     await this.files.writeFile(this.rel(path), content, options)
   }
 
