@@ -4186,6 +4186,7 @@ export interface CreateGitlabHookInput {
   family: GitlabHookFamily // one row per family; every event pattern must belong to it
   events: string[] // 'issues:*' / 'merge_request:*' / 'push:*' — at least one
   commentFamilies?: GitlabCommentFamily[]
+  labelFilter?: string[] // non-empty ⇒ the subject's current labels must intersect it (case-insensitive)
   mentionOnly?: boolean
   reviewPolicy?: HookReviewPolicy
   // 'check' publishes the merge-request run note; no gateMode — GitLab has no required gate.
@@ -4202,6 +4203,7 @@ export interface CreateGiteaHookInput {
   family: GiteaHookFamily // one row per family; every event pattern must belong to it
   events: string[] // 'issues:*' / 'merge_request:*' / 'push:*' — at least one
   commentFamilies?: GiteaCommentFamily[]
+  labelFilter?: string[] // non-empty ⇒ the subject's current labels must intersect it (case-insensitive)
   mentionOnly?: boolean
   reviewPolicy?: HookReviewPolicy
   // 'status' publishes the pull request's commit status; no gateMode — a required check is the operator's choice.

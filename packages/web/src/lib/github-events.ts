@@ -16,23 +16,23 @@ import type { GithubCommentFamily, GithubHookFamily, HookCommentFamily } from '.
  *              close/reopen and content edits; PR target-branch changes, other
  *              supported updates, and replies run. A deployment row adds
  *              `deployment_status:*` — every status GitHub posts against it.
- *   labeled  → `issues:labeled` alone. Issues-only, and the one cadence that
- *              subscribes to no replies at all: a label is applied to a thread,
- *              not said in it. A `labelFilter` intersects the issue's CURRENT
- *              label set (relay semantics for every cadence), not the label
- *              this delivery applied; empty means any label.
  *   @-mention → the same subscriptions as any update, with `mentionOnly: true` —
  *              an event fires ONLY when its text (issue/PR body, comment body,
  *              commit message) @-mentions the assigned agent or the App. The
  *              agent handle targets one rule; the App handle broadcasts.
  *              Thread actors additionally pass the relay's live maintainer gate.
  *
+ * A row's `labelFilter` is orthogonal to its mode: non-empty, the subject's
+ * CURRENT labels must intersect it (case-insensitively) on every delivery, so
+ * applying a listed label is how a thread enters an any-update row and removing
+ * the last one is how it leaves; empty means any label.
+ *
  * The REST DTO accepts finer `family:action` values — these helpers just never
  * emit them.
  */
 
 export type GhFamily = GithubHookFamily
-export type GhTriggerMode = 'first' | 'every' | 'labeled' | 'mention'
+export type GhTriggerMode = 'first' | 'every' | 'mention'
 
 export interface GhFamilyTile {
   fam: GhFamily
@@ -67,12 +67,11 @@ export function githubFamilyCarriesReviews(fam: GhFamily): boolean {
 }
 
 /** The trigger modes in display order — mention deliberately last. */
-export const GH_TRIGGER_MODES: readonly GhTriggerMode[] = ['first', 'every', 'labeled', 'mention']
+export const GH_TRIGGER_MODES: readonly GhTriggerMode[] = ['first', 'every', 'mention']
 /** The cadence vocabulary ("Trigger when …") the create surfaces spell out. */
 export const GH_TRIGGER_LABEL: Record<GhTriggerMode, string> = {
   first: 'opened',
   every: 'any update',
-  labeled: 'labeled',
   mention: '@-mention'
 }
 /** The agent-detail trigger bar's segment vocabulary — deliberately shorter than
@@ -80,15 +79,12 @@ export const GH_TRIGGER_LABEL: Record<GhTriggerMode, string> = {
 export const GH_TRIGGER_PILL: Record<GhTriggerMode, string> = {
   first: 'create',
   every: 'update',
-  labeled: 'labeled',
   mention: '@-mention'
 }
 
-/** Label events ride the issues subject alone — a PR row never offers or compiles one. A deployment
- *  carries no labels and no thread anyone writes in, so it offers only the two plain cadences. */
+/** Every thread family offers all three cadences; a deployment has no thread anyone writes in, so nobody @-mentions in one. */
 export function githubFamilySupportsMode(fam: GhFamily, mode: GhTriggerMode): boolean {
-  if (fam === 'deployment') return mode === 'first' || mode === 'every'
-  return mode !== 'labeled' || fam === 'issues'
+  return fam !== 'deployment' || mode !== 'mention'
 }
 
 /** The cadences one family offers, in display order. */
@@ -108,8 +104,6 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string, fam
       return `Runs when an issue or PR opens, plus later @${agentName} mentions.`
     case 'every':
       return 'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and title/body edits are ignored).'
-    case 'labeled':
-      return "Runs when a label is applied to an issue. A label filter matches the issue's current labels, not just the one applied. Replies do not run it."
     case 'mention':
       // Not "only @agent": the App handle is the repository-wide broadcast, and
       // an authorized native App review request bypasses cadence/mention/label.
@@ -148,15 +142,13 @@ export function githubCommentFamilies(families: readonly HookCommentFamily[]): G
   return families.filter((family): family is GithubCommentFamily => family === 'issues' || family === 'pull_request')
 }
 
-/** A cadence a family cannot carry narrows to the opening, never widens — only issues-only `labeled` reaches this. */
+/** A cadence a family cannot carry narrows to the opening, never widens — only a deployment's mention reaches this. */
 function effectiveMode(fam: GhFamily, mode: GhTriggerMode): GhTriggerMode {
   return githubFamilySupportsMode(fam, mode) ? mode : 'first'
 }
 
-/** Derive the explicit comment scope from the selected issue/PR families — a
- *  labeled subscription listens to no replies, so it carries no scope. */
-export function commentFamiliesForFamilies(fams: Iterable<GhFamily>, mode?: GhTriggerMode): GithubCommentFamily[] {
-  if (mode === 'labeled') return []
+/** Derive the explicit comment scope from the selected issue/PR families. */
+export function commentFamiliesForFamilies(fams: Iterable<GhFamily>): GithubCommentFamily[] {
   return [...fams].filter((fam): fam is GithubCommentFamily => fam === 'issues' || fam === 'pull_request')
 }
 
@@ -165,7 +157,6 @@ export function eventsForFamilies(fams: Iterable<GhFamily>, mode: GhTriggerMode)
   const families = [...fams]
   const familyEvents = families.flatMap((fam) => {
     const own = effectiveMode(fam, mode)
-    if (own === 'labeled') return [`${fam}:labeled`]
     if (fam === 'deployment') {
       return own === 'first' ? [DEPLOYMENT_CREATED_EVENT] : [`${fam}:*`, DEPLOYMENT_STATUS_EVENT]
     }
@@ -176,7 +167,7 @@ export function eventsForFamilies(fams: Iterable<GhFamily>, mode: GhTriggerMode)
     families.some((fam) => {
       const own = effectiveMode(fam, mode)
       return own === 'every' || own === 'mention'
-    }) && commentFamiliesForFamilies(families, mode).length > 0
+    }) && commentFamiliesForFamilies(families).length > 0
   return listensForThreadReplies ? [...familyEvents, THREAD_COMMENT_EVENT] : familyEvents
 }
 
@@ -206,19 +197,15 @@ export function githubFamilySubscription(fam: GhFamily, mode: GhTriggerMode): Gi
   const own = effectiveMode(fam, mode)
   return {
     events: eventsForFamilies([fam], own),
-    commentFamilies: commentFamiliesForFamilies([fam], own),
+    commentFamilies: commentFamiliesForFamilies([fam]),
     mentionOnly: own === 'mention'
   }
 }
 
-/** The one events shape the labeled cadence writes — its own round-trip anchor. */
-const LABELED_EVENT = 'issues:labeled'
-
-/** Recover the trigger mode: the mentionOnly flag wins, the bare label
- *  subscription is labeled, and `:opened` (or a bare deployment opening) ⇒ opened. */
+/** Recover the trigger mode: the mentionOnly flag wins, `:opened` (or a bare deployment opening) ⇒ opened,
+ *  and anything else — the retired bare `issues:labeled` included — reads as the nearest cadence, any update. */
 export function triggerModeOf(h: { events: string[]; mentionOnly: boolean }): GhTriggerMode {
   if (h.mentionOnly) return 'mention'
-  if (h.events.length === 1 && h.events[0] === LABELED_EVENT) return 'labeled'
   if (h.events.length === 1 && h.events[0] === DEPLOYMENT_CREATED_EVENT) return 'first'
   return h.events.some((e) => e.endsWith(':opened')) ? 'first' : 'every'
 }
@@ -243,6 +230,6 @@ export function githubHookNeedsNormalization(h: {
   }
   return (
     !sameMembers(h.events, eventsForFamilies(families, mode)) ||
-    !sameMembers(githubCommentFamilies(h.commentFamilies), commentFamiliesForFamilies(families, mode))
+    !sameMembers(githubCommentFamilies(h.commentFamilies), commentFamiliesForFamilies(families))
   )
 }

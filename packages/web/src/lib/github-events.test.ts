@@ -34,14 +34,13 @@ describe('GH_TRIGGER_LABEL', () => {
 
   it('spells the cadences out for the create surfaces', () => {
     expect(GH_TRIGGER_LABEL.every).toBe('any update')
-    expect(GH_TRIGGER_LABEL.labeled).toBe('labeled')
     expect(GH_TRIGGER_LABEL.mention).toBe('@-mention')
   })
 })
 
 describe('githubTriggerModes', () => {
-  it('offers the label cadence on issues alone', () => {
-    expect(githubTriggerModes('issues')).toEqual(['first', 'every', 'labeled', 'mention'])
+  it('offers the same three cadences on every thread family — labels are a filter, not a cadence', () => {
+    expect(githubTriggerModes('issues')).toEqual(['first', 'every', 'mention'])
     expect(githubTriggerModes('pull_request')).toEqual(['first', 'every', 'mention'])
     expect(githubTriggerModes('push')).toEqual(['first', 'every', 'mention'])
   })
@@ -64,7 +63,6 @@ describe('GH_TRIGGER_PILL', () => {
   it('keeps the short forms the IM trigger bar shares', () => {
     expect(GH_TRIGGER_PILL.first).toBe('create')
     expect(GH_TRIGGER_PILL.every).toBe('update')
-    expect(GH_TRIGGER_PILL.labeled).toBe('labeled')
   })
 
   it('names the agent in the per-segment hover copy', () => {
@@ -151,24 +149,6 @@ describe('githubFamilySubscription', () => {
     })
   })
 
-  it('compiles the label cadence to the bare label event, with no reply scope', () => {
-    // A label is applied to a thread, not said in it — so no issue_comment
-    // subscription and no commentFamilies to narrow one.
-    expect(githubFamilySubscription('issues', 'labeled')).toEqual({
-      events: ['issues:labeled'],
-      commentFamilies: [],
-      mentionOnly: false
-    })
-  })
-
-  it('narrows to the opening for a family that has no label events', () => {
-    // The console never offers `labeled` off the issues subject; a stray pick
-    // must not compile `pull_request:labeled`, nor widen past what was picked.
-    expect(githubFamilySubscription('pull_request', 'labeled')).toEqual(
-      githubFamilySubscription('pull_request', 'first')
-    )
-  })
-
   it('compiles a deployment row to its creation or to creation plus every status, with no reply scope', () => {
     expect(githubFamilySubscription('deployment', 'first')).toEqual({
       events: [DEPLOYMENT_CREATED_EVENT],
@@ -182,7 +162,6 @@ describe('githubFamilySubscription', () => {
     })
     // Cadences a deployment cannot carry narrow to the opening and never set the mention gate.
     expect(githubFamilySubscription('deployment', 'mention')).toEqual(githubFamilySubscription('deployment', 'first'))
-    expect(githubFamilySubscription('deployment', 'labeled')).toEqual(githubFamilySubscription('deployment', 'first'))
   })
 
   it('never emits a pattern from another family', () => {
@@ -310,23 +289,17 @@ describe('githubHookNeedsNormalization', () => {
     ).toBe(true)
   })
 
-  it('accepts a canonical labeled row', () => {
+  it('flags the retired bare label row, so the next cadence pick rewrites it', () => {
     expect(githubHookNeedsNormalization({ events: ['issues:labeled'], commentFamilies: [], mentionOnly: false })).toBe(
-      false
+      true
     )
-    // A labeled row that also carries a reply scope is not what the console writes.
-    expect(
-      githubHookNeedsNormalization({ events: ['issues:labeled'], commentFamilies: ['issues'], mentionOnly: false })
-    ).toBe(true)
   })
 })
 
 describe('triggerModeOf', () => {
-  it('round-trips the label cadence, and only for the exact issues subscription', () => {
-    expect(triggerModeOf({ events: ['issues:labeled'], mentionOnly: false })).toBe('labeled')
-    // Anything wider than the bare label event is an update rule, not a label one.
+  it('reads the retired bare label event as any update — the cadence it migrated to', () => {
+    expect(triggerModeOf({ events: ['issues:labeled'], mentionOnly: false })).toBe('every')
     expect(triggerModeOf({ events: ['issues:labeled', THREAD_COMMENT_EVENT], mentionOnly: false })).toBe('every')
-    expect(triggerModeOf({ events: ['pull_request:labeled'], mentionOnly: false })).toBe('every')
     // The mention flag still wins over every events shape.
     expect(triggerModeOf({ events: ['issues:labeled'], mentionOnly: true })).toBe('mention')
   })

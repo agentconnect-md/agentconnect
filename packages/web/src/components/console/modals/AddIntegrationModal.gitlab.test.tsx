@@ -225,6 +225,7 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       family: 'merge_request',
       events: ['merge_request:*'],
       commentFamilies: ['merge_request'],
+      labelFilter: [],
       mentionOnly: false,
       // The review format opens on the full set, exactly like the github pane.
       reviewPolicy: 'full',
@@ -276,6 +277,7 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       family: 'issues',
       events: ['issues:*'],
       commentFamilies: ['issues'],
+      labelFilter: [],
       mentionOnly: true,
       reviewPolicy: 'off',
       reportingMode: 'off'
@@ -287,6 +289,7 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       family: 'merge_request',
       events: ['merge_request:*'],
       commentFamilies: ['merge_request'],
+      labelFilter: [],
       mentionOnly: true,
       reviewPolicy: 'full',
       reportingMode: 'check'

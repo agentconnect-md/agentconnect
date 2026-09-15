@@ -106,7 +106,8 @@ const ISSUES_ROW = githubHook({
   name: 'acme/api',
   repoFullName: 'acme/api',
   family: 'issues',
-  events: ['issues:*', 'issue_comment:created']
+  events: ['issues:*', 'issue_comment:created'],
+  labelFilter: ['bug', 'p0', 'ux']
 })
 const DEPLOY_ROW = githubHook({
   id: 'hook-deploy',
@@ -248,17 +249,34 @@ describe('AgentDetailView, code-host repository blocks', () => {
     expect(menuItem('Add Issues')).toBeUndefined()
   })
 
-  it('offers the label cadence on an issues row only', async () => {
+  it('offers the same three cadences on an issues row as on a PR row', async () => {
     const scope = await render()
     // The menu is body-portaled, so read it off the document after opening.
     await act(async () => scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api Issues"]')!.click())
-    expect(menuItem('labeled')).toBeTruthy()
+    expect(menuItem('labeled')).toBeUndefined()
+    expect(menuItem('create')).toBeTruthy()
     expect(menuItem('update')).toBeTruthy()
     await act(async () => menuItem('@-mention')!.click())
 
     await act(async () => scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api PRs"]')!.click())
     expect(menuItem('labeled')).toBeUndefined()
     expect(menuItem('update')).toBeTruthy()
+  })
+
+  it('shows a row’s label filter at rest and settles it in the settings dialog of any thread row', async () => {
+    const scope = await render()
+    // Two labels and the overflow count at rest; the full list on hover.
+    const hint = byTitle(scope, 'Label filter: bug, p0, ux')
+    expect(hint).toHaveLength(1)
+    expect(hint[0]!.textContent).toContain('bug, p0')
+    expect(hint[0]!.textContent).toContain('+1')
+    // Settings… is on the issues row too: the label filter is, even though reviews are not.
+    await act(async () => scope.querySelector<HTMLElement>('[aria-label="More for acme/api Issues"]')!.click())
+    await act(async () => menuItem('Settings…')!.click())
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    expect(dialog.textContent).toContain('Issues settings')
+    expect(dialog.textContent?.toLowerCase()).not.toContain('review')
+    expect(dialog.querySelectorAll('[data-label-filter="open"] [aria-label^="Remove label "]')).toHaveLength(3)
   })
 
   it('creates the missing family row at the default trigger', async () => {
@@ -289,24 +307,23 @@ describe('AgentDetailView, code-host repository blocks', () => {
     expect(byTitle(scope, 'Watch another subject')).toHaveLength(2)
   })
 
-  it('keeps the review surface off the issues rows', async () => {
+  it('offers settings on every thread row, with the review surface on the PR row alone', async () => {
     const scope = await render()
-    // Desktop folds settings into the row's ⋯ menu; mobile keeps its inline icon (one PR row ⇒ one).
-    expect(byTitle(scope, 'PR review and Checks settings')).toHaveLength(1)
+    // Desktop folds settings into the row's ⋯ menu; mobile keeps an inline icon on each THREAD row —
+    // both issues rows and the PR row, never the deployment, which has nothing to settle.
+    expect(byTitle(scope, 'Settings')).toHaveLength(3)
     const prMore = scope.querySelector<HTMLElement>('[aria-label="More for acme/api PRs"]')!
     await act(async () => prMore.click())
-    expect(menuItem('Review & Checks settings')).toBeTruthy()
-    await act(async () => prMore.click()) // close before opening the next menu
-    const issuesMore = scope.querySelector<HTMLElement>('[aria-label="More for acme/api Issues"]')!
-    await act(async () => issuesMore.click())
-    expect(menuItem('Review & Checks settings')).toBeUndefined()
-    expect(menuItem('Recent deliveries')).toBeTruthy()
+    await act(async () => menuItem('Settings…')!.click())
+    const prDialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    expect(prDialog.textContent).toContain('Pull requests settings')
+    expect(prDialog.textContent).toContain('PR review')
+    expect(prDialog.textContent).toContain('Only with labels')
+    await act(async () => byTitle(prDialog, 'Close')[0]!.click())
 
-    mocks.hooks = [WEB_ISSUES_ROW]
-    await act(async () => root!.unmount())
-    root = undefined
-    host?.remove()
-    const issuesOnly = await render()
-    expect(byTitle(issuesOnly, 'PR review and Checks settings')).toHaveLength(0)
+    const deployMore = scope.querySelector<HTMLElement>('[aria-label="More for acme/api Deploys"]')!
+    await act(async () => deployMore.click())
+    expect(menuItem('Settings…')).toBeUndefined()
+    expect(menuItem('Recent deliveries')).toBeTruthy()
   })
 })

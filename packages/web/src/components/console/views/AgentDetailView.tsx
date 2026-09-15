@@ -76,6 +76,7 @@ import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
 import { GiteaReviewSettings } from '@/components/console/GiteaReviewSettings'
 import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
+import { LabelFilterField } from '@/components/console/LabelFilterField'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GiteaMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
@@ -182,11 +183,13 @@ function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 
   )
 }
 
+// One row's settings dialog: the label filter on every thread row, the two review axes on a change-proposal row.
 interface CodeHostReviewSettingsDraft {
   hookId: string
   kind: CodeHostProvider
   reviewPolicy: HookReviewPolicy
   reportingMode: HookReportingMode
+  labelFilter: string[]
 }
 
 // The review dialog's host plate on the inverse surface — each host keeps its own fill and color.
@@ -196,11 +199,15 @@ const REVIEW_DIALOG_MARK: Record<CodeHostProvider, ReactNode> = {
   gitea: <GiteaMark color="#fff" fillPct={100} />
 }
 
-// What the dialog settles, in each host's vocabulary.
-const REVIEW_DIALOG_TITLE: Record<CodeHostProvider, string> = {
-  github: 'PR review & Checks',
-  gitlab: 'MR review & run note',
-  gitea: 'PR review & commit status'
+// The dialog settles one subscription row, so its subject names it.
+function rowSettingsTitle(hook: HookDto): string {
+  const label =
+    hook.kind === 'github'
+      ? githubFamilyTile(githubHookFamily(hook) ?? 'pull_request')?.label
+      : hook.kind === 'gitlab'
+        ? gitlabFamilyTile(gitlabHookFamily(hook) ?? 'merge_request')?.label
+        : giteaFamilyTile(giteaHookFamily(hook) ?? 'merge_request')?.label
+  return `${label ?? 'Subscription'} settings`
 }
 
 export default function AgentDetailView() {
@@ -409,7 +416,8 @@ export default function AgentDetailView() {
       hookId: hook.id,
       kind: hook.kind,
       reviewPolicy: hook.reviewPolicy,
-      reportingMode: hook.reportingMode
+      reportingMode: hook.reportingMode,
+      labelFilter: hook.labelFilter
     })
   }
 
@@ -425,10 +433,10 @@ export default function AgentDetailView() {
     }
     const agentId = reviewSettingsHook.agentId
     const hook = reviewSettingsHook
-    const { reviewPolicy, reportingMode } = reviewSettingsDraft
-    const common = { agentId, name: hook.name, enabled: hook.enabled, events: hook.events }
-    // Each host's PUT re-sends its own whole block; only the two effect axes move. Total over
-    // the providers, so a new host writes through its own endpoint instead of GitHub's.
+    const { reviewPolicy, reportingMode, labelFilter } = reviewSettingsDraft
+    const common = { agentId, name: hook.name, enabled: hook.enabled, events: hook.events, labelFilter }
+    // Each host's PUT re-sends its own whole block; only the effect axes and the label filter move. Total
+    // over the providers, so a new host writes through its own endpoint instead of GitHub's.
     const writers: Record<CodeHostProvider, (() => Promise<HookDto>) | null> = {
       gitea: hook.repoId
         ? () =>
@@ -447,7 +455,6 @@ export default function AgentDetailView() {
               ...common,
               repoFullName: hook.repoFullName!,
               commentFamilies: githubCommentFamilies(hook.commentFamilies),
-              labelFilter: hook.labelFilter,
               mentionOnly: hook.mentionOnly,
               reviewPolicy,
               reportingMode,
@@ -484,8 +491,13 @@ export default function AgentDetailView() {
   }
 
   // One review editor per host, chosen by a total table — a new host brings its own pane instead
-  // of inheriting GitHub's. Both arms edit the same draft, so the two handlers are shared.
-  const reviewSettingsEditor = (draft: CodeHostReviewSettingsDraft): ReactNode => {
+  // of inheriting GitHub's. Both arms edit the same draft, so the two handlers are shared. The
+  // label filter follows on every row; the review axes only where the row carries them.
+  const reviewSettingsEditor = (
+    draft: CodeHostReviewSettingsDraft,
+    carriesReviews: boolean,
+    carriesLabels: boolean
+  ): ReactNode => {
     const onReviewPolicyChange = (reviewPolicy: HookReviewPolicy) => {
       setReviewSettingsError(null)
       setReviewSettingsDraft((current) => (current ? { ...current, reviewPolicy } : current))
@@ -522,7 +534,20 @@ export default function AgentDetailView() {
         />
       )
     }
-    return editors[draft.kind]()
+    return (
+      <div className="flex flex-col gap-4">
+        {carriesReviews && editors[draft.kind]()}
+        {carriesLabels && (
+          <LabelFilterField
+            value={draft.labelFilter}
+            onChange={(labelFilter) => {
+              setReviewSettingsError(null)
+              setReviewSettingsDraft((current) => (current ? { ...current, labelFilter } : current))
+            }}
+          />
+        )}
+      </div>
+    )
   }
 
   // Edit one github subscription in place (PUT re-sends the whole block); the
@@ -691,7 +716,7 @@ export default function AgentDetailView() {
     const fam = githubHookFamily(h)
     return !!fam && githubFamilyCarriesReviews(fam)
   }
-  // The cadences THIS row may pick: label events ride issues alone.
+  // The cadences THIS row may pick: a deployment reads its own two.
   const ghRowTriggerModes = (h: HookDto): readonly GhTriggerMode[] => {
     const fam = githubHookFamily(h)
     return fam ? githubTriggerModes(fam) : GH_TRIGGER_MODES
@@ -712,6 +737,15 @@ export default function AgentDetailView() {
     const fam = giteaHookFamily(h)
     return !!fam && giteaFamilyCarriesReviews(fam)
   }
+  const rowCarriesReviews = (h: HookDto) =>
+    h.kind === 'github' ? ghRowCarriesReviews(h) : h.kind === 'gitlab' ? glRowCarriesReviews(h) : gtRowCarriesReviews(h)
+  // Labels are a thread's: a deployment or push row carries none, so such a row has no settings to open.
+  const rowCarriesLabels = (h: HookDto) => {
+    const fam =
+      h.kind === 'github' ? githubHookFamily(h) : h.kind === 'gitlab' ? gitlabHookFamily(h) : giteaHookFamily(h)
+    return fam === 'pull_request' || fam === 'merge_request' || fam === 'issues'
+  }
+  const rowHasSettings = (h: HookDto) => rowCarriesReviews(h) || rowCarriesLabels(h)
   // One open-state drives both agent-actions surfaces: the desktop kebab dropdown
   // and the mobile bottom sheet (only one is ever visible — CSS gates them).
   const [actionsOpen, setActionsOpen] = useState(false)
@@ -1703,19 +1737,15 @@ export default function AgentDetailView() {
                             {h.reportingMode === 'check' ? ' · informational Check' : ''}
                           </span>
                         )}
+                        <LabelFilterLine labels={h.labelFilter} />
                         {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
                           <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
                             {addFamilyError.message}
                           </span>
                         )}
                       </span>
-                      {/* Reviews and Checks exist on the pull-request row only. */}
-                      {ghRowCarriesReviews(h) && (
-                        <button
-                          className="iconbtn flex-none"
-                          title="PR review and Checks settings"
-                          onClick={() => openReviewSettings(h)}
-                        >
+                      {rowHasSettings(h) && (
+                        <button className="iconbtn flex-none" title="Settings" onClick={() => openReviewSettings(h)}>
                           <Icon name="settings-2" size={15} />
                         </button>
                       )}
@@ -1773,19 +1803,15 @@ export default function AgentDetailView() {
                             {h.reportingMode === 'check' ? ' · run note' : ''}
                           </span>
                         )}
+                        <LabelFilterLine labels={h.labelFilter} />
                         {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
                           <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
                             {addFamilyError.message}
                           </span>
                         )}
                       </span>
-                      {/* Reviews and the run note exist on the merge-request row only. */}
-                      {glRowCarriesReviews(h) && (
-                        <button
-                          className="iconbtn flex-none"
-                          title="MR review and run note settings"
-                          onClick={() => openReviewSettings(h)}
-                        >
+                      {rowHasSettings(h) && (
+                        <button className="iconbtn flex-none" title="Settings" onClick={() => openReviewSettings(h)}>
                           <Icon name="settings-2" size={15} />
                         </button>
                       )}
@@ -1845,19 +1871,15 @@ export default function AgentDetailView() {
                             {h.reportingMode === 'status' ? ' · commit status' : ''}
                           </span>
                         )}
+                        <LabelFilterLine labels={h.labelFilter} />
                         {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
                           <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
                             {addFamilyError.message}
                           </span>
                         )}
                       </span>
-                      {/* Reviews and the commit status exist on the pull-request row only. */}
-                      {gtRowCarriesReviews(h) && (
-                        <button
-                          className="iconbtn flex-none"
-                          title="PR review and commit status settings"
-                          onClick={() => openReviewSettings(h)}
-                        >
+                      {rowHasSettings(h) && (
+                        <button className="iconbtn flex-none" title="Settings" onClick={() => openReviewSettings(h)}>
                           <Icon name="settings-2" size={15} />
                         </button>
                       )}
@@ -2033,6 +2055,7 @@ export default function AgentDetailView() {
                               )}
                               {/* Authorization is repo-scoped, so the badge shows once per group. */}
                               {first && watchUnauthorized(h) && <UnauthorizedWatchBadge />}
+                              <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
                               {/* What this row subscribes to, stated at the head of its control cluster — a label, not a control. Fixed width so the trigger column aligns across rows. */}
                               <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
                                 {ghRowPill(h)}
@@ -2053,15 +2076,15 @@ export default function AgentDetailView() {
                                 busy={hookBusy === h.id}
                               />
                               <span className="inline-flex flex-none gap-[2px]">
-                                {/* Reviews and Checks exist on the pull-request row only. */}
+                                {/* Settings: the label filter on every row, reviews and Checks on the pull-request row. */}
                                 <RowMoreMenu
                                   ariaLabel={`More for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
                                   items={[
-                                    ...(ghRowCarriesReviews(h)
+                                    ...(rowHasSettings(h)
                                       ? [
                                           {
                                             icon: 'settings-2' as const,
-                                            label: 'Review & Checks settings',
+                                            label: 'Settings…',
                                             onClick: () => openReviewSettings(h)
                                           }
                                         ]
@@ -2176,6 +2199,7 @@ export default function AgentDetailView() {
                                   custom rule
                                 </span>
                               )}
+                              <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
                               {/* What this row subscribes to, stated at the head of its control cluster — a label, not a control. Fixed width so the trigger column aligns across rows. */}
                               <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
                                 {glRowPill(h)}
@@ -2195,15 +2219,15 @@ export default function AgentDetailView() {
                                 busy={hookBusy === h.id}
                               />
                               <span className="inline-flex flex-none gap-[2px]">
-                                {/* Reviews and the run note exist on the merge-request row only. */}
+                                {/* Settings: the label filter on every row, reviews and the run note on the merge-request row. */}
                                 <RowMoreMenu
                                   ariaLabel={`More for ${h.repoFullName ?? h.name} ${glRowPill(h)}`}
                                   items={[
-                                    ...(glRowCarriesReviews(h)
+                                    ...(rowHasSettings(h)
                                       ? [
                                           {
                                             icon: 'settings-2' as const,
-                                            label: 'Review & run note settings',
+                                            label: 'Settings…',
                                             onClick: () => openReviewSettings(h)
                                           }
                                         ]
@@ -2318,6 +2342,7 @@ export default function AgentDetailView() {
                                   custom rule
                                 </span>
                               )}
+                              <LabelFilterHint labels={h.labelFilter} onClick={() => openReviewSettings(h)} />
                               {/* What this row subscribes to, stated at the head of its control cluster. */}
                               <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
                                 {gtRowPill(h)}
@@ -2336,15 +2361,15 @@ export default function AgentDetailView() {
                                 busy={hookBusy === h.id}
                               />
                               <span className="inline-flex flex-none gap-[2px]">
-                                {/* Reviews and the commit status exist on the pull-request row only. */}
+                                {/* Settings: the label filter on every row, reviews and the commit status on the pull-request row. */}
                                 <RowMoreMenu
                                   ariaLabel={`More for ${h.repoFullName ?? h.name} ${gtRowPill(h)}`}
                                   items={[
-                                    ...(gtRowCarriesReviews(h)
+                                    ...(rowHasSettings(h)
                                       ? [
                                           {
                                             icon: 'settings-2' as const,
-                                            label: 'Review & commit status settings',
+                                            label: 'Settings…',
                                             onClick: () => openReviewSettings(h)
                                           }
                                         ]
@@ -2667,7 +2692,7 @@ export default function AgentDetailView() {
                   id="code-host-review-settings-title"
                   className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
                 >
-                  {REVIEW_DIALOG_TITLE[reviewSettingsDraft.kind]}
+                  {rowSettingsTitle(reviewSettingsHook)}
                 </div>
                 <div className="mono mt-[2px] truncate text-[11.5px] text-(--text-tertiary)">
                   {reviewSettingsHook.repoFullName ?? reviewSettingsHook.name}
@@ -2678,7 +2703,11 @@ export default function AgentDetailView() {
               </button>
             </div>
             <div className="overflow-y-auto px-4 py-4 desktop:px-5">
-              {reviewSettingsEditor(reviewSettingsDraft)}
+              {reviewSettingsEditor(
+                reviewSettingsDraft,
+                rowCarriesReviews(reviewSettingsHook),
+                rowCarriesLabels(reviewSettingsHook)
+              )}
               {reviewSettingsError && (
                 <div className="mt-3 flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                   <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
@@ -2769,6 +2798,39 @@ function UnauthorizedWatchBadge() {
 // The add-subject trigger keeps the retired dashed chip's look — transparent ground, tint on hover only.
 const ADD_SUBJECT_BTN =
   'inline-flex h-[26px] w-[26px] flex-none items-center justify-center rounded-[7px] border border-dashed border-(--border-subtle) bg-transparent text-(--text-tertiary) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-secondary)'
+
+// The at-rest label filter on a desktop row: two labels and a "+N", the full list on hover, a click opens the
+// row's settings. It is secondary information, so it takes the row's slack and yields to everything else;
+// an empty filter renders the spacer alone, keeping the pill and trigger columns where they were.
+function LabelFilterHint({ labels, onClick }: { labels: readonly string[]; onClick: () => void }) {
+  if (labels.length === 0) return <span className="ml-auto min-w-0 flex-1" />
+  const more = labels.length - 2
+  return (
+    <button
+      type="button"
+      title={`Label filter: ${labels.join(', ')}`}
+      onClick={onClick}
+      className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-[5px] overflow-hidden border-0 bg-transparent p-0 font-mono text-[11px] font-medium leading-normal text-(--text-tertiary) hover:text-(--text-primary)"
+    >
+      <Icon name="tag" size={11} className="flex-none" />
+      <span className="truncate">
+        {labels.slice(0, 2).join(', ')}
+        {more > 0 ? `  +${more}` : ''}
+      </span>
+    </button>
+  )
+}
+
+// The mobile row's label filter, one line under the cadence — the full list, truncated by the row.
+function LabelFilterLine({ labels }: { labels: readonly string[] }) {
+  if (labels.length === 0) return null
+  return (
+    <span className="flex min-w-0 items-center gap-[5px] font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
+      <Icon name="tag" size={11} className="flex-none" />
+      <span className="truncate">{labels.join(', ')}</span>
+    </span>
+  )
+}
 
 // A one-button flyout for row controls: ⋯ folds the secondary actions, + offers the subjects a repo could still watch.
 function RowMoreMenu({

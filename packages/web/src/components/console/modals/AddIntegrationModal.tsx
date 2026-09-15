@@ -73,6 +73,7 @@ import {
   type RepoAccess
 } from '@/lib/api'
 import EditWorkspaceModal from './EditWorkspaceModal'
+import { LabelFilterField } from '@/components/console/LabelFilterField'
 import {
   GH_DEFAULT_FAMILIES,
   GH_FAMILIES,
@@ -183,9 +184,8 @@ interface TriggerTile<M extends string> {
   desc: string
 }
 
-/** The cadences each GitHub subject offers, worded for that subject. Issues trade
- *  "any update" for "labeled" here: a label is the signal a triaging agent waits
- *  on, and the agent page still offers the full four. */
+/** The cadences each GitHub subject offers, worded for that subject — the same three on every
+ *  thread family; a triaging agent narrows an any-update row with the label filter beneath. */
 const GH_TRIGGER_TILES: Partial<Record<GhFamily, TriggerTile<GhTriggerMode>[]>> = {
   pull_request: [
     // Subtitles promise only what the ingress admits: ready-for-review and
@@ -196,7 +196,7 @@ const GH_TRIGGER_TILES: Partial<Record<GhFamily, TriggerTile<GhTriggerMode>[]>> 
   ],
   issues: [
     { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'A new issue is filed' },
-    { mode: 'labeled', label: GH_TRIGGER_LABEL.labeled, desc: 'A label is applied' },
+    { mode: 'every', label: GH_TRIGGER_LABEL.every, desc: 'Every update or reply' },
     { mode: 'mention', label: GH_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
   ],
   // A deployment has no thread: nobody opens or @-mentions in it, so two cadences, worded for it.
@@ -206,9 +206,7 @@ const GH_TRIGGER_TILES: Partial<Record<GhFamily, TriggerTile<GhTriggerMode>[]>> 
   ]
 }
 
-/** The GitLab cadences — the same shape, minus the label mode: GitLab label
- *  events are not a verified subscription here, so its issues keep the three
- *  modes the wire already carries. */
+/** The GitLab cadences — the same three, worded for a merge request. */
 const GL_TRIGGER_TILES: Partial<Record<GlFamily, TriggerTile<GlTriggerMode>[]>> = {
   merge_request: [
     // Same honesty rule: draft/ready flips are dropped by ingress normalization.
@@ -223,8 +221,7 @@ const GL_TRIGGER_TILES: Partial<Record<GlFamily, TriggerTile<GlTriggerMode>[]>> 
   ]
 }
 
-/** Gitea's cadences — the same three, worded for a pull request. Gitea's own label events are
- *  not a verified subscription here either, so its issues keep the three the wire carries. */
+/** Gitea's cadences — the same three, worded for a pull request. */
 const GT_TRIGGER_TILES: Partial<Record<GtFamily, TriggerTile<GtTriggerMode>[]>> = {
   merge_request: [
     // Same honesty rule: draft/ready flips are dropped by ingress normalization.
@@ -513,6 +510,8 @@ export default function AddIntegrationModal({
   // Unset ⇒ that family's default, so a newly ticked family needs no seeding here.
   const [ghModes, setGhModes] = useState<Partial<Record<GhFamily, GhTriggerMode>>>({})
   const ghModeOf = (fam: GhFamily): GhTriggerMode => ghModes[fam] ?? githubDefaultTriggerMode(fam)
+  // The label filter is per subject too; unset ⇒ any label.
+  const [ghLabels, setGhLabels] = useState<Partial<Record<GhFamily, string[]>>>({})
   const [ghReviewPolicy, setGhReviewPolicy] = useState<HookReviewPolicy>('full')
   const [ghReportingMode, setGhReportingMode] = useState<HookReportingMode>('check')
   const [ghSyncing, setGhSyncing] = useState(false)
@@ -616,6 +615,7 @@ export default function AddIntegrationModal({
   const [glFams, setGlFams] = useState<Set<GlFamily>>(new Set(GL_DEFAULT_FAMILIES))
   const [glModes, setGlModes] = useState<Partial<Record<GlFamily, GlTriggerMode>>>({})
   const glModeOf = (fam: GlFamily): GlTriggerMode => glModes[fam] ?? gitlabDefaultTriggerMode(fam)
+  const [glLabels, setGlLabels] = useState<Partial<Record<GlFamily, string[]>>>({})
   const [glReviewPolicy, setGlReviewPolicy] = useState<HookReviewPolicy>('full')
   const [glReportingMode, setGlReportingMode] = useState<HookReportingMode>('check')
 
@@ -628,6 +628,7 @@ export default function AddIntegrationModal({
   const [gtFams, setGtFams] = useState<Set<GtFamily>>(new Set(GT_DEFAULT_FAMILIES))
   const [gtModes, setGtModes] = useState<Partial<Record<GtFamily, GtTriggerMode>>>({})
   const gtModeOf = (fam: GtFamily): GtTriggerMode => gtModes[fam] ?? giteaDefaultTriggerMode(fam)
+  const [gtLabels, setGtLabels] = useState<Partial<Record<GtFamily, string[]>>>({})
   const [gtReviewPolicy, setGtReviewPolicy] = useState<HookReviewPolicy>('full')
   const [gtReportingMode, setGtReportingMode] = useState<HookReportingMode>('status')
 
@@ -1184,6 +1185,7 @@ export default function AddIntegrationModal({
           repoId: gtRepo,
           family: fam,
           ...giteaFamilySubscription(fam, gtModeOf(fam)),
+          labelFilter: gtLabels[fam] ?? [],
           reviewPolicy: reviews ? gtEffectiveReviewPolicy : 'off',
           reportingMode: reviews ? gtEffectiveReportingMode : 'off'
         })
@@ -1229,6 +1231,7 @@ export default function AddIntegrationModal({
           projectId: glProject,
           family: fam,
           ...gitlabFamilySubscription(fam, glModeOf(fam)),
+          labelFilter: glLabels[fam] ?? [],
           reviewPolicy: reviews ? glEffectiveReviewPolicy : 'off',
           reportingMode: reviews ? glEffectiveReportingMode : 'off'
         })
@@ -1303,6 +1306,7 @@ export default function AddIntegrationModal({
           repoFullName: ghRepoPick,
           family: fam,
           ...githubFamilySubscription(fam, ghModeOf(fam)),
+          labelFilter: ghLabels[fam] ?? [],
           reviewPolicy: reviews ? ghEffectiveReviewPolicy : 'off',
           reportingMode: reviews ? ghEffectiveReportingMode : 'off',
           gateMode: 'informational'
@@ -1994,34 +1998,43 @@ export default function AddIntegrationModal({
                       ? githubMentionUsage(agent.name, ghTeamOwner)
                       : githubTriggerTooltip(mode, agent.name, fam)
                   }
-                  // Reviews and Checks ride the change-proposal subject, so the
-                  // format section lives in that card's body and nowhere else.
-                  bodyExtra={(fam) =>
-                    githubFamilyCarriesReviews(fam) ? (
-                      <GithubReviewSettings
-                        layout="format"
-                        value={{ reviewPolicy: ghReviewPolicy, reportingMode: ghReportingMode }}
-                        onReviewPolicyChange={(policy) => {
-                          setGhReviewPolicy(policy)
-                          setErr(null)
-                        }}
-                        onReportingModeChange={(m) => {
-                          setGhReportingMode(m)
-                          setErr(null)
-                        }}
-                        repoAccess={ghRepoAccess}
-                        installation={ghSelectedInstallation}
-                        publicRepo={ghSelectedRepo ? !ghSelectedRepo.private : false}
-                        repoSelected={Boolean(ghRepoPick)}
-                        canAuthorizeRepo={
-                          canEditAgent &&
-                          (ghRepoAccess === 'none' || ghSelectedIsWorkspace || ghSelectedAuthorization !== undefined)
-                        }
-                        authorizingRepo={ghAccessSaving}
-                        onAuthorizeRepo={() => void authorizeSelectedRepo()}
-                      />
-                    ) : null
-                  }
+                  // Reviews and Checks ride the change-proposal subject, so the format section lives in
+                  // that card's body and nowhere else; the label filter rides every thread subject.
+                  bodyExtra={(fam) => (
+                    <div className="flex flex-col gap-3">
+                      {githubFamilyCarriesReviews(fam) && (
+                        <GithubReviewSettings
+                          layout="format"
+                          value={{ reviewPolicy: ghReviewPolicy, reportingMode: ghReportingMode }}
+                          onReviewPolicyChange={(policy) => {
+                            setGhReviewPolicy(policy)
+                            setErr(null)
+                          }}
+                          onReportingModeChange={(m) => {
+                            setGhReportingMode(m)
+                            setErr(null)
+                          }}
+                          repoAccess={ghRepoAccess}
+                          installation={ghSelectedInstallation}
+                          publicRepo={ghSelectedRepo ? !ghSelectedRepo.private : false}
+                          repoSelected={Boolean(ghRepoPick)}
+                          canAuthorizeRepo={
+                            canEditAgent &&
+                            (ghRepoAccess === 'none' || ghSelectedIsWorkspace || ghSelectedAuthorization !== undefined)
+                          }
+                          authorizingRepo={ghAccessSaving}
+                          onAuthorizeRepo={() => void authorizeSelectedRepo()}
+                        />
+                      )}
+                      {(fam === 'pull_request' || fam === 'issues') && (
+                        <LabelFilterField
+                          collapsible
+                          value={ghLabels[fam] ?? []}
+                          onChange={(labels) => setGhLabels((prev) => ({ ...prev, [fam]: labels }))}
+                        />
+                      )}
+                    </div>
+                  )}
                 />
               </>
             )}
@@ -2111,17 +2124,26 @@ export default function AddIntegrationModal({
                       ? giteaMentionUsage(agent.name, gtTeamOwner)
                       : giteaTriggerTooltip(mode, agent.name)
                   }
-                  bodyExtra={(fam) =>
-                    giteaFamilyCarriesReviews(fam) ? (
-                      <GiteaReviewSettings
-                        value={{ reviewPolicy: gtReviewPolicy, reportingMode: gtReportingMode }}
-                        onReviewPolicyChange={setGtReviewPolicy}
-                        onReportingModeChange={setGtReportingMode}
-                        repositoryReady={!gtPicked?.binding || gtPicked.binding.state !== 'provisioning'}
-                        layout="format"
-                      />
-                    ) : null
-                  }
+                  bodyExtra={(fam) => (
+                    <div className="flex flex-col gap-3">
+                      {giteaFamilyCarriesReviews(fam) && (
+                        <GiteaReviewSettings
+                          value={{ reviewPolicy: gtReviewPolicy, reportingMode: gtReportingMode }}
+                          onReviewPolicyChange={setGtReviewPolicy}
+                          onReportingModeChange={setGtReportingMode}
+                          repositoryReady={!gtPicked?.binding || gtPicked.binding.state !== 'provisioning'}
+                          layout="format"
+                        />
+                      )}
+                      {(fam === 'merge_request' || fam === 'issues') && (
+                        <LabelFilterField
+                          collapsible
+                          value={gtLabels[fam] ?? []}
+                          onChange={(labels) => setGtLabels((prev) => ({ ...prev, [fam]: labels }))}
+                        />
+                      )}
+                    </div>
+                  )}
                 />
               </>
             )}
@@ -2208,24 +2230,33 @@ export default function AddIntegrationModal({
                   titleOf={(mode) =>
                     mode === 'mention' ? gitlabMentionUsage(agent.name) : gitlabTriggerTooltip(mode, agent.name)
                   }
-                  // Reviews and the run note ride the merge-request subject only.
-                  bodyExtra={(fam) =>
-                    gitlabFamilyCarriesReviews(fam) ? (
-                      <GitlabReviewSettings
-                        layout="format"
-                        value={{ reviewPolicy: glReviewPolicy, reportingMode: glReportingMode }}
-                        onReviewPolicyChange={(policy) => {
-                          setGlReviewPolicy(policy)
-                          setErr(null)
-                        }}
-                        onReportingModeChange={(mode) => {
-                          setGlReportingMode(mode)
-                          setErr(null)
-                        }}
-                        projectBotReady={!glPicked?.binding || glPicked.binding.state !== 'provisioning'}
-                      />
-                    ) : null
-                  }
+                  // Reviews and the run note ride the merge-request subject only; the label filter, every thread subject.
+                  bodyExtra={(fam) => (
+                    <div className="flex flex-col gap-3">
+                      {gitlabFamilyCarriesReviews(fam) && (
+                        <GitlabReviewSettings
+                          layout="format"
+                          value={{ reviewPolicy: glReviewPolicy, reportingMode: glReportingMode }}
+                          onReviewPolicyChange={(policy) => {
+                            setGlReviewPolicy(policy)
+                            setErr(null)
+                          }}
+                          onReportingModeChange={(mode) => {
+                            setGlReportingMode(mode)
+                            setErr(null)
+                          }}
+                          projectBotReady={!glPicked?.binding || glPicked.binding.state !== 'provisioning'}
+                        />
+                      )}
+                      {(fam === 'merge_request' || fam === 'issues') && (
+                        <LabelFilterField
+                          collapsible
+                          value={glLabels[fam] ?? []}
+                          onChange={(labels) => setGlLabels((prev) => ({ ...prev, [fam]: labels }))}
+                        />
+                      )}
+                    </div>
+                  )}
                 />
               </>
             )}

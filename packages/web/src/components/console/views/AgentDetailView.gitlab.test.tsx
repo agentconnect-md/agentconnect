@@ -84,6 +84,7 @@ const gitlabHook = {
   repoFullName: 'group/project',
   events: ['issue_comment'],
   commentFamilies: [],
+  labelFilter: [],
   enabled: true
 } as unknown as Parameters<typeof Object.freeze>[0]
 

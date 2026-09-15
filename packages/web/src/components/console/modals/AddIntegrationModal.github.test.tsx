@@ -177,16 +177,17 @@ describe('AddIntegrationModal, GitHub trigger cadence', () => {
     expect(document.querySelectorAll('[data-github-trigger^="issues:"]')).toHaveLength(0)
   })
 
-  it('offers each subject its own three cadences — label events on issues alone', async () => {
+  it('offers each thread subject the same three cadences — labels are a filter beneath, not a cadence', async () => {
     await renderAgent({ id: 'agent-per-family-tiles' })
     await act(async () => family('issues')?.click())
 
     expect(trigger('pull_request', 'every')).not.toBeNull()
+    expect(trigger('issues', 'every')).not.toBeNull()
     expect(trigger('pull_request', 'labeled')).toBeNull()
-    expect(trigger('issues', 'labeled')).not.toBeNull()
-    // Issues trade "any update" for the label cadence in the wizard.
-    expect(trigger('issues', 'every')).toBeNull()
+    expect(trigger('issues', 'labeled')).toBeNull()
     expect(document.querySelectorAll('[data-github-trigger]')).toHaveLength(6)
+    // Each open card folds its label filter behind a link until it is wanted.
+    expect(document.querySelectorAll('[data-label-filter="collapsed"]')).toHaveLength(2)
   })
 
   it('gives each selected subject its own cadence in a single pass', async () => {
@@ -224,21 +225,28 @@ describe('AddIntegrationModal, GitHub trigger cadence', () => {
     )
   })
 
-  it('compiles the label cadence to the bare label event with no reply scope', async () => {
+  it('sends the label filter typed into a card with that family’s create and an empty one otherwise', async () => {
     await renderAgent({ id: 'agent-labeled' })
     await act(async () => family('issues')?.click())
-    await act(async () => trigger('issues', 'labeled')?.click())
+    // The first link belongs to the pull-request card, which is open by default.
+    await act(async () => clickText('Filter by labels')?.click())
+    const input = document.querySelector<HTMLInputElement>('[data-label-filter="open"] input')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter?.call(input, 'Needs-Review')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
 
     await act(async () => clickText('Connect')?.click())
 
     expect(mocks.createGithubHook).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ family: 'pull_request', labelFilter: ['Needs-Review'] })
+    )
+    expect(mocks.createGithubHook).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({
-        family: 'issues',
-        events: ['issues:labeled'],
-        commentFamilies: [],
-        mentionOnly: false
-      })
+      expect.objectContaining({ family: 'issues', labelFilter: [] })
     )
   })
 

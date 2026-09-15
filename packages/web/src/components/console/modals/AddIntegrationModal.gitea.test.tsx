@@ -231,6 +231,7 @@ describe('AddIntegrationModal, Gitea trigger', () => {
       family: 'merge_request',
       events: ['merge_request:*'],
       commentFamilies: ['merge_request'],
+      labelFilter: [],
       mentionOnly: false,
       // The review format opens on the full set, and Gitea reports the run state as a commit status.
       reviewPolicy: 'full',
@@ -282,6 +283,7 @@ describe('AddIntegrationModal, Gitea trigger', () => {
       family: 'issues',
       events: ['issues:*'],
       commentFamilies: ['issues'],
+      labelFilter: [],
       mentionOnly: true,
       reviewPolicy: 'off',
       reportingMode: 'off'
@@ -293,6 +295,7 @@ describe('AddIntegrationModal, Gitea trigger', () => {
       family: 'merge_request',
       events: ['merge_request:*'],
       commentFamilies: ['merge_request'],
+      labelFilter: [],
       mentionOnly: true,
       reviewPolicy: 'full',
       reportingMode: 'status'
