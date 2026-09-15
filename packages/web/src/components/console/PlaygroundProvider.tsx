@@ -758,6 +758,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 appId: ev.appId,
                 title: ev.title,
                 toolName: ev.toolName,
+                ...(ev.nativeUi ? { nativeUi: ev.nativeUi } : {}),
                 ...(ev.html !== undefined ? { html: ev.html } : {}),
                 ...(ev.htmlBytes !== undefined ? { htmlBytes: ev.htmlBytes } : {}),
                 ...(ev.toolInput ? { toolInput: ev.toolInput } : {}),

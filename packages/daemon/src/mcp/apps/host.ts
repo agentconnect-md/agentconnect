@@ -20,6 +20,7 @@
 import { Client, StreamableHTTPClientTransport, type Transport } from '@modelcontextprotocol/client'
 import { CappedStdioClientTransport } from '../../memory-plugin/stdio-transport.js'
 import { MCP_APP_HTML_MAX_BYTES, type McpAppCsp, type McpAppDimensions } from '@agentconnect.md/protocol'
+import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import type { McpServerDef } from '../../config/config-schema.js'
 import type { Logger } from '../../log.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
@@ -100,7 +101,8 @@ export interface AppToolCall {
    */
   interfaceUnavailable?: true
   card?: {
-    html: string
+    html?: string
+    nativeUi?: NativeMcpUi
     csp?: McpAppCsp
     dimensions?: McpAppDimensions
     toolResult: { content?: unknown[]; structuredContent?: Record<string, unknown>; isError?: boolean }
@@ -108,6 +110,7 @@ export interface AppToolCall {
 }
 
 export interface McpAppsHostDeps {
+  nativeResource?: (tool: string, uri: string, result: unknown) => NativeMcpUi | undefined
   /**
    * The servers visible to ONE ORGANIZATION — daemon-local config overlaid with whatever the CP
    * pushed for that org — read through a function so a config reload or a CP push is picked up
@@ -289,6 +292,8 @@ export class McpAppsHost {
 
     const title = upstream.title ?? tool
     if (!upstream.templateUri || isError) return { content, isError, title }
+    const nativeUi = this.deps.nativeResource?.(tool, upstream.templateUri, raw)
+    if (nativeUi) return { content, isError, title, card: { nativeUi, toolResult: { content } } }
     const template = await this.template(orgId, server, upstream.templateUri)
     if (!template) {
       this.deps.log?.warn(
@@ -386,6 +391,7 @@ export class McpAppsHost {
   }
 
   async close(): Promise<void> {
+    this.dialing.clear()
     for (const [name, conn] of this.conns) {
       await conn.client.close().catch((err: unknown) => {
         this.deps.log?.debug(`mcp apps: closing "${name}" failed: ${(err as Error).message}`)

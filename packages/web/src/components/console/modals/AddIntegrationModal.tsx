@@ -440,6 +440,7 @@ export default function AddIntegrationModal({
   onPickAgent,
   initialPlatform,
   initialFeishuRegion,
+  onCompleted,
   onClose
 }: {
   agent: Agent
@@ -448,6 +449,7 @@ export default function AddIntegrationModal({
   onPickAgent?: (agentId: string) => void
   initialPlatform?: Platform
   initialFeishuRegion?: FeishuRegion
+  onCompleted?: (summary: string) => void
   onClose: () => void
 }) {
   const {
@@ -807,7 +809,10 @@ export default function AddIntegrationModal({
     setIdentityChrome,
     setRegionLocked,
     setError,
-    close: onClose,
+    close: () => {
+      onCompleted?.(`Created ${platform} integration for ${agent.name}.`)
+      onClose()
+    },
     invalidate: refresh
   }
 
@@ -820,6 +825,7 @@ export default function AddIntegrationModal({
     setErr(null)
     try {
       await createIntegration(wizard.buildReuseInput(selectedBot, reuseContext(wantShared)))
+      onCompleted?.(`Created ${platform} integration for ${agent.name}.`)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -844,6 +850,7 @@ export default function AddIntegrationModal({
         hmac: hookHmac
       })
       setCreatedHook(created)
+      onCompleted?.(`Created webhook integration for ${agent.name}.`)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -1181,6 +1188,7 @@ export default function AddIntegrationModal({
           reportingMode: reviews ? gtEffectiveReportingMode : 'off'
         })
       }
+      onCompleted?.(`Created Gitea subscriptions for ${agent.name}.`)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -1225,6 +1233,7 @@ export default function AddIntegrationModal({
           reportingMode: reviews ? glEffectiveReportingMode : 'off'
         })
       }
+      onCompleted?.(`Created GitLab subscriptions for ${agent.name} on ${glPicked?.projectPath ?? glProject}.`)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -1299,6 +1308,7 @@ export default function AddIntegrationModal({
           gateMode: 'informational'
         })
       }
+      onCompleted?.(`Created GitHub subscriptions for ${agent.name} on ${ghRepoPick}.`)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -2564,17 +2574,21 @@ function AgentPicker({ agents, value, onPick }: { agents: Agent[]; value: string
 export function AddIntegrationForOrgModal({
   initialPlatform,
   initialFeishuRegion,
+  initialAgentId,
+  onCompleted,
   onClose
 }: {
   initialPlatform?: Platform
   initialFeishuRegion?: FeishuRegion
+  initialAgentId?: string
+  onCompleted?: (summary: string) => void
   onClose: () => void
 }) {
   const { agents } = useConsoleData()
   // Creating an integration writes the agent's spec, so only offer the ones this
   // viewer may edit — the CP would 403 the rest.
   const choices = useMemo(() => agents.filter((a) => a.canEdit), [agents])
-  const [agentId, setAgentId] = useState<string | null>(null)
+  const [agentId, setAgentId] = useState<string | null>(initialAgentId ?? null)
   const agent = choices.find((a) => a.id === agentId) ?? choices[0]
 
   if (!agent) {
@@ -2612,6 +2626,7 @@ export function AddIntegrationForOrgModal({
       agent={agent}
       agentChoices={choices}
       onPickAgent={setAgentId}
+      onCompleted={onCompleted}
       initialPlatform={initialPlatform}
       initialFeishuRegion={initialFeishuRegion}
       onClose={onClose}

@@ -4240,8 +4240,8 @@ export async function createGithubHook(input: CreateGithubHookInput): Promise<Cr
 
 // Update a github hook's subscription (event pills / labels / repo re-target).
 // The body re-sends the full github block — PUT is whole-definition.
-export async function updateGithubHook(id: string, input: UpdateGithubHookInput): Promise<HookDto> {
-  return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'github', ...input })
+export async function updateGithubHook(id: string, input: UpdateGithubHookInput, orgId?: string): Promise<HookDto> {
+  return apiPut<HookDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}`, { kind: 'github', ...input })
 }
 
 // GitLab subscription — no URL, no secret: the managed project webhook signs its
@@ -4253,8 +4253,8 @@ export async function createGitlabHook(input: CreateGitlabHookInput): Promise<Cr
 }
 
 // Update a gitlab hook's subscription. Whole-definition PUT, like the github one.
-export async function updateGitlabHook(id: string, input: UpdateGitlabHookInput): Promise<HookDto> {
-  return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'gitlab', ...input })
+export async function updateGitlabHook(id: string, input: UpdateGitlabHookInput, orgId?: string): Promise<HookDto> {
+  return apiPut<HookDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}`, { kind: 'gitlab', ...input })
 }
 
 // Gitea subscription — no URL, no secret: the managed repository webhook signs its own
@@ -4266,8 +4266,8 @@ export async function createGiteaHook(input: CreateGiteaHookInput): Promise<Crea
 }
 
 // Update a gitea hook's subscription. Whole-definition PUT, like the other two.
-export async function updateGiteaHook(id: string, input: UpdateGiteaHookInput): Promise<HookDto> {
-  return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'gitea', ...input })
+export async function updateGiteaHook(id: string, input: UpdateGiteaHookInput, orgId?: string): Promise<HookDto> {
+  return apiPut<HookDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}`, { kind: 'gitea', ...input })
 }
 
 export async function deleteHook(id: string): Promise<void> {
@@ -4284,10 +4284,11 @@ export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRun
 export async function updateIntegrationChannel(
   integrationId: string,
   channelId: string,
-  patch: { trigger?: ChannelTrigger; agentId?: string }
+  patch: { trigger?: ChannelTrigger; agentId?: string },
+  orgId?: string
 ): Promise<IntegrationChannelDto> {
   return apiPatch<IntegrationChannelDto>(
-    `${orgBase()}/integrations/${encodeURIComponent(integrationId)}/channels/${encodeURIComponent(channelId)}`,
+    `${orgBase(orgId)}/integrations/${encodeURIComponent(integrationId)}/channels/${encodeURIComponent(channelId)}`,
     patch
   )
 }
@@ -5221,12 +5222,12 @@ export type GithubInstalledRepoDto = GithubRepoDto & { installationId: string }
 /** Installations list doubles as the enabled-probe: it is viewer-readable (the
  *  install-link route is not — minting a state is a write), and 404 ⇒ the
  *  feature is off on this deployment. */
-export async function fetchGithubInstallations(): Promise<{
+export async function fetchGithubInstallations(orgId?: string): Promise<{
   enabled: boolean
   installations: GithubInstallationDto[]
 }> {
   try {
-    const installations = await apiGet<GithubInstallationDto[]>(`${orgBase()}/github/installations`)
+    const installations = await apiGet<GithubInstallationDto[]>(`${orgBase(orgId)}/github/installations`)
     return { enabled: true, installations }
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return { enabled: false, installations: [] }

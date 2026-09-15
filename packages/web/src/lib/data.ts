@@ -2,6 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
+import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import {
   CODE_HOST_PROVIDERS,
@@ -1241,6 +1242,7 @@ export interface SessionStep {
    *  closed it, a newer card superseded it, or the session ended), which is what renders the
    *  frame inert in place. */
   app?: {
+    nativeUi?: NativeMcpUi
     appId: string
     title: string
     toolName: string

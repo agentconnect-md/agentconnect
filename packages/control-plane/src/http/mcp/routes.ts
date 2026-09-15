@@ -33,6 +33,7 @@ import type { HttpDeps } from '../deps.js'
 import { API_V1_PREFIX } from '../version.js'
 import { OrgId } from '../../domain/ids.js'
 import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult } from './tools.js'
+import { INTEGRATION_APP_HTML, INTEGRATION_APP_MIME, INTEGRATION_APP_URI } from './integration-app.js'
 import { publicBaseUrl, mcpAuthenticateChallenge } from '../oauth/base.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER } from './internal-invocation-auth.js'
 import type { InvocationContext, ParsedInvocationMetadata } from './remote-grant-authenticator.js'
@@ -43,6 +44,21 @@ import { defaultWebchatMcpMetrics, type WebchatMcpMetrics } from '../../observab
 export const MCP_PATH = '/mcp'
 
 const SERVER_INFO = { name: 'agentconnect', version: '1.0.0' }
+
+// Static templates contain no caller data; grant-authenticated resource reads need no invocation identity.
+function createServer(publicWebUrl?: string) {
+  const server = new Server(serverInfo(publicWebUrl), { capabilities: { tools: {}, resources: {} } })
+  server.setRequestHandler('resources/list', async () => ({
+    resources: [{ uri: INTEGRATION_APP_URI, name: 'Integration setup', mimeType: INTEGRATION_APP_MIME }]
+  }))
+  server.setRequestHandler('resources/read', async (request) => {
+    if (request.params.uri !== INTEGRATION_APP_URI) throw new Error('Unknown resource')
+    return {
+      contents: [{ uri: INTEGRATION_APP_URI, mimeType: INTEGRATION_APP_MIME, text: INTEGRATION_APP_HTML }]
+    }
+  })
+  return server
+}
 const REMOTE_GRANT_DENIED_BODY = Buffer.from(
   JSON.stringify({ error: 'Unauthorized', statusCode: 401, message: 'remote MCP grant denied' })
 )
@@ -302,9 +318,7 @@ export function mcpRoutes(deps: HttpDeps) {
       // capability, so the client proceeds to `tools/list`, which then runs the full
       // invocation path below.
       if (handshakeOnly) {
-        return sendWireResponse(
-          await runHandler(new Server(serverInfo(deps.config.PUBLIC_WEB_URL), { capabilities: { tools: {} } }))
-        )
+        return sendWireResponse(await runHandler(createServer(deps.config.PUBLIC_WEB_URL)))
       }
 
       const orgId = invocationContext?.orgId ?? req.apiKeyOrgId!
@@ -380,7 +394,7 @@ export function mcpRoutes(deps: HttpDeps) {
       }
 
       let definiteFailure = false
-      const server = new Server(serverInfo(deps.config.PUBLIC_WEB_URL), { capabilities: { tools: {} } })
+      const server = createServer(deps.config.PUBLIC_WEB_URL)
 
       server.setRequestHandler('tools/list', async () => ({
         // A read-only credential doesn't see tools it may never call.

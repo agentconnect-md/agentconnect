@@ -52,6 +52,7 @@ const AGENT_UUID = '5e0f8a25-31c8-4a1a-bb0e-9a8f6a2b1c22'
 
 /** Minimal happy-path args per tool (tools with no args pass {}). */
 const ARGS: Record<string, Record<string, unknown>> = {
+  configureIntegration: { mode: 'create' },
   getAgent: { agentId: 'agent-1' },
   getDaemon: { daemonId: 'daemon-1' },
   listWorkspaceFiles: { agentId: 'agent-1', path: 'scripts' },
@@ -96,6 +97,34 @@ async function run(toolName: string, args?: Record<string, unknown>) {
 }
 
 describe('MCP tool registry — §6.2 invariants', () => {
+  it('opens configuration without a write and rejects credential or organization arguments', async () => {
+    const tool = findTool('configureIntegration')!
+    const { ctx, calls } = recordingCtx()
+    const result = await tool.call(ctx, { mode: 'create', provider: 'github', agentId: AGENT_UUID })
+    expect(JSON.parse(result.body)).toMatchObject({
+      orgId: ORG_ID,
+      intent: { mode: 'create', provider: 'github', agentId: AGENT_UUID }
+    })
+    expect(calls.every((call) => call.method === 'GET')).toBe(true)
+    expect(toolDescriptor(tool)._meta?.ui.resourceUri).toBe('ui://agentconnect/integration-setup')
+    for (const extra of [{ orgId: 'another-org' }, { token: 'secret' }, { html: '<script></script>' }]) {
+      expect(tool.schema.safeParse({ mode: 'create', ...extra }).success).toBe(false)
+    }
+  })
+
+  it('resolves an edit target under the requested agent and refuses a different owner', async () => {
+    const tool = findTool('configureIntegration')!
+    const { ctx } = recordingCtx()
+    const hookId = '33333333-3333-4333-8333-333333333333'
+    const args = { mode: 'edit', agentId: AGENT_UUID, target: { kind: 'codehost-subscription', id: hookId } }
+    for (const agentId of [AGENT_UUID, HOST_AGENT_UUID]) {
+      ctx.get = async (path) => ({
+        statusCode: 200,
+        body: JSON.stringify(path.endsWith('/hooks') ? [{ id: hookId, kind: 'github', agentId }] : {})
+      })
+      expect((await tool.call(ctx, args)).statusCode).toBe(agentId === AGENT_UUID ? 200 : 404)
+    }
+  })
   it('every tool only touches /me or the caller-org subtree', async () => {
     for (const tool of MCP_TOOLS) {
       const { calls } = await run(tool.name)

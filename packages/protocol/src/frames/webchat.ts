@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { MCP_APP_CONTEXT_MAX_CHARS } from '../mcp-app.js'
+import { MCP_APP_CONTEXT_MAX_CHARS, NativeMcpUi } from '../mcp-app.js'
 
 // The MCP Apps constants live in the `./mcp-app` leaf so the console can value-import them; the barrel still re-exports them.
 export * from '../mcp-app.js'
@@ -311,6 +311,7 @@ export type McpAppDimensions = z.infer<typeof McpAppDimensions>
  * ordinary tool calls and `ui/message`, not through a parked resolver.
  */
 export const McpAppCard = z.object({
+  nativeUi: NativeMcpUi.optional(),
   /** The unguessable id every RPC from this view carries back — the card's identity, exactly as
    *  `requestId` is an elicitation card's. A view may only reach the server that opened it, and
    *  only while this id is live in its own conversation. */
@@ -360,7 +361,7 @@ export type McpAppCard = z.infer<typeof McpAppCard>
  *  session ending under it. Every one of them renders the card inert and keeps its header and
  *  final result — a persisted app is the record of a decision, never a page re-armed against a
  *  session that no longer exists (§8). */
-export const McpAppOutcome = z.enum(['closed', 'superseded', 'expired'])
+export const McpAppOutcome = z.enum(['closed', 'superseded', 'expired', 'completed'])
 export type McpAppOutcome = z.infer<typeof McpAppOutcome>
 
 /**

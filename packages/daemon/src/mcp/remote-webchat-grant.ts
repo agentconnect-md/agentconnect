@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { McpServer } from '@agentclientprotocol/sdk'
+import { McpAppsHost, type McpAppsHostDeps } from './apps/host.js'
+import { INTEGRATION_SETUP_URI, NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import type {
   WebchatMcpGrantAccept,
   WebchatMcpGrantActivate,
@@ -10,7 +12,7 @@ import type {
   WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
 
-const SERVER_NAME = 'agentconnect-admin'
+export const ADMIN_MCP_SERVER_NAME = 'agentconnect-admin'
 const RENEW_BEFORE_EXPIRY_MS = 5 * 60_000
 
 export interface RemoteWebchatGrantClient {
@@ -49,6 +51,8 @@ interface ActiveDescriptor {
   grantRevision: number
   expiresAt: number
   server: McpServer
+  apps?: McpAppsHost
+  appsReady?: boolean
 }
 
 function stableDescriptorId(conversationId: string): string {
@@ -96,6 +100,8 @@ export class RemoteWebchatGrantManager {
     agentId?: string
   ): Promise<{ server: McpServer; changed: boolean }> {
     const current = this.active.get(conversationId)
+    if (agentId && current?.agentId && current.agentId !== agentId)
+      throw new Error('remote MCP conversation belongs to another agent')
     if (
       current &&
       current.expiresAt > now + RENEW_BEFORE_EXPIRY_MS &&
@@ -143,10 +149,11 @@ export class RemoteWebchatGrantManager {
     const expiresAt = Date.parse(issued.expiresAt)
     const server: McpServer = {
       type: 'http',
-      name: SERVER_NAME,
+      name: ADMIN_MCP_SERVER_NAME,
       url: issued.mcpUrl,
       headers: [{ name: 'Authorization', value: `Bearer ${issued.token}` }]
     }
+    await current?.apps?.close()
     this.active.set(conversationId, {
       ...(agentId ? { agentId } : {}),
       entitlement: { ...entitlement },
@@ -163,6 +170,48 @@ export class RemoteWebchatGrantManager {
       authorityGeneration: issued.authorityGeneration
     })
     return { server, changed: true }
+  }
+
+  // Each conversation owns its connection and template cache under its own activated grant.
+  async prepareApps(conversationId: string, agentId: string): Promise<boolean> {
+    const entry = this.active.get(conversationId)
+    if (!entry || entry.agentId !== agentId || !('type' in entry.server) || entry.server.type !== 'http') return false
+    const server = entry.server
+    entry.apps ??= new McpAppsHost({
+      nativeResource: (tool, uri, result) => {
+        if (tool !== 'configureIntegration' || uri !== INTEGRATION_SETUP_URI) return undefined
+        const content = (result as { content?: Array<{ type?: string; text?: string }> }).content
+        try {
+          const parsed = NativeMcpUi.safeParse(
+            JSON.parse(content?.find((block) => block.type === 'text')?.text ?? 'null')
+          )
+          return parsed.success && parsed.data.orgId === this.orgForAgent?.(agentId) ? parsed.data : undefined
+        } catch {
+          return undefined
+        }
+      },
+      defs: (): ReturnType<McpAppsHostDeps['defs']> =>
+        this.active.get(conversationId) === entry && entry.expiresAt > Date.now()
+          ? {
+              [ADMIN_MCP_SERVER_NAME]: {
+                transport: 'http',
+                args: [],
+                env: [],
+                url: server.url,
+                headers: server.headers,
+                ui: true
+              }
+            }
+          : {}
+    })
+    const tools = await entry.apps.toolsFor(undefined, [ADMIN_MCP_SERVER_NAME])
+    entry.appsReady = this.active.get(conversationId) === entry && tools.length > 0
+    return entry.appsReady
+  }
+
+  appsFor(conversationId: string, agentId: string): McpAppsHost | undefined {
+    const entry = this.active.get(conversationId)
+    return entry?.agentId === agentId && entry.expiresAt > Date.now() && entry.appsReady ? entry.apps : undefined
   }
 
   async revoke(
@@ -195,7 +244,10 @@ export class RemoteWebchatGrantManager {
       // Also forget the local descriptor: the authority is queued for durable
       // revocation, so nothing may reuse or renew this conversation's plaintext.
       const failed = this.active.get(conversationId)
-      if (failed && sameEntitlement(failed.entitlement, entitlement)) this.active.delete(conversationId)
+      if (failed && sameEntitlement(failed.entitlement, entitlement)) {
+        this.active.delete(conversationId)
+        await failed.apps?.close()
+      }
       throw error
     }
     this.ledger?.clear({
@@ -204,7 +256,10 @@ export class RemoteWebchatGrantManager {
       authorityGeneration: entitlement.authorityGeneration
     })
     const current = this.active.get(conversationId)
-    if (current && sameEntitlement(current.entitlement, entitlement)) this.active.delete(conversationId)
+    if (current && sameEntitlement(current.entitlement, entitlement)) {
+      this.active.delete(conversationId)
+      await current.apps?.close()
+    }
   }
 
   async revokeConversation(conversationId: string, reason: WebchatMcpGrantRevoke['reason']): Promise<void> {

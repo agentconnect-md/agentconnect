@@ -28,7 +28,7 @@ export const ELICIT_LANE = 'ELICIT'
 export const APP_LANE = 'APP'
 
 /** The settlements a persisted app row may carry — anything else is a body we do not trust. */
-const MCP_APP_OUTCOMES = new Set(['closed', 'superseded', 'expired'])
+const MCP_APP_OUTCOMES = new Set(['closed', 'superseded', 'expired', 'completed'])
 
 export type PlanEntry = PlanBody['entries'][number]
 

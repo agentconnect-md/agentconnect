@@ -9,6 +9,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Agent, DaemonRow, IntegrationRow, MemberSetRow } from '@/lib/data'
 import type { CronDto, HookDto } from '@/lib/api'
+import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import NativeIntegrationDialog from './modals/NativeIntegrationDialog'
 import AddAgentModal from './modals/AddAgentModal'
 import AddDaemonModal from './modals/AddDaemonModal'
 import AddIntegrationModal, {
@@ -33,6 +35,7 @@ import RuntimeLoginModal, { type RuntimeLoginTarget } from './modals/RuntimeLogi
 import DeleteGroupModal from './modals/DeleteGroupModal'
 
 export type ModalKind =
+  | 'nativeIntegration'
   | 'agent'
   | 'daemon'
   | 'integration'
@@ -62,6 +65,9 @@ type ModalTarget =
 // scrolls the Edit-agent modal to the group whose Edit was clicked (Basics / Runtime
 // behavior / Access), so every Configuration group edits through the same surface.
 interface ModalOpts {
+  nativeUi?: NativeMcpUi
+  nativeRequestId?: string
+  onCompleted?: (summary: string) => void
   platform?: IntegrationPlatform
   feishuRegion?: FeishuRegion
   focusSection?: EditAgentSection
@@ -70,6 +76,8 @@ interface ModalOpts {
 }
 
 interface ModalData {
+  openNativeIntegration: (ui: NativeMcpUi, onCompleted: (summary: string) => void, requestId: string) => boolean
+  closeNativeIntegration: (requestId: string) => void
   // `target` is the scoped dialog's subject (DaemonRow or Agent); ignored by the rest.
   openModal: (kind: ModalKind, target?: ModalTarget, opts?: ModalOpts) => void
 }
@@ -79,12 +87,18 @@ const Ctx = createContext<ModalData | null>(null)
 export function ModalProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState<{ kind: ModalKind; target?: ModalTarget; opts?: ModalOpts } | null>(null)
   const dismissHandler = useRef<(() => void) | null>(null)
+  const occupied = useRef(false)
+  const nativeRequestId = useRef<string | undefined>(undefined)
   const openModal = useCallback((kind: ModalKind, target?: ModalTarget, opts?: ModalOpts) => {
     dismissHandler.current = null
+    occupied.current = true
+    nativeRequestId.current = opts?.nativeRequestId
     setOpen({ kind, target, opts })
   }, [])
   const close = useCallback(() => {
     dismissHandler.current = null
+    occupied.current = false
+    nativeRequestId.current = undefined
     setOpen(null)
   }, [])
   const requestClose = useCallback(() => {
@@ -99,7 +113,24 @@ export function ModalProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const value = useMemo<ModalData>(() => ({ openModal }), [openModal])
+  const openNativeIntegration = useCallback(
+    (nativeUi: NativeMcpUi, onCompleted: (summary: string) => void, requestId: string) => {
+      if (occupied.current) return false
+      openModal('nativeIntegration', undefined, { nativeUi, onCompleted, nativeRequestId: requestId })
+      return true
+    },
+    [openModal]
+  )
+  const closeNativeIntegration = useCallback(
+    (requestId: string) => {
+      if (nativeRequestId.current === requestId) close()
+    },
+    [close]
+  )
+  const value = useMemo<ModalData>(
+    () => ({ openModal, openNativeIntegration, closeNativeIntegration }),
+    [openModal, openNativeIntegration, closeNativeIntegration]
+  )
 
   // Dialogs hold in-progress form state, so a stray click on the scrim must not
   // discard it. Esc asks the active dialog to dismiss first, so dialogs that own
@@ -119,8 +150,11 @@ export function ModalProvider({ children }: { children: ReactNode }) {
       {open && (
         <div className="scrim">
           <div
+            role={open.kind === 'nativeIntegration' ? 'dialog' : undefined}
+            aria-modal={open.kind === 'nativeIntegration' ? true : undefined}
+            aria-label={open.kind === 'nativeIntegration' ? 'Integration configuration' : undefined}
             className={
-              open.kind === 'integration'
+              open.kind === 'integration' || open.kind === 'nativeIntegration'
                 ? 'modal desktop:max-w-[700px]'
                 : // Add/Edit agent carry a section rail beside the form — they need the
                   // design's ≥720px so the two-up fields keep their old width.
@@ -129,6 +163,13 @@ export function ModalProvider({ children }: { children: ReactNode }) {
                   : 'modal'
             }
           >
+            {open.kind === 'nativeIntegration' && open.opts?.nativeUi && (
+              <NativeIntegrationDialog
+                ui={open.opts.nativeUi}
+                onClose={() => closeNativeIntegration(open.opts!.nativeRequestId!)}
+                onCompleted={open.opts.onCompleted!}
+              />
+            )}
             {/* `group` with no target creates; with one it renames — a group has one property. */}
             {open.kind === 'group' && <GroupModal group={open.target as MemberSetRow | undefined} onClose={close} />}
             {open.kind === 'deleteGroup' && open.target && (
@@ -220,4 +261,8 @@ export function useModal(): ModalData {
   const ctx = useContext(Ctx)
   if (!ctx) throw new Error('useModal must be used within <ModalProvider>')
   return ctx
+}
+
+export function useOptionalModal(): ModalData | null {
+  return useContext(Ctx)
 }

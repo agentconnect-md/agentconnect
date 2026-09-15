@@ -22,6 +22,7 @@ import {
   MCP_APP_MESSAGE_MAX_CHARS
 } from '@agentconnect.md/protocol/mcp-app'
 import { Icon } from '@/components/ui'
+import { NativeIntegrationAppCard } from './NativeIntegrationAppCard'
 import type { SessionStep } from '@/lib/data'
 import {
   MCP_APP_SANDBOX,
@@ -33,6 +34,7 @@ import {
 
 /** How a settled frame reads once its bridge has stopped answering. */
 const APP_OUTCOME: Record<string, { icon: string; color: string; label: string }> = {
+  completed: { icon: 'check', color: 'var(--text-secondary)', label: 'Configuration saved' },
   closed: { icon: 'x', color: 'var(--text-tertiary)', label: 'Interface closed' },
   superseded: { icon: 'refresh-cw', color: 'var(--text-tertiary)', label: 'Replaced by a newer interface' },
   expired: { icon: 'clock', color: 'var(--text-tertiary)', label: 'Interface expired with the session' }
@@ -63,7 +65,11 @@ function useConsoleTheme(): 'light' | 'dark' {
   return theme
 }
 
-export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
+export function McpAppCard(props: McpAppCardProps) {
+  return props.step.app?.nativeUi ? <NativeIntegrationAppCard {...props} /> : <SandboxedMcpAppCard {...props} />
+}
+
+function SandboxedMcpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
   const theme = useConsoleTheme()
   const app = step.app
   const frameRef = useRef<HTMLIFrameElement | null>(null)

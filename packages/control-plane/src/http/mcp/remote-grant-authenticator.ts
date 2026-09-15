@@ -37,7 +37,13 @@ export interface ParsedInvocationMetadata {
  *  all. They are answered inside the MCP handler, reach no tool, no nested REST call,
  *  and no org-scoped data — but they still require a live, unrevoked grant, so an
  *  expired credential learns nothing beyond the same 401. */
-const HANDSHAKE_METHODS = new Set(['initialize', 'notifications/initialized', 'ping'])
+const HANDSHAKE_METHODS = new Set([
+  'initialize',
+  'notifications/initialized',
+  'ping',
+  'resources/list',
+  'resources/read'
+])
 
 export type RemoteGrantClaimResult =
   { kind: 'execute'; context: InvocationContext } | { kind: 'handshake' } | { kind: 'denied'; reason: string }

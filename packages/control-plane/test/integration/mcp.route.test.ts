@@ -360,7 +360,10 @@ describe('delegated webchat MCP operations', () => {
     expect(listed.statusCode).toBe(200)
     expect((mcpMessage(listed).result as { tools: Array<{ name: string }> }).tools.length).toBeGreaterThan(0)
 
-    const off = await remoteMethod({ id: 4, method: 'resources/list' })
+    const resources = await remoteMethod({ id: 4, method: 'resources/list' })
+    expect(resources.statusCode).toBe(200)
+    expect(mcpMessage(resources).result).toMatchObject({ resources: [{ uri: 'ui://agentconnect/integration-setup' }] })
+    const off = await remoteMethod({ id: 5, method: 'prompts/list' })
     expect(off.statusCode).toBe(401)
     expect(off.headers['www-authenticate']).toBeUndefined()
   })
@@ -641,6 +644,20 @@ describe('POST /api/v1/mcp — protocol', () => {
 })
 
 describe('POST /api/v1/mcp — tools act with the caller’s own authority', () => {
+  it('returns a native GitHub configuration intent without creating an integration', async () => {
+    const app = build()
+    const { key } = await makeUserWithKey('collaborator')
+    const before = await prisma.integration.count({ where: { orgId: DEFAULT_ORG_ID } })
+    const out = await callTool(app, key, 'configureIntegration', { mode: 'create', provider: 'github' })
+    expect(out.isError).not.toBe(true)
+    expect(JSON.parse(toolText(out))).toEqual({
+      resourceUri: 'ui://agentconnect/integration-setup',
+      resourceVersion: 1,
+      orgId: DEFAULT_ORG_ID,
+      intent: { mode: 'create', provider: 'github' }
+    })
+    expect(await prisma.integration.count({ where: { orgId: DEFAULT_ORG_ID } })).toBe(before)
+  })
   it('whoami reports the key’s user and their role in the bound org', async () => {
     const app = build()
     const { userId, key } = await makeUserWithKey('collaborator')

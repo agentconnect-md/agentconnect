@@ -1,5 +1,11 @@
 # Preset Webchat AgentConnect MCP
 
+Hosting update: [native integration configuration](webchat-native-integration-ui.md)
+supersedes the runtime-only delivery statements below. An available conversation
+MCP Apps host now proxies the same authenticated admin endpoint through the daemon
+bridge; direct runtime delivery remains a fallback. Grant authority, approvals and
+operation idempotency remain server-owned as specified here.
+
 Status: proposed replacement design. This document is authoritative for the next
 implementation of the feature; the existing daemon-local broker implementation is
 superseded and must not be treated as the target architecture.

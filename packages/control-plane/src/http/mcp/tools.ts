@@ -18,6 +18,8 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
+import { INTEGRATION_SETUP_URI, IntegrationSetupIntent } from '@agentconnect.md/protocol/mcp-app'
+import { HOOK_KINDS, isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
 
 /** The day presets `getUsage` accepts, which it converts to an explicit window. */
 type UsageToolRange = 'd1' | 'd7' | 'd30' | 'd90'
@@ -43,6 +45,7 @@ export interface RestResult {
 
 export interface McpToolDef {
   name: string
+  uiResourceUri?: string
   description: string
   /** Argument contract — published to clients as JSON Schema via {@link toolDescriptor}. */
   schema: z.ZodType<Record<string, unknown>>
@@ -205,6 +208,48 @@ function checkWorkspaceMode(value: Record<string, unknown>, ctx: z.RefinementCtx
 const GithubHookEvents = z.array(z.string().min(1)).min(1).max(20)
 
 export const MCP_TOOLS: McpToolDef[] = [
+  {
+    name: 'configureIntegration',
+    description:
+      'Open the Console integration dialog to add or edit an integration. For create, optionally preselect provider (github, gitlab, gitea, webhook, or a chat platform) and agentId. For edit, pass agentId and a target from listIntegrations (kind integration) or listAgentHooks (kind codehost-subscription). Never ask for credentials in chat. Opening does not save changes; the user submits the form.',
+    uiResourceUri: INTEGRATION_SETUP_URI,
+    schema: IntegrationSetupIntent,
+    call: async (ctx, args) => {
+      const result = await ctx.get(org(ctx, ''))
+      if (result.statusCode !== 200) return result
+      const intent = IntegrationSetupIntent.parse(args)
+      if (
+        intent.mode === 'create' &&
+        intent.provider &&
+        ![...CP_PLATFORM_IDS, ...HOOK_KINDS].some((id) => id === intent.provider)
+      ) {
+        return { statusCode: 400, body: JSON.stringify({ message: 'Unknown integration provider' }) }
+      }
+      if (intent.agentId) {
+        const agent = await ctx.get(org(ctx, `/agents/${seg(intent.agentId)}`))
+        if (agent.statusCode !== 200) return agent
+      }
+      if (intent.mode === 'edit') {
+        const list = await ctx.get(
+          org(ctx, intent.target.kind === 'integration' ? '/integrations' : `/agents/${seg(intent.agentId)}/hooks`)
+        )
+        if (list.statusCode !== 200) return list
+        const rows = JSON.parse(list.body) as Array<{ id: string; agentId?: string; kind?: string }>
+        const found = rows.find((row) => row.id === intent.target.id && row.agentId === intent.agentId)
+        if (!found || (intent.target.kind === 'codehost-subscription' && !isCodeHostProvider(found.kind)))
+          return notFound('integration')
+      }
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          resourceUri: INTEGRATION_SETUP_URI,
+          resourceVersion: 1,
+          orgId: ctx.orgId,
+          intent
+        })
+      }
+    }
+  },
   {
     name: 'whoami',
     description:
@@ -822,14 +867,17 @@ export const MCP_TOOLS: McpToolDef[] = [
  *  can gate write/destructive tools behind their own approval UX. */
 export function toolDescriptor(t: McpToolDef): {
   name: string
+  _meta?: { ui: { resourceUri: string } }
   description: string
   inputSchema: { type: 'object' } & Record<string, unknown>
   annotations: { readOnlyHint: boolean; destructiveHint?: boolean }
 } {
   const json = z.toJSONSchema(t.schema) as { type: 'object' } & Record<string, unknown>
+  json.type = 'object'
   delete json.$schema
   return {
     name: t.name,
+    ...(t.uiResourceUri ? { _meta: { ui: { resourceUri: t.uiResourceUri } } } : {}),
     description: t.description,
     inputSchema: json,
     annotations: t.write ? { readOnlyHint: false, destructiveHint: t.destructive === true } : { readOnlyHint: true }
