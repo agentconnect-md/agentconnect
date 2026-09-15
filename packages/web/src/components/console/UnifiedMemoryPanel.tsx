@@ -195,6 +195,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
       ++detailRequest.current
       setReading(false)
       setBusy(true)
+      setPaging(false)
       setError(undefined)
       setHits(null)
       setSearchNote(undefined)
@@ -357,6 +358,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
     }
   }
   function switchView(view: MemoryView) {
+    if (view === (legacy ? 'legacy' : 'entries')) return
     if (view === 'legacy') void openLegacy()
     else {
       setLegacy(false)
@@ -516,7 +518,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
                   onClick={() => setConfirmDelete(true)}
                   ariaLabel="Delete memory"
                 >
-                  <Icon name="trash-2" size={13} />
+                  <Icon name="trash" size={13} />
                   <span className="max-desktop:hidden">Delete memory</span>
                 </Button>
               ) : null}
