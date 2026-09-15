@@ -4,6 +4,8 @@
  * `uninstall-service`; launchd and systemd implement it. All process execution
  * goes through the injectable `Exec` so tests never shell out.
  */
+import type { ServiceAccount } from './account.js'
+
 export interface ExecResult {
   code: number
   stdout: string
@@ -21,6 +23,14 @@ export interface ControllerDeps {
   /** Named service instance (instance.ts). Undefined = the default instance,
    *  whose unit keeps the historical name so existing installs stay addressable. */
   instance?: string
+  /** Linux only: which systemd scope to drive. Defaults to `system`; `user`
+   *  addresses a legacy `~/.config/systemd/user` unit so it stays removable. */
+  scope?: 'system' | 'user'
+  /** Linux system scope: the account the unit's `User=` names. Required to install. */
+  account?: ServiceAccount
+  /** Test seams so a unit install never touches /etc on the developer's machine. */
+  systemUnitDir?: string
+  polkitDir?: string
 }
 
 /**
@@ -58,6 +68,10 @@ export interface InstalledUnit {
   label: string
   unitPath: string
   root: string
+  /** systemd scope the unit was found in; launchd agents are always `user`. */
+  scope: 'system' | 'user'
+  /** The account a system unit runs as, off its `User=` line. */
+  user?: string
 }
 
 export interface ServiceStatus {

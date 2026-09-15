@@ -39,7 +39,10 @@ const VALUE_OPTS = new Set([
   '--log-level',
   '--agents-dir',
   '--max-agents',
-  '--agent'
+  '--agent',
+  '--service-user',
+  '--service-home',
+  '--service-path'
 ])
 
 /**
@@ -96,12 +99,18 @@ export function parseRootFlag(argv: string[]): string | undefined {
  * rewritten by {@link withResolvedRoot} before it reaches the daemon.
  */
 export function parseInstanceFlag(argv: string[]): string | undefined {
+  return parseValueFlag(argv, '--instance')
+}
+
+/** One global value option, read with the same option-value-skipping whole-argv
+ *  scan as `--root` — the service flags are read before commander parses. */
+export function parseValueFlag(argv: string[], flag: string): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === undefined) break
     if (a === '--') break
-    if (a === '--instance') return argv[i + 1]
-    if (a.startsWith('--instance=')) return a.slice('--instance='.length)
+    if (a === flag) return argv[i + 1]
+    if (a.startsWith(`${flag}=`)) return a.slice(flag.length + 1)
     if (VALUE_OPTS.has(a) || SUBCOMMAND_VALUE_OPTS.has(a)) i++
   }
   return undefined

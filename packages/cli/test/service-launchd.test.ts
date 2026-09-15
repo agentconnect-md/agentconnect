@@ -182,13 +182,15 @@ describe('scanLaunchAgents', () => {
       {
         label: 'md.agentconnect.daemon',
         root: rootA,
-        unitPath: join(h, 'Library', 'LaunchAgents', 'md.agentconnect.daemon.plist')
+        unitPath: join(h, 'Library', 'LaunchAgents', 'md.agentconnect.daemon.plist'),
+        scope: 'user'
       },
       {
         instance: 'b',
         label: 'md.agentconnect.daemon.b',
         root: rootB,
-        unitPath: join(h, 'Library', 'LaunchAgents', 'md.agentconnect.daemon.b.plist')
+        unitPath: join(h, 'Library', 'LaunchAgents', 'md.agentconnect.daemon.b.plist'),
+        scope: 'user'
       }
     ])
   })

@@ -53,7 +53,8 @@ export function scanLaunchAgents(home: string): InstalledUnit[] {
       ...(match[1] ? { instance: match[1] } : {}),
       label: name.replace(/\.plist$/, ''),
       unitPath,
-      root: parsePlistRoot(text)
+      root: parsePlistRoot(text),
+      scope: 'user'
     })
   }
   // Default instance first, then named ones alphabetically — the order the

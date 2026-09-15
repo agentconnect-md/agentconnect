@@ -1,24 +1,61 @@
 #!/usr/bin/env node
 import { fileURLToPath } from 'node:url'
-import { Command } from 'commander'
+import { Command, Option } from 'commander'
 import { selfHealCliEntry } from './self-heal.js'
 import { delegate } from './delegate.js'
 import { runShell } from './run-shell.js'
-import { classifyInvocation, parseInstanceFlag, parseRootFlag, withResolvedRoot } from './route.js'
+import {
+  classifyInvocation,
+  firstPositional,
+  parseInstanceFlag,
+  parseRootFlag,
+  parseValueFlag,
+  withResolvedRoot
+} from './route.js'
 import { runLogin } from './login.js'
 import {
   commandSelector,
   controllerFor,
-  installService,
+  isElevated,
   listInstances,
+  lookupAccount,
   resolveController,
   resolveServiceTarget,
-  shouldBakeRootEnv,
-  uninstallService
+  sudoAccountName
 } from './service/index.js'
+import { performInstallService, performUninstallService } from './install-service.js'
 import { runUpgrade, versionInstall, versionList, versionPrune, versionUse } from './version-commands.js'
 import { DEFAULT_KEEP_VERSIONS } from './version-ops.js'
 import { CLI_VERSION } from './version.js'
+
+/** Commands that address the OS service, and so may run under sudo. */
+const SERVICE_COMMANDS = new Set([
+  'install-service',
+  'uninstall-service',
+  'up',
+  'down',
+  'restart',
+  'status',
+  'instances'
+])
+
+/**
+ * Under sudo `os.homedir()` is root's, so an operator who typed
+ * `sudo agentconnect install-service` by hand would install a unit pointing at
+ * `/root/.agentconnect` — and would not see the legacy user unit that has to be
+ * retired first. Re-point HOME at the account that will own the service before
+ * any root resolution runs, so an elevated invocation resolves the same root,
+ * default root and unit set as the unelevated one. Service commands only; an
+ * explicit `--root` still wins, since it is read straight off argv.
+ */
+function adoptServiceAccountHome(argv: string[], flags: { serviceUser?: string; serviceHome?: string }): void {
+  if (process.platform !== 'linux' || !isElevated()) return
+  const cmd = firstPositional(argv)
+  if (cmd === undefined || !SERVICE_COMMANDS.has(cmd)) return
+  const name = flags.serviceUser ?? sudoAccountName()
+  const home = flags.serviceHome ?? (name ? lookupAccount(name)?.home : undefined)
+  if (home) process.env.HOME = home
+}
 
 const fail = (cmd: string, err: unknown): never => {
   console.error(`agentconnect ${cmd}: ${(err as Error).message}`)
@@ -32,6 +69,10 @@ async function main(): Promise<void> {
   // daemon understands so run/delegate never see the flag.
   const instance = parseInstanceFlag(argv)
   const rootFlag = parseRootFlag(argv)
+  const serviceUser = parseValueFlag(argv, '--service-user')
+  const serviceHome = parseValueFlag(argv, '--service-home')
+  const servicePath = parseValueFlag(argv, '--service-path')
+  adoptServiceAccountHome(argv, { serviceUser, serviceHome })
   const target = resolveServiceTarget({
     ...(rootFlag !== undefined ? { root: rootFlag } : {}),
     ...(instance !== undefined ? { instance } : {})
@@ -71,6 +112,11 @@ async function main(): Promise<void> {
     .option('--require-sandbox', 'require an OS sandbox for every agent or refuse daemon startup')
     .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
     .option('--agent <name>', 'select a single agent by id (run/chat)')
+    .option('--service-user <name>', 'Linux: the account the installed system unit runs the daemon as')
+    // Injected by the sudo re-exec so the elevated CLI resolves the same account,
+    // root and PATH the operator's shell had. Not part of the public surface.
+    .addOption(new Option('--service-home <dir>', 'internal').hideHelp())
+    .addOption(new Option('--service-path <path>', 'internal').hideHelp())
 
   // Every service command addresses the same target the argv scan above resolved,
   // and every suggested follow-up command repeats that selector so a copy-paste
@@ -86,14 +132,12 @@ async function main(): Promise<void> {
       process.exit(1)
     }
   }
-  // includeRootEnv follows the RESOLVED root, not whether a flag was typed: an
-  // AGENTCONNECT_ROOT-driven install must not write a unit that omits the root
-  // and silently falls back to ~/.agentconnect at service start.
-  const installOpts = () => ({
-    execPath: process.execPath,
-    includeRootEnv: shouldBakeRootEnv(root),
+  const serviceParams = () => ({
+    root,
+    ...(instance !== undefined ? { instance } : {}),
     cliEntry,
-    ...(process.env.PATH ? { envPath: process.env.PATH } : {})
+    ...(serviceUser !== undefined ? { serviceUser } : {}),
+    ...(servicePath !== undefined ? { servicePath } : {})
   })
 
   program
@@ -172,8 +216,14 @@ async function main(): Promise<void> {
     .description('Install the launchd / systemd service (does not start it — run `agentconnect up`)')
     .action(async () => {
       try {
-        const c = await installService(serviceTarget(), installOpts())
-        console.log(`agentconnect: service installed (${c.label}, root ${root}).`)
+        const outcome = await performInstallService(serviceParams())
+        if (outcome.kind === 'delegated') process.exit(outcome.code)
+        console.log(`agentconnect: service installed (${outcome.controller.label}, root ${root}).`)
+        if (!outcome.unprivilegedControl) {
+          console.log(
+            `This host has no polkit rules.d backend, so \`up\`/\`down\`/\`restart\` need sudo (\`sudo systemctl start ${outcome.controller.label}\`).`
+          )
+        }
         console.log(`Run \`agentconnect${selector} up\` to start it.`)
       } catch (err) {
         fail('install-service', err)
@@ -185,8 +235,9 @@ async function main(): Promise<void> {
     .description('Stop and remove the system service')
     .action(async () => {
       try {
-        const c = await uninstallService(serviceTarget())
-        console.log(`agentconnect: service uninstalled (${c.label})`)
+        const outcome = await performUninstallService(serviceParams())
+        if (outcome.kind === 'delegated') process.exit(outcome.code)
+        console.log(`agentconnect: service uninstalled (${outcome.controller.label})`)
       } catch (err) {
         fail('uninstall-service', err)
       }
@@ -207,7 +258,8 @@ async function main(): Promise<void> {
         for (const unit of found) {
           const s = await controllerFor(unit).status()
           const state = s.running ? `running${s.pid ? ` (pid ${s.pid})` : ''}` : 'stopped'
-          console.log(`${unit.instance ?? '(default)'}\t${state}\t${unit.root}\t${unit.label}`)
+          const where = unit.scope === 'user' ? ' [per-user unit — does not survive logout]' : ''
+          console.log(`${unit.instance ?? '(default)'}\t${state}\t${unit.root}\t${unit.label}${where}`)
         }
       } catch (err) {
         fail('instances', err)
@@ -229,7 +281,9 @@ async function main(): Promise<void> {
           root,
           ...(instance !== undefined ? { instance } : {}),
           configPath: opts.config,
-          cliEntry
+          cliEntry,
+          ...(serviceUser !== undefined ? { serviceUser } : {}),
+          ...(servicePath !== undefined ? { servicePath } : {})
         })
         process.exit(0)
       } catch (err) {

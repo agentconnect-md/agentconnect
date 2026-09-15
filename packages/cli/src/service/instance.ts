@@ -54,7 +54,8 @@ export function resolveServiceTarget(opts: { root?: string; instance?: string } 
   const named = opts.instance === undefined ? undefined : assertInstanceName(opts.instance)
   const scope: DiscoveryScope = {
     ...(opts.home !== undefined ? { home: opts.home } : {}),
-    ...(opts.platform !== undefined ? { platform: opts.platform } : {})
+    ...(opts.platform !== undefined ? { platform: opts.platform } : {}),
+    ...(opts.systemUnitDir !== undefined ? { systemUnitDir: opts.systemUnitDir } : {})
   }
   const root =
     opts.root !== undefined

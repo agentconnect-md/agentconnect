@@ -243,7 +243,7 @@ signal.
 The CLI supports:
 
 - a per-user launchd LaunchAgent on macOS;
-- a systemd user service on Linux.
+- a systemd **system** service on Linux (§4.2.2).
 
 Other platforms must use foreground `agentconnect run`.
 
@@ -296,10 +296,6 @@ directly keep working and migrate to the CLI form on the next `install-service`.
 service definition retains the Node executable and the CLI entry path used
 during installation, so a Node runtime change — or a CLI reinstall that moves
 its entry — requires reinstalling the service.
-
-Interactive `agentconnect login` ensures an active daemon version exists before
-installing and starting the service, so first-time onboarding does not require a
-separate `agentconnect install`.
 
 #### 4.2.1 Several services on one host
 
@@ -355,6 +351,66 @@ OTLP endpoints must be set per instance rather than exported from a shell
 profile, since the login-shell launch inherits the profile; and each root
 carries its own copy of the daemon bundle, so N instances cost N version stores
 (which is also what lets one instance canary a version).
+
+#### 4.2.2 Linux scope and privileges
+
+The Linux unit is **system-scoped**: `/etc/systemd/system/<unit>`, `User=<the
+operator's own account>`, `WantedBy=multi-user.target`. A `--user` unit could not
+meet the requirement, because with `Linger=no` logind stops the user manager once
+the last login session ends and `Restart=always` cannot revive a daemon whose
+manager is gone — closing the last SSH connection took the daemon offline, and
+reconnecting brought it back. `User=` keeps agent execution on the ordinary
+account: only the unit file is root's. `Group=` is omitted so systemd uses that
+account's primary group, and `HOME` plus `WorkingDirectory` are baked in because
+every path below `<root>` and the login-shell launch depend on them.
+
+Privilege is confined to the two commands that change what is installed:
+
+| command                   | privilege | what it does                                                     |
+| ------------------------- | --------- | ---------------------------------------------------------------- |
+| `install-service`         | root      | writes the unit, `daemon-reload`, `enable`, writes a polkit rule |
+| `uninstall-service`       | root      | `stop`, `disable`, removes the unit and its polkit rule          |
+| `up` / `down` / `restart` | none      | `systemctl start` / `stop` under the polkit rule                 |
+| `status` / `instances`    | none      | read-only `systemctl is-active` / `show`                         |
+
+Both privileged commands **re-execute themselves through sudo** rather than
+failing with an instruction. The elevated argv is rebuilt from resolved intent
+(`--root`, `--instance`, `--service-user`, `--service-home`, `--service-path`),
+never rewritten from the caller's, so no option-parsing quirk can smuggle a flag
+across the boundary; `sudo -E` is deliberately not used, since it would carry the
+invoking user's `NODE_OPTIONS` into a root process. `PATH` travels as an argument
+because sudo's `secure_path` replaces the environment one, and that snapshot is
+what the unit bakes in. `sudo -n true` is probed first: with no TTY and no
+passwordless sudo the command refuses and prints the exact line to run, rather
+than blocking on a prompt nobody can see. Elevation is skipped when already root,
+and `SUDO_UID` (or `--service-user`) is what identifies the account — under sudo
+`os.homedir()` is root's, so resolving from it would install a unit pointing at
+`/root/.agentconnect`. Running as real root with neither is refused: `User=root`
+would hand every agent root on the host.
+
+`install-service` drops `/etc/polkit-1/rules.d/49-<unit>.rules`, scoped to one
+unit name, one account, and `start`/`stop`/`restart`/`try-restart`/
+`reload-or-restart`. `enable`/`disable` are deliberately outside it — boot
+persistence is an install-time decision, which is also why install does the
+`enable` and `up` only needs `start`. A host without the `rules.d` JS backend
+(polkit < 0.106) is detected, the rule is skipped, and install says that `up`/
+`down` will need sudo there. `uninstall-service` removes only its own rule file.
+
+Because the unit is enabled at install, `down` on a system unit means _stop now_,
+not _stop and do not come back at boot_; `uninstall-service` is what retires an
+instance. Legacy `~/.config/systemd/user` units stay fully drivable — discovery
+scans both scopes, each `InstalledUnit` carries its own, and `status`/`down`/
+`uninstall-service` address whichever one is actually installed. `install-service`
+migrates: it retires the user unit first and **unelevated**, since
+`systemctl --user` only reaches the caller's own manager and root cannot do it on
+their behalf, and only then asks for root. Reaching the installer with a user unit
+still on disk means someone ran it under sudo by hand, and it refuses rather than
+leave one root with two enabled units. Lingering is never enabled or disabled —
+it is shared by all of that account's services.
+
+Interactive `agentconnect login` ensures an active daemon version exists before
+installing and starting the service, so first-time onboarding does not require a
+separate `agentconnect install`.
 
 ## 5. Stable helper entry
 

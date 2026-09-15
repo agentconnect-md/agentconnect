@@ -15,7 +15,8 @@ import { createInterface } from 'node:readline'
 import { resolveRoot, configPath } from './paths.js'
 import { CLI_VERSION } from './version.js'
 import { probeAuth, type ProbeResult } from './cp/auth-probe.js'
-import { commandSelector, installService as installUnit, shouldBakeRootEnv, type InstallOpts } from './service/index.js'
+import { commandSelector, resolveController, shouldBakeRootEnv, type InstallOpts } from './service/index.js'
+import { performInstallService } from './install-service.js'
 import { ensureDaemonInstalled, runShell } from './run-shell.js'
 
 export interface PersistCredsOpts {
@@ -93,6 +94,10 @@ export interface RunLoginOpts {
   configPath?: string
   /** This CLI's own dist entry, pinned into the service unit (InstallOpts.cliEntry). */
   cliEntry?: string
+  /** Linux: the account the installed system unit runs the daemon as. */
+  serviceUser?: string
+  /** Linux: pre-sudo `PATH` snapshot, threaded through an elevated re-exec. */
+  servicePath?: string
 }
 
 /**
@@ -138,11 +143,19 @@ function realDeps(opts: RunLoginOpts): LoginDeps {
     installService: async () => {
       const root = resolveRoot(opts.root)
       await ensureDaemonInstalled(root)
-      const controller = await installUnit(
-        { root, ...(opts.instance !== undefined ? { instance: opts.instance } : {}) },
-        buildInstallOpts(opts)
-      )
-      await controller.up()
+      const outcome = await performInstallService({
+        root,
+        ...(opts.instance !== undefined ? { instance: opts.instance } : {}),
+        cliEntry: opts.cliEntry ?? process.argv[1] ?? '',
+        ...(opts.serviceUser !== undefined ? { serviceUser: opts.serviceUser } : {}),
+        ...(opts.servicePath !== undefined ? { servicePath: opts.servicePath } : {})
+      })
+      if (outcome.kind === 'delegated' && outcome.code !== 0) {
+        throw new Error('service install failed — see the messages above')
+      }
+      // `up` is unprivileged either way: install already enabled the unit, and the
+      // polkit rule covers `start` for this account.
+      await resolveController({ root, ...(opts.instance !== undefined ? { instance: opts.instance } : {}) }).up()
     },
     // Foreground onboarding runs the daemon via the same respawn shell as
     // `agentconnect run` (§6.1) — it delegates to <root>/current and never
@@ -219,6 +232,9 @@ export async function runLogin(opts: RunLoginOpts, partial: Partial<LoginDeps> =
 
     const ans = (await nextLine(iter, 'Install AgentConnect as a background service? (y/N) ', out)).toLowerCase()
     if (ans === 'y' || ans === 'yes') {
+      // Elevation prompts for a password on /dev/tty; release the terminal first
+      // so readline and the sudo prompt never contend for stdin.
+      rl.close()
       await deps.installService()
       // Repeat the selector: after `login --instance dev`, a bare `agentconnect
       // status` would report the DEFAULT instance, not the one just installed.
