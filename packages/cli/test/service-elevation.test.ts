@@ -47,8 +47,10 @@ describe('account', () => {
 
 describe('polkit rule', () => {
   it('names the file so it sorts ahead of polkit defaults', () => {
-    expect(polkitRulePath('agentconnect.service', '/r')).toBe('/r/49-agentconnect.rules')
-    expect(polkitRulePath('agentconnect@dev.service', '/r')).toBe('/r/49-agentconnect@dev.rules')
+    // `49-` beats polkit's shipped `50-default.rules`; joined so the assertion
+    // holds on the Windows unit-test leg too.
+    expect(polkitRulePath('agentconnect.service', '/r')).toBe(join('/r', '49-agentconnect.rules'))
+    expect(polkitRulePath('agentconnect@dev.service', '/r')).toBe(join('/r', '49-agentconnect@dev.rules'))
   })
 
   it('grants exactly one unit, one account, and the lifecycle verbs', () => {
