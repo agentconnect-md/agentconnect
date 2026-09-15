@@ -4462,7 +4462,7 @@ export class Daemon {
     return (
       this.gitSkillRefs?.resolve(entry, {
         agentId: agent.id,
-        useGitCredential: this.workspaces.usesGithubApp(agent)
+        useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
       }) ?? Promise.resolve(null)
     )
   }
@@ -4622,7 +4622,7 @@ export class Daemon {
             {
               destination: join(scratch, `git-${index}`),
               agentId: agent.id,
-              useGitCredential: this.workspaces.usesGithubApp(agent)
+              useGitCredential: this.workspaces.skillGitCredentialEnabled(agent)
             }
           )
           const resolvedCommit = acquired.resolvedCommit.toLowerCase()

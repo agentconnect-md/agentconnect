@@ -350,7 +350,15 @@ describe('skill source visibility — the agent that enables it resolves it anyw
     const res = await app.inject({ method: 'GET', url: `${ORG}/agents/${A}/skill-sources` })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([
-      { id: S, name: 'sk-hidden-kit', source: 'example-org/example-ai-kit', ref: null, subDir: null, skills: [] }
+      {
+        id: S,
+        name: 'sk-hidden-kit',
+        source: 'example-org/example-ai-kit',
+        ref: null,
+        subDir: null,
+        skills: [],
+        private: false
+      }
     ])
     // Reading it there does NOT loosen the write gate: the ref can be dropped but
     // not re-added, so the console renders that tile off-only.

@@ -895,9 +895,10 @@ async function verifyGithubRepositoryIdentity(
   ) {
     throw new Error('skill GitHub repository identity does not match the configured source')
   }
-  if (record.private !== false) {
-    throw new Error('private skill sources are not supported')
-  }
+  // A private repository is admitted: the CP marked the entry `private` and the
+  // credential fallback above already authenticated this read with the agent's
+  // repository-scoped installation token (shared-skills.md §3). The identity and
+  // name checks above are what fence a private source; visibility is not a gate.
 }
 
 /** A ref the operator pinned to exact bytes: never re-read, never tracked. */
@@ -1009,8 +1010,8 @@ export async function acquireGitSkillSource(
       repositoryPath: github.path,
       agentId: opts.agentId,
       privateHome,
-      // A scoped credential may raise GitHub's API rate limit or resolve the
-      // exact numeric identity, but metadata below still rejects private repos.
+      // A scoped credential resolves a private repository's numeric identity
+      // (anonymously it reads as 404) and raises GitHub's API rate limit.
       // Crucially, credential fallback happens on the numeric endpoint before
       // any potentially captured owner/name is queried.
       useGitCredential: opts.useGitCredential,

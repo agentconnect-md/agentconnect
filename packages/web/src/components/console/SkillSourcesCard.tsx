@@ -13,8 +13,10 @@
 // just fills the source string and skill filter from the hit you picked.
 //
 // A source records only WHERE skills come from (source string + optional ref /
-// subDir / skill filter) — nothing secret. Self-contained (own create/edit/delete
-// dialogs in a scrim, like the MCP servers card).
+// subDir / skill filter) — nothing secret. A private repository is accepted when
+// the org GitHub App covers it; the tile then carries a "private" badge and the
+// daemon acquires it with a read-only installation token. Self-contained (own
+// create/edit/delete dialogs in a scrim, like the MCP servers card).
 
 import { useRef, useState } from 'react'
 import useSWR, { useSWRConfig } from 'swr'
@@ -238,9 +240,21 @@ function SourceTile({
       mark={<SkillMark />}
       name={s.name}
       badge={
-        s.ref ? (
-          <span className="badge max-w-[92px] flex-none truncate bg-(--status-info-soft) text-[9.5px] text-(--status-info)">
-            {s.ref}
+        s.ref || s.private ? (
+          <span className="flex min-w-0 items-center gap-1">
+            {s.private && (
+              <span
+                className="badge flex-none bg-(--status-paused-soft) text-[9.5px] text-(--status-paused)"
+                title="Private repository — installed through the org GitHub App"
+              >
+                private
+              </span>
+            )}
+            {s.ref && (
+              <span className="badge max-w-[92px] flex-none truncate bg-(--status-info-soft) text-[9.5px] text-(--status-info)">
+                {s.ref}
+              </span>
+            )}
           </span>
         ) : undefined
       }
@@ -348,7 +362,7 @@ export function CreateSkillSourceModal({
               autoFocus
             />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              A repository of skills, one folder per SKILL.md.
+              A repository of skills, one folder per SKILL.md. Private repos need the org GitHub App.
             </span>
           </div>
           <div className="fld">

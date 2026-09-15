@@ -99,7 +99,8 @@ Implementation anchors:
 
 | Building block                               | Location                                                          | Role                                                        |
 | -------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------- |
-| Organization registry and visibility         | `prisma/schema.prisma` and `http/routes/skill-sources.ts`         | Store public-GitHub metadata and agent enablement           |
+| Organization registry and visibility         | `prisma/schema.prisma` and `http/routes/skill-sources.ts`         | Store GitHub source metadata and agent enablement           |
+| Private-source read grants                   | `github/service.ts` (`resolveAgentRepoAuthorizationByName`)       | Mint repo-scoped read tokens for enabled private sources    |
 | Per-agent projection and distribution        | `orchestrator/skillSource.ts` and `AgentSpec.skills`              | Validate/filter rows and reuse `agent/upsert`/`register/ok` |
 | Workspace clone/pull and cold-host gate      | `prepareWorkspace` in `workspace/workspace-manager.ts`            | Reconcile skills **after cloning** and before every host    |
 | Bounded GitHub acquisition and origin policy | `skills/skill-git-source.ts` and `workspace/git-origin-policy.ts` | Produce commit-bound local snapshots                        |
@@ -166,15 +167,32 @@ through its hardened Git path and gives the CLI only a private local snapshot:
 - Every installable entry carries GitHub's canonical positive decimal
   repository ID. The daemon calls the numeric repository endpoint before and
   after the owner/name-based commit lookup and requires the returned ID,
-  `full_name`, and `private: false` to match exactly. A rename, deletion, or
-  replacement at the old name therefore fails closed before archive download.
-- Only public repositories are supported. The normal uncached path consumes
+  and `full_name` to match exactly. A rename, deletion, or replacement at the
+  old name therefore fails closed before archive download.
+- Public repositories acquire anonymously. The normal uncached path consumes
   four GitHub REST requests per source (two numeric-identity checks, commit
   resolution, and archive lookup), plus one bounded codeload download. GitHub's
   anonymous REST limit is 60 requests/hour per egress IP, so roughly fifteen
   cold source acquisitions can exhaust that shared budget. Retained commit
   resolutions avoid paying it on unchanged fast paths; operators must still
   treat anonymous quota exhaustion as an availability constraint.
+- **Private repositories** are supported when the organization's GitHub App
+  installation covers the repository owner. The Control Plane binds such a
+  source only through that installation (the anonymous read cannot see it),
+  records `private: true` on the row, and projects the flag inline on the
+  agent entry. **Enabling a private source on an agent is the read grant:**
+  the gitcred broker treats every private skill source in the agent's
+  enable-list as an implied `read` authorization for exactly that numeric
+  repository, next to the workspace repository and explicit additional-repo
+  rows, and mints a `contents:read` installation token scoped to that one
+  repository. No grant row is stored, so unselecting or deleting the source
+  revokes it. On the daemon, the anonymous numeric-identity read answers 404
+  for a private repository; the existing credential fallback then obtains the
+  token through the URL-scoped helper and every later API read carries it,
+  while codeload still receives only GitHub's short-lived archive query. A
+  private source also enables that fallback for agents whose workspace is not
+  itself a GitHub-App checkout. Authenticated reads count against the
+  installation's 5,000 requests/hour rather than the anonymous budget.
 
 The CLI discovers skills; the Control Plane **does not parse `SKILL.md` for
 installation**. A best-effort GitHub preview endpoint can scan `SKILL.md` files
@@ -199,6 +217,7 @@ model SkillSource {
   ref             String?            // Optional branch, tag, or commit embedded in source or used for update
   subDir          String?            // Optional install directory inside the repository
   skills          String[] @default([]) // Empty means all skills; non-empty values are passed with -s
+  private         Boolean  @default(false) // Private at bind time; acquired through the org GitHub App
   visibility      ResourceVisibility @default(org)
   sharedWith      String[]           @default([])
   createdByUserId String?
@@ -211,10 +230,13 @@ model SkillSource {
 ```
 
 There is no `SkillRepoVersion` table, manifest column, or Control Plane content
-cache. There is **no secret side table or repository grant**: installation is
-public-only. `githubRepoId` remains nullable in the database only so rolling
-upgrades can read historical rows; a current row is installable only after it is
-bound to GitHub's numeric repository identity.
+cache. There is **no secret side table or repository grant row**: a public
+source installs anonymously, and a private source (`private: true`, recorded at
+bind time from the installation read) is authorized by the organization's GitHub
+App installation itself, resolved at mint time from the agent's enable-list.
+`githubRepoId` remains nullable in the database only so rolling upgrades can read
+historical rows; a current row is installable only after it is bound to GitHub's
+numeric repository identity.
 
 **Binding is the Control Plane's job, not the client's.** No console entry point
 can know the numeric ID -- it appears in no read the browser makes -- so the
@@ -266,7 +288,8 @@ array of **self-contained entries**, not a list of names:
     "githubRepoId": "123456789",           // Exact decimal ID; never a JS number
     "ref": "v1.2.0",                       // Optional branch, tag, or commit
     "subDir": "skills",                    // Optional directory inside the repository
-    "skills": ["review-pr", "safe-deploy"] // Empty means all skills and omits -s
+    "skills": ["review-pr", "safe-deploy"], // Empty means all skills and omits -s
+    "private": true                        // Optional; acquire through the App read token
   }
 ]
 ```
@@ -310,7 +333,7 @@ Every route follows `openapi.ts` requirements for tags, summary, and
 | `GET /skill-sources`                 | List sources.                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `GET /skill-sources/registry/search` | Search the public skills.sh index by skill name for the "Install from skills.sh" modal. Read-only proxy of the index `npx skills find` uses (skills.sh sends no CORS headers); each hit is normalized to `{id, name, source, installs}` and validated against the same `source` / `-s` grammars the create body enforces. Nothing is persisted, and `reachable:false` distinguishes "index down" from "no match". |
 | `POST /skill-sources/preview`        | Best-effort UI scan. Given `{installationId, owner, repo, ref?}`, use the selected GitHub App installation to return branch/tag choices and candidate `{name,dirPath}` skills. Preview is not persisted or authoritative; an empty list still permits “install all.”                                                                                                                                              |
-| `POST /skill-sources`                | Persist a public GitHub source, resolving its numeric repository ID server-side (installation read, then anonymous public read). A source that cannot be bound is refused rather than stored non-installable; a body-supplied ID overrides the lookup.                                                                                                                                                            |
+| `POST /skill-sources`                | Persist a GitHub source, resolving its numeric repository ID server-side (installation read, then anonymous public read). A private repository is accepted only when the installation read answered, and is stored with `private: true`. A source that cannot be bound is refused rather than stored non-installable; a body-supplied ID overrides the lookup.                                                    |
 | `PATCH /skill-sources/:id`           | Change source, numeric repository ID, ref, subdirectory, or skills (name is immutable), then **repush every agent that references it**. Re-binds the numeric ID when the source changes or the row is unbound (the repair path for historical rows); clearing it is refused.                                                                                                                                      |
 | `PUT /skill-sources/:id/sharing`     | Set `ResourceVisibility`, matching MCP providers.                                                                                                                                                                                                                                                                                                                                                                 |
 | `DELETE /skill-sources/:id`          | Delete a source only when no agent references it; otherwise return 409 and require explicit unselection first.                                                                                                                                                                                                                                                                                                    |
@@ -321,9 +344,9 @@ Sharing governs the **registry**: `GET /skill-sources` and
 `GET /skill-sources/:id` apply `canView` on the source, so a restricted source is
 invisible to a collaborator it was not shared with. It does **not** govern what an
 agent already installs. The definition rides inline on that agent's `AgentSpec`
-regardless, so hiding it from the agent's own page buys no confidentiality (skill
-sources are public repositories with no grant and no secret side-table) and only
-leaves an unexplained row on the Tools & Skills tab.
+regardless, so hiding it from the agent's own page buys no confidentiality (a
+source string carries no secret; a private source's access is the installation's,
+not the row's) and only leaves an unexplained row on the Tools & Skills tab.
 
 `GET /agents/:id/skill-sources` therefore resolves the agent's enable-list refs
 gated on **viewing the agent**, returning a slimmer DTO without the source's own
@@ -477,8 +500,10 @@ Build an ordered plan: Git entries from `agent.skills`, verified managed-cache
 directories, then accepted agent-local Dream directories. Later sources win a
 same-path collision, preserving accepted-local > managed > Git precedence.
 Every source is first copied with a bounded no-follow walker into a daemon-owned
-snapshot. Git acquisition is public-only, begins with anonymous GitHub requests,
-and never passes a remote URL or credential to the CLI.
+snapshot. Git acquisition begins with anonymous GitHub requests, falls back to
+the agent's repository-scoped read token only for a private source (or a
+GitHub-App workspace hitting a rate limit), and never passes a remote URL or
+credential to the CLI.
 
 For a Git entry, the acquisition step resolves the requested ref to an exact
 GitHub commit, accepts only the matching repository/commit redirect to canonical
@@ -684,12 +709,13 @@ The implemented surface follows `McpServersCard`:
   from the controlled organization registry, Git is acquired separately, and
   every source becomes a bounded no-follow local snapshot. The exact CLI writes
   only to a private cell; unexpected outputs and links are rejected.
-- **Credentials:** the Control Plane uses a GitHub App token only for preview
-  scanning. Public acquisition starts anonymously; on a GitHub-App workspace,
-  the numeric identity request may retry with the existing URL-scoped helper as
-  a rate-limit/identity fallback, but `private: false` remains mandatory. The CLI
-  cell receives no Git/provider token, proxy, SSH agent, npm config, or ambient
-  HOME.
+- **Credentials:** the Control Plane uses a GitHub App token for preview
+  scanning and for binding a private source. Acquisition starts anonymously; the
+  numeric identity request retries through the existing URL-scoped helper when
+  the source is private or the agent's workspace is a GitHub-App checkout, and
+  the Control Plane mints that token read-only and scoped to the one repository
+  because the agent enables the source. The CLI cell receives no Git/provider
+  token, proxy, SSH agent, npm config, or ambient HOME.
 - **Workspace isolation:** within one daemon-root/configured-`agentsDir`
   authority domain, the external SQLite ownership database, canonical workspace
   claims, active-roster overlap validation, and exact byte receipts govern

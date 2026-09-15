@@ -9,7 +9,7 @@
  * the registry is the authority, so an enable-list entry pointing at a deleted
  * source simply drops out rather than failing the whole spec.
  */
-import { AgentSkillEntry, redactGitUrlSecrets } from '@agentconnect.md/protocol'
+import { AgentSkillEntry, normalizeGitHubSkillSource, redactGitUrlSecrets } from '@agentconnect.md/protocol'
 import type { AgentRecord, SkillSourceRepo } from '../persistence/ports.js'
 
 const MAX_PROJECTED_SKILL_SOURCES = 64
@@ -18,6 +18,41 @@ export interface InvalidSkillSourceProjection {
   sourceId: string
   sourceName: string
   issues: Array<{ path: string; message: string }>
+}
+
+/**
+ * Extract `{owner, repo, ref?, subDir?}` from a source string. Decomposes the value
+ * the SHARED grammar already accepted (`normalizeGitHubSkillSource` — the same
+ * refinement `SkillSourceArg` enforces) rather than re-deriving the accepted set:
+ * binding is mandatory, so any form this missed would be a source the DTO admits
+ * and the route then rejects. Null ⇒ not a GitHub source at all. Shared by the
+ * registry routes (binding) and the gitcred broker (a private source's read grant).
+ */
+export function parseGithubSkillRepo(
+  source: string
+): { owner: string; repo: string; ref?: string; subDir?: string } | null {
+  let normalized: string
+  try {
+    normalized = normalizeGitHubSkillSource(source)
+  } catch {
+    return null
+  }
+  // scp form (`git@github.com:owner/repo`) carries its path after the colon and is
+  // not a parseable URL; every other accepted form is absolute by now.
+  const scp = /^[\w.-]+@[\w.-]+:(.+)$/.exec(normalized)
+  let parts: string[]
+  try {
+    parts = (scp ? scp[1]! : new URL(normalized).pathname.slice(1)).split('/').map(decodeURIComponent)
+  } catch {
+    return null
+  }
+  const owner = parts[0]
+  const repo = parts[1]?.replace(/\.git$/i, '')
+  if (!owner || !repo) return null
+  // The grammar admits owner/repo or owner/repo/tree/<ref>[/<subdir>] (https only).
+  const ref = parts[2] === 'tree' ? parts[3] : undefined
+  const subDir = ref && parts.length > 4 ? parts.slice(4).join('/') : undefined
+  return { owner, repo, ...(ref ? { ref } : {}), ...(subDir ? { subDir } : {}) }
 }
 
 /** Split "<source>/<skill>" (or "<source>/*"); a bare "<source>" ⇒ all skills. */
@@ -84,7 +119,10 @@ export async function resolveAgentSkillEntries(
       ...(row.githubRepoId !== null ? { githubRepoId: row.githubRepoId.toString() } : {}),
       ...(row.ref ? { ref: row.ref } : {}),
       ...(row.subDir ? { subDir: row.subDir } : {}),
-      skills
+      skills,
+      // Only a private source carries the flag: it tells the daemon to acquire
+      // through the org GitHub App credential rather than anonymously.
+      ...(row.private ? { private: true } : {})
     }
     const parsed = AgentSkillEntry.safeParse(candidate)
     if (!parsed.success) {
@@ -106,6 +144,31 @@ export async function resolveAgentSkillEntries(
     entries.push(parsed.data)
   }
   return entries
+}
+
+/**
+ * The private skill-source repositories an agent's enable-list references — the
+ * gitcred broker's grant set (shared-skills.md §3): enabling a private source IS
+ * the authorization for a read-only, repository-scoped token, so there is no
+ * separate grant row to keep in sync (and nothing left behind when the source
+ * is unselected or deleted). Public sources are omitted: they acquire
+ * anonymously and must not widen what the agent can mint. Unbound rows are
+ * omitted too — they never project, so they never acquire.
+ */
+export async function resolvePrivateSkillSourceRepos(
+  agent: Pick<AgentRecord, 'orgId' | 'skills'>,
+  repo: Pick<SkillSourceRepo, 'getByName'>
+): Promise<Array<{ repoId: bigint; repoFullName: string }>> {
+  const names = [...new Set(agent.skills.map((ref) => parseSkillRef(ref).source))]
+  const out: Array<{ repoId: bigint; repoFullName: string }> = []
+  for (const name of names) {
+    const row = await repo.getByName(agent.orgId, name)
+    if (!row || !row.private || row.githubRepoId === null) continue
+    const parsed = parseGithubSkillRepo(row.source)
+    if (!parsed) continue
+    out.push({ repoId: row.githubRepoId, repoFullName: `${parsed.owner}/${parsed.repo}` })
+  }
+  return out
 }
 
 /**

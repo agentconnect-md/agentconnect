@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { jwtVerify } from 'jose'
 import type { GitCredCapability } from '@agentconnect.md/protocol'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
-import type { AgentRepoAuthorizationRecord, GithubInstallationRecord } from '../persistence/ports.js'
+import type { AgentRepoAuthorizationRecord, GithubInstallationRecord, SkillSourceRecord } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
 import { githubAppBotIdentity, resolveGithubAppConfig, type GithubAppConfig } from './config.js'
 import { GithubApiError, githubRequest, githubRetryAfterMs, mintAppJwt, type FetchLike } from './api.js'
@@ -1170,6 +1170,8 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     /** GET /repos/{owner}/{repo} answers, keyed lowercase; missing ⇒ 404. */
     repoRefs?: Record<string, { id: number; full_name: string }>
     withRepoAuths?: boolean
+    /** Skill-source registry rows by name (shared-skills.md §3 read grants). */
+    skillSources?: Record<string, SkillSourceRecord>
   }) {
     const clock = new FakeClock(1_700_000_000_000)
     const byAccount = opts.installationsByAccount ?? { acme: installation() }
@@ -1208,13 +1210,96 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       } as never,
       installState: { put: async () => {}, consume: async () => true },
       ...(opts.withRepoAuths === false ? {} : { repoAuths: { listForAgent, updateFullName } as never }),
+      ...(opts.skillSources
+        ? { skillSources: { getByName: async (_org: string, name: string) => opts.skillSources![name] ?? null } }
+        : {}),
       pepper: 'p'.repeat(32),
       fetchImpl
     })
     return { svc, mintBodies, repoLookups, accountLookups, listForAgent, updateFullName }
   }
 
+  function skillSourceRow(over: Partial<SkillSourceRecord> = {}): SkillSourceRecord {
+    return {
+      id: 'ss-1',
+      orgId: 'org-a' as never,
+      name: 'qargo-skills',
+      source: 'acme/skills',
+      githubRepoId: 555n,
+      ref: null,
+      subDir: null,
+      skills: [],
+      private: true,
+      visibility: 'org',
+      sharedWith: [],
+      createdByUserId: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      ...over
+    }
+  }
+
   const CONTENTS: readonly GitCredCapability[] = ['contents'] // the git plane's ask
+
+  describe('private skill sources (shared-skills.md §3)', () => {
+    const SKILLS_AGENT = { ...(SCRATCH_AGENT as object), skills: ['qargo-skills/*'] } as never
+
+    it('an enabled PRIVATE source mints a read-only token scoped to its numeric repo id', async () => {
+      const { svc, mintBodies, repoLookups } = harness({
+        rows: [],
+        skillSources: { 'qargo-skills': skillSourceRow() }
+      })
+      const grant = await svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/Skills')
+      expect(grant).toMatchObject({ repoFullName: 'acme/Skills', access: 'read' })
+      expect(mintBodies).toEqual([{ repository_ids: [555], permissions: { metadata: 'read', contents: 'read' } }])
+      expect(repoLookups).toEqual([]) // exact match — no name→id lookup needed
+    })
+
+    it('never widens: a requested write floor still clamps to read', async () => {
+      const { svc, mintBodies } = harness({ rows: [], skillSources: { 'qargo-skills': skillSourceRow() } })
+      await svc.mintForAgent(SKILLS_AGENT, [], ['contents', 'issues', 'pull_requests'], 'acme/skills', 'write')
+      expect(mintBodies[0]).toMatchObject({
+        repository_ids: [555],
+        permissions: { contents: 'read', issues: 'read', pull_requests: 'read' }
+      })
+    })
+
+    it('a PUBLIC source is not a grant, and neither is a source the agent does not enable', async () => {
+      const publicOnly = harness({ rows: [], skillSources: { 'qargo-skills': skillSourceRow({ private: false }) } })
+      await expect(publicOnly.svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/skills')).rejects.toMatchObject({
+        code: 'SCOPE_DENIED'
+      })
+      const notEnabled = harness({ rows: [], skillSources: { 'qargo-skills': skillSourceRow() } })
+      await expect(
+        notEnabled.svc.mintForAgent({ ...(SCRATCH_AGENT as object), skills: [] } as never, [], CONTENTS, 'acme/skills')
+      ).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+      expect(publicOnly.mintBodies).toEqual([])
+      expect(notEnabled.mintBodies).toEqual([])
+    })
+
+    it('an explicit additional-repo grant outranks the implied read grant', async () => {
+      const { svc, mintBodies } = harness({
+        rows: [grantRow({ repoId: 555n, repoFullName: 'acme/skills', access: 'write' })],
+        skillSources: { 'qargo-skills': skillSourceRow() }
+      })
+      const grant = await svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/skills')
+      expect(grant).toMatchObject({ access: 'write' })
+      expect(mintBodies[0]).toMatchObject({ permissions: { contents: 'write' } })
+    })
+
+    it('recognizes a renamed private skill repo by id under the registry’s old slug', async () => {
+      // The daemon asks under the name the registry still stores; GitHub already
+      // redirects that name to the renamed repository with the same id.
+      const { svc, mintBodies } = harness({
+        rows: [],
+        skillSources: { 'qargo-skills': skillSourceRow({ source: 'acme/skills-old' }) },
+        repoRefs: { 'acme/skills-old': { id: 555, full_name: 'acme/skills' } }
+      })
+      const grant = await svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/skills-old')
+      expect(grant).toMatchObject({ access: 'read' })
+      expect(mintBodies[0]).toMatchObject({ repository_ids: [555], permissions: { contents: 'read' } })
+    })
+  })
 
   it('a requestedRepo equal to the workspace label mints by its rename-proof repo id', async () => {
     const { svc, mintBodies, listForAgent } = harness({ rows: [grantRow()] })

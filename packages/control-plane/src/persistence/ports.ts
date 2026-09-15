@@ -5977,6 +5977,7 @@ export interface SkillSourceRecord extends Shareable {
   ref: string | null
   subDir: string | null
   skills: string[] // empty ⇒ install every skill; else only these
+  private: boolean // repo was private at bind time ⇒ daemons acquire through the org GitHub App
   createdByUserId: string | null
   createdAt: Date
   updatedAt: Date
@@ -5990,6 +5991,7 @@ export interface CreateSkillSourceInput {
   ref?: string | null
   subDir?: string | null
   skills?: string[]
+  private?: boolean // default false
   visibility?: ResourceVisibility // default 'org'
   sharedWith?: string[]
   createdByUserId?: string
@@ -6002,6 +6004,7 @@ export interface UpdateSkillSourceInput {
   ref?: string | null
   subDir?: string | null
   skills?: string[]
+  private?: boolean
 }
 
 export interface SkillSourceRepo {

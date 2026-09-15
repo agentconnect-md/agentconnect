@@ -5,8 +5,10 @@
  * bounded public GitHub source and numeric repository identity (+ optional
  * ref/subDir/skill filter) and never fetches or holds skill content — the daemon
  * acquires and installs it from a local snapshot. Unlike the MCP provider
- * registry there is NO secret side-table and NO repository grant. A Shareable,
- * so the same visibility policy as agents/MCP applies.
+ * registry there is NO secret side-table: a PRIVATE source is authorized by the
+ * org GitHub App installation (the gitcred broker mints a read-only token for an
+ * agent that enables it), never by a stored secret. A Shareable, so the same
+ * visibility policy as agents/MCP applies.
  */
 import type { Prisma, SkillSource } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
@@ -52,6 +54,7 @@ function toRecord(s: SkillSource): SkillSourceRecord {
     ref: s.ref,
     subDir: s.subDir,
     skills: s.skills,
+    private: s.private,
     visibility: s.visibility as ResourceVisibility,
     sharedWith: s.sharedWith,
     createdByUserId: s.createdByUserId,
@@ -90,6 +93,7 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
           ...(input.ref !== undefined ? { ref: input.ref } : {}),
           ...(input.subDir !== undefined ? { subDir: input.subDir } : {}),
           ...(input.skills ? { skills: input.skills } : {}),
+          ...(input.private !== undefined ? { private: input.private } : {}),
           ...(input.visibility ? { visibility: input.visibility } : {}),
           ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
           ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
@@ -168,7 +172,8 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
           ...(patch.githubRepoId !== undefined ? { githubRepoId: patch.githubRepoId } : {}),
           ...(patch.ref !== undefined ? { ref: patch.ref } : {}),
           ...(patch.subDir !== undefined ? { subDir: patch.subDir } : {}),
-          ...(patch.skills !== undefined ? { skills: patch.skills } : {})
+          ...(patch.skills !== undefined ? { skills: patch.skills } : {}),
+          ...(patch.private !== undefined ? { private: patch.private } : {})
         }
       })
       // `AgentSpec.skills` is RESOLVED from this row, so an edit here changes the

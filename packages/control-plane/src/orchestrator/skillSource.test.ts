@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { AgentSpec, RegisterOk } from '@agentconnect.md/protocol'
-import { parseSkillRef, redactSourceCredentials, resolveAgentSkillEntries } from './skillSource.js'
+import {
+  parseSkillRef,
+  redactSourceCredentials,
+  resolveAgentSkillEntries,
+  resolvePrivateSkillSourceRepos
+} from './skillSource.js'
 import type { SkillSourceRecord, SkillSourceRepo } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
 
@@ -16,6 +21,7 @@ function source(over: Partial<SkillSourceRecord>): SkillSourceRecord {
     ref: null,
     subDir: null,
     skills: [],
+    private: false,
     visibility: 'org',
     sharedWith: [],
     createdByUserId: null,
@@ -238,5 +244,38 @@ describe('redactSourceCredentials', () => {
     expect(redactSourceCredentials('https://git.example.test/ops/skills.git?ref=v1@2')).toBe(
       'https://git.example.test/ops/skills.git'
     )
+  })
+})
+
+describe('private skill sources (shared-skills.md §3)', () => {
+  it('projects `private: true` inline so the daemon acquires through the App credential', async () => {
+    const repo = repoWith([source({ name: 'platform', private: true }), source({ name: 'public', id: 'id-2' })])
+    const entries = await resolveAgentSkillEntries({ orgId: ORG, skills: ['platform/*', 'public/*'] }, repo)
+    expect(entries).toEqual([
+      expect.objectContaining({ name: 'platform', private: true }),
+      expect.not.objectContaining({ private: expect.anything() })
+    ])
+  })
+
+  it('derives the read-grant set from enabled PRIVATE, bound sources only', async () => {
+    const repo = repoWith([
+      source({ name: 'platform', private: true, githubRepoId: 555n, source: 'Acme/Platform-Skills' }),
+      source({
+        name: 'tree',
+        private: true,
+        githubRepoId: 556n,
+        source: 'https://github.com/acme/mono/tree/main/plugins/x'
+      }),
+      source({ name: 'public', private: false, githubRepoId: 557n }),
+      source({ name: 'unbound', private: true, githubRepoId: null })
+    ])
+    const grants = await resolvePrivateSkillSourceRepos(
+      { orgId: ORG, skills: ['platform/review', 'tree/*', 'public/*', 'unbound/*', 'missing/*'] },
+      repo
+    )
+    expect(grants).toEqual([
+      { repoId: 555n, repoFullName: 'Acme/Platform-Skills' },
+      { repoId: 556n, repoFullName: 'acme/mono' }
+    ])
   })
 })

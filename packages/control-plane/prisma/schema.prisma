@@ -3350,6 +3350,7 @@ model SkillSource {
   ref             String? // optional branch/tag/commit; composed into the source (design §5)
   subDir          String? // optional repo-relative install dir
   skills          String[]           @default([]) // empty ⇒ install every skill; else only these (passed as -s)
+  private         Boolean            @default(false) // repo was private at bind time; daemons acquire it through the org GitHub App (read-only, repo-scoped)
   visibility      ResourceVisibility @default(org)
   sharedWith      String[]           @default([]) // complete app_user.id audience when visibility='restricted'
   createdByUserId String?

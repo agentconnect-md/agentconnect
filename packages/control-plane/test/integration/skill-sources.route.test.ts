@@ -19,7 +19,7 @@
  * rather than committing a dangling ref. Dangling refs can therefore only predate
  * the fence (or bypass the routes); the capture guard still protects those.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -750,7 +750,9 @@ describe('POST/PATCH /skill-sources — githubRepoId binding', () => {
     expect(res.statusCode).toBe(503)
   })
 
-  it('rejects a confirmed-private repo before binding it', async () => {
+  it('refuses a private repo the org GitHub App did not answer for — only the installation can install it', async () => {
+    // A `private: true` verdict from the anonymous/public path has no credential
+    // behind it, so the row would look enabled and never acquire.
     const app = appResolving(async (owner, repo) => ({
       repoId: 9n,
       fullName: `${owner}/${repo}`,
@@ -763,7 +765,76 @@ describe('POST/PATCH /skill-sources — githubRepoId binding', () => {
       payload: { name: 'kit', source: 'anthropics/skills' }
     })
     expect(res.statusCode).toBe(400)
-    expect(res.json().message).toContain('private skill sources are not supported')
+    expect(res.json().message).toContain('org GitHub App')
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources` })).json()).toEqual([])
+  })
+
+  it('binds a private repo through the org installation, records it, and projects the flag inline', async () => {
+    await prisma.githubInstallation.create({
+      data: {
+        orgId: DEFAULT_ORG_ID,
+        installationId: 4242n,
+        accountLogin: 'anthropics',
+        accountType: 'Organization',
+        repositorySelection: 'all'
+      }
+    })
+    const repoRefFor = vi.fn(async (_ins: unknown, owner: string, repo: string) => ({
+      repoId: 8080n,
+      fullName: `${owner}/${repo}`,
+      private: true,
+      defaultBranch: 'main'
+    }))
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, {
+      github: { repoRefFor } as never,
+      // The public path must not even be consulted once the installation answered.
+      resolvePublicRepo: async () => {
+        throw new Error('public read must not run for an installation-covered owner')
+      }
+    })
+    opened.push(app)
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/skill-sources`,
+      payload: { name: 'kit', source: 'anthropics/skills', subDir: 'plugins/review' }
+    })
+    expect(created.statusCode).toBe(201)
+    expect(created.json()).toMatchObject({ githubRepoId: '8080', private: true, ref: 'main', subDir: 'plugins/review' })
+    expect(repoRefFor).toHaveBeenCalledWith(expect.objectContaining({ installationId: 4242n }), 'anthropics', 'skills')
+
+    const agentId = await createAgent(app, 'enabler', ['kit/*'])
+    const agent = await app.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId))
+    const spec = await app.deps.agentSpecs.assemble(agent!)
+    expect(spec.skills).toEqual([
+      {
+        name: 'kit',
+        source: 'anthropics/skills',
+        githubRepoId: '8080',
+        ref: 'main',
+        subDir: 'plugins/review',
+        skills: [],
+        private: true
+      }
+    ])
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/skill-sources` })).json()).toEqual([
+      expect.objectContaining({ name: 'kit', private: true })
+    ])
+
+    // A later edit re-reads visibility alongside the id: the repo went public.
+    repoRefFor.mockImplementation(async (_ins: unknown, owner: string, repo: string) => ({
+      repoId: 8080n,
+      fullName: `${owner}/${repo}`,
+      private: false,
+      defaultBranch: 'main'
+    }))
+    const patched = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/skill-sources/${created.json().id}`,
+      payload: { skills: ['review'] }
+    })
+    expect(patched.statusCode).toBe(200)
+    expect(patched.json()).toMatchObject({ private: false, skills: ['review'] })
   })
 
   it('back-fills a historical unbound row on the next edit — the repair PATCH could not do', async () => {

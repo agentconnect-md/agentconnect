@@ -332,7 +332,7 @@ export class WorkspaceManager {
       ...(opts.skillsStateDir ? { stateDir: opts.skillsStateDir } : {}),
       ...(opts.skillsAgentId === undefined ? {} : { skillsAgentId: opts.skillsAgentId }),
       localSkills: [...managedSkills, ...acceptedSkills],
-      useGitCredential: this.usesGithubApp(agent),
+      useGitCredential: this.skillGitCredentialEnabled(agent),
       ...(opts.resolveGitSkillRef
         ? { resolveGitRef: (entry: AgentSkillEntry) => opts.resolveGitSkillRef!(entry, agent) }
         : {}),
@@ -368,6 +368,15 @@ export class WorkspaceManager {
 
   usesGithubApp(agent: Agent): boolean {
     return agent.workspace.mode === 'git-repo' && agent.workspace.gitCredential === 'github-app'
+  }
+
+  /** Whether Git skill acquisition may ask the daemon's GitHub credential helper.
+   *  True for a GitHub-App workspace (the helper is wired for it anyway) and for
+   *  any agent that enables a PRIVATE skill source — the CP mints a read-only,
+   *  repository-scoped token for exactly those (shared-skills.md §3). A scratch
+   *  or anonymous-git agent with only public sources keeps acquiring anonymously. */
+  skillGitCredentialEnabled(agent: Agent): boolean {
+    return this.usesGithubApp(agent) || (agent.skills ?? []).some((entry) => entry.private === true)
   }
 
   /** Which managed credential backs this workspace's remote git; undefined ⇒ anonymous. */

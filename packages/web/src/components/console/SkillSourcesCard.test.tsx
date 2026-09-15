@@ -74,6 +74,7 @@ beforeEach(() => {
       ref: 'main',
       subDir: null,
       skills: [],
+      private: false,
       visibility: 'org',
       sharedWith: [],
       createdBy: 'owner-1',
@@ -165,6 +166,24 @@ describe('organization Skills library', () => {
     expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
       expect.stringContaining('/orgs/org-test/managed-skills?includeArchived=false')
     ])
+  })
+
+  it('badges a private source so the App-backed acquisition path is visible', async () => {
+    mocks.skillSources = mocks.skillSources.map((s) => ({ ...s, private: true, ref: 'v2' }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }))
+    )
+    await act(async () => {
+      root.render(
+        <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+          <SkillSourcesCard canWrite={false} canManage={true} />
+        </SWRConfig>
+      )
+    })
+    await settleUntil(() => host.textContent?.includes('platform-skills') === true)
+    const badges = [...host.querySelectorAll('.badge')].map((el) => el.textContent)
+    expect(badges).toEqual(expect.arrayContaining(['private', 'v2']))
   })
 
   it('installs a searched skills.sh hit as a one-skill source, and marks what the library already has', async () => {

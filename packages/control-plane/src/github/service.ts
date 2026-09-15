@@ -21,7 +21,8 @@ import type {
   AgentRecord,
   AgentRepo,
   AgentRepoAuthorizationRepo,
-  RepoAccess
+  RepoAccess,
+  SkillSourceRepo
 } from '../persistence/ports.js'
 import { githubRequest, githubRequestPage, mintAppJwt, GithubApiError, type FetchLike, type GithubPage } from './api.js'
 import { githubAppBotIdentity, type GithubAppConfig } from './config.js'
@@ -33,6 +34,7 @@ import {
 } from './installation-token.service.js'
 import { deriveInstallStateKey, mintInstallState, verifyInstallState } from './install-state.js'
 import { TokenBucket } from './rate-limit.js'
+import { resolvePrivateSkillSourceRepos } from '../orchestrator/skillSource.js'
 
 /** As GitHub returns an installation object (App-JWT surface). */
 interface GhInstallation {
@@ -103,6 +105,11 @@ export interface GithubServiceDeps {
    *  `gitcred/request` naming a non-workspace repo. Absent (older test
    *  harnesses) ⇒ non-workspace requests are denied. */
   repoAuths?: AgentRepoAuthorizationRepo
+  /** Private skill sources (shared-skills.md §3): an agent that enables a private
+   *  source is thereby authorized to READ that repository, so the daemon can
+   *  acquire it with a repository-scoped contents:read token. Absent ⇒ private
+   *  skill repos are denied like any other non-workspace repo. */
+  skillSources?: Pick<SkillSourceRepo, 'getByName'>
   /** Optional lazy repair of the workspace's rename-proof numeric repo id. */
   agents?: Pick<AgentRepo, 'setWorkspaceRepoId'>
   onInstallationFactsChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
@@ -155,7 +162,9 @@ function toFacts(ins: GhInstallation): GithubInstallationFacts {
 }
 
 export interface ResolvedAgentRepoAuthorization {
-  kind: 'workspace' | 'additional'
+  /** `skill-source`: implied by a private skill source the agent enables
+   *  (shared-skills.md §3) — always read-only, never a review/comment subject. */
+  kind: 'workspace' | 'additional' | 'skill-source'
   repoId: bigint
   repoFullName: string
   access: RepoAccess
@@ -1036,14 +1045,31 @@ export class GithubService {
       (row) => row.provider === 'github'
     )
     const exact = grants.find((row) => row.repoFullName.toLowerCase() === repoFullName.toLowerCase())
+    // A private skill source the agent enables is a read grant on its repository
+    // (shared-skills.md §3). Consulted only when no explicit row matches: an
+    // explicit grant's tier always wins, and a public source never widens the set.
+    const skillRepos =
+      exact || !this.deps.skillSources
+        ? []
+        : await resolvePrivateSkillSourceRepos(agent, this.deps.skillSources).catch(() => [])
+    const skillExact = skillRepos.find((row) => row.repoFullName.toLowerCase() === repoFullName.toLowerCase())
     // Never probe an unrelated owner merely because the daemon named it. A
     // same-owner grant is enough to justify the slow rename lookup below.
     const renameCandidates = grants.filter(
       (row) => row.repoFullName.split('/')[0]?.toLowerCase() === owner.toLowerCase()
     )
+    const skillRenameCandidates = skillRepos.filter(
+      (row) => row.repoFullName.split('/')[0]?.toLowerCase() === owner.toLowerCase()
+    )
     const workspaceRenameCandidate =
       agent.workspaceRepoId !== undefined && workspaceOwner?.toLowerCase() === owner.toLowerCase()
-    if (!exact && renameCandidates.length === 0 && !workspaceRenameCandidate) {
+    if (
+      !exact &&
+      !skillExact &&
+      renameCandidates.length === 0 &&
+      skillRenameCandidates.length === 0 &&
+      !workspaceRenameCandidate
+    ) {
       throw new GitCredDeniedError(`${repoFullName} is not authorized for this agent`, 'SCOPE_DENIED', false)
     }
 
@@ -1057,6 +1083,15 @@ export class GithubService {
         repoId: exact.repoId,
         repoFullName,
         access: exact.access,
+        installation
+      }
+    }
+    if (skillExact) {
+      return {
+        kind: 'skill-source',
+        repoId: skillExact.repoId,
+        repoFullName,
+        access: 'read',
         installation
       }
     }
@@ -1079,6 +1114,14 @@ export class GithubService {
     }
     const renamed = renameCandidates.find((row) => row.repoId === ref.repoId)
     if (!renamed) {
+      // The daemon verifies a skill source's numeric identity before any name-based
+      // read, so a renamed private skill repo arrives here under its OLD name with
+      // the id the registry still carries; the CP's PATCH re-bind is what moves the
+      // stored slug, and the token is minted for the id regardless.
+      const renamedSkill = skillRenameCandidates.find((row) => row.repoId === ref.repoId)
+      if (renamedSkill) {
+        return { kind: 'skill-source', repoId: renamedSkill.repoId, repoFullName, access: 'read', installation }
+      }
       throw new GitCredDeniedError(`${repoFullName} is not authorized for this agent`, 'SCOPE_DENIED', false)
     }
     if (renamed.repoFullName !== ref.fullName) {

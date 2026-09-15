@@ -266,7 +266,12 @@ export const AgentSkillEntry = z.object({
     .array(SkillSelectionArg)
     .max(64)
     .refine((skills) => new Set(skills).size === skills.length, { message: 'skill selections must be unique' })
-    .default([])
+    .default([]),
+  // The repository was private when the CP bound it. The daemon then acquires it
+  // through the org GitHub App's read-only credential (the CP mints a
+  // contents:read token scoped to exactly this repository because the agent
+  // enables the source) instead of anonymously. Absent/false ⇒ public.
+  private: z.boolean().optional()
 })
 export type AgentSkillEntry = z.infer<typeof AgentSkillEntry>
 
@@ -293,7 +298,8 @@ export const CompatibleAgentSkillEntry = z.object({
   githubRepoId: z.string().optional(),
   ref: z.string().optional(),
   subDir: z.string().optional(),
-  skills: z.array(LegacySkillArg).default([])
+  skills: z.array(LegacySkillArg).default([]),
+  private: z.boolean().optional()
 })
 
 /** One centrally accepted, immutable Agent Skills bundle enabled for an agent.

@@ -282,7 +282,8 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     // `capabilities` (P2.5) widen the scope set, clamped to the agent's gitAccess.
     // `repoFullName` (issue #457) targets a non-workspace repo — admitted only
     // through the agent's explicit AgentRepoAuthorization rows (multi-repo
-    // design §2). GithubPoster requests take the purpose-gated path above;
+    // design §2) or, read-only, a PRIVATE skill source the agent enables
+    // (shared-skills.md §3). GithubPoster requests take the purpose-gated path above;
     // general agent git/gh credentials stay constrained by this allowlist.
     // `requestedAccess` is the §17.1 access floor; every pre-v2 caller leaves it absent and keeps the tier.
     const cred = await deps.github!.mintForAgent(

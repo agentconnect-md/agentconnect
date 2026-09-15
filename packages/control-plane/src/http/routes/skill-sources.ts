@@ -10,18 +10,18 @@
  * nothing (issue #935). The daemon acquires a commit-bound snapshot and installs it
  * with its bundled exact CLI before the ACP host spawns.
  *
- * There is NO secret side-table and NO grant (unlike MCP providers): skills carry
- * no upstream credential. This release supports PUBLIC sources only — a private
- * repo has no daemon authorization path yet, so create rejects a confirmed-private
- * source (a dedicated read-only grant is a follow-up). The definition is not pushed
- * on its own frame either — it
- * rides INLINE on each enabling agent's AgentSpec.skills (resolved by
- * agentSpecAssembler). So a source change fans out to `agent/upsert` for every
- * agent that references it (§4 trade-off).
+ * There is NO secret side-table (unlike MCP providers): skills carry no upstream
+ * credential of their own. A PRIVATE repository is admitted only when the org's
+ * GitHub App installation covers its owner; the row records `private: true`, and
+ * the gitcred broker treats an agent's enabled private sources as its read-only,
+ * repository-scoped grant set (github/service.ts), so the daemon acquires it with a
+ * short-lived installation token rather than anonymously. The definition is not
+ * pushed on its own frame either — it rides INLINE on each enabling agent's
+ * AgentSpec.skills (resolved by agentSpecAssembler). So a source change fans out to
+ * `agent/upsert` for every agent that references it (§4 trade-off).
  */
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
-import { normalizeGitHubSkillSource } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
@@ -31,7 +31,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
-import { parseSkillRef } from '../../orchestrator/skillSource.js'
+import { parseSkillRef, parseGithubSkillRepo as parseGithubRepo } from '../../orchestrator/skillSource.js'
 import {
   CreateSkillSourceBody,
   UpdateSkillSourceBody,
@@ -59,36 +59,6 @@ import {
  * replacement — across control-plane instances (rolling updates included),
  * where the per-process promise chain this replaced could not reach.
  */
-
-/** Extract `{owner, repo, ref?, subDir?}` from a source string. Decomposes the
- *  value the SHARED grammar already accepted (`normalizeGitHubSkillSource` — the
- *  same refinement `SkillSourceArg` enforces) rather than re-deriving the accepted
- *  set here: binding is mandatory, so any form this missed would be a source the
- *  DTO admits and the route then rejects. Null ⇒ not a GitHub source at all. */
-function parseGithubRepo(source: string): { owner: string; repo: string; ref?: string; subDir?: string } | null {
-  let normalized: string
-  try {
-    normalized = normalizeGitHubSkillSource(source)
-  } catch {
-    return null
-  }
-  // scp form (`git@github.com:owner/repo`) carries its path after the colon and is
-  // not a parseable URL; every other accepted form is absolute by now.
-  const scp = /^[\w.-]+@[\w.-]+:(.+)$/.exec(normalized)
-  let parts: string[]
-  try {
-    parts = (scp ? scp[1]! : new URL(normalized).pathname.slice(1)).split('/').map(decodeURIComponent)
-  } catch {
-    return null
-  }
-  const owner = parts[0]
-  const repo = parts[1]?.replace(/\.git$/i, '')
-  if (!owner || !repo) return null
-  // The grammar admits owner/repo or owner/repo/tree/<ref>[/<subdir>] (https only).
-  const ref = parts[2] === 'tree' ? parts[3] : undefined
-  const subDir = ref && parts.length > 4 ? parts.slice(4).join('/') : undefined
-  return { owner, repo, ...(ref ? { ref } : {}), ...(subDir ? { subDir } : {}) }
-}
 
 /**
  * Rewrite the owner/repo half of a source to GitHub's canonical `full_name`,
@@ -121,6 +91,9 @@ type RepoBinding =
       canonicalSource: string | null
       private: boolean
       defaultBranch: string
+      /** Which read answered. A private repo is only ever seen through the org
+       *  installation, and only that path gives the daemon a credential later. */
+      via: 'installation' | 'public'
     }
   | { status: 'not-found' | 'unreachable' | 'unparseable' }
 
@@ -133,6 +106,7 @@ function toDto(s: SkillSourceRecord, ctx: ViewCtx): SkillSourceDtoT {
     ref: s.ref,
     subDir: s.subDir,
     skills: s.skills,
+    private: s.private,
     visibility: s.visibility,
     sharedWith: s.sharedWith,
     createdBy: s.createdByUserId,
@@ -159,26 +133,27 @@ export function skillSourceRoutes(deps: HttpDeps) {
 
     // ONE lookup per write, answering everything a source write needs about the repo:
     // its rename-proof NUMERIC id (without which the row never projects onto an
-    // AgentSpec — issue #935), whether it is private (rejected this release), and its
-    // default branch (a subdir source must pin a ref; the daemon must not assume
-    // `main`). The org installation answers first when it covers the owner; otherwise
-    // the anonymous public read does, which is the only path for a skills.sh source.
+    // AgentSpec — issue #935), whether it is private (then only installable through
+    // the org GitHub App), and its default branch (a subdir source must pin a ref;
+    // the daemon must not assume `main`). The org installation answers first when it
+    // covers the owner; otherwise the anonymous public read does, which is the only
+    // path for a skills.sh source.
     const resolveRepoBinding = async (orgId: OrgId, source: string): Promise<RepoBinding> => {
       const parsed = parseGithubRepo(source)
       if (!parsed) return { status: 'unparseable' }
-      const found = async (): Promise<
-        { repoId: bigint; fullName: string; private: boolean; defaultBranch: string } | 'not-found' | 'unreachable'
-      > => {
+      type Hit = { repoId: bigint; fullName: string; private: boolean; defaultBranch: string }
+      const found = async (): Promise<(Hit & { via: 'installation' | 'public' }) | 'not-found' | 'unreachable'> => {
         const gh = deps.github
         if (gh) {
           const ins = await deps.repos.githubInstallation.liveByOrgAndAccount(orgId, parsed.owner)
           // An installation failure is not a verdict on a PUBLIC repo — fall through
           // to the anonymous read rather than treat the source as unbindable.
           const ref = ins ? await gh.repoRefFor(ins, parsed.owner, parsed.repo).catch(() => null) : null
-          if (ref) return ref
+          if (ref) return { ...ref, via: 'installation' }
         }
         const resolve = deps.resolvePublicRepo
-        return resolve ? await resolve(parsed.owner, parsed.repo) : 'unreachable'
+        const hit = resolve ? await resolve(parsed.owner, parsed.repo) : 'unreachable'
+        return typeof hit === 'string' ? hit : { ...hit, via: 'public' }
       }
       const hit = await found()
       if (typeof hit === 'string') return { status: hit }
@@ -186,6 +161,13 @@ export function skillSourceRoutes(deps: HttpDeps) {
       // daemon refuses the entry (see canonicalizeSource).
       return { status: 'ok', ...hit, canonicalSource: canonicalizeSource(source, parsed, hit.fullName) }
     }
+
+    // A private repository is installable only through the org GitHub App: that
+    // installation is what the gitcred broker mints the daemon's read token from.
+    // Seeing `private: true` from any other read (a test double, or a future
+    // anonymous path) would persist a row the daemon can never acquire.
+    const privateWithoutInstallation = (binding: RepoBinding): boolean =>
+      binding.status === 'ok' && binding.private && binding.via !== 'installation'
 
     // Reject rather than persist a source whose identity we could not establish: an
     // unbound row looks enabled in the console but is silently dropped from every
@@ -363,7 +345,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Register a skill source',
           description:
-            'Register an org-level public GitHub skill source. The numeric repository identity is resolved server-side (org installation first, then a public read), so no client needs to know it; `githubRepoId` in the body only overrides that lookup. A repository that cannot be identified is rejected — 400 when GitHub says it does not exist, 503 while GitHub is unreachable — rather than persisted as a row the projection would silently drop. The daemon acquires a bounded local snapshot; the remote source is never passed to the CLI. `skills` empty ⇒ install every skill the snapshot exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
+            'Register an org-level GitHub skill source. The numeric repository identity is resolved server-side (org installation first, then a public read), so no client needs to know it; `githubRepoId` in the body only overrides that lookup. A private repository is accepted when the org GitHub App installation covers its owner: the row is marked `private` and daemons acquire it with a read-only installation token minted for every agent that enables the source. A repository that cannot be identified is rejected — 400 when GitHub says it does not exist, 503 while GitHub is unreachable — rather than persisted as a row the projection would silently drop. The daemon acquires a bounded local snapshot; the remote source is never passed to the CLI. `skills` empty ⇒ install every skill the snapshot exposes. Rejected with 409 while any agent already enables skills under the requested source name — agents bind by name, so a new source must not silently capture existing selections.',
           operationId: 'createSkillSource',
           body: CreateSkillSourceBody,
           response: {
@@ -383,9 +365,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
             ? await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
             : undefined
         const binding = await resolveRepoBinding(orgOf(req), req.body.source)
-        // Scope this release to PUBLIC sources: the daemon has no authorization path to
-        // clone a private skill repo yet (a dedicated read-only grant is a follow-up).
-        if (binding.status === 'ok' && binding.private) return reply.code(400).send(privateNotSupported)
+        if (privateWithoutInstallation(binding)) return reply.code(400).send(privateNeedsInstallation)
         // Bind the numeric identity server-side. A client-supplied id still wins (it is
         // the same fact, already verified by the daemon before acquisition), but no
         // client has to know it — which is what made every console-created source
@@ -414,6 +394,10 @@ export function skillSourceRoutes(deps: HttpDeps) {
           ...(ref !== undefined ? { ref } : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
           skills: req.body.skills,
+          // Recorded from the SAME read that bound the id: a client cannot declare a
+          // repo private (which would make daemons request credentials for it), and a
+          // body-supplied id that skipped the lookup binds as public.
+          private: binding.status === 'ok' && repoId === binding.repoId ? binding.private : false,
           ...(req.body.visibility ? { visibility: req.body.visibility } : {}),
           ...(sharedWith ? { sharedWith } : {}),
           ...(req.principal ? { createdByUserId: req.principal.userId } : {})
@@ -451,9 +435,9 @@ export function skillSourceRoutes(deps: HttpDeps) {
         if (req.body.githubRepoId === null) return reply.code(400).send(unbindNotAllowed)
         const effSource = req.body.source ?? existing.source
         const binding = await resolveRepoBinding(orgOf(req), effSource)
-        // Same public-only guard as create, on the EFFECTIVE source — a PATCH that
-        // points an existing source at a (now-confirmed) private repo is rejected too.
-        if (binding.status === 'ok' && binding.private) return reply.code(400).send(privateNotSupported)
+        // Same installation guard as create, on the EFFECTIVE source — a PATCH that
+        // points an existing source at a private repo the App cannot reach is refused.
+        if (privateWithoutInstallation(binding)) return reply.code(400).send(privateNeedsInstallation)
         // Re-bind when the identity would otherwise be wrong or missing: a changed
         // source, or a historical row that never got one. This is what repairs the
         // NULL rows already in the wild — PATCH had no way to fix them (#935). An
@@ -493,7 +477,12 @@ export function skillSourceRoutes(deps: HttpDeps) {
               ? { ref: null }
               : {}),
           ...(req.body.subDir !== undefined ? { subDir: req.body.subDir } : {}),
-          ...(req.body.skills !== undefined ? { skills: req.body.skills } : {})
+          ...(req.body.skills !== undefined ? { skills: req.body.skills } : {}),
+          // Whenever this write bound the id, the visibility observed alongside it is
+          // the truth (a repo flipped private↔public since it was registered); a
+          // `skills`-only edit that reached GitHub refreshes it too. Unreachable
+          // GitHub leaves the stored value alone.
+          ...(bound ? { private: binding.private } : {})
         })
         await fanOutToReferrers(orgOf(req), source.name)
         return toDto(source, ctxOf(req))
@@ -591,16 +580,18 @@ const subdirNeedsRef = {
   message: 'a subdir skill source needs a ref; provide one, or ensure the org GitHub App can reach the repo'
 }
 
-const privateNotSupported = {
+const privateNeedsInstallation = {
   error: 'Bad Request',
   statusCode: 400,
-  message: 'private skill sources are not supported yet — use a public repository'
+  message:
+    'private skill sources are installed through the org GitHub App — install it on the repository owner (with access to this repository) first'
 }
 
 const repoNotFound = {
   error: 'Bad Request',
   statusCode: 400,
-  message: 'no such public GitHub repository — a source that cannot be identified can never install'
+  message:
+    'no such GitHub repository (or a private one the org GitHub App cannot see) — a source that cannot be identified can never install'
 }
 
 const notAGithubRepo = {
