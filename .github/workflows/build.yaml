@@ -587,7 +587,13 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           OWNER: ${{ github.repository_owner }}
         run: |
-          set -eu
+          set -euo pipefail
+          # Finalizers of overlapping or re-run releases can land out of order, so only the newest candidate moves `:rc`.
+          newest="$(git ls-remote --tags --refs "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" 'v*-rc.*' | sed 's|.*refs/tags/||' | sort -V | tail -1)"
+          if [ "$newest" != "$VERSION" ]; then
+            echo "${newest} is newer than ${VERSION}; leaving :rc to it"
+            exit 0
+          fi
           for comp in control-plane web relay memory-plugin-mem0 mem0-server runtime-sandbox runtime-sandbox-full daemon; do
             docker buildx imagetools create -t "${REGISTRY}/${OWNER}/${comp}:rc" "${REGISTRY}/${OWNER}/${comp}:${VERSION}"
           done
