@@ -15,10 +15,9 @@
  *
  * - **Per daemon** — {@link lockDaemonMembership}, an advisory transaction lock every writer of
  *   "is this daemon in a set" and every reader that acts on the answer takes: enrolment,
- *   withdrawal, the pool-placement guard, and the ledger's two claim paths. Without it, a
- *   placement that read "not a pool Pod" and a pool enrolment both commit and leave an agent
- *   pinned to a Pod the reconciler may retire; or a claim commits a live lease onto a member the
- *   withdrawal has just decided was idle.
+ *   withdrawal, and the ledger's two claim paths. Without it, a claim commits a live lease onto a
+ *   member the withdrawal has just decided was idle. The pool-placement guard is not a taker: it
+ *   reads the daemon's identity, which no enrolment changes.
  * - **Per set** — the `member_set` row itself, read `FOR SHARE` by everything that adds a
  *   reference to it and `FOR UPDATE` by the delete. Counting references without that lets a
  *   placement land after the count and be silently `SET NULL`ed by the cascade.
@@ -59,9 +58,9 @@ async function shareSetRow(tx: Prisma.TransactionClient, setId: string): Promise
 }
 
 /** The ONLY writer of `member_set_member`: the set's org and the daemon's org must be the same
- *  value, null (cross-org) included, or the row is refused. Takes both fences — the daemon's,
- *  so a concurrent placement cannot pin an agent to the machine it is enrolling, and the set's,
- *  so a concurrent delete cannot drop the set this row points at. */
+ *  value, null (cross-org) included, or the row is refused. Takes both fences — the daemon's, so
+ *  it serializes with withdrawal and the ledger's claims, and the set's, so a concurrent delete
+ *  cannot drop the set this row points at. */
 export async function enrollDaemonInSet(tx: Prisma.TransactionClient, setId: string, daemonId: string): Promise<void> {
   await lockDaemonMembership(tx, daemonId)
   const set = await shareSetRow(tx, setId)
@@ -91,27 +90,16 @@ export async function assertAgentMayUseSet(
   if (!row || (row.orgId !== null && row.orgId !== agent.orgId)) throw new AgentSetPlacementDenied(agent.id, setId)
 }
 
-/**
- * A `daemon` placement may not name a POOL member (§3). Under the daemon fence, so it cannot race
- * the enrolment that is putting the machine there.
- */
+/** A `daemon` placement may not name a pool Pod (§3): org-less identity is fixed at creation, so this needs no fence. */
 export async function assertDaemonNotInSet(
   tx: Prisma.TransactionClient,
   agentId: string,
   daemonId: string
 ): Promise<void> {
-  await lockDaemonMembership(tx, daemonId)
-  // Only the install-wide pool refuses a pin, and not because membership conflicts with one — a
-  // `daemon` placement is eligible for exactly that machine either way. It is that a pool member
-  // is a REPLACEABLE identity: the reconciler retires Pods without notice, so a pin to one is a
-  // pointer that outlives what it names. An org's own machines are stable, so pinning an agent to
-  // one is allowed whether or not it has joined a group.
-  const [row] = await tx.$queryRaw<{ one: number }[]>(Prisma.sql`
-    SELECT 1 AS one FROM "member_set_member" m
-    JOIN "member_set" s ON s.id = m."setId"
-    WHERE m."daemonId" = ${daemonId}::uuid AND s."orgId" IS NULL
-  `)
-  if (row) throw new DaemonPlacementInSet(agentId, daemonId)
+  const [row] = await tx.$queryRaw<{ orgId: string | null }[]>(
+    Prisma.sql`SELECT "orgId" FROM "daemon" WHERE id = ${daemonId}::uuid`
+  )
+  if (row && row.orgId === null) throw new DaemonPlacementInSet(agentId, daemonId)
 }
 
 export class PgMemberSetRepo implements MemberSetRepo {

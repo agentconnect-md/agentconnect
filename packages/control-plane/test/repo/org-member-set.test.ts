@@ -265,22 +265,17 @@ describe('the membership fences (real Postgres)', () => {
     })
   })
 
-  it('still serializes a pool enrolment against a concurrent pin, where the pair IS forbidden', async () => {
-    // The pool keeps the old fence for the reason it always had one: its members are replaceable
-    // Pods, so an agent pinned to one names something the reconciler may retire.
+  it('refuses a pin to a pool Pod by identity, so an enrolment has nothing to race', async () => {
+    // The guard reads identity, not membership: an org-less row is refused before it enrols, so a pin cannot race the enrolment.
     const pod = DaemonId(randomUUID())
     await prisma.daemon.create({ data: { id: pod, orgId: null, maxAgents: 8, status: 'ready' } })
-    const pool = await poolSetId(prisma)
-    const agentId = AgentId(randomUUID())
+    const pin = () =>
+      agents().create({ id: AgentId(randomUUID()), orgId: ORG_X, name: 'pool-racer', runtime: 'claude', daemonId: pod })
 
-    const outcomes = await Promise.allSettled([
-      sets().enroll(pool, pod),
-      agents().create({ id: agentId, orgId: ORG_X, name: 'pool-racer', runtime: 'claude', daemonId: pod })
-    ])
-    const inPool = (await sets().setIdOf(pod)) !== null
-    const pinned = await prisma.agent.count({ where: { daemonId: pod } })
-    expect(inPool && pinned > 0).toBe(false)
-    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1)
+    await expect(pin()).rejects.toBeInstanceOf(DaemonPlacementInSet)
+    await sets().enroll(await poolSetId(prisma), pod)
+    await expect(pin()).rejects.toBeInstanceOf(DaemonPlacementInSet)
+    expect(await prisma.agent.count({ where: { daemonId: pod } })).toBe(0)
   })
 
   it('never answers success for the loser of two concurrent enrolments into different sets', async () => {

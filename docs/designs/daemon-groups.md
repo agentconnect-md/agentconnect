@@ -200,7 +200,9 @@ The converse follows from the same predicate: an agent **may** be pinned to a ma
 that is in an organization's group. The one refusal that survives is the install-wide
 pool, and identity is why — a pool member is a Pod the reconciler retires without notice,
 so a pin to one names something that stops existing. That is a statement about
-replaceability, not about membership.
+replaceability, not about membership — and the guard reads it as one: an org-less daemon
+row, fixed when the row is minted, rather than the membership row that lands at
+authentication. A Pod is refused before it enrols, so a pin cannot race the enrolment.
 
 Leaving a set does not move agents by itself: they stay `set`-placed and re-grant to
 the remaining members. An operator who wants them pinned back to the leaving machine

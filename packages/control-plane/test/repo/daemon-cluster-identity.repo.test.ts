@@ -1,12 +1,10 @@
 /** Real-Postgres coverage for Kubernetes identity-to-daemon bindings. */
-import { onDaemon } from '../../src/domain/placement.js'
 import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { poolSetId } from '../fakes/member-set.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { seedAgent } from '../fixtures/seed.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
-import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 
 const INSTALL_IDENTITY = 'system:serviceaccount:agentconnect:ac-cloud-daemon'
@@ -88,7 +86,8 @@ describe('DaemonRepo pool-member retirement', () => {
     // pool member has, and the reason the settlement cannot be org-scoped.
     const hosted = AgentId('a9999999-9999-4999-8999-999999999999')
     await seedAgent(prisma, hosted, { daemonId: pod.id })
-    await new PgAgentRepo(prisma).setPlacement(hosted, onDaemon(pod.id))
+    // Activated by hand: the placement repo refuses a pin to a pool Pod, enrolled or not.
+    await prisma.agent.update({ where: { id: hosted }, data: { status: 'active' } })
     const laptop = DaemonId('88888888-8888-4888-8888-888888888888')
     await repo.provision(laptop, DEF_ORG)
     await prisma.daemon.update({ where: { id: laptop }, data: { lastSeenAt: HOUR_AGO } })
