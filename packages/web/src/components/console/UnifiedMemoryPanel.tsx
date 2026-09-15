@@ -66,6 +66,16 @@ export interface OverviewSource {
 }
 // The daemon stamps this marker on every index it generates; anything else was written by hand and is kept as-is.
 const GENERATED_OVERVIEW_MARKER = '<!-- generated from each topic'
+// Summaries carry no filename, so an overview link is followed by the name the index shows, which the daemon derives
+// exactly as it derives an entry's label (frontmatter name, else the topic filename); the map is href → shown name.
+function overviewLinkNames(content: string): Map<string, string> {
+  const names = new Map<string, string>()
+  for (const match of content.matchAll(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+    const file = memoryFileFromHref(match[2]!)
+    if (file && !names.has(file)) names.set(file, match[1]!.trim())
+  }
+  return names
+}
 export function UnifiedMemoryPanel(props: Props) {
   return <Entries key={`${props.agentId}:${props.channelKey ?? ''}`} {...props} />
 }
@@ -435,6 +445,38 @@ function Entries({
       if (id === overviewRequest.current) setOverviewBusy(false)
     }
   }
+  async function openOverviewLink(name: string) {
+    const id = generation.current
+    const matching = (list: MemoryEntrySummary[]) => list.filter((entry) => entry.label === name)
+    let pool = entries
+    let next = cursor
+    let found = matching(pool)
+    setError(undefined)
+    try {
+      for (let pages = 0; found.length === 0 && next && pages < 25; pages++) {
+        setPaging(true)
+        const page = await listAgentMemoryEntries(agentId, channelKey, next)
+        if (id !== generation.current) return
+        pool = [...pool, ...page.entries]
+        next = page.nextCursor
+        setEntries(pool)
+        setCursor(next)
+        found = matching(pool)
+      }
+    } catch (err) {
+      if (id === generation.current) setError(errorMessage(err))
+      return
+    } finally {
+      if (id === generation.current) setPaging(false)
+    }
+    if (found.length === 1) void open(found[0]!)
+    else
+      setError(
+        found.length
+          ? `Several memory entries are named “${name}”; open the one you mean from the list.`
+          : `No memory entry is named “${name}”. The overview may be out of date.`
+      )
+  }
   // The wake watches the root read; its poll re-issues that read until the sandbox answers or the bound passes.
   const readState: SandboxReadState =
     errorCode === SANDBOX_ASLEEP_CODE ? 'asleep' : busy ? 'pending' : error ? 'failed' : 'ready'
@@ -469,6 +511,7 @@ function Entries({
             .join(' · ')
         : ''
   const overviewGenerated = overviewDoc?.content.includes(GENERATED_OVERVIEW_MARKER) === true
+  const overviewLinks = overviewLinkNames(overviewDoc?.content ?? '')
   const overviewMeta = overviewDoc
     ? [
         formatFileSize(new TextEncoder().encode(overviewDoc.content).byteLength),
@@ -680,11 +723,11 @@ function Entries({
                 resolveFileBrowserMarkdownLink(
                   href,
                   (candidate) => {
-                    const name = memoryFileFromHref(candidate)
-                    const target = name && entries.find((entry) => entry.label === name.replace(/\.md$/, ''))
-                    return name && target ? { path: name, name, ref: target.ref } : null
+                    const file = memoryFileFromHref(candidate)
+                    const name = file ? overviewLinks.get(file) : undefined
+                    return file && name ? { path: file, name } : null
                   },
-                  (target) => void open({ ref: target.ref })
+                  (target) => void openOverviewLink(target.name)
                 )
               }
             />

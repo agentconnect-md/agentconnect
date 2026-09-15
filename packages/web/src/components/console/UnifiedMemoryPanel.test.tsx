@@ -367,12 +367,16 @@ it('wakes a sleeping sandbox instead of reporting a generic failure', async () =
   expect(host.textContent).not.toContain('Legacy memory tools')
 })
 
-it('pins the overview when given, labels a hand-written one, and follows its links to entries', async () => {
-  const read = vi.fn(async () => ({
-    exists: true,
-    content: "# Memory\n\n<!-- generated from each topic's `description` header -->\n\n- [Topic](Topic.md)",
-    mtime: '2026-09-14T00:00:00.000Z'
-  }))
+it('pins the overview when given, labels a hand-written one, and follows its links by shown name across pages', async () => {
+  const overview = { exists: true, content: '', mtime: null as string | null }
+  const read = vi.fn(async () => overview)
+  // The link's shown name is what the daemon derives for the entry label; its href names a file the list never exposes.
+  overview.content = "# Memory\n\n<!-- generated from each topic's `description` header -->\n\n- [Later](oncall.md)"
+  overview.mtime = '2026-09-14T00:00:00.000Z'
+  const later = { ...entry, ref: 'later-ref', label: 'Later' }
+  vi.mocked(api.listAgentMemoryEntries)
+    .mockResolvedValueOnce({ entries: [entry], consistency: 'live', order: 'topic', nextCursor: 'p2' })
+    .mockResolvedValueOnce({ entries: [later], consistency: 'live', order: 'topic' })
   await act(async () =>
     root.render(
       <UnifiedMemoryPanel agentId="agent" canEdit overview={{ read }}>
@@ -385,11 +389,17 @@ it('pins the overview when given, labels a hand-written one, and follows its lin
   expect(read).toHaveBeenCalledTimes(1)
   expect(host.textContent).toContain('generated from topic descriptions')
   expect(host.textContent).not.toContain('Edit memory')
+  expect(host.querySelector('[data-testid="stray"]')?.textContent).toBe('blocked')
   await click('follow oncall.md')
-  expect(api.getAgentMemoryEntry).not.toHaveBeenCalled()
-  read.mockResolvedValueOnce({ exists: true, content: '# Mine\n\n[Topic](Topic.md)', mtime: null })
+  expect(api.listAgentMemoryEntries).toHaveBeenLastCalledWith('agent', undefined, 'p2')
+  expect(api.getAgentMemoryEntry).toHaveBeenCalledWith('agent', 'later-ref', undefined, undefined)
+  expect(host.textContent).toContain('Later')
+  overview.content = '# Mine\n\n[Nowhere](oncall.md)'
+  overview.mtime = null
   await click('MEMORY.md')
   expect(host.textContent).toContain('hand-written')
+  await click('follow oncall.md')
+  expect(host.textContent).toContain('No memory entry is named “Nowhere”')
 })
 
 it('shows a record’s metadata under its text', async () => {
