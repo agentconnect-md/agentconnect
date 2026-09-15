@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import type { McpAppBody } from '@/lib/data'
 import {
   appStepKey,
   foldCustomAnswers,
   liveAppKeys,
   mcpAppCard,
+  mergeFetchedAppCard,
   PLAN_LANE,
   WORK_LANES,
   planEntries,
@@ -312,5 +314,34 @@ describe('liveAppKeys — one card, not two, while its live copy stands', () => 
 
   it('does not collide two owners holding the same card id', () => {
     expect(appStepKey('bot-a', 'app-1')).not.toBe(appStepKey('bot-b', 'app-1'))
+  })
+})
+
+describe('mergeFetchedAppCard — the row stays authoritative over a fetched snapshot', () => {
+  const preview: McpAppBody = { appId: 'app-1', title: 'DeFi positions', toolName: 'charts__positions' }
+  const fetched: McpAppBody = {
+    appId: 'app-1',
+    title: 'DeFi positions',
+    toolName: 'charts__positions',
+    html: '<p>page</p>',
+    toolResult: { structuredContent: { positions: [1, 2] } },
+    outcome: 'expired'
+  }
+
+  it('takes what the row shed — the page, and the result when that went too', () => {
+    const out = mergeFetchedAppCard(preview, fetched)
+    expect(out.html).toBe('<p>page</p>')
+    expect(out.toolResult).toEqual({ structuredContent: { positions: [1, 2] } })
+  })
+
+  it('never lets the fetched snapshot reinstate an outcome the row has moved past', () => {
+    // The reader closed the card after the fetch. Letting the snapshot win would leave the frame
+    // on screen, live, until the next reload.
+    const closed: McpAppBody = { ...preview, outcome: 'closed' }
+    expect(mergeFetchedAppCard(closed, fetched).outcome).toBe('closed')
+  })
+
+  it('lets the row CLEAR an outcome too — a revived card is live again', () => {
+    expect(mergeFetchedAppCard(preview, fetched).outcome).toBeUndefined()
   })
 })

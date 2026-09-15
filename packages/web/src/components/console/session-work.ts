@@ -200,6 +200,20 @@ export function liveElicitKeys(
   return keys
 }
 
+/**
+ * Fold a card fetched in full into the PREVIEW its transcript row carried (webchat-mcp-apps.md §8).
+ *
+ * The fetch supplies only what the row shed — the template, and the result when the card was large
+ * enough to lose that too. The row stays authoritative for everything it still carries, and
+ * `outcome` is why the distinction is worth stating: the fetched copy is a snapshot from whenever
+ * it was read, so letting it win would put a card the reader has since closed back on screen,
+ * frame and all, until the next reload. Pure.
+ */
+export function mergeFetchedAppCard<T extends { appId: string; outcome?: string }>(preview: T, fetched: T): T {
+  const { outcome: _snapshot, ...payload } = fetched
+  return { ...payload, ...preview } as T
+}
+
 export function appStepKey(agentId: string | undefined, appId: string): string {
   return `${agentId ?? ''}\u0000${appId}`
 }

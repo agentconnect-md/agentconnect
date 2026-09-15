@@ -213,7 +213,7 @@ function transcriptPageCursor(page: unknown): number | undefined {
  *
  * Null ⇒ the body could not be parsed, and the row's title stands alone. Pure.
  */
-function previewAppBody(body: string): string | null {
+export function previewAppBody(body: string): string | null {
   let card: Record<string, unknown>
   try {
     card = JSON.parse(body) as Record<string, unknown>

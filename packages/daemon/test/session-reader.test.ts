@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
-import { createSessionReader } from '../src/cp/session-reader.js'
+import { createSessionReader, previewAppBody } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
@@ -612,7 +612,11 @@ describe('SessionReader', () => {
       conversationId: 'C1',
       outcome: 'expired',
       toolInput: { chain: 'eth' },
-      toolResult: { structuredContent: { positions: Array.from({ length: 900 }, (_, i) => `position-${i}`) } }
+      // Big enough that dropping the 200 KiB template still leaves the body over the cap — the
+      // whole point of the case. The real one was ~57 KiB of positions.
+      toolResult: {
+        structuredContent: { positions: Array.from({ length: 4000 }, (_, i) => `position-${i}-0x${'a'.repeat(12)}`) }
+      }
     }
     const body = JSON.stringify({ ...card, html: `<p>${'x'.repeat(200 * 1024)}</p>` })
     await s.upsertApp({
@@ -630,7 +634,11 @@ describe('SessionReader', () => {
     // The identity survives whatever else is shed — that is what makes it a card and not a line.
     expect(preview).toMatchObject({ appId: 'app-3', title: 'DeFi positions', toolName: 'charts__get_defi_positions' })
     expect(preview.outcome).toBe('expired')
+    // Both heavy halves are gone — the template AND the result that kept it over the cap.
     expect(preview.html).toBeUndefined()
+    expect(preview.toolResult).toBeUndefined()
+    // Shed in order: the arguments are lighter than the result and survive it.
+    expect(preview.toolInput).toEqual({ chain: 'eth' })
     expect(Buffer.byteLength(row.body!)).toBeLessThanOrEqual(32 * 1024)
     expect(row.bodyTruncated).toBe(true)
     expect(row.bodyBytes).toBe(Buffer.byteLength(body))
@@ -1078,5 +1086,63 @@ describe('SessionReader', () => {
       /cannot resolve the transcript organization/
     )
     await holder.close() // one database behind both handles: closing it once is closing it
+  })
+})
+
+describe('previewAppBody — shedding one app card onto a transcript page', () => {
+  const card = (over: Record<string, unknown> = {}) => ({
+    appId: 'app-1',
+    title: 'DeFi positions',
+    toolName: 'charts__get_defi_positions',
+    server: 'charts',
+    conversationId: 'C1',
+    outcome: 'expired',
+    ...over
+  })
+  const bulk = (bytes: number) => 'x'.repeat(bytes)
+  const parse = (body: string) => JSON.parse(previewAppBody(body)!) as Record<string, unknown>
+
+  it('drops the template first, keeping the result the card reported', () => {
+    const out = parse(JSON.stringify(card({ html: bulk(200 * 1024), toolResult: { structuredContent: { a: 1 } } })))
+    expect(out.html).toBeUndefined()
+    expect(out.toolResult).toEqual({ structuredContent: { a: 1 } })
+  })
+
+  it('drops the result next, when the template alone was not what made it too big', () => {
+    const out = parse(
+      JSON.stringify(card({ html: bulk(200 * 1024), toolResult: { structuredContent: { big: bulk(60 * 1024) } } }))
+    )
+    expect(out.toolResult).toBeUndefined()
+    expect(out.title).toBe('DeFi positions')
+  })
+
+  it('drops the arguments last, after the result has already gone', () => {
+    const out = parse(
+      JSON.stringify(
+        card({
+          html: bulk(200 * 1024),
+          toolResult: { structuredContent: { big: bulk(60 * 1024) } },
+          toolInput: { blob: bulk(60 * 1024) }
+        })
+      )
+    )
+    expect(out.toolResult).toBeUndefined()
+    expect(out.toolInput).toBeUndefined()
+  })
+
+  it('keeps the card’s IDENTITY whatever it has to shed — a row read as a line is a card that vanished', () => {
+    // The floor. Unreachable for a schema-valid card, which is exactly why it is worth pinning:
+    // a row is only ever rendered as a card when the console can still read these fields off it.
+    const out = parse(JSON.stringify(card({ html: bulk(200 * 1024), unknownBulk: bulk(64 * 1024) })))
+    expect(out).toEqual({
+      appId: 'app-1',
+      title: 'DeFi positions',
+      toolName: 'charts__get_defi_positions',
+      outcome: 'expired'
+    })
+  })
+
+  it('returns null for a body that is not a card, leaving the row’s own title to stand alone', () => {
+    expect(previewAppBody('not json')).toBeNull()
   })
 })

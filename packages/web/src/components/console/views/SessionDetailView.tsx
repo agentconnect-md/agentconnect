@@ -110,6 +110,7 @@ import {
   appStepKey,
   liveAppKeys,
   mcpAppCard,
+  mergeFetchedAppCard,
   APP_LANE,
   ELICIT_LANE,
   elicitStepKey,
@@ -1835,10 +1836,11 @@ function McpAppRow({
       live = false
     }
   }, [wants, sessionId, toolCallId, appId])
-  // The fetched card REPLACES the preview rather than lending it a template: a page-sized card
-  // sheds its result as well as its page, so merging only the `html` back would arm a frame and
-  // then hand it no `tool-result` to render — a page that comes back empty.
-  const whole = app && full?.appId === app.appId && !app.html ? { ...step, app: full } : step
+  // The fetch supplies what the ROW shed; the row itself stays authoritative for everything it
+  // still carries. `outcome` is why that distinction matters: the fetched copy is a snapshot from
+  // whenever it was read, so letting it win would put a card the reader has since closed back on
+  // screen, frame and all, until the next reload.
+  const whole = app && full?.appId === app.appId && !app.html ? { ...step, app: mergeFetchedAppCard(app, full) } : step
   return <McpAppCard step={whole} {...(onRpc ? { onRpc } : {})} {...(onClose ? { onClose } : {})} />
 }
 
