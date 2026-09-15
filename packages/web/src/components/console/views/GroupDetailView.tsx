@@ -213,7 +213,7 @@ export default function GroupDetailView() {
                 No daemons in this group
               </div>
               <div className="mt-[3px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                A daemon joins from its own page — membership is admitted on the machine whose runtime authority moves.
+                Add daemons from their own page.
               </div>
             </div>
           )}
@@ -245,11 +245,6 @@ export default function GroupDetailView() {
         emptyTitle="No agents target this group yet"
         emptyHint={`Place an agent on ${group.name} and it runs on whichever member is serving.`}
       />
-
-      <p className="mt-[14px] max-w-[780px] font-sans text-[12px] font-normal leading-[1.6] text-(--text-tertiary) text-pretty">
-        An agent placed on this group keeps running when one member does not — whichever member is serving picks the
-        work up. An agent pinned to a member stays pinned there and does not move with the group.
-      </p>
     </div>
   )
 }

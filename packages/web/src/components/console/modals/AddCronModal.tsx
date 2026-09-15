@@ -433,11 +433,11 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
               </option>
             ))}
           </select>
-          <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            {timezoneValid
-              ? 'The selected IANA timezone is used to calculate each UTC fire time.'
-              : 'Select a valid IANA timezone.'}
-          </span>
+          {!timezoneValid && (
+            <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+              Select a valid IANA timezone.
+            </span>
+          )}
         </div>
 
         <div className="fld mt-[14px]">
@@ -491,13 +491,8 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
             </select>
           </div>
           <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            Where the run posts its output. Leave empty to keep it in the session only.
+            Optional — output stays in the session.
           </span>
-        </div>
-
-        <div className="mt-[14px] flex items-start gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          <Icon name="info" size={14} className="mt-[1px] flex-none" />
-          <span>Each run starts a fresh session for the agent — you&rsquo;ll see it under Sessions.</span>
         </div>
 
         <VisibilityField value={sharing} onChange={setSharing} disabled={!!cron && !cron.canManageSharing} />

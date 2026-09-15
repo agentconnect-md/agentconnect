@@ -1493,8 +1493,7 @@ export default function AddIntegrationModal({
               </select>
               {hookSessionMode === 'perSubject' && (
                 <div className="mt-1.5 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  Deliveries carrying the same <span className="mono">X-AC-Session-Key</span> header continue one
-                  session — one ticket, one conversation. A delivery without the header starts its own session.
+                  Deliveries with the same <span className="mono">X-AC-Session-Key</span> header share one session.
                 </div>
               )}
             </div>
@@ -1512,8 +1511,8 @@ export default function AddIntegrationModal({
             <div className="mt-3 flex items-start gap-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
               <Icon name="info" size={13} className="mt-[1px] flex-none" />
               <span>
-                The payload is the message — the <span className="mono">message</span> field in your JSON tells the
-                agent what to do. The generated URL contains a random token and works like an API key; keep it private.
+                POST JSON with a <span className="mono">message</span> field. Keep the URL private — its token is the
+                credential.
               </span>
             </div>
           </div>
@@ -1535,9 +1534,8 @@ export default function AddIntegrationModal({
               </button>
             </div>
             <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-              Send a JSON POST here and each request runs this agent — the payload is the message (the{' '}
-              <span className="mono">message</span> field speaks for the caller). Keep the full URL private: its random
-              token authenticates each request.
+              POST JSON with a <span className="mono">message</span> field. Keep the URL private — its token is the
+              credential.
             </div>
             {createdHook.hmacSecret && (
               <div className="mt-[14px] border-t border-dashed border-(--border-default) pt-[13px]">
@@ -1556,8 +1554,7 @@ export default function AddIntegrationModal({
                   </button>
                 </div>
                 <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  Send <span className="mono">X-AC-Signature: sha256=&lt;hmac&gt;</span> computed over the raw request
-                  body. The signature is verified before the request reaches the agent.{' '}
+                  HMAC over the raw body, sent as <span className="mono">X-AC-Signature: sha256=&lt;hmac&gt;</span>.{' '}
                   <span className="font-medium text-(--text-secondary)">Shown only once — copy it now.</span>
                 </div>
               </div>
@@ -1615,8 +1612,7 @@ export default function AddIntegrationModal({
                   )
                 })()}
                 <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  Fire this from your terminal to confirm the agent is receiving — it opens a session just like a real
-                  delivery.
+                  Run this to send a test delivery.
                 </div>
               </div>
             )}
@@ -1643,8 +1639,7 @@ export default function AddIntegrationModal({
                   Connect GitHub to watch repos
                 </div>
                 <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  Install the AgentConnect GitHub app to subscribe this agent to issue and pull-request events. You
-                  choose which repos it can read.
+                  Install the GitHub App to subscribe to repository events.
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-3">
                   <Button size="sm" onClick={() => void openGhInstall()}>
@@ -2303,8 +2298,7 @@ export default function AddIntegrationModal({
           <div className="mb-4 overflow-hidden rounded-[9px] border border-(--border-subtle)">
             {freeBots.length === 0 && (
               <div className="px-[14px] py-[18px] text-center font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                No free bots yet — bots freed by uninstalling an integration will show up here. Create a new one
-                instead.
+                No free bots — create a new one.
               </div>
             )}
             {freeBots.map((b) => {
@@ -2347,10 +2341,6 @@ export default function AddIntegrationModal({
                 </div>
               )
             })}
-            <div className="flex items-center gap-2 bg-(--surface-app) px-[13px] py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-              <Icon name="info" size={13} className="flex-none" />A bot can be installed on one agent at a time. Freed
-              bots show up here.
-            </div>
           </div>
         )}
         {/* The active platform's fragment. Keyed by platform so its whole
@@ -2360,7 +2350,7 @@ export default function AddIntegrationModal({
           <Icon name="hash" size={14} className="mt-[1px] flex-none" />
           <span>
             {platform === 'webhook'
-              ? 'Each POST becomes a session, routed to this agent by the endpoint path. Retries are de-duplicated by the X-AC-Delivery-Key header (auto-assigned when absent).'
+              ? 'Each POST starts a session; retries are de-duplicated by the X-AC-Delivery-Key header.'
               : isCodeHostProvider(platform)
                 ? CODE_HOST_SUBSCRIPTION_HINT[platform]
                 : wizard?.inviteHint(region)}
@@ -2607,8 +2597,7 @@ export function AddIntegrationForOrgModal({
         </div>
         <div className="modalbody">
           <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-app) px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
-            An integration is answered by an agent, and there is no agent you can edit yet. Create one first — the
-            Add-integration step is offered again from the agent&rsquo;s own page.
+            Create an agent first — integrations are added from the agent&rsquo;s page.
           </div>
         </div>
         <div className="modalfoot">

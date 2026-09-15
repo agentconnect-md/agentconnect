@@ -841,14 +841,13 @@ export default function EditAgentModal({
                           {forceMove ? (
                             <>
                               <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span> is
-                              offline and cannot confirm the handover, so this move force reassigns. If it is still
-                              running, both copies may process messages — bring it online first to move safely.
+                              offline, so this move force reassigns; if it is still running, both copies may process
+                              messages.
                             </>
                           ) : sourceOffline ? (
                             <>
-                              To move safely, bring{' '}
-                              <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span> online,
-                              then retry. The existing copy must stop before this agent is activated elsewhere.
+                              Bring <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span>{' '}
+                              online, then retry.
                             </>
                           ) : (
                             <>
@@ -979,8 +978,7 @@ export default function EditAgentModal({
                     <Toggle checked={introduceOnJoin} onChange={setIntroduceOnJoin} />
                   </div>
                   <span className="mt-[6px] text-[11px] text-(--text-secondary)">
-                    When this agent joins a channel, it messages the agents already there to introduce itself — so they
-                    know who to delegate to later. Off by default.
+                    Introduces itself to agents already in a channel it joins.
                   </span>
                 </div>
               </div>
@@ -1057,43 +1055,36 @@ export default function EditAgentModal({
                 <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
                 {initialPlacement ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    This places the unassigned agent on{' '}
+                    Places the agent on{' '}
                     <span className="font-semibold text-(--text-primary)">{daemon?.name ?? 'the selected daemon'}</span>{' '}
-                    from its saved settings. No workspace, memory, or session history is copied from another daemon.
+                    from its saved settings; nothing is copied.
                   </span>
                 ) : daemonChanged && forceMove ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    Force reassign activates this agent on{' '}
-                    <span className="font-semibold text-(--text-primary)">{daemon?.name ?? 'the target daemon'}</span>{' '}
-                    without confirmation from{' '}
-                    <span className="font-semibold text-(--text-primary)">
-                      {sourceDaemon?.name ?? 'the current daemon'}
-                    </span>
-                    . Local workspace, memory, transcripts, and attachments are not copied. Continue only when the
-                    source machine is permanently stopped.
-                  </span>
-                ) : daemonChanged ? (
-                  <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    This is a hard cutover. Current turns on{' '}
+                    Skips confirmation from{' '}
                     <span className="font-semibold text-(--text-primary)">
                       {sourceDaemon?.name ?? 'the current daemon'}
                     </span>{' '}
-                    are cancelled without a final reply. New messages start fresh on{' '}
-                    <span className="font-semibold text-(--text-primary)">{daemon?.name ?? 'the target daemon'}</span>.
-                    Workspace, memory, and session history stay on the source and are not copied or replayed; GitHub
-                    workspaces are re-cloned. Other edits in this dialog are saved as part of the same operation.
+                    and copies nothing — use only if that machine is permanently stopped.
+                  </span>
+                ) : daemonChanged ? (
+                  <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                    Hard cutover: current turns on{' '}
+                    <span className="font-semibold text-(--text-primary)">
+                      {sourceDaemon?.name ?? 'the current daemon'}
+                    </span>{' '}
+                    are cancelled, and workspace, memory and history are not copied.
                   </span>
                 ) : (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    Repair cold-reprovisions this agent on its current daemon from its saved settings. Use it to recover
-                    an interrupted move. Current turns are drained; local workspace and memory stay in place.
+                    Re-provisions the agent in place; current turns drain first.
                   </span>
                 )}
               </div>
             )}
             <div className="mt-[14px] flex items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="info" size={14} />
-              The agent name is fixed. Edit workspace source and working directory from the Workspace card.
+              The agent name can&rsquo;t be changed.
             </div>
             {err && (
               <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">

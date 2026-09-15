@@ -55,8 +55,7 @@ export function McpServersCard({ canWrite }: { canWrite: boolean }) {
     <div className="px-4 py-7 text-center">
       <div className="font-sans text-[13px] font-semibold leading-normal">No connectors or MCPs yet</div>
       <div className="mx-auto mt-1 max-w-[430px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-        Register an upstream MCP server once and any agent in this organization can enable it — the tool calls are
-        proxied through a relay with a managed grant key, so the upstream URL and credentials stay here.
+        Register an MCP server once; any agent in the organization can enable it.
       </div>
     </div>
   )
@@ -530,7 +529,7 @@ export function CreateMcpProviderModal({
               onChange={(e) => setUrl(e.target.value)}
             />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              The upstream MCP endpoint (http transport). Agents never see this — the relay dials it.
+              Agents never see this URL — the relay dials it.
             </span>
           </div>
           <div className="fld">
@@ -552,11 +551,6 @@ export function CreateMcpProviderModal({
                 </button>
               ))}
             </div>
-            <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              {auth === 'oauth2'
-                ? 'AgentConnect signs in to the server and keeps the token refreshed. You will be asked to authorize after adding.'
-                : 'The credential you enter is stored by the control plane and injected by the relay.'}
-            </span>
           </div>
           {auth === 'headers' ? (
             <HeadersEditor rows={headers} onChange={setHeaders} />
@@ -578,8 +572,7 @@ export function CreateMcpProviderModal({
                   onChange={(e) => setClientSecret(e.target.value)}
                 />
                 <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                  Leave blank to register automatically. Fill these in only if you registered an OAuth app with the
-                  server yourself.
+                  Leave blank unless you registered your own OAuth app.
                 </span>
               </div>
             </details>
@@ -680,7 +673,7 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
             <span className="fldlbl">Name</span>
             <input className="inp mn opacity-60" value={provider.name} readOnly disabled />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              The name is fixed once created — agents bind to it. Recreate under a new name to change it.
+              The name can&rsquo;t be changed later.
             </span>
           </div>
           <div className="fld">
@@ -710,7 +703,7 @@ export function EditMcpProviderModal({ provider, onClose }: { provider: McpProvi
                 </button>
               </div>
               <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                Editing headers replaces the whole set — re-enter every header you want to keep.
+                Replaces all existing headers.
               </span>
             </div>
           )}
@@ -941,7 +934,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
                     />
                   ))}
                   <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    The current value is hidden. Enter a new one to replace it, or leave blank to keep it.
+                    Leave blank to keep the current value.
                   </span>
                 </div>
               )}

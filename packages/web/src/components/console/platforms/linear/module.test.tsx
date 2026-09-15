@@ -126,13 +126,7 @@ describe('the linear transcript and card semantics', () => {
     // §4.3: a gated member acts in a team only as its default; the host's generic banner
     // would promise a per-member enable the model does not have.
     const note = channelListSemantics('linear').gatedNote
-    expect(note).toBe('Private agent: it answers in a team only where it is the default and the team is not off.')
-  })
-
-  it('keeps the footer to what the rows do not already say', () => {
-    const footerNote = channelListSemantics('linear').footerNote ?? ''
-    expect(footerNote).toContain('Every team of this workspace is listed here')
-    expect(footerNote.split('. ').length).toBe(1)
+    expect(note).toBe('Private agent — answers only in teams where it is the default.')
   })
 
   it('is the only module whose roster is derived, or whose triggers are narrowed', () => {

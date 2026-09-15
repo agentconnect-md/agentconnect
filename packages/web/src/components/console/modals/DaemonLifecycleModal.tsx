@@ -113,14 +113,13 @@ export default function DaemonLifecycleModal({
               <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                 {isUpgrade ? (
                   <>
-                    <span className="mono text-(--text-primary)">{daemon.name}</span> will install the target version,
-                    then drain its active sessions and relaunch onto it. Established sessions finish first; brief
-                    downtime during the relaunch.
+                    <span className="mono text-(--text-primary)">{daemon.name}</span> installs the target version,
+                    drains active sessions, then relaunches. Brief downtime.
                   </>
                 ) : (
                   <>
-                    <span className="mono text-(--text-primary)">{daemon.name}</span> will drain its active sessions and
-                    relaunch on the same version. Established sessions finish first; brief downtime during the relaunch.
+                    <span className="mono text-(--text-primary)">{daemon.name}</span> drains active sessions, then
+                    relaunches. Brief downtime.
                   </>
                 )}
               </span>

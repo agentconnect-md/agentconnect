@@ -552,18 +552,7 @@ export interface WebChannelListSemantics {
    *  platform's own UI. Absent ⇒ the host's generic wording with its
    *  "the chat app" fallback (:232-241). */
   cannotLeaveRowHint?: string
-  /** The per-platform tail of the card footer (:786-791): Discord's
-   *  servers-not-channels note, Slack's remove-it-in-Slack note (which
-   *  encodes `membershipEnumeration: 'authoritative'` — the list updates by
-   *  itself). Absent ⇒ no extra sentence. */
-  footerNote?: string
-  /**
-   * Where the rows come from. `'observed'` (the default) — each row records a room the
-   * bot was seen in, so it can be dropped from the list and the footer says how rows
-   * appear. `'derived'` — the roster is the platform's own and the console neither adds
-   * to it nor removes from it, so no row carries a way out and the footer's arrival
-   * sentence is the module's {@link footerNote} instead of the host's.
-   */
+  /** `'observed'` (default): rows record rooms the bot was seen in and can be dropped; `'derived'`: the platform's own roster, nothing added or removed here. */
   roster?: 'observed' | 'derived'
   /**
    * The room row's trigger vocabulary, host order preserved. Absent ⇒ all three

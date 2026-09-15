@@ -100,12 +100,12 @@ export default function EditOrgModal({ onClose }: { onClose: () => void }) {
             />
           </div>
           <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            Anything you like — shown across the console. Leave blank to use the URL name.
+            Leave blank to use the URL name.
           </span>
         </div>
         <div className="mt-[14px] flex items-start gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
           <Icon name="info" size={14} className="mt-[1px] flex-none" />
-          <span>Only owners can edit these settings. Changing the name updates the organization URL for everyone.</span>
+          <span>Changing the name changes the organization URL.</span>
         </div>
         <div className="mt-[18px] flex items-center gap-[11px] rounded-[9px] border border-[rgba(220,75,75,.28)] bg-(--status-error-soft) px-[13px] py-3">
           <Icon name="trash" size={16} color="var(--status-error)" className="flex-none" />
@@ -114,7 +114,7 @@ export default function EditOrgModal({ onClose }: { onClose: () => void }) {
               Delete organization
             </div>
             <div className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-              Deletes its agents, schedules, integrations and members for good. Daemons must be removed first.
+              Remove its daemons first.
             </div>
           </div>
           <button

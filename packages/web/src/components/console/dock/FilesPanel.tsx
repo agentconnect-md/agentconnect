@@ -237,8 +237,8 @@ export function FilesPanel({
         <>
           <div className="px-3 pb-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
             {matches.length > 0
-              ? `Matched ${matches.length} of ${loadedFiles.length} loaded files. This filters the folders you have opened, not the whole repository.`
-              : `No loaded file path contains “${query.trim()}”. Open more folders to load more of the tree — this filter never searches the whole repository.`}
+              ? `Matched ${matches.length} of ${loadedFiles.length} loaded files — only opened folders are searched.`
+              : `No match in the loaded files — open more folders to search them.`}
           </div>
           {matches.map((file) => {
             const status = dirtyMap.get(file.path)

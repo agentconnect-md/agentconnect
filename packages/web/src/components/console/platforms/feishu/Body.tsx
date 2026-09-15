@@ -325,14 +325,6 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                       {saving ? 'Creating…' : `Create ${brand} bot`}
                     </Button>
                   </div>
-                  <div className="mt-[9px] flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                    <Icon name="shield-check" size={13} className="mt-[1px] flex-none" />
-                    <span>
-                      You review the requested message, chat, resource, basic-contact and tenant-information permissions
-                      before the app is created. It must belong to the same {brand} organization used by this
-                      AgentConnect deployment. No App ID or Secret is shown here.
-                    </span>
-                  </div>
                 </>
               )
             ) : (

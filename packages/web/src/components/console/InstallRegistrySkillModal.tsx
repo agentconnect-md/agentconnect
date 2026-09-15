@@ -213,8 +213,7 @@ export function InstallRegistrySkillModal({
             <div className="mt-3 flex flex-col gap-[6px]">
               {q.trim().length < MIN_QUERY ? (
                 <div className="px-1 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  Type at least {MIN_QUERY} characters to search skills.sh — the same index{' '}
-                  <span className="mono">npx skills find</span> reads.
+                  Type at least {MIN_QUERY} characters.
                 </div>
               ) : !shown ? (
                 <div className="flex items-center gap-2 px-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">

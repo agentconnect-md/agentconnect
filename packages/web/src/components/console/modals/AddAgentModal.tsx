@@ -1514,11 +1514,6 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
             <div className="mt-[13px] flex flex-col gap-[14px]">
               <div className="fld">
                 <MemoryProviderPicker value={memoryProvider} onChange={setMemoryProvider} disabled={busy} />
-                <span className="mt-[6px] text-[11px] text-(--text-secondary)">
-                  Managed: a memory directory we keep for the agent. Native: the runtime&apos;s own memory (Claude /
-                  Codex), isolated under the agent root. External: an owner-reviewed plugin connection. Off: no
-                  persistent memory.
-                </span>
               </div>
               {memoryProvider === 'external' && (
                 <div className="flex flex-col gap-2">
@@ -1534,17 +1529,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           </section>
 
           <section ref={sectionRef('secrets')} className="mt-5 border-t border-(--border-subtle) pt-5">
-            {/* A new agent is enrolled into the organization's "All agents"
-                variables and secrets as part of its creation, and those win a
-                same-name collision (organization-secrets-and-variables.md §3.4).
-                The registry itself is owner-only, so this states the behavior
-                rather than listing entries the creator may not be allowed to
-                enumerate; the agent's own cards show exactly what applied as soon
-                as it exists. */}
+            {/* Org-wide "All agents" entries enroll at creation and win same-name collisions (organization-secrets-and-variables.md §3.4); the registry is owner-only, so state the rule rather than list entries. */}
             <div className="mb-[14px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-              Organization-wide variables and secrets set for all agents also apply to this one, and take precedence
-              over a value with the same name here. They appear on the agent’s Variables and Secrets cards once it is
-              created.
+              Organization-wide variables and secrets also apply and take precedence over same-name values here.
             </div>
             <EnvSecretsFields
               envRows={envRows}

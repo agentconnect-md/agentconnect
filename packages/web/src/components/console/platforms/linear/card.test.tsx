@@ -216,13 +216,6 @@ describe('the workspace chrome', () => {
     expect(text()).not.toContain('Acme')
   })
 
-  it('says the roster is the workspace’s own, not something the bot was added to', async () => {
-    await render()
-
-    expect(text()).toContain('Every team of this workspace is listed here')
-    expect(text()).not.toContain('appears here once the bot is added to it')
-  })
-
   it('never offers Disconnect — that removes the workspace for every agent', async () => {
     await render()
 
@@ -401,9 +394,8 @@ describe('a private agent’s own card', () => {
 
     // §4.3: a gated member acts in a team only as its default, so the banner promises no
     // per-member enabling the model does not have.
-    expect(text()).toContain('Private agent: it answers in a team only where it is the default')
-    expect(text()).toContain('the team is not off')
-    // Linear has no direct messages to promise.
-    expect(text()).not.toContain('or direct message')
+    expect(text()).toContain('Private agent — answers only in teams where it is the default.')
+    // Linear has no per-row enable to promise.
+    expect(text()).not.toContain('enabled below')
   })
 })

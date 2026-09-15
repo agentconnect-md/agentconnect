@@ -131,8 +131,7 @@ export function GithubInstallPrompt({
       <div className="min-w-0 flex-1">
         <div className="font-sans text-[13.5px] font-semibold leading-normal">Connect GitHub to sync repos</div>
         <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Install the AgentConnect GitHub app to browse repositories and keep branch, commit, and metadata synced
-          automatically. You choose which repos it can read.
+          Install the GitHub App to browse repositories.
         </div>
         <div className="mt-[10px] flex flex-wrap items-center gap-[10px]">
           <Button onClick={onInstall}>
@@ -452,8 +451,7 @@ export function GiteaNoRepositoriesNotice({
           Connect Gitea to watch repositories
         </div>
         <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Your organization needs one Gitea bot user, connected once with its personal access token. Add it under
-          Integrations &rarr; Code hosts, then pick a repository here.
+          Add a Gitea bot under Integrations &rarr; Code hosts first.
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <a className="lnk font-medium" href={integrationsHref}>
@@ -641,10 +639,7 @@ export function GitUrlTileFields({
       </div>
       <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
         <Icon name="info" size={14} className="mt-[1px] flex-none" />
-        <span>
-          Cloned with the daemon host&rsquo;s own git credentials — read-only from AgentConnect&rsquo;s side, and the
-          daemon&rsquo;s allowed-origins policy must permit the host.
-        </span>
+        <span>Cloned with the daemon host&rsquo;s own git credentials.</span>
       </div>
     </div>
   )
@@ -674,8 +669,7 @@ export function GitlabNoProjectsNotice({
           Connect GitLab to watch projects
         </div>
         <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          Authorize AgentConnect on GitLab to subscribe this agent to issue and merge-request events. You pick the
-          project it watches here — you need Maintainer or Owner access to it.
+          Authorize on GitLab to pick a project; Maintainer or Owner access required.
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <Button size="sm" onClick={onConnect}>

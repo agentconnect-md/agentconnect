@@ -910,9 +910,7 @@ export default function AddAgentRepoModal({
           {err && <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
         </div>
         <div className="modalfoot">
-          <span className="flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-            {`Access applies only to this ${hostProjection.repoNoun} and can be revoked at any time.`}
-          </span>
+          <span className="flex-1" />
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>

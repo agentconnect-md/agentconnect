@@ -153,7 +153,6 @@ describe('AddAgentRepoModal, Gitea repositories', () => {
 
     expect(document.body.textContent).toContain('Gitea repository')
     expect(document.body.textContent).toContain('Push, open pull requests & request reviews')
-    expect(document.body.textContent).toContain('Access applies only to this repository')
     expect(document.body.textContent).not.toContain('run GitHub Actions')
     expect(document.body.textContent).not.toContain('run pipelines')
   })

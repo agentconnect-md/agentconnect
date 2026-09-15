@@ -176,7 +176,7 @@ function DisconnectWorkspaceModal({ bot, onClose }: { bot: BotDto; onClose: () =
           fresh authorization in Linear.
         </p>
         <p className="mt-[10px] mb-0 font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
-          Agents you cannot see are removed too — the workspace is disconnected for the whole organization.
+          Disconnects the workspace for the whole organization.
         </p>
         {err && (
           <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>

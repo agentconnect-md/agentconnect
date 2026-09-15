@@ -260,8 +260,7 @@ export default function ClusterDetailView() {
 
       {managed && (
         <p className="mt-[14px] max-w-[780px] font-sans text-[12px] font-normal leading-[1.6] text-(--text-tertiary) text-pretty">
-          Cloud usage is billed to this organization&rsquo;s balance. Agents on daemons you connected yourself use the
-          credentials on those machines and are never billed here.
+          Cloud usage is billed to this organization&rsquo;s balance.
         </p>
       )}
     </div>

@@ -160,8 +160,7 @@ export function SkillSourcesCard({ canWrite, canManage }: { canWrite: boolean; c
         <LoadingState size={22} padding={20} />
       ) : empty && !managedSkills.error ? (
         <div className="px-4 py-[14px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No skills yet. Install one from skills.sh, import a GitHub source, or accept a managed skill suggestion to
-          make skills available to your agents.
+          No skills yet. Install one from skills.sh or import a GitHub source.
         </div>
       ) : (
         <ToolTileGrid>
@@ -349,7 +348,7 @@ export function CreateSkillSourceModal({
               autoFocus
             />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              A repo of skills (each a folder with a SKILL.md). Passed to `npx skills add` on the daemon.
+              A repository of skills, one folder per SKILL.md.
             </span>
           </div>
           <div className="fld">
@@ -466,7 +465,7 @@ function EditSkillSourceModal({ source: s, onClose }: { source: SkillSourceDto; 
             <span className="fldlbl">Source</span>
             <input className="inp mn" value={source} onChange={(e) => setSource(e.target.value)} />
             <span className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-              The name is fixed — agents bind by it. Editing a source re-installs it on every agent that enables it.
+              The name can&rsquo;t be changed later.
             </span>
           </div>
           <div className="grid grid-cols-2 gap-[14px]">

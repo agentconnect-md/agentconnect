@@ -52,12 +52,8 @@ export const slackModule: WebPlatformModule<SlackApi> = {
   channelList: {
     roomNoun: 'channel',
     roomGlyph: '#',
-    // `conversations.leave` would need `channels:manage`, which also grants
-    // create/archive/kick/rename and would force every installed workspace to
-    // re-authorize. Slack re-lists membership authoritatively instead, so
-    // removing the bot IN Slack clears the row by itself — hence the footer note.
-    leave: 'none',
-    footerNote: 'To remove the bot from a channel, do it in Slack — this list updates by itself.'
+    // `conversations.leave` needs `channels:manage` (a re-authorize for every workspace); removing the bot in Slack clears the row instead.
+    leave: 'none'
   },
   messageIdentity: (row) => (SLACK_NATIVE_TS.test(row.ts) ? `ts:${row.ts}` : null),
   // Slack rows carry the workspace's own send-time, and a page must present

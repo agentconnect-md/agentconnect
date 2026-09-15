@@ -4987,10 +4987,7 @@ export default function SessionDetailView() {
               {wantTranscript && visibleMsgErr && !transcriptPurged && (
                 <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
                   <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
-                  <span>
-                    Couldn&apos;t load the transcript — the owning daemon may be offline. Session history is pulled live
-                    from the daemon, so it&apos;s unavailable while that machine is disconnected.
-                  </span>
+                  <span>Couldn&apos;t load the transcript — the owning daemon may be offline.</span>
                 </div>
               )}
               {transcriptPurged && (
@@ -5010,7 +5007,7 @@ export default function SessionDetailView() {
                     {memberCount > 1
                       ? `${purgedMemberCount} of ${memberCount} participants had their transcript deleted`
                       : 'this transcript was deleted'}{' '}
-                    on {fmtDate(purgedAt)} by the session retention policy. What you see below is the remaining record.
+                    on {fmtDate(purgedAt)} by the session retention policy.
                   </span>
                 </div>
               )}

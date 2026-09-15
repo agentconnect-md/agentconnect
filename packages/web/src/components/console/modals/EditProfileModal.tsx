@@ -164,8 +164,7 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="mt-[14px] flex items-center gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           <Icon name="info" size={14} />
-          Your email comes from your sign-in provider and can’t be changed. Role and daemon access are managed by a
-          workspace admin.
+          Email comes from your sign-in provider.
         </div>
         {err && (
           <div className="mt-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>

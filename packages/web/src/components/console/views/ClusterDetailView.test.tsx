@@ -526,12 +526,11 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).toContain('Runtimes available')
   })
 
-  it('says where Cloud usage is billed, and where it is not', () => {
+  it('says where Cloud usage is billed', () => {
     mocks.daemons = [member('p1')]
 
     const html = render()
 
     expect(html).toContain('billed to this organization')
-    expect(html).toContain('never billed here')
   })
 })

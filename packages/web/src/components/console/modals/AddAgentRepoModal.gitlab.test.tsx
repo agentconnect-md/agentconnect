@@ -149,7 +149,6 @@ describe('AddAgentRepoModal, GitLab projects', () => {
 
     expect(document.body.textContent).toContain('GitLab project')
     expect(document.body.textContent).toContain('Push, open merge requests & run pipelines')
-    expect(document.body.textContent).toContain('Access applies only to this project')
     expect(document.body.textContent).not.toContain('run GitHub Actions')
   })
 

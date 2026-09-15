@@ -1001,8 +1001,7 @@ export function MemoryPanel({
 
             {provider === 'managed' && settings.scope === 'channel' ? (
               <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                Each channel (DMs and webchat included) keeps its own memory folder, so different channels never mix.
-                Dreaming is unavailable under channel scope.
+                One memory folder per channel. Dreaming is unavailable.
               </span>
             ) : null}
 
@@ -1056,8 +1055,7 @@ export function MemoryPanel({
                       </label>
                       {settings.dreaming.autoAdopt ? (
                         <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--amber-500)">
-                          Warning: Dream memory results can be inaccurate. Conflicting changes to live memory while a
-                          dream runs still pause the result for review.
+                          Results can be inaccurate; conflicts still pause for review.
                         </div>
                       ) : null}
                     </div>
@@ -1079,8 +1077,7 @@ export function MemoryPanel({
                       </label>
                       {settings.dreaming.mineSkills === true ? (
                         <div className="ml-6 font-sans text-[11px] font-normal leading-[1.5] text-(--text-tertiary)">
-                          Dreams read which commands ran, not just what was said, and recommend a procedure seen in at
-                          least two sessions. Skills are never installed automatically — you review each one.
+                          Suggested skills always need your review.
                         </div>
                       ) : null}
                     </div>
@@ -1166,7 +1163,7 @@ export function MemoryPanel({
                     Move memory back to the daemon
                   </span>
                   <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    Deletes every memory file and its history in the Control Plane; the agent starts with empty memory.
+                    Deletes all memory and its history.
                   </span>
                 </div>
                 <Button

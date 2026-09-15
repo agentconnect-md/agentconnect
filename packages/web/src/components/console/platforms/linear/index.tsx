@@ -59,10 +59,8 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     roster: 'derived',
     // No `any`: every Linear event is addressed by construction (§6.1), so nothing would match it.
     triggers: ['off', 'mention'],
-    footerNote:
-      'Every team of this workspace is listed here; a delegation or a mention starts a session in one that is not off.',
     // §4.3: a gated member acts in a team only as its default, so enabling the row is half the gate.
-    gatedNote: 'Private agent: it answers in a team only where it is the default and the team is not off.',
+    gatedNote: 'Private agent — answers only in teams where it is the default.',
     // The daemon stores a team as "<Workspace name> / <Team name>" (§4.5), because a session list
     // spanning every workspace needs both. These rows always sit under one workspace's own card,
     // which already names it, so the row keeps the TEAM alone — and never the team KEY, which is

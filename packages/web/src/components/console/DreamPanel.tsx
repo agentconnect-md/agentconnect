@@ -770,10 +770,6 @@ function DreamSkills({
       <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-secondary)">
         Suggested skills
       </span>
-      <span className="font-sans text-[11px] font-normal leading-[1.5] text-(--text-tertiary)">
-        Generated skills always require review before installation. Accepting one installs it for this agent so later
-        sessions can reuse it.
-      </span>
       {proposed.map((skill) => (
         <div
           key={skill.name}

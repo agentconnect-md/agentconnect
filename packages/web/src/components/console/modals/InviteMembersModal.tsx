@@ -89,7 +89,7 @@ export default function InviteMembersModal({ onClose, onAdded }: { onClose: () =
             />
           </div>
           <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            Separate multiple addresses with commas. They join the organization.
+            Separate addresses with commas.
           </span>
         </div>
         <div className="fldlbl mx-0 mt-[18px] mb-2">Role</div>
@@ -127,10 +127,7 @@ export default function InviteMembersModal({ onClose, onAdded }: { onClose: () =
         </div>
         <div className="mt-[14px] flex items-start gap-2 rounded-md bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
           <Icon name="mail" size={14} className="mt-[1px] flex-none" />
-          <span>
-            No email is sent — members are added right away and get access the first time they sign in with this
-            address.
-          </span>
+          <span>No email is sent; access starts at their first sign-in.</span>
         </div>
         {err && (
           <div className="mt-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>

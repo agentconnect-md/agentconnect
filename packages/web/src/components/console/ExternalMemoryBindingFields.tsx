@@ -176,9 +176,6 @@ export function ExternalMemoryBindingFields({
                   ? 'none declared'
                   : 'not reported yet'}
             </div>
-            <div className="mt-1 text-(--text-tertiary)">
-              AgentConnect enforces the plugin endpoint. Downstream hosts are declarations made by the plugin.
-            </div>
           </details>
         </div>
       )}

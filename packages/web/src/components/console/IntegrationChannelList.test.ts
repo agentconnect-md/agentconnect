@@ -6,7 +6,6 @@ import {
   groupBySpace,
   IntegrationChannelList,
   placePopover,
-  roomArticle,
   roomGlyph,
   roomPlural,
   rowLabel,
@@ -288,49 +287,20 @@ describe('roomGlyph', () => {
 })
 
 describe('IntegrationChannelList footer', () => {
-  const footer = (platform?: string) =>
-    renderToStaticMarkup(
-      createElement(IntegrationChannelList, {
-        platform,
-        gated: false,
-        channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
-      })
-    )
-
-  it("appends the platform's own tail, and nothing when it has none", () => {
-    expect(footer('discord')).toContain('A Discord bot joins servers, not channels')
-    expect(footer('slack')).toContain('To remove the bot from a channel, do it in Slack')
-    // Telegram and Lark contribute no tail — and neither may borrow another's.
-    for (const platform of ['telegram', 'feishu', 'teams-x', undefined]) {
-      const html = footer(platform)
-      expect(html, String(platform)).not.toContain('joins servers, not channels')
+  it('renders no explanatory footer under the rows', () => {
+    // The rows speak for themselves; the how-this-list-fills prose was removed on purpose.
+    for (const platform of ['slack', 'discord', 'telegram', 'linear', 'not-a-platform', undefined]) {
+      const html = renderToStaticMarkup(
+        createElement(IntegrationChannelList, {
+          platform,
+          gated: false,
+          channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
+        })
+      )
+      expect(html, String(platform)).not.toContain('appears here once the bot is added')
       expect(html, String(platform)).not.toContain('do it in Slack')
+      expect(html, String(platform)).not.toContain('Default dispatch is the agent')
     }
-  })
-
-  it('names the room with the platform noun throughout', () => {
-    expect(footer('telegram')).toContain('A group appears here once the bot is added to it')
-    expect(footer('slack')).toContain('A channel appears here once the bot is added to it')
-    // The article follows the module's noun rather than being a literal, so a module
-    // whose noun starts with a vowel reads correctly without the sentence changing.
-    expect(roomArticle('issue')).toBe('An')
-    expect(roomArticle('channel')).toBe('A')
-  })
-
-  it('lets a DERIVED roster replace the arrival sentences with its own note', () => {
-    // Linear's team rows are the workspace's own list, upserted by the control plane, so
-    // "appears here once the bot is added to it" would describe something that never
-    // happens — and there are no direct messages to promise either.
-    const html = footer('linear')
-    expect(html).not.toContain('appears here once the bot is added to it')
-    expect(html).not.toContain('Direct messages appear when someone writes to the bot')
-    expect(html).toContain('Every team of this workspace is listed here')
-  })
-
-  it('falls back to the generic noun for a platform no module claims', () => {
-    // The lookup has to be total — an integration row carries whatever platform the CP
-    // sent — and what it answers is the host default, never a borrowed noun.
-    expect(footer('not-a-platform')).toContain('A channel appears here once the bot is added to it')
   })
 })
 
@@ -344,18 +314,17 @@ describe('IntegrationChannelList private-agent banner', () => {
       })
     )
 
-  it('states the gate in one clause, in the platform’s noun', () => {
-    expect(banner('slack')).toContain('Private agent: it answers only in a channel or direct message enabled below.')
-    expect(banner('telegram')).toContain('only in a group or direct message enabled below')
+  it('states the gate in one clause', () => {
+    expect(banner('slack')).toContain('Private agent — answers only where enabled below.')
+    expect(banner('telegram')).toContain('Private agent — answers only where enabled below.')
   })
 
   it('lets a platform whose gate is more than the row say so itself', () => {
     // §4.3: a gated Linear member acts in a team only as its default, so the host's
     // "enable it below" would promise a per-member switch the model does not have.
     const html = banner('linear')
-    expect(html).toContain('Private agent: it answers in a team only where it is the default and the team is not off.')
+    expect(html).toContain('Private agent — answers only in teams where it is the default.')
     expect(html).not.toContain('enabled below')
-    expect(html).not.toContain('direct message')
   })
 })
 
@@ -451,16 +420,14 @@ describe('IntegrationChannelList default dispatch on a one-member bot', () => {
       })
     )
 
-  it('drops the picker and the sentence that explains it', () => {
+  it('drops the picker', () => {
     const html = render('bot_solo')
     expect(html).not.toContain('Default dispatch')
-    expect(html).not.toContain('the agent who handles unmatched messages')
   })
 
-  it('keeps both once a second agent shares the bot', () => {
+  it('keeps it once a second agent shares the bot', () => {
     const html = render('bot_shared')
     expect(html).toContain('Default dispatch — Alice')
-    expect(html).toContain('the agent who handles unmatched messages')
   })
 })
 

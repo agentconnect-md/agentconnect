@@ -37,8 +37,7 @@ function DiscordDeleteNotice({ bot }: { bot: BotDto }) {
       <div className="flex items-start gap-[9px]">
         <Icon name="info" size={15} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
         <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-          The Discord application itself keeps existing. To remove it completely, delete it in the Developer Portal
-          under Settings → Delete App.
+          The Discord application itself is not deleted.
         </span>
       </div>
       <a

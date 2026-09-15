@@ -57,9 +57,8 @@ export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentNa
   return (
     <div className="flex flex-col gap-4 p-4 desktop:max-w-[820px] desktop:p-0">
       <p className="m-0 font-sans text-[13px] font-normal leading-[1.6] text-(--text-secondary)">
-        Build services on top of <span className="font-semibold text-(--text-primary)">{agentName}</span>. Mint
-        short-lived connection credentials, then stream a run directly through the relay — with the same model, tools
-        and workspace used by channel conversations.
+        Build on <span className="font-semibold text-(--text-primary)">{agentName}</span>: mint short-lived credentials,
+        then stream a run through the relay.
       </p>
 
       <ApiKeysCard
@@ -116,10 +115,6 @@ export function AgentApiPanel({ agentId, agentName }: { agentId: string; agentNa
               </button>
             )}
           </div>
-          <p className="m-0 font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)">
-            The POST only mints short-lived connection credentials and returns a conversation ID for reconnect or
-            resume. It does not create an agent session; the daemon creates one only after it accepts the first message.
-          </p>
         </div>
       </div>
 

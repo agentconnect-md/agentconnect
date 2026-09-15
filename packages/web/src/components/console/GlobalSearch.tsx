@@ -507,16 +507,13 @@ export function GlobalSearch({
         <div className="flex-1 overflow-y-auto pb-6">
           {query === '' && (
             <div className="px-4 py-6 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              Type to search agents, daemons, schedules and sessions by name, or jump to a page or setting.
+              Search agents, daemons, schedules, sessions and pages.
             </div>
           )}
           {isEmpty && (
             <div className="px-4 py-6 text-center">
               <div className="font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
                 No results for “{q.trim()}”
-              </div>
-              <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                Search matches agent, daemon, schedule and session names, plus console pages and settings.
               </div>
             </div>
           )}
@@ -621,16 +618,13 @@ export function GlobalSearch({
             {typeChipRow}
             {isHint && (
               <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                Type to search agents, daemons, schedules and sessions by name, or jump to a page or setting.
+                Search agents, daemons, schedules, sessions and pages.
               </div>
             )}
             {isEmpty && (
               <div className="px-4 py-5 text-center">
                 <div className="font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
                   No results for “{q.trim()}”
-                </div>
-                <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  Search matches agent, daemon, schedule and session names, plus console pages and settings.
                 </div>
               </div>
             )}

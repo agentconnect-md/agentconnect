@@ -201,8 +201,7 @@ export function OrganizationEnvironmentCard({
 function RunningProcessNote() {
   return (
     <span className="mt-[10px] block font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-      Agents pick this up when their runtime is next restarted. A process already running keeps the old value until
-      then.
+      Applies on the agent&rsquo;s next restart.
     </span>
   )
 }

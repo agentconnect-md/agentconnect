@@ -343,8 +343,7 @@ function SlackDeleteNotice({ bot }: { bot: BotDto }) {
       <div className="flex items-start gap-[9px]">
         <Icon name="info" size={15} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
         <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-          The Slack app itself keeps existing in the workspace. To remove it completely, delete it on Slack under Basic
-          Information → Delete App.
+          The Slack app itself is not deleted.
         </span>
       </div>
       <a

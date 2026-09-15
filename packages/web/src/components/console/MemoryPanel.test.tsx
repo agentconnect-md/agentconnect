@@ -302,11 +302,11 @@ describe('MemoryPanel settings draft', () => {
     // Auto-adopt is on by default, so the accuracy caveat is shown up front.
     expect(checkboxFor('Automatically adopt completed memory results')?.checked).toBe(true)
     expect(container.textContent).toContain('Daily')
-    expect(container.textContent).toContain('Dream memory results can be inaccurate')
+    expect(container.textContent).toContain('Results can be inaccurate')
 
     // Opt out of automatic acceptance.
     await act(async () => checkboxFor('Automatically adopt completed memory results')?.click())
-    expect(container.textContent).not.toContain('Dream memory results can be inaccurate')
+    expect(container.textContent).not.toContain('Results can be inaccurate')
     const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Save memory settings'
     )
@@ -349,7 +349,7 @@ describe('MemoryPanel settings draft', () => {
       )
 
     expect(checkboxFor('Also mine reusable skills')?.checked).toBe(true)
-    expect(container.textContent).toContain('at least two sessions')
+    expect(container.textContent).toContain('Suggested skills always need your review')
 
     // Opt out of skill mining.
     await act(async () => checkboxFor('Also mine reusable skills')?.click())
@@ -438,7 +438,7 @@ describe('MemoryPanel settings draft', () => {
     await act(async () => channelPill?.click())
     // Channel scope hides the dreaming controls and explains the tradeoff.
     expect(container.textContent).not.toContain('Enable dreaming')
-    expect(container.textContent).toContain('Dreaming is unavailable under channel scope')
+    expect(container.textContent).toContain('Dreaming is unavailable')
 
     const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Save memory settings'

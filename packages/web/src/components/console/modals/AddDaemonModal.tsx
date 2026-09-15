@@ -202,8 +202,7 @@ export default function AddDaemonModal({
       </div>
       <div className="modalbody">
         <p className="mb-[14px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-          Run one of these commands on the machine where agents should run. AgentConnect installs the daemon
-          automatically before connecting it.
+          Run one of these on the machine where agents should run.
         </p>
         <p className="mb-[8px] font-sans text-[12px] font-semibold leading-normal text-(--text-tertiary)">Connect</p>
         <CommandBox

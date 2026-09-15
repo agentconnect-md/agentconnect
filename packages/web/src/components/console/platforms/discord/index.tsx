@@ -37,8 +37,7 @@ export const discordModule: WebPlatformModule<typeof discordApi> = {
     // can offer is the whole server — the band heading's action, not the row's.
     leave: 'space',
     cannotLeaveRowHint:
-      'A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.',
-    footerNote: 'A Discord bot joins servers, not channels, so it can only leave a whole server.'
+      'A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.'
   },
   messageIdentity: (row) => (DISCORD_SNOWFLAKE.test(row.ts) ? `ts:${row.ts}` : null)
 }

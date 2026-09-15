@@ -205,11 +205,6 @@ const canLeaveConversation = (platform?: string): boolean => channelListSemantic
  */
 const roomNoun = (platform?: string): string => channelListSemantics(platform).roomNoun
 
-/** "A"/"An" for a noun a module supplies. The room noun is the platform's own word and
- *  may start with a vowel, so the article cannot be a literal. Exported for its test:
- *  today's modules all take "A", so only a test keeps the other arm honest. */
-export const roomArticle = (noun: string): string => (/^[aeiou]/i.test(noun) ? 'An' : 'A')
-
 /** The plural of a noun a module supplies — what a column header over a list of rows reads.
  *  Today's modules all take a bare "s", so only a test keeps the sibilant arm honest. */
 export const roomPlural = (noun: string): string => (/(?:s|x|z|ch|sh)$/i.test(noun) ? `${noun}es` : `${noun}s`)
@@ -566,28 +561,12 @@ export function IntegrationChannelList({
   const ownerGuard = useOwnerChangeGuard()
   // A derived roster is the platform's own list — nothing is observed into it, and nothing is dropped from here.
   const derivedRoster = channelListSemantics(platform).roster === 'derived'
-  // Where rows come from, plus the platform's tail — which on a derived roster IS the arrival sentence, so it leads.
-  const footerNote = channelListSemantics(platform).footerNote
   // The agents that share this bot — the candidate per-conversation defaults.
   const memberIds = shareable && botId ? (bots.find((b) => b.id === botId)?.agentIds ?? []) : []
   // Dispatch is a decision only where there are two agents to decide between.
   const dispatchable = memberIds.length > 1
   // Why a private agent's rows start off. A platform whose gate is more than the row's own says so itself.
-  const gatedNote =
-    channelListSemantics(platform).gatedNote ??
-    `Private agent: it answers only in a ${roomNoun(platform)}${derivedRoster ? '' : ' or direct message'} enabled below.`
-  const footerSentences = [
-    ...(derivedRoster
-      ? footerNote
-        ? [footerNote]
-        : []
-      : [
-          `${roomArticle(roomNoun(platform))} ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per conversation.`,
-          'Direct messages appear when someone writes to the bot.'
-        ]),
-    ...(dispatchable ? ['Default dispatch is the agent who handles unmatched messages in the conversation.'] : []),
-    ...(!derivedRoster && footerNote ? [footerNote] : [])
-  ]
+  const gatedNote = channelListSemantics(platform).gatedNote ?? 'Private agent — answers only where enabled below.'
   // A platform refusal is the useful half of a failed Leave — a missing scope or a
   // last-member channel tells the operator what to do — so it is shown verbatim
   // rather than collapsed into "something went wrong".
@@ -755,13 +734,6 @@ export function IntegrationChannelList({
       ))}
       {dmRows.length > 0 && groupHeader('Direct messages', padX)}
       {dmRows.map(row)}
-      <div
-        className="flex items-start gap-2 border-t border-(--border-subtle) bg-(--surface-app) font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)"
-        style={{ padding: `10px ${padX}px` }}
-      >
-        <Icon name="info" size={14} className="mt-[3px] flex-none" />
-        <span>{footerSentences.join(' ')}</span>
-      </div>
       {ownerGuard.dialog}
     </>
   )

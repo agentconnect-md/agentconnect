@@ -39,7 +39,7 @@ function FeishuDeleteNotice({ bot }: { bot: BotDto }) {
       <div className="flex items-start gap-[9px]">
         <Icon name="info" size={15} color="var(--text-tertiary)" className="mt-[1px] flex-none" />
         <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-          The {brand} app itself keeps existing. To remove it completely, delete it in the {brand} developer console.
+          The {brand} app itself is not deleted.
         </span>
       </div>
       <a

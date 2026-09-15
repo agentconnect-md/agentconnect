@@ -251,7 +251,7 @@ export function AgentReachabilityOverview({
               Configured topology
             </div>
             <div className="mt-1 font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-              Each arrow is a direct path allowed by both agents. Follow arrows for transitive reachability.
+              Arrows are direct call paths.
             </div>
           </div>
           <label className="flex flex-none items-center gap-2">
@@ -279,7 +279,6 @@ export function AgentReachabilityOverview({
             <span className="h-px w-7 bg-(--text-tertiary)" />
             direct call path
           </span>
-          <span>Availability and channel membership may further limit delivery.</span>
         </div>
 
         <div className="overflow-auto bg-(--surface-app)">

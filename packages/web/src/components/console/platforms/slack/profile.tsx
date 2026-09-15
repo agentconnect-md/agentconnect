@@ -163,8 +163,7 @@ export function SlackConfigCard() {
             ) : (
               !showForm && (
                 <div className="font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-tertiary)">
-                  Not configured. Store your workspace&rsquo;s App Configuration token to get quick Slack installs for
-                  the apps you create.
+                  Not configured.
                 </div>
               )
             )}
@@ -172,10 +171,7 @@ export function SlackConfigCard() {
             {showForm && (
               <div className={configured ? 'mt-1' : ''}>
                 <div className="mb-3 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-tertiary)">
-                  Store your Slack App Configuration token to get one-click installs for the apps you create. The{' '}
-                  <span className="font-medium text-(--text-secondary)">config token alone is enough</span> — it works
-                  for about 12 hours. Add the refresh token too and it auto-renews, so it never expires. Generate them
-                  at{' '}
+                  A config token works for about 12 hours; add the refresh token to auto-renew. Generate both at{' '}
                   <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" className="lnk">
                     api.slack.com/apps
                   </a>{' '}

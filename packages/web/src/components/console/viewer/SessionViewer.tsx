@@ -608,9 +608,8 @@ export function SessionViewer({
           data-viewer-diff-unsided=""
           className="flex-none border-t border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
         >
-          Part of this diff is shown exactly as git wrote it, without added/removed sides — its hunk header is not a
-          plain two-way one, which is what a file with merge conflicts produces. The counts above cover only the parts
-          that could be read.
+          Part of this diff is shown raw — its hunks are not two-way (a merge conflict, usually). Counts cover only the
+          readable parts.
         </div>
       ) : null}
 

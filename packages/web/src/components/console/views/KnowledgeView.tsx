@@ -253,14 +253,11 @@ export function SuggestionCard({
         ) : !suggestion.contentAvailable ? (
           <div className="flex items-center gap-2 rounded-md bg-(--status-paused-soft) px-3 py-3 font-sans text-[12px] text-(--text-secondary)">
             <Icon name="server-off" size={15} />
-            Review is unavailable because the source daemon is offline, upgrading, paused for safety, or no longer owns
-            the source agent. The staged body remains there until that source is ready again.
+            Review is unavailable while the source daemon is offline or no longer owns the agent.
           </div>
         ) : !inspect ? (
           <p className="rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-3 font-sans text-[12px] text-(--text-secondary)">
-            Choose <strong>Inspect</strong> above to fetch the staged body from its source daemon. Accepting binds to
-            the body you inspected, so it stays disabled until that body renders in full. Rejecting needs no inspection
-            — it installs nothing.
+            Choose <strong>Inspect</strong> to fetch the staged body; Accept is enabled once it renders in full.
           </p>
         ) : contentError ? (
           <div className="font-sans text-[12px] text-(--status-error)">

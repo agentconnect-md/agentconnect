@@ -152,9 +152,6 @@ export function MemoryConnectionsCard({ canManage }: { canManage: boolean }) {
             Add connection
           </Button>
         )}
-        <p className="col-span-2 mt-0 max-w-[560px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-1 desktop:col-start-1">
-          Connect approved memory services that agents can use for recall and capture.
-        </p>
       </div>
 
       {loading && connections.length === 0 && installations.length === 0 ? (
@@ -472,25 +469,18 @@ function ConnectionCard({
 function SecretRowsEditor({
   rows,
   onChange,
-  collectValues,
-  transport
+  collectValues
 }: {
   rows: SecretRow[]
   onChange: (rows: SecretRow[]) => void
   collectValues: boolean
-  transport: MemoryPluginInstallationDto['transport']
 }) {
   const set = (index: number, patch: Partial<SecretRow>) =>
     onChange(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)))
   return (
     <div className="fld desktop:col-span-2">
       <span className="fldlbl">Credential fields</span>
-      <span className="mb-2 text-[11px] text-(--text-tertiary)">
-        Logical names and transport headers are matched against the plugin profile. Values are write-only.
-        {transport === 'stdio'
-          ? ' For local plugins, the daemon injects each value only through the operator allowlist mapping.'
-          : ' For remote plugins, the relay injects each value into its reviewed header.'}
-      </span>
+      <span className="mb-2 text-[11px] text-(--text-tertiary)">Values are write-only.</span>
       <div className="flex flex-col gap-2">
         {rows.map((row, index) => (
           <div key={index} className="grid grid-cols-1 gap-2 desktop:grid-cols-[1fr_1fr_1fr_auto]">
@@ -657,14 +647,11 @@ function CreateMemoryConnectionModal({
             <div className="desktop:col-span-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3 text-[12px] text-(--text-secondary)">
               {selected.transport === 'stdio' ? (
                 <>
-                  The daemon will resolve <span className="mono">{selected.commandRef}</span> only from its local
-                  operator allowlist. No command, path, or arguments are stored in this installation. Downstream network
-                  access is controlled by that operator deployment, not AgentConnect.
+                  Runs <span className="mono">{selected.commandRef}</span> from the daemon&rsquo;s operator allowlist.
                 </>
               ) : (
                 <>
-                  Recall and capture traffic will be sent to <span className="mono">{selected.endpoint}</span>. The
-                  plugin may make further requests that AgentConnect cannot enforce.
+                  Sends recall and capture traffic to <span className="mono">{selected.endpoint}</span>.
                 </>
               )}
             </div>
@@ -721,8 +708,7 @@ function CreateMemoryConnectionModal({
                   onChange={(event) => setCommandRef(event.target.value)}
                 />
                 <span className="mt-1 text-[11px] text-(--text-tertiary)">
-                  Allowlist key only — never enter a path, executable, or arguments. The operator-installed child may
-                  make deployment-configured network requests.
+                  Allowlist key only — no paths or arguments.
                 </span>
               </label>
             ) : (
@@ -748,7 +734,7 @@ function CreateMemoryConnectionModal({
                 onChange={(event) => setManifestDigest(event.target.value)}
               />
             </label>
-            <SecretRowsEditor rows={newSecretRows} onChange={setNewSecretRows} collectValues transport={transport} />
+            <SecretRowsEditor rows={newSecretRows} onChange={setNewSecretRows} collectValues />
           </>
         )}
         <label className="fld desktop:col-span-2">
@@ -761,8 +747,7 @@ function CreateMemoryConnectionModal({
           />
         </label>
         <div className="desktop:col-span-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) p-3 text-[11.5px] leading-[1.5] text-(--text-secondary)">
-          A compatibility check starts after an agent selects this connection. The agent will not start with external
-          memory until this exact revision verifies successfully.
+          Verified when an agent first selects it.
         </div>
         {error && <div className="desktop:col-span-2 text-[12px] text-(--red-600)">{error}</div>}
       </div>
@@ -835,7 +820,6 @@ function EditMemoryConnectionModal({
               ? (installation.commandRef ?? 'unavailable')
               : (installation?.endpoint ?? 'unavailable')}
           </span>
-          . Saving increments the definition revision and requires a fresh compatibility check.
         </div>
         <label className="fld">
           <span className="fldlbl">Non-secret connection config (JSON)</span>

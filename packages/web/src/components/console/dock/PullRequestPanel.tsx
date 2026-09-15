@@ -449,9 +449,8 @@ export function PullRequestPanel({
           >
             <Icon name="info" size={13} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
             <span>
-              A pull request was requested in this session — the agent replies with its URL in the conversation. This
-              tab links it once the branch is pushed and a pull request exists for it; press refresh if that just
-              happened.
+              A pull request was requested — this tab links it once the branch is pushed and the pull request exists.
+              Refresh if that just happened.
             </span>
           </div>
         ) : null}

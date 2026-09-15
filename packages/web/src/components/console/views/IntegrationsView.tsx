@@ -742,8 +742,7 @@ function GithubCard({ canWrite, isOwner }: { canWrite: boolean; isOwner: boolean
         <div className="px-4 py-7 text-center">
           <div className="font-sans text-[13px] font-semibold leading-normal">No installations yet</div>
           <div className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            Install the GitHub App on your org to pick private repositories when creating agents — the daemon then
-            clones and pushes with short-lived tokens, no git credentials on the machine.
+            Install the GitHub App to use private repositories with credential-free clone and push.
           </div>
         </div>
       )}

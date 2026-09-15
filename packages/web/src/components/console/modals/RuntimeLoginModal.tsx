@@ -56,8 +56,7 @@ export default function RuntimeLoginModal({ target, onClose }: { target: Runtime
         <div className="mb-[14px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
           <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
           <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-            <span className="mono text-(--text-primary)">{target.runtimeId}</span> rejected the probe with
-            &ldquo;authentication required&rdquo;. Its credential lives in the runtime&apos;s own state on
+            <span className="mono text-(--text-primary)">{target.runtimeId}</span> needs a sign-in on
             {target.daemonName ? (
               <>
                 {' '}
@@ -65,8 +64,8 @@ export default function RuntimeLoginModal({ target, onClose }: { target: Runtime
               </>
             ) : (
               " the daemon's host"
-            )}
-            , and every login it offers needs a human at that terminal — so run this there.
+            )}{' '}
+            — run this there.
           </span>
         </div>
         <div className="overflow-hidden rounded-[9px] border border-(--gray-800) bg-(--gray-1000)">

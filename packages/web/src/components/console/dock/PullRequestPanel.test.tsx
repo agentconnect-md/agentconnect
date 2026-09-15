@@ -311,7 +311,7 @@ describe('PullRequestPanel verdicts', () => {
 
     await rerender({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
     expect(container?.querySelector('[data-pr-create-requested]')?.textContent).toContain(
-      'links it once the branch is pushed and a pull request exists'
+      'links it once the branch is pushed and the pull request exists'
     )
     expect(container?.querySelector('[data-pr-create]')?.textContent).toContain('Ask again')
   })

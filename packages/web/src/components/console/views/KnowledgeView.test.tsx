@@ -104,7 +104,7 @@ describe('organization suggestion review card', () => {
     expect(button('Reject').disabled).toBe(true)
     expect(button('Accept').disabled).toBe(true)
     expect(button('Inspect').disabled).toBe(true) // nothing to read the body from
-    expect(host.textContent).toContain('paused for safety')
+    expect(host.textContent).toContain('Review is unavailable')
     expect(fetchMock).not.toHaveBeenCalled()
   })
 

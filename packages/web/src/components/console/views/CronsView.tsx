@@ -54,8 +54,7 @@ export default function CronsView() {
             </span>
             <div className="font-sans text-[15px] font-semibold leading-normal">No schedules yet</div>
             <div className="max-w-[400px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-              Create a schedule to run an agent on a timer — a daily report, a nightly dependency audit, a periodic
-              sweep.
+              Run an agent on a timer — a daily report, a nightly audit.
             </div>
             <Button variant="secondary" size="sm" onClick={() => openModal('cron')}>
               <Icon name="plus" size={15} />
@@ -118,7 +117,7 @@ export default function CronsView() {
           </span>
           <div className="font-sans text-[15px] font-semibold leading-normal">No schedules yet</div>
           <div className="max-w-[400px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-            Create a schedule to run an agent on a timer — a daily report, a nightly dependency audit, a periodic sweep.
+            Run an agent on a timer — a daily report, a nightly audit.
           </div>
           <Button variant="secondary" size="sm" onClick={() => openModal('cron')}>
             <Icon name="plus" size={15} />

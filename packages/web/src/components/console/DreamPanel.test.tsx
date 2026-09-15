@@ -455,7 +455,6 @@ describe('DreamPanel', () => {
     expect(api.listDreams).toHaveBeenCalledWith(AGENT, 50, { pendingSkills: true })
 
     expect(host.textContent).toContain('Suggested skills')
-    expect(host.textContent).toContain('Generated skills always require review before installation')
     expect(host.textContent).toContain('deploy-staging')
     expect(host.textContent).toContain('Deploy to staging')
     // Nothing happens until the human acts — skills are never auto-installed.

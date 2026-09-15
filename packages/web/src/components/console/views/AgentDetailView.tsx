@@ -2102,11 +2102,6 @@ export default function AgentDetailView() {
                             Add repository
                           </button>
                         </div>
-                        <div className="flex items-center gap-[7px] px-[14px] pt-0 pb-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                          <Icon name="info" size={12} className="flex-none" />
-                          Pick which repos to watch and which events run the agent — it replies on the same PR, issue or
-                          commit thread.
-                        </div>
                       </div>
                     </div>
                   )}
@@ -2244,11 +2239,6 @@ export default function AgentDetailView() {
                             Add project
                           </button>
                         </div>
-                        <div className="flex items-center gap-[7px] px-[14px] pt-0 pb-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                          <Icon name="info" size={12} className="flex-none" />
-                          Pick which projects to watch and which events run the agent — it replies on the same issue,
-                          merge request thread.
-                        </div>
                       </div>
                     </div>
                   )}
@@ -2384,11 +2374,6 @@ export default function AgentDetailView() {
                             <Icon name="plus" size={13} />
                             Add repository
                           </button>
-                        </div>
-                        <div className="flex items-center gap-[7px] px-[14px] pt-0 pb-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                          <Icon name="info" size={12} className="flex-none" />
-                          Pick which repositories to watch and which events run the agent — it replies on the same issue
-                          or pull-request thread.
                         </div>
                       </div>
                     </div>

@@ -93,8 +93,7 @@ export default function DaemonsView() {
               </span>
               <div className="font-sans text-[15px] font-semibold leading-normal">No daemons connected</div>
               <div className="max-w-[380px] font-sans text-[13px] font-normal leading-[1.55] text-(--text-secondary)">
-                Run the daemon on a machine where agents should execute. It connects to the control plane and shows up
-                here.
+                Run the daemon where agents should execute; it shows up here.
               </div>
               <Button variant="secondary" size="sm" onClick={() => openModal('daemon')}>
                 <Icon name="plus" size={15} />
@@ -200,8 +199,7 @@ function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: D
       />
       {groups.length === 0 ? (
         <div className="card px-4 py-[18px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
-          Place an agent on a group instead of one daemon and it keeps running when that daemon does not — whichever
-          member is serving picks the work up.
+          Groups keep an agent running when one daemon goes down.
         </div>
       ) : (
         <div className={FLEET_GRID}>

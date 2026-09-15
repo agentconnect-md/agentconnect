@@ -763,8 +763,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                       </div>
                       <div className="mt-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
                         Under <span className="mono">Your apps</span> →{' '}
-                        <span className="mono">configuration tokens</span>, pick the workspace and generate a token
-                        pair. The app is created in that workspace.
+                        <span className="mono">configuration tokens</span>, generate a token pair for the workspace.
                       </div>
                     </div>
                   </div>
@@ -925,10 +924,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                         className="mt-[1px] flex-none"
                       />
                       <span className="min-w-0 flex-1 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                        If Slack shows{' '}
-                        <span className="font-medium">“You’ve changed the permission scopes… reinstall your app”</span>,
-                        click <span className="font-medium">Reinstall</span> once — that’s what activates the Bot User
-                        OAuth token you paste above.
+                        If Slack asks you to reinstall the app, do it once.
                       </span>
                     </div>
                   </div>

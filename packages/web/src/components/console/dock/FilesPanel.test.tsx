@@ -612,7 +612,7 @@ describe('FilesPanel path filter', () => {
     // Full paths, flat, and a label that does not let the reader believe a repository was searched.
     expect(rowNames()).toEqual(['src/reader.ts'])
     expect(text()).toContain('Matched 1 of 3 loaded files')
-    expect(text()).toContain('not the whole repository')
+    expect(text()).toContain('only opened folders are searched')
   })
 
   it('never asks the server, because there is no path-search route', async () => {
@@ -624,8 +624,8 @@ describe('FilesPanel path filter', () => {
     expect(vi.mocked(fetchWorkspaceFiles).mock.calls.length).toBe(before)
     // 'docs' was never opened, so its file is not in the corpus — the honest consequence the label warns about.
     expect(rowNames()).toEqual([])
-    expect(text()).toContain('No loaded file path contains “guide”')
-    expect(text()).toContain('Open more folders')
+    expect(text()).toContain('No match in the loaded files')
+    expect(text()).toContain('open more folders')
   })
 
   it('opens a filtered row by its full path', async () => {
