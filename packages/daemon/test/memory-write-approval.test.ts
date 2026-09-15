@@ -88,7 +88,7 @@ function world(over: WorldOptions = {}) {
     agents: () => new Map([[AGENT, { id: AGENT } as never]]),
     pending: () => pending,
     evalHooks: () => ({ emit: vi.fn() }) as never,
-    memoryExtractionInFlight: () => false,
+    memoryExtraction: () => undefined,
     enqueueApply,
     postCardSerialized: vi.fn(async () => undefined),
     elicitCardFacet: () => over.facet,

@@ -90,7 +90,7 @@ async function world(over?: {
     agents: () => new Map([[AGENT, { id: AGENT } as never]]),
     pending: () => pending,
     evalHooks: () => ({ emit: vi.fn() }) as never,
-    memoryExtractionInFlight: () => false,
+    memoryExtraction: () => undefined,
     enqueueApply: vi.fn(),
     postCardSerialized: vi.fn(async () => undefined),
     // The approval DM is its own surface; no in-channel elicitation card is posted from here.

@@ -433,6 +433,8 @@ export interface MemoryExtractionCollector {
   /** Dream sessions expose the same original reasoning/tool activity as ordinary
    *  sessions. Background distillation has no transcript and leaves this unset. */
   transcript?: { channel: string; thread: string; recorder: TranscriptRecorder }
+  /** Calls to this daemon's own bridge tools: the only requests an extraction turn may be granted (#2091). */
+  builtinSystemToolCallIds: Set<string>
 }
 
 /** The union of every platform's renderer action, and of every platform's

@@ -5732,7 +5732,7 @@ export class Daemon {
       const key = pendingTurnKey(owner, sessionId)
       const chunks: string[] = []
       this.memoryExtractionQuarantines.delete(key)
-      this.memoryExtractionCollectors.set(key, { chunks })
+      this.memoryExtractionCollectors.set(key, { chunks, builtinSystemToolCallIds: new Set() })
       this.memoryExtractionScopes.set(cacheKey, scope ?? { agentId })
       try {
         // Extraction runs read-only and shouldn't touch the config files, but keep
@@ -5844,7 +5844,7 @@ export class Daemon {
         else signal.addEventListener('abort', onAbort, { once: true })
         const chunks: string[] = []
         this.memoryExtractionQuarantines.delete(key)
-        this.memoryExtractionCollectors.set(key, { chunks })
+        this.memoryExtractionCollectors.set(key, { chunks, builtinSystemToolCallIds: new Set() })
         try {
           // Keep the invariant every host.prompt in this file holds: config files exist for the turn.
           this.rematerializeConfigFiles(agentId)
@@ -6274,6 +6274,9 @@ export class Daemon {
       kind: 'text',
       text: 'Memory dream started.'
     })
+    // Resolved before the start snapshot so the console shows the forced mode, not the agent's default (#2091).
+    const modes = host.permissionModeOptions()?.modes ?? []
+    const readOnlyMode = modes.find((mode) => mode === 'read-only') ?? modes.find((mode) => mode === 'plan')
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId,
       sessionKey: executionKey,
@@ -6284,7 +6287,8 @@ export class Daemon {
       thread: context.dreamId,
       status: 'running',
       runtime: agent.runtime,
-      model: model ?? null
+      model: model ?? null,
+      ...(readOnlyMode ? { permissionMode: readOnlyMode } : {})
     })
     // On cancel, drive the ACP turn-cancel path so a hung/long prompt actually
     // stops instead of pinning the dream's one-in-flight reservation.
@@ -6292,16 +6296,10 @@ export class Daemon {
     if (signal.aborted) onAbort()
     else signal.addEventListener('abort', onAbort, { once: true })
     let promptCompleted = false
-    let extractionMode: string | undefined
     let collector: MemoryExtractionCollector | undefined
     try {
       if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
-      // HARD GATE: require a verified non-mutating mode. Fail closed if the
-      // runtime advertises none or the switch is rejected — never run an
-      // injection-exposed extraction with write access.
-      const modes = host.permissionModeOptions()?.modes ?? []
-      const readOnlyMode = modes.find((mode) => mode === 'read-only') ?? modes.find((mode) => mode === 'plan')
-      extractionMode = readOnlyMode
+      // HARD GATE, fail closed: no verified non-mutating mode, or a rejected switch, means no injection-exposed extraction with write access.
       if (!readOnlyMode || !(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
         throw new Error('runtime lacks a verified read-only/plan mode; dream extraction cannot run safely')
       }
@@ -6314,6 +6312,7 @@ export class Daemon {
         chunks,
         sessionKey: executionKey,
         runtimeCostReported: false,
+        builtinSystemToolCallIds: new Set(),
         transcript: { channel: 'memory', thread: context.dreamId, recorder: new TranscriptRecorder() }
       }
       this.memoryExtractionQuarantines.delete(key)
@@ -6421,7 +6420,7 @@ export class Daemon {
         status: promptCompleted ? 'completed' : signal.aborted ? 'canceled' : 'failed',
         runtime: agent.runtime,
         model: model ?? null,
-        ...(extractionMode ? { permissionMode: extractionMode } : {})
+        ...(readOnlyMode ? { permissionMode: readOnlyMode } : {})
       })
       host.discardSession(sessionId)
       this.internalPassSessions.delete(pendingTurnKey(owner, sessionId))
@@ -9799,7 +9798,10 @@ export class Daemon {
       agents: () => this.agents,
       pending: () => this.pending,
       evalHooks: () => this.evalHooks,
-      memoryExtractionInFlight: (turnKey) => this.memoryExtractionCollectors.has(turnKey),
+      memoryExtraction: (turnKey) => {
+        const collector = this.memoryExtractionCollectors.get(turnKey)
+        return collector && { builtinSystemToolCallIds: collector.builtinSystemToolCallIds }
+      },
       enqueueApply: (p, action) => this.enqueueApply(p, action),
       postCardSerialized: (p, post) => this.postCardSerialized(p, post),
       elicitCardFacet: (platform) => this.turnSurfaces.exact(platform)?.elicitCards,
@@ -15109,6 +15111,7 @@ export class Daemon {
   /** One ACP session's updates stay in arrival order: the async store would otherwise let
    *  a later update whose handler does less I/O emit ahead of an earlier one. */
   private enqueueAcpUpdate(owner: HostKey, sessionId: string, update: unknown): Promise<void> {
+    this.noteExtractionBridgeCall(owner, sessionId, update)
     const key = acpUpdateChainKey(owner, sessionId)
     const previous = this.acpUpdateChains.get(key) ?? Promise.resolve()
     const done = previous.then(() => this.onAcpUpdate(owner, sessionId, update))
@@ -15117,6 +15120,16 @@ export class Daemon {
       done.catch((err) => this.log.error(`acp update failed for session ${sessionId}: ${formatErr(err)}`))
     )
     return done
+  }
+
+  /** Ahead of the chain, not inside it: the runtime's approval request follows this notification at once, and a chain still writing earlier updates to the transcript would answer it before the call was known (#2091). */
+  private noteExtractionBridgeCall(owner: HostKey, sessionId: string, update: unknown): void {
+    const extraction = this.memoryExtractionCollectors.get(pendingTurnKey(owner, sessionId))
+    if (!extraction) return
+    const toolCallId = (update as { toolCallId?: unknown } | undefined)?.toolCallId
+    if (typeof toolCallId === 'string' && toolCallId && isBuiltinSystemToolCall(update)) {
+      extraction.builtinSystemToolCallIds.add(toolCallId)
+    }
   }
 
   private async onAcpUpdate(owner: HostKey, sessionId: string, update: any): Promise<void> {

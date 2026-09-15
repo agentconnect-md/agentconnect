@@ -111,8 +111,13 @@ export interface PermissionCoreHost {
   /** Live turns keyed by `pendingTurnKey(agentId, acpSessionId)`. */
   pending(): ReadonlyMap<string, Pending>
   evalHooks(): DaemonEvaluationHooks
-  /** A silent background extraction turn: it may never gain side effects. */
-  memoryExtractionInFlight(turnKey: string): boolean
+  /** The live extraction turn on this key, if any: only its bound bridge tools may be granted (#2091). */
+  memoryExtraction(turnKey: string): MemoryExtractionTurn | undefined
+}
+
+/** What the permission path knows about a live extraction turn: the bridge calls it has issued so far. */
+export interface MemoryExtractionTurn {
+  builtinSystemToolCallIds: ReadonlySet<string>
 }
 
 /** The CP exchange behind approval-DM routing — present only when connected AND the
@@ -1393,30 +1398,28 @@ export class PermissionCoordinator {
     // Mask before anything renders it (Slack card now, resolved-card edit later via
     // the pending request).
     params = this.host.maskAgentSecrets(agentId, params)
-    // Extraction is a silent background operation: it may never gain side effects
-    // merely because the user agent normally runs in an auto-approval mode.
-    if (this.host.memoryExtractionInFlight(pendingTurnKey(owner, sessionId))) {
+    // Extraction stays silent: cancel everything but the daemon's own bound bridge tools, its only output path on a runtime that asks per MCP call (#2091).
+    const extraction = this.host.memoryExtraction(pendingTurnKey(owner, sessionId))
+    if (extraction) {
+      const allowed = isBuiltinSystemTool(params, extraction.builtinSystemToolCallIds)
+        ? this.autoAllowSystemTool(agentId, sessionId, params, evaluationParams, 'memory_extraction_bound_tool')
+        : undefined
+      if (allowed) return allowed
       this.permissionEvaluationDetails.set(evaluationParams, { reason: 'memory_extraction' })
       return { outcome: { outcome: 'cancelled' } }
     }
-    // Platform system tools (this daemon's OWN MCP tools — sendMessage, listAgents,
-    // orchestration, memory, …) are always granted: a human should never
-    // have to approve them per call. Auto-allow without rendering a card. Non-system tools
-    // (incl. the runtime's dangerous built-ins) fall through to the interactive policy below.
+    // This daemon's OWN MCP tools are always granted without a card; everything else takes the interactive policy.
     const p = this.host.pending().get(pendingTurnKey(owner, sessionId))
     if (isBuiltinSystemTool(params, p?.builtinSystemToolCallIds)) {
-      const allow = params.options.find((o) => o.kind === 'allow_always' || o.kind === 'allow_once')
-      if (allow) {
-        this.permissionEvaluationDetails.set(evaluationParams, { reason: 'agentconnect_system_tool' })
-        this.host.evalHooks().emit({
-          type: 'permission.auto_allowed',
-          agentId,
-          sessionId,
-          ...(p?.plan.evaluationTurnId ? { turnId: p.plan.evaluationTurnId } : {}),
-          data: { reason: 'agentconnect_system_tool', optionId: allow.optionId }
-        })
-        return { outcome: { outcome: 'selected', optionId: allow.optionId } }
-      }
+      const allowed = this.autoAllowSystemTool(
+        agentId,
+        sessionId,
+        params,
+        evaluationParams,
+        'agentconnect_system_tool',
+        p?.plan.evaluationTurnId
+      )
+      if (allowed) return allowed
     }
     if (!p || p.outputSuppressed) {
       this.permissionEvaluationDetails.set(evaluationParams, {
@@ -1451,6 +1454,28 @@ export class PermissionCoordinator {
     return await this.awaitEditorPermission(agentId, sessionId, params, evaluationParams, p)
   }
 
+  /** Grant one of this daemon's own tools without a card; undefined when the runtime offered no allow option. */
+  private autoAllowSystemTool(
+    agentId: string,
+    sessionId: string,
+    params: RequestPermissionRequest,
+    evaluationParams: RequestPermissionRequest,
+    reason: 'agentconnect_system_tool' | 'memory_extraction_bound_tool',
+    turnId?: string
+  ): RequestPermissionResponse | undefined {
+    const allow = params.options.find((o) => o.kind === 'allow_always' || o.kind === 'allow_once')
+    if (!allow) return undefined
+    this.permissionEvaluationDetails.set(evaluationParams, { reason })
+    this.host.evalHooks().emit({
+      type: 'permission.auto_allowed',
+      agentId,
+      sessionId,
+      ...(turnId ? { turnId } : {}),
+      data: { reason, optionId: allow.optionId }
+    })
+    return { outcome: { outcome: 'selected', optionId: allow.optionId } }
+  }
+
   /**
    * ACP `elicitation/create` policy (wired as AcpHost.onElicit). Renders the form's first
    * choice/boolean field as a Slack card and resolves with the user's pick. Returns
@@ -1467,6 +1492,13 @@ export class PermissionCoordinator {
     // Same reason as onAcpPermission: the elicitation message/labels are agent-authored
     // text headed for a platform card — mask any embedded secret value first.
     params = this.host.maskAgentSecrets(agentId, params)
+    // Codex carries MCP approval here when form elicitation is advertised: same extraction rule as above (#2091).
+    const extraction = this.host.memoryExtraction(pendingTurnKey(owner, sessionId))
+    if (extraction) {
+      return isBuiltinSystemToolElicitation(params, extraction.builtinSystemToolCallIds)
+        ? { action: 'accept' }
+        : { action: 'cancel' }
+    }
     const p = this.host.pending().get(pendingTurnKey(owner, sessionId))
     if (!p) return undefined
     if (p.outputSuppressed) return { action: 'cancel' }

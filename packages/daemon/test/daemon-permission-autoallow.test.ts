@@ -10,6 +10,8 @@ import { join } from 'node:path'
 import { LocalStore } from '../src/store/local-store.js'
 import { listAgentPermissionRequests } from '../src/cp/config-apply-handlers.js'
 import { SlackConnection } from '../src/slack/connection.js'
+import { pendingTurnKey } from '../src/daemon/turn-types.js'
+import { agentHostKey } from '../src/acp/host-key.js'
 import {
   ELICIT_CONFIRM_ACTION,
   elicitForm,
@@ -1937,5 +1939,87 @@ describe('Slack renders and settles a URL-mode consent card', () => {
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     expect(JSON.stringify(posted[0])).not.toContain('sk-live-DEADBEEF')
     await (daemon as any).permissions.releaseElicits('agent-1', 's1')
+  })
+})
+
+describe('memory extraction turns grant only the daemon’s own bound bridge tools (#2091)', () => {
+  /** A live extraction collector for ('agent-1','s1') — an extraction turn has no Pending entry. */
+  function installExtraction(daemon: Daemon): Set<string> {
+    const builtinSystemToolCallIds = new Set<string>()
+    ;(daemon as any).memoryExtractionCollectors.set(pendingTurnKey(agentHostKey('agent-1'), 's1'), {
+      chunks: [],
+      builtinSystemToolCallIds
+    })
+    return builtinSystemToolCallIds
+  }
+
+  it('auto-allows a correlated bridge call on both Codex approval transports and by FQN', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const ids = installExtraction(daemon)
+    await (daemon as any).enqueueAcpUpdate(agentHostKey('agent-1'), 's1', {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'dream-write',
+      kind: 'execute',
+      title: 'mcp.agentconnect.writeMemory',
+      rawInput: { server: 'agentconnect', tool: 'writeMemory', arguments: {} }
+    })
+    expect(ids).toContain('dream-write')
+    // codex-acp's `session/request_permission` for an MCP approval carries only the correlated id.
+    await expect(
+      (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ toolCallId: 'dream-write' }))
+    ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    // With form elicitation advertised the same approval arrives as `elicitation/create`.
+    await expect((daemon as any).permissions.onAcpElicit('agent-1', 's1', elicitation('dream-write'))).resolves.toEqual(
+      { action: 'accept' }
+    )
+    // A runtime that names the tool in the request needs no correlation.
+    await expect(
+      (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ title: 'mcp__agentconnect__readMemory' }))
+    ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
+    expect((daemon as any).permissions.pendingElicits.size).toBe(0)
+  })
+
+  it('cancels every other request during extraction without queueing a human decision', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const ids = installExtraction(daemon)
+    await (daemon as any).enqueueAcpUpdate(agentHostKey('agent-1'), 's1', {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'other-server',
+      kind: 'execute',
+      title: 'mcp.agentconnect.writeMemory',
+      rawInput: { server: 'another-server', tool: 'writeMemory', arguments: {} }
+    })
+    expect(ids.size).toBe(0)
+    const permissions = (daemon as any).permissions
+    await expect(permissions.onAcpPermission('agent-1', 's1', req({ toolCallId: 'other-server' }))).resolves.toEqual({
+      outcome: { outcome: 'cancelled' }
+    })
+    await expect(
+      permissions.onAcpPermission('agent-1', 's1', req({ title: 'Bash', rawInput: { command: 'rm -rf memory' } }))
+    ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await expect(permissions.onAcpElicit('agent-1', 's1', elicitation('uncorrelated'))).resolves.toEqual({
+      action: 'cancel'
+    })
+    expect(permissions.pendingEditorPermissions.size).toBe(0)
+    expect(permissions.pendingChatPermissions.size).toBe(0)
+    expect(permissions.pendingElicits.size).toBe(0)
+  })
+
+  it('scopes the grant to the live collector', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    installExtraction(daemon)
+    await (daemon as any).enqueueAcpUpdate(agentHostKey('agent-1'), 's1', {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'late-write',
+      kind: 'execute',
+      title: 'mcp.agentconnect.writeMemory',
+      rawInput: { server: 'agentconnect', tool: 'writeMemory', arguments: {} }
+    })
+    ;(daemon as any).memoryExtractionCollectors.delete(pendingTurnKey(agentHostKey('agent-1'), 's1'))
+    // No extraction and no live turn: the ordinary policy cancels an uncorrelated late request.
+    await expect(
+      (daemon as any).permissions.onAcpPermission('agent-1', 's1', req({ toolCallId: 'late-write' }))
+    ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   })
 })

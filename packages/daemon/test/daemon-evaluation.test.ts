@@ -832,3 +832,171 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     await daemon.stop()
   })
 })
+
+describe('memory extraction grants only the daemon’s own bound bridge tools (#2091)', () => {
+  const options = [
+    { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'deny', name: 'Decline', kind: 'reject_once' }
+  ]
+  // codex-acp's MCP approval names nothing but the correlated call; the runtime's own tools carry a title.
+  const permission = (sessionId: string, toolCall: Record<string, unknown>) =>
+    ({ sessionId, options, toolCall: { toolCallId: 'tc-1', ...toolCall } }) as any
+  const approvalElicitation = (sessionId: string, toolCallId: string) =>
+    ({
+      sessionId,
+      toolCallId,
+      mode: 'form',
+      message: 'Allow the agentconnect MCP server to run this tool?',
+      requestedSchema: { type: 'object', properties: { persist: { type: 'string', enum: ['once'] } } },
+      _meta: { codex_approval_kind: 'mcp_tool_call' }
+    }) as any
+  // An extraction turn has no Pending entry; its owner is the key its collector sits under.
+  const extractionOwner = (daemon: any, sessionId: string): string => {
+    const key = ([...daemon.memoryExtractionCollectors.keys()] as string[]).find(
+      (k) => (JSON.parse(k) as string[])[1] === sessionId
+    )
+    expect(key).toBeDefined()
+    const [owner] = JSON.parse(key!) as [string, string]
+    return owner
+  }
+  // What the runtime asks mid-prompt, in the order codex-acp asks it: the bridge call's update, then its approval.
+  async function askDuringPrompt(daemon: any, sessionId: string, onUpdate: (sid: string, update: unknown) => void) {
+    const owner = extractionOwner(daemon, sessionId)
+    onUpdate(sessionId, {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'bridge-write',
+      kind: 'execute',
+      title: 'mcp.agentconnect.writeMemory',
+      status: 'pending',
+      rawInput: { server: 'agentconnect', tool: 'writeMemory', arguments: { topic: 'preferences' } }
+    })
+    return {
+      owner,
+      bridgePermission: await daemon.permissions.onAcpPermission(
+        owner,
+        sessionId,
+        permission(sessionId, { toolCallId: 'bridge-write' })
+      ),
+      bridgeElicitation: await daemon.permissions.onAcpElicit(
+        owner,
+        sessionId,
+        approvalElicitation(sessionId, 'bridge-write')
+      ),
+      shellPermission: await daemon.permissions.onAcpPermission(
+        owner,
+        sessionId,
+        permission(sessionId, { title: 'Bash', rawInput: { command: 'rm -rf memory' } })
+      ),
+      strangerElicitation: await daemon.permissions.onAcpElicit(
+        owner,
+        sessionId,
+        approvalElicitation(sessionId, 'not-ours')
+      )
+    }
+  }
+  const expectBoundToolsOnly = (asked: Awaited<ReturnType<typeof askDuringPrompt>>) => {
+    expect(asked.bridgePermission).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    expect(asked.bridgeElicitation).toEqual({ action: 'accept' })
+    expect(asked.shellPermission).toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(asked.strangerElicitation).toEqual({ action: 'cancel' })
+  }
+
+  it('lets a dream stage through the bridge while the runtime still asks per MCP call', async () => {
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    let asked: Awaited<ReturnType<typeof askDuringPrompt>> | undefined
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'dream-session-2'),
+      hasSession: vi.fn(() => true),
+      usesMetaSystemPrompt: vi.fn(() => false),
+      modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
+      permissionModeOptions: vi.fn(() => ({ modes: ['read-only'] })),
+      setSessionPermissionMode: vi.fn(async () => true),
+      prompt: vi.fn(async (sessionId: string) => {
+        asked = await askDuringPrompt(daemon, sessionId, onUpdate)
+        onUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: JSON.stringify({ index: '# Memory', files: [] }) }
+        })
+        return { stopReason: 'end_turn', usage: { totalTokens: 12, inputTokens: 8, outputTokens: 4 } }
+      }),
+      discardSession: vi.fn(),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon: any = new Daemon({
+      root: scaffold({ autoAdopt: true }),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      },
+      dreamOperationPolicy: 'test-only'
+    })
+    await daemon.start()
+    const sessionEvents: any[] = []
+    daemon.cpClient = {
+      emitEventSession: vi.fn((event: unknown) => sessionEvents.push(event)),
+      emitSessionActivity: vi.fn(),
+      emitUsageReport: vi.fn(),
+      stop: vi.fn(async () => {})
+    }
+
+    const started = await daemon.dreamRunner().start(AGENT_ID, { trigger: 'manual' })
+    await vi.waitFor(async () => {
+      expect((await daemon.store.getDream(AGENT_ID, started.dreamId))?.status).toBe('adopted')
+    }, WAIT)
+    expectBoundToolsOnly(asked!)
+    // The console sees the mode the dream was forced into from its first frame, not the agent's default.
+    expect(sessionEvents.find((event) => event.phase === 'start')).toMatchObject({
+      platform: 'dream',
+      permissionMode: 'read-only'
+    })
+    expect(daemon.permissions.pendingEditorPermissions.size).toBe(0)
+    expect(daemon.permissions.pendingElicits.size).toBe(0)
+    await daemon.stop()
+  })
+
+  it('applies the same rule to a distillation pass', async () => {
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    let asked: Awaited<ReturnType<typeof askDuringPrompt>> | undefined
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'distill-session-2'),
+      hasSession: vi.fn(() => true),
+      usesMetaSystemPrompt: vi.fn(() => true),
+      modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
+      permissionModeOptions: vi.fn(() => ({ modes: ['read-only'] })),
+      setSessionPermissionMode: vi.fn(async () => true),
+      prompt: vi.fn(async (sessionId: string) => {
+        asked = await askDuringPrompt(daemon, sessionId, onUpdate)
+        onUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: '{"memories":[]}' }
+        })
+        return { stopReason: 'end_turn', usage: { totalTokens: 5, inputTokens: 4, outputTokens: 1 } }
+      }),
+      discardSession: vi.fn(),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon: any = new Daemon({
+      root: scaffold(),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      }
+    })
+    await daemon.start()
+    await daemon.runMemoryExtraction(AGENT_ID, 'extract', { agentId: AGENT_ID, sourceTurnId: 'turn-1' })
+    expectBoundToolsOnly(asked!)
+    // Once the pass settles nothing is live for that session, so a late approval is cancelled like any other.
+    await expect(
+      daemon.permissions.onAcpPermission(
+        asked!.owner,
+        'distill-session-2',
+        permission('distill-session-2', { toolCallId: 'bridge-write' })
+      )
+    ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await daemon.stop()
+  })
+})

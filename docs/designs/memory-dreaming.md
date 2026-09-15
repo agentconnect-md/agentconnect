@@ -127,7 +127,11 @@ side effects. The executor therefore separates two independent gates:
   model honours by never calling `writeMemory`, so the dream host defines a
   `read-only` agent through `OPENCODE_CONFIG_CONTENT` — an allow-list of read
   tools plus the daemon's bridge tools — which the gate prefers over `plan`
-  (`runtime-defs/opencode-runtime.ts`).
+  (`runtime-defs/opencode-runtime.ts`). Inside that mode the daemon answers
+  every runtime permission request with cancel, except calls to its own bridge
+  tools bound to the extraction (the dream's staged store, distillation's
+  scope), which it auto-allows: on a runtime that asks approval for every MCP
+  tool (Codex) those calls are the extraction's only output path (#2091).
 - **Trusted system-prompt channel — OBSERVED.** When the runtime carries the system
   prompt via `_meta.systemPrompt` the dream policy rides it; otherwise the
   policy is prepended to the user prompt. Auto-accept is the user's explicit
