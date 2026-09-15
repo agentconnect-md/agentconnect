@@ -557,13 +557,12 @@ describe('gitlab ingress', () => {
     expect(h.sent).toHaveLength(0)
   })
 
-  it('verdict is pure: event patterns gate before authz, and a stored label filter is ignored', async () => {
-    const ctx = normalizeGitlabEvent(issuePayload() as never)!
-    // The label filter is a removed feature. A rule compiled from a stored config
-    // that still carries one matches exactly as if it carried none — matching or
-    // non-matching labels make no difference to the verdict.
+  it('verdict is pure: event patterns gate before authz, and the label filter reads the CURRENT labels case-insensitively', async () => {
+    const ctx = normalizeGitlabEvent(issuePayload() as never)! // labels: [bug]
     expect(gitlabRuleVerdict(rule({}, { labelFilter: ['bug'] }), ctx)).toBe('needs-authz')
-    expect(gitlabRuleVerdict(rule({}, { labelFilter: ['ops'] }), ctx)).toBe('needs-authz')
+    expect(gitlabRuleVerdict(rule({}, { labelFilter: ['BUG'] }), ctx)).toBe('needs-authz')
+    expect(gitlabRuleVerdict(rule({}, { labelFilter: ['ops'] }), ctx)).toBe('no-match')
+    // Absent (a CP predating the filter) and empty both admit every label.
     expect(gitlabRuleVerdict(rule({}, { labelFilter: undefined }), ctx)).toBe('needs-authz')
     expect(gitlabRuleVerdict(rule({}, { events: ['merge_request:*'] }), ctx)).toBe('no-match')
     expect(gitlabRuleVerdict(rule({ kind: 'github' }), ctx)).toBe('no-match')

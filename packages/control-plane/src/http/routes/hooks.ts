@@ -754,6 +754,7 @@ export function hookRoutes(deps: HttpDeps) {
                   family: req.body.family,
                   events: req.body.events,
                   commentFamilies: req.body.commentFamilies,
+                  labelFilter: req.body.labelFilter,
                   mentionOnly: req.body.mentionOnly,
                   reviewPolicy: req.body.reviewPolicy,
                   reportingMode: req.body.reportingMode
@@ -1098,6 +1099,7 @@ export function hookRoutes(deps: HttpDeps) {
             repoFullName: binding.projectPath,
             events: req.body.events,
             commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
+            labelFilter: req.body.labelFilter ?? existing.labelFilter,
             mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
             ...effectConfig
           }
@@ -1170,6 +1172,7 @@ export function hookRoutes(deps: HttpDeps) {
             repoFullName: binding.repoPath,
             events: req.body.events,
             commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
+            labelFilter: req.body.labelFilter ?? existing.labelFilter,
             mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
             ...effectConfig
           }

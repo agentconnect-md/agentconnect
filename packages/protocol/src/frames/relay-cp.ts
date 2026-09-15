@@ -361,7 +361,7 @@ export const RcGitlabHookRule = z.object({
   projectPath: z.string().min(1), // display/logs only; never matched on
   sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitlab:<projectId>
   events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
-  // Removed feature, accepted and ignored for one release: an older relay still REQUIRES it, so the CP sends an empty array.
+  // Non-empty ⇒ the subject's CURRENT labels must intersect it (case-insensitive); optional for a CP predating the filter.
   labelFilter: z.array(z.string()).optional(),
   commentFamilies: z.array(z.enum(['issues', 'merge_request'])).optional(),
   mentionOnly: z.boolean(),
@@ -384,6 +384,8 @@ export const RcGiteaHookRule = z.object({
   repoPath: z.string().min(1), // display/logs only; never matched on
   sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitea:<repoId>
   events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
+  // Non-empty ⇒ the subject's CURRENT labels must intersect it (case-insensitive); additive optional, an older relay ignores it.
+  labelFilter: z.array(z.string()).optional(),
   // The comment SUBJECT vocabulary (`is_pull`), not the event family: the CP maps a stored `merge_request` scope here.
   commentFamilies: z.array(z.enum(['issues', 'pull_request'])).optional(),
   mentionOnly: z.boolean(),

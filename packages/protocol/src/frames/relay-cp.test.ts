@@ -839,7 +839,7 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(rm.ok).toBe(true)
   })
 
-  it('a gitlab rule decodes with or without the removed label filter (§17.3)', () => {
+  it('a gitlab rule decodes with or without a label filter (§17.3)', () => {
     const gitlab = {
       hookId: '88888888-8888-4888-8888-888888888888',
       agentId: AGENT_ID,
@@ -858,10 +858,9 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
         signingToken: 'whsec_example'
       }
     }
-    // Absence is the shape a later release sends once no older relay is deployed.
+    // Absence is a Control Plane predating the filter: the relay admits every label.
     expect(RcHookAssign.safeParse(gitlab).success).toBe(true)
-    // Presence is what a Control Plane predating the removal still sends; it decodes
-    // and the relay's matcher ignores the value.
+    // Presence is the filter itself, carried verbatim to the relay's matcher.
     const withFilter = { ...gitlab, gitlab: { ...gitlab.gitlab, labelFilter: ['bug'] } }
     const decoded = RcHookAssign.safeParse(withFilter)
     expect(decoded.success).toBe(true)

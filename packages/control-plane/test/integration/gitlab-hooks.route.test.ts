@@ -246,7 +246,6 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     h.a.relayReg.add(glab.ch)
     h.a.relayReg.add(legacy.ch)
 
-    // The removed label filter is read tolerantly: an old client may still send it.
     const res = await h.a.app.inject({
       method: 'POST',
       url: `${ORG}/hooks`,
@@ -294,8 +293,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         expect(rule.gitlab?.signingToken).toBe(webhook.token)
         expect(rule.gitlab?.events).toEqual(['merge_request:*'])
         expect(rule.gitlab?.commentFamilies).toEqual(['merge_request'])
-        // The value never reaches the rule; the empty array only keeps an older relay decoding.
-        expect(rule.gitlab?.labelFilter).toEqual([])
+        expect(rule.gitlab?.labelFilter).toEqual(['bug'])
       },
       { timeout: 20_000 }
     )

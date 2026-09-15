@@ -477,10 +477,13 @@ describe('gitea ingress', () => {
     // Comment edits and deletions re-fire the same type with a fresh delivery id — never a turn.
     expect(row('issue_comment', issueCommentPayload({ action: 'edited' }))).toBeUndefined()
     expect(row('pull_request_comment', pullCommentPayload({ action: 'deleted' }))).toBeUndefined()
-    // Label, assignment, and milestone churn arrive under event types the table never names.
-    expect(row('issue_label', issuePayload({ action: 'label_updated' }))).toBeUndefined()
+    // A label change normalizes to `:labeled` (the verdict admits it for filtered rows only); a cleared set never fires.
+    expect(row('issue_label', issuePayload({ action: 'label_updated' }))).toBe('issues:labeled')
+    expect(row('issue_label', issuePayload({ action: 'label_cleared' }))).toBeUndefined()
+    expect(row('pull_request_label', pullPayload({ action: 'label_updated' }))).toBe('merge_request:labeled')
+    expect(row('pull_request_label', pullPayload({ action: 'label_cleared' }))).toBeUndefined()
+    // Assignment and milestone churn arrive under event types the table never names.
     expect(row('issue_assign', issuePayload({ action: 'assigned' }))).toBeUndefined()
-    expect(row('pull_request_label', pullPayload({ action: 'label_updated' }))).toBeUndefined()
     expect(row('pull_request_assign', pullPayload({ action: 'assigned' }))).toBeUndefined()
     expect(
       row('pull_request_review_request', reviewRequestPayload({ action: 'review_request_removed' }))
@@ -748,6 +751,30 @@ describe('gitea ingress', () => {
     expect((await post(h, bare, { eventType: 'issue_comment', delivery: 'd2' })).statusCode).toBe(202)
     await flush()
     expect(h.sent.map((m) => (m as RdMsgHook).hookId)).toEqual([HOOK_B])
+  })
+
+  it('a label change fires only rows that filter on labels; the filter reads the CURRENT labels case-insensitively', () => {
+    const labeled = normalizeGiteaEvent('issue_label', issuePayload({ action: 'label_updated' }) as GiteaPayload)!
+    expect(labeled.eventAction).toBe('issues:labeled')
+    // A filter-less row keeps today's veto: label churn is lifecycle noise to it.
+    expect(giteaRuleVerdict(rule({}, { events: ['issues:*'] }), labeled)).toBe('no-match')
+    // A filtered any-update row is entered by the label that now matches, casing aside.
+    expect(giteaRuleVerdict(rule({}, { events: ['issues:*'], labelFilter: ['BUG'] }), labeled)).toBe('needs-authz')
+    expect(giteaRuleVerdict(rule({}, { events: ['issues:*'], labelFilter: ['docs'] }), labeled)).toBe('no-match')
+    // Opened is literal: a filtered opened row fires for an issue filed with the label, not for one labeled later.
+    const opened = normalizeGiteaEvent('issues', issuePayload() as GiteaPayload)!
+    expect(giteaRuleVerdict(rule({}, { labelFilter: ['bug'] }), opened)).toBe('needs-authz')
+    expect(giteaRuleVerdict(rule({}, { labelFilter: ['docs'] }), opened)).toBe('no-match')
+    expect(giteaRuleVerdict(rule({}, { labelFilter: ['bug'] }), labeled)).toBe('no-match')
+    // Pull requests ride the same arm under their own event type.
+    const pullLabeled = normalizeGiteaEvent(
+      'pull_request_label',
+      pullPayload({ action: 'label_updated', pull_request: { labels: [{ name: 'needs-review' }] } }) as GiteaPayload
+    )!
+    expect(pullLabeled.eventAction).toBe('merge_request:labeled')
+    const filtered = { events: ['merge_request:*'], labelFilter: ['needs-review'] }
+    expect(giteaRuleVerdict(rule({}, filtered), pullLabeled)).toBe('needs-authz')
+    expect(giteaRuleVerdict(rule({}, { events: ['merge_request:*'] }), pullLabeled)).toBe('no-match')
   })
 
   it('the team form is never a bare mention of the owner, and is inert without an owner', () => {

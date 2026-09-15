@@ -47,6 +47,7 @@ import type { HookRateLimiter } from './rate-limit.js'
 import { dispatchHookFire } from './ingress.js'
 import { hookSnapshotForDelivery } from './hook-snapshot.js'
 import { verifySha256Header } from './signature.js'
+import { labelFilterAdmits } from './label-filter.js'
 import type { Logger } from '../log.js'
 
 /** Raw-body cap for the GitHub endpoint (design: 1 MiB — GitHub's own payload cap). */
@@ -443,8 +444,7 @@ export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): Gith
   // events (for example, labeled): the thread summoned the agent, so its
   // updates keep flowing.
   if (rule.github.mentionOnly && !summoned) return 'no-match'
-  if (rule.github.labelFilter.length > 0 && !ctx.labels.some((l) => rule.github!.labelFilter.includes(l)))
-    return 'no-match'
+  if (!labelFilterAdmits(rule.github.labelFilter, ctx.labels)) return 'no-match'
 
   // GitHub's relationship labels are descriptive, not an authorization proof: MEMBER and
   // COLLABORATOR may still hold read only. Every numbered-thread event resolves the live role;

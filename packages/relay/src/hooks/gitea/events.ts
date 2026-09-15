@@ -14,11 +14,14 @@
  */
 import type { GiteaHookMetadata, GiteaHookTarget, HookContext, RcHookAssign } from '@agentconnect.md/protocol'
 import { mentionsGithubHandle, mentionsGithubTeam, truncateUtf8, GITHUB_BODY_EXCERPT_MAX } from '../github-ingress.js'
+import { labelFilterAdmits } from '../label-filter.js'
 
 /** The Gitea webhook event types this ingress maps; every other type is silently unmapped. */
 export const GITEA_EVENT_ISSUES = 'issues'
+export const GITEA_EVENT_ISSUE_LABEL = 'issue_label'
 export const GITEA_EVENT_ISSUE_COMMENT = 'issue_comment'
 export const GITEA_EVENT_PULL_REQUEST = 'pull_request'
+export const GITEA_EVENT_PULL_REQUEST_LABEL = 'pull_request_label'
 export const GITEA_EVENT_PULL_REQUEST_COMMENT = 'pull_request_comment'
 export const GITEA_EVENT_PULL_REQUEST_SYNC = 'pull_request_sync'
 export const GITEA_EVENT_PULL_REQUEST_REVIEW_REQUEST = 'pull_request_review_request'
@@ -173,11 +176,12 @@ function pullRequestCtxBase(payload: GiteaPayload, pull: GiteaPullRequestRef, in
  * undefined when the delivery is lifecycle noise (§8 vetoes) or an event type
  * this ingress does not map. Exported for unit tests.
  *
- * Label, assignment, and milestone churn arrive under their own event types
- * (`issue_label`, `issue_assign`, `issue_milestone`, and the pull-request
- * equivalents), which the table below never names — the Gitea form of GitLab's
- * label/assignment veto. Draft toggles and target-branch edits ride
- * `pull_request` `edited`, which is inert here for the same reason.
+ * Assignment and milestone churn arrive under their own event types
+ * (`issue_assign`, `issue_milestone`, and the pull-request equivalents), which
+ * the table below never names — the Gitea form of GitLab's assignment veto. A
+ * label change (`issue_label` / `pull_request_label`) normalizes to `:labeled`,
+ * and the verdict admits it only for a row that filters on labels. Draft toggles
+ * and target-branch edits ride `pull_request` `edited`, which is inert here.
  */
 export function normalizeGiteaEvent(eventType: string, payload: GiteaPayload): GiteaMatchCtx | undefined {
   const ctx = normalizeGiteaSubject(eventType, payload)
@@ -185,6 +189,12 @@ export function normalizeGiteaEvent(eventType: string, payload: GiteaPayload): G
   // The team-mention owner comes from the delivery's OWN repository, never from a rule.
   const teamOwnerLogin = giteaTeamOwner(payload.repository)
   return teamOwnerLogin === undefined ? ctx : { ...ctx, teamOwnerLogin }
+}
+
+/** `opened` on the issues type; `label_updated` on the label type (a cleared label set can match no filter). */
+function issueEventAction(eventType: string, action: string | undefined): string | undefined {
+  if (eventType === GITEA_EVENT_ISSUE_LABEL) return action === 'label_updated' ? 'issues:labeled' : undefined
+  return action === 'opened' ? 'issues:opened' : undefined
 }
 
 /** The subject half of the normalization: everything except the team-mention owner. */
@@ -205,14 +215,15 @@ function normalizeGiteaSubject(eventType: string, payload: GiteaPayload): GiteaM
       ref: payload.ref
     }
   }
-  if (eventType === GITEA_EVENT_ISSUES) {
+  if (eventType === GITEA_EVENT_ISSUES || eventType === GITEA_EVENT_ISSUE_LABEL) {
     const issue = payload.issue
     const index = positiveIndex(issue?.number)
     if (!issue || index === undefined) return undefined
     // `closed` fires separately as maintenance cleanup; `edited` and `reopened` are lifecycle noise.
-    if (payload.action !== 'opened') return undefined
+    const eventAction = issueEventAction(eventType, payload.action)
+    if (eventAction === undefined) return undefined
     return {
-      eventAction: 'issues:opened',
+      eventAction,
       family: 'issues',
       ...(userId(payload.sender) !== undefined ? { actorId: userId(payload.sender) } : {}),
       ...(payload.sender?.login ? { actorLogin: payload.sender.login } : {}),
@@ -223,13 +234,20 @@ function normalizeGiteaSubject(eventType: string, payload: GiteaPayload): GiteaM
       index
     }
   }
-  if (eventType === GITEA_EVENT_PULL_REQUEST || eventType === GITEA_EVENT_PULL_REQUEST_SYNC) {
+  if (
+    eventType === GITEA_EVENT_PULL_REQUEST ||
+    eventType === GITEA_EVENT_PULL_REQUEST_SYNC ||
+    eventType === GITEA_EVENT_PULL_REQUEST_LABEL
+  ) {
     const pull = payload.pull_request
     const index = positiveIndex(pull?.number)
     if (!pull || index === undefined) return undefined
     const base = pullRequestCtxBase(payload, pull, index)
     if (eventType === GITEA_EVENT_PULL_REQUEST_SYNC) {
       return payload.action === 'synchronized' ? { ...base, eventAction: 'merge_request:synchronize' } : undefined
+    }
+    if (eventType === GITEA_EVENT_PULL_REQUEST_LABEL) {
+      return payload.action === 'label_updated' ? { ...base, eventAction: 'merge_request:labeled' } : undefined
     }
     // `closed` with `merged` fires separately as maintenance cleanup; an unmerged close, a
     // reopen, and `edited` (which carries draft toggles and target-branch changes) are noise.
@@ -332,7 +350,7 @@ function isInternalBotRevision(rule: RcHookAssign, ctx: GiteaMatchCtx): boolean 
 /**
  * One rule's verdict for one verified delivery (pure; exported for unit tests).
  * Order: loop-prevention veto → reviewer-request path → cadence/additive summon
- * match → comment scope → mention-only gate → live-authz classification.
+ * match → comment scope → mention-only gate → labels → live-authz classification.
  */
 export function giteaRuleVerdict(rule: RcHookAssign, ctx: GiteaMatchCtx): GiteaRuleVerdict {
   const gitea = rule.gitea
@@ -373,7 +391,10 @@ export function giteaRuleVerdict(rule: RcHookAssign, ctx: GiteaMatchCtx): GiteaR
     eventMatched = matchesPattern(ctx.family) || createdCadenceSummon
   }
   if (!eventMatched) return 'no-match'
+  // Label churn stays vetoed (§8) unless the row filters on labels — then a label change is how a thread enters the filter.
+  if (action === ':labeled' && !gitea.labelFilter?.length) return 'no-match'
   if (gitea.mentionOnly && !summoned) return 'no-match'
+  if (!labelFilterAdmits(gitea.labelFilter, ctx.labels)) return 'no-match'
   // §8: pushes and the bot's own same-repository revisions stay relay-trusted; every issue and
   // pull-request lifecycle event, comment, and review submission resolves live membership.
   if (ctx.family === 'push') return 'trusted'

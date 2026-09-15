@@ -353,33 +353,42 @@ sealed.
 
 **Compiled rule.** The `rc/hook-assign` rule gains a `gitea` member shaped
 like the `gitlab` one: numeric repository id as match key, current path for
-display, the connection's bot user id as the veto set, the signing key inline.
+display, the connection's bot user id as the veto set, the label filter, the
+signing key inline.
 
 ## 8. Event Mapping and Routing
 
-| Product family                    | Gitea source                                                                                                                          |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `issues:opened` / `:edited` / …   | `issues` with the matching `action`                                                                                                   |
-| issue conversation comment        | `issue_comment`, `is_pull: false`, `action: created`                                                                                  |
-| pull-request conversation comment | `pull_request_comment`, `is_pull: true`, `action: created`                                                                            |
-| pull-request diff comment         | `pull_request_review_comment`, `action: reviewed` — one delivery per review submission, carrying only the summary in `review.content` |
-| `merge_request:opened`            | `pull_request` `opened`                                                                                                               |
-| `merge_request:synchronize`       | `pull_request_sync` `synchronized`                                                                                                    |
-| `merge_request:review_requested`  | `pull_request_review_request` `review_requested` naming the bot                                                                       |
-| `merge_request:reopened`          | `pull_request` `reopened`                                                                                                             |
-| maintenance cleanup family        | `pull_request` `closed` with `merged: true`; `issues` `closed`                                                                        |
-| `push:*`                          | `push`                                                                                                                                |
+| Product family                             | Gitea source                                                                                                                          |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `issues:opened` / `:edited` / …            | `issues` with the matching `action`                                                                                                   |
+| issue conversation comment                 | `issue_comment`, `is_pull: false`, `action: created`                                                                                  |
+| pull-request conversation comment          | `pull_request_comment`, `is_pull: true`, `action: created`                                                                            |
+| pull-request diff comment                  | `pull_request_review_comment`, `action: reviewed` — one delivery per review submission, carrying only the summary in `review.content` |
+| `merge_request:opened`                     | `pull_request` `opened`                                                                                                               |
+| `merge_request:synchronize`                | `pull_request_sync` `synchronized`                                                                                                    |
+| `merge_request:review_requested`           | `pull_request_review_request` `review_requested` naming the bot                                                                       |
+| `merge_request:reopened`                   | `pull_request` `reopened`                                                                                                             |
+| `issues:labeled` / `merge_request:labeled` | `issue_label` / `pull_request_label` `label_updated` — admitted only for a row whose label filter is non-empty                        |
+| maintenance cleanup family                 | `pull_request` `closed` with `merged: true`; `issues` `closed`                                                                        |
+| `push:*`                                   | `push`                                                                                                                                |
 
-Edited-comment noise, draft toggles, label churn, and assignment events are
-vetoed exactly as in §12; Gitea delivers label, assignment, and milestone churn
-under its own `issue_label`/`issue_assign`/`issue_milestone` event types, which
-the table above simply does not name, and a draft toggle rides `pull_request`
-`edited`, which is inert for the same reason. `pull_request.head.sha` and
-`base.sha` are present on every pull-request payload and become the head fence.
+Edited-comment noise, draft toggles, and assignment events are vetoed exactly
+as in §12; Gitea delivers assignment and milestone churn under its own
+`issue_assign`/`issue_milestone` event types, which the table above simply does
+not name, and a draft toggle rides `pull_request` `edited`, which is inert for
+the same reason. A label change is the one exception: `issue_label` and
+`pull_request_label` normalize to `:labeled`, and the verdict admits them only
+for a row whose label filter is non-empty — to every other row they stay noise.
+The filter itself reads the subject's current labels case-insensitively on every
+delivery, exactly as on GitHub and GitLab, so applying a listed label is how a
+thread enters an any-update row and removing the last one is how it leaves.
+`pull_request.head.sha` and `base.sha` are present on every pull-request payload
+and become the head fence.
 
 The normalized event names are GitLab's, so a stored pattern stays
-provider-neutral: `issues:opened`, `merge_request:opened`,
-`merge_request:synchronize`, `merge_request:review_requested`, `note:created`,
+provider-neutral: `issues:opened`, `issues:labeled`, `merge_request:opened`,
+`merge_request:labeled`, `merge_request:synchronize`,
+`merge_request:review_requested`, `note:created`,
 `push`, and the maintenance pair `issues:closed` / `merge_request:merged`. A
 review submission is the one delivery GitLab has no counterpart for, and its
 verdict is the only thing the relay can carry into the correlation below, so it

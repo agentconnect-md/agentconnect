@@ -1618,9 +1618,9 @@ describe('github ingress', () => {
       expect(h.sent).toHaveLength(0)
     })
 
-    it('labelFilter requires an intersection with the subject CURRENT labels', async () => {
-      h.table.upsert(rule({}, { labelFilter: ['p0', 'bug'] }))
-      await post('issues', issuesPayload()) // labels: [bug] — hit
+    it('labelFilter requires a case-insensitive intersection with the subject CURRENT labels', async () => {
+      h.table.upsert(rule({}, { labelFilter: ['P0', 'Bug'] }))
+      await post('issues', issuesPayload()) // labels: [bug] — hit, casing aside
       await post('issues', issuesPayload({ issue: { number: 42, labels: [{ name: 'docs' }] } })) // miss
       await flush()
       expect(h.sent).toHaveLength(1)

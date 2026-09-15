@@ -120,30 +120,31 @@ authorization facts, secrets, and body-free run metadata.
 The target is the current supported GitHub behavior, not reserved or future
 GitHub modes.
 
-| AgentConnect capability                | GitLab.com implementation                                                              | Parity                                                                                         |
-| -------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Browser connection                     | OAuth authorization code + PKCE                                                        | Equivalent                                                                                     |
-| Repository discovery                   | Paginated OAuth project search, keyed by numeric project ID                            | Equivalent                                                                                     |
-| Stable bot identity                    | Per-agent service account                                                              | Equivalent; each agent is a distinct GitLab user, agent-scoped rather than installation-scoped |
-| Private clone/fetch/pull               | HTTPS credential helper using the read token                                           | Equivalent                                                                                     |
-| Push                                   | HTTPS credential helper using the Git-write token                                      | Equivalent, subject to GitLab branch permissions                                               |
-| Additional repository grants           | Provider-qualified `read`, `comment`, or `write` authorization                         | Equivalent                                                                                     |
-| Issue and merge-request reads          | Read-only `glab` wrapper or provider read tools                                        | Equivalent                                                                                     |
-| Controlled comments and mutations      | Daemon-owned effect broker                                                             | Equivalent                                                                                     |
-| Managed event ingress                  | Automatically reconciled project webhook                                               | Equivalent                                                                                     |
-| Created, updated, mention-only cadence | GitLab issue, merge-request, note, and push event mapping                              | Equivalent                                                                                     |
-| Collaborator gate                      | Live target-project membership check; Developer or higher                              | Stricter than GitHub, whose gate now accepts the triage role                                   |
-| External merge-request gate            | Target-project membership or explicit Developer-or-higher request                      | Stricter than GitHub; no workflow-approval start path                                          |
-| Bot-authored merge requests            | Same-project service-account MR revisions enter review                                 | Equivalent to GitHub's internal-CI lane                                                        |
-| Per-thread sessions                    | Numeric project ID + subject kind + IID                                                | Equivalent                                                                                     |
-| Ordinary final reply                   | One service-account note                                                               | Equivalent                                                                                     |
-| Inline formal review                   | Draft Notes API + bulk publish                                                         | Equivalent                                                                                     |
-| Approve                                | Bulk-published review plus SHA-fenced approval API call                                | Equivalent unless policy requires interactive reauthentication                                 |
-| Request changes                        | Human-requested bot reviewer, then `reviewer_state=requested_changes`                  | Equivalent on Premium once requested; advisory on Free                                         |
-| Informational run state                | One updated merge-request status note                                                  | Semantically equivalent; not a native Check                                                    |
-| Re-request                             | Re-request the agent's service-account reviewer, authorized mention, or Console re-run | Equivalent; the Console re-run replaces the native Check button                                |
-| Required run gate                      | Not in the current GitHub delivery contract                                            | Not introduced                                                                                 |
-| Session merge-request panel and merges | Not in GitLab v1                                                                       | Deliberately absent; merges are Control-Plane-direct writes                                    |
+| AgentConnect capability                | GitLab.com implementation                                                                 | Parity                                                                                         |
+| -------------------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Browser connection                     | OAuth authorization code + PKCE                                                           | Equivalent                                                                                     |
+| Repository discovery                   | Paginated OAuth project search, keyed by numeric project ID                               | Equivalent                                                                                     |
+| Stable bot identity                    | Per-agent service account                                                                 | Equivalent; each agent is a distinct GitLab user, agent-scoped rather than installation-scoped |
+| Private clone/fetch/pull               | HTTPS credential helper using the read token                                              | Equivalent                                                                                     |
+| Push                                   | HTTPS credential helper using the Git-write token                                         | Equivalent, subject to GitLab branch permissions                                               |
+| Additional repository grants           | Provider-qualified `read`, `comment`, or `write` authorization                            | Equivalent                                                                                     |
+| Issue and merge-request reads          | Read-only `glab` wrapper or provider read tools                                           | Equivalent                                                                                     |
+| Controlled comments and mutations      | Daemon-owned effect broker                                                                | Equivalent                                                                                     |
+| Managed event ingress                  | Automatically reconciled project webhook                                                  | Equivalent                                                                                     |
+| Created, updated, mention-only cadence | GitLab issue, merge-request, note, and push event mapping                                 | Equivalent                                                                                     |
+| Label filter                           | Current issue or merge-request labels from the verified event, matched case-insensitively | Equivalent                                                                                     |
+| Collaborator gate                      | Live target-project membership check; Developer or higher                                 | Stricter than GitHub, whose gate now accepts the triage role                                   |
+| External merge-request gate            | Target-project membership or explicit Developer-or-higher request                         | Stricter than GitHub; no workflow-approval start path                                          |
+| Bot-authored merge requests            | Same-project service-account MR revisions enter review                                    | Equivalent to GitHub's internal-CI lane                                                        |
+| Per-thread sessions                    | Numeric project ID + subject kind + IID                                                   | Equivalent                                                                                     |
+| Ordinary final reply                   | One service-account note                                                                  | Equivalent                                                                                     |
+| Inline formal review                   | Draft Notes API + bulk publish                                                            | Equivalent                                                                                     |
+| Approve                                | Bulk-published review plus SHA-fenced approval API call                                   | Equivalent unless policy requires interactive reauthentication                                 |
+| Request changes                        | Human-requested bot reviewer, then `reviewer_state=requested_changes`                     | Equivalent on Premium once requested; advisory on Free                                         |
+| Informational run state                | One updated merge-request status note                                                     | Semantically equivalent; not a native Check                                                    |
+| Re-request                             | Re-request the agent's service-account reviewer, authorized mention, or Console re-run    | Equivalent; the Console re-run replaces the native Check button                                |
+| Required run gate                      | Not in the current GitHub delivery contract                                               | Not introduced                                                                                 |
+| Session merge-request panel and merges | Not in GitLab v1                                                                          | Deliberately absent; merges are Control-Plane-direct writes                                    |
 
 Ordinary final replies and formal reviews remain mutually exclusive. The
 status note is a separate daemon-owned projection and may coexist with either.
@@ -218,7 +219,7 @@ The relay owns public webhook ingress. It:
 - verifies the signing-token HMAC and timestamp before full decoding;
 - maps `webhook-id` to the stable downstream delivery identity without owning
   authoritative deduplication;
-- applies provider-specific event, bot, mention, and collaborator gates;
+- applies provider-specific event, bot, mention, label, and collaborator gates;
 - routes the bounded, explicitly untrusted context directly to the owning
   daemon; and
 - reports only delivery metadata to the Control Plane.
@@ -882,7 +883,7 @@ The Control Plane sends each relay the compiled rule, extending the existing
 - the hook agent's account numeric user ID and username, plus the veto set of
   every account user ID bound to the project (Section 12.1) as an additive
   optional field;
-- event patterns, comment families, and mention mode; and
+- event patterns, label filter, comment families, and mention mode; and
 - the project signing token inline in the rule, exactly as the generic
   webhook's HMAC secret rides today, fetched from the hook secret store at
   compile time.
@@ -1701,8 +1702,8 @@ rather than offered again.
 Because a trigger may only watch a project the agent already holds (§8.3), the
 trigger wizard says so where the pick is rather than letting the create reach
 the same refusal from the server, and names the two ways to satisfy it. Hook
-configuration retains the existing family, cadence, review, reporting, and
-output controls. Premium-only
+configuration retains the existing family, cadence, label, review, reporting,
+and output controls. Premium-only
 effective behavior is described where relevant; the UI does not imply that
 Free request changes block merges.
 
@@ -2088,7 +2089,7 @@ Use focused unit tests for pure boundaries only:
 
 - OAuth state/PKCE binding and refresh single-writer transitions;
 - Standard Webhooks signature, timestamp, and multi-signature verification;
-- event normalization, mention targeting, bot veto, and membership gates,
+- event normalization, mention targeting, bot veto, labels, and membership gates,
   including effective direct, inherited, invited-group, expired, and awaiting
   membership;
 - disjoint issue, merge-request, and push session-key derivation with missing

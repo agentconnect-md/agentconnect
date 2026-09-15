@@ -107,7 +107,11 @@ describe('gitea hooks — routes, compile, webhook converge (§7)', () => {
     h.a.relayReg.add(capable.ch)
     h.a.relayReg.add(legacy.ch)
 
-    const res = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: body(h.agentId) })
+    const res = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: body(h.agentId, { labelFilter: ['needs-review'] })
+    })
     expect(res.statusCode).toBe(200)
     const dto = res.json() as {
       id: string
@@ -115,8 +119,14 @@ describe('gitea hooks — routes, compile, webhook converge (§7)', () => {
       repoId: string
       repoFullName: string
       commentFamilies: string[]
+      labelFilter: string[]
     }
-    expect(dto).toMatchObject({ kind: 'gitea', repoId: REPO.toString(), repoFullName: 'example-org/example-repo' })
+    expect(dto).toMatchObject({
+      kind: 'gitea',
+      repoId: REPO.toString(),
+      repoFullName: 'example-org/example-repo',
+      labelFilter: ['needs-review']
+    })
     await h.seam.settled()
 
     // The webhook now exists with the union the hook asked for, active, under the relay's endpoint.
@@ -147,6 +157,7 @@ describe('gitea hooks — routes, compile, webhook converge (§7)', () => {
       events: ['merge_request:*'],
       // The stored merge_request scope is the pull_request SUBJECT on the wire.
       commentFamilies: ['pull_request'],
+      labelFilter: ['needs-review'],
       botUserId: '9042',
       botUsername: 'example-bot',
       host: 'https://gitea.com'
@@ -207,6 +218,31 @@ describe('gitea hooks — routes, compile, webhook converge (§7)', () => {
     })
     expect(ok.statusCode).toBe(200)
     expect(ok.json()).toMatchObject({ events: ['merge_request:opened'], mentionOnly: true })
+  })
+
+  it('a PUT without labelFilter keeps the stored filter; an explicit empty array clears it', async () => {
+    const h = await harness()
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks`,
+      payload: body(h.agentId, { labelFilter: ['bug', 'needs-review'] })
+    })
+    const id = (created.json() as { id: string }).id
+    // A client predating the filter echoes the row without the key.
+    const kept = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${id}`,
+      payload: { ...body(h.agentId), family: undefined }
+    })
+    expect(kept.statusCode).toBe(200)
+    expect((kept.json() as { labelFilter: string[] }).labelFilter).toEqual(['bug', 'needs-review'])
+    const cleared = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${id}`,
+      payload: { ...body(h.agentId, { labelFilter: [] }), family: undefined }
+    })
+    expect(cleared.statusCode).toBe(200)
+    expect((cleared.json() as { labelFilter: string[] }).labelFilter).toEqual([])
   })
 })
 
