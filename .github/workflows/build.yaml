@@ -1,7 +1,7 @@
 name: Build & Push Images
 
 # Publishes service, pool-runtime, and full daemon-runtime images to GHCR at each release tag.
-# Stable releases also move `:latest`.
+# Stable releases also move `:latest`, release candidates `:rc`.
 #
 # Called by release.yaml after semantic-release publishes a version, so image
 # publication appears in the same Release run. Plain pushes that don't produce
@@ -579,6 +579,18 @@ jobs:
           alias_unchanged runtime-sandbox "$RUNTIME_SANDBOX_EFFECTIVE"
           alias_unchanged runtime-sandbox-full "$RUNTIME_SANDBOX_FULL_EFFECTIVE"
           alias_unchanged daemon "$DAEMON_EFFECTIVE"
+
+      # Every component resolves at this release's tag by now, so `:rc` moves for all of them together, after every leg passed.
+      - name: Point rc at this release
+        if: contains(needs.prepare.outputs.version, '-rc.')
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -eu
+          for comp in control-plane web relay memory-plugin-mem0 mem0-server runtime-sandbox runtime-sandbox-full daemon; do
+            docker buildx imagetools create -t "${REGISTRY}/${OWNER}/${comp}:rc" "${REGISTRY}/${OWNER}/${comp}:${VERSION}"
+          done
 
   # The Helm chart rides the same release train as the images: chart version = the release
   # with the `v` stripped (OCI/SemVer form), appVersion = the release tag (the image-tag

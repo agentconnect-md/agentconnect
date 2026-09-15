@@ -28,8 +28,8 @@ jobs:
           # prisma-cli is pushed by hand under the tag compose.yaml pins, so it is left out.
           packages: control-plane,web,relay,daemon,memory-plugin-mem0,mem0-server,runtime-sandbox,runtime-sandbox-full,charts/agentconnect
           use-regex: true
-          # Kept forever: stable releases, latest, build caches and the digest-pinned runtime bases; other tags age out.
-          exclude-tags: '^(v?\d+\.\d+\.\d+|latest|buildcache.*|base-.*)$'
+          # Kept forever: stable releases, latest, rc, build caches and the digest-pinned runtime bases; other tags age out.
+          exclude-tags: '^(v?\d+\.\d+\.\d+|latest|rc|buildcache.*|base-.*)$'
           # Every rule only sees versions older than this, so a release still pushing never loses a fresh manifest.
           older-than: 14 days
           # An alias tag keeps its build's original timestamp, so a component's current build can look old; keep the newest.
