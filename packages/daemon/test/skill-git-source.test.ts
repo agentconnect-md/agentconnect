@@ -14,7 +14,11 @@ import {
   resolveBoundedGitSkillSource,
   type GitSkillCredentialRequest
 } from '../src/skills/skill-git-source.js'
-import { daemonGitCredentialTarget, initGitInjection } from '../src/workspace/git-injection.js'
+import {
+  daemonGitCredentialTarget,
+  initGitInjection,
+  sandboxGitCredentialTarget
+} from '../src/workspace/git-injection.js'
 import { configureWorkspaceGitOrigins } from '../src/workspace/git-origin-policy.js'
 
 const entry = (source: string, githubRepoId = '42') => ({
@@ -843,6 +847,32 @@ describe('Git skill source policy boundary', () => {
     expect(cloneUrl).toBe('ssh://git@git.example.test:2222/acme/skills.git')
     expect(env.AC_GITCRED_AGENT).toBeUndefined()
     expect(env.AC_GITCRED_CAPABILITY).toBeUndefined()
+  })
+
+  it('points a cluster agent’s acquisition at the DAEMON helper, not the sandbox pod’s', () => {
+    // A cluster agent's workspace git runs in its sandbox, so `targetFor` names the pod's helper
+    // and tunnel socket. Skill acquisition runs on the daemon, where neither exists — using them
+    // is exactly the "skill GitHub credentials are unavailable" failure on every private source.
+    const daemon = daemonGitCredentialTarget({ shimPath: '/daemon/git-credential-helper', runDir: '/private/run' })
+    initGitInjection({
+      targetFor: () => sandboxGitCredentialTarget(),
+      daemonTarget: daemon,
+      preWarm: async () => {},
+      capabilityFor: (agentId) => `cap-${agentId}`
+    })
+    const env = buildSkillGitAcquisitionEnv({
+      agentId: 'agent-1',
+      cloneUrl: 'https://github.com/acme/skills.git',
+      privateHome: '/private/home',
+      useGitCredential: true
+    })
+    const config = gitConfig(env)
+
+    expect(env.AC_GITCRED_AGENT).toBe('agent-1')
+    expect(env.AC_GITCRED_CAPABILITY).toBe('cap-agent-1')
+    expect(env.AC_GITCRED_SOCKET).toBeUndefined() // the daemon shim derives its own socket
+    expect(config.get('credential.https://github.com.helper')).toBe("!'/daemon/git-credential-helper' agent-1")
+    expect(config.get('credential.https://github.com.helper')).not.toContain('/opt/agentconnect/bin')
   })
 
   it('scopes the daemon credential capability to canonical GitHub HTTPS only', () => {

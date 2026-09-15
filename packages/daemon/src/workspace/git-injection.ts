@@ -495,6 +495,7 @@ export interface GitCredentialTarget {
 
 /** Module-level init (workspace-manager is functional; mirrors cloneInFlight). */
 let targetFor: ((agentId: string) => GitCredentialTarget) | undefined
+let daemonTarget: GitCredentialTarget | undefined
 let preWarm: ((agentId: string, reason: 'clone' | 'pull') => Promise<void>) | undefined
 let capabilityFor: ((agentId: string) => string) | undefined
 
@@ -507,12 +508,19 @@ export function initGitInjection(opts: {
    * exactly the bug this seam exists to remove.
    */
   targetFor: (agentId: string) => GitCredentialTarget
+  /**
+   * This daemon's OWN filesystem, for git the daemon itself runs regardless of where the agent's
+   * workspace git runs (skill-source acquisition, shared-skills.md §6). Absent ⇒ `targetFor`
+   * answers for those too, which is only right for a daemon that never sandboxes.
+   */
+  daemonTarget?: GitCredentialTarget
   /** Warm the daemon credential cache BEFORE a timed git op (never inside its budget). */
   preWarm: (agentId: string, reason: 'clone' | 'pull') => Promise<void>
   /** Runtime-only local socket capability. Never written to a config file. */
   capabilityFor: (agentId: string) => string
 }): void {
   targetFor = opts.targetFor
+  daemonTarget = opts.daemonTarget
   preWarm = opts.preWarm
   capabilityFor = opts.capabilityFor
 }
@@ -573,12 +581,13 @@ function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(ag
  *  so a non-gitlab agent keeps whatever machine gitlab credentials exist. */
 function credentialConfigPairs(
   agentId: string,
-  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE,
+  target: GitCredentialTarget = targetOf(agentId)
 ): Array<[string, string]> {
   const base = scope.host.baseUrl
   return [
     [`credential.${base}.helper`, ''], // reset: machine helpers must never answer for this host
-    [`credential.${base}.helper`, quotedHelper(agentId)],
+    [`credential.${base}.helper`, quotedHelper(agentId, target)],
     [`credential.${base}.useHttpPath`, 'true'] // git strips `path` otherwise — the helper wants it
   ]
 }
@@ -593,9 +602,34 @@ export function cloneGitEnv(
   repository?: string,
   scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
 ): Record<string, string> {
-  const pairs = [...workspaceGitConfigPairs(repository), ...credentialConfigPairs(agentId, scope)]
+  return gitEnvFor(agentId, targetOf(agentId), repository, scope)
+}
+
+/**
+ * Env for a git process the DAEMON runs on its own filesystem no matter where the agent's
+ * workspace git runs — skill-source acquisition (shared-skills.md §6) happens on the daemon even
+ * for a cluster agent, whose `targetFor` names the sandbox pod's helper and tunnel socket. Those
+ * paths do not exist here, so `git credential fill` would fail with "credentials are unavailable"
+ * on every private source. The helper and config paths therefore come from `daemonTarget`; the
+ * agent identity and capability still name the agent, so the CP scopes the token to it.
+ */
+export function daemonLocalGitEnv(
+  agentId: string,
+  repository?: string,
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+): Record<string, string> {
+  return gitEnvFor(agentId, daemonTarget ?? targetOf(agentId), repository, scope)
+}
+
+function gitEnvFor(
+  agentId: string,
+  target: GitCredentialTarget,
+  repository: string | undefined,
+  scope: ManagedCredentialScope
+): Record<string, string> {
+  const pairs = [...workspaceGitConfigPairs(repository), ...credentialConfigPairs(agentId, scope, target)]
   const env: Record<string, string> = {
-    ...gitCredentialEnv(agentId, targetOf(agentId), scope),
+    ...gitCredentialEnv(agentId, target, scope),
     GIT_TERMINAL_PROMPT: '0',
     ...gitConfigEnv(pairs)
   }

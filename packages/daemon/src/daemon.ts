@@ -2283,6 +2283,9 @@ export class Daemon {
       // a cluster agent's channel comes and goes, and both resolvers follow it together.
       targetFor: (agentId) =>
         this.k8sPlane?.runsInSandbox(agentId) ? sandboxGitCredentialTarget() : daemonCredentialTarget,
+      // Git the daemon runs itself (skill acquisition) reads these on THIS filesystem, whatever
+      // `targetFor` says about the agent's workspace git.
+      daemonTarget: daemonCredentialTarget,
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
       preWarm: async (agentId, reason) => {
         const agent = this.agents.get(agentId)

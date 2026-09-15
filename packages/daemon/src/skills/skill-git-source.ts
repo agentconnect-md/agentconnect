@@ -7,7 +7,7 @@ import { createGunzip } from 'node:zlib'
 import { workspaceGitOriginOf, type AgentSkillEntry } from '@agentconnect.md/protocol'
 import { extract as extractTar, list as listTar, type ReadEntry } from 'tar'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
-import { cloneGitEnv, workspaceGitEnvBase } from '../workspace/git-injection.js'
+import { daemonLocalGitEnv, workspaceGitEnvBase } from '../workspace/git-injection.js'
 import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 
 const GITHUB_SHORTHAND = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/
@@ -170,8 +170,10 @@ export function buildSkillGitAcquisitionEnv(opts: {
 }): Record<string, string> {
   const configured = {
     ...workspaceGitEnvBase(opts.cloneUrl),
+    // Acquisition runs on THIS daemon even for a cluster agent, so the helper pointers must name
+    // the daemon's own shim and socket, never the sandbox pod's (see daemonLocalGitEnv).
     ...(opts.useGitCredential && workspaceGitOriginOf(opts.cloneUrl) === 'https://github.com'
-      ? cloneGitEnv(opts.agentId, opts.cloneUrl)
+      ? daemonLocalGitEnv(opts.agentId, opts.cloneUrl)
       : {})
   }
   const env: Record<string, string> = {
