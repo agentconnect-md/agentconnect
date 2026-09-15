@@ -903,6 +903,18 @@ async function verifyGithubRepositoryIdentity(
   // name checks above are what fence a private source; visibility is not a gate.
 }
 
+/** The exact `owner/repo` a Git skill entry acquires from, or undefined when the entry is not a
+ *  bounded GitHub source. Used to recognize the daemon's own credential ask for a private source
+ *  (cp/gitcred-server.ts `privateGithubSkillRepoOf`). */
+export function gitSkillRepositoryPath(entry: Pick<AgentSkillEntry, 'source' | 'ref' | 'subDir'>): string | undefined {
+  try {
+    // Only the source string decides the repository; the numeric id is verified at acquisition.
+    return githubRepository(resolveBoundedGitSkillSource(entry as AgentSkillEntry).cloneUrl).path
+  } catch {
+    return undefined
+  }
+}
+
 /** A ref the operator pinned to exact bytes: never re-read, never tracked. */
 export function isPinnedGitSkillRef(entry: AgentSkillEntry): boolean {
   const ref = resolveBoundedGitSkillSource(entry).ref

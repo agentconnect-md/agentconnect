@@ -190,6 +190,54 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     ])
   })
 
+  it('routes a private GitHub skill source to GitHub even when the workspace credential is gitlab', async () => {
+    // Skill acquisition is daemon-owned and asks under the implicit (GitHub) provider. Without the
+    // spec-derived skill authority the ask would inherit the WORKSPACE provider and reach the gitlab
+    // broker, so a gitlab/gitea-workspace agent could never install a private GitHub skill source.
+    const { sockPath, gets, capability } = await boot('example-group/example-project', {
+      providerOf: () => 'gitlab',
+      qualifiedRepoOf: () => undefined,
+      privateGithubSkillRepoOf: (_agentId: string, repoFullName: string) =>
+        repoFullName.toLowerCase() === 'qargotms/claude-plugins'
+    })
+    const res = await roundtrip(sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability,
+      repoFullName: 'QargoTMS/claude-plugins'
+    })
+    expect(res.ok).toBe(true)
+    expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git', repo: 'QargoTMS/claude-plugins' } }])
+
+    // An unrelated repository still follows the workspace provider.
+    const other = await roundtrip(sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability,
+      repoFullName: 'example-group/other'
+    })
+    expect(other.ok).toBe(true)
+    expect(gets[1]).toEqual({ agentId: 'a1', opts: { plane: 'git', repo: 'example-group/other', provider: 'gitlab' } })
+  })
+
+  it('does not let a skill repository answer an explicit gitlab host hint', async () => {
+    const { sockPath, gets, capability } = await boot(undefined, {
+      providerOf: () => 'gitlab',
+      privateGithubSkillRepoOf: () => true
+    })
+    const res = await roundtrip(sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability,
+      repoFullName: 'QargoTMS/claude-plugins',
+      provider: 'gitlab'
+    })
+    expect(res.ok).toBe(true)
+    expect(gets).toEqual([
+      { agentId: 'a1', opts: { plane: 'git', repo: 'QargoTMS/claude-plugins', provider: 'gitlab' } }
+    ])
+  })
+
   it('denies a gitlab project the replicated spec does not authorize', async () => {
     const { sockPath, gets, capability } = await boot(undefined, {
       providerOf: () => 'github',

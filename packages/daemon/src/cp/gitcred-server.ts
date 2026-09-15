@@ -92,6 +92,12 @@ export interface GitCredServerDeps {
     agentId: string,
     repoFullName: string
   ) => { provider: QualifiedCodeHostProvider; externalId: string } | undefined
+  /** A NAMED repository the replicated spec lists as a PRIVATE GitHub skill source
+   *  (shared-skills.md §3) — the third spec-derived authority. Acquisition is daemon-owned and
+   *  always GitHub, so such a request routes to GitHub whatever the WORKSPACE provider is; without
+   *  this, a gitlab/gitea workspace would send it to its own broker and the source could never
+   *  install. Like `qualifiedRepoOf`, it never introduces a repository the spec lacks. */
+  privateGithubSkillRepoOf?: (agentId: string, repoFullName: string) => boolean
 }
 
 export class GitCredServer {
@@ -102,6 +108,7 @@ export class GitCredServer {
   private readonly providerOf?: GitCredServerDeps['providerOf']
   private readonly workspaceRepoIdOf?: GitCredServerDeps['workspaceRepoIdOf']
   private readonly qualifiedRepoOf?: GitCredServerDeps['qualifiedRepoOf']
+  private readonly privateGithubSkillRepoOf?: GitCredServerDeps['privateGithubSkillRepoOf']
 
   constructor(
     private readonly cache: GitCredentialCache,
@@ -113,6 +120,7 @@ export class GitCredServer {
     if (deps.providerOf) this.providerOf = deps.providerOf
     if (deps.workspaceRepoIdOf) this.workspaceRepoIdOf = deps.workspaceRepoIdOf
     if (deps.qualifiedRepoOf) this.qualifiedRepoOf = deps.qualifiedRepoOf
+    if (deps.privateGithubSkillRepoOf) this.privateGithubSkillRepoOf = deps.privateGithubSkillRepoOf
   }
 
   async start(): Promise<void> {
@@ -218,8 +226,16 @@ export class GitCredServer {
     // token live to TTL.
     const workspaceProvider = this.providerOf?.(req.agentId) ?? IMPLICIT_CREDENTIAL_PROVIDER
     const named = repo !== undefined ? this.qualifiedRepoOf?.(req.agentId, repo) : undefined
-    const provider: CodeHostProvider =
-      named !== undefined && (req.provider === named.provider || workspaceProvider === named.provider)
+    // A private GitHub skill source the spec enables is GitHub by construction: the daemon's own
+    // acquisition asks for it under the implicit provider, and the workspace's provider (gitlab,
+    // gitea) must not capture that ask. An explicit non-GitHub host hint is still a mismatch below.
+    const privateSkill =
+      repo !== undefined &&
+      (req.provider === undefined || req.provider === IMPLICIT_CREDENTIAL_PROVIDER) &&
+      this.privateGithubSkillRepoOf?.(req.agentId, repo) === true
+    const provider: CodeHostProvider = privateSkill
+      ? IMPLICIT_CREDENTIAL_PROVIDER
+      : named !== undefined && (req.provider === named.provider || workspaceProvider === named.provider)
         ? named.provider
         : workspaceProvider
     // Only a provider that is not the implicit one is named on the wire (the empty cache-key segment).

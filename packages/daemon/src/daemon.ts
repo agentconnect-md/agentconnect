@@ -316,7 +316,7 @@ import {
 } from './workspace/workspace-manager.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import { acceptedDreamSkillSources } from './skills/dream-skills.js'
-import { acquireGitSkillSource } from './skills/skill-git-source.js'
+import { acquireGitSkillSource, gitSkillRepositoryPath } from './skills/skill-git-source.js'
 import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
 import { resolveSkillSelections } from './skills/skill-cli-selection.js'
 import {
@@ -2271,6 +2271,14 @@ export class Daemon {
           return { provider, externalId: row.repoId }
         }
         return undefined
+      },
+      // A PRIVATE GitHub skill source the spec enables (shared-skills.md §3): the daemon's own
+      // acquisition asks for exactly that owner/repo, and it is GitHub whatever the workspace is.
+      privateGithubSkillRepoOf: (agentId: string, repoFullName: string) => {
+        const wanted = repoFullName.toLowerCase()
+        return (this.agents.get(agentId)?.skills ?? []).some(
+          (entry) => entry.private === true && gitSkillRepositoryPath(entry)?.toLowerCase() === wanted
+        )
       }
     })
     const daemonCredentialTarget = daemonGitCredentialTarget({
