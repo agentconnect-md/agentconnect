@@ -375,11 +375,13 @@ export interface SessionListRow extends SessionRecord {
  *                  `ElicitBody` in `body`). Audit/UI only, and deliberately so: the runtime
  *                  already received the answer as the ACP response, so re-feeding the card as
  *                  conversation on catch-up would ask it again (#1794).
+ *  - `app`       — one MCP App card minus its template and how it ended (one upserted row, the
+ *                  `McpAppBody` in `body`). Audit/UI only, for the same reason `elicit` is.
  * Every one of these is recorded for EVERY turn regardless of the agent's Slack output mode —
  * output mode only gates what reaches the platform, never the transcript.
  * Only `text` and `tool` rows ever rebuild model context; the rest are read-only history.
  */
-export type TranscriptKind = 'text' | 'tool' | 'reasoning' | 'plan' | 'elicit'
+export type TranscriptKind = 'text' | 'tool' | 'reasoning' | 'plan' | 'elicit' | 'app'
 
 /** One elicitation card's row identity in the shared `tool_call_id` column, namespaced so it
  *  cannot be an ACP tool id. Keyed by the card's minted `ts`, not its request id: request ids
@@ -388,11 +390,11 @@ function elicitRowId(ts: string): string {
   return `elicit:${ts}`
 }
 
-/** The same trick for an MCP App card's row, keyed by its minted `ts` for the same reason: an
- *  `appId` is a per-process uuid, and a card re-opened after a restart must not rewrite an
- *  older one's row. */
-function appRowId(ts: string): string {
-  return `app:${ts}`
+/** The same trick for an MCP App card's row, keyed by the card's own `appId` — a fresh uuid per
+ *  card, never reused across restarts, and the one name a reloaded view knows itself by. Keying
+ *  on it is what lets the daemon find a card's record from an RPC that carries nothing else. */
+function appRowId(appId: string): string {
+  return `app:${appId}`
 }
 
 export interface TranscriptEntry {
@@ -1380,6 +1382,11 @@ export class LocalStore {
       -- them; the uniqueness that matters is per agent.
       CREATE UNIQUE INDEX IF NOT EXISTS transcript_agent_tool_call
         ON transcript (orgId, channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+      -- An MCP App card is found by its card id ALONE when a reloaded view names it (§8.1), and
+      -- the index above leads with the thread, so it cannot serve that. Partial on app rows: a
+      -- handful per conversation, so the write cost is paid only where the read happens.
+      CREATE INDEX IF NOT EXISTS transcript_app_card
+        ON transcript (tool_call_id) WHERE kind = 'app';
       -- Chronological history key: rows carry both an insertion-order seq and an
       -- event time, and the console reads in event-time order.
       CREATE INDEX IF NOT EXISTS transcript_thread_event_time
@@ -4223,15 +4230,16 @@ export class LocalStore {
    * Write (or rewrite) one MCP App card's transcript row — the peer of {@link upsertElicit}, and
    * the thing that makes a card survive a reload (webchat-mcp-apps.md §8).
    *
-   * `body` is a {@link McpAppBody}: the card WITHOUT its template. History shows what was opened
-   * and how it ended; it never re-arms the frame, and a 300 KiB document never enters a transcript
-   * read.
+   * `body` is a {@link McpAppBody}: the WHOLE card, template included, so a reloaded reader gets
+   * the interface back. Keeping it out of transcript PAGES is the history projection's job — it
+   * strips the template and the console fetches the full body on demand.
    */
   upsertApp(e: {
     channel: string
     thread: string
     ts: string
     sender: string
+    appId: string
     text: string
     body: string
   }): Promise<void> {
@@ -4240,7 +4248,7 @@ export class LocalStore {
   }
 
   private async upsertAppLocked(
-    e: { channel: string; thread: string; ts: string; sender: string; text: string; body: string },
+    e: { channel: string; thread: string; ts: string; sender: string; appId: string; text: string; body: string },
     orgId: string
   ): Promise<void> {
     const revision = this.transcriptRevision + 1
@@ -4258,7 +4266,7 @@ export class LocalStore {
             ts: e.ts,
             sender: e.sender,
             text: e.text,
-            cardId: appRowId(e.ts),
+            cardId: appRowId(e.appId),
             body: e.body,
             eventTimeUs: transcriptEventTimeUs(e.ts),
             revision
@@ -4270,7 +4278,7 @@ export class LocalStore {
         sql: `UPDATE transcript SET text = ?, body = ?, revision = ?
          WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = 'app'
            AND (text IS NOT ? OR body IS NOT ?)`,
-        params: [e.text, e.body, revision, orgId, e.channel, e.thread, e.sender, appRowId(e.ts), e.text, e.body]
+        params: [e.text, e.body, revision, orgId, e.channel, e.thread, e.sender, appRowId(e.appId), e.text, e.body]
       }
     ])
     // An unchanged re-write must not bump the revision a live console polls on — the same rule
@@ -4279,6 +4287,29 @@ export class LocalStore {
       this.transcriptRevision = written.revision
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
     }
+  }
+
+  /**
+   * One MCP App card's persisted row, by the `appId` a reloaded view names itself with — what a
+   * card is rebuilt from once the process that opened it is gone (webchat-mcp-apps.md §8).
+   *
+   * Looked up by card id ALONE, and deliberately so: the row carries the conversation the card was
+   * opened in, and the caller fences the reader's own routed conversation against that. A lookup
+   * scoped by channel here would answer the same question twice and get the second one wrong for
+   * a conversation whose transcript channel is scoped.
+   */
+  async getAppCard(
+    appId: string
+  ): Promise<{ channel: string; thread: string; ts: string; sender: string; body: string } | undefined> {
+    const row = (await this.db
+      .prepare(
+        "SELECT channel, thread, ts, sender, body FROM transcript WHERE tool_call_id = ? AND kind = 'app' LIMIT 1"
+      )
+      .get(appRowId(appId))) as
+      { channel: string; thread: string; ts: string; sender: string; body: string | null } | undefined
+    return row?.body
+      ? { channel: row.channel, thread: row.thread, ts: row.ts, sender: row.sender, body: row.body }
+      : undefined
   }
 
   /** Write this turn's plan row (summary in `text`, the serialized PlanBody in `body`).

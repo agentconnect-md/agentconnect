@@ -1,6 +1,14 @@
 import { z } from 'zod'
 import { SessionKey } from './route.js'
-import { ElicitCard, McpAppOutcome, PlanEntry, WebchatImageAttachment } from './webchat.js'
+import {
+  ElicitCard,
+  MCP_APP_HTML_MAX_BYTES,
+  McpAppCsp,
+  McpAppDimensions,
+  McpAppOutcome,
+  PlanEntry,
+  WebchatImageAttachment
+} from './webchat.js'
 
 /**
  * Session read-back (C→D REQ → REP) — the console's on-demand pulls.
@@ -126,13 +134,17 @@ export type ElicitBody = z.infer<typeof ElicitBody>
 /**
  * An `app` row: one MCP App card as the transcript KEEPS it (webchat-mcp-apps.md §8).
  *
- * Deliberately the live card MINUS its template. A persisted app is the record of a decision, not
- * a page to re-run against a session that has moved on: history shows what was opened, which tool
- * opened it, what it reported and how it ended, and never re-arms a frame whose bridge stopped
- * answering. Dropping the template is also what keeps a 300 KiB document out of every transcript
- * read.
+ * The WHOLE card, template included, because a reader who reloads wants the interface back and a
+ * header saying one was shown is not that. The template is what makes the row large, so it never
+ * rides a transcript PAGE: the history projection strips it and marks the row truncated, and the
+ * console pulls the full body through the same on-demand daemon read an oversized tool body uses.
  *
- * `outcome` absent while the card was live; a row that STAYS absent is a card whose daemon died
+ * `server` and `conversationId` are the daemon's OWN record of what the card may reach, kept here
+ * so a card outlives the process that opened it. They are read back by the daemon, never by the
+ * frame: a view still names only its `appId`, so it can no more select a server after a reload
+ * than it could before one.
+ *
+ * `outcome` absent while the card is live; a row that STAYS absent is a card whose daemon died
  * holding it, which reads as unfinished rather than as falsely closed.
  */
 export const McpAppBody = z.object({
@@ -146,7 +158,23 @@ export const McpAppBody = z.object({
       isError: z.boolean().optional()
     })
     .optional(),
-  outcome: McpAppOutcome.optional()
+  outcome: McpAppOutcome.optional(),
+  /** The `ui://` template, verbatim. Absent from a transcript PAGE (stripped as oversized) and
+   *  present in the full-body read — so a row with `bodyTruncated` is a card whose page is one
+   *  fetch away, not one that was never recorded. */
+  html: z.string().max(MCP_APP_HTML_MAX_BYTES).optional(),
+  /** The arguments the card was opened with, replayed to the view as `ui/notifications/tool-input`
+   *  so a reloaded page renders what it rendered live rather than an empty shell. */
+  toolInput: z.record(z.string(), z.unknown()).optional(),
+  csp: McpAppCsp.optional(),
+  dimensions: McpAppDimensions.optional(),
+  /** The CONFIGURED server name the card's tool came from — the one server a re-armed view may
+   *  reach. Daemon-read; absent on a row written before templates were kept, which is what makes
+   *  such a card replayable as a record but never re-armable. */
+  server: z.string().max(200).optional(),
+  /** The conversation the card was opened in, re-checked against the routed frame's own before a
+   *  reloaded card is re-armed — the persisted half of the live registry's conversation fence. */
+  conversationId: z.string().max(200).optional()
 })
 export type McpAppBody = z.infer<typeof McpAppBody>
 

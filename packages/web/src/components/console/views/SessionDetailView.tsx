@@ -70,7 +70,7 @@ import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
-import { McpAppCard } from '@/components/console/McpAppCard'
+import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
 import { UserTurnDetails } from '../UserTurnDetails'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
 import type { McpAppRpc, UserTurnBody } from '@agentconnect.md/protocol'
@@ -107,7 +107,10 @@ import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
   elicitCard,
+  appStepKey,
+  liveAppKeys,
   mcpAppCard,
+  mergeFetchedAppCard,
   APP_LANE,
   ELICIT_LANE,
   elicitStepKey,
@@ -449,9 +452,8 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
   // just without an `onAnswer` — a reader loading the conversation later sees the question, what
   // was offered and what was answered, with every control inert. A row whose body cannot be read
   // falls through to plain text, which is at least the question itself.
-  // A recorded MCP App card (webchat-mcp-apps.md §8). It renders through the SAME component a live
-  // card does, without an `onRpc` — so the reader sees what was opened, what it reported and how it
-  // ended, with no frame armed against a bridge that stopped answering.
+  // A recorded MCP App card (webchat-mcp-apps.md §8), rendered by the SAME component a live card
+  // is: the row keeps the template, so a reloaded page comes back rather than a record of itself.
   if (k === 'app') {
     const card = mcpAppCard(m.body)
     if (card)
@@ -467,7 +469,10 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
         files: [],
         app: card,
         time: formatTranscriptRowTime(m),
-        ...(platform ? { platform } : {})
+        ...(platform ? { platform } : {}),
+        // The template is stripped from a transcript page, so a truncated row carries its own
+        // coordinates and the card pulls the page back through the full-body read.
+        ...(m.bodyTruncated ? { msg: m, ...(toolSessionId ? { toolSessionId } : {}) } : {})
       }
   }
   if (k === 'elicit') {
@@ -1789,6 +1794,54 @@ function ContentBlock({ block }: { block: unknown }) {
     return <CodeBlock>{fmtValue(b.content)}</CodeBlock>
   }
   return <CodeBlock>{fmtValue(block)}</CodeBlock>
+}
+
+/**
+ * One MCP App card in the transcript, with the template its row was recorded with.
+ *
+ * A transcript page strips the template (a card is hundreds of KiB), so a row that came back
+ * truncated is one fetch away from its page: this pulls the whole body back through the same
+ * on-demand daemon read a large tool body uses, and hands the card its `html`. Until then — and
+ * forever, if the read fails — the card renders exactly as it did before the template was kept.
+ */
+function McpAppRow({
+  step,
+  sessionId,
+  onRpc,
+  onClose
+}: {
+  step: FmtStep
+  sessionId?: string
+  onRpc?: McpAppCardProps['onRpc']
+  onClose?: McpAppCardProps['onClose']
+}) {
+  const [full, setFull] = useState<NonNullable<FmtStep['app']> | null>(null)
+  const app = step.app
+  const appId = app?.appId
+  const toolCallId = step.msg?.toolCallId
+  const wants = !!appId && !!toolCallId && !!sessionId && !app?.html
+  useEffect(() => {
+    if (!wants) return
+    let live = true
+    fetchToolBody(sessionId!, toolCallId!).then(
+      (body) => {
+        const card = mcpAppCard(body)
+        if (live && card?.appId === appId) setFull(card)
+      },
+      () => {
+        // A card that cannot be fetched stays the preview it already is.
+      }
+    )
+    return () => {
+      live = false
+    }
+  }, [wants, sessionId, toolCallId, appId])
+  // The fetch supplies what the ROW shed; the row itself stays authoritative for everything it
+  // still carries. `outcome` is why that distinction matters: the fetched copy is a snapshot from
+  // whenever it was read, so letting it win would put a card the reader has since closed back on
+  // screen, frame and all, until the next reload.
+  const whole = app && full?.appId === app.appId && !app.html ? { ...step, app: mergeFetchedAppCard(app, full) } : step
+  return <McpAppCard step={whole} {...(onRpc ? { onRpc } : {})} {...(onClose ? { onClose } : {})} />
 }
 
 // The expandable body panel for one tool row: input, output, content blocks,
@@ -3997,6 +4050,11 @@ export default function SessionDetailView() {
   // retired the persisted row takes over, carrying the outcome it was rewritten with. Empty on a
   // Slack-origin session, which streams no cards and so only ever has the persisted copy.
   const liveCards = liveElicitKeys(liveSteps, session.agentId)
+  // An app card has the same two-copy problem and the same answer: the live frame is the one the
+  // daemon's registry is serving and the one a settlement reaches, so the persisted row stands
+  // aside while that replay does. Without this a second tab on a running conversation renders the
+  // card twice, both armed.
+  const liveApps = liveAppKeys(liveSteps, session.agentId)
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
@@ -4005,6 +4063,11 @@ export default function SessionDetailView() {
         const persisted = elicitCard(m.body)
         const owner = conversationSourceAgentByMessageRef.current.get(m) ?? m.sender
         if (persisted && liveCards.has(elicitStepKey(owner, persisted.requestId))) continue
+      }
+      if (liveApps.size > 0 && (m.kind || '').toLowerCase() === 'app') {
+        const persisted = mcpAppCard(m.body)
+        const owner = conversationSourceAgentByMessageRef.current.get(m) ?? m.sender
+        if (persisted && liveApps.has(appStepKey(owner, persisted.appId))) continue
       }
       const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
       const sourceTurnKey = conversationSourceTurnByMessageRef.current.get(m)
@@ -5192,8 +5255,9 @@ export default function SessionDetailView() {
                                   {saidSteps.map((st, si) =>
                                     st.lane === APP_LANE ? (
                                       <div key={`a:${st.app?.appId ?? si}`} className={si > 0 ? 'mt-2' : ''}>
-                                        <McpAppCard
+                                        <McpAppRow
                                           step={st}
+                                          sessionId={st.toolSessionId ?? toolSid}
                                           {...(appRpc
                                             ? { onRpc: (appId, rpc) => appRpc(turn.agentId, appId, rpc) }
                                             : {})}

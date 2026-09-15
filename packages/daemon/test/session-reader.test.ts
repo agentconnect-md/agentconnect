@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
-import { createSessionReader } from '../src/cp/session-reader.js'
+import { createSessionReader, previewAppBody } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
@@ -532,6 +532,127 @@ describe('SessionReader', () => {
     expect(shrunk.bodyBytes).toBe(Buffer.byteLength(big))
   })
 
+  it('carries a persisted MCP App card’s body, so a reloaded conversation still shows the card', async () => {
+    const s = await store()
+    await seedHistorySession(s)
+    const body = JSON.stringify({
+      appId: 'app-1',
+      title: 'Token balances',
+      toolName: 'charts__get_wallet_balances',
+      server: 'charts',
+      conversationId: 'C1',
+      html: '<p>chart</p>',
+      outcome: 'closed'
+    })
+    await s.upsertApp({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: AGENT,
+      appId: 'app-1',
+      text: 'Token balances',
+      body
+    })
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    // A card that fits rides whole — template included, which is what re-renders the page.
+    expect(messages).toEqual([
+      expect.objectContaining({ kind: 'app', text: 'Token balances', body, toolCallId: 'app:app-1' })
+    ])
+    expect(messages[0]!.bodyTruncated).toBeUndefined()
+    await s.close()
+  })
+
+  it('drops only the TEMPLATE from an oversized app card, leaving the card fetchable whole', async () => {
+    const s = await store()
+    await seedHistorySession(s)
+    const card = {
+      appId: 'app-2',
+      title: 'Token balances',
+      toolName: 'charts__get_wallet_balances',
+      server: 'charts',
+      conversationId: 'C1',
+      toolResult: { structuredContent: { total: 1 } }
+    }
+    const body = JSON.stringify({ ...card, html: `<p>${'x'.repeat(40 * 1024)}</p>` })
+    await s.upsertApp({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: AGENT,
+      appId: 'app-2',
+      text: 'Token balances',
+      body
+    })
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    const row = messages[0]!
+    // The page never rides a transcript page; the row says so and names the key the console
+    // pulls the whole card back under, which is the same read an oversized tool body uses.
+    expect(JSON.parse(row.body!)).toEqual(card)
+    expect(row.bodyTruncated).toBe(true)
+    expect(row.bodyBytes).toBe(Buffer.byteLength(body))
+    expect(row.toolCallId).toBe('app:app-2')
+    expect(
+      await createSessionReader(s).toolBody({ agentId: AGENT, sessionId: 'acp-1', toolCallId: 'app:app-2', offset: 0 })
+    ).toMatchObject({ totalBytes: Buffer.byteLength(body) })
+    await s.close()
+  })
+
+  it('keeps an app card READABLE when even its template-less body is oversized', async () => {
+    // The shape that shipped broken: a `get_defi_positions` card whose own tool result is ~57 KiB,
+    // so dropping the 500 KiB template still leaves a body over the page cap. Giving up there sent
+    // the console a row with no body at all, which it cannot read as a card — so the card vanished
+    // on reload, which is the whole bug this feature exists to fix.
+    const s = await store()
+    await seedHistorySession(s)
+    const card = {
+      appId: 'app-3',
+      title: 'DeFi positions',
+      toolName: 'charts__get_defi_positions',
+      server: 'charts',
+      conversationId: 'C1',
+      outcome: 'expired',
+      toolInput: { chain: 'eth' },
+      // Big enough that dropping the 200 KiB template still leaves the body over the cap — the
+      // whole point of the case. The real one was ~57 KiB of positions.
+      toolResult: {
+        structuredContent: { positions: Array.from({ length: 4000 }, (_, i) => `position-${i}-0x${'a'.repeat(12)}`) }
+      }
+    }
+    const body = JSON.stringify({ ...card, html: `<p>${'x'.repeat(200 * 1024)}</p>` })
+    await s.upsertApp({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: AGENT,
+      appId: 'app-3',
+      text: 'DeFi positions',
+      body
+    })
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    const row = messages[0]!
+    const preview = JSON.parse(row.body!) as Record<string, unknown>
+    // The identity survives whatever else is shed — that is what makes it a card and not a line.
+    expect(preview).toMatchObject({ appId: 'app-3', title: 'DeFi positions', toolName: 'charts__get_defi_positions' })
+    expect(preview.outcome).toBe('expired')
+    // Both heavy halves are gone — the template AND the result that kept it over the cap.
+    expect(preview.html).toBeUndefined()
+    expect(preview.toolResult).toBeUndefined()
+    // Shed in order: the arguments are lighter than the result and survive it.
+    expect(preview.toolInput).toEqual({ chain: 'eth' })
+    expect(Buffer.byteLength(row.body!)).toBeLessThanOrEqual(32 * 1024)
+    expect(row.bodyTruncated).toBe(true)
+    expect(row.bodyBytes).toBe(Buffer.byteLength(body))
+    // And the whole card — template and result — is still one fetch away under the same key.
+    const full = await createSessionReader(s).toolBody({
+      agentId: AGENT,
+      sessionId: 'acp-1',
+      toolCallId: 'app:app-3',
+      offset: 0
+    })
+    expect(full.totalBytes).toBe(Buffer.byteLength(body))
+    await s.close()
+  })
+
   it('binds session and tool-body reads to the authorized agent in a shared thread', async () => {
     const s = await store()
     seedHistorySession(s)
@@ -965,5 +1086,63 @@ describe('SessionReader', () => {
       /cannot resolve the transcript organization/
     )
     await holder.close() // one database behind both handles: closing it once is closing it
+  })
+})
+
+describe('previewAppBody — shedding one app card onto a transcript page', () => {
+  const card = (over: Record<string, unknown> = {}) => ({
+    appId: 'app-1',
+    title: 'DeFi positions',
+    toolName: 'charts__get_defi_positions',
+    server: 'charts',
+    conversationId: 'C1',
+    outcome: 'expired',
+    ...over
+  })
+  const bulk = (bytes: number) => 'x'.repeat(bytes)
+  const parse = (body: string) => JSON.parse(previewAppBody(body)!) as Record<string, unknown>
+
+  it('drops the template first, keeping the result the card reported', () => {
+    const out = parse(JSON.stringify(card({ html: bulk(200 * 1024), toolResult: { structuredContent: { a: 1 } } })))
+    expect(out.html).toBeUndefined()
+    expect(out.toolResult).toEqual({ structuredContent: { a: 1 } })
+  })
+
+  it('drops the result next, when the template alone was not what made it too big', () => {
+    const out = parse(
+      JSON.stringify(card({ html: bulk(200 * 1024), toolResult: { structuredContent: { big: bulk(60 * 1024) } } }))
+    )
+    expect(out.toolResult).toBeUndefined()
+    expect(out.title).toBe('DeFi positions')
+  })
+
+  it('drops the arguments last, after the result has already gone', () => {
+    const out = parse(
+      JSON.stringify(
+        card({
+          html: bulk(200 * 1024),
+          toolResult: { structuredContent: { big: bulk(60 * 1024) } },
+          toolInput: { blob: bulk(60 * 1024) }
+        })
+      )
+    )
+    expect(out.toolResult).toBeUndefined()
+    expect(out.toolInput).toBeUndefined()
+  })
+
+  it('keeps the card’s IDENTITY whatever it has to shed — a row read as a line is a card that vanished', () => {
+    // The floor. Unreachable for a schema-valid card, which is exactly why it is worth pinning:
+    // a row is only ever rendered as a card when the console can still read these fields off it.
+    const out = parse(JSON.stringify(card({ html: bulk(200 * 1024), unknownBulk: bulk(64 * 1024) })))
+    expect(out).toEqual({
+      appId: 'app-1',
+      title: 'DeFi positions',
+      toolName: 'charts__get_defi_positions',
+      outcome: 'expired'
+    })
+  })
+
+  it('returns null for a body that is not a card, leaving the row’s own title to stand alone', () => {
+    expect(previewAppBody('not json')).toBeNull()
   })
 })

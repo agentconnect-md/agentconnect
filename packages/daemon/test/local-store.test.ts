@@ -597,6 +597,36 @@ describe('LocalStore', () => {
     await s.close()
   })
 
+  it('an app card is one row keyed by its card id, re-readable by that id after a restart', async () => {
+    const s = await store()
+    const card = {
+      appId: 'app-1',
+      title: 'Token balances',
+      toolName: 'charts__balances',
+      server: 'charts',
+      conversationId: 'C1',
+      html: '<p>chart</p>'
+    }
+    const row = { channel: 'C1', thread: 'T', ts: '2', sender: 'bot', appId: 'app-1', text: card.title }
+    await s.upsertApp({ ...row, body: JSON.stringify(card) })
+    // The settlement rewrites the SAME row: one card is one row, whatever happened to it.
+    await s.upsertApp({ ...row, body: JSON.stringify({ ...card, outcome: 'expired' }) })
+    const rows = (await s.threadTranscript('C1', 'T')) as { kind: string; text: string }[]
+    expect(rows.map((r) => [r.kind, r.text])).toEqual([['app', 'Token balances']])
+
+    // Found by the card id ALONE — the only name a reloaded view knows itself by, and what makes
+    // the card revivable once the process that opened it is gone.
+    const found = await s.getAppCard('app-1')
+    expect(found).toMatchObject({ channel: 'C1', thread: 'T', ts: '2', sender: 'bot' })
+    expect(JSON.parse(found!.body)).toEqual({ ...card, outcome: 'expired' })
+    expect(await s.getAppCard('app-2')).toBeUndefined()
+
+    // Read-only history, exactly as an elicitation card is: the model already had the tool result.
+    await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '3', sender: 'bot', kind: 'text', text: 'done' })
+    expect((await s.transcriptSince('C1', 'T', null, 'bot-a')).map((e) => e.text)).toEqual(['done'])
+    await s.close()
+  })
+
   it('replay returns only text rows; the full activity log returns all kinds in order', async () => {
     const s = await store()
     await s.appendTranscript({ channel: 'C1', thread: 'T', ts: '1', sender: 'U1', kind: 'text', text: 'ask' })

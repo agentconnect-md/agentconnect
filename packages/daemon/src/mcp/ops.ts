@@ -464,7 +464,7 @@ async function executeRegisteredTool(
   const gw = ctx.integrationId ? deps.gatewayFor(ctx.integrationId) : undefined
   if (!gw) throw new Error(`no live platform connection for integration ${ctx.integrationId ?? '(none)'}`)
 
-  if (isAttachmentReadTool(name)) return await readAttachment(args, deps, gw)
+  if (isAttachmentReadTool(name)) return await readAttachment(ctx, args, deps, gw)
   if (name === 'getCurrentChannel') return await getCurrentChannel(ctx, gw)
   throw new Error(`unknown tool: ${name}`)
 }

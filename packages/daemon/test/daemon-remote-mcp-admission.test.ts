@@ -20,6 +20,28 @@ const AUTHORITY = '11111111-1111-4111-8111-111111111111'
 const GRANT = '33333333-3333-4333-8333-333333333333'
 const TOKEN = 'secret-token-that-is-longer-than-thirty-two-bytes'
 
+it('does not revive a conversation-granted admin card through the organization provider host', async () => {
+  const daemon = Object.create(Daemon.prototype) as any
+  daemon.store = {
+    getAppCard: vi.fn(async () => ({
+      channel: CONV,
+      thread: CONV,
+      ts: '100',
+      sender: AGENT_ID,
+      body: JSON.stringify({
+        appId: 'native-app',
+        conversationId: CONV,
+        server: 'agentconnect-admin',
+        toolName: 'agentconnect-admin__configureIntegration',
+        title: 'Configure integration'
+      })
+    }))
+  }
+  daemon.orgForAgent = vi.fn()
+  expect(await daemon.reviveAppCard('native-app', CONV, {})).toBeUndefined()
+  expect(daemon.orgForAgent).not.toHaveBeenCalled()
+})
+
 function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-rmcp-'))
   writeFileSync(

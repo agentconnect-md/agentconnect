@@ -12,6 +12,7 @@ import {
 import { AskRequired } from '../src/mcp/ops.js'
 import type { AskAnswer } from '../src/mcp/ask.js'
 import { MULTI_INTEGRATION_NOTE, resolveGatewayForPlatform } from '../src/mcp/ops/gateway.js'
+import { attachmentFileName } from '../src/mcp/ops/platform-reads.js'
 import type { MemoryProvider } from '../src/memory/provider.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 import { EPHEMERAL_RESULT_MARKER } from '../src/session/ephemeral-results.js'
@@ -1425,7 +1426,7 @@ describe('executeTool: readSlackFile', () => {
     expect(res.mcpContent).toEqual([{ type: 'text', text: 'hello world' }])
   })
 
-  it('summarizes non-image binary instead of inlining a base64 blob', async () => {
+  it('summarizes non-image binary when the daemon cannot save to the workspace', async () => {
     const gw = fakeGateway({ downloadFile: vi.fn(async () => Buffer.from([1, 2, 3, 4])) })
     const { deps: d } = deps(gw)
     const res = (await executeTool(
@@ -1438,12 +1439,68 @@ describe('executeTool: readSlackFile', () => {
     expect(res.mcpContent[0]!.text).toMatch(/4 bytes of application\/zip/)
   })
 
+  it('saves a non-image binary into the workspace uploads/ and names the path', async () => {
+    const pdf = Buffer.from('%PDF-1.4 fake')
+    const gw = fakeGateway({ downloadFile: vi.fn(async () => pdf) })
+    const saveAttachment = vi.fn(async (_c: SessionContext, name: string) => ({
+      ok: true as const,
+      path: `uploads/${name}`
+    }))
+    const d = makeDeps({ gatewayFor: () => gw, saveAttachment, now: () => 1000 })
+    const res = (await executeTool(
+      ctx,
+      'readSlackFile',
+      { url: 'https://files.slack.com/files-pri/T1-F1/download/Q3%20report.pdf' },
+      d
+    )) as { mcpContent: { type: string; text?: string }[] }
+    expect(saveAttachment).toHaveBeenCalledWith(ctx, 'Q3 report.pdf', pdf)
+    expect(res.mcpContent[0]!.text).toMatch(/Saved 13 bytes of application\/pdf to `uploads\/Q3 report.pdf`/)
+  })
+
+  it('names a Telegram file (no URL) from its MIME type and reports a failed save', async () => {
+    const gw = fakeGateway({ downloadFile: vi.fn(async () => Buffer.from('PK')) })
+    const saveAttachment = vi.fn(async () => ({ ok: false as const, reason: 'sandboxed' as const }))
+    const d = makeDeps({ gatewayFor: () => gw, saveAttachment, now: () => 1000 })
+    const res = (await executeTool(ctx, 'readTelegramFile', { url: 'AgACAgID', mimeType: 'application/zip' }, d)) as {
+      mcpContent: { type: string; text?: string }[]
+    }
+    expect(saveAttachment).toHaveBeenCalledWith(ctx, 'attachment.zip', Buffer.from('PK'))
+    expect(res.mcpContent[0]!.text).toMatch(/sandbox workspace is unreachable/)
+  })
+
   it('errors clearly when the download fails (e.g. missing files:read)', async () => {
     const gw = fakeGateway({ downloadFile: vi.fn(async () => null) })
     const { deps: d } = deps(gw)
     await expect(executeTool(ctx, 'readSlackFile', { url: 'https://files/x.png' }, d)).rejects.toThrow(
       /could not download|files:read/
     )
+  })
+})
+
+describe('attachmentFileName', () => {
+  it('takes the last URL segment, decoded', () => {
+    expect(
+      attachmentFileName('https://files.slack.com/files-pri/T1-F1/download/Q3%20report.pdf', 'application/pdf')
+    ).toBe('Q3 report.pdf')
+  })
+  it('neutralizes traversal, separators, control characters and marker delimiters', () => {
+    expect(attachmentFileName('https://x/f/..%2F..%2Fetc%2Fpasswd', 'application/octet-stream')).toBe('_.._etc_passwd')
+    expect(attachmentFileName('https://x/f/%2e%2e', 'application/pdf')).toBe('attachment.pdf')
+    expect(attachmentFileName('https://x/f/a%00b(1).zip', 'application/zip')).toBe('ab_1_.zip')
+    expect(attachmentFileName('https://x/f/.hidden.tar', 'application/x-tar')).toBe('hidden.tar')
+  })
+  it('names an unnamed reference from its MIME type and adds a missing extension', () => {
+    expect(attachmentFileName('AgACAgID', 'application/pdf')).toBe('attachment.pdf')
+    expect(attachmentFileName('AgACAgID', 'application/x-unknown')).toBe('attachment')
+    expect(
+      attachmentFileName('https://x/f/report', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    ).toBe('report.xlsx')
+  })
+  it('bounds the length but keeps the extension', () => {
+    const long = 'a'.repeat(300) + '.pdf'
+    const out = attachmentFileName(`https://x/f/${long}`, 'application/pdf')
+    expect(out.length).toBe(120)
+    expect(out.endsWith('.pdf')).toBe(true)
   })
 })
 

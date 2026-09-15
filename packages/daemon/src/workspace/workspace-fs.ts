@@ -1,5 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
+import {
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  rmdirSync,
+  writeFileSync
+} from 'node:fs'
 
 /**
  * What one path IS, resolved WITHOUT following a symlink.
@@ -9,6 +19,22 @@ import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rm
  * `missing` is data, never an error: absence is the ordinary answer to "is the checkout there".
  */
 export type WorkspaceFsKind = 'file' | 'dir' | 'missing' | 'other'
+
+/** An `ifAbsent` write found the target already there. The name was NOT reserved by the caller's
+ *  earlier stat — that is the point of asking for exclusive creation — so a caller picks another. */
+export class WorkspaceFileExistsError extends Error {
+  constructor(path: string) {
+    super(`workspace file already exists: ${path}`)
+    this.name = 'WorkspaceFileExistsError'
+  }
+}
+
+export interface WorkspaceWriteOptions {
+  mode?: number
+  /** Exclusive create: publish only if nothing is at `path`, else throw {@link WorkspaceFileExistsError}.
+   *  Atomic on both arms (hard link of the staged file, not a replacing rename). */
+  ifAbsent?: boolean
+}
 
 /**
  * The filesystem twin of `GitRunner`: the workspace file operations the daemon actually performs,
@@ -38,8 +64,9 @@ export interface WorkspaceFs {
    *  absent/unreadable answers undefined. The binary sibling of {@link readFile}, added for the
    *  outbound file share (agent-authored-attachments.md §6). */
   readFileBytes(path: string, maxBytes: number): Promise<{ bytes: Buffer } | { tooLarge: number } | undefined>
-  /** Atomic: staged beside the target, then published by one rename. */
-  writeFile(path: string, content: string, options?: { mode?: number }): Promise<void>
+  /** Atomic: staged beside the target, then published by one rename. Text or raw BYTES: the
+   *  binary arm lands an inbound attachment in the workspace (inbound-file-attachments.md §2). */
+  writeFile(path: string, content: string | Uint8Array, options?: WorkspaceWriteOptions): Promise<void>
   rename(from: string, to: string): Promise<void>
   /**
    * Remove a directory ONLY if it is empty, answering whether it went.
@@ -110,13 +137,23 @@ export class LocalWorkspaceFs implements WorkspaceFs {
     }
   }
 
-  async writeFile(path: string, content: string, options: { mode?: number } = {}): Promise<void> {
+  async writeFile(path: string, content: string | Uint8Array, options: WorkspaceWriteOptions = {}): Promise<void> {
     // A per-write temp name rather than a fixed `.tmp`: two writers publishing the same marker must
     // not stage into one another's file, and the rename is what makes either one whole.
     const temp = `${path}.${randomUUID()}.tmp`
     try {
       writeFileSync(temp, content, options.mode === undefined ? {} : { mode: options.mode })
-      renameSync(temp, path)
+      if (options.ifAbsent) {
+        // link(2) fails with EEXIST when ANYTHING is at `path` (a file, a dir, even a dangling
+        // symlink), and never follows it — so the check and the publish are one kernel step.
+        try {
+          linkSync(temp, path)
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw new WorkspaceFileExistsError(path)
+          throw err
+        }
+        rmSync(temp, { force: true })
+      } else renameSync(temp, path)
     } catch (err) {
       rmSync(temp, { force: true })
       throw err
@@ -167,7 +204,7 @@ export class RoutedWorkspaceFs implements WorkspaceFs {
   async readFileBytes(path: string, maxBytes: number): ReturnType<WorkspaceFs['readFileBytes']> {
     return (await this.route(path)).readFileBytes(path, maxBytes)
   }
-  async writeFile(path: string, content: string, options?: { mode?: number }): Promise<void> {
+  async writeFile(path: string, content: string | Uint8Array, options?: WorkspaceWriteOptions): Promise<void> {
     return (await this.route(path)).writeFile(path, content, options)
   }
   async rename(from: string, to: string): Promise<void> {

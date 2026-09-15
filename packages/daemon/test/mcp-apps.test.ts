@@ -14,6 +14,7 @@ import {
   appContextBlock,
   MCP_APP_CALLS_PER_WINDOW,
   MCP_APP_CALL_WINDOW_MS,
+  reviveAppRow,
   type LiveApp
 } from '../src/mcp/apps/cards.js'
 import {
@@ -411,6 +412,75 @@ describe('LiveAppRegistry — what a frame is allowed to reach', () => {
     for (const message of Object.values(APP_RPC_REFUSALS)) expect(message.length).toBeGreaterThan(0)
     // The unknown refusal must not say WHY, or an id becomes probe-able.
     expect(APP_RPC_REFUSALS.unknown).not.toMatch(/conversation|session|expired|closed/i)
+  })
+})
+
+describe('reviveAppRow — rebuilding a card from what the daemon recorded (§8)', () => {
+  const stored = (body: Record<string, unknown>) => ({
+    channel: 'C1',
+    thread: 'T1',
+    ts: '100',
+    sender: 'bot-a',
+    body: JSON.stringify(body)
+  })
+  const RECORDED = {
+    appId: 'app-1',
+    title: 'Deploy',
+    toolName: 'charts__pick',
+    server: 'charts',
+    conversationId: 'conv-1',
+    html: '<p>hi</p>',
+    toolInput: { env: 'prod' },
+    toolResult: { structuredContent: { ok: true } }
+  }
+
+  it('rebuilds the card’s reach and its page from the row, so a reloaded frame is served again', () => {
+    expect(reviveAppRow('app-1', 'conv-1', stored(RECORDED))).toEqual({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '100',
+      sender: 'bot-a',
+      appId: 'app-1',
+      conversationId: 'conv-1',
+      server: 'charts',
+      title: 'Deploy',
+      toolName: 'charts__pick',
+      toolInput: { env: 'prod' },
+      toolResult: { structuredContent: { ok: true } },
+      html: '<p>hi</p>'
+    })
+  })
+
+  it('refuses a row from another conversation, exactly as the live registry refuses that card', () => {
+    expect(reviveAppRow('app-1', 'conv-other', stored(RECORDED))).toBeUndefined()
+  })
+
+  it('refuses a row that records no server rather than guessing what the card may reach', () => {
+    const { server: _none, ...noServer } = RECORDED
+    expect(reviveAppRow('app-1', 'conv-1', stored(noServer))).toBeUndefined()
+  })
+
+  it('refuses a row the READER closed, so an in-flight RPC cannot undo a dismissal', () => {
+    // The console stops rendering a dismissed card, but it is not the only thing that can revive
+    // one: an RPC already in flight when the frame was closed, or one from a second tab that
+    // still had it armed, would otherwise clear the outcome and hand the page back on reload.
+    expect(reviveAppRow('app-1', 'conv-1', stored({ ...RECORDED, outcome: 'closed' }))).toBeUndefined()
+    // A bridge that settled on its own is not a dismissal — that card comes back.
+    expect(reviveAppRow('app-1', 'conv-1', stored({ ...RECORDED, outcome: 'expired' }))).toMatchObject({
+      appId: 'app-1'
+    })
+    expect(reviveAppRow('app-1', 'conv-1', stored({ ...RECORDED, outcome: 'superseded' }))).toMatchObject({
+      appId: 'app-1'
+    })
+  })
+
+  it('refuses a completed interface so another tab cannot repeat its workflow', () => {
+    expect(reviveAppRow('app-1', 'conv-1', stored({ ...RECORDED, outcome: 'completed' }))).toBeUndefined()
+  })
+
+  it('refuses a row whose card id is not the one being revived, and one that will not parse', () => {
+    expect(reviveAppRow('app-2', 'conv-1', stored(RECORDED))).toBeUndefined()
+    expect(reviveAppRow('app-1', 'conv-1', { ...stored(RECORDED), body: 'not json' })).toBeUndefined()
   })
 })
 

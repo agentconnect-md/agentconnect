@@ -81,7 +81,20 @@ export interface PlatformReadDeps extends GatewayDeps, AskDeps {
   ) => Promise<{ id: string; name?: string }[]>
   /** Byte cap for `read*File` downloads (defaults to 8 MiB). */
   maxAttachmentBytes?: number
+  /** Land a downloaded attachment in the session's workspace under `uploads/`
+   *  (inbound-file-attachments.md §2): the only filesystem the agent's own tools reach on every
+   *  deployment shape. `name` is already sanitized. Absent outside a live daemon, in which case a
+   *  non-image binary can only be summarized. */
+  saveAttachment?: (ctx: SessionContext, name: string, bytes: Buffer) => Promise<SaveAttachmentResult>
 }
+
+/** Where a saved attachment landed (workspace-relative), or why it could not. */
+export type SaveAttachmentResult =
+  | { ok: true; path: string }
+  | { ok: false; reason: 'no-workspace' | 'sandboxed' | 'escape' | 'write-failed'; detail?: string }
+
+/** Every attachment saved to the workspace lands under this directory (design §2.1). */
+export const ATTACHMENT_UPLOADS_DIR = 'uploads'
 
 /** Best-effort MIME guess from a Slack file URL's extension (used when the caller
  *  doesn't pass a mimeType hint). */
@@ -98,9 +111,83 @@ function guessMimeFromUrl(url: string): string | undefined {
     txt: 'text/plain',
     md: 'text/markdown',
     json: 'application/json',
-    csv: 'text/csv'
+    csv: 'text/csv',
+    pdf: 'application/pdf',
+    zip: 'application/zip',
+    gz: 'application/gzip',
+    tar: 'application/x-tar',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    xml: 'application/xml'
   }
   return ext ? map[ext] : undefined
+}
+
+/** Preferred extension for a MIME type whose file name carries none. */
+const EXT_FOR_MIME: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'application/zip': 'zip',
+  'application/gzip': 'gz',
+  'application/x-tar': 'tar',
+  'application/json': 'json',
+  'application/xml': 'xml',
+  'text/plain': 'txt',
+  'text/markdown': 'md',
+  'text/csv': 'csv',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp'
+}
+
+const ATTACHMENT_NAME_MAX = 120
+
+/**
+ * The stored name for a downloaded attachment (design §2.1: names are hostile input).
+ *
+ * Derived from the URL's last path segment — a Slack `url_private` ends in the original file
+ * name; a Telegram `file_id` has none and gets a generated one. Path separators, `..`, control
+ * characters, leading dots and the marker delimiters are stripped; an empty survivor is named
+ * from the MIME type. The result is a single path component, never a path.
+ */
+export function attachmentFileName(url: string, mimeType: string, fallbackStem = 'attachment'): string {
+  let raw = ''
+  try {
+    const u = new URL(url)
+    raw = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() ?? '')
+  } catch {
+    // Not a URL (a Telegram file_id): no name to salvage.
+  }
+  let name = raw
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[\\/]/g, '_')
+    .replace(/[()\[\]<>:"|?*]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+/, '')
+  if (name === '..' || name === '.') name = ''
+  if (name.length > ATTACHMENT_NAME_MAX) {
+    const ext = name.match(/\.[A-Za-z0-9]{1,10}$/)?.[0] ?? ''
+    name = name.slice(0, ATTACHMENT_NAME_MAX - ext.length) + ext
+  }
+  if (!name) {
+    const ext = EXT_FOR_MIME[mimeType]
+    name = ext ? `${fallbackStem}.${ext}` : fallbackStem
+  } else if (!/\.[A-Za-z0-9]{1,10}$/.test(name)) {
+    const ext = EXT_FOR_MIME[mimeType]
+    if (ext) name = `${name}.${ext}`
+  }
+  return name
 }
 
 /** Whose observed history a read may see. */
@@ -328,7 +415,14 @@ export async function getThreadHistory(
 // ONE body for all of them: a platform contributes only the descriptor by declaring the
 // read port, and the fetch itself is the Layer-1 `downloadFile` every connection has, on
 // the gateway this session is already bound to.
+//
+// Images come back as viewable image content and small text as text, exactly as before. Any
+// OTHER file — a PDF, a spreadsheet, an archive — is materialized into the session workspace
+// under `uploads/` (inbound-file-attachments.md §2) and the result names the path, because a
+// base64 blob in the prompt is not a file the agent's tools can open; the byte-count stub this
+// replaces lost the file entirely.
 export async function readAttachment(
+  ctx: SessionContext,
   args: Record<string, unknown>,
   deps: PlatformReadDeps,
   gw: MessageGateway
@@ -353,10 +447,43 @@ export async function readAttachment(
     const result: McpContentResult = { mcpContent: [{ type: 'text', text: bytes.toString('utf8') }] }
     return result
   }
-  // Non-image binary: don't inline a base64 blob as text; report what we got.
+  // Non-image binary: land it in the workspace and hand back the path.
+  const name = attachmentFileName(url, mimeType)
+  const size = `${bytes.byteLength} bytes of ${mimeType}`
+  if (!deps.saveAttachment) {
+    const result: McpContentResult = {
+      mcpContent: [
+        {
+          type: 'text',
+          text: `Downloaded ${size} (binary — not shown inline, and this daemon cannot save it to the workspace).`
+        }
+      ]
+    }
+    return result
+  }
+  const saved = await deps.saveAttachment(ctx, name, bytes)
+  if (!saved.ok) {
+    const why =
+      saved.reason === 'no-workspace'
+        ? 'this session has no workspace to save it to'
+        : saved.reason === 'sandboxed'
+          ? 'the sandbox workspace is unreachable right now (retry may help)'
+          : saved.reason === 'escape'
+            ? 'the file name could not be placed safely'
+            : `the write failed${saved.detail ? `: ${saved.detail}` : ''}`
+    const result: McpContentResult = {
+      mcpContent: [{ type: 'text', text: `Downloaded ${size}, but ${why}. Binary content is not shown inline.` }]
+    }
+    return result
+  }
   const result: McpContentResult = {
     mcpContent: [
-      { type: 'text', text: `Downloaded ${bytes.byteLength} bytes of ${mimeType} (binary — not shown inline).` }
+      {
+        type: 'text',
+        text:
+          `Saved ${size} to \`${saved.path}\` in your workspace (relative to the workspace root). ` +
+          `Open it with your file tools or shell — e.g. a PDF with a text extractor, a spreadsheet with a parser.`
+      }
     ]
   }
   return result

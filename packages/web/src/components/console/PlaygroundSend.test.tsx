@@ -1631,8 +1631,20 @@ describe('MCP App card lifetime (webchat-mcp-apps.md §7.3)', () => {
     act(() => send(socket, turnId, 1, { kind: 'app_resolved', appId: 'app-1', outcome: 'closed' }))
     const steps = getLiveSteps('s1').filter((step) => step.kind === 'app')
     expect(steps).toMatchObject([{ app: { appId: 'app-1', outcome: 'closed' } }])
-    // The template goes with the settlement: a settled frame is never re-armed.
+    // The reader dismissed this one, so its page is hidden and holding the document would be
+    // holding it for nothing.
     expect(steps[0]?.app?.html).toBeUndefined()
+  })
+
+  it('keeps the template when the BRIDGE settles, so the card does not blank in place', async () => {
+    // `superseded` and `expired` end an arming, not the page (§8). The persisted row that also
+    // holds this template steps aside while the live copy stands, so dropping it here would leave
+    // the reader with a card and nothing in it.
+    const { socket, turnId } = await openStream()
+    act(() => send(socket, turnId, 0, CARD))
+    act(() => send(socket, turnId, 1, { kind: 'app_resolved', appId: 'app-1', outcome: 'expired' }))
+    const steps = getLiveSteps('s1').filter((step) => step.kind === 'app')
+    expect(steps).toMatchObject([{ app: { appId: 'app-1', outcome: 'expired', html: CARD.html } }])
   })
 
   it('completes a view RPC issued after the turn finished, instead of letting it time out', async () => {

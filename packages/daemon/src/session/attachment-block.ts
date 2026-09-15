@@ -66,7 +66,7 @@ export function attachmentToBlock(
     name: att.name,
     uri: att.sourceUrl,
     mimeType: att.mimeType,
-    description: `Slack file. You cannot fetch this URL directly — call the readSlackFile tool with this uri (mimeType: ${att.mimeType}) to view its contents.`,
+    description: `Slack file. You cannot fetch this URL directly — call the readSlackFile tool with this uri (mimeType: ${att.mimeType}) to view its contents (a non-image binary is saved into uploads/ in your workspace).`,
     ...(typeof att.size === 'number' ? { size: att.size } : {})
   }
 }

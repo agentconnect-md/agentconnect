@@ -64,8 +64,8 @@ const ELICIT_OUTCOMES = new Set(['accepted', 'dismissed', 'cancelled', 'complete
  *  which is at least the question, rather than a card with nothing in it. */
 /** Parse an `app` row's body into the card history shows (webchat-mcp-apps.md §8). A row that
  *  cannot be read yields null and the caller falls back to plain text — the card's title, which is
- *  at least what was opened. There is never an `html` here: a persisted app is a record, not a
- *  page, so the renderer shows the header and the outcome and arms nothing. */
+ *  at least what was opened. `html` is present once the row's full body has been read, and that is
+ *  what lets a reloaded page render again instead of standing as a record of itself. */
 export function mcpAppCard(body: string | undefined): McpAppBody | null {
   if (!body) return null
   try {
@@ -79,6 +79,10 @@ export function mcpAppCard(body: string | undefined): McpAppBody | null {
       title: typeof parsed.title === 'string' ? parsed.title : parsed.toolName,
       toolName: parsed.toolName,
       ...(parsed.toolResult ? { toolResult: parsed.toolResult } : {}),
+      ...(typeof parsed.html === 'string' && parsed.html.length > 0 ? { html: parsed.html } : {}),
+      ...(parsed.toolInput ? { toolInput: parsed.toolInput } : {}),
+      ...(parsed.csp ? { csp: parsed.csp } : {}),
+      ...(parsed.dimensions ? { dimensions: parsed.dimensions } : {}),
       ...(outcome ? { outcome } : {})
     }
   } catch {
@@ -192,6 +196,42 @@ export function liveElicitKeys(
   for (const step of live) {
     if (!step.elicit?.requestId) continue
     keys.add(elicitStepKey(step.agentId ?? ownerAgentId, step.elicit.requestId))
+  }
+  return keys
+}
+
+/**
+ * Fold a card fetched in full into the PREVIEW its transcript row carried (webchat-mcp-apps.md §8).
+ *
+ * The fetch supplies only what the row shed — the template, and the result when the card was large
+ * enough to lose that too. The row stays authoritative for everything it still carries, and
+ * `outcome` is why the distinction is worth stating: the fetched copy is a snapshot from whenever
+ * it was read, so letting it win would put a card the reader has since closed back on screen,
+ * frame and all, until the next reload. Pure.
+ */
+export function mergeFetchedAppCard<T extends { appId: string; outcome?: string }>(preview: T, fetched: T): T {
+  const { outcome: _snapshot, ...payload } = fetched
+  return { ...payload, ...preview } as T
+}
+
+export function appStepKey(agentId: string | undefined, appId: string): string {
+  return `${agentId ?? ''}\u0000${appId}`
+}
+
+/** Every app card the LIVE stream is currently carrying — the peer of {@link liveElicitKeys}, and
+ *  there for the same reason: on a reload, or in a second tab, a card in a running turn arrives
+ *  twice, once as its transcript row and once as the replayed `app` event. The live copy wins
+ *  while that replay stands — it is the one a settlement reaches — so the persisted row steps
+ *  aside rather than standing beside it as a second armed frame. Empty on a surface that streams
+ *  no cards, which leaves the persisted copy alone as before. */
+export function liveAppKeys(
+  live: readonly { lane?: string; agentId?: string; app?: { appId: string } }[],
+  ownerAgentId?: string
+): Set<string> {
+  const keys = new Set<string>()
+  for (const step of live) {
+    if (!step.app?.appId) continue
+    keys.add(appStepKey(step.agentId ?? ownerAgentId, step.app.appId))
   }
   return keys
 }

@@ -18,7 +18,8 @@ export const TELEGRAM_ATTACHMENT_TOOL: ToolDescriptor = {
     'Fetch the contents of a file shared in Telegram, using the bot credentials. You do NOT have direct network ' +
     "access to Telegram's file storage — use this tool instead of curl/fetch. Pass the file's `url` (the `file_id` " +
     'from a shared attachment or the `uri` of a resource link). Images are returned as viewable image content; text ' +
-    'files as text. Supply `mimeType` when known for correct handling.',
+    'files as text. Any other file (PDF, spreadsheet, archive, …) is saved into `uploads/` in your workspace and the ' +
+    'result names the path — open it with your file tools. Supply `mimeType` when known for correct handling.',
   inputSchema: {
     type: 'object',
     properties: {
