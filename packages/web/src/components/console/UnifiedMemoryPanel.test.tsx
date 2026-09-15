@@ -86,7 +86,12 @@ async function render(channelKey = 'one', canEdit = true, onOpenLegacy?: () => P
   await act(async () =>
     root.render(
       <UnifiedMemoryPanel agentId="agent" channelKey={channelKey} canEdit={canEdit} {...{ onOpenLegacy }}>
-        <div>Legacy memory tools</div>
+        {(viewSwitch) => (
+          <div>
+            {viewSwitch}
+            <span>Legacy memory tools</span>
+          </div>
+        )}
       </UnifiedMemoryPanel>
     )
   )
@@ -217,7 +222,7 @@ it('refreshes retained tools when switching from a successful entry create', asy
   await render('one', true, refresh)
   await click('New memory')
   await click('Save memory')
-  await click('More memory tools')
+  await click('Files')
   expect(refresh).toHaveBeenCalledTimes(1)
   expect(host.textContent).toContain('Legacy memory tools')
 })

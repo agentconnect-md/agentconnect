@@ -20,10 +20,18 @@ import {
   deleteAgentMemoryEntry
 } from '@/lib/api'
 import { readCompleteMemoryEntry } from '@/lib/memory-entry-content'
-import { Button } from '@/components/ui'
+import { Spinner } from '@/components/marks'
+import { Button, Icon } from '@/components/ui'
 import { memoryFileFromHref } from '@/components/console/memory-links'
 import { UnifiedMemoryHistory } from '@/components/console/UnifiedMemoryHistory'
 import { resolveFileBrowserMarkdownLink } from '@/components/console/file-browser-links'
+import {
+  FileBrowserLayout,
+  FileBrowserPreviewSummary,
+  FileBrowserShell,
+  formatFileMtime,
+  formatFileSize
+} from '@/components/console/FileBrowser'
 
 // Loaded lazily like the file preview so react-markdown never ships in the main console bundle.
 const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
@@ -31,11 +39,15 @@ const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), 
   loading: () => <p className="text-(--text-tertiary)">Rendering…</p>
 })
 
+type MemoryView = 'entries' | 'legacy'
 interface Props {
   agentId: string
   channelKey?: string
   canEdit: boolean
-  children: ReactNode
+  // The retained raw view (files or records); it receives the view switch so the switch sits in its own header.
+  children: (viewSwitch: ReactNode) => ReactNode
+  // What the retained view is called in the switch: "Files" for a managed directory, "Records" for a plugin.
+  legacyLabel?: string
   onOpenLegacy?: () => Promise<void>
 }
 export function UnifiedMemoryPanel(props: Props) {
@@ -60,7 +72,100 @@ function linkedRef(document: MemoryEntryContent, name: string): string | undefin
   return [...(document.links ?? []), ...(document.backlinks ?? [])].find((edge) => edge.ref && edge.label === label)
     ?.ref
 }
-function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props) {
+function ViewSwitch({
+  view,
+  legacyLabel,
+  disabled,
+  onChange
+}: {
+  view: MemoryView
+  legacyLabel: string
+  disabled?: boolean
+  onChange: (view: MemoryView) => void
+}) {
+  const cls = (on: boolean) => (on ? 'pill on px-[10px] py-[3px] text-[12px]' : 'pill px-[10px] py-[3px] text-[12px]')
+  return (
+    <div className="pillbar flex-none" role="group" aria-label="Memory view">
+      <button
+        type="button"
+        className={cls(view === 'entries')}
+        aria-pressed={view === 'entries'}
+        disabled={disabled}
+        onClick={() => onChange('entries')}
+      >
+        Entries
+      </button>
+      <button
+        type="button"
+        className={cls(view === 'legacy')}
+        aria-pressed={view === 'legacy'}
+        disabled={disabled}
+        onClick={() => onChange('legacy')}
+      >
+        {legacyLabel}
+      </button>
+    </div>
+  )
+}
+// A topic keeps its mono name like a file; a nameless record shows its opening text instead.
+function EntryRow({
+  entry,
+  snippet,
+  selected,
+  disabled,
+  onClick
+}: {
+  entry: MemoryEntrySummary
+  snippet?: string
+  selected: boolean
+  disabled: boolean
+  onClick: () => void
+}) {
+  const named = entry.format === 'markdown'
+  const detail = named ? (snippet ?? entry.description) : undefined
+  const trailing = entry.origin === 'inherited' ? 'inherited' : entry.updatedAt ? formatFileMtime(entry.updatedAt) : ''
+  return (
+    <button
+      type="button"
+      className={`file-browser-item flex w-full items-start gap-[6px] border-0 border-r-2 py-[6px] pl-2 pr-[10px] text-left [font:inherit] disabled:cursor-default disabled:opacity-60 ${
+        selected ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'
+      }`}
+      aria-current={selected ? 'page' : undefined}
+      title={entry.description ?? (named ? entry.label : undefined)}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <Icon
+        name={named ? 'file-text' : 'sticky-note'}
+        size={15}
+        color="var(--text-tertiary)"
+        className="mt-[2px] flex-none"
+      />
+      <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+        <span
+          className={
+            named
+              ? `mono truncate text-[12.5px] ${selected ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`
+              : `line-clamp-2 font-sans text-[12.5px] font-normal leading-[1.45] ${selected ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`
+          }
+        >
+          {entry.label || 'Untitled memory'}
+        </span>
+        {detail ? (
+          <span className="line-clamp-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+            {detail}
+          </span>
+        ) : null}
+      </span>
+      {trailing ? (
+        <span className="flex-none pt-[1px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+          {trailing}
+        </span>
+      ) : null}
+    </button>
+  )
+}
+function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files', onOpenLegacy }: Props) {
   const generation = useRef(0)
   const detailRequest = useRef(0)
   const [capabilities, setCapabilities] = useState<MemoryEntryCapabilities | null>(null)
@@ -71,7 +176,9 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
   const [hits, setHits] = useState<MemoryEntrySearchHit[] | null>(null)
   const [searchNote, setSearchNote] = useState<string>()
   const [busy, setBusy] = useState(true)
+  const [paging, setPaging] = useState(false)
   const [reading, setReading] = useState(false)
+  const [selectedRef, setSelectedRef] = useState<string>()
   const [error, setError] = useState<string>()
   const [document, setDocument] = useState<MemoryEntryContent | null>(null)
   const [draft, setDraft] = useState('')
@@ -129,7 +236,7 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
   }, [reload])
   async function more() {
     const id = generation.current
-    setBusy(true)
+    setPaging(true)
     setError(undefined)
     try {
       const page = await listAgentMemoryEntries(agentId, channelKey, cursor)
@@ -139,7 +246,7 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
     } catch (err) {
       if (id === generation.current) setError(errorMessage(err))
     } finally {
-      if (id === generation.current) setBusy(false)
+      if (id === generation.current) setPaging(false)
     }
   }
   // A search is retrieval over the authorized view, never a listing; the note says what it can prove.
@@ -164,6 +271,7 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
   }
   async function open(entry: Pick<MemoryEntrySummary, 'ref'>) {
     const id = ++detailRequest.current
+    setSelectedRef(entry.ref)
     setReading(true)
     setDocument(null)
     setError(undefined)
@@ -219,6 +327,7 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
       setMode(null)
       setDraft('')
       setDocument(null)
+      setSelectedRef(undefined)
       setConfirmDelete(false)
       setNotice(remove ? 'Memory deleted. Inherited memory may now be visible.' : 'Memory saved.')
       await reload()
@@ -247,224 +356,261 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
       if (id === generation.current) setBusy(false)
     }
   }
+  function switchView(view: MemoryView) {
+    if (view === 'legacy') void openLegacy()
+    else {
+      setLegacy(false)
+      void reload()
+    }
+  }
+  function startCreate() {
+    setMode('create')
+    setDocument(null)
+    setSelectedRef(undefined)
+    setDraft('')
+    setLabel('')
+    setError(undefined)
+  }
+  function cancelEdit() {
+    setMode(null)
+    setDraft('')
+  }
+  // An old peer has no entry view at all, so there is nothing to switch back to.
   if (legacy)
     return (
       <>
-        {capabilities && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              setLegacy(false)
-              void reload()
-            }}
-          >
-            Memory entries
-          </Button>
+        {children(
+          capabilities ? (
+            <ViewSwitch view="legacy" legacyLabel={legacyLabel} disabled={busy} onChange={switchView} />
+          ) : null
         )}
-        {children}
       </>
     )
-  return (
-    <section
-      className="rounded-lg border border-(--border-subtle) bg-(--surface-card) p-4 font-sans text-[13px] leading-normal"
-      aria-label="Memory entries"
-    >
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="m-0 font-semibold">Memory</h3>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={busy || saving || (!!mode && !blocked)}
-            onClick={() => void reload(blocked)}
-          >
-            Refresh
-          </Button>
-          {supports('create') && (
-            <Button
-              size="sm"
-              disabled={busy || reading || saving || !!mode || blocked}
-              onClick={() => {
-                setMode('create')
-                setDocument(null)
-                setDraft('')
-                setLabel('')
-                setError(undefined)
-              }}
-            >
-              New memory
-            </Button>
-          )}
-          <Button variant="secondary" size="sm" disabled={busy || saving || !!mode} onClick={() => void openLegacy()}>
-            More memory tools
-          </Button>
+  const rowsLocked = saving || (!!mode && !blocked)
+  const selectedEntry = document?.entry
+  const previewMeta =
+    mode === 'create'
+      ? 'New memory'
+      : selectedEntry
+        ? [
+            formatFileSize(selectedEntry.byteSize),
+            selectedEntry.updatedAt ? `edited ${formatFileMtime(selectedEntry.updatedAt)}` : '',
+            selectedEntry.origin === 'inherited' ? 'inherited · read-only' : ''
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        : ''
+  const renderTree = (openPreview: () => void) => (
+    <>
+      {busy ? (
+        <div className="flex justify-center py-4" role="status" aria-label="Loading memory">
+          <Spinner size={18} />
         </div>
-      </div>
-      {capabilities?.operations.includes('search') && (
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <input
-            aria-label="Search memory"
-            placeholder="Search memory"
-            value={query}
-            maxLength={2048}
-            disabled={busy || saving}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                void search()
-              }
-            }}
-            className="min-w-0 flex-1 rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2"
-          />
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={busy || saving || !query.trim()}
-            onClick={() => void search()}
-          >
-            Search
-          </Button>
-          {hits && (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busy || saving}
-              onClick={() => {
-                setHits(null)
-                setSearchNote(undefined)
-              }}
-            >
-              Clear search
-            </Button>
-          )}
+      ) : null}
+      {!busy && hits && searchNote ? (
+        <div className="px-4 py-[6px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+          {searchNote}
         </div>
-      )}
-      {notice && <p role="status">{notice}</p>}
-      {error && (
-        <p role="alert" className="text-(--text-secondary)">
-          {error}
-        </p>
-      )}
-      <div className="grid gap-4 desktop:grid-cols-[240px_minmax(0,1fr)]">
-        <div className="flex flex-col gap-2">
-          {busy && <p role="status">Loading memory…</p>}
-          {hits && searchNote && <p className="text-[11px] text-(--text-secondary)">{searchNote}</p>}
-          {!busy && !error && hits && hits.length === 0 && <p>No memory matched this search.</p>}
-          {hits?.map((hit, index) => (
-            <button
+      ) : null}
+      {!busy && !error && hits && hits.length === 0 ? (
+        <div className="px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          No memory matched this search.
+        </div>
+      ) : null}
+      {!busy && hits
+        ? hits.map((hit, index) => (
+            <EntryRow
               key={`${hit.entry.ref}:${index}`}
-              className="rounded-sm border border-(--border-subtle) p-2 text-left text-(--text-primary) hover:bg-(--surface-hover) disabled:opacity-50"
-              disabled={saving || (!!mode && !blocked)}
-              onClick={() => void open(hit.entry)}
-            >
-              <span className="block break-words font-semibold">{hit.entry.label ?? 'Untitled memory'}</span>
-              <span className="block break-words text-[11px] text-(--text-secondary)">{hit.snippet}</span>
-            </button>
-          ))}
-          {!busy && !error && !hits && entries.length === 0 && <p>No memory entries on this page.</p>}
-          {!hits &&
-            entries.map((entry, index) => (
-              <button
-                key={`${entry.ref}:${index}`}
-                className="rounded-sm border border-(--border-subtle) p-2 text-left text-(--text-primary) hover:bg-(--surface-hover) disabled:opacity-50"
-                disabled={saving || (!!mode && !blocked)}
-                onClick={() => void open(entry)}
-              >
-                <span className="block break-words font-semibold">{entry.label ?? 'Untitled memory'}</span>
-                <span className="text-[11px] text-(--text-secondary)">
-                  {entry.origin === 'active' ? '' : 'Inherited · '}
-                  {entry.byteSize} bytes
-                </span>
-              </button>
-            ))}
-          {!hits && cursor && (
-            <Button variant="secondary" size="sm" disabled={busy || saving} onClick={() => void more()}>
-              Load more
-            </Button>
-          )}
+              entry={hit.entry}
+              snippet={hit.snippet}
+              selected={selectedRef === hit.entry.ref}
+              disabled={rowsLocked}
+              onClick={() => {
+                void open(hit.entry)
+                openPreview()
+              }}
+            />
+          ))
+        : null}
+      {!busy && !error && !hits && entries.length === 0 ? (
+        <div className="px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          No memory yet.
         </div>
-        <div className="min-w-0">
-          {reading ? (
-            <p role="status">Loading complete memory…</p>
-          ) : mode ? (
-            <>
-              {mode === 'create' && (
-                <label className="mb-2 block">
-                  Name (optional)
-                  <input
-                    aria-label="Memory name"
-                    value={label}
-                    maxLength={512}
-                    disabled={saving}
-                    onChange={(e) => setLabel(e.target.value)}
-                    className="mt-1 w-full rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2"
-                  />
-                </label>
-              )}
-              <label className="block">
-                Content
-                <textarea
-                  aria-label="Memory content"
-                  value={draft}
-                  disabled={saving}
-                  onChange={(e) => setDraft(e.target.value)}
-                  className="mt-1 min-h-64 w-full rounded-sm border border-(--border-subtle) bg-(--surface-card) p-2 font-mono text-[12px] leading-[1.5]"
-                />
-              </label>
-              {tooLarge && <p role="alert">This change is too large to save here. Reduce its size.</p>}
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  disabled={saving || blocked || tooLarge || !supports(mode === 'create' ? 'create' : 'update')}
-                  onClick={() => void mutate()}
-                >
-                  {saving ? 'Saving…' : 'Save memory'}
-                </Button>
+      ) : null}
+      {!busy && !hits
+        ? entries.map((entry, index) => (
+            <EntryRow
+              key={`${entry.ref}:${index}`}
+              entry={entry}
+              selected={selectedRef === entry.ref}
+              disabled={rowsLocked}
+              onClick={() => {
+                void open(entry)
+                openPreview()
+              }}
+            />
+          ))
+        : null}
+      {!busy && !hits && cursor ? (
+        <div className="px-3 py-2">
+          <Button variant="ghost" size="xs" disabled={paging || saving} onClick={() => void more()}>
+            {paging ? 'Loading…' : 'Load more'}
+          </Button>
+        </div>
+      ) : null}
+    </>
+  )
+  const renderPreview = (onBack?: () => void) => (
+    <>
+      <FileBrowserPreviewSummary
+        meta={reading ? 'Loading complete memory…' : previewMeta}
+        onBack={onBack}
+        actions={
+          mode ? (
+            <div className="flex flex-none items-center gap-2">
+              <Button variant="secondary" size="xs" disabled={saving} onClick={cancelEdit}>
+                Cancel
+              </Button>
+              <Button
+                size="xs"
+                disabled={saving || blocked || tooLarge || !supports(mode === 'create' ? 'create' : 'update')}
+                onClick={() => void mutate()}
+              >
+                {saving ? 'Saving…' : 'Save memory'}
+              </Button>
+            </div>
+          ) : document && !reading ? (
+            <div className="flex flex-none items-center gap-2">
+              {capabilities?.operations.includes('history') ? (
                 <Button
                   variant="secondary"
-                  size="sm"
-                  disabled={saving}
-                  onClick={() => {
-                    setMode(null)
-                    setDraft('')
-                  }}
+                  size="xs"
+                  ariaExpanded={showHistory}
+                  onClick={() => setShowHistory((open) => !open)}
                 >
-                  Cancel edit
+                  <Icon name="rotate-ccw-clock" size={13} />
+                  {showHistory ? 'Hide history' : 'History'}
                 </Button>
-                {blocked && document && (
-                  <Button variant="secondary" size="sm" disabled={saving} onClick={() => void open(document.entry)}>
-                    Reload saved version
-                  </Button>
-                )}
-              </div>
-            </>
-          ) : document ? (
-            <>
-              <h4 className="mt-0 break-words">{document.entry.label ?? 'Memory'}</h4>
-              {document.entry.format === 'markdown' ? (
-                <div className="max-h-96 overflow-auto rounded-sm bg-(--surface-sunken) px-3 py-2">
-                  <MarkdownView
-                    content={document.text}
-                    resolveLink={(href) =>
-                      resolveFileBrowserMarkdownLink(
-                        href,
-                        (candidate) => {
-                          const name = memoryFileFromHref(candidate)
-                          const ref = name ? linkedRef(document, name) : undefined
-                          return name && ref ? { path: name, name, ref } : null
-                        },
-                        (target) => void open({ ref: target.ref })
-                      )
-                    }
-                  />
-                </div>
-              ) : (
-                <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-sm bg-(--surface-sunken) p-3 font-mono text-[12px] leading-[1.5]">
-                  {document.text}
-                </pre>
-              )}
+              ) : null}
+              {supports('update') && editable ? (
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  disabled={saving || blocked}
+                  onClick={() => {
+                    setDraft(document.text)
+                    setMode('update')
+                    setError(undefined)
+                  }}
+                  ariaLabel="Edit memory"
+                >
+                  <Icon name="pencil" size={13} />
+                  <span className="max-desktop:hidden">Edit memory</span>
+                </Button>
+              ) : null}
+              {supports('delete') && editable ? (
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  disabled={saving || blocked || confirmDelete}
+                  onClick={() => setConfirmDelete(true)}
+                  ariaLabel="Delete memory"
+                >
+                  <Icon name="trash-2" size={13} />
+                  <span className="max-desktop:hidden">Delete memory</span>
+                </Button>
+              ) : null}
+            </div>
+          ) : undefined
+        }
+      />
+      {confirmDelete && document ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-primary)">
+          <span className="min-w-0 flex-1">
+            Delete “{document.entry.label || 'this memory'}”?
+            {channelKey ? ' Deleting an override can reveal inherited memory.' : ''}
+          </span>
+          <Button
+            variant="danger"
+            size="xs"
+            disabled={saving || blocked || !supports('delete')}
+            onClick={() => void mutate(true)}
+          >
+            Confirm deletion
+          </Button>
+          <Button variant="secondary" size="xs" disabled={saving} onClick={() => setConfirmDelete(false)}>
+            Keep memory
+          </Button>
+        </div>
+      ) : null}
+      {reading ? (
+        <div className="flex flex-1 items-center justify-center py-10">
+          <Spinner size={28} />
+        </div>
+      ) : mode ? (
+        <div className="flex flex-1 flex-col gap-3 p-4">
+          {mode === 'create' ? (
+            <input
+              aria-label="Memory name"
+              placeholder="Name (optional)"
+              value={label}
+              maxLength={512}
+              disabled={saving}
+              onChange={(e) => setLabel(e.target.value)}
+              className="inp mono h-8 min-h-8 px-[10px] py-1 text-[12.5px]"
+              spellCheck={false}
+            />
+          ) : null}
+          <textarea
+            aria-label="Memory content"
+            value={draft}
+            disabled={saving}
+            onChange={(e) => setDraft(e.target.value)}
+            className="inp mono min-h-[300px] flex-1 resize-y px-3 py-[10px] leading-[1.6] focus:border-(--brand) focus:outline-none"
+            spellCheck={false}
+            autoFocus={mode === 'update'}
+          />
+          {tooLarge ? (
+            <div role="alert" className="font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+              This change is too large to save here. Reduce its size.
+            </div>
+          ) : null}
+          {blocked && document ? (
+            <div>
+              <Button variant="secondary" size="xs" disabled={saving} onClick={() => void open(document.entry)}>
+                Reload saved version
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : document && showHistory ? (
+        <div className="max-h-[520px] overflow-auto px-4 pb-4 pt-1 font-sans text-[12.5px] leading-normal">
+          <UnifiedMemoryHistory agentId={agentId} entryRef={document.entry.ref} channelKey={channelKey} />
+        </div>
+      ) : document ? (
+        <div className="max-h-[520px] overflow-auto px-[18px] py-4">
+          {document.entry.format === 'markdown' ? (
+            <MarkdownView
+              content={document.text}
+              resolveLink={(href) =>
+                resolveFileBrowserMarkdownLink(
+                  href,
+                  (candidate) => {
+                    const name = memoryFileFromHref(candidate)
+                    const ref = name ? linkedRef(document, name) : undefined
+                    return name && ref ? { path: name, name, ref } : null
+                  },
+                  (target) => void open({ ref: target.ref })
+                )
+              }
+            />
+          ) : (
+            <pre className="m-0 whitespace-pre-wrap break-words font-sans text-[13.5px] font-normal leading-[1.7] text-(--text-primary)">
+              {document.text}
+            </pre>
+          )}
+          {document.links?.length || document.backlinks?.length ? (
+            <div className="mt-4 flex flex-col gap-1 border-t border-(--border-subtle) pt-3 font-sans text-[12px] font-normal leading-normal">
               {(
                 [
                   ['Links', document.links],
@@ -472,16 +618,16 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
                 ] as Array<[string, MemoryEntryLink[] | undefined]>
               ).map(([title, edges]) =>
                 edges?.length ? (
-                  <p key={title} className="my-2 text-[12px]">
-                    <span className="font-semibold">{title}:</span>{' '}
+                  <p key={title} className="m-0">
+                    <span className="font-semibold text-(--text-secondary)">{title}:</span>{' '}
                     {edges.map((edge, index) => (
                       <span key={`${edge.label}:${index}`}>
                         {index > 0 ? ', ' : ''}
                         {edge.ref ? (
                           <button
                             type="button"
-                            className="underline"
-                            disabled={saving || (!!mode && !blocked)}
+                            className="lnk text-[12px]"
+                            disabled={rowsLocked}
                             onClick={() => void open({ ref: edge.ref! })}
                           >
                             {edge.label}
@@ -494,63 +640,118 @@ function Entries({ agentId, channelKey, canEdit, children, onOpenLegacy }: Props
                   </p>
                 ) : null
               )}
-              <div className="flex flex-wrap gap-2">
-                {supports('update') && editable && (
-                  <Button
-                    size="sm"
-                    disabled={saving || blocked}
-                    onClick={() => {
-                      setDraft(document.text)
-                      setMode('update')
-                      setError(undefined)
-                    }}
-                  >
-                    Edit memory
-                  </Button>
-                )}
-                {supports('delete') && editable && (
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    disabled={saving || blocked}
-                    onClick={() => setConfirmDelete(true)}
-                  >
-                    Delete memory
-                  </Button>
-                )}
-                {capabilities?.operations.includes('history') && (
-                  <Button variant="secondary" size="sm" onClick={() => setShowHistory((open) => !open)}>
-                    {showHistory ? 'Hide history' : 'History'}
-                  </Button>
-                )}
-              </div>
-              {showHistory && (
-                <UnifiedMemoryHistory agentId={agentId} entryRef={document.entry.ref} channelKey={channelKey} />
-              )}
-              {confirmDelete && (
-                <div className="mt-3 rounded-sm border border-(--border-subtle) p-3">
-                  <p>
-                    Delete “{document.entry.label ?? 'this memory'}”? Deleting an override can reveal inherited memory.
-                  </p>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    disabled={saving || blocked || !supports('delete')}
-                    onClick={() => void mutate(true)}
-                  >
-                    Confirm deletion
-                  </Button>
-                  <Button variant="secondary" size="sm" disabled={saving} onClick={() => setConfirmDelete(false)}>
-                    Keep memory
-                  </Button>
-                </div>
-              )}
-            </>
-          ) : (
-            <p className="text-(--text-secondary)">Select a memory to read its complete content.</p>
-          )}
+            </div>
+          ) : null}
         </div>
-      </div>
-    </section>
+      ) : null}
+    </>
+  )
+  return (
+    <FileBrowserShell
+      title={<span aria-label="Memory entries">Memory</span>}
+      headerEnd={
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+          {capabilities ? (
+            <ViewSwitch
+              view="entries"
+              legacyLabel={legacyLabel}
+              disabled={busy || saving || !!mode}
+              onChange={switchView}
+            />
+          ) : null}
+          <Button
+            variant="secondary"
+            size="xs"
+            disabled={busy || saving || (!!mode && !blocked)}
+            onClick={() => void reload(blocked)}
+            ariaLabel="Refresh"
+          >
+            <Icon name="refresh-cw" size={13} />
+            <span className="max-desktop:hidden">Refresh</span>
+          </Button>
+          {supports('create') ? (
+            <Button
+              variant="secondary"
+              size="xs"
+              disabled={busy || reading || saving || !!mode || blocked}
+              onClick={startCreate}
+              ariaLabel="New memory"
+            >
+              <Icon name="plus" size={13} />
+              <span className="max-desktop:hidden">New memory</span>
+            </Button>
+          ) : null}
+        </div>
+      }
+    >
+      {capabilities?.operations.includes('search') ? (
+        <div className="flex items-center gap-2 border-b border-(--border-subtle) px-3 py-2">
+          <input
+            aria-label="Search memory"
+            placeholder="Search memory…"
+            value={query}
+            maxLength={2048}
+            disabled={busy || saving}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                void search()
+              }
+            }}
+            className="inp h-8 min-h-8 min-w-0 flex-1 px-[10px] py-1 text-[12.5px]"
+          />
+          <Button
+            variant="secondary"
+            size="xs"
+            disabled={busy || saving || !query.trim()}
+            onClick={() => void search()}
+          >
+            <Icon name="search" size={13} />
+            Search
+          </Button>
+          {hits ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={busy || saving}
+              onClick={() => {
+                setHits(null)
+                setSearchNote(undefined)
+              }}
+            >
+              Clear search
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {notice ? (
+        <div
+          role="status"
+          className="border-b border-(--border-subtle) px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
+        >
+          {notice}
+        </div>
+      ) : null}
+      {error ? (
+        <div
+          role="alert"
+          className="border-b border-(--border-subtle) px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)"
+        >
+          {error}
+        </div>
+      ) : null}
+      <FileBrowserLayout
+        resetKey={`${agentId}:${channelKey ?? ''}`}
+        previewOpen={!!mode}
+        tree={renderTree}
+        preview={reading || mode || document ? renderPreview : null}
+        emptyPreview={
+          <div className="flex flex-1 items-center justify-center px-4 py-10 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+            Select a memory to read it.
+          </div>
+        }
+      />
+    </FileBrowserShell>
   )
 }

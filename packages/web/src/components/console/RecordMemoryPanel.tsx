@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import {
   ApiError,
   createMemoryRecord,
@@ -34,7 +34,16 @@ function message(error: unknown): string {
 }
 
 /** Capability-driven canonical-record console for an external memory provider. */
-export function RecordMemoryPanel({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
+export function RecordMemoryPanel({
+  agentId,
+  canEdit,
+  headerStart
+}: {
+  agentId: string
+  canEdit: boolean
+  // Slot before the header actions; the unified panel hands its Entries/Records switch through here.
+  headerStart?: ReactNode
+}) {
   const request = useRef(0)
   const recordsRequest = useRef(0)
   const detailRequest = useRef(0)
@@ -271,23 +280,9 @@ export function RecordMemoryPanel({ agentId, canEdit }: { agentId: string; canEd
     }
   }
 
-  if (loading && !surface) {
-    return (
-      <div className="mt-4 flex items-center justify-center rounded-md border border-(--border-subtle) py-8">
-        <Spinner />
-      </div>
-    )
-  }
-
-  if (surface?.shape !== 'records') {
-    return (
-      <div className="mt-4 rounded-md border border-(--border-subtle) p-4 text-[12.5px] text-(--text-secondary)">
-        {error ?? 'The selected backend does not currently expose a record administration surface.'}
-      </div>
-    )
-  }
-
-  return (
+  const ready = surface?.shape === 'records'
+  // One header for every state, so the view switch never disappears while the surface loads or fails.
+  const frame = (body: ReactNode) => (
     <div className="mt-4 rounded-(--radius-lg) border border-(--border-subtle)">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-(--border-subtle) px-4 py-3">
         <div>
@@ -296,20 +291,44 @@ export function RecordMemoryPanel({ agentId, canEdit }: { agentId: string; canEd
             Canonical records are proxied live; AgentConnect does not store their bodies in the control plane.
           </div>
         </div>
-        {canEdit && capabilities.has('create') ? (
-          <Button
-            size="xs"
-            onClick={() => {
-              setEditing('create')
-              setDraft('')
-              setMutationError(null)
-            }}
-          >
-            New record
-          </Button>
-        ) : null}
+        <div className="flex flex-none items-center gap-2">
+          {headerStart}
+          {ready && canEdit && capabilities.has('create') ? (
+            <Button
+              size="xs"
+              onClick={() => {
+                setEditing('create')
+                setDraft('')
+                setMutationError(null)
+              }}
+            >
+              New record
+            </Button>
+          ) : null}
+        </div>
       </div>
+      {body}
+    </div>
+  )
 
+  if (loading && !surface) {
+    return frame(
+      <div className="flex items-center justify-center py-8">
+        <Spinner />
+      </div>
+    )
+  }
+
+  if (!ready) {
+    return frame(
+      <div className="p-4 text-[12.5px] text-(--text-secondary)">
+        {error ?? 'The selected backend does not currently expose a record administration surface.'}
+      </div>
+    )
+  }
+
+  return frame(
+    <>
       {capabilities.has('recall') ? (
         <form className="flex gap-2 border-b border-(--border-subtle) p-3" onSubmit={(event) => void search(event)}>
           <input
@@ -499,6 +518,6 @@ export function RecordMemoryPanel({ agentId, canEdit }: { agentId: string; canEd
           </div>
         </div>
       )}
-    </div>
+    </>
   )
 }

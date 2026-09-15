@@ -12,12 +12,13 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/components/console/UnifiedMemoryPanel', () => ({
-  UnifiedMemoryPanel: ({ children, onOpenLegacy }: { children: ReactNode; onOpenLegacy?: () => Promise<void> }) => (
-    <>
-      <button onClick={() => void onOpenLegacy?.()}>Open retained memory tools</button>
-      {children}
-    </>
-  )
+  UnifiedMemoryPanel: ({
+    children,
+    onOpenLegacy
+  }: {
+    children: (viewSwitch: ReactNode) => ReactNode
+    onOpenLegacy?: () => Promise<void>
+  }) => children(<button onClick={() => void onOpenLegacy?.()}>Open retained memory tools</button>)
 }))
 
 vi.mock('next/dynamic', () => ({ default: () => () => null }))

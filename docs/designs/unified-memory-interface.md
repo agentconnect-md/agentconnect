@@ -438,9 +438,13 @@ The console UI and catalog-refresh integration are subsequent slices.
 
 The Memory panel now defaults to a capability-driven entry browser for providers
 that support list/get. Managed and external views share the same paged list and
-complete-content reader. The existing settings, channel selector, and Dream panel
-remain in place. Unsupported/older peers use the existing view; “More memory
-tools” also retains file/history and provider-specific operations during rollout.
+complete-content reader, rendered in the console's file-browser shell: a list of
+named topics or nameless records with their last edit, and a preview pane whose
+header carries size, edit time, inheritance and the entry actions. The existing
+settings, channel selector, and Dream panel remain in place. Unsupported/older
+peers use the existing view; an Entries / Files (or Records) switch in the card
+header keeps the raw view reachable during rollout, because the generated overview,
+record identifiers/metadata, and the sandbox wake flow have no entry projection yet.
 
 The editor loads every content slice before enabling edits, rejecting missing,
 repeated, changed-revision, or oversized continuation chains. Reads are bounded to
