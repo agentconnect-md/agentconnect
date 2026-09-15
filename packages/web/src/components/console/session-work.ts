@@ -64,8 +64,8 @@ const ELICIT_OUTCOMES = new Set(['accepted', 'dismissed', 'cancelled', 'complete
  *  which is at least the question, rather than a card with nothing in it. */
 /** Parse an `app` row's body into the card history shows (webchat-mcp-apps.md §8). A row that
  *  cannot be read yields null and the caller falls back to plain text — the card's title, which is
- *  at least what was opened. There is never an `html` here: a persisted app is a record, not a
- *  page, so the renderer shows the header and the outcome and arms nothing. */
+ *  at least what was opened. `html` is present once the row's full body has been read, and that is
+ *  what lets a reloaded page render again instead of standing as a record of itself. */
 export function mcpAppCard(body: string | undefined): McpAppBody | null {
   if (!body) return null
   try {
@@ -79,6 +79,10 @@ export function mcpAppCard(body: string | undefined): McpAppBody | null {
       title: typeof parsed.title === 'string' ? parsed.title : parsed.toolName,
       toolName: parsed.toolName,
       ...(parsed.toolResult ? { toolResult: parsed.toolResult } : {}),
+      ...(typeof parsed.html === 'string' && parsed.html.length > 0 ? { html: parsed.html } : {}),
+      ...(parsed.toolInput ? { toolInput: parsed.toolInput } : {}),
+      ...(parsed.csp ? { csp: parsed.csp } : {}),
+      ...(parsed.dimensions ? { dimensions: parsed.dimensions } : {}),
       ...(outcome ? { outcome } : {})
     }
   } catch {

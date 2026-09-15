@@ -357,9 +357,9 @@ export type McpAppCard = z.infer<typeof McpAppCard>
 
 /** How a live app card stopped being one. `closed` is the reader dismissing the frame,
  *  `superseded` the same conversation opening past {@link MCP_APP_LIVE_CAP}, `expired` the
- *  session ending under it. Every one of them renders the card inert and keeps its header and
- *  final result — a persisted app is the record of a decision, never a page re-armed against a
- *  session that no longer exists (§8). */
+ *  session ending under it. Each ends one ARMING, not the record: the row keeps the template, so
+ *  a reloaded page renders again and may be re-armed from its row (§8.1). `closed` is the
+ *  exception the reader asked for — a card they dismissed stays dismissed. */
 export const McpAppOutcome = z.enum(['closed', 'superseded', 'expired'])
 export type McpAppOutcome = z.infer<typeof McpAppOutcome>
 

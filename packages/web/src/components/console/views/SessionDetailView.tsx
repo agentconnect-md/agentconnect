@@ -70,7 +70,7 @@ import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
-import { McpAppCard } from '@/components/console/McpAppCard'
+import { McpAppCard, type McpAppCardProps } from '@/components/console/McpAppCard'
 import { UserTurnDetails } from '../UserTurnDetails'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
 import type { McpAppRpc, UserTurnBody } from '@agentconnect.md/protocol'
@@ -449,9 +449,8 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
   // just without an `onAnswer` — a reader loading the conversation later sees the question, what
   // was offered and what was answered, with every control inert. A row whose body cannot be read
   // falls through to plain text, which is at least the question itself.
-  // A recorded MCP App card (webchat-mcp-apps.md §8). It renders through the SAME component a live
-  // card does, without an `onRpc` — so the reader sees what was opened, what it reported and how it
-  // ended, with no frame armed against a bridge that stopped answering.
+  // A recorded MCP App card (webchat-mcp-apps.md §8), rendered by the SAME component a live card
+  // is: the row keeps the template, so a reloaded page comes back rather than a record of itself.
   if (k === 'app') {
     const card = mcpAppCard(m.body)
     if (card)
@@ -467,7 +466,10 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
         files: [],
         app: card,
         time: formatTranscriptRowTime(m),
-        ...(platform ? { platform } : {})
+        ...(platform ? { platform } : {}),
+        // The template is stripped from a transcript page, so a truncated row carries its own
+        // coordinates and the card pulls the page back through the full-body read.
+        ...(m.bodyTruncated ? { msg: m, ...(toolSessionId ? { toolSessionId } : {}) } : {})
       }
   }
   if (k === 'elicit') {
@@ -1789,6 +1791,51 @@ function ContentBlock({ block }: { block: unknown }) {
     return <CodeBlock>{fmtValue(b.content)}</CodeBlock>
   }
   return <CodeBlock>{fmtValue(block)}</CodeBlock>
+}
+
+/**
+ * One MCP App card in the transcript, with the template its row was recorded with.
+ *
+ * A transcript page strips the template (a card is hundreds of KiB), so a row that came back
+ * truncated is one fetch away from its page: this pulls the whole body back through the same
+ * on-demand daemon read a large tool body uses, and hands the card its `html`. Until then — and
+ * forever, if the read fails — the card renders exactly as it did before the template was kept.
+ */
+function McpAppRow({
+  step,
+  sessionId,
+  onRpc,
+  onClose
+}: {
+  step: FmtStep
+  sessionId?: string
+  onRpc?: McpAppCardProps['onRpc']
+  onClose?: McpAppCardProps['onClose']
+}) {
+  const [html, setHtml] = useState<{ appId: string; html: string } | null>(null)
+  const app = step.app
+  const appId = app?.appId
+  const toolCallId = step.msg?.toolCallId
+  const wants = !!appId && !!toolCallId && !!sessionId && !app?.html
+  useEffect(() => {
+    if (!wants) return
+    let live = true
+    fetchToolBody(sessionId!, toolCallId!).then(
+      (body) => {
+        const card = mcpAppCard(body)
+        if (live && card?.html) setHtml({ appId: appId!, html: card.html })
+      },
+      () => {
+        // A template that cannot be fetched leaves the card as the record it already is.
+      }
+    )
+    return () => {
+      live = false
+    }
+  }, [wants, sessionId, toolCallId, appId])
+  const withTemplate =
+    app && html?.appId === app.appId && !app.html ? { ...step, app: { ...app, html: html.html } } : step
+  return <McpAppCard step={withTemplate} {...(onRpc ? { onRpc } : {})} {...(onClose ? { onClose } : {})} />
 }
 
 // The expandable body panel for one tool row: input, output, content blocks,
@@ -5192,8 +5239,9 @@ export default function SessionDetailView() {
                                   {saidSteps.map((st, si) =>
                                     st.lane === APP_LANE ? (
                                       <div key={`a:${st.app?.appId ?? si}`} className={si > 0 ? 'mt-2' : ''}>
-                                        <McpAppCard
+                                        <McpAppRow
                                           step={st}
+                                          sessionId={st.toolSessionId ?? toolSid}
                                           {...(appRpc
                                             ? { onRpc: (appId, rpc) => appRpc(turn.agentId, appId, rpc) }
                                             : {})}

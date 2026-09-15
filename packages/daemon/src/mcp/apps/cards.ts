@@ -13,7 +13,13 @@
  * the reader closes it, a fifth card in one conversation supersedes the oldest
  * ({@link MCP_APP_LIVE_CAP}), or the session it was opened under ends.
  */
-import { MCP_APP_LIVE_CAP, type McpAppOutcome } from '@agentconnect.md/protocol'
+import {
+  MCP_APP_LIVE_CAP,
+  McpAppBody,
+  type McpAppCsp,
+  type McpAppDimensions,
+  type McpAppOutcome
+} from '@agentconnect.md/protocol'
 import type { AppStream } from './surface.js'
 
 /** One live card, as the daemon holds it. The fields are the answers to "may this view do
@@ -49,15 +55,65 @@ export interface LiveApp {
   readonly row?: AppRow
 }
 
-/** One app card's transcript row coordinates plus the body fields a settlement re-writes. */
+/** One app card's transcript row coordinates plus the body a settlement re-writes. The template
+ *  and the card's reach are in here because the row is what a reloaded page is rebuilt from. */
 export interface AppRow {
   readonly channel: string
   readonly thread: string
   readonly ts: string
   readonly sender: string
+  readonly appId: string
+  readonly conversationId: string
+  readonly server: string
   readonly title: string
   readonly toolName: string
+  readonly toolInput?: Record<string, unknown>
   readonly toolResult?: { content?: unknown[]; structuredContent?: Record<string, unknown>; isError?: boolean }
+  readonly html?: string
+  readonly csp?: McpAppCsp
+  readonly dimensions?: McpAppDimensions
+}
+
+/**
+ * Rebuild one card's record from the transcript row that recorded it (webchat-mcp-apps.md §8) —
+ * the pure half of reviving a card whose process, or whose reader's page, has been restarted.
+ *
+ * Undefined is a card that must NOT be revived, and it is the same answer for every reason: a row
+ * that will not parse, one from another conversation, and one written before templates were kept
+ * (no `server`, so nothing records what the card was allowed to reach). Refusing to guess at the
+ * server is the point — the frame names only its `appId`, and a revived card that inferred its
+ * reach from anything else would be a frame choosing its own.
+ */
+export function reviveAppRow(
+  appId: string,
+  conversationId: string,
+  stored: { channel: string; thread: string; ts: string; sender: string; body: string }
+): AppRow | undefined {
+  let parsed
+  try {
+    parsed = McpAppBody.safeParse(JSON.parse(stored.body))
+  } catch {
+    return undefined
+  }
+  if (!parsed.success) return undefined
+  const body = parsed.data
+  if (body.appId !== appId || !body.server || body.conversationId !== conversationId) return undefined
+  return {
+    channel: stored.channel,
+    thread: stored.thread,
+    ts: stored.ts,
+    sender: stored.sender,
+    appId,
+    conversationId,
+    server: body.server,
+    title: body.title,
+    toolName: body.toolName,
+    ...(body.toolInput ? { toolInput: body.toolInput } : {}),
+    ...(body.toolResult ? { toolResult: body.toolResult } : {}),
+    ...(body.html ? { html: body.html } : {}),
+    ...(body.csp ? { csp: body.csp } : {}),
+    ...(body.dimensions ? { dimensions: body.dimensions } : {})
+  }
 }
 
 /** A view's per-card call budget. An app is an interface, not a loop: a frame that wants more

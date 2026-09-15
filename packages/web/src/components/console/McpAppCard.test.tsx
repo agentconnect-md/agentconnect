@@ -66,10 +66,26 @@ describe('McpAppCard — what renders', () => {
     expect(host.textContent).toContain('charts__pick_target')
   })
 
-  it('does NOT arm a frame with no way to answer it — a history view is a record, not a page', () => {
+  it('shows the page in a read-only view but arms no bridge behind it', () => {
+    // A view that cannot forward RPCs still renders what was shown — the template is recorded, so
+    // withholding it would hide the interface for no gain. What it must not do is answer for it:
+    // a frame that gets a handshake from a host with nowhere to forward to is a page whose buttons
+    // hang rather than one that says it cannot act.
     render(<McpAppCard step={{ app: APP }} />)
+    expect(host.querySelector('iframe')).not.toBeNull()
+    const posted: unknown[] = []
+    vi.spyOn(frameWindow(), 'postMessage').mockImplementation((message: unknown) => {
+      posted.push(message)
+    })
+    fromFrame({ jsonrpc: '2.0', id: 1, method: 'ui/initialize', params: {} })
+    expect(posted).toEqual([])
+  })
+
+  it('renders a card with no recorded template as the record it is', () => {
+    const { html: _dropped, ...noTemplate } = APP
+    render(<McpAppCard step={{ app: noTemplate }} onRpc={async () => ({ ok: true, result: {} })} />)
     expect(host.querySelector('iframe')).toBeNull()
-    expect(host.textContent).toContain('not replayed here')
+    expect(host.textContent).toContain('could not be loaded')
   })
 
   it('waits for a chunked template to finish before arming a frame', () => {
@@ -87,15 +103,26 @@ describe('McpAppCard — what renders', () => {
     expect(host.querySelector('iframe')).not.toBeNull()
   })
 
-  it('renders a settled card inert, saying how it ended instead of showing a dead page', () => {
+  it('keeps showing the page when the BRIDGE settled, and names how it ended', () => {
+    // `superseded` and `expired` end an arming, not the reader's interest in what they were
+    // looking at — the template is recorded, so the page comes back and the header says plainly
+    // that this card's bridge is not the live one any more.
     render(
       <McpAppCard step={{ app: { ...APP, outcome: 'superseded' } }} onRpc={async () => ({ ok: true, result: {} })} />
     )
-    expect(host.querySelector('iframe')).toBeNull()
+    expect(host.querySelector('iframe')).not.toBeNull()
     expect(host.textContent).toContain('Replaced by a newer interface')
   })
 
-  it('offers no close control once the card is settled', () => {
+  it('goes inert when the READER closed it, rather than putting the page back', () => {
+    // The one settlement that hides the page: they said they were done with it, and rendering it
+    // again on the next paint would be undoing that.
+    render(<McpAppCard step={{ app: { ...APP, outcome: 'closed' } }} onRpc={async () => ({ ok: true, result: {} })} />)
+    expect(host.querySelector('iframe')).toBeNull()
+    expect(host.textContent).toContain('Interface closed')
+  })
+
+  it('offers no close control once the reader has closed it', () => {
     const onClose = vi.fn()
     render(
       <McpAppCard

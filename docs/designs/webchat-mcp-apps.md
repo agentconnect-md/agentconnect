@@ -333,16 +333,43 @@ correct only once there is no band.
 ## 8. Body-locality
 
 Unchanged, and worth stating because an app looks like content: the CP stores no app
-HTML, no `structuredContent`, and no view RPC. The card is streamed relay-to-browser,
-persisted in the **daemon's** transcript as an `app` row — header, tool, final result and the
-settlement, but **not the template** — and an authorized BFF history read proxies that row from
-the owning daemon like any other. A reloaded conversation shows the settled card, never a
-re-armed iframe.
+HTML, no `structuredContent`, and no view RPC. The card is streamed relay-to-browser and
+persisted in the **daemon's** transcript as an `app` row — header, tool, arguments, final result,
+the settlement **and the template** — which an authorized BFF read proxies from the owning daemon
+like any other body. A reloaded conversation shows the PAGE again, not a note saying one was shown.
 
 The row is written at open and rewritten at settlement (`LocalStore.upsertApp`, the peer of
-`upsertElicit`). Dropping the template from it is what keeps a several-hundred-KiB document out
-of every transcript read, and it is the same decision §7.1 makes: history is the record of a
-decision, not a page to re-run against a session that has moved on.
+`upsertElicit`), keyed by the card's own `appId` — the one name a reloaded view knows itself by.
+
+Keeping the template is what makes a reload show the interface, and it is also what would put a
+several-hundred-KiB document into every transcript read, so the two are separated rather than
+traded: the history projection strips `html` from an oversized row and marks it truncated, and the
+console pulls the whole card back through the same on-demand `session/tool-body` read an oversized
+tool body uses (keyed by the row's `app:<appId>`). One card, one row, one fetch — and a transcript
+page that is the size it always was.
+
+### 8.1 Re-arming a reloaded card
+
+A page that renders and cannot act is worse than no page, so a card the registry no longer holds
+is rebuilt from its row on the first view RPC that names it (`reviveAppRow`): the reader reloaded,
+or the daemon restarted, and the frame in front of them is the one the row records.
+
+Nothing about the rebuild is taken from the frame. The row carries the card's `server` and the
+`conversationId` it was opened in; the routed frame supplies only its `appId`, and its own
+conversation is re-checked against the row's before anything is revived. A row with no recorded
+server — one written before templates were kept — stays a record and is never re-armed, because
+refusing to guess at a card's reach is the same rule §7.3 states for a live one. A revived card
+re-enters the registry under the ordinary per-conversation cap and its row stops naming an
+outcome, since it is live again.
+
+Two settlements are not the same after a reload. `superseded` and `expired` end an _arming_, so
+the page still renders and the header says how the last one ended; `closed` is the READER
+dismissing the card, and putting that page back on the next paint would undo what they did.
+
+The verdict for every view RPC goes back on **the connection the RPC arrived on**, not on the
+stream the card was opened on. A card outlives its turn, and after a reload that turn's stream
+reaches a browser that is gone — which is a button that hangs rather than one that is refused. The
+console already accepts `app_rpc_result` and `app_resolved` out of band for exactly this reason.
 
 ## 9. Plan
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   foldCustomAnswers,
+  mcpAppCard,
   PLAN_LANE,
   WORK_LANES,
   planEntries,
@@ -251,5 +252,39 @@ describe('foldCustomAnswers', () => {
     expect(only[0]?.options.map((o) => o.label)).toEqual(['Other'])
     const seeded = foldCustomAnswers([{ ...q('q', 'enum', ['keep', 'Other']), defaultValue: 'Other' }, box('q_custom')])
     expect(seeded[0]?.defaultValue).toBeUndefined()
+  })
+})
+
+describe('mcpAppCard — reading an app row back (webchat-mcp-apps.md §8)', () => {
+  const RECORDED = {
+    appId: 'app-1',
+    title: 'Token balances',
+    toolName: 'charts__balances',
+    html: '<p>chart</p>',
+    toolInput: { chain: 'eth' },
+    toolResult: { structuredContent: { total: 1 } },
+    dimensions: { height: 420 },
+    outcome: 'expired'
+  }
+
+  it('carries the recorded TEMPLATE through, which is what re-renders the page on a reload', () => {
+    expect(mcpAppCard(JSON.stringify(RECORDED))).toEqual(RECORDED)
+  })
+
+  it('reads a row whose template was stripped for the page as a card still worth showing', () => {
+    // The transcript page drops `html` on an oversized row; the card parses without it and the
+    // console fetches the whole body under the row's own key.
+    const { html: _stripped, ...lean } = RECORDED
+    expect(mcpAppCard(JSON.stringify(lean))).toEqual(lean)
+  })
+
+  it('drops an outcome it cannot read rather than rendering a verdict it invented', () => {
+    expect(mcpAppCard(JSON.stringify({ ...RECORDED, outcome: 'vaporized' }))?.outcome).toBeUndefined()
+  })
+
+  it('refuses a body that is not a card at all', () => {
+    expect(mcpAppCard(undefined)).toBeNull()
+    expect(mcpAppCard('not json')).toBeNull()
+    expect(mcpAppCard(JSON.stringify({ title: 'no id' }))).toBeNull()
   })
 })

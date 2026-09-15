@@ -532,6 +532,71 @@ describe('SessionReader', () => {
     expect(shrunk.bodyBytes).toBe(Buffer.byteLength(big))
   })
 
+  it('carries a persisted MCP App card’s body, so a reloaded conversation still shows the card', async () => {
+    const s = await store()
+    await seedHistorySession(s)
+    const body = JSON.stringify({
+      appId: 'app-1',
+      title: 'Token balances',
+      toolName: 'charts__get_wallet_balances',
+      server: 'charts',
+      conversationId: 'C1',
+      html: '<p>chart</p>',
+      outcome: 'closed'
+    })
+    await s.upsertApp({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: AGENT,
+      appId: 'app-1',
+      text: 'Token balances',
+      body
+    })
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    // A card that fits rides whole — template included, which is what re-renders the page.
+    expect(messages).toEqual([
+      expect.objectContaining({ kind: 'app', text: 'Token balances', body, toolCallId: 'app:app-1' })
+    ])
+    expect(messages[0]!.bodyTruncated).toBeUndefined()
+    await s.close()
+  })
+
+  it('drops only the TEMPLATE from an oversized app card, leaving the card fetchable whole', async () => {
+    const s = await store()
+    await seedHistorySession(s)
+    const card = {
+      appId: 'app-2',
+      title: 'Token balances',
+      toolName: 'charts__get_wallet_balances',
+      server: 'charts',
+      conversationId: 'C1',
+      toolResult: { structuredContent: { total: 1 } }
+    }
+    const body = JSON.stringify({ ...card, html: `<p>${'x'.repeat(40 * 1024)}</p>` })
+    await s.upsertApp({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: AGENT,
+      appId: 'app-2',
+      text: 'Token balances',
+      body
+    })
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    const row = messages[0]!
+    // The page never rides a transcript page; the row says so and names the key the console
+    // pulls the whole card back under, which is the same read an oversized tool body uses.
+    expect(JSON.parse(row.body!)).toEqual(card)
+    expect(row.bodyTruncated).toBe(true)
+    expect(row.bodyBytes).toBe(Buffer.byteLength(body))
+    expect(row.toolCallId).toBe('app:app-2')
+    expect(
+      await createSessionReader(s).toolBody({ agentId: AGENT, sessionId: 'acp-1', toolCallId: 'app:app-2', offset: 0 })
+    ).toMatchObject({ totalBytes: Buffer.byteLength(body) })
+    await s.close()
+  })
+
   it('binds session and tool-body reads to the authorized agent in a shared thread', async () => {
     const s = await store()
     seedHistorySession(s)

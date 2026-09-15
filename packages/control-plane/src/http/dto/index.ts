@@ -3164,7 +3164,7 @@ export const SessionMessageDto = z.object({
   kind: z.string(),
   text: z.string(),
   attachments: z.array(SessionImageAttachment).max(1).optional(),
-  // ── tool-body enrichment (mirrors protocol SessionMessage; tool rows only) ──
+  // ── tool-body enrichment (mirrors protocol SessionMessage; tool and app rows) ──
   toolCallId: z.string().optional(),
   toolStatus: z.string().optional(),
   toolKind: z.string().optional(),

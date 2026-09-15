@@ -1244,9 +1244,9 @@ export interface SessionStep {
     appId: string
     title: string
     toolName: string
-    /** The template, present only on a LIVE card. A persisted row carries none: see McpAppBody.
-     *  A large template arrives as `app_template` chunks, so this grows until it reaches
-     *  {@link htmlBytes} — the renderer waits for that before arming a frame. */
+    /** The template. A large one arrives as `app_template` chunks, so this grows until it reaches
+     *  {@link htmlBytes} — the renderer waits for that before arming a frame. On a card read back
+     *  from history it arrives whole, from the row's full-body read. */
     html?: string
     /** Set when the template is chunked: the assembled length to expect, in characters. */
     htmlBytes?: number
@@ -1263,11 +1263,11 @@ export interface SessionStep {
  *  same type a live step carries, so one component renders the live card and the recorded one. */
 export type ElicitBody = NonNullable<SessionStep['elicit']>
 
-/** An MCP App card as the transcript PERSISTS it. The live step's own shape minus the template:
- *  a recorded app is the record of a decision, not a page to re-run against a session that no
- *  longer exists (webchat-mcp-apps.md §8), so history shows the header and the final result and
- *  never re-arms the frame. */
-export type McpAppBody = Omit<NonNullable<SessionStep['app']>, 'html'>
+/** An MCP App card as the transcript PERSISTS it — the live step's own shape, template included
+ *  (webchat-mcp-apps.md §8), so a reader who reloads gets the interface back rather than a header
+ *  saying one was shown. `html` is absent from a transcript PAGE, which strips it as oversized;
+ *  the console then pulls the whole card back through the row's full-body read. */
+export type McpAppBody = NonNullable<SessionStep['app']>
 
 // Per-session token accounting (protocol `SessionUsage`), metered by the daemon.
 // Token counts are session-cumulative; context/cost are the latest snapshot.

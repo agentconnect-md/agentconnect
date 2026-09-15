@@ -379,10 +379,35 @@ export function createSessionReader(
           if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
           return base
         }
-        // An elicitation card's body is the card itself and likewise has no full-body fetch behind
-        // it: it rides inline or not at all, leaving the row's question to stand alone.
+        // An elicitation card's body IS the card and has no full-body fetch behind it: it rides
+        // inline or not at all, leaving the row's question to stand alone.
         if (r.kind === 'elicit') {
           if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
+          return base
+        }
+        // An app card's body is the card WITH its template, which is the whole reason a reloaded
+        // page can be shown again (webchat-mcp-apps.md §8) and also why it must not ride a page:
+        // one card is hundreds of KiB. Oversized, the template alone is dropped and the row is
+        // marked truncated, so the console pulls the whole card back through the same on-demand
+        // daemon read an oversized tool body uses — which is keyed by the `toolCallId` below.
+        if (r.kind === 'app') {
+          base.toolCallId = r.tool_call_id ?? undefined
+          const bytes = Buffer.byteLength(r.body)
+          if (bytes <= PREVIEW_CAP) {
+            base.body = r.body
+            return base
+          }
+          try {
+            const { html: _html, ...lean } = JSON.parse(r.body) as { html?: unknown }
+            const shrunk = JSON.stringify(lean)
+            if (Buffer.byteLength(shrunk) <= PREVIEW_CAP) {
+              base.body = shrunk
+              base.bodyTruncated = true
+              base.bodyBytes = bytes
+            }
+          } catch {
+            // unparseable body → the row's title stands alone
+          }
           return base
         }
         if (r.kind !== 'tool') return base

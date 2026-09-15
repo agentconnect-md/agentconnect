@@ -74,9 +74,15 @@ export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
   // reaches what the card declared. Handing an iframe half a document renders a broken page —
   // the one outcome worse than saying the interface is still arriving.
   const assembling = app?.htmlBytes !== undefined && (app.html?.length ?? 0) < app.htmlBytes
-  // A persisted card carries no template (§8), so history shows the header and the result and
-  // never re-arms a frame against a session that has moved on.
-  const live = !settled && !!app?.html && !assembling && !!onRpc
+  // The reader DISMISSING a card is the one settlement that hides its page: they said they were
+  // done with it, and putting it back on the next render would be undoing that. `superseded` and
+  // `expired` are the bridge's lifecycle, not a dismissal — the page is still worth showing, and
+  // the daemon decides for itself whether the card behind it can be served again (§8).
+  const dismissed = app?.outcome === 'closed'
+  // A card read back from history carries its template, so the page renders again; the bridge is
+  // armed whenever this view can forward RPCs, and the daemon refuses any it will not serve.
+  const shows = !dismissed && !!app?.html && !assembling
+  const live = shows && !!onRpc
 
   const doc = useMemo(() => (app?.html ? buildMcpAppDocument(app.html, app.csp) : ''), [app?.html, app?.csp])
 
@@ -203,8 +209,8 @@ export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
   // A settled card's frame stops being driven; the view is told before it goes inert, so an app
   // that wants to say goodbye gets the chance the spec gives it.
   useEffect(() => {
-    if (settled) post({ jsonrpc: '2.0', method: 'ui/resource-teardown', params: {} })
-  }, [settled, post])
+    if (dismissed) post({ jsonrpc: '2.0', method: 'ui/resource-teardown', params: {} })
+  }, [dismissed, post])
 
   if (!app) return null
   const edge = settled ? 'border-l-(--border-strong)' : 'border-l-(--brand)'
@@ -222,13 +228,21 @@ export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
         <span className="min-w-0 flex-none truncate font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
           {app.toolName}
         </span>
+        {settled && shows && (
+          <span
+            className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+            title={settled.label}
+          >
+            {settled.label}
+          </span>
+        )}
         {step.time && (
           <span className="ml-auto flex-none font-mono text-[11.5px] font-normal leading-normal text-(--text-disabled)">
             {step.time}
           </span>
         )}
         <span className={`-my-[2px] -mr-[4px] flex flex-none items-center gap-[2px] ${step.time ? '' : 'ml-auto'}`}>
-          {!settled && (
+          {shows && (
             <button
               type="button"
               className="iconbtn h-[22px] w-[22px]"
@@ -240,7 +254,7 @@ export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
               <Icon name={minimized ? 'chevron-right' : 'chevron-down'} size={12} color="var(--text-tertiary)" />
             </button>
           )}
-          {!settled && onClose && (
+          {shows && onClose && (
             <button
               type="button"
               className="iconbtn h-[22px] w-[22px]"
@@ -253,14 +267,14 @@ export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
           )}
         </span>
       </div>
-      {(!minimized || settled) && (
+      {(!minimized || (settled && !shows)) && (
         <div className="min-w-0 border-t border-(--border-subtle)">
-          {settled ? (
+          {settled && !shows ? (
             <span className="flex min-w-0 items-center gap-[7px] px-[14px] py-[11px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
               <Icon name={settled.icon} size={13} color={settled.color} />
               <span className="min-w-0 truncate">{settled.label}</span>
             </span>
-          ) : live ? (
+          ) : shows ? (
             <iframe
               ref={frameRef}
               title={app.title}
@@ -276,11 +290,11 @@ export function McpAppCard({ step, onRpc, onClose }: McpAppCardProps) {
               <span className="min-w-0 truncate">Loading the interface…</span>
             </span>
           ) : (
-            // A card read back from history: the frame is not re-armed, and saying so is more
-            // honest than showing a page whose buttons would do nothing.
+            // A card whose template never arrived — a row written before templates were kept, or a
+            // full-body read that failed. Saying so is more honest than an empty frame.
             <span className="flex min-w-0 items-center gap-[7px] px-[14px] py-[11px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="archive" size={13} color="var(--text-tertiary)" />
-              <span className="min-w-0 truncate">This interface was shown live; its page is not replayed here.</span>
+              <span className="min-w-0 truncate">This interface was shown live; its page could not be loaded.</span>
             </span>
           )}
         </div>

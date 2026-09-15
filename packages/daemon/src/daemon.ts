@@ -17,6 +17,7 @@ import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   encodeSharedSlackStatusTarget,
+  McpAppBody,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HookReport,
@@ -208,7 +209,7 @@ import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { DAEMON_VERSION } from './version.js'
 import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
-import { AppSurface, newAppId, type AppTurn } from './mcp/apps/surface.js'
+import { AppSurface, newAppId, type AppStream, type AppTurn } from './mcp/apps/surface.js'
 import {
   APP_RPC_REFUSALS,
   CLOSED,
@@ -216,6 +217,7 @@ import {
   LiveAppRegistry,
   SUPERSEDED,
   appContextBlock,
+  reviveAppRow,
   type AppRow,
   type LiveApp
 } from './mcp/apps/cards.js'
@@ -596,7 +598,6 @@ import type {
   McpAppRpc,
   McpAppRpcResult,
   CodeHostProvider,
-  McpAppBody,
   McpAppOutcome
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
@@ -9061,10 +9062,21 @@ export class Daemon {
         // Accepted means DELIVERED, not allowed: the verdict travels back on the stream as the
         // `app_rpc_result` event the view's JSON-RPC call is completed from, so a refusal is
         // something the frame can render rather than an ack the frame never sees.
-        await this.handleAppRpc(msg.chatId, op.appId, op.callId, op.rpc, {
-          ...(op.user !== undefined ? { user: op.user } : {}),
-          ...(op.userId !== undefined ? { userId: op.userId } : {})
-        })
+        await this.handleAppRpc(
+          msg.chatId,
+          op.appId,
+          op.callId,
+          op.rpc,
+          {
+            ...(op.user !== undefined ? { user: op.user } : {}),
+            ...(op.userId !== undefined ? { userId: op.userId } : {})
+          },
+          // This op's OWN connection, which is the one the reader is actually on: a card outlives
+          // its turn, and after a reload the turn's stream reaches a browser that is long gone.
+          // The synthetic turnId is what the console already handles out of band for exactly these
+          // two card-lifetime events.
+          { conversationId: msg.chatId, turnId: `app:${op.appId}`, index: 0, sink }
+        )
         return { msgId: msg.msgId, accepted: true }
       case 'app_close': {
         // The conversation confines the close to a card this browser was actually shown, exactly
@@ -9073,6 +9085,11 @@ export class Daemon {
         if ('app' in resolved) {
           this.liveApps.settle(op.appId)
           this.settleAppCard(resolved.app, CLOSED)
+        } else {
+          // A card this daemon holds only a ROW for — the reader reloaded and dismissed the page
+          // without ever driving it. The dismissal is theirs either way, and a row that did not
+          // record it would put the page back on their next reload.
+          await this.recordAppClose(op.appId, msg.chatId)
         }
         return { msgId: msg.msgId, accepted: true }
       }
@@ -14203,11 +14220,11 @@ export class Daemon {
       inline ? undefined : call.card.html
     )
     if (posted.shown) {
-      // The card's transcript row, written at open and rewritten at settlement (§8). Without it a
-      // reloaded conversation shows nothing at all — which is what shipped, because the row was
-      // designed and never written.
+      // The card's transcript row, written at open and rewritten at settlement (§8). It carries the
+      // whole card — template, arguments, result — because a reloaded conversation rebuilds the
+      // PAGE from it, not just the fact that one was shown.
       const p = [...this.pending.values()].find((t) => t.plan.sessionKey === key)
-      const row = p
+      const row: AppRow | undefined = p
         ? {
             channel: p.plan.transcriptChannel,
             thread: p.plan.statusThread,
@@ -14215,9 +14232,18 @@ export class Daemon {
             // keeps the card where it was opened and cannot collide with a second card's row.
             ts: monotonicTs(),
             sender: p.plan.agentId,
+            appId,
+            conversationId: ctx.channel,
+            server: split.server,
             title: call.title,
             toolName: name,
-            ...(call.card.toolResult ? { toolResult: call.card.toolResult } : {})
+            // The template and the call's own arguments, so the row rebuilds the PAGE and not just
+            // the fact that one was shown — a reload replays both into the frame (§8).
+            html: call.card.html,
+            ...(Object.keys(args).length > 0 ? { toolInput: args } : {}),
+            ...(call.card.toolResult ? { toolResult: call.card.toolResult } : {}),
+            ...(call.card.csp ? { csp: call.card.csp } : {}),
+            ...(call.card.dimensions ? { dimensions: call.card.dimensions } : {})
           }
         : undefined
       if (row) this.writeAppRow(row)
@@ -14273,20 +14299,32 @@ export class Daemon {
     appId: string,
     callId: string,
     rpc: McpAppRpc,
-    author?: { user?: string; userId?: string }
+    author?: { user?: string; userId?: string },
+    /** The connection the RPC ARRIVED on. Every verdict goes back here rather than on the card's
+     *  own held stream: after a reload the browser is on a new connection and the turn that opened
+     *  the card is long finished, so its stream reaches nobody — which is a button that hangs. */
+    reply?: AppStream
   ): Promise<void> {
-    const resolved = this.liveApps.resolve({ appId, conversationId })
+    let resolved = this.liveApps.resolve({ appId, conversationId })
+    // A card the registry does not hold may still be one this daemon RECORDED: the reader reloaded,
+    // or the process restarted, and the page they are looking at is the one the row rebuilds (§8).
+    if ('refused' in resolved && resolved.refused === 'unknown' && reply) {
+      const revived = await this.reviveAppCard(appId, conversationId, reply)
+      if (revived) resolved = { app: revived }
+    }
     if ('refused' in resolved) {
       // A refusal still has to reach the frame, and the refused card is by definition not the
-      // place to look for its stream — so the conversation's own live one carries it. A refusal
-      // for a conversation with nothing streaming has nowhere to go, and stays silent.
-      const stream = [...this.pending.values()].find((p) => p.webchat?.conversationId === conversationId)?.webchat
+      // place to look for its stream — so the connection that asked carries it, falling back to
+      // the conversation's own live stream for a caller that gave none.
+      const stream =
+        reply ?? [...this.pending.values()].find((p) => p.webchat?.conversationId === conversationId)?.webchat
       if (stream)
         this.appSurface.answer(stream, appId, callId, { ok: false, error: APP_RPC_REFUSALS[resolved.refused] })
       return
     }
     const app = resolved.app
-    const answer = (outcome: McpAppRpcResult): void => this.appSurface.answer(app.stream, appId, callId, outcome)
+    const answer = (outcome: McpAppRpcResult): void =>
+      this.appSurface.answer(reply ?? app.stream, appId, callId, outcome)
     try {
       switch (rpc.method) {
         case 'tools/call': {
@@ -14331,7 +14369,10 @@ export class Daemon {
             app.conversationId,
             rpc.text,
             webchatAuthorOf(author ?? {}),
-            app.stream.sink
+            // The reader's CURRENT connection, for the same reason the verdict goes back on it:
+            // a turn streamed onto the stream that opened the card would reach whoever was there
+            // before the reload, which is nobody.
+            reply?.sink ?? app.stream.sink
           )
           answer(
             ack.accepted
@@ -14352,21 +14393,79 @@ export class Daemon {
     }
   }
 
+  /**
+   * Rebuild one app card from the row this daemon wrote when it opened it (webchat-mcp-apps.md §8),
+   * so a reader who reloaded — or who came back after a restart — is driving a live bridge again
+   * rather than a page whose buttons hang.
+   *
+   * Every authorization fact is taken from the ROW, never from the frame: the card may reach the
+   * one server it was opened on, in the one conversation it was opened in, and the routed frame's
+   * own conversation is re-checked against the row's before anything is revived. A row written
+   * before templates were kept has no server recorded and stays unrevivable — a record, as it was.
+   */
+  private async reviveAppCard(appId: string, conversationId: string, stream: AppStream): Promise<LiveApp | undefined> {
+    let stored
+    try {
+      stored = await this.store.getAppCard(appId)
+    } catch (err: unknown) {
+      this.log.warn(`mcp apps: card ${appId} not readable for revival: ${formatErr(err)}`)
+      return undefined
+    }
+    const row = stored ? reviveAppRow(appId, conversationId, stored) : undefined
+    if (!row) return undefined
+    const orgId = this.orgForAgent(row.sender)
+    const app: LiveApp = {
+      appId,
+      conversationId,
+      agentId: row.sender,
+      sessionKey: this.webchatTransport.webchatSessionKey(conversationId, row.sender),
+      server: row.server,
+      ...(orgId ? { orgId } : {}),
+      toolName: row.toolName,
+      openedAt: Date.now(),
+      stream,
+      row
+    }
+    for (const gone of this.liveApps.open(app)) this.settleAppCard(gone, SUPERSEDED)
+    // The card is live again, so its row must stop saying how the last arming ended.
+    this.writeAppRow(row)
+    this.log.debug(`mcp apps: revived card ${appId} for "${row.toolName}" from its transcript row`)
+    return app
+  }
+
+  /** Record a reader's dismissal of a card that is no longer live, on the row that recorded it —
+   *  so a reload does not hand back a page they closed. Silent for a row it cannot revive. */
+  private async recordAppClose(appId: string, conversationId: string): Promise<void> {
+    try {
+      const stored = await this.store.getAppCard(appId)
+      const row = stored ? reviveAppRow(appId, conversationId, stored) : undefined
+      if (row) this.writeAppRow(row, CLOSED)
+    } catch (err: unknown) {
+      this.log.warn(`mcp apps: close not recorded for card ${appId}: ${formatErr(err)}`)
+    }
+  }
+
   /** Tell the browser a card settled AND record the same verdict on its transcript row, so a
    *  reader who loads the conversation later sees the card as it ended rather than as it opened. */
   private settleAppCard(app: LiveApp, outcome: McpAppOutcome): void {
     this.appSurface.settle(app.stream, app.appId, outcome)
-    if (app.row) this.writeAppRow(app.row, app.appId, outcome)
+    if (app.row) this.writeAppRow(app.row, outcome)
   }
 
   /** Write (or rewrite) one app card's row. Best effort by construction: a card that renders and
    *  works but does not persist is a smaller failure than a turn that breaks over a store write. */
-  private writeAppRow(row: AppRow, appId?: string, outcome?: McpAppOutcome): void {
+  private writeAppRow(row: AppRow, outcome?: McpAppOutcome): void {
     const body: McpAppBody = {
-      appId: appId ?? '',
+      appId: row.appId,
       title: row.title,
       toolName: row.toolName,
+      conversationId: row.conversationId,
+      server: row.server,
+      ...(row.html ? { html: row.html } : {}),
+      ...(row.toolInput ? { toolInput: row.toolInput } : {}),
       ...(row.toolResult ? { toolResult: row.toolResult } : {}),
+      ...(row.csp ? { csp: row.csp } : {}),
+      ...(row.dimensions ? { dimensions: row.dimensions } : {}),
       ...(outcome ? { outcome } : {})
     }
     void this.store
@@ -14375,6 +14474,7 @@ export class Daemon {
         thread: row.thread,
         ts: row.ts,
         sender: row.sender,
+        appId: row.appId,
         text: row.title,
         body: JSON.stringify(body)
       })
