@@ -1251,7 +1251,10 @@ export function MemoryPanel({
             canEdit={canEdit}
             legacyLabel="Files"
             sandboxed={sandboxedMemory}
-            overview={{ read: () => fetchAgentMemoryFull(agentId, undefined, selectedChannel) }}
+            overview={{
+              read: () => fetchAgentMemoryFull(agentId, undefined, selectedChannel),
+              readTopic: (file) => fetchAgentMemoryFull(agentId, file, selectedChannel)
+            }}
             onOpenLegacy={async () => {
               await Promise.all([loadList(), loadFile(selected)])
             }}

@@ -367,19 +367,25 @@ it('wakes a sleeping sandbox instead of reporting a generic failure', async () =
   expect(host.textContent).not.toContain('Legacy memory tools')
 })
 
-it('pins the overview when given, labels a hand-written one, and follows its links by shown name across pages', async () => {
-  const overview = { exists: true, content: '', mtime: null as string | null }
-  const read = vi.fn(async () => overview)
-  // The link's shown name is what the daemon derives for the entry label; its href names a file the list never exposes.
-  overview.content = "# Memory\n\n<!-- generated from each topic's `description` header -->\n\n- [Later](oncall.md)"
-  overview.mtime = '2026-09-14T00:00:00.000Z'
-  const later = { ...entry, ref: 'later-ref', label: 'Later' }
-  vi.mocked(api.listAgentMemoryEntries)
-    .mockResolvedValueOnce({ entries: [entry], consistency: 'live', order: 'topic', nextCursor: 'p2' })
-    .mockResolvedValueOnce({ entries: [later], consistency: 'live', order: 'topic' })
+it('pins the overview when given, labels a hand-written one, and follows its links by filename, read-only', async () => {
+  type File = { exists: boolean; content: string; mtime: string | null }
+  const overview: File = {
+    exists: true,
+    content: "# Memory\n\n<!-- generated from each topic's `description` header -->\n\n- [Later](oncall.md)",
+    mtime: '2026-09-14T00:00:00.000Z'
+  }
+  // A fresh object per read, as a fetch would give; the same reference would let React skip the re-render.
+  const read = vi.fn(async () => ({ ...overview }))
+  let resolveTopic!: (value: File) => void
+  const readTopic = vi.fn(
+    () =>
+      new Promise<File>((r) => {
+        resolveTopic = r
+      })
+  )
   await act(async () =>
     root.render(
-      <UnifiedMemoryPanel agentId="agent" canEdit overview={{ read }}>
+      <UnifiedMemoryPanel agentId="agent" canEdit overview={{ read, readTopic }}>
         {() => null}
       </UnifiedMemoryPanel>
     )
@@ -389,17 +395,32 @@ it('pins the overview when given, labels a hand-written one, and follows its lin
   expect(read).toHaveBeenCalledTimes(1)
   expect(host.textContent).toContain('generated from topic descriptions')
   expect(host.textContent).not.toContain('Edit memory')
-  expect(host.querySelector('[data-testid="stray"]')?.textContent).toBe('blocked')
+  // Any flat memory filename is a destination; a missing one says so after the read, below.
+  expect(host.querySelector('[data-testid="stray"]')?.textContent).toBe('action')
+  // The href names the file; while it loads, nothing that could take a draft is offered.
   await click('follow oncall.md')
-  expect(api.listAgentMemoryEntries).toHaveBeenLastCalledWith('agent', undefined, 'p2')
-  expect(api.getAgentMemoryEntry).toHaveBeenCalledWith('agent', 'later-ref', undefined, undefined)
-  expect(host.textContent).toContain('Later')
-  overview.content = '# Mine\n\n[Nowhere](oncall.md)'
+  expect(readTopic).toHaveBeenCalledWith('oncall.md')
+  expect([...host.querySelectorAll('button')].find((b) => b.textContent?.includes('New memory'))?.disabled).toBe(true)
+  await act(async () => resolveTopic({ exists: true, content: 'On call rota', mtime: null }))
+  expect(host.textContent).toContain('On call rota')
+  expect(host.textContent).toContain('oncall.md')
+  expect(host.textContent).toContain('read-only')
+  expect(host.textContent).not.toContain('Edit memory')
+  expect(api.getAgentMemoryEntry).not.toHaveBeenCalled()
+  await click('Back to overview')
+  expect(host.textContent).toContain('generated from topic descriptions')
+  // A read still in flight when a new memory starts is dropped, so it can never replace the draft.
+  await click('follow oncall.md')
+  await click('MEMORY.md')
+  await act(async () => resolveTopic({ exists: true, content: 'stale topic', mtime: null }))
+  expect(host.textContent).not.toContain('stale topic')
+  overview.content = '# Mine\n\n[read this](oncall.md)'
   overview.mtime = null
   await click('MEMORY.md')
   expect(host.textContent).toContain('hand-written')
   await click('follow oncall.md')
-  expect(host.textContent).toContain('No memory entry is named “Nowhere”')
+  await act(async () => resolveTopic({ exists: false, content: '', mtime: null }))
+  expect(host.textContent).toContain('This topic no longer exists.')
 })
 
 it('shows a record’s metadata under its text', async () => {

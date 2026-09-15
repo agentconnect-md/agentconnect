@@ -61,21 +61,18 @@ interface Props {
   // The generated overview (MEMORY.md), read through the compatibility route and shown read-only as a pinned row.
   overview?: OverviewSource
 }
+export interface OverviewFile {
+  exists: boolean
+  content: string
+  mtime: string | null
+}
 export interface OverviewSource {
-  read: () => Promise<{ exists: boolean; content: string; mtime: string | null }>
+  read: () => Promise<OverviewFile>
+  // A topic the overview links to, by filename, read through the same route; refs never name files, so it stays read-only.
+  readTopic: (file: string) => Promise<OverviewFile>
 }
 // The daemon stamps this marker on every index it generates; anything else was written by hand and is kept as-is.
 const GENERATED_OVERVIEW_MARKER = '<!-- generated from each topic'
-// Summaries carry no filename, so an overview link is followed by the name the index shows, which the daemon derives
-// exactly as it derives an entry's label (frontmatter name, else the topic filename); the map is href → shown name.
-function overviewLinkNames(content: string): Map<string, string> {
-  const names = new Map<string, string>()
-  for (const match of content.matchAll(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
-    const file = memoryFileFromHref(match[2]!)
-    if (file && !names.has(file)) names.set(file, match[1]!.trim())
-  }
-  return names
-}
 export function UnifiedMemoryPanel(props: Props) {
   return <Entries key={`${props.agentId}:${props.channelKey ?? ''}`} {...props} />
 }
@@ -227,10 +224,16 @@ function Entries({
   const [errorCode, setErrorCode] = useState<string>()
   const [overviewOpen, setOverviewOpen] = useState(false)
   const [overviewBusy, setOverviewBusy] = useState(false)
-  const [overviewDoc, setOverviewDoc] = useState<{ exists: boolean; content: string; mtime: string | null } | null>(
-    null
-  )
+  const [overviewDoc, setOverviewDoc] = useState<OverviewFile | null>(null)
+  const [overviewTopic, setOverviewTopic] = useState<(OverviewFile & { file: string }) | null>(null)
+  const [overviewTopicBusy, setOverviewTopicBusy] = useState(false)
   const overviewRequest = useRef(0)
+  // A newer action outdates any overview read still in flight and takes its busy flag with it.
+  const dropOverviewReads = () => {
+    ++overviewRequest.current
+    setOverviewBusy(false)
+    setOverviewTopicBusy(false)
+  }
   const reload = useCallback(
     async (reconcileEmpty = false) => {
       const id = ++generation.current
@@ -319,7 +322,9 @@ function Entries({
   async function open(entry: Pick<MemoryEntrySummary, 'ref'>) {
     const id = ++detailRequest.current
     setSelectedRef(entry.ref)
+    dropOverviewReads()
     setOverviewOpen(false)
+    setOverviewTopic(null)
     setReading(true)
     setDocument(null)
     setError(undefined)
@@ -416,7 +421,9 @@ function Entries({
     setMode('create')
     setDocument(null)
     setSelectedRef(undefined)
+    dropOverviewReads()
     setOverviewOpen(false)
+    setOverviewTopic(null)
     setDraft('')
     setLabel('')
     setError(undefined)
@@ -427,12 +434,14 @@ function Entries({
   }
   async function openOverview() {
     if (!overview) return
-    const id = ++overviewRequest.current
+    dropOverviewReads()
+    const id = overviewRequest.current
     ++detailRequest.current
     setReading(false)
     setDocument(null)
     setSelectedRef('overview')
     setOverviewOpen(true)
+    setOverviewTopic(null)
     setOverviewBusy(true)
     setError(undefined)
     setConfirmDelete(false)
@@ -445,37 +454,21 @@ function Entries({
       if (id === overviewRequest.current) setOverviewBusy(false)
     }
   }
-  async function openOverviewLink(name: string) {
-    const id = generation.current
-    const matching = (list: MemoryEntrySummary[]) => list.filter((entry) => entry.label === name)
-    let pool = entries
-    let next = cursor
-    let found = matching(pool)
+  // The href's filename is the destination; it is read as the overview was, and a newer action outdates the read.
+  async function openOverviewTopic(file: string) {
+    if (!overview) return
+    dropOverviewReads()
+    const id = overviewRequest.current
+    setOverviewTopicBusy(true)
     setError(undefined)
     try {
-      for (let pages = 0; found.length === 0 && next && pages < 25; pages++) {
-        setPaging(true)
-        const page = await listAgentMemoryEntries(agentId, channelKey, next)
-        if (id !== generation.current) return
-        pool = [...pool, ...page.entries]
-        next = page.nextCursor
-        setEntries(pool)
-        setCursor(next)
-        found = matching(pool)
-      }
+      const result = await overview.readTopic(file)
+      if (id === overviewRequest.current) setOverviewTopic({ file, ...result })
     } catch (err) {
-      if (id === generation.current) setError(errorMessage(err))
-      return
+      if (id === overviewRequest.current) setError(errorMessage(err))
     } finally {
-      if (id === generation.current) setPaging(false)
+      if (id === overviewRequest.current) setOverviewTopicBusy(false)
     }
-    if (found.length === 1) void open(found[0]!)
-    else
-      setError(
-        found.length
-          ? `Several memory entries are named “${name}”; open the one you mean from the list.`
-          : `No memory entry is named “${name}”. The overview may be out of date.`
-      )
   }
   // The wake watches the root read; its poll re-issues that read until the sandbox answers or the bound passes.
   const readState: SandboxReadState =
@@ -511,16 +504,30 @@ function Entries({
             .join(' · ')
         : ''
   const overviewGenerated = overviewDoc?.content.includes(GENERATED_OVERVIEW_MARKER) === true
-  const overviewLinks = overviewLinkNames(overviewDoc?.content ?? '')
-  const overviewMeta = overviewDoc
+  const shownOverview = overviewTopic ?? overviewDoc
+  const overviewMeta = shownOverview
     ? [
-        formatFileSize(new TextEncoder().encode(overviewDoc.content).byteLength),
-        overviewDoc.mtime ? `edited ${formatFileMtime(overviewDoc.mtime)}` : '',
-        overviewGenerated ? 'generated from topic descriptions' : 'hand-written · kept as-is'
+        overviewTopic?.file ?? '',
+        formatFileSize(new TextEncoder().encode(shownOverview.content).byteLength),
+        shownOverview.mtime ? `edited ${formatFileMtime(shownOverview.mtime)}` : '',
+        overviewTopic
+          ? 'read-only · select it in the list to edit'
+          : overviewGenerated
+            ? 'generated from topic descriptions'
+            : 'hand-written · kept as-is'
       ]
         .filter(Boolean)
         .join(' · ')
     : ''
+  const overviewLink = (href: string) =>
+    resolveFileBrowserMarkdownLink(
+      href,
+      (candidate) => {
+        const file = memoryFileFromHref(candidate)
+        return file ? { path: file, name: file } : null
+      },
+      (target) => void openOverviewTopic(target.path)
+    )
   const renderTree = (openPreview: () => void) => (
     <>
       {asleepView && !busy ? (
@@ -630,10 +637,21 @@ function Entries({
   const renderPreview = (onBack?: () => void) => (
     <>
       <FileBrowserPreviewSummary
-        meta={reading || overviewBusy ? 'Loading complete memory…' : overviewOpen ? overviewMeta : previewMeta}
+        meta={
+          reading || overviewBusy || overviewTopicBusy
+            ? 'Loading complete memory…'
+            : overviewOpen
+              ? overviewMeta
+              : previewMeta
+        }
         onBack={onBack}
         actions={
-          mode ? (
+          overviewTopic ? (
+            <Button variant="secondary" size="xs" onClick={() => setOverviewTopic(null)}>
+              <Icon name="arrow-left" size={13} />
+              Back to overview
+            </Button>
+          ) : mode ? (
             <div className="flex flex-none items-center gap-2">
               <Button variant="secondary" size="xs" disabled={saving} onClick={cancelEdit}>
                 Cancel
@@ -711,30 +729,19 @@ function Entries({
         </div>
       ) : null}
       {overviewOpen ? (
-        overviewBusy ? (
+        overviewBusy || overviewTopicBusy ? (
           <div className="flex flex-1 items-center justify-center py-10">
             <Spinner size={28} />
           </div>
-        ) : overviewDoc?.exists && overviewDoc.content.trim() ? (
+        ) : shownOverview?.exists && shownOverview.content.trim() ? (
           <div className="max-h-[520px] overflow-auto px-[18px] py-4">
-            <MarkdownView
-              content={overviewDoc.content}
-              resolveLink={(href) =>
-                resolveFileBrowserMarkdownLink(
-                  href,
-                  (candidate) => {
-                    const file = memoryFileFromHref(candidate)
-                    const name = file ? overviewLinks.get(file) : undefined
-                    return file && name ? { path: file, name } : null
-                  },
-                  (target) => void openOverviewLink(target.name)
-                )
-              }
-            />
+            <MarkdownView content={shownOverview.content} resolveLink={overviewLink} />
           </div>
-        ) : overviewDoc ? (
+        ) : shownOverview ? (
           <div className="px-4 py-6 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-            No overview yet. The agent maintains its memory itself as it works.
+            {overviewTopic
+              ? 'This topic no longer exists.'
+              : 'No overview yet. The agent maintains its memory itself as it works.'}
           </div>
         ) : null
       ) : reading ? (
@@ -879,7 +886,7 @@ function Entries({
             <Button
               variant="secondary"
               size="xs"
-              disabled={busy || reading || saving || !!mode || blocked}
+              disabled={busy || reading || overviewBusy || overviewTopicBusy || saving || !!mode || blocked}
               onClick={startCreate}
               ariaLabel="New memory"
             >
