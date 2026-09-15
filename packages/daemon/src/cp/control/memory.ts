@@ -158,16 +158,25 @@ function memoryError(wire: ControlWire, corr: string, op: string, err: unknown):
   wire.sendError(corr, 'INTERNAL', `${op} failed`, false)
 }
 
+// Entry replies are in-band; only an unreachable home is refused on the wire, with the reason the console wakes on.
 export const memoryEntriesRead: ControlHandler<MemoryControlDeps> = async (frame, deps, wire) => {
-  const result = deps.memoryEntriesRead
-    ? await deps.memoryEntriesRead(frame.payload as MemoryEntriesReadReq)
-    : { operation: 'error', code: 'UNSUPPORTED', message: 'memory entry reads are unavailable' }
-  wire.reply(frame, 'memory/entries/read/v1/result', result)
+  try {
+    const result = deps.memoryEntriesRead
+      ? await deps.memoryEntriesRead(frame.payload as MemoryEntriesReadReq)
+      : { operation: 'error', code: 'UNSUPPORTED', message: 'memory entry reads are unavailable' }
+    wire.reply(frame, 'memory/entries/read/v1/result', result)
+  } catch (err) {
+    memoryError(wire, frame.id, 'memory/entries/read', err)
+  }
 }
 
 export const memoryEntriesWrite: ControlHandler<MemoryControlDeps> = async (frame, deps, wire) => {
-  const result = deps.memoryEntriesWrite
-    ? await deps.memoryEntriesWrite(frame.payload as MemoryEntriesWriteReq)
-    : { operation: 'error', code: 'UNSUPPORTED', message: 'unified memory writes are unavailable' }
-  wire.reply(frame, 'memory/entries/write/v1/result', result)
+  try {
+    const result = deps.memoryEntriesWrite
+      ? await deps.memoryEntriesWrite(frame.payload as MemoryEntriesWriteReq)
+      : { operation: 'error', code: 'UNSUPPORTED', message: 'unified memory writes are unavailable' }
+    wire.reply(frame, 'memory/entries/write/v1/result', result)
+  } catch (err) {
+    memoryError(wire, frame.id, 'memory/entries/write', err)
+  }
 }

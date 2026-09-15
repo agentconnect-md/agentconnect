@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
 import type {
   MemoryEntryCapabilities,
@@ -23,6 +23,13 @@ import { readCompleteMemoryEntry } from '@/lib/memory-entry-content'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { memoryFileFromHref } from '@/components/console/memory-links'
+import { useSandboxWake, type SandboxReadState } from '@/components/console/sandbox-wake'
+import {
+  MEMORY_SANDBOX_ASLEEP_NOTICE,
+  SandboxAsleepNotice,
+  SandboxStartingNotice
+} from '@/components/console/SandboxWakeNotice'
+import { SANDBOX_ASLEEP_CODE } from '@/components/console/workspace-tree'
 import { UnifiedMemoryHistory } from '@/components/console/UnifiedMemoryHistory'
 import { resolveFileBrowserMarkdownLink } from '@/components/console/file-browser-links'
 import {
@@ -49,7 +56,16 @@ interface Props {
   // What the retained view is called in the switch: "Files" for a managed directory, "Records" for a plugin.
   legacyLabel?: string
   onOpenLegacy?: () => Promise<void>
+  // The managed tree sits on a pool sandbox volume: a read refused as asleep presses the wake, like the file browser.
+  sandboxed?: boolean
+  // The generated overview (MEMORY.md), read through the compatibility route and shown read-only as a pinned row.
+  overview?: OverviewSource
 }
+export interface OverviewSource {
+  read: () => Promise<{ exists: boolean; content: string; mtime: string | null }>
+}
+// The daemon stamps this marker on every index it generates; anything else was written by hand and is kept as-is.
+const GENERATED_OVERVIEW_MARKER = '<!-- generated from each topic'
 export function UnifiedMemoryPanel(props: Props) {
   return <Entries key={`${props.agentId}:${props.channelKey ?? ''}`} {...props} />
 }
@@ -165,7 +181,16 @@ function EntryRow({
     </button>
   )
 }
-function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files', onOpenLegacy }: Props) {
+function Entries({
+  agentId,
+  channelKey,
+  canEdit,
+  children,
+  legacyLabel = 'Files',
+  onOpenLegacy,
+  sandboxed = false,
+  overview
+}: Props) {
   const generation = useRef(0)
   const detailRequest = useRef(0)
   const [capabilities, setCapabilities] = useState<MemoryEntryCapabilities | null>(null)
@@ -189,6 +214,13 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [notice, setNotice] = useState<string>()
+  const [errorCode, setErrorCode] = useState<string>()
+  const [overviewOpen, setOverviewOpen] = useState(false)
+  const [overviewBusy, setOverviewBusy] = useState(false)
+  const [overviewDoc, setOverviewDoc] = useState<{ exists: boolean; content: string; mtime: string | null } | null>(
+    null
+  )
+  const overviewRequest = useRef(0)
   const reload = useCallback(
     async (reconcileEmpty = false) => {
       const id = ++generation.current
@@ -197,6 +229,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
       setBusy(true)
       setPaging(false)
       setError(undefined)
+      setErrorCode(undefined)
       setHits(null)
       setSearchNote(undefined)
       try {
@@ -221,7 +254,10 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
         if (id !== generation.current) return
         if (err instanceof ApiError && (err.status === 404 || err.status === 501 || err.code === 'UNSUPPORTED'))
           setLegacy(true)
-        else setError(errorMessage(err))
+        else {
+          setErrorCode(err instanceof ApiError ? err.code : undefined)
+          setError(errorMessage(err))
+        }
       } finally {
         if (id === generation.current) setBusy(false)
       }
@@ -273,6 +309,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
   async function open(entry: Pick<MemoryEntrySummary, 'ref'>) {
     const id = ++detailRequest.current
     setSelectedRef(entry.ref)
+    setOverviewOpen(false)
     setReading(true)
     setDocument(null)
     setError(undefined)
@@ -369,6 +406,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
     setMode('create')
     setDocument(null)
     setSelectedRef(undefined)
+    setOverviewOpen(false)
     setDraft('')
     setLabel('')
     setError(undefined)
@@ -377,6 +415,34 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
     setMode(null)
     setDraft('')
   }
+  async function openOverview() {
+    if (!overview) return
+    const id = ++overviewRequest.current
+    ++detailRequest.current
+    setReading(false)
+    setDocument(null)
+    setSelectedRef('overview')
+    setOverviewOpen(true)
+    setOverviewBusy(true)
+    setError(undefined)
+    setConfirmDelete(false)
+    try {
+      const result = await overview.read()
+      if (id === overviewRequest.current) setOverviewDoc(result)
+    } catch (err) {
+      if (id === overviewRequest.current) setError(errorMessage(err))
+    } finally {
+      if (id === overviewRequest.current) setOverviewBusy(false)
+    }
+  }
+  // The wake watches the root read; its poll re-issues that read until the sandbox answers or the bound passes.
+  const readState: SandboxReadState =
+    errorCode === SANDBOX_ASLEEP_CODE ? 'asleep' : busy ? 'pending' : error ? 'failed' : 'ready'
+  const retry = useCallback(() => void reload(), [reload])
+  const wake = useSandboxWake(agentId, readState, retry, { sandboxed })
+  const asleep = readState === 'asleep'
+  const asleepView = asleep || (wake.phase === 'starting' && !!error)
+  const startable = sandboxed || asleep
   // An old peer has no entry view at all, so there is nothing to switch back to.
   if (legacy)
     return (
@@ -402,8 +468,64 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
             .filter(Boolean)
             .join(' · ')
         : ''
+  const overviewGenerated = overviewDoc?.content.includes(GENERATED_OVERVIEW_MARKER) === true
+  const overviewMeta = overviewDoc
+    ? [
+        formatFileSize(new TextEncoder().encode(overviewDoc.content).byteLength),
+        overviewDoc.mtime ? `edited ${formatFileMtime(overviewDoc.mtime)}` : '',
+        overviewGenerated ? 'generated from topic descriptions' : 'hand-written · kept as-is'
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
   const renderTree = (openPreview: () => void) => (
     <>
+      {asleepView && !busy ? (
+        wake.phase === 'starting' ? (
+          <SandboxStartingNotice compact />
+        ) : (
+          <SandboxAsleepNotice
+            wake={wake}
+            startable={startable}
+            compact
+            notice={
+              <div className="px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
+                {MEMORY_SANDBOX_ASLEEP_NOTICE}
+              </div>
+            }
+          />
+        )
+      ) : null}
+      {overview && !busy && !hits && !asleepView ? (
+        <button
+          type="button"
+          className={`file-browser-item flex w-full items-start gap-[6px] border-0 border-r-2 py-[6px] pl-2 pr-[10px] text-left [font:inherit] disabled:cursor-default disabled:opacity-60 ${
+            overviewOpen ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'
+          }`}
+          aria-current={overviewOpen ? 'page' : undefined}
+          title="The overview the agent reads first"
+          disabled={rowsLocked}
+          onClick={() => {
+            void openOverview()
+            openPreview()
+          }}
+        >
+          <Icon name="book-marked" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+          <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+            <span
+              className={`mono truncate text-[12.5px] ${overviewOpen ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`}
+            >
+              MEMORY.md
+            </span>
+            <span className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">Overview</span>
+          </span>
+          {overviewDoc?.mtime ? (
+            <span className="flex-none pt-[1px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+              {formatFileMtime(overviewDoc.mtime)}
+            </span>
+          ) : null}
+        </button>
+      ) : null}
       {busy ? (
         <div className="flex justify-center py-4" role="status" aria-label="Loading memory">
           <Spinner size={18} />
@@ -434,7 +556,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
             />
           ))
         : null}
-      {!busy && !error && !hits && entries.length === 0 ? (
+      {!busy && !error && !hits && entries.length === 0 && !overview ? (
         <div className="px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           No memory yet.
         </div>
@@ -465,7 +587,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
   const renderPreview = (onBack?: () => void) => (
     <>
       <FileBrowserPreviewSummary
-        meta={reading ? 'Loading complete memory…' : previewMeta}
+        meta={reading || overviewBusy ? 'Loading complete memory…' : overviewOpen ? overviewMeta : previewMeta}
         onBack={onBack}
         actions={
           mode ? (
@@ -545,7 +667,34 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
           </Button>
         </div>
       ) : null}
-      {reading ? (
+      {overviewOpen ? (
+        overviewBusy ? (
+          <div className="flex flex-1 items-center justify-center py-10">
+            <Spinner size={28} />
+          </div>
+        ) : overviewDoc?.exists && overviewDoc.content.trim() ? (
+          <div className="max-h-[520px] overflow-auto px-[18px] py-4">
+            <MarkdownView
+              content={overviewDoc.content}
+              resolveLink={(href) =>
+                resolveFileBrowserMarkdownLink(
+                  href,
+                  (candidate) => {
+                    const name = memoryFileFromHref(candidate)
+                    const target = name && entries.find((entry) => entry.label === name.replace(/\.md$/, ''))
+                    return name && target ? { path: name, name, ref: target.ref } : null
+                  },
+                  (target) => void open({ ref: target.ref })
+                )
+              }
+            />
+          </div>
+        ) : overviewDoc ? (
+          <div className="px-4 py-6 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
+            No overview yet. The agent maintains its memory itself as it works.
+          </div>
+        ) : null
+      ) : reading ? (
         <div className="flex flex-1 items-center justify-center py-10">
           <Spinner size={28} />
         </div>
@@ -644,6 +793,18 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
               )}
             </div>
           ) : null}
+          {document.metadata && Object.keys(document.metadata).length ? (
+            <dl className="mt-4 grid grid-cols-[minmax(72px,auto)_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-(--border-subtle) pt-3 font-sans text-[11.5px] font-normal leading-normal">
+              {Object.entries(document.metadata).map(([key, value]) => (
+                <Fragment key={key}>
+                  <dt className="text-(--text-tertiary)">{key}</dt>
+                  <dd className="m-0 break-all font-mono text-(--text-secondary)">
+                    {typeof value === 'string' ? value : JSON.stringify(value)}
+                  </dd>
+                </Fragment>
+              ))}
+            </dl>
+          ) : null}
         </div>
       ) : null}
     </>
@@ -735,7 +896,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
           {notice}
         </div>
       ) : null}
-      {error ? (
+      {error && !asleepView ? (
         <div
           role="alert"
           className="border-b border-(--border-subtle) px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)"
@@ -747,7 +908,7 @@ function Entries({ agentId, channelKey, canEdit, children, legacyLabel = 'Files'
         resetKey={`${agentId}:${channelKey ?? ''}`}
         previewOpen={!!mode}
         tree={renderTree}
-        preview={reading || mode || document ? renderPreview : null}
+        preview={reading || mode || document || overviewOpen ? renderPreview : null}
         emptyPreview={
           <div className="flex flex-1 items-center justify-center px-4 py-10 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
             Select a memory to read it.

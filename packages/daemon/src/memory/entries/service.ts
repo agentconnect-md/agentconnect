@@ -29,6 +29,7 @@ import {
   type MemoryContinuationStore,
   type MemoryEntriesView
 } from './contract.js'
+import { MemoryHomeUnavailableError } from '../fs.js'
 import { MemoryEntryTokens } from './tokens.js'
 
 const CURSOR_TTL_MS = 30 * 60 * 1000
@@ -437,6 +438,8 @@ export class MemoryEntries {
       return await operation()
     } catch (error) {
       if (error instanceof MemoryEntriesError) throw error
+      // An unreachable home keeps its reason: the wire refuses it as such, so the console can wake a sleeping sandbox.
+      if (error instanceof MemoryHomeUnavailableError) throw error
       throw new MemoryEntriesError('UNAVAILABLE', 'memory service is temporarily unavailable')
     }
   }

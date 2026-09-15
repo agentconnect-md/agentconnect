@@ -335,6 +335,32 @@ describe('PUT /agents/:id/memory/file (replace, edit-gated, proxied)', () => {
     }
   })
 
+  it('answers a sleeping sandbox with the same 503 + code on every unified entry route', async () => {
+    // The entry routes reach the same home; the daemon refuses on the wire with the reason, and the console's
+    // entry browser wakes the sandbox on this code exactly like the file browser does.
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const asleep = () => {
+      throw new ProtocolError('BAD_PAYLOAD', 'memory/entries/read failed: agent has no running sandbox', {
+        details: { reason: 'sandbox-unavailable' }
+      })
+    }
+    const s = { memoryEntriesRead: asleep, memoryEntriesWrite: asleep }
+    running = buildHttpApp(prisma, undefined, LIVE, s as unknown as ControlSender)
+    for (const request of [
+      { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory/capabilities` },
+      { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory/entries` },
+      { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory/entries/some-ref` },
+      { method: 'GET' as const, url: `${ORG}/agents/${AGENT}/memory/entries/some-ref/history` },
+      { method: 'POST' as const, url: `${ORG}/agents/${AGENT}/memory/entries/search`, payload: { query: 'x' } },
+      { method: 'POST' as const, url: `${ORG}/agents/${AGENT}/memory/entries`, payload: { text: 'x' } }
+    ]) {
+      const res = await running.app.inject(request)
+      expect(res.statusCode, request.url).toBe(503)
+      expect((res.json() as { code?: string }).code, request.url).toBe('WORKSPACE_SANDBOX_UNAVAILABLE')
+    }
+  })
+
   it('answers every other unreachable-home reason with 503 + the reason on the write and history routes', async () => {
     // A `control-plane` home behind a missing connection, feature, scope, migration copy, or a pool member's daemon home
     // is "not now" exactly like a sleeping sandbox (§3.2.1) — a 503 the console retries, never a 400 that stops it. Only

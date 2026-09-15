@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MEMORY_ENTRY_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { localMemoryHome } from '../src/memory/home.js'
-import { LocalMemoryFs } from '../src/memory/fs.js'
+import { LocalMemoryFs, MemorySandboxUnavailableError } from '../src/memory/fs.js'
 import { ManagedMemoryProvider } from '../src/memory/providers/managed.js'
 import { createMemoryProvider } from '../src/memory/provider.js'
 import { MemoryEntries } from '../src/memory/entries/service.js'
@@ -451,6 +451,25 @@ it('rechecks daemon ownership and returns bounded typed read errors to admin cal
     operation: 'error',
     code: 'FORBIDDEN'
   })
+})
+
+it('lets an unreachable home escape the admin reader and writer with its reason', async () => {
+  // A sleeping sandbox is refused on the wire with `sandbox-unavailable`, the code the console wakes on; folding it
+  // into an in-band UNAVAILABLE would leave the entry browser unable to tell it from an offline plugin.
+  const { db } = await store()
+  const provider = new ManagedMemoryProvider(() => {
+    throw new MemorySandboxUnavailableError('agent "a" has no running sandbox, so its memory cannot be reached')
+  })
+  const { createMemoryEntriesReader, createMemoryEntriesWriter } = await import('../src/cp/memory-entries.js')
+  const read = createMemoryEntriesReader(provider, db, () => true)
+  await expect(read({ agentId: 'a', operation: 'describe' })).rejects.toBeInstanceOf(MemorySandboxUnavailableError)
+  await expect(read({ agentId: 'a', operation: 'list', request: { limit: 1 } })).rejects.toMatchObject({
+    reason: 'sandbox-unavailable'
+  })
+  const write = createMemoryEntriesWriter(provider, db, () => true)
+  await expect(write({ agentId: 'a', operation: 'create', request: { text: 'x' } })).rejects.toBeInstanceOf(
+    MemorySandboxUnavailableError
+  )
 })
 
 it('pins synthetic MCP reads to the Dream draft even after the live provider changes', async () => {

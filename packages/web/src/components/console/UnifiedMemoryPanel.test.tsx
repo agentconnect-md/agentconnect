@@ -20,6 +20,7 @@ vi.mock('@/lib/api', () => {
     getAgentMemoryEntry: vi.fn(),
     searchAgentMemoryEntries: vi.fn(),
     listAgentMemoryEntryHistory: vi.fn(),
+    wakeAgent: vi.fn(async () => ({ state: 'starting' })),
     createAgentMemoryEntry: vi.fn(),
     updateAgentMemoryEntry: vi.fn(),
     deleteAgentMemoryEntry: vi.fn()
@@ -352,4 +353,55 @@ it('ignores a click on the already-active view and recovers paging after a refre
   await act(async () => resolvePage({ entries: [], consistency: 'live', order: 'topic' }))
   const more = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Load more')
   expect(more?.disabled).toBe(false)
+})
+
+it('wakes a sleeping sandbox instead of reporting a generic failure', async () => {
+  vi.mocked(api.describeAgentMemoryEntries)
+    .mockRejectedValueOnce(new api.ApiError('asleep', 503, 'WORKSPACE_SANDBOX_UNAVAILABLE'))
+    .mockResolvedValue(caps)
+  await render()
+  // The refusal presses the wake once and the tree shows the sandbox starting, never the generic failure or the old view.
+  expect(api.wakeAgent).toHaveBeenCalledWith('agent')
+  expect(host.textContent).toContain('Starting')
+  expect(host.textContent).not.toContain('temporarily unavailable')
+  expect(host.textContent).not.toContain('Legacy memory tools')
+})
+
+it('pins the overview when given, labels a hand-written one, and follows its links to entries', async () => {
+  const read = vi.fn(async () => ({
+    exists: true,
+    content: "# Memory\n\n<!-- generated from each topic's `description` header -->\n\n- [Topic](Topic.md)",
+    mtime: '2026-09-14T00:00:00.000Z'
+  }))
+  await act(async () =>
+    root.render(
+      <UnifiedMemoryPanel agentId="agent" canEdit overview={{ read }}>
+        {() => null}
+      </UnifiedMemoryPanel>
+    )
+  )
+  expect(host.textContent).toContain('MEMORY.md')
+  await click('MEMORY.md')
+  expect(read).toHaveBeenCalledTimes(1)
+  expect(host.textContent).toContain('generated from topic descriptions')
+  expect(host.textContent).not.toContain('Edit memory')
+  await click('follow oncall.md')
+  expect(api.getAgentMemoryEntry).not.toHaveBeenCalled()
+  read.mockResolvedValueOnce({ exists: true, content: '# Mine\n\n[Topic](Topic.md)', mtime: null })
+  await click('MEMORY.md')
+  expect(host.textContent).toContain('hand-written')
+})
+
+it('shows a record’s metadata under its text', async () => {
+  vi.mocked(api.getAgentMemoryEntry).mockResolvedValue({
+    entry: { ...entry, format: 'text' },
+    text: 'plain record',
+    complete: true,
+    metadata: { source: 'slack', tags: ['ops', 'rpc'] }
+  })
+  await render()
+  await click('Topic')
+  expect(host.textContent).toContain('source')
+  expect(host.textContent).toContain('slack')
+  expect(host.textContent).toContain('["ops","rpc"]')
 })

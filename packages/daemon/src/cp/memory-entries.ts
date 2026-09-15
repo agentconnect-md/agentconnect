@@ -10,6 +10,7 @@ import type { MemoryProvider } from '../memory/provider.js'
 import type { LocalStore } from '../store/local-store.js'
 import { createMemoryEntryService } from '../memory/entries/factory.js'
 import { MemoryEntriesError } from '../memory/entries/contract.js'
+import { MemoryHomeUnavailableError } from '../memory/fs.js'
 
 export function createMemoryEntriesReader(
   provider: MemoryProvider,
@@ -46,6 +47,8 @@ export function createMemoryEntriesReader(
           return { operation: 'history', result: await entries.history(req.request) }
       }
     } catch (error) {
+      // An unreachable home is refused on the wire with its reason, so the console can wake a sleeping sandbox.
+      if (error instanceof MemoryHomeUnavailableError) throw error
       if (error instanceof MemoryEntriesError)
         return { operation: 'error', code: error.code, message: error.message.slice(0, 512) }
       return { operation: 'error', code: 'UNAVAILABLE', message: 'memory entry service is unavailable' }
@@ -72,6 +75,8 @@ export function createMemoryEntriesWriter(
       const result = await entries[req.operation](req.request)
       return { operation: 'completed', result }
     } catch (error) {
+      // The home is resolved before any write leaves this daemon, so this refusal is never an uncertain outcome.
+      if (error instanceof MemoryHomeUnavailableError) throw error
       if (error instanceof MemoryEntriesError)
         return {
           operation: 'error',

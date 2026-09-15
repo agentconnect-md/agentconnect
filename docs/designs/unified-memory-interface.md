@@ -443,8 +443,14 @@ named topics or nameless records with their last edit, and a preview pane whose
 header carries size, edit time, inheritance and the entry actions. The existing
 settings, channel selector, and Dream panel remain in place. Unsupported/older
 peers use the existing view; an Entries / Files (or Records) switch in the card
-header keeps the raw view reachable during rollout, because the generated overview,
-record identifiers/metadata, and the sandbox wake flow have no entry projection yet.
+header keeps the raw view reachable during rollout. The entry browser now covers
+what used to need that view: a read that refuses as a sleeping sandbox presses the
+same wake the file browser does (the daemon lets an unreachable home escape the
+in-band entry error so the Control Plane answers 503 with the wake code), the
+generated overview is a pinned read-only row served through the compatibility
+index route and labelled generated or hand-written, and a record's metadata is
+listed under its text. What still keeps the switch is the compatibility window for
+daemons without the entry features; retiring it is a release decision.
 
 The editor loads every content slice before enabling edits, rejecting missing,
 repeated, changed-revision, or oversized continuation chains. Reads are bounded to

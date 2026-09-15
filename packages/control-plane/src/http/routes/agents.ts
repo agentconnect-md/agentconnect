@@ -13,7 +13,6 @@ import {
   MemoryEntryHistoryResult,
   MemoryEntryGetRequest,
   MemoryEntryContent,
-  MemoryEntryErrorCode,
   type MemoryEntriesReadReq,
   WorkspaceListPage,
   WorkspaceReadContent,
@@ -948,11 +947,12 @@ export function agentRoutes(deps: HttpDeps) {
         ? Omit<R, 'agentId'>
         : never
       : never
+    // `code` is an entry error code, or the unreachable-home code the console wakes a sandbox on.
     const entryError = z.object({
       error: z.string(),
       statusCode: z.number(),
       message: z.string(),
-      code: MemoryEntryErrorCode.optional(),
+      code: z.string().optional(),
       currentRevision: z.string().max(512).optional()
     })
     const entryCall = async (req: FastifyRequest, reply: FastifyReply, id: string, operation: MemoryEntryOperation) => {
@@ -1028,9 +1028,12 @@ export function agentRoutes(deps: HttpDeps) {
       } catch (err) {
         const failure = memoryAdminFailure(err)
         if (failure)
-          return reply
-            .code(failure.status)
-            .send({ error: failure.error, statusCode: failure.status, message: failure.message })
+          return reply.code(failure.status).send({
+            error: failure.error,
+            statusCode: failure.status,
+            message: failure.message,
+            ...(failure.code ? { code: failure.code } : {})
+          })
         throw err
       }
     }
