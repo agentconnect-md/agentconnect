@@ -3149,8 +3149,10 @@ export class Daemon {
         const placement = pod ? this.k8sPlane?.workspaceFsFor(ctx.agentId) : undefined
         if (pod && !placement) return { ok: false, reason: 'sandboxed' }
         const target: SaveAttachmentTarget = placement
-          ? { fs: placement.fs, root: location.root }
-          : { fs: localWorkspaceFs, root: location.root, canonicalDir: canonicalWorkspacePath }
+          ? { kind: 'workspace-fs', fs: placement.fs, root: location.root }
+          : process.platform === 'linux'
+            ? { kind: 'pinned', root: location.root }
+            : { kind: 'workspace-fs', fs: localWorkspaceFs, root: location.root, canonicalDir: canonicalWorkspacePath }
         try {
           return await saveAttachmentTo(target, name, bytes)
         } catch (err) {
