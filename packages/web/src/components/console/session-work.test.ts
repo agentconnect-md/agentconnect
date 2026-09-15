@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  appStepKey,
   foldCustomAnswers,
+  liveAppKeys,
   mcpAppCard,
   PLAN_LANE,
   WORK_LANES,
@@ -286,5 +288,29 @@ describe('mcpAppCard — reading an app row back (webchat-mcp-apps.md §8)', () 
     expect(mcpAppCard(undefined)).toBeNull()
     expect(mcpAppCard('not json')).toBeNull()
     expect(mcpAppCard(JSON.stringify({ title: 'no id' }))).toBeNull()
+  })
+})
+
+describe('liveAppKeys — one card, not two, while its live copy stands', () => {
+  it('keys a live app step by its owner and card id, so the persisted row can step aside', () => {
+    const live = [
+      { lane: 'APP', agentId: 'bot-a', app: { appId: 'app-1' } },
+      { lane: 'APP', app: { appId: 'app-2' } },
+      { lane: 'TOOL' }
+    ]
+    const keys = liveAppKeys(live, 'owner')
+    expect(keys.has(appStepKey('bot-a', 'app-1'))).toBe(true)
+    // A step with no agent of its own belongs to the conversation's owner.
+    expect(keys.has(appStepKey('owner', 'app-2'))).toBe(true)
+    expect(keys.size).toBe(2)
+  })
+
+  it('is empty when nothing is streaming, which leaves the persisted card alone', () => {
+    expect(liveAppKeys([], 'owner').size).toBe(0)
+    expect(liveAppKeys([{ lane: 'TOOL' }], 'owner').size).toBe(0)
+  })
+
+  it('does not collide two owners holding the same card id', () => {
+    expect(appStepKey('bot-a', 'app-1')).not.toBe(appStepKey('bot-b', 'app-1'))
   })
 })

@@ -200,6 +200,28 @@ export function liveElicitKeys(
   return keys
 }
 
+export function appStepKey(agentId: string | undefined, appId: string): string {
+  return `${agentId ?? ''}\u0000${appId}`
+}
+
+/** Every app card the LIVE stream is currently carrying — the peer of {@link liveElicitKeys}, and
+ *  there for the same reason: on a reload, or in a second tab, a card in a running turn arrives
+ *  twice, once as its transcript row and once as the replayed `app` event. The live copy wins
+ *  while that replay stands — it is the one a settlement reaches — so the persisted row steps
+ *  aside rather than standing beside it as a second armed frame. Empty on a surface that streams
+ *  no cards, which leaves the persisted copy alone as before. */
+export function liveAppKeys(
+  live: readonly { lane?: string; agentId?: string; app?: { appId: string } }[],
+  ownerAgentId?: string
+): Set<string> {
+  const keys = new Set<string>()
+  for (const step of live) {
+    if (!step.app?.appId) continue
+    keys.add(appStepKey(step.agentId ?? ownerAgentId, step.app.appId))
+  }
+  return keys
+}
+
 /** Split an agent turn's collapsed work steps into the counts the summary reports:
  *  reasoning STEPS (THINK/PLAN), tool-command STEPS (TOOL), and edited FILES — the
  *  DISTINCT file paths across all EDIT steps (a single EDIT row can touch several

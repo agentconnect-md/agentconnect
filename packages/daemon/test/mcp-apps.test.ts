@@ -460,6 +460,20 @@ describe('reviveAppRow — rebuilding a card from what the daemon recorded (§8)
     expect(reviveAppRow('app-1', 'conv-1', stored(noServer))).toBeUndefined()
   })
 
+  it('refuses a row the READER closed, so an in-flight RPC cannot undo a dismissal', () => {
+    // The console stops rendering a dismissed card, but it is not the only thing that can revive
+    // one: an RPC already in flight when the frame was closed, or one from a second tab that
+    // still had it armed, would otherwise clear the outcome and hand the page back on reload.
+    expect(reviveAppRow('app-1', 'conv-1', stored({ ...RECORDED, outcome: 'closed' }))).toBeUndefined()
+    // A bridge that settled on its own is not a dismissal — that card comes back.
+    expect(reviveAppRow('app-1', 'conv-1', stored({ ...RECORDED, outcome: 'expired' }))).toMatchObject({
+      appId: 'app-1'
+    })
+    expect(reviveAppRow('app-1', 'conv-1', stored({ ...RECORDED, outcome: 'superseded' }))).toMatchObject({
+      appId: 'app-1'
+    })
+  })
+
   it('refuses a row whose card id is not the one being revived, and one that will not parse', () => {
     expect(reviveAppRow('app-2', 'conv-1', stored(RECORDED))).toBeUndefined()
     expect(reviveAppRow('app-1', 'conv-1', { ...stored(RECORDED), body: 'not json' })).toBeUndefined()

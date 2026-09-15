@@ -79,10 +79,18 @@ export interface AppRow {
  * the pure half of reviving a card whose process, or whose reader's page, has been restarted.
  *
  * Undefined is a card that must NOT be revived, and it is the same answer for every reason: a row
- * that will not parse, one from another conversation, and one written before templates were kept
- * (no `server`, so nothing records what the card was allowed to reach). Refusing to guess at the
- * server is the point — the frame names only its `appId`, and a revived card that inferred its
- * reach from anything else would be a frame choosing its own.
+ * that will not parse, one from another conversation, one written before templates were kept (no
+ * `server`, so nothing records what the card was allowed to reach), and one the reader CLOSED.
+ *
+ * The dismissal is enforced here rather than left to the console, because the console is not the
+ * only thing that can revive a card: an RPC already in flight when the reader closed the frame —
+ * or one from a second tab that still had it armed — would otherwise revive the card, clear the
+ * outcome from its row, and hand the page back on the next reload. A reader who closed a card has
+ * closed it.
+ *
+ * Refusing to guess at the server is the same rule from the other side — the frame names only its
+ * `appId`, and a revived card that inferred its reach from anything else would be a frame choosing
+ * its own.
  */
 export function reviveAppRow(
   appId: string,
@@ -98,6 +106,7 @@ export function reviveAppRow(
   if (!parsed.success) return undefined
   const body = parsed.data
   if (body.appId !== appId || !body.server || body.conversationId !== conversationId) return undefined
+  if (body.outcome === 'closed') return undefined
   return {
     channel: stored.channel,
     thread: stored.thread,

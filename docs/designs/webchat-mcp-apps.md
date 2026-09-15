@@ -366,6 +366,16 @@ Two settlements are not the same after a reload. `superseded` and `expired` end 
 the page still renders and the header says how the last one ended; `closed` is the READER
 dismissing the card, and putting that page back on the next paint would undo what they did.
 
+A dismissal is enforced in the DAEMON, not only in the console: `reviveAppRow` refuses a row whose
+outcome is `closed`. The console is not the only thing that can revive a card — an RPC already in
+flight when the frame closed, or one from a second tab that still had it armed, would otherwise
+clear the outcome from the row and hand the page back on the next reload.
+
+A card in a RUNNING turn now exists twice over: as its row, written at open, and as the streamed
+`app` event. The console keeps the live copy and steps the row aside (`liveAppKeys`, the peer of
+`liveElicitKeys`) — it is the one the registry is serving and the one a settlement reaches.
+Without that, a second tab on a running conversation renders one card as two armed frames.
+
 The verdict for every view RPC goes back on **the connection the RPC arrived on**, not on the
 stream the card was opened on. A card outlives its turn, and after a reload that turn's stream
 reaches a browser that is gone — which is a button that hangs rather than one that is refused. The

@@ -107,6 +107,8 @@ import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
   elicitCard,
+  appStepKey,
+  liveAppKeys,
   mcpAppCard,
   APP_LANE,
   ELICIT_LANE,
@@ -4044,6 +4046,11 @@ export default function SessionDetailView() {
   // retired the persisted row takes over, carrying the outcome it was rewritten with. Empty on a
   // Slack-origin session, which streams no cards and so only ever has the persisted copy.
   const liveCards = liveElicitKeys(liveSteps, session.agentId)
+  // An app card has the same two-copy problem and the same answer: the live frame is the one the
+  // daemon's registry is serving and the one a settlement reaches, so the persisted row stands
+  // aside while that replay does. Without this a second tab on a running conversation renders the
+  // card twice, both armed.
+  const liveApps = liveAppKeys(liveSteps, session.agentId)
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
@@ -4052,6 +4059,11 @@ export default function SessionDetailView() {
         const persisted = elicitCard(m.body)
         const owner = conversationSourceAgentByMessageRef.current.get(m) ?? m.sender
         if (persisted && liveCards.has(elicitStepKey(owner, persisted.requestId))) continue
+      }
+      if (liveApps.size > 0 && (m.kind || '').toLowerCase() === 'app') {
+        const persisted = mcpAppCard(m.body)
+        const owner = conversationSourceAgentByMessageRef.current.get(m) ?? m.sender
+        if (persisted && liveApps.has(appStepKey(owner, persisted.appId))) continue
       }
       const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
       const sourceTurnKey = conversationSourceTurnByMessageRef.current.get(m)
