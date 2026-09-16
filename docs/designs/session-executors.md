@@ -168,9 +168,24 @@ values `sandbox.backend` already uses:
 **`host` is a legitimate strategy.** §9.1 of the architecture already says an
 unsandboxed agent is operator-trusted code; spreading such sessions across the
 operator's own machines changes nothing about that trust. And the shim is an
-ordinary Node process with no dependency on the boundary around it, so "shim as a
-host process" is not a new mode, only a new place to start it. `host`
-is what makes a Mac build machine or a Windows box a usable executor.
+ordinary Node process, so "shim as a host process" is not a new mode, only a new
+place to start it. `host` is what makes a Mac build machine or a Windows box a
+usable executor.
+
+The shim does assume one thing about its surroundings that `host` must supply
+explicitly: that it owns its filesystem namespace. Its tunnel endpoints are the
+fixed in-sandbox paths `/run/agentconnect/{gitcred,mcp}.sock`, and `TunnelHost`
+removes a stale socket before binding, because inside a pod or a VM the only
+previous owner of that path is an earlier incarnation of the same shim. Two `host`
+sessions on one machine would replace each other's endpoints — a request could
+reach the wrong holder, and one session's shutdown would unlink another's socket.
+So the `host` strategy runs each session's shim with **per-session tunnel paths**
+under the session's private runtime directory, through the `socketPathFor` seam
+`TunnelHost` already exposes, and points the helper configuration at those paths:
+the git-credential socket variable and the `mcpServers` spec the shim reports are
+per session too. The wire contract is unchanged; only the paths move. The AF_UNIX
+path-length budget applies here as it does to the session's `TMPDIR`, so the
+directory is kept short rather than nested under the session's HOME.
 
 **Configured is what a machine offers; reported is what is effective.** A strategy
 whose probe fails at startup is reported unavailable with its reason, the way the
@@ -381,14 +396,14 @@ Five to six pull requests, roughly three weeks of focused work plus a week of
 validation on a real multi-machine deployment, which the requester of #2111 offered
 to run.
 
-| PR  | Scope                                                                                                                                                        |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | Protocol and CP: facet declaration at registration, strategy table and session count in the heartbeat, binding token, `executorDaemonId` on the session row. |
-| 2   | Executor facet: split "prepare an environment" from "spawn the runtime" in the microsandbox driver, the listener and token check, `host` strategy, draining. |
-| 3   | Holder: the executor `SpawnDriver`, extracting the shared dial-and-bind layer from `K8sDriver`; placement; the unreachable-executor state.                   |
-| 4   | Console: group switch, per-daemon hosting and capacity, session's executor.                                                                                  |
-| 5   | Tests: a two-daemon, one-CP integration fixture covering holder failover and executor loss; the loopback shim smoke test extended to `host`.                 |
-| 6   | Documents beside the code: this design, the pointers in the group and backend designs, and the workspace model's tier rule gaining the executor arm.         |
+| PR  | Scope                                                                                                                                                                                                                    |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Protocol and CP: facet declaration at registration, strategy table and session count in the heartbeat, binding token, `executorDaemonId` on the session row.                                                             |
+| 2   | Executor facet: split "prepare an environment" from "spawn the runtime" in the microsandbox driver, the listener and token check, `host` strategy with per-session tunnel paths and helper configuration (§5), draining. |
+| 3   | Holder: the executor `SpawnDriver`, extracting the shared dial-and-bind layer from `K8sDriver`; placement; the unreachable-executor state.                                                                               |
+| 4   | Console: group switch, per-daemon hosting and capacity, session's executor.                                                                                                                                              |
+| 5   | Tests: a two-daemon, one-CP integration fixture covering holder failover and executor loss; the loopback shim smoke test extended to `host`.                                                                             |
+| 6   | Documents beside the code: this design, the pointers in the group and backend designs, and the workspace model's tier rule gaining the executor arm.                                                                     |
 
 Calibration: `K8sDriver` is about three thousand lines and took five weeks of
 commits, including claim, sleep and orphan machinery this design does not need. The
