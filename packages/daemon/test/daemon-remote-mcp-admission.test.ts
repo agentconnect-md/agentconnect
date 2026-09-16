@@ -195,29 +195,25 @@ describe('preset admin MCP through the webchat dispatch path', () => {
     const cards = outputs.filter((output) => output.event?.kind === 'app')
     expect(cards).toHaveLength(1)
     expect(cards[0]?.event).toMatchObject({ nativeUi })
-  }, 20_000)
+  })
   it.each([
     ['without an OS sandbox', false],
     ['with an OS sandbox', true]
-  ] as const)(
-    'attaches to an arbitrary preset runtime %s',
-    async (_label, runInSandbox) => {
-      const { client, host, selectedAgents, dones } = await runTurn({ builtin: true, runInSandbox })
+  ] as const)('attaches to an arbitrary preset runtime %s', async (_label, runInSandbox) => {
+    const { client, host, selectedAgents, dones } = await runTurn({ builtin: true, runInSandbox })
 
-      expect(dones).toHaveLength(1)
-      expect(selectedAgents[0]).toMatchObject({
-        builtin: true,
-        runInSandbox,
-        runtime: 'arbitrary-acp'
-      })
-      expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
-      expect(client.acceptWebchatMcpGrant).toHaveBeenCalledTimes(1)
-      expect(adminDescriptor(host)?.headers).toEqual([{ name: 'Authorization', value: `Bearer ${TOKEN}` }])
-      // The credential is ACP session configuration, never model prompt text.
-      expect(JSON.stringify(host.prompt.mock.calls)).not.toContain(TOKEN)
-    },
-    20_000
-  )
+    expect(dones).toHaveLength(1)
+    expect(selectedAgents[0]).toMatchObject({
+      builtin: true,
+      runInSandbox,
+      runtime: 'arbitrary-acp'
+    })
+    expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    expect(client.acceptWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    expect(adminDescriptor(host)?.headers).toEqual([{ name: 'Authorization', value: `Bearer ${TOKEN}` }])
+    // The credential is ACP session configuration, never model prompt text.
+    expect(JSON.stringify(host.prompt.mock.calls)).not.toContain(TOKEN)
+  })
 
   it('does not attach when a non-preset agent is handed a forged entitlement', async () => {
     const { client, host, dones } = await runTurn({ builtin: false, runInSandbox: false })
