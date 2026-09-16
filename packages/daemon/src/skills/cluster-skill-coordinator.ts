@@ -3,7 +3,11 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ClusterSkillReconcileAuthority, ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 import type { ClusterSkillClient } from '../shim/skill-client.js'
-import { ClusterSkillReconcileResultSchema, type ClusterSkillFile } from '../shim/skill-protocol.js'
+import {
+  ClusterSkillReconcileResultSchema,
+  type ClusterSkillFile,
+  type ClusterSkillSkippedSource
+} from '../shim/skill-protocol.js'
 import { inspectLocalSkillSource, type SkillSourceSnapshotLimits } from './skill-source-snapshot.js'
 
 export interface ClusterSkillSnapshotSource {
@@ -59,7 +63,7 @@ export class ClusterSkillCoordinator {
     client: ClusterSkillClient
     initialLedger?: ClusterSkillLedger
     isLaunchCurrent?: () => boolean
-  }): Promise<ClusterSkillLedger> {
+  }): Promise<ClusterSkillLedger & { skipped?: ClusterSkillSkippedSource[] }> {
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
     }
@@ -136,6 +140,16 @@ export class ClusterSkillCoordinator {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
     }
     const expectedSources = new Map(sources.map((source) => [source.sourceId, source]))
+    // A skipped source must be one this run asked for; its prior roots (if any) ride the receipt
+    // untouched, so the selection check below does not apply to it.
+    const skipped = reply.skipped ?? []
+    const skippedIds = new Set<string>()
+    for (const entry of skipped) {
+      if (!expectedSources.has(entry.sourceId) || skippedIds.has(entry.sourceId)) {
+        throw new Error('cluster skill shim skipped an unexpected source')
+      }
+      skippedIds.add(entry.sourceId)
+    }
     const returnedSelections = new Map<string, Set<string>>()
     for (const root of reply.roots) {
       const expected = expectedSources.get(root.sourceId)
@@ -147,7 +161,7 @@ export class ClusterSkillCoordinator {
       returnedSelections.set(root.sourceId, selected)
     }
     for (const source of sources) {
-      if (source.expectedLeaves.length === 0) continue
+      if (source.expectedLeaves.length === 0 || skippedIds.has(source.sourceId)) continue
       const returned = returnedSelections.get(source.sourceId) ?? new Set<string>()
       if (
         source.expectedLeaves.some((selection) => !returned.has(selection)) ||
@@ -156,7 +170,15 @@ export class ClusterSkillCoordinator {
         throw new Error('cluster skill shim returned an incomplete selection receipt')
       }
     }
-    const ledger = { roots: reply.roots, gitResolutions: input.gitResolutions ?? [] }
+    // A skipped Git source keeps no resolution: the next preparation must acquire and retry it
+    // rather than read "installed at this commit" for bytes that never published.
+    const skippedGitPrefixes = [...skippedIds]
+      .map((sourceId) => /^agent:\d+:([0-9a-f]+):/.exec(sourceId)?.[1])
+      .filter((digest): digest is string => digest !== undefined)
+    const gitResolutions = (input.gitResolutions ?? []).filter(
+      (resolution) => !skippedGitPrefixes.includes(resolution.definitionDigest)
+    )
+    const ledger = { roots: reply.roots, gitResolutions }
     const committed = await this.store.commitClusterSkillReconcile({
       ...authority,
       priorRevision: begun.priorRevision,
@@ -166,6 +188,7 @@ export class ClusterSkillCoordinator {
     if (input.isLaunchCurrent && !input.isLaunchCurrent()) {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
     }
-    return ledger
+    // `skipped` only when something was: the committed ledger and the returned value stay equal otherwise.
+    return skipped.length > 0 ? { ...ledger, skipped } : ledger
   }
 }

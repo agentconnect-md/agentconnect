@@ -161,6 +161,51 @@ describe('a failed install keeps what is still desired', () => {
     expect(await installedRoots()).toEqual(['git-skill', 'other-skill'])
   })
 
+  it('a source whose CLI stage fails is skipped by name; the others still install and it keeps its own', async () => {
+    // The shape of an oversized asset: the CLI cell refuses the bundle after the CLI ran. That is
+    // the SOURCE's problem — it must not cost the agent its session or its other skills.
+    const gitDir = await writeSkill(sources, 'git-skill', 'git')
+    const bigDir = await writeSkill(sources, 'big-skill', 'big')
+    const cli = fakeCli(() => '.runtime')
+    const skills = [entry('git', ['git-skill']), entry('big', ['big-skill'])]
+    let bigBroken = false
+    const runCli = async (input: SkillsCliInvocation) => {
+      if (bigBroken && input.skills.includes('big-skill')) {
+        throw new Error(
+          'skills CLI bundle "big-skill" contains an oversized file: assets/photo.png is 3455494 bytes (limit 16777216)'
+        )
+      }
+      return cli.run(input)
+    }
+    const acquireGit = async (candidate: { name?: string; ref?: string }) => ({
+      sourceDir: candidate.name === 'big' ? bigDir : gitDir,
+      resolvedCommit: candidate.ref ?? FIRST
+    })
+
+    await installSkills({ id: 'a1', runtime: 'claude', skills }, cwd, {
+      stateDir,
+      acquireGit,
+      resolveGitRef: async () => FIRST,
+      runCli
+    })
+    expect(await installedRoots()).toEqual(['big-skill', 'git-skill'])
+
+    bigBroken = true
+    const partial = await installSkills({ id: 'a1', runtime: 'claude', skills }, cwd, {
+      stateDir,
+      acquireGit,
+      resolveGitRef: async () => MOVED,
+      runCli
+    })
+    expect(partial.errors).toEqual([
+      { source: 'big', error: expect.stringContaining('assets/photo.png is 3455494 bytes') }
+    ])
+    // `git` rebuilt at the moved head; `big` kept its previously installed bundle.
+    expect(await installedRoots()).toEqual(['big-skill', 'git-skill'])
+    expect(partial.owned.sort()).toEqual(['.runtime/skills/big-skill', '.runtime/skills/git-skill'])
+    expect(partial.skipped).toBeNull()
+  })
+
   it('still removes a source the desired set no longer names', async () => {
     const gitDir = await writeSkill(sources, 'git-skill', 'git')
     const otherDir = await writeSkill(sources, 'other-skill', 'other')
@@ -323,7 +368,8 @@ describe('a failed install keeps what is still desired', () => {
         }
       }
     )
-    expect(broken.errors.map((e) => e.source)).toEqual(['*'])
+    // Named per source now — a CLI failure is that source's problem, not the run's.
+    expect(broken.errors).toEqual([{ source: 'git', error: 'skills CLI exited 1' }])
     expect(await installedRoots()).toEqual(['git-skill'])
     expect(broken.owned).toEqual(['.runtime/skills/git-skill'])
   })

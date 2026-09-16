@@ -83,8 +83,21 @@ digests and CLI-derived relative roots outside the agent-writable workspace.
   journal writes are fenced by duty term and SandboxClaim UID.
 
 The publisher, durable ledger, and shared shim admit up to 64 installed bundles,
-each with 64 files and relative paths of at most 1024 UTF-8 bytes. These selected
-installation limits are separate from the larger source snapshot manifest.
+each with 64 files and relative paths of at most 1024 UTF-8 bytes. Byte ceilings follow
+the plugin ecosystems skills come from: one CLI cell is one source, i.e. one plugin, and
+Claude Code and Codex accept a 50 MB plugin, so a source's installed output may hold up
+to 50 MiB; a file is capped at the cluster channel's 16 MiB; an agent's whole published
+set at 128 MiB. File and path COUNTS stay tight because a receipt root must fit one
+control frame. These selected installation limits are separate from the larger source
+snapshot manifest.
+
+A source that fails its CLI stage — an oversized asset, too many files, a CLI crash —
+is **skipped by name** for that run, on the daemon and inside the sandbox shim alike:
+its previously installed bundles are preserved exactly as an acquisition failure's
+are, the other sources still install, the run's fingerprint is marked failed so the
+next preparation retries, and the reason names the bundle and file (for a cluster
+agent it travels back in the reconcile reply's `skipped` list). Only a ledger safety
+error refuses host startup; content never does.
 `cluster-skills-v3` pages prior receipts, installation results, and verification
 requests within the 220 KiB control-message budget. Small receipts still use one
 reconcile round trip. Publication checks result capacity before changing workspace

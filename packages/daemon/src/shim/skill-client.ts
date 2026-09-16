@@ -120,7 +120,11 @@ export class ClusterSkillClient {
     let page = ClusterSkillReceiptPageSchema.parse(
       await this.requester.request('skills', ClusterSkillReconcileSchema.parse(request), { timeoutMs: 15 * 60_000 })
     )
-    const result = { roots: [...page.roots], conflicts: page.conflicts }
+    const result = {
+      roots: [...page.roots],
+      conflicts: page.conflicts,
+      ...(page.skipped && page.skipped.length > 0 ? { skipped: page.skipped } : {})
+    }
     while (page.nextOffset !== undefined) {
       if (page.nextOffset !== result.roots.length) throw new Error('inconsistent skill receipt offset')
       page = ClusterSkillReceiptPageSchema.parse(
@@ -131,7 +135,11 @@ export class ClusterSkillClient {
           offset: page.nextOffset
         })
       )
-      if (page.roots.length === 0 || JSON.stringify(page.conflicts) !== JSON.stringify(result.conflicts))
+      if (
+        page.roots.length === 0 ||
+        JSON.stringify(page.conflicts) !== JSON.stringify(result.conflicts) ||
+        JSON.stringify(page.skipped ?? []) !== JSON.stringify(result.skipped ?? [])
+      )
         throw new Error('inconsistent skill receipt page')
       result.roots.push(...page.roots)
       ClusterSkillReconcileResultSchema.parse(result)

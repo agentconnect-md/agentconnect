@@ -38,7 +38,7 @@ async function fixture(content = Buffer.from('hello')) {
 }
 
 describe('cluster skill shim staging', () => {
-  it('rejects an oversized selected skill set before publishing any workspace files', async () => {
+  it('skips a source whose selected skill set is oversized, publishing nothing for it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skill-admission-'))
     const workspace = join(root, 'workspace')
     await mkdir(workspace)
@@ -69,17 +69,19 @@ describe('cluster skill shim staging', () => {
       }))
       const { handle } = await client.begin({ operationId, authority, skillsAgentId: 'codex', files })
       for (const [index, file] of files.entries()) await client.upload(operationId, handle, file, bodies[index]!)
-      await expect(
-        client.reconcile({
-          operationId,
-          handle,
-          authority,
-          priorRoots: [],
-          replayKey: 'a'.repeat(64),
-          allowDesiredAdoption: false,
-          sources: [{ sourceId: 'source', sourceKind: 'managed', selections: [] }]
-        })
-      ).rejects.toThrow()
+      // 65 bundles exceed the cell's bundle cap. That is the SOURCE's problem, not the session's:
+      // the reply names it under `skipped`, nothing of it is published, and the run still completes.
+      const reply = await client.reconcile({
+        operationId,
+        handle,
+        authority,
+        priorRoots: [],
+        replayKey: 'a'.repeat(64),
+        allowDesiredAdoption: false,
+        sources: [{ sourceId: 'source', sourceKind: 'managed', selections: [] }]
+      })
+      expect(reply.roots).toEqual([])
+      expect(reply.skipped).toEqual([{ sourceId: 'source', reason: expect.stringContaining('too many bundles') }])
       expect(await readdir(workspace)).toEqual([])
     } finally {
       await rm(root, { recursive: true, force: true })

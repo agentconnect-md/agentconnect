@@ -16,8 +16,10 @@ export interface SkillSourceSnapshotLimits {
 
 export const DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS: Readonly<SkillSourceSnapshotLimits> = {
   maxFiles: MAX_SKILL_RECEIPT_FILES,
-  maxTotalBytes: 4 * 1024 * 1024,
-  maxFileBytes: 512 * 1024,
+  // One installed skill; byte ceilings match the CLI cell (skills-cli-cell.ts) so a bundle the cell
+  // admits is never refused one step later.
+  maxTotalBytes: 50 * 1024 * 1024,
+  maxFileBytes: 16 * 1024 * 1024,
   maxEntries: 256,
   maxDepth: 32,
   maxPathBytes: MAX_SKILL_PATH_BYTES

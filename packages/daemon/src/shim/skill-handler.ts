@@ -32,7 +32,8 @@ import {
   type ClusterSkillPrior,
   type ClusterSkillPriorReply,
   type ClusterSkillReceipt,
-  type ClusterSkillReceiptPage
+  type ClusterSkillReceiptPage,
+  type ClusterSkillSkippedSource
 } from './skill-protocol.js'
 
 interface Operation {
@@ -300,6 +301,8 @@ export class ClusterSkillHandler {
     }
     const candidates: CandidateSkillBundle[] = []
     const cleanups: Array<() => void> = []
+    // Sources whose CLI stage failed: reported, and their prior roots left exactly as they are.
+    const skipped: ClusterSkillSkippedSource[] = []
     try {
       const replayingPublication = await hasSkillPublicationOperation(
         this.deps.workspaceRoot,
@@ -309,29 +312,43 @@ export class ClusterSkillHandler {
       )
       for (const source of input.sources) {
         const snapshot = join(this.deps.stagingRoot, input.handle, sourceDirectory(source.sourceId))
-        const cell = await stageSkillsCliCell({
-          sourceSnapshot: snapshot,
-          agentId: operation.skillsAgentId,
-          selectedSkills: source.selections
-        })
-        cleanups.push(cell.cleanup)
-        for (const bundle of cell.bundles) {
-          const inspected = await inspectLocalSkillSource(bundle.absolutePath)
-          const files = inspected.files.map((file) => ({
-            path: file.path,
-            mode: file.mode & 0o111 ? 0o700 : 0o600,
-            size: file.size,
-            sha256: file.sha256.replace(/^sha256:/, '')
-          }))
-          candidates.push({
-            relativeRoot: bundle.relativePath,
-            sourceKey: source.sourceId,
-            sourceDir: bundle.absolutePath,
-            files,
-            treeDigest: treeDigest(files)
+        // One source failing its CLI stage — an oversized asset, too many files, a CLI crash — costs
+        // that source its skills for this run, never the agent its session: the others still publish,
+        // the failed source keeps whatever it had, and the daemon logs the named reason.
+        const staged: CandidateSkillBundle[] = []
+        try {
+          const cell = await stageSkillsCliCell({
+            sourceSnapshot: snapshot,
+            agentId: operation.skillsAgentId,
+            selectedSkills: source.selections
           })
+          cleanups.push(cell.cleanup)
+          for (const bundle of cell.bundles) {
+            const inspected = await inspectLocalSkillSource(bundle.absolutePath)
+            const files = inspected.files.map((file) => ({
+              path: file.path,
+              mode: file.mode & 0o111 ? 0o700 : 0o600,
+              size: file.size,
+              sha256: file.sha256.replace(/^sha256:/, '')
+            }))
+            staged.push({
+              relativeRoot: bundle.relativePath,
+              sourceKey: source.sourceId,
+              sourceDir: bundle.absolutePath,
+              files,
+              treeDigest: treeDigest(files)
+            })
+          }
+        } catch (error) {
+          if (mutationSignal.aborted) throw error
+          const reason = error instanceof Error ? error.message : 'unknown skills CLI error'
+          skipped.push({ sourceId: source.sourceId, reason: reason.slice(0, 1024) })
+          continue
         }
+        candidates.push(...staged)
       }
+      const skippedIds = new Set(skipped.map((entry) => entry.sourceId))
+      const preserveOwned = input.priorRoots.filter((root) => skippedIds.has(root.sourceId)).map((root) => root.path)
       // Validate the largest possible result before publication; conflicts and installed roots are subsets of this set.
       const desiredRoots = [
         ...new Map(candidates.map((candidate) => [candidate.relativeRoot, ownedRoot(candidate)])).values()
@@ -355,7 +372,13 @@ export class ClusterSkillHandler {
         agentId: 'cluster-shim',
         runtime: operation.skillsAgentId,
         cliVersion: PINNED_SKILLS_CLI_VERSION,
-        fingerprint: createHash('sha256').update(JSON.stringify(input.sources)).digest('hex'),
+        // A run that skipped a source has not met its plan: never let its fingerprint short-circuit
+        // the next preparation's retry.
+        fingerprint:
+          skipped.length > 0
+            ? `failed:${randomBytes(16).toString('hex')}`
+            : createHash('sha256').update(JSON.stringify(input.sources)).digest('hex'),
+        ...(preserveOwned.length > 0 ? { preserveOwned } : {}),
         ...(replayingPublication
           ? {}
           : {
@@ -375,7 +398,8 @@ export class ClusterSkillHandler {
       })
       const reply = ClusterSkillReconcileResultSchema.parse({
         roots: result.owned.map(ownedRoot),
-        conflicts: result.conflicts
+        conflicts: result.conflicts,
+        ...(skipped.length > 0 ? { skipped } : {})
       })
       if (input.priorRootCount !== undefined) {
         operation.result = reply

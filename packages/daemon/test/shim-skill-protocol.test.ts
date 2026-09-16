@@ -9,7 +9,9 @@ import {
   MAX_CLUSTER_SKILL_CONTROL_BYTES,
   MAX_CLUSTER_SKILL_FILE_BYTES,
   MAX_CLUSTER_SKILL_FILES,
-  MAX_CLUSTER_SKILL_MANIFEST_PAGE
+  MAX_CLUSTER_SKILL_MANIFEST_PAGE,
+  ClusterSkillReconcileResultSchema,
+  skillReceiptPage
 } from '../src/shim/skill-protocol.js'
 import { ClusterSkillClient } from '../src/shim/skill-client.js'
 
@@ -122,6 +124,22 @@ describe('cluster skill protocol', () => {
         conflicts: []
       }).success
     ).toBe(false)
+  })
+
+  it('carries skipped sources on every receipt page, so paging cannot lose them', () => {
+    const skipped = [
+      { sourceId: 'agent:0:abc:' + 'f'.repeat(40), reason: 'skills CLI bundle "x" contains an oversized file' }
+    ]
+    const result = ClusterSkillReconcileResultSchema.parse({ roots: [], conflicts: [], skipped })
+    expect(skillReceiptPage(result, 0)).toEqual({ roots: [], conflicts: [], skipped })
+    // Absent stays absent: a shim without the field parses unchanged.
+    expect(skillReceiptPage(ClusterSkillReconcileResultSchema.parse({ roots: [], conflicts: [] }), 0)).toEqual({
+      roots: [],
+      conflicts: []
+    })
+    expect(() =>
+      ClusterSkillReconcileResultSchema.parse({ roots: [], conflicts: [], skipped: [{ sourceId: '', reason: 'x' }] })
+    ).toThrow()
   })
 
   it('pages a full Git collection manifest, each page its own frame', async () => {

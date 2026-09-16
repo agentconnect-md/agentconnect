@@ -49,7 +49,8 @@ const MAX_LOCAL_SKILL_SOURCES = 64
 const MAX_CLI_INVOCATIONS = 128
 const MAX_PUBLISHED_SKILL_BUNDLES = 64
 const MAX_PUBLISHED_SKILL_FILES = 1_024
-const MAX_PUBLISHED_SKILL_BYTES = 64 * 1024 * 1024
+// Room for a couple of maximal (50 MiB) plugins per agent; the cluster channel admits far more.
+const MAX_PUBLISHED_SKILL_BYTES = 128 * 1024 * 1024
 const MAX_INPUT_FILES = 8_192
 const MAX_INPUT_BYTES = 256 * 1024 * 1024
 
@@ -392,17 +393,6 @@ async function installSkillsLocked(
       gitSources,
       [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
     )
-    // Owned bundles belonging to a source this run could not build: still desired,
-    // so the publication leaves them exactly as they are instead of removing them.
-    const preserveOwned =
-      unresolvedScopes.size > 0
-        ? (ledger?.owned ?? [])
-            .filter((bundle) => {
-              const scope = gitSourceKeyScope(bundle.sourceKey)
-              return scope !== undefined && unresolvedScopes.has(scope)
-            })
-            .map((bundle) => bundle.relativeRoot)
-        : []
     // What the publication layer stores and compares: the commits actually acquired.
     const installedFingerprint = fingerprintFor(plannedGitCommits(gitSources, nextGitResolutions, new Map()))
 
@@ -410,10 +400,26 @@ async function installSkillsLocked(
     const candidatesByPath = new Map<string, CandidateSkillBundle>()
     let stagedCandidateFiles = 0
     let stagedCandidateBytes = 0
+    // Source keys whose CLI stage failed this run. Their owned bundles are preserved like an
+    // acquisition failure's: the source is still desired, only this run could not rebuild it.
+    const skippedSourceKeys = new Set<string>()
+    // One source's CLI stage failing — an oversized asset, too many files, a CLI crash — must cost
+    // that source its skills for this run, not the agent its session (design §2: degrade, never
+    // refuse host startup for content). The failure is named per source so the operator can fix it.
+    const skipSource = async (source: PreparedSource, error: unknown, staged: CandidateSkillBundle[]) => {
+      const message = error instanceof Error ? error.message : 'unknown skills CLI error'
+      result.errors.push({ source: source.name, error: message })
+      opts.warn?.(`skills: source "${source.name}" skipped this run; keeping what is installed (${message})`)
+      const scope = gitSourceKeyScope(source.key)
+      if (scope !== undefined) unresolvedScopes.add(scope)
+      skippedSourceKeys.add(source.key)
+      for (const candidate of staged) await fsp.rm(candidate.sourceDir, { recursive: true, force: true })
+    }
     for (const [index, source] of prepared.entries()) {
       const cellDir = join(scratch, 'cells', `${index}-${randomUUID()}`)
       await fsp.mkdir(cellDir, { recursive: true, mode: 0o700 })
       let invocation: SkillsCliInvocationResult | undefined
+      const staged: CandidateSkillBundle[] = []
       try {
         invocation = await runCli({
           sourceDir: source.sourceDir,
@@ -449,37 +455,83 @@ async function installSkillsLocked(
             size: file.size,
             sha256: stripShaPrefix(file.sha256)
           }))
-          const candidate: CandidateSkillBundle = {
+          staged.push({
             relativeRoot: bundle.relativeRoot,
             sourceKey: source.key,
             sourceDir: destination,
             files,
             treeDigest: treeDigest(files)
-          }
-          const replaced = candidatesByPath.get(candidate.relativeRoot)
-          if (replaced) {
-            opts.warn?.(
-              `skills: source "${source.name}" overrides "${replaced.sourceKey}" at CLI-derived path ${candidate.relativeRoot}`
-            )
-          }
-          candidatesByPath.set(candidate.relativeRoot, candidate)
-          if (replaced) {
-            await fsp.rm(replaced.sourceDir, { recursive: true, force: true })
-            stagedCandidateFiles -= replaced.files.length
-            stagedCandidateBytes -= replaced.files.reduce((total, file) => total + file.size, 0)
-          }
-          if (
-            candidatesByPath.size > MAX_PUBLISHED_SKILL_BUNDLES ||
-            stagedCandidateFiles > MAX_PUBLISHED_SKILL_FILES ||
-            stagedCandidateBytes > MAX_PUBLISHED_SKILL_BYTES
-          ) {
-            throw new Error('aggregate skills CLI output exceeds the publication limits')
-          }
+          })
         }
+      } catch (error) {
+        // Roll this source's staging back before the counters are charged.
+        for (const candidate of staged) {
+          stagedCandidateFiles -= candidate.files.length
+          stagedCandidateBytes -= candidate.files.reduce((total, file) => total + file.size, 0)
+        }
+        await skipSource(source, error, staged)
+        continue
       } finally {
         invocation?.cleanup?.()
       }
+      // The whole source built; admit its bundles together so a source that overflows the
+      // publication limits is skipped as a unit rather than half-published.
+      const replaced: CandidateSkillBundle[] = []
+      for (const candidate of staged) {
+        const previous = candidatesByPath.get(candidate.relativeRoot)
+        if (previous) {
+          opts.warn?.(
+            `skills: source "${source.name}" overrides "${previous.sourceKey}" at CLI-derived path ${candidate.relativeRoot}`
+          )
+          replaced.push(previous)
+          stagedCandidateFiles -= previous.files.length
+          stagedCandidateBytes -= previous.files.reduce((total, file) => total + file.size, 0)
+        }
+        candidatesByPath.set(candidate.relativeRoot, candidate)
+      }
+      if (
+        candidatesByPath.size > MAX_PUBLISHED_SKILL_BUNDLES ||
+        stagedCandidateFiles > MAX_PUBLISHED_SKILL_FILES ||
+        stagedCandidateBytes > MAX_PUBLISHED_SKILL_BYTES
+      ) {
+        for (const candidate of staged) {
+          candidatesByPath.delete(candidate.relativeRoot)
+          stagedCandidateFiles -= candidate.files.length
+          stagedCandidateBytes -= candidate.files.reduce((total, file) => total + file.size, 0)
+        }
+        for (const previous of replaced) {
+          candidatesByPath.set(previous.relativeRoot, previous)
+          stagedCandidateFiles += previous.files.length
+          stagedCandidateBytes += previous.files.reduce((total, file) => total + file.size, 0)
+        }
+        await skipSource(
+          source,
+          new Error(
+            `aggregate skills CLI output would exceed the publication limits (${MAX_PUBLISHED_SKILL_BUNDLES} bundles, ${MAX_PUBLISHED_SKILL_FILES} files, ${MAX_PUBLISHED_SKILL_BYTES} bytes)`
+          ),
+          staged
+        )
+        continue
+      }
+      for (const previous of replaced) await fsp.rm(previous.sourceDir, { recursive: true, force: true })
     }
+
+    // Owned bundles belonging to a source this run could not ACQUIRE: still desired, so the
+    // publication leaves them exactly as they are instead of removing them. A source whose CLI
+    // stage failed is broader: a published bundle's source key names its acquisition identity, not
+    // its repository, so this run cannot tell a re-pinned source from a removed one — it keeps
+    // everything published and leaves pruning to the next run that builds every source (§6.3).
+    const preserveOwned =
+      skippedSourceKeys.size > 0
+        ? (ledger?.owned ?? []).map((bundle) => bundle.relativeRoot)
+        : unresolvedScopes.size > 0
+          ? (ledger?.owned ?? [])
+              .filter((bundle) => {
+                const scope = gitSourceKeyScope(bundle.sourceKey)
+                return scope !== undefined && unresolvedScopes.has(scope)
+              })
+              .map((bundle) => bundle.relativeRoot)
+          : []
 
     const candidates = [...candidatesByPath.values()]
     const candidateFiles = candidates.reduce((total, candidate) => total + candidate.files.length, 0)
@@ -503,7 +555,8 @@ async function installSkillsLocked(
       cliVersion: PINNED_SKILLS_CLI_VERSION,
       // A run that could not build every desired source has not met its plan, so
       // its fingerprint must not let the next preparation skip the retry.
-      fingerprint: unresolvedScopes.size > 0 ? `failed:${randomUUID()}` : installedFingerprint,
+      fingerprint:
+        unresolvedScopes.size > 0 || skippedSourceKeys.size > 0 ? `failed:${randomUUID()}` : installedFingerprint,
       candidates,
       ...(preserveOwned.length > 0 ? { preserveOwned } : {}),
       gitResolutions: nextGitResolutions,

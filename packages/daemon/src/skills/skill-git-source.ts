@@ -32,13 +32,15 @@ export interface GitSkillArchiveLimits {
 }
 
 export const DEFAULT_GIT_SKILL_ARCHIVE_LIMITS: Readonly<GitSkillArchiveLimits> = {
-  // These cover the installer's existing 64 MiB / 8192-entry Git snapshot
-  // ceiling plus tar headers and incompressible gzip overhead.
-  maxCompressedBytes: 80 * 1024 * 1024,
-  maxTarBytes: 80 * 1024 * 1024,
+  // These cover a 128 MiB / 8192-entry Git collection — a marketplace of several
+  // 50 MB plugins — plus tar headers and incompressible gzip overhead; the per-file
+  // ceiling matches the installer's (skills-cli-cell.ts), so an asset the CLI cell
+  // admits is never refused here.
+  maxCompressedBytes: 160 * 1024 * 1024,
+  maxTarBytes: 160 * 1024 * 1024,
   maxEntries: 8_192,
-  maxFileBytes: 4 * 1024 * 1024,
-  maxTotalFileBytes: 64 * 1024 * 1024,
+  maxFileBytes: 16 * 1024 * 1024,
+  maxTotalFileBytes: 128 * 1024 * 1024,
   maxDepth: 64,
   maxPathBytes: 1_024
 }

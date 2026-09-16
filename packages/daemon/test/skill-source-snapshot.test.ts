@@ -57,8 +57,8 @@ describe('snapshotLocalSkillSource', () => {
 
       expect(DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS).toMatchObject({
         maxFiles: 64,
-        maxTotalBytes: 4 * 1024 * 1024,
-        maxFileBytes: 512 * 1024
+        maxTotalBytes: 50 * 1024 * 1024,
+        maxFileBytes: 16 * 1024 * 1024
       })
       expect(result.files.map((file) => file.path)).toEqual(['.hidden', 'bundle/SKILL.md', 'bundle/bin/run.sh'])
       expect(result.files.map((file) => file.mode)).toEqual([0o644, 0o644, 0o755])

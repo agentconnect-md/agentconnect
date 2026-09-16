@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -147,6 +147,116 @@ describe('cluster skill coordinator', () => {
     expect(events[0]).toBe('begin-journal')
     expect(events.at(-1)).toBe('commit:3')
     expect(reconciledSourceIds).toEqual(sources.map((source) => source.sourceId))
+  })
+
+  it('a source the shim skipped does not fail the run: it is reported, unresolved, and the rest commit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-cluster-coordinator-skip-'))
+    const commit = 'f'.repeat(40)
+    const make = async (kind: 'agent' | 'managed', sourceId: string) => {
+      const sourceDir = join(root, kind)
+      await mkdir(sourceDir)
+      await writeFile(join(sourceDir, 'SKILL.md'), `---\nname: ${kind}\ndescription: fixture\n---\n# ${kind}\n`)
+      return { sourceId, sourceKind: kind, sourceDir, selections: [kind], expectedLeaves: [kind] }
+    }
+    const sources = [await make('agent', `agent:0:abc123:${commit}`), await make('managed', 'm:managed')]
+    const commits: number[] = []
+    let committedResolutions: unknown
+    const store: ClusterSkillJournalStore = {
+      async beginClusterSkillReconcile() {
+        return {
+          ok: true,
+          operationId: '11111111-1111-4111-8111-111111111111',
+          replayKey: 'a'.repeat(64),
+          priorRevision: 0,
+          priorLedger: { roots: [] },
+          resumed: false
+        }
+      },
+      async commitClusterSkillReconcile(input) {
+        commits.push(input.ledger.roots.length)
+        committedResolutions = input.ledger.gitResolutions
+        return { ok: true, revision: 1 }
+      },
+      async authorizeClusterSkillMutation() {
+        return true
+      }
+    }
+    const requester = {
+      async request(_capability: unknown, payload: unknown) {
+        const request = payload as Record<string, unknown>
+        if (request.op === 'begin') return { handle: 'opaque-handle-1234' }
+        if (request.op === 'upload') {
+          const data = Buffer.from(String(request.data), 'base64')
+          return { received: Number(request.offset) + data.length, complete: request.final }
+        }
+        // The shim built `managed` and refused `agent` (an oversized asset); its expected leaf is
+        // therefore absent from the receipt, which is only acceptable BECAUSE it is named as skipped.
+        return {
+          roots: [
+            {
+              path: '.agents/skills/managed',
+              sourceId: 'm:managed',
+              sourceKind: 'managed',
+              digest: createHash('sha256').update(JSON.stringify([])).digest('hex'),
+              files: []
+            }
+          ],
+          conflicts: [],
+          skipped: [{ sourceId: sources[0]!.sourceId, reason: 'skills CLI bundle "agent" contains an oversized file' }]
+        }
+      }
+    }
+    const ledger = await new ClusterSkillCoordinator(store).reconcile({
+      authority: { groupId: 'g', term: '1', daemonId: 'd', agentId: 'a', workspaceIncarnation: 'claim' },
+      skillsAgentId: 'codex',
+      shimGeneration: 7,
+      sources,
+      gitResolutions: [{ definitionDigest: 'abc123', resolvedCommit: commit }],
+      client: new ClusterSkillClient(requester, true, true)
+    })
+    expect(ledger.roots.map((r) => r.sourceId)).toEqual(['m:managed'])
+    expect(ledger.skipped).toEqual([{ sourceId: sources[0]!.sourceId, reason: expect.stringContaining('oversized') }])
+    expect(commits).toEqual([1])
+    // The skipped Git source keeps no resolution, so the next preparation acquires and retries it.
+    expect(committedResolutions).toEqual([])
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it('refuses a skipped source the run never asked for', async () => {
+    const store: ClusterSkillJournalStore = {
+      async beginClusterSkillReconcile() {
+        return {
+          ok: true,
+          operationId: '11111111-1111-4111-8111-111111111111',
+          replayKey: 'a'.repeat(64),
+          priorRevision: 0,
+          priorLedger: { roots: [] },
+          resumed: false
+        }
+      },
+      async commitClusterSkillReconcile() {
+        return { ok: true, revision: 1 }
+      },
+      async authorizeClusterSkillMutation() {
+        return true
+      }
+    }
+    const requester = {
+      async request(_capability: unknown, payload: unknown) {
+        const request = payload as Record<string, unknown>
+        if (request.op === 'begin') return { handle: 'opaque-handle-1234' }
+        return { roots: [], conflicts: [], skipped: [{ sourceId: 'm:stranger', reason: 'oversized' }] }
+      }
+    }
+    await expect(
+      new ClusterSkillCoordinator(store).reconcile({
+        authority: { groupId: 'g', term: '1', daemonId: 'd', agentId: 'a', workspaceIncarnation: 'claim' },
+        skillsAgentId: 'codex',
+        shimGeneration: 7,
+        sources: [],
+        client: new ClusterSkillClient(requester, true, true)
+      })
+    ).rejects.toThrow(/skipped an unexpected source/)
   })
 
   it('uploads a whole Git collection, which the single-bundle default profile would truncate', async () => {

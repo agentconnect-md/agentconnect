@@ -192,10 +192,21 @@ export const ClusterSkillManifestReplySchema = z
 export const ClusterSkillUploadReplySchema = z
   .object({ received: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILE_BYTES), complete: z.boolean() })
   .strict()
+/** A source whose CLI stage failed inside the shim — an oversized asset, too many files, a CLI
+ *  crash. Its prior roots were preserved untouched and nothing new was published for it; the daemon
+ *  logs the reason and the run counts as failed so the next preparation retries. Sent only when
+ *  non-empty, so a shim without the field parses unchanged against this daemon and vice versa. */
+export const ClusterSkillSkippedSourceSchema = z
+  .object({
+    sourceId: z.string().min(1).max(160),
+    reason: z.string().min(1).max(1024)
+  })
+  .strict()
 export const ClusterSkillReconcileResultSchema = z
   .object({
     roots: z.array(ClusterSkillPriorRootSchema).max(MAX_SKILL_BUNDLES),
-    conflicts: z.array(RelativeSkillPathSchema).max(MAX_SKILL_BUNDLES)
+    conflicts: z.array(RelativeSkillPathSchema).max(MAX_SKILL_BUNDLES),
+    skipped: z.array(ClusterSkillSkippedSourceSchema).max(MAX_CLUSTER_SKILL_SOURCES).optional()
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -244,14 +255,17 @@ export function skillControlPages<T>(
 
 export function skillReceiptPage(result: ClusterSkillReconcileReply, offset: number): ClusterSkillReceiptPage {
   if (offset > result.roots.length) throw new Error('skill receipt offset exceeds result')
+  // `skipped` rides on every page like `conflicts`, so a paged reply cannot lose it.
+  const skipped = result.skipped && result.skipped.length > 0 ? { skipped: result.skipped } : {}
   const overhead = Buffer.byteLength(
-    JSON.stringify({ roots: [], conflicts: result.conflicts, nextOffset: MAX_SKILL_BUNDLES })
+    JSON.stringify({ roots: [], conflicts: result.conflicts, ...skipped, nextOffset: MAX_SKILL_BUNDLES })
   )
   const roots = skillControlPages(result.roots.slice(offset), MAX_SKILL_BUNDLES, overhead)[0]!
   const nextOffset = offset + roots.length
   return ClusterSkillReceiptPageSchema.parse({
     roots,
     conflicts: result.conflicts,
+    ...skipped,
     ...(nextOffset < result.roots.length ? { nextOffset } : {})
   })
 }
@@ -269,6 +283,7 @@ export type ClusterSkillRequest = z.infer<typeof ClusterSkillRequestSchema>
 export type ClusterSkillBeginReply = z.infer<typeof ClusterSkillBeginReplySchema>
 export type ClusterSkillUploadReply = z.infer<typeof ClusterSkillUploadReplySchema>
 export type ClusterSkillReconcileReply = z.infer<typeof ClusterSkillReconcileResultSchema>
+export type ClusterSkillSkippedSource = z.infer<typeof ClusterSkillSkippedSourceSchema>
 export type ClusterSkillPrior = z.infer<typeof ClusterSkillPriorSchema>
 export type ClusterSkillPriorReply = z.infer<typeof ClusterSkillPriorReplySchema>
 export type ClusterSkillReceipt = z.infer<typeof ClusterSkillReceiptSchema>

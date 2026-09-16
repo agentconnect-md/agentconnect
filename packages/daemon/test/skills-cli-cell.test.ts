@@ -341,8 +341,11 @@ describe('scanSkillsCliCell', () => {
   it('enforces configurable file and byte caps', () => {
     const path = bundle('.runtime', 'skill')
     writeFileSync(join(path, 'extra'), '12345')
-    expect(() => scanSkillsCliCell(cwd, { maxFilesPerBundle: 1 })).toThrow('too many files')
-    expect(() => scanSkillsCliCell(cwd, { maxFileBytes: 4 })).toThrow('oversized file')
+    expect(() => scanSkillsCliCell(cwd, { maxFilesPerBundle: 1 })).toThrow('bundle "skill" has too many files')
+    // The operator fixing the source needs the bundle, the file, its size and the ceiling.
+    expect(() => scanSkillsCliCell(cwd, { maxFileBytes: 4 })).toThrow(
+      'bundle "skill" contains an oversized file: extra is 5 bytes (limit 4)'
+    )
   })
 
   it('applies depth and entry caps to layout prefixes as well as bundle contents', () => {

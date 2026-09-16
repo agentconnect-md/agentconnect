@@ -4693,7 +4693,7 @@ export class Daemon {
         configuredGitSources.map(({ entry }) => entry),
         [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
       )
-      return await new ClusterSkillCoordinator(this.store).reconcile({
+      const reconciled = await new ClusterSkillCoordinator(this.store).reconcile({
         authority: {
           groupId: duty.groupId,
           term: duty.term,
@@ -4709,6 +4709,18 @@ export class Daemon {
         initialLedger: peer.initialLedger,
         isLaunchCurrent: peer.isLaunchCurrent
       })
+      // Named per source so the operator can fix the repository; the session goes on without it.
+      const sourceNames = new Map(
+        configuredGitSources.map(({ index, entry }) => [`agent:${index}:`, entry.name] as const)
+      )
+      for (const entry of reconciled.skipped ?? []) {
+        const name =
+          [...sourceNames].find(([prefix]) => entry.sourceId.startsWith(prefix))?.[1] ??
+          sources.find((source) => source.sourceId === entry.sourceId)?.selections.join(',') ??
+          entry.sourceId
+        this.log.warn(`skills: source ${name} skipped for ${agent.id}; keeping what is installed (${entry.reason})`)
+      }
+      return reconciled
     } finally {
       await rm(scratch, { recursive: true, force: true })
     }

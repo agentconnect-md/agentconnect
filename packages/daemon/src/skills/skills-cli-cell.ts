@@ -12,7 +12,7 @@ import {
   rmdirSync,
   rmSync
 } from 'node:fs'
-import { basename, isAbsolute, dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { offlineSandboxLaunch, probeOfflineSandboxHost } from './offline-sandbox.js'
@@ -70,9 +70,14 @@ export const DEFAULT_SKILLS_CLI_CELL_LIMITS: Readonly<SkillsCliCellLimits> = {
   maxEntries: 1_024,
   maxDepth: 16,
   maxFilesPerBundle: 64,
-  maxFileBytes: 512 * 1024,
-  maxBytesPerBundle: 4 * 1024 * 1024,
-  maxTotalBytes: 32 * 1024 * 1024,
+  // Byte ceilings follow the plugin ecosystems skills come from. One cell is one source, i.e. one
+  // plugin, and Claude Code and Codex accept a 50 MB plugin — so a cell (and therefore any single
+  // bundle in it) may hold 50 MiB. A file is capped at the cluster channel's existing 16 MiB
+  // (MAX_CLUSTER_SKILL_FILE_BYTES), so what the cell admits the sandbox upload can carry. File COUNT
+  // and path limits stay tight — a receipt root must fit one control frame (shared-skills.md §1).
+  maxFileBytes: 16 * 1024 * 1024,
+  maxBytesPerBundle: 50 * 1024 * 1024,
+  maxTotalBytes: 50 * 1024 * 1024,
   maxLockBytes: 1024 * 1024
 }
 
@@ -561,10 +566,23 @@ function scanBundle(
       if (stat.nlink !== 1) throw new SkillsCliCellError('skills CLI bundle contains a hard-linked file')
       fileCount += 1
       totalBytes += stat.size
-      if (fileCount > limits.maxFilesPerBundle) throw new SkillsCliCellError('skills CLI bundle has too many files')
-      if (stat.size > limits.maxFileBytes) throw new SkillsCliCellError('skills CLI bundle contains an oversized file')
-      if (totalBytes > limits.maxBytesPerBundle)
-        throw new SkillsCliCellError('skills CLI bundle exceeds its byte limit')
+      // Name the bundle and the file: the operator fixing the source needs to know WHICH one.
+      const bundleName = basename(bundlePath)
+      if (fileCount > limits.maxFilesPerBundle) {
+        throw new SkillsCliCellError(
+          `skills CLI bundle "${bundleName}" has too many files (more than ${limits.maxFilesPerBundle})`
+        )
+      }
+      if (stat.size > limits.maxFileBytes) {
+        throw new SkillsCliCellError(
+          `skills CLI bundle "${bundleName}" contains an oversized file: ${relative(bundlePath, path)} is ${stat.size} bytes (limit ${limits.maxFileBytes})`
+        )
+      }
+      if (totalBytes > limits.maxBytesPerBundle) {
+        throw new SkillsCliCellError(
+          `skills CLI bundle "${bundleName}" exceeds its byte limit (${totalBytes} bytes so far, limit ${limits.maxBytesPerBundle})`
+        )
+      }
       if (current.depth === bundleDepth && name === 'SKILL.md') hasManifest = true
     }
   }
