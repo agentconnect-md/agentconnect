@@ -85,15 +85,27 @@ is passed to MCP or into an iframe.
 
 ## Interaction lifecycle
 
-The first live event opens the dialog, unless another dialog is already open. A
-card button allows a later explicit open. App ids are deduplicated in memory and
-tab session storage; reconnects and remounts do not repeatedly interrupt the user.
-The transcript preserves the validated native intent. Refreshing or disconnecting releases
-the old stream without expiring the card; an authorized, connected reader can reopen
-it and send completion through a restored native-only handler. Closed, completed,
-superseded, or session-expired cards remain inactive. Read-only history never opens
-a dialog. Closing an editor without submitting
-does not send a completion message. A card becoming inactive closes its own dialog.
+The first live event opens the dialog, unless another dialog is already open. App ids
+are deduplicated in memory and tab session storage; reconnects and remounts do not
+repeatedly interrupt the user, and only a live card opens itself — a reload must not
+throw a dialog over a conversation someone came back to read.
+
+The transcript preserves the validated native intent, and opening needs nothing else:
+a native dialog runs on the reader's own Console session, which is why refreshing or
+disconnecting releases the old stream without expiring the card. The card's button is
+therefore offered for as long as its intent parses, including after the card closed,
+completed, was superseded or expired with its session — a configuration the reader
+cannot reach a second time is a dead end, not a boundary.
+
+Reporting back is what needs a live card. A settled one still opens and still saves,
+through the same Console authorization, and says plainly that the agent was not
+notified instead of dropping the note. Completion callbacks are deduplicated per
+opening, so one dialog reports once and a reopened one may report again.
+
+Closing an editor without submitting does not send a completion message. A card going
+inert closes the dialog it opened, on that transition alone, so re-reading an old card
+cannot shut a dialog someone deliberately reopened; a completed card is left alone for
+its own final reveal step.
 
 Successful saves produce a bounded, non-secret summary through the existing
 `ui/message` path. The daemon dispatches it as an ordinary user turn and settles the

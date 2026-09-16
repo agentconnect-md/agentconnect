@@ -23,30 +23,55 @@ export function NativeIntegrationAppCard({ step, onRpc }: McpAppCardProps) {
   const [error, setError] = useState('')
   const completed = useRef(false)
   const opening = useRef(false)
-  const live = !!onRpc && !app.outcome && !!ui
-  const active = useRef(live)
+  // Opening needs no MCP bridge: a native dialog runs on the reader's own Console session, which is
+  // why the daemon keeps a native card reopenable from its recorded intent across a disconnect.
+  // Only TELLING the agent needs the bridge, so a settled card still opens — it just reports nothing.
+  const openable = !!ui && !!modal
+  const live = !!onRpc && !app.outcome && openable
+  // Read at callback time, not closure-capture time: a dialog outlives the render that opened it.
+  const report = useRef<McpAppCardProps['onRpc']>(undefined)
+  const mounted = useRef(true)
   useEffect(() => {
-    active.current = live
+    report.current = app.outcome ? undefined : onRpc
+  })
+  useEffect(() => {
+    mounted.current = true
     return () => {
-      active.current = false
+      mounted.current = false
     }
-  }, [live])
+  }, [])
   useEffect(() => () => modal?.closeNativeIntegration?.(app.appId), [modal, app.appId])
+  // A card going inert closes the dialog it opened — but only on the TRANSITION: re-reading a card
+  // that settled long ago must not shut a dialog the reader deliberately reopened from it. A
+  // completed one is left alone, so a saved form keeps its own final reveal step.
+  const settled = !!app.outcome
+  const inert = settled && app.outcome !== 'completed'
+  const wasInert = useRef(inert)
   useEffect(() => {
-    if (!live && app.outcome !== 'completed') modal?.closeNativeIntegration?.(app.appId)
-  }, [live, app.outcome, modal, app.appId])
+    if (inert && !wasInert.current) modal?.closeNativeIntegration?.(app.appId)
+    wasInert.current = inert
+  }, [inert, modal, app.appId])
   const open = useCallback(async () => {
-    if (!live || !ui || !modal || opening.current) return
+    if (!ui || !modal || opening.current) return
     opening.current = true
+    // Per-open deduplication: one dialog reports once, and reopening it may report again.
+    completed.current = false
     try {
-      if (!active.current) return
+      if (!mounted.current) return
       const shown = modal.openNativeIntegration(
         ui,
         (message) => {
-          if (completed.current || !active.current) return
+          if (completed.current || !mounted.current) return
           completed.current = true
           setSummary(message)
-          void onRpc!(app.appId, { method: 'ui/message', text: message })
+          // Saves already applied under the reader's own Console session; without a live bridge the
+          // only thing missing is the note to the agent, and saying so beats dropping it silently.
+          const notify = report.current
+          if (!notify) {
+            setError('Your changes are saved. This interface is no longer live, so the agent was not notified.')
+            return
+          }
+          void notify(app.appId, { method: 'ui/message', text: message })
             .then((result) => {
               if (!result.ok) setError(`Configuration was saved, but the agent could not be notified: ${result.error}`)
             })
@@ -61,8 +86,10 @@ export function NativeIntegrationAppCard({ step, onRpc }: McpAppCardProps) {
     } finally {
       opening.current = false
     }
-  }, [live, ui, modal, onRpc, app.appId])
+  }, [ui, modal, app.appId])
 
+  // Only a LIVE card opens itself — a reload must not throw a dialog over a conversation the reader
+  // came back to read. A settled one waits behind its button.
   useEffect(() => {
     if (!live || opened.has(app.appId)) return
     opened.add(app.appId)
@@ -82,16 +109,20 @@ export function NativeIntegrationAppCard({ step, onRpc }: McpAppCardProps) {
       <div className="font-sans text-[14px] font-semibold leading-normal">{title(ui)}</div>
       <p className="mt-2 text-[13px] text-(--text-secondary)">
         {summary ||
-          (live ? 'Complete configuration in the dialog.' : 'This configuration interface is no longer active.')}
+          (live
+            ? 'Complete configuration in the dialog.'
+            : openable
+              ? 'Open this configuration again whenever you need it.'
+              : 'This configuration interface is no longer available.')}
       </p>
       {error && (
         <p role="alert" className="mt-2 text-[13px] text-(--text-secondary)">
           {error}
         </p>
       )}
-      {live && !summary && (
-        <Button variant="secondary" onClick={open}>
-          Open configuration
+      {openable && (
+        <Button variant="secondary" className="mt-2" onClick={open}>
+          {summary || settled ? 'Open again' : 'Open configuration'}
         </Button>
       )}
     </div>

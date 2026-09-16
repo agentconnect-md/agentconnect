@@ -104,18 +104,43 @@ describe('native integration UI', () => {
     })
     expect(modal.openNativeIntegration).toHaveBeenCalledTimes(1)
   })
-  it('does not open a settled request or a history card', async () => {
+  it('does not open a settled request or a history card by itself, but still offers the way back', async () => {
+    const settled = { ...app(), outcome: 'expired' as const }
     await act(async () => {
-      root.render(
-        <McpAppCard step={{ app: { ...app(), outcome: 'expired' } }} onRpc={async () => ({ ok: true, result: {} })} />
-      )
+      root.render(<McpAppCard step={{ app: settled }} onRpc={async () => ({ ok: true, result: {} })} />)
     })
     expect(modal.openNativeIntegration).not.toHaveBeenCalled()
-    expect(element.textContent).toContain('no longer active')
+    // Opening needs no bridge — a dialog the reader cannot reach again is the bug this guards.
+    expect(element.textContent).toContain('Open again')
+    await act(async () => element.querySelector('button')!.click())
+    expect(modal.openNativeIntegration).toHaveBeenCalledTimes(1)
+    act(() => root.unmount())
+    root = createRoot(element)
     await act(async () => {
       root.render(<McpAppCard step={{ app: app() }} />)
     })
-    expect(modal.openNativeIntegration).not.toHaveBeenCalled()
+    expect(modal.openNativeIntegration).toHaveBeenCalledTimes(1)
+    await act(async () => element.querySelector('button')!.click())
+    expect(modal.openNativeIntegration).toHaveBeenCalledTimes(2)
+  })
+
+  it('reopens a completed card and says plainly when the agent can no longer be told', async () => {
+    const value = app()
+    const onRpc = vi.fn(async () => ({ ok: true as const, result: {} }))
+    await act(async () => {
+      root.render(<McpAppCard step={{ app: value }} onRpc={onRpc} />)
+    })
+    await act(async () => {
+      root.render(<McpAppCard step={{ app: { ...value, outcome: 'completed' } }} onRpc={onRpc} />)
+    })
+    expect(element.textContent).toContain('Open again')
+    await act(async () => element.querySelector('button')!.click())
+    expect(modal.openNativeIntegration).toHaveBeenCalledTimes(2)
+    const completed = (modal.openNativeIntegration.mock.calls[1] as unknown as [unknown, (text: string) => void])[1]
+    await act(async () => completed('Reviewed the code host connections.'))
+    // The saves already applied under the reader's own Console session; only the note is missing.
+    expect(onRpc).not.toHaveBeenCalled()
+    expect(element.textContent).toContain('the agent was not notified')
   })
   it('reports successful completion once and never reports opening as creation', async () => {
     const onRpc = vi.fn(async () => ({ ok: true as const, result: {} }))
