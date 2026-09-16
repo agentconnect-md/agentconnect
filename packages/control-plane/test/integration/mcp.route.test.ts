@@ -798,8 +798,27 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
     })
     const githubKey = await mintKeyAs(DEFAULT_OWNER_ID)
     const GITHUB_GATED = new Set(['listGithubInstallations', 'listGithubRepositories', 'getGithubRepositoryAccess'])
+    // Same opt-in shape for the other two hosts: without a configured application or
+    // instance their route families are legitimately absent, so they are probed against
+    // a deployment that configured one. Only `api.baseUrl` is read by these reads.
+    const codeHostApp = build(undefined, undefined, undefined, {
+      gitlab: { api: { baseUrl: 'https://gitlab.example.test' } } as never,
+      gitea: { api: { baseUrl: 'https://gitea.example.test' } } as never
+    })
+    const codeHostKey = await mintKeyAs(DEFAULT_OWNER_ID)
+    const CODE_HOST_GATED = new Set([
+      'listGitlabConnections',
+      'listGitlabBots',
+      'listGitlabProjects',
+      'listGiteaConnections',
+      'listGiteaRepositories'
+    ])
     for (const tool of MCP_TOOLS) {
-      const target = GITHUB_GATED.has(tool.name) ? { app: githubApp, key: githubKey } : { app, key }
+      const target = GITHUB_GATED.has(tool.name)
+        ? { app: githubApp, key: githubKey }
+        : CODE_HOST_GATED.has(tool.name)
+          ? { app: codeHostApp, key: codeHostKey }
+          : { app, key }
       const out = await callTool(target.app, target.key, tool.name, idArgs[tool.name])
       if (out.isError) {
         expect(toolText(out), `${tool.name} hit a route-level 404 (route drift)`).not.toContain('Route ')
