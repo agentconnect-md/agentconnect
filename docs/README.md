@@ -123,6 +123,7 @@ the picture it draws.
 - [cluster-spawn-and-shim.md](designs/cluster-spawn-and-shim.md) — Running ACP runtimes in sandbox pods, and the in-sandbox shim.
 - [cloud-data-plane-postgres.md](designs/cloud-data-plane-postgres.md) — PostgreSQL as the cloud daemon's durable store.
 - [daemon-groups.md](designs/daemon-groups.md) — Daemon groups and agent placement.
+- [session-executors.md](designs/session-executors.md) — Spreading one agent's sessions across a daemon group: the executor facet, the shim contract, execution strategies.
 - [background-task-aware-reclaim.md](designs/background-task-aware-reclaim.md) — ACP host reclamation that respects background jobs.
 - [runtime-model-catalog.md](designs/runtime-model-catalog.md) — Runtime model discovery, per-model fallback, and local caching.
 

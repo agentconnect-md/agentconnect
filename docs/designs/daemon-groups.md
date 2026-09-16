@@ -9,6 +9,10 @@ and the one-action live membership transitions of §3 (what shipped instead is r
 there). ([k8s-daemon-pool.md](k8s-daemon-pool.md) §14 records the pool as the degenerate
 case of what this document generalizes.)
 
+A group makes machines interchangeable _holders_; where a held agent's sessions execute
+is the subject of [session-executors.md](session-executors.md), which gives every member
+an executor facet so one agent's concurrent sessions can spread across the group.
+
 A _daemon group_ is a named set of daemons within which an agent's duty may be claimed.
 The k8s pool is one such group, and since #1003 it is an explicit one: a `member_set` row,
 install-wide and org-less, its members every frame-mode Pod of the install. What remains

@@ -10,6 +10,10 @@ network and workload validation remains pending.
 
 The VM implementation uses the existing workspace modes and lifecycle.
 
+A backend is also what a daemon's executor facet wraps when it hosts sessions for
+other members of its group; [session-executors.md](session-executors.md) §5 names the
+execution strategies after these backends.
+
 This extends [daemon configuration and lifecycle](daemon-detailed-design.md) and
 uses the existing [execution-driver seam](cluster-spawn-and-shim.md#1-why-a-seam-at-all).
 [Workspace ownership](git-workspace-model.md) remains a separate concern. The
