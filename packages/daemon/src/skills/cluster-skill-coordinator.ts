@@ -150,10 +150,19 @@ export class ClusterSkillCoordinator {
       }
       skippedIds.add(entry.sourceId)
     }
+    // With a skipped source the shim preserves every prior root it did not rebuild; those carry
+    // the receipt this run started from (possibly an earlier revision's source id) and are admitted
+    // only as exactly that — path, source id and kind as the prior ledger recorded them.
+    const priorRoots =
+      begun.priorRevision === 0 ? (input.initialLedger ?? begun.priorLedger).roots : begun.priorLedger.roots
+    const preservedPrior = new Set(
+      skipped.length > 0 ? priorRoots.map((root) => `${root.path}\0${root.sourceId}\0${root.sourceKind}`) : []
+    )
     const returnedSelections = new Map<string, Set<string>>()
     for (const root of reply.roots) {
       const expected = expectedSources.get(root.sourceId)
       if (!expected || expected.sourceKind !== root.sourceKind) {
+        if (preservedPrior.has(`${root.path}\0${root.sourceId}\0${root.sourceKind}`)) continue
         throw new Error('cluster skill shim returned an unexpected source receipt')
       }
       const selected = returnedSelections.get(root.sourceId) ?? new Set<string>()

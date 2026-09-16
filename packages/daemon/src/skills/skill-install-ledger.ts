@@ -4,14 +4,21 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { under } from '../fs/contained-path.js'
 import { inspectLocalSkillSource } from './skill-source-snapshot.js'
-import { MAX_SKILL_BUNDLES, MAX_SKILL_PATH_BYTES, MAX_SKILL_RECEIPT_FILES } from './skill-limits.js'
+import {
+  MAX_SKILL_BUNDLES,
+  MAX_SKILL_PATH_BYTES,
+  MAX_SKILL_RECEIPT_FILES,
+  MAX_SKILL_BUNDLE_BYTES,
+  MAX_SKILL_FILE_BYTES
+} from './skill-limits.js'
 import { canonicalSkillMutationRoot, runSkillWorkspaceMutation } from './skill-workspace-mutator.js'
 import { withSkillMutationHelperLease, type SkillMutationHelperLease } from './skill-workspace-lock-lease.js'
 
 // Two sets of 64 bundles × 64 files × 1 KiB paths, source keys and JSON escaping fit below this bounded journal read.
 export const MAX_SKILL_LEDGER_BYTES = 32 * 1024 * 1024
-const MAX_RECEIPT_BYTES = 4 * 1024 * 1024
-const MAX_RECEIPT_FILE_BYTES = 512 * 1024
+// The same ceilings the CLI cell and snapshot admit (skill-limits.ts): what staged must publish.
+const MAX_RECEIPT_BYTES = MAX_SKILL_BUNDLE_BYTES
+const MAX_RECEIPT_FILE_BYTES = MAX_SKILL_FILE_BYTES
 const MAX_LAYOUT_SEGMENTS = 8
 const SAFE_LAYOUT_SEGMENT = /^\.?[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/
 const SAFE_BUNDLE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$/

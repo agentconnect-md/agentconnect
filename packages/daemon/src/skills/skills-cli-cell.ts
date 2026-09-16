@@ -16,6 +16,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { offlineSandboxLaunch, probeOfflineSandboxHost } from './offline-sandbox.js'
+import { MAX_SKILL_BUNDLE_BYTES, MAX_SKILL_FILE_BYTES } from './skill-limits.js'
 
 export const PINNED_SKILLS_CLI_VERSION = '1.5.21'
 
@@ -75,9 +76,9 @@ export const DEFAULT_SKILLS_CLI_CELL_LIMITS: Readonly<SkillsCliCellLimits> = {
   // bundle in it) may hold 50 MiB. A file is capped at the cluster channel's existing 16 MiB
   // (MAX_CLUSTER_SKILL_FILE_BYTES), so what the cell admits the sandbox upload can carry. File COUNT
   // and path limits stay tight — a receipt root must fit one control frame (shared-skills.md §1).
-  maxFileBytes: 16 * 1024 * 1024,
-  maxBytesPerBundle: 50 * 1024 * 1024,
-  maxTotalBytes: 50 * 1024 * 1024,
+  maxFileBytes: MAX_SKILL_FILE_BYTES,
+  maxBytesPerBundle: MAX_SKILL_BUNDLE_BYTES,
+  maxTotalBytes: MAX_SKILL_BUNDLE_BYTES,
   maxLockBytes: 1024 * 1024
 }
 

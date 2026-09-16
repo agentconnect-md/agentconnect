@@ -159,6 +159,15 @@ describe('cluster skill coordinator', () => {
       return { sourceId, sourceKind: kind, sourceDir, selections: [kind], expectedLeaves: [kind] }
     }
     const sources = [await make('agent', `agent:0:abc123:${commit}`), await make('managed', 'm:managed')]
+    // The agent source was installed before at an earlier commit; the shim preserves that root
+    // when it skips the new revision, and the coordinator must admit it under its OLD id.
+    const previous = {
+      path: '.agents/skills/agent',
+      sourceId: `agent:0:abc123:${'e'.repeat(40)}`,
+      sourceKind: 'agent' as const,
+      digest: createHash('sha256').update(JSON.stringify([])).digest('hex'),
+      files: []
+    }
     const commits: number[] = []
     let committedResolutions: unknown
     const store: ClusterSkillJournalStore = {
@@ -167,8 +176,8 @@ describe('cluster skill coordinator', () => {
           ok: true,
           operationId: '11111111-1111-4111-8111-111111111111',
           replayKey: 'a'.repeat(64),
-          priorRevision: 0,
-          priorLedger: { roots: [] },
+          priorRevision: 1,
+          priorLedger: { roots: [previous] },
           resumed: false
         }
       },
@@ -193,6 +202,7 @@ describe('cluster skill coordinator', () => {
         // therefore absent from the receipt, which is only acceptable BECAUSE it is named as skipped.
         return {
           roots: [
+            previous,
             {
               path: '.agents/skills/managed',
               sourceId: 'm:managed',
@@ -214,11 +224,77 @@ describe('cluster skill coordinator', () => {
       gitResolutions: [{ definitionDigest: 'abc123', resolvedCommit: commit }],
       client: new ClusterSkillClient(requester, true, true)
     })
-    expect(ledger.roots.map((r) => r.sourceId)).toEqual(['m:managed'])
+    expect(ledger.roots.map((r) => r.sourceId)).toEqual([previous.sourceId, 'm:managed'])
     expect(ledger.skipped).toEqual([{ sourceId: sources[0]!.sourceId, reason: expect.stringContaining('oversized') }])
-    expect(commits).toEqual([1])
+    expect(commits).toEqual([2])
     // The skipped Git source keeps no resolution, so the next preparation acquires and retries it.
     expect(committedResolutions).toEqual([])
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it('still refuses a root under an unknown id when it was not in the prior ledger', async () => {
+    const store: ClusterSkillJournalStore = {
+      async beginClusterSkillReconcile() {
+        return {
+          ok: true,
+          operationId: '11111111-1111-4111-8111-111111111111',
+          replayKey: 'a'.repeat(64),
+          priorRevision: 0,
+          priorLedger: { roots: [] },
+          resumed: false
+        }
+      },
+      async commitClusterSkillReconcile() {
+        return { ok: true, revision: 1 }
+      },
+      async authorizeClusterSkillMutation() {
+        return true
+      }
+    }
+    const root = await mkdtemp(join(tmpdir(), 'ac-cluster-coordinator-stranger-'))
+    const sourceDir = join(root, 'managed')
+    await mkdir(sourceDir)
+    await writeFile(join(sourceDir, 'SKILL.md'), '---\nname: managed\ndescription: fixture\n---\n# m\n')
+    const requester = {
+      async request(_capability: unknown, payload: unknown) {
+        const request = payload as Record<string, unknown>
+        if (request.op === 'begin') return { handle: 'opaque-handle-1234' }
+        if (request.op === 'upload') {
+          const data = Buffer.from(String(request.data), 'base64')
+          return { received: Number(request.offset) + data.length, complete: request.final }
+        }
+        return {
+          roots: [
+            {
+              path: '.agents/skills/stranger',
+              sourceId: 'agent:9:zzz:' + 'e'.repeat(40),
+              sourceKind: 'agent',
+              digest: createHash('sha256').update(JSON.stringify([])).digest('hex'),
+              files: []
+            }
+          ],
+          conflicts: [],
+          skipped: [{ sourceId: 'm:managed', reason: 'oversized' }]
+        }
+      }
+    }
+    await expect(
+      new ClusterSkillCoordinator(store).reconcile({
+        authority: { groupId: 'g', term: '1', daemonId: 'd', agentId: 'a', workspaceIncarnation: 'claim' },
+        skillsAgentId: 'codex',
+        shimGeneration: 7,
+        sources: [
+          {
+            sourceId: 'm:managed',
+            sourceKind: 'managed',
+            sourceDir,
+            selections: ['managed'],
+            expectedLeaves: ['managed']
+          }
+        ],
+        client: new ClusterSkillClient(requester, true, true)
+      })
+    ).rejects.toThrow(/unexpected source receipt/)
     await rm(root, { recursive: true, force: true })
   })
 

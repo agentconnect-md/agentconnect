@@ -19,8 +19,11 @@ import {
   SkillsCliCellError,
   stageSkillsCliCell,
   type ResolvedSkillsCli,
-  type SkillsCliRunOptions
+  type SkillsCliRunOptions,
+  DEFAULT_SKILLS_CLI_CELL_LIMITS
 } from '../src/skills/skills-cli-cell.js'
+import { MAX_SKILL_BUNDLE_BYTES, MAX_SKILL_FILE_BYTES } from '../src/skills/skill-limits.js'
+import { DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS } from '../src/skills/skill-source-snapshot.js'
 
 describe('resolvePinnedSkillsCli', () => {
   let root: string
@@ -352,6 +355,17 @@ describe('scanSkillsCliCell', () => {
     bundle('one/two/three', 'skill')
     expect(() => scanSkillsCliCell(cwd, { maxDepth: 4 })).toThrow('depth limit')
     expect(() => scanSkillsCliCell(cwd, { maxEntries: 4 })).toThrow('too many entries')
+  })
+
+  it('shares its byte ceilings with the snapshot and the ledger (one number, every validator)', () => {
+    expect(DEFAULT_SKILLS_CLI_CELL_LIMITS.maxFileBytes).toBe(MAX_SKILL_FILE_BYTES)
+    expect(DEFAULT_SKILLS_CLI_CELL_LIMITS.maxBytesPerBundle).toBe(MAX_SKILL_BUNDLE_BYTES)
+    expect(DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS.maxFileBytes).toBe(MAX_SKILL_FILE_BYTES)
+    expect(DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS.maxTotalBytes).toBe(MAX_SKILL_BUNDLE_BYTES)
+    // The confined mutation helper cannot import these (builtins only) and restates them.
+    const helper = readFileSync(new URL('../src/skills/skill-workspace-mutation-cli.ts', import.meta.url), 'utf8')
+    expect(helper).toContain(`const MAX_FILE_BYTES = ${MAX_SKILL_FILE_BYTES / (1024 * 1024)} * 1024 * 1024`)
+    expect(helper).toContain(`const MAX_BUNDLE_BYTES = ${MAX_SKILL_BUNDLE_BYTES / (1024 * 1024)} * 1024 * 1024`)
   })
 
   it('rejects an empty cell', () => {

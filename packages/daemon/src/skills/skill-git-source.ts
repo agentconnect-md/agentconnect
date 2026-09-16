@@ -9,6 +9,7 @@ import { extract as extractTar, list as listTar, type ReadEntry } from 'tar'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { daemonLocalGitEnv, workspaceGitEnvBase } from '../workspace/git-injection.js'
 import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
+import { MAX_SKILL_FILE_BYTES } from './skill-limits.js'
 
 const GITHUB_SHORTHAND = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/
 const GITHUB_TREE = /^\/([^/]+)\/([^/]+)\/tree\/([^/]+)(?:\/(.*))?$/
@@ -39,7 +40,7 @@ export const DEFAULT_GIT_SKILL_ARCHIVE_LIMITS: Readonly<GitSkillArchiveLimits> =
   maxCompressedBytes: 160 * 1024 * 1024,
   maxTarBytes: 160 * 1024 * 1024,
   maxEntries: 8_192,
-  maxFileBytes: 16 * 1024 * 1024,
+  maxFileBytes: MAX_SKILL_FILE_BYTES,
   maxTotalFileBytes: 128 * 1024 * 1024,
   maxDepth: 64,
   maxPathBytes: 1_024

@@ -87,14 +87,18 @@ each with 64 files and relative paths of at most 1024 UTF-8 bytes. Byte ceilings
 the plugin ecosystems skills come from: one CLI cell is one source, i.e. one plugin, and
 Claude Code and Codex accept a 50 MB plugin, so a source's installed output may hold up
 to 50 MiB; a file is capped at the cluster channel's 16 MiB; an agent's whole published
-set at 128 MiB. File and path COUNTS stay tight because a receipt root must fit one
-control frame. These selected installation limits are separate from the larger source
+set at 128 MiB. The two per-skill numbers live once (`skill-limits.ts`) and every
+validator on the path reads them — the CLI cell, the snapshot, the ledger's receipt check
+and the confined mutation helper — so a bundle one stage admits is never refused by the
+next. File and path COUNTS stay tight because a receipt root must fit one control frame. These selected installation limits are separate from the larger source
 snapshot manifest.
 
 A source that fails its CLI stage — an oversized asset, too many files, a CLI crash —
 is **skipped by name** for that run, on the daemon and inside the sandbox shim alike:
-its previously installed bundles are preserved exactly as an acquisition failure's
-are, the other sources still install, the run's fingerprint is marked failed so the
+every previously installed bundle is preserved (a Git source id names its commit, so
+a skipped revision's prior bundles cannot be matched by id; a run that skipped anything
+says nothing about intent and pruning waits for a run that builds every source), the
+other sources still install, the run's fingerprint is marked failed so the
 next preparation retries, and the reason names the bundle and file (for a cluster
 agent it travels back in the reconcile reply's `skipped` list). Only a ledger safety
 error refuses host startup; content never does.

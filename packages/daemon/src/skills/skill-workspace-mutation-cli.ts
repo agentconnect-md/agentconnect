@@ -139,6 +139,12 @@ function validateRelativeRoot(value: string): string[] {
   return parts
 }
 
+// This helper is a self-contained confined process (Node builtins only), so the shared ceilings
+// from skill-limits.ts (MAX_SKILL_FILE_BYTES / MAX_SKILL_BUNDLE_BYTES) are restated here; the
+// install-ledger test pins the two pairs equal.
+const MAX_FILE_BYTES = 16 * 1024 * 1024
+const MAX_BUNDLE_BYTES = 50 * 1024 * 1024
+
 function validateReceipt(receipt: BundleReceipt): void {
   if (!/^[a-f0-9]{64}$/.test(receipt.treeDigest) || !Array.isArray(receipt.files) || receipt.files.length === 0) {
     fail('invalid skill mutation receipt')
@@ -158,14 +164,14 @@ function validateReceipt(receipt: BundleReceipt): void {
       (file.mode !== 0o600 && file.mode !== 0o700) ||
       !Number.isSafeInteger(file.size) ||
       file.size < 0 ||
-      file.size > 512 * 1024 ||
+      file.size > MAX_FILE_BYTES ||
       !/^[a-f0-9]{64}$/.test(file.sha256) ||
       seen.has(file.path)
     ) {
       fail('invalid skill mutation receipt')
     }
     total += file.size
-    if (total > 4 * 1024 * 1024) fail('invalid skill mutation receipt')
+    if (total > MAX_BUNDLE_BYTES) fail('invalid skill mutation receipt')
     seen.add(file.path)
   }
   if (!seen.has('SKILL.md') || digest(receipt.files) !== receipt.treeDigest) fail('invalid skill mutation receipt')

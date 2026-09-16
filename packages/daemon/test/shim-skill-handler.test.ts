@@ -546,6 +546,124 @@ describe('cluster skill shim staging', () => {
     expect(await readFile(join(workspace, '.agents/skills/cluster-golden/SKILL.md'), 'utf8')).toContain('# Cluster')
   }, 120_000)
 
+  it('publishes a bundle carrying a multi-MiB asset end to end (cell, snapshot, ledger and mutation helper agree)', async () => {
+    // Every validator on the path must admit what the first one admits: a 1 MiB asset was refused
+    // by the old 512 KiB receipt checks even once staging let it through.
+    const skill = Buffer.from('---\nname: with-asset\ndescription: fixture\n---\n# Asset\n')
+    const asset = Buffer.alloc(1024 * 1024 + 7, 0x41)
+    const root = await mkdtemp(join(tmpdir(), 'ac-shim-skills-asset-'))
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    const operationId = randomUUID()
+    const handler = new ClusterSkillHandler({
+      stagingRoot: join(root, 'staging'),
+      workspaceRoot: workspace,
+      stateRoot: join(root, 'state')
+    })
+    const client = new ClusterSkillClient({ request: (_cap, payload) => handler.handle(payload) }, true, true, true)
+    const authority = {
+      groupId: 'g',
+      term: '1',
+      daemonId: 'd',
+      agentId: 'a',
+      workspaceIncarnation: 'claim',
+      shimGeneration: 1
+    }
+    const files = [
+      { sourceId: 'managed:a', path: 'SKILL.md', size: skill.length, sha256: sha256(skill) },
+      { sourceId: 'managed:a', path: 'assets/photo.bin', size: asset.length, sha256: sha256(asset) }
+    ]
+    const { handle } = await client.begin({ operationId, authority, skillsAgentId: 'codex', files })
+    await client.upload(operationId, handle, files[0]!, skill)
+    await client.upload(operationId, handle, files[1]!, asset)
+    const reply = await client.reconcile({
+      operationId,
+      handle,
+      authority,
+      priorRoots: [],
+      replayKey: 'd'.repeat(64),
+      allowDesiredAdoption: false,
+      sources: [{ sourceId: 'managed:a', sourceKind: 'managed', selections: ['with-asset'] }]
+    })
+    expect(reply.skipped).toBeUndefined()
+    expect(reply.roots.map((r) => r.path)).toEqual(['.agents/skills/with-asset'])
+    expect(reply.roots[0]!.files.find((f) => f.path === 'assets/photo.bin')?.size).toBe(asset.length)
+    expect((await readFile(join(workspace, '.agents/skills/with-asset/assets/photo.bin'))).length).toBe(asset.length)
+    await rm(root, { recursive: true, force: true })
+  }, 120_000)
+
+  it('keeps a skipped Git source’s PREVIOUS revision installed, even though its source id changed', async () => {
+    // Revision A of `agent:0:dgst:<A>` installs; revision B of the same source (a different id,
+    // since the id names the commit) fails staging with too many bundles. B is skipped and A's
+    // bundle must stay — the run says nothing about intent — under A's own receipt.
+    const A = 'a'.repeat(40)
+    const B = 'b'.repeat(40)
+    const body = Buffer.from('---\nname: keep-me\ndescription: fixture\n---\n# Keep\n')
+    const root = await mkdtemp(join(tmpdir(), 'ac-shim-skills-revision-'))
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    const authority = {
+      groupId: 'g',
+      term: '1',
+      daemonId: 'd',
+      agentId: 'a',
+      workspaceIncarnation: 'claim',
+      shimGeneration: 1
+    }
+    const handler = new ClusterSkillHandler({
+      stagingRoot: join(root, 'staging'),
+      workspaceRoot: workspace,
+      stateRoot: join(root, 'state')
+    })
+    const client = new ClusterSkillClient({ request: (_cap, payload) => handler.handle(payload) }, true, true, true)
+
+    const firstId = `agent:0:dgst:${A}`
+    const first = randomUUID()
+    const firstFiles = [{ sourceId: firstId, path: 'keep-me/SKILL.md', size: body.length, sha256: sha256(body) }]
+    const begunA = await client.begin({ operationId: first, authority, skillsAgentId: 'codex', files: firstFiles })
+    await client.upload(first, begunA.handle, firstFiles[0]!, body)
+    const installed = await client.reconcile({
+      operationId: first,
+      handle: begunA.handle,
+      authority,
+      priorRoots: [],
+      replayKey: 'e'.repeat(64),
+      allowDesiredAdoption: false,
+      sources: [{ sourceId: firstId, sourceKind: 'agent', selections: ['keep-me'] }]
+    })
+    expect(installed.roots.map((r) => r.path)).toEqual(['.agents/skills/keep-me'])
+
+    const secondId = `agent:0:dgst:${B}`
+    const second = randomUUID()
+    const bodies = Array.from({ length: 65 }, (_, i) =>
+      Buffer.from(`---\nname: skill-${i}\ndescription: f\n---\n# ${i}\n`)
+    )
+    const secondFiles = bodies.map((b, i) => ({
+      sourceId: secondId,
+      path: `skill-${i}/SKILL.md`,
+      size: b.length,
+      sha256: sha256(b)
+    }))
+    const begunB = await client.begin({ operationId: second, authority, skillsAgentId: 'codex', files: secondFiles })
+    for (const [i, file] of secondFiles.entries()) await client.upload(second, begunB.handle, file, bodies[i]!)
+    const reply = await client.reconcile({
+      operationId: second,
+      handle: begunB.handle,
+      authority,
+      priorRoots: installed.roots,
+      replayKey: 'f'.repeat(64),
+      allowDesiredAdoption: false,
+      sources: [{ sourceId: secondId, sourceKind: 'agent', selections: [] }]
+    })
+    expect(reply.skipped).toEqual([{ sourceId: secondId, reason: expect.stringContaining('too many bundles') }])
+    // A's bundle survived, still owned under A's id and kind.
+    expect(reply.roots).toEqual([
+      expect.objectContaining({ path: '.agents/skills/keep-me', sourceId: firstId, sourceKind: 'agent' })
+    ])
+    expect(await readFile(join(workspace, '.agents/skills/keep-me/SKILL.md'), 'utf8')).toContain('# Keep')
+    await rm(root, { recursive: true, force: true })
+  }, 120_000)
+
   it('uses the durable receipt to remove an owned root after pod-local state is lost', async () => {
     const content = Buffer.from('---\nname: replacement\ndescription: fixture\n---\n# Replacement\n')
     const root = await mkdtemp(join(tmpdir(), 'ac-shim-skills-replacement-'))

@@ -288,13 +288,17 @@ export class ClusterSkillHandler {
       throw new Error('reconcile source was not declared')
     }
     const sourceMeta = new Map(input.sources.map((source) => [source.sourceId, source]))
+    // A prior root preserved for a skipped source may carry an earlier revision's source id (a Git
+    // source id names its commit), so its kind comes from the prior receipt, not this run's sources.
+    const priorKinds = new Map(input.priorRoots.map((root) => [`${root.path}\0${root.sourceId}`, root.sourceKind]))
     const ownedRoot = (root: Omit<CandidateSkillBundle, 'sourceDir'>) => {
-      const source = sourceMeta.get(root.sourceKey)
-      if (!source) throw new Error('cluster skill publisher returned an unknown source')
+      const sourceKind =
+        sourceMeta.get(root.sourceKey)?.sourceKind ?? priorKinds.get(`${root.relativeRoot}\0${root.sourceKey}`)
+      if (!sourceKind) throw new Error('cluster skill publisher returned an unknown source')
       return {
         path: root.relativeRoot,
         sourceId: root.sourceKey,
-        sourceKind: source.sourceKind,
+        sourceKind,
         digest: root.treeDigest,
         files: root.files.map(({ path, mode, size, sha256 }) => ({ path, mode, size, sha256 }))
       }
@@ -347,8 +351,11 @@ export class ClusterSkillHandler {
         }
         candidates.push(...staged)
       }
-      const skippedIds = new Set(skipped.map((entry) => entry.sourceId))
-      const preserveOwned = input.priorRoots.filter((root) => skippedIds.has(root.sourceId)).map((root) => root.path)
+      // A Git source id names its commit, so a skipped source's prior roots carry the PREVIOUS
+      // revision's id and cannot be matched by id. As on the daemon-local path, a run that skipped
+      // anything says nothing about intent: every prior root not rebuilt this run is preserved,
+      // and pruning waits for the next run that builds every source (shared-skills.md §6.3).
+      const preserveOwned = skipped.length > 0 ? input.priorRoots.map((root) => root.path) : []
       // Validate the largest possible result before publication; conflicts and installed roots are subsets of this set.
       const desiredRoots = [
         ...new Map(candidates.map((candidate) => [candidate.relativeRoot, ownedRoot(candidate)])).values()
