@@ -405,20 +405,28 @@ default branch and retention policy, which the executor does not know.
 **When there is no holder.** An executor cannot judge, and an agent may lose its
 holder for a long time or be removed outright. So the executor keeps an inventory
 of its environments labelled by agent id and session leaf — the pool's claim labels
-— and reconciles it against the store of record on a schedule, over its own control
-connection: it asks the CP which of its environments still have a live session row,
-and discards those whose rows are gone, under the pool's orphan-reconciliation
-rules (a grace period, and a same-name replacement check so a row recreated after
-the query is never the one deleted). Agent removal deletes the rows; the next
+— and reconciles it on a schedule against the same two authorities the pool's
+reconciler uses (`cli/reconcile.ts`): the **shared data-plane store** for session
+existence, read directly through `sessionKeysForAgent`, and the **CP** for agent
+existence, over its control connection. The CP is deliberately not asked about
+sessions: its `SessionMeta` row is created asynchronously from daemon reports and
+is kept after the data-plane session is purged, so a missing CP row can describe a
+retained session and a present one an already-purged session. The executor
+discards an environment whose agent the CP no longer knows, or whose session key
+the store no longer lists, under the pool's orphan-reconciliation rules (a grace
+period, and a same-name replacement check so a session recreated after the query
+is never the one deleted) — and **retains** everything when either lookup cannot
+answer. Agent removal and session retirement delete the store's rows; the next
 reconcile removes the environments. Nothing is kept forever for lack of a judge.
 
-The row is authoritative the other way too. An environment whose row exists is
-kept however long its agent goes without a holder: retaining a live agent's work is
-intentional, and unassignment is not an orphan signal. The executor discards only
-what has no row **and** no admitted holder connection, and it never judges
-dirtiness — the row's deletion, produced by the holder's retirement or by agent
-removal, is the only evidence it acts on. That gives deletion an owner that
-survives the holder without giving the executor a duty.
+The store is authoritative the other way too. An environment whose session the
+store still lists is kept however long its agent goes without a holder: retaining a
+live agent's work is intentional, and unassignment is not an orphan signal. The
+executor discards only what the authorities no longer know **and** no admitted
+holder connection is using, and it never judges dirtiness — the deletion, produced
+by the holder's retirement or by agent removal, is the only evidence it acts on.
+That gives deletion an owner that survives the holder without giving the executor
+a duty.
 
 **Holder failover.** The successor member claims the agent through the ledger as
 today, reads the session's executor from its row, completes a rendezvous, and
@@ -561,7 +569,7 @@ to run.
 
 | PR  | Scope                                                                                                                                                                                                                                                                                                                      |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Protocol and CP: facet declaration at registration; strategy table, executor endpoint and `hostedSessions` in the heartbeat; the dial rendezvous with its ledger check; `executorDaemonId` on the session row; the environment-inventory reconcile query.                                                                  |
+| 1   | Protocol and CP: facet declaration at registration; strategy table, executor endpoint and `hostedSessions` in the heartbeat; the dial rendezvous with its ledger check; `executorDaemonId` on the session row; the agent-existence answer the reconcile asks the CP for.                                                   |
 | 2   | Executor facet: split "prepare an environment" from "spawn the runtime" in the microsandbox driver; ACP and both tunnels onto the shim with the `tunnel` grant; the listener and expected-dial check; `host` strategy (Linux) with per-session tunnel paths and helper configuration (§5); the orphan reconcile; draining. |
 | 3   | Holder: the executor `SpawnDriver`, extracting the shared dial-and-bind layer from `K8sDriver`; placement with the optimistic count and the `full` reply; the memory-home gate in the birth predicate; the unreachable-executor state.                                                                                     |
 | 4   | Console: group switch, per-daemon hosting and capacity, session's executor.                                                                                                                                                                                                                                                |
