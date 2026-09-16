@@ -33,7 +33,7 @@ import type { HttpDeps } from '../deps.js'
 import { API_V1_PREFIX } from '../version.js'
 import { OrgId } from '../../domain/ids.js'
 import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult } from './tools.js'
-import { INTEGRATION_APP_HTML, INTEGRATION_APP_MIME, INTEGRATION_APP_URI } from './integration-app.js'
+import { NATIVE_APPS, NATIVE_APP_MIME, nativeApp } from './native-apps.js'
 import { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { publicBaseUrl, mcpAuthenticateChallenge } from '../oauth/base.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER } from './internal-invocation-auth.js'
@@ -50,13 +50,12 @@ const SERVER_INFO = { name: 'agentconnect', version: '1.0.0' }
 function createServer(publicWebUrl?: string) {
   const server = new Server(serverInfo(publicWebUrl), { capabilities: { tools: {}, resources: {} } })
   server.setRequestHandler('resources/list', async () => ({
-    resources: [{ uri: INTEGRATION_APP_URI, name: 'Integration setup', mimeType: INTEGRATION_APP_MIME }]
+    resources: NATIVE_APPS.map((app) => ({ uri: app.uri, name: app.name, mimeType: NATIVE_APP_MIME }))
   }))
   server.setRequestHandler('resources/read', async (request) => {
-    if (request.params.uri !== INTEGRATION_APP_URI) throw new Error('Unknown resource')
-    return {
-      contents: [{ uri: INTEGRATION_APP_URI, mimeType: INTEGRATION_APP_MIME, text: INTEGRATION_APP_HTML }]
-    }
+    const app = nativeApp(request.params.uri)
+    if (!app) throw new Error('Unknown resource')
+    return { contents: [{ uri: app.uri, mimeType: NATIVE_APP_MIME, text: app.html }] }
   })
   return server
 }
@@ -565,7 +564,8 @@ export function mcpRoutes(deps: HttpDeps) {
         }
         // 204/202-style successes have no body — still hand the model a definite answer.
         const content = [{ type: 'text' as const, text: result.body || `OK (HTTP ${result.statusCode})` }]
-        if (tool.uiResourceUri === INTEGRATION_APP_URI) {
+        // A UI tool's whole answer IS the presentation intent, so it is republished as structured content.
+        if (tool.uiResourceUri && nativeApp(tool.uiResourceUri)) {
           return { content, structuredContent: NativeMcpUi.parse(JSON.parse(result.body)) }
         }
         return { content }

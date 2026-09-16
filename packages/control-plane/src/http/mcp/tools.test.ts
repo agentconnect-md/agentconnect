@@ -112,6 +112,38 @@ describe('MCP tool registry — §6.2 invariants', () => {
     }
   })
 
+  it('opens the code-host surface read-only and refuses a provider this deployment has not configured', async () => {
+    const tool = findTool('manageCodeHosts')!
+    const { ctx, calls } = recordingCtx()
+    const result = await tool.call(ctx, { provider: 'gitlab' })
+    expect(JSON.parse(result.body)).toMatchObject({ orgId: ORG_ID, intent: { provider: 'gitlab' } })
+    expect(calls.map((call) => call.path)).toEqual([`/orgs/${ORG_ID}`, `/orgs/${ORG_ID}/gitlab/connections`])
+    expect(toolDescriptor(tool)._meta?.ui.resourceUri).toBe('ui://agentconnect/code-host-setup')
+    // A token, an install URL or another org's id is not an argument this surface accepts.
+    for (const extra of [{ orgId: 'another-org' }, { token: 'secret' }, { provider: 'bitbucket' }])
+      expect(tool.schema.safeParse(extra).success).toBe(false)
+    ctx.get = async (path) =>
+      path.endsWith('/gitea/connections')
+        ? { statusCode: 404, body: '{}' }
+        : { statusCode: 200, body: JSON.stringify({ id: ORG_ID }) }
+    const refused = await tool.call(ctx, { provider: 'gitea' })
+    expect(refused.statusCode).toBe(400)
+    expect(JSON.parse(refused.body).message).toContain('not configured')
+  })
+
+  it('reads the code hosts’ own connection surfaces without naming another org', async () => {
+    for (const [tool, path] of [
+      ['listGitlabConnections', '/gitlab/connections'],
+      ['listGitlabBots', '/gitlab/accounts'],
+      ['listGitlabProjects', '/gitlab/projects'],
+      ['listGiteaConnections', '/gitea/connections'],
+      ['listGiteaRepositories', '/gitea/repositories']
+    ] as const) {
+      const { calls } = await run(tool)
+      expect(calls).toEqual([{ method: 'GET', path: `/orgs/${ORG_ID}${path}` }])
+    }
+  })
+
   it('resolves an edit target under the requested agent and refuses a different owner', async () => {
     const tool = findTool('configureIntegration')!
     const { ctx } = recordingCtx()

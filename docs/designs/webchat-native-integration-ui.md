@@ -14,6 +14,20 @@ triggers. Editing a code-host subscription configures its name, enabled state,
 event cadence and supported review settings. Repository identity and subject family
 stay fixed; another repository or family is added through the creation flow.
 
+A second intent, `ui://agentconnect/code-host-setup`, opens the Integrations page's
+"Code hosts" section: the GitHub App's installations (install, sync, uninstall), the
+organization's GitLab account connections and bot accounts, and the Gitea bot
+connection and its managed repositories. It optionally names one provider, and the
+dialog mounts the SAME cards the page mounts, so the two surfaces cannot drift.
+
+None of that section's actions is an administrative MCP write. Each one either
+redirects to the provider (the App install funnel, GitLab's OAuth hop) or takes a bot
+token, so it belongs to the human's browser session, not to a tool call: the tool
+opens the surface and reports nothing but counts when the user is done. Reading the
+same state without a dialog is `listGithubInstallations`, `listGitlabConnections`,
+`listGitlabBots`, `listGitlabProjects`, `listGiteaConnections` and
+`listGiteaRepositories`.
+
 GitHub, GitLab and Gitea remain code hosts, not chat platform modules. Their edit
 targets use `kind: codehost-subscription`; chat bindings use `kind: integration`.
 An edit requires both the target id and its owning agent id. The MCP tool resolves
@@ -31,8 +45,13 @@ Examples:
 { "mode": "edit", "agentId": "<uuid>", "target": { "kind": "codehost-subscription", "id": "<uuid>" } }
 ```
 
-The tool is read-only: it opens an editor without submitting any changes. Its
-descriptor declares `_meta.ui.resourceUri`. The result contains a strict,
+```json
+{ "provider": "gitlab" }
+```
+
+Both tools are read-only: they open an editor without submitting any changes. Each
+descriptor declares its own `_meta.ui.resourceUri`, and the resource — never the
+intent's shape — selects the dialog and the card's title. The result contains a strict,
 versioned `NativeMcpUi` value with the organization id and validated intent.
 Unknown arguments, including credentials, HTML and caller-selected organization
 ids, are rejected. The server supplies the organization from authentication.

@@ -1,12 +1,18 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import { CODE_HOST_SETUP_URI, NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { Button } from '@/components/ui'
 import { useOptionalModal } from './ModalProvider'
 import type { McpAppCardProps } from './McpAppCard'
 
 const opened = new Set<string>()
+
+/** The card's own heading — the intent says which surface the dialog opens, before it is opened. */
+function title(ui: NativeMcpUi | undefined): string {
+  if (ui?.resourceUri === CODE_HOST_SETUP_URI) return 'Code host connections'
+  return ui?.intent.mode === 'edit' ? 'Edit integration' : 'Add integration'
+}
 
 export function NativeIntegrationAppCard({ step, onRpc }: McpAppCardProps) {
   const modal = useOptionalModal()
@@ -73,9 +79,7 @@ export function NativeIntegrationAppCard({ step, onRpc }: McpAppCardProps) {
 
   return (
     <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) p-4">
-      <div className="font-sans text-[14px] font-semibold leading-normal">
-        {ui?.intent.mode === 'edit' ? 'Edit integration' : 'Add integration'}
-      </div>
+      <div className="font-sans text-[14px] font-semibold leading-normal">{title(ui)}</div>
       <p className="mt-2 text-[13px] text-(--text-secondary)">
         {summary ||
           (live ? 'Complete configuration in the dialog.' : 'This configuration interface is no longer active.')}

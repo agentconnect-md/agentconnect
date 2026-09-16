@@ -208,26 +208,36 @@ context.**
 
 Tools **call the CP service layer directly or reuse route-handler logic**, preserving zod validation, `denyViewerWrite`, `canView/canEdit`, and `visibilityWhere`. The tool layer never duplicates authz; it only translates 403/404 into model-friendly errors:
 
-| Tool                                                           | Equivalent REST                                            | Write?  |
-| -------------------------------------------------------------- | ---------------------------------------------------------- | ------- |
-| `whoami`                                                       | GET /me + GET /orgs/:orgId (credential identity/role)      | –       |
-| `listAgents` / `getAgent`                                      | GET /agents(:id)                                           | –       |
-| `listWorkspaceFiles` / `readWorkspaceFile`                     | GET /agents/:id/workspace/files(file) (proxied, unstored)  | –       |
-| `createAgent` / `updateAgent`                                  | POST /agents · PATCH /agents/:id                           | ✎       |
-| `setAgentWorkspace`                                            | PUT /agents/:id/workspace                                  | ✎🔥     |
-| `deleteAgent`                                                  | DELETE /agents/:id                                         | ✎🔥     |
-| `listDaemons` / `renameDaemon`                                 | GET /daemons (liveness) · PATCH /daemons/:id               | –/✎     |
-| `listDaemonCapabilities` / `getDaemon`                         | GET /daemons/capabilities · GET /daemons/:id               | –       |
-| `listCrons` / `getCron` / `listCronRuns`                       | GET /crons…                                                | –       |
-| `upsertCron` / `runCron` / `deleteCron`                        | PUT /crons/:id · POST /crons/:id/run · DELETE              | ✎(🔥)   |
-| `listSessions` / `getSession`                                  | GET /sessions(:id) (body policy is Open Question 1 in §15) | –       |
-| `getUsage`                                                     | GET /usage                                                 | –       |
-| `listIntegrations` / `setChannelTrigger` / `removeIntegration` | GET · PATCH channels/:channelId · DELETE                   | –/✎(🔥) |
-| `listBots` / `listMembers` / `listAgentHooks` / `listHookRuns` | GET (metadata only, no secret)                             | –       |
-| `listGithubInstallations` / `listGithubRepositories`           | GET /github/installations(/:id/repositories)               | –       |
-| `getGithubRepositoryAccess`                                    | GET /github/installations/:id/repositories/:o/:r/access    | –       |
-| `getOperation` / `listOperations`                              | GET /agents/:id/webchat/:conversationId/mcp-operations(…)  | –       |
-| `createGithubTrigger`                                          | POST /hooks (`kind:"github"` only)                         | ✎       |
+| Tool                                                              | Equivalent REST                                               | Write?  |
+| ----------------------------------------------------------------- | ------------------------------------------------------------- | ------- |
+| `whoami`                                                          | GET /me + GET /orgs/:orgId (credential identity/role)         | –       |
+| `listAgents` / `getAgent`                                         | GET /agents(:id)                                              | –       |
+| `listWorkspaceFiles` / `readWorkspaceFile`                        | GET /agents/:id/workspace/files(file) (proxied, unstored)     | –       |
+| `createAgent` / `updateAgent`                                     | POST /agents · PATCH /agents/:id                              | ✎       |
+| `setAgentWorkspace`                                               | PUT /agents/:id/workspace                                     | ✎🔥     |
+| `deleteAgent`                                                     | DELETE /agents/:id                                            | ✎🔥     |
+| `listDaemons` / `renameDaemon`                                    | GET /daemons (liveness) · PATCH /daemons/:id                  | –/✎     |
+| `listDaemonCapabilities` / `getDaemon`                            | GET /daemons/capabilities · GET /daemons/:id                  | –       |
+| `listCrons` / `getCron` / `listCronRuns`                          | GET /crons…                                                   | –       |
+| `upsertCron` / `runCron` / `deleteCron`                           | PUT /crons/:id · POST /crons/:id/run · DELETE                 | ✎(🔥)   |
+| `listSessions` / `getSession`                                     | GET /sessions(:id) (body policy is Open Question 1 in §15)    | –       |
+| `getUsage`                                                        | GET /usage                                                    | –       |
+| `listIntegrations` / `setChannelTrigger` / `removeIntegration`    | GET · PATCH channels/:channelId · DELETE                      | –/✎(🔥) |
+| `listBots` / `listMembers` / `listAgentHooks` / `listHookRuns`    | GET (metadata only, no secret)                                | –       |
+| `listGithubInstallations` / `listGithubRepositories`              | GET /github/installations(/:id/repositories)                  | –       |
+| `getGithubRepositoryAccess`                                       | GET /github/installations/:id/repositories/:o/:r/access       | –       |
+| `listGitlabConnections` / `listGitlabBots` / `listGitlabProjects` | GET /gitlab/connections · /gitlab/accounts · /gitlab/projects | –       |
+| `listGiteaConnections` / `listGiteaRepositories`                  | GET /gitea/connections · /gitea/repositories                  | –       |
+| `configureIntegration` / `manageCodeHosts`                        | – (a Console dialog named by `_meta.ui.resourceUri`)          | –       |
+| `getOperation` / `listOperations`                                 | GET /agents/:id/webchat/:conversationId/mcp-operations(…)     | –       |
+| `createGithubTrigger`                                             | POST /hooks (`kind:"github"` only)                            | ✎       |
+
+The two UI tools are read-only by construction: they resolve their target through
+the ordinary authenticated REST reads and answer with a presentation intent
+(webchat-native-integration-ui.md). Installing a GitHub App, authorizing a GitLab
+account and replacing a Gitea bot token stay OFF the catalog for the §6.3 reason —
+each is a redirect to the provider or a token entry, so the human performs it in
+the browser under their own Console session, and the model only opens the page.
 
 The two operation reads are the delegated-webchat arm's own: they answer about
 side-effecting operations awaiting or past the conversation owner's approval

@@ -363,7 +363,9 @@ describe('delegated webchat MCP operations', () => {
 
     const resources = await remoteMethod({ id: 4, method: 'resources/list' })
     expect(resources.statusCode).toBe(200)
-    expect(mcpMessage(resources).result).toMatchObject({ resources: [{ uri: 'ui://agentconnect/integration-setup' }] })
+    expect(mcpMessage(resources).result).toMatchObject({
+      resources: [{ uri: 'ui://agentconnect/integration-setup' }, { uri: 'ui://agentconnect/code-host-setup' }]
+    })
     const off = await remoteMethod({ id: 5, method: 'prompts/list' })
     expect(off.statusCode).toBe(401)
     expect(off.headers['www-authenticate']).toBeUndefined()

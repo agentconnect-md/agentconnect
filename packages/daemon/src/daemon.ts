@@ -209,7 +209,7 @@ import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { DAEMON_VERSION } from './version.js'
 import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
-import { nativeUiFromToolUpdate } from './mcp/native-ui.js'
+import { nativeUiChrome, nativeUiFromToolUpdate } from './mcp/native-ui.js'
 import { AppSurface, newAppId, type AppStream, type AppTurn } from './mcp/apps/surface.js'
 import {
   APP_RPC_REFUSALS,
@@ -14229,8 +14229,7 @@ export class Daemon {
     if (opened.has(toolCallId)) return
     opened.add(toolCallId)
     const appId = newAppId()
-    const title = nativeUi.intent.mode === 'edit' ? 'Edit integration' : 'Add integration'
-    const toolName = 'configureIntegration'
+    const { title, toolName } = nativeUiChrome(nativeUi)
     const posted = this.appSurface.open(p.plan.sessionKey, { appId, title, toolName, nativeUi })
     if (!posted.shown) return
     const row: AppRow = {

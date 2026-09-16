@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { INTEGRATION_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import { CODE_HOST_SETUP_URI, INTEGRATION_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import NativeIntegrationDialog from './NativeIntegrationDialog'
 vi.mock('../platforms/registry', () => ({ channelListSemantics: () => ({}) }))
 
@@ -35,6 +35,7 @@ vi.mock('@/lib/api', () => ({
   updateGiteaHook: mocks.updateGiteaHook,
   updateIntegrationChannel: mocks.updateIntegrationChannel
 }))
+vi.mock('./CodeHostSetupDialog', () => ({ default: () => <div>Code host surface</div> }))
 vi.mock('./AddIntegrationModal', () => ({
   AddIntegrationForOrgModal: (props: unknown) => {
     mocks.createProps(props)
@@ -60,7 +61,8 @@ const hook = {
   reportingMode: 'off',
   configRevision: '4'
 }
-function ui(intent: NativeMcpUi['intent']): NativeMcpUi {
+type IntegrationUi = Extract<NativeMcpUi, { resourceUri: typeof INTEGRATION_SETUP_URI }>
+function ui(intent: IntegrationUi['intent']): IntegrationUi {
   return { resourceUri: INTEGRATION_SETUP_URI, resourceVersion: 1, orgId: mocks.orgId, intent }
 }
 const edit = () => ui({ mode: 'edit', agentId: mocks.agentId, target: { kind: 'codehost-subscription', id: hook.id } })
@@ -138,6 +140,25 @@ describe('native integration dialog', () => {
     expect(completed).not.toHaveBeenCalled()
     expect(element.textContent).toContain('This subscription changed')
   })
+  it('routes by the named resource, not by the intent’s shape', async () => {
+    await act(async () =>
+      root.render(
+        <NativeIntegrationDialog
+          ui={{
+            resourceUri: CODE_HOST_SETUP_URI,
+            resourceVersion: 1,
+            orgId: mocks.orgId,
+            intent: { provider: 'gitea' }
+          }}
+          onClose={vi.fn()}
+          onCompleted={vi.fn()}
+        />
+      )
+    )
+    expect(element.textContent).toContain('Code host surface')
+    expect(mocks.createProps).not.toHaveBeenCalled()
+  })
+
   it('refuses an organization mismatch before mounting a configuration editor', async () => {
     await act(async () => {
       root.render(

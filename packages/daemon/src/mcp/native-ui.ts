@@ -1,4 +1,4 @@
-import { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import { CODE_HOST_SETUP_URI, NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -31,4 +31,14 @@ export function nativeUiFromToolUpdate(update: unknown): NativeMcpUi | undefined
     }
   }
   return undefined
+}
+
+/** The card chrome one intent earns — the resource names the surface, so neither is guessed from arguments. */
+export function nativeUiChrome(nativeUi: NativeMcpUi): { title: string; toolName: string } {
+  if (nativeUi.resourceUri === CODE_HOST_SETUP_URI)
+    return { title: 'Code host connections', toolName: 'manageCodeHosts' }
+  return {
+    title: nativeUi.intent.mode === 'edit' ? 'Edit integration' : 'Add integration',
+    toolName: 'configureIntegration'
+  }
 }

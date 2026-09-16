@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import { CODE_HOST_SETUP_URI, INTEGRATION_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { Button } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -56,14 +56,32 @@ import {
   type GtTriggerMode
 } from '@/lib/gitea-events'
 import { AddIntegrationForOrgModal } from './AddIntegrationModal'
+import CodeHostSetupDialog from './CodeHostSetupDialog'
 
 interface Props {
-  ui: NativeMcpUi
+  ui: Extract<NativeMcpUi, { resourceUri: typeof INTEGRATION_SETUP_URI }>
   onClose: () => void
   onCompleted: (summary: string) => void
 }
 
-export default function NativeIntegrationDialog({ ui, onClose, onCompleted }: Props) {
+/** One presentation intent, one dialog: the `ui://` resource the tool named picks which. */
+export default function NativeIntegrationDialog({
+  ui,
+  onClose,
+  onCompleted
+}: {
+  ui: NativeMcpUi
+  onClose: () => void
+  onCompleted: (summary: string) => void
+}) {
+  return ui.resourceUri === CODE_HOST_SETUP_URI ? (
+    <CodeHostSetupDialog ui={ui} onClose={onClose} onCompleted={onCompleted} />
+  ) : (
+    <IntegrationSetupDialog ui={ui} onClose={onClose} onCompleted={onCompleted} />
+  )
+}
+
+function IntegrationSetupDialog({ ui, onClose, onCompleted }: Props) {
   const { activeOrg } = useOrgs()
   const { agents, integrations, loading } = useConsoleData()
   const intent = ui.intent

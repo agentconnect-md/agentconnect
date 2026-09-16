@@ -20,15 +20,28 @@ export const IntegrationSetupIntent = z.discriminatedUnion('mode', [
 ])
 export type IntegrationSetupIntent = z.infer<typeof IntegrationSetupIntent>
 
+export const CODE_HOST_SETUP_URI = 'ui://agentconnect/code-host-setup'
+// Redeclared rather than imported from `./code-host`: this module is a leaf (see the banner).
+export const CODE_HOST_SETUP_PROVIDERS = ['github', 'gitlab', 'gitea'] as const
+// Which card the connection surface opens on; omitted means the whole surface, as the Console page shows it.
+export const CodeHostSetupIntent = z.object({ provider: z.enum(CODE_HOST_SETUP_PROVIDERS).optional() }).strict()
+export type CodeHostSetupIntent = z.infer<typeof CodeHostSetupIntent>
+
+const nativeApp = <U extends string, I extends z.ZodTypeAny>(uri: U, intent: I) =>
+  z
+    .object({
+      resourceUri: z.literal(uri),
+      resourceVersion: z.literal(1),
+      orgId: z.string().min(1).max(200),
+      intent
+    })
+    .strict()
+
 // A bounded presentation request; Console JWT authorization governs every form read and write.
-export const NativeMcpUi = z
-  .object({
-    resourceUri: z.literal(INTEGRATION_SETUP_URI),
-    resourceVersion: z.literal(1),
-    orgId: z.string().min(1).max(200),
-    intent: IntegrationSetupIntent
-  })
-  .strict()
+export const NativeMcpUi = z.discriminatedUnion('resourceUri', [
+  nativeApp(INTEGRATION_SETUP_URI, IntegrationSetupIntent),
+  nativeApp(CODE_HOST_SETUP_URI, CodeHostSetupIntent)
+])
 export type NativeMcpUi = z.infer<typeof NativeMcpUi>
 
 // Sent as `protocolVersion` in the `ui/initialize` result; the official SDK's `App.connect()` rejects a result without it (SEP-1865 Final).

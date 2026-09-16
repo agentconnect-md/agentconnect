@@ -18,7 +18,12 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
-import { INTEGRATION_SETUP_URI, IntegrationSetupIntent } from '@agentconnect.md/protocol/mcp-app'
+import {
+  CODE_HOST_SETUP_URI,
+  CodeHostSetupIntent,
+  INTEGRATION_SETUP_URI,
+  IntegrationSetupIntent
+} from '@agentconnect.md/protocol/mcp-app'
 import { HOOK_KINDS, isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
 
 /** The day presets `getUsage` accepts, which it converts to an explicit window. */
@@ -243,6 +248,47 @@ export const MCP_TOOLS: McpToolDef[] = [
         statusCode: 200,
         body: JSON.stringify({
           resourceUri: INTEGRATION_SETUP_URI,
+          resourceVersion: 1,
+          orgId: ctx.orgId,
+          intent
+        })
+      }
+    }
+  },
+  {
+    // Every action on this surface either redirects to the provider (GitHub App install, GitLab
+    // OAuth) or takes a bot token, so none of it can be a write tool: the human performs it in
+    // the browser under their own Console JWT, and the model only opens the page (§6.3).
+    name: 'manageCodeHosts',
+    description:
+      'Open the Console code-host connections surface: GitHub App installations (install, sync, uninstall), the organization’s GitLab account connections and bot accounts, and the Gitea bot connection and its repositories. Optionally open it on one provider. Never ask for a token, an install link or a code in chat — this hands the work to the browser. Opening changes nothing; the user acts in the dialog. To read the current state instead, use listGithubInstallations, listGitlabConnections or listGiteaConnections.',
+    uiResourceUri: CODE_HOST_SETUP_URI,
+    schema: CodeHostSetupIntent,
+    call: async (ctx, args) => {
+      const result = await ctx.get(org(ctx, ''))
+      if (result.statusCode !== 200) return result
+      const intent = CodeHostSetupIntent.parse(args)
+      // A provider whose routes are absent is not configured on this deployment — say so here
+      // rather than opening a dialog onto a card that can only report the same thing.
+      if (intent.provider) {
+        const probe = await ctx.get(
+          org(ctx, intent.provider === 'github' ? '/github/installations' : `/${intent.provider}/connections`)
+        )
+        if (probe.statusCode === 404)
+          return {
+            statusCode: 400,
+            body: JSON.stringify({
+              error: 'Bad Request',
+              statusCode: 400,
+              message: `${intent.provider} is not configured on this deployment`
+            })
+          }
+        if (probe.statusCode !== 200) return probe
+      }
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          resourceUri: CODE_HOST_SETUP_URI,
           resourceVersion: 1,
           orgId: ctx.orgId,
           intent
@@ -523,6 +569,41 @@ export const MCP_TOOLS: McpToolDef[] = [
       ctx.get(
         org(ctx, `/github/installations/${seg(a.installationId)}/repositories/${seg(a.owner)}/${seg(a.repo)}/access`)
       )
+  },
+  {
+    name: 'listGitlabConnections',
+    description:
+      'The GitLab accounts members have connected for this organization — who connected each one, whether it is still connected, and how many managed projects it administers. A project is bound, repaired or taken over through a connection, so a stuck project usually means the connection that administers it is gone. 404 means this deployment has no GitLab application configured.',
+    schema: NoArgs,
+    call: (ctx) => ctx.get(org(ctx, '/gitlab/connections'))
+  },
+  {
+    name: 'listGitlabBots',
+    description:
+      'The GitLab service accounts the organization’s agents act as — one per agent per top-level group, with its health and the managed projects it is a member of. `converging: true` means account provisioning still owes work, so an incomplete answer is not yet a failure.',
+    schema: NoArgs,
+    call: (ctx) => ctx.get(org(ctx, '/gitlab/accounts'))
+  },
+  {
+    name: 'listGitlabProjects',
+    description:
+      'The GitLab projects this organization manages — lifecycle state, the reason behind a degraded one, the managed webhook’s state, and which connection administers it. `not_needed` webhook state is a resting state (no enabled trigger wants ingress), not a fault.',
+    schema: NoArgs,
+    call: (ctx) => ctx.get(org(ctx, '/gitlab/projects'))
+  },
+  {
+    name: 'listGiteaConnections',
+    description:
+      'The organization’s Gitea bot connection — the bot’s identity, the instance it talks to, whether that instance clears the supported-version floor, and how many repositories the connection administers. The bot token is write-only and is never returned. 404 means this deployment has no Gitea instance configured.',
+    schema: NoArgs,
+    call: (ctx) => ctx.get(org(ctx, '/gitea/connections'))
+  },
+  {
+    name: 'listGiteaRepositories',
+    description:
+      'The Gitea repositories this organization manages — lifecycle state, the repair category behind a degraded one, the managed webhook’s state, and when a delivery was last verified.',
+    schema: NoArgs,
+    call: (ctx) => ctx.get(org(ctx, '/gitea/repositories'))
   },
   {
     name: 'listBots',

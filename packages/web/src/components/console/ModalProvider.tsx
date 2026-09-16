@@ -9,7 +9,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Agent, DaemonRow, IntegrationRow, MemberSetRow } from '@/lib/data'
 import type { CronDto, HookDto } from '@/lib/api'
-import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import { CODE_HOST_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import NativeIntegrationDialog from './modals/NativeIntegrationDialog'
 import AddAgentModal from './modals/AddAgentModal'
 import AddDaemonModal from './modals/AddDaemonModal'
@@ -152,7 +152,13 @@ export function ModalProvider({ children }: { children: ReactNode }) {
           <div
             role={open.kind === 'nativeIntegration' ? 'dialog' : undefined}
             aria-modal={open.kind === 'nativeIntegration' ? true : undefined}
-            aria-label={open.kind === 'nativeIntegration' ? 'Integration configuration' : undefined}
+            aria-label={
+              open.kind === 'nativeIntegration'
+                ? open.opts?.nativeUi?.resourceUri === CODE_HOST_SETUP_URI
+                  ? 'Code host connections'
+                  : 'Integration configuration'
+                : undefined
+            }
             className={
               open.kind === 'integration' || open.kind === 'nativeIntegration'
                 ? 'modal desktop:max-w-[700px]'

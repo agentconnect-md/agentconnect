@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { INTEGRATION_SETUP_URI } from '@agentconnect.md/protocol/mcp-app'
-import { nativeUiFromToolUpdate } from '../src/mcp/native-ui.js'
+import { CODE_HOST_SETUP_URI, INTEGRATION_SETUP_URI } from '@agentconnect.md/protocol/mcp-app'
+import { nativeUiChrome, nativeUiFromToolUpdate } from '../src/mcp/native-ui.js'
 import { Daemon } from '../src/daemon.js'
 import { LiveAppRegistry, reviveAppRow } from '../src/mcp/apps/cards.js'
 import { AppSurface } from '../src/mcp/apps/surface.js'
@@ -59,6 +59,27 @@ describe('direct HTTP native UI result', () => {
 
   it('treats an intent as presentation data regardless of the tool display name', () => {
     expect(nativeUiFromToolUpdate({ ...update, rawInput: { server: 'other', tool: 'other' } })).toEqual(ui)
+  })
+
+  it('reads the code-host surface and titles the card from the resource, not the arguments', () => {
+    const codeHost = { ...ui, resourceUri: CODE_HOST_SETUP_URI, intent: { provider: 'gitlab' } }
+    const event = { ...update, rawOutput: { structuredContent: codeHost } }
+    expect(nativeUiFromToolUpdate(event)).toEqual(codeHost)
+    expect(nativeUiChrome(nativeUiFromToolUpdate(event)!)).toEqual({
+      title: 'Code host connections',
+      toolName: 'manageCodeHosts'
+    })
+    expect(nativeUiChrome(nativeUiFromToolUpdate(update)!)).toEqual({
+      title: 'Add integration',
+      toolName: 'configureIntegration'
+    })
+    // The intent's own vocabulary is still closed: a provider the surface has no card for is not one.
+    expect(
+      nativeUiFromToolUpdate({
+        ...event,
+        rawOutput: { structuredContent: { ...codeHost, intent: { provider: 'svn' } } }
+      })
+    ).toBeUndefined()
   })
 
   it('accepts the default organization identifier as well as UUID organizations', () => {
