@@ -10,25 +10,25 @@ This document generalizes what the managed pool already does with session pods
 ([k8s-daemon-pool.md](k8s-daemon-pool.md) §4, [git-workspace-model.md](git-workspace-model.md)
 §11) to machines that are not a cluster. Almost everything here is "reuse X". The
 two genuinely new things are a second facet on every daemon (§3) and the first
-listener a daemon has ever opened (§6); the rest is the pool's shape with the
-Kubernetes-specific parts removed.
+listener a daemon opens that carries session traffic (§6); the rest is the pool's
+shape with the Kubernetes-specific parts removed.
 
 ## 0. Decision summary
 
-| #   | Decision                | Outcome                                                                                                                                                                             |
-| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Unit of ownership       | Unchanged: the whole agent, held by one daemon through the duty ledger. No session-level duty.                                                                                      |
-| D2  | Where a session runs    | On the **executor facet** of any daemon in the agent's group, chosen by the holder. Only `session`-isolated sessions spread; `shared` sessions stay with the primary checkout.      |
-| D3  | What the user sees      | One concept: the daemon. Every daemon has a holder facet and an executor facet; each can be switched off. No separate executor component or install.                                |
-| D4  | The contract            | The shim protocol, exactly as the pool uses it against a session pod. ACP, exec, fs, skills and the credential and MCP tunnels all ride it. The backend behind the shim is private. |
-| D5  | Direction               | The executor facet listens; the holder dials. Same rule as the pool: the shim never dials.                                                                                          |
-| D6  | Control plane role      | Orchestration only: capability facts, a short-lived binding token, the session's executor id, upgrades. Never on the data path. Placement is the holder's decision.                 |
-| D7  | Execution strategies    | `host`, `microsandbox` in v1; `srt` and `docker` later. Named after `sandbox.backend`. Capabilities are reported as an effective strategy table; placement is a match against it.   |
-| D8  | State location          | Clones and HOME live on the executor's own disk in the pool's layout. No host mounts across machines, no shared filesystem.                                                         |
-| D9  | Credentials             | Each machine signs in for itself; the executor facet seeds from its own host HOME. Agent secrets travel from the holder over the authenticated link.                                |
-| D10 | Upgrades                | The facet upgrades with the daemon through the existing CLI store and the CP-tracked `daemon/upgrade`, with one new `draining` phase. Sandboxes survive the restart.                |
-| D11 | Local convergence       | Later, behind a flag: the holder's own machine becomes a loopback executor, and the direct local path retires. Not in this project.                                                 |
-| D12 | Network assumption (v1) | Group members share a LAN. No NAT traversal, no relay, TLS optional. This buys little structurally and is stated as scope, not as a simplifier.                                     |
+| #   | Decision                | Outcome                                                                                                                                                                                                                |
+| --- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Unit of ownership       | Unchanged: the whole agent, held by one daemon through the duty ledger. No session-level duty.                                                                                                                         |
+| D2  | Where a session runs    | On the **executor facet** of any daemon in the agent's group, chosen by the holder. Only `session`-isolated sessions spread; `shared` sessions stay with the primary checkout.                                         |
+| D3  | What the user sees      | One concept: the daemon. Every daemon has a holder facet and an executor facet; each can be switched off. No separate executor component or install.                                                                   |
+| D4  | The contract            | The shim protocol, exactly as the pool uses it against a session pod. ACP, exec, fs, skills and the credential and MCP tunnels all ride it. The backend behind the shim is private.                                    |
+| D5  | Direction               | The executor facet listens; the holder dials. Same rule as the pool: the shim never dials.                                                                                                                             |
+| D6  | Control plane role      | Orchestration only: capability facts and the executor endpoint in the heartbeat, a dial rendezvous checked against the ledger, the session's executor id, upgrades. Never on the data path. Placement is the holder's. |
+| D7  | Execution strategies    | `host` (Linux) and `microsandbox` in v1; `srt`, `docker` and non-Linux `host` later. Named after `sandbox.backend`. Capabilities are an effective strategy table; placement is a match against it.                     |
+| D8  | State location          | Clones and HOME live in an executor-local directory mounted into the environment, the local confined layout; a replaced VM keeps them. No mounts across machines, no shared filesystem.                                |
+| D9  | Credentials             | Each machine carries its own runtime sign-in or API-key configuration; the executor facet seeds from its own host HOME. Provider credentials and agent secrets travel from the holder over the authenticated link.     |
+| D10 | Upgrades                | The facet upgrades with the daemon through the existing CLI store and the CP-tracked `daemon/upgrade`, with one new `draining` phase. Environments survive as disks and directories; running processes do not.         |
+| D11 | Local convergence       | Later, behind a flag: the holder's own machine becomes a loopback executor, and the direct local path retires. Not in this project.                                                                                    |
+| D12 | Network assumption (v1) | Group members share a LAN. No NAT traversal, no relay, TLS optional. This buys little structurally and is stated as scope, not as a simplifier.                                                                        |
 
 ## 1. Problem
 
@@ -83,11 +83,13 @@ two facets, declared at registration:
   exposes the shim contract and nothing else. It holds no duty, knows no agent,
   and cannot become a holder; it is the self-hosted counterpart of a session pod.
 
-The two facets are a seam inside one process, not two processes. `--role executor`
-switches the holder facet off, for a machine that only contributes compute.
-`sandbox.share: false` switches the executor facet off, for a laptop that should
-hold agents but never run other machines' sessions. Neither switch introduces a
-second binary, service unit or install path.
+The two facets are a seam inside one process, not two processes. Two configuration
+keys switch them (§10): `role: "executor"` — `--role executor` on the command line
+is the same key — switches the holder facet off, for a machine that only
+contributes compute; `sandbox.share: false` switches the executor facet off, for a
+laptop that should hold agents but never run other machines' sessions. Both off is
+refused at startup. Neither switch introduces a second binary, service unit or
+install path.
 
 This also settles what a group is. A group used to be one half of the pool's shape —
 a set of interchangeable holders — with the other half missing because the holder
@@ -115,11 +117,21 @@ through it" layer is extracted from `K8sDriver` when the second remote implement
 arrives, per the repository's rule of extracting on the second implementer rather
 than guessing an interface from one.
 
-One consequence is deliberate: the local microsandbox path today spawns ACP through
-agentd's exec channel and uses the shim only for filesystem and skills. A remote
-session spawns ACP **through the shim**, as a pod does. That is what keeps the
-contract backend-neutral; a holder never learns whether the far side is a VM, a
-container or a bare process.
+Two things the local microsandbox path does differently today move onto the shim,
+and both are in PR 2's scope (§12):
+
+- **ACP.** Locally, ACP is spawned through agentd's exec channel and the shim serves
+  only filesystem and skills. A remote session spawns ACP **through the shim**, as a
+  pod does.
+- **The tunnels.** Locally, the VM's `gitcred` and `mcp` endpoints are AF_VSOCK bridges
+  (`microsandbox/socket-bridge.ts`) that the driver wires to the local daemon's host
+  sockets, and the VM shim is granted `read` and `skills*` but never `tunnel`. On an
+  executor those bridges would terminate at a daemon that knows no agent, so the
+  `microsandbox` strategy serves both tunnels through the shim's `TunnelHost` and
+  grants `tunnel`, exactly as the pool image does.
+
+That is what keeps the contract backend-neutral: a holder never learns whether the
+far side is a VM, a container or a bare process.
 
 The executor side is the same shim the pool image carries and the microsandbox
 backend already stages into a VM's `/run` at startup. The holder pushes its own shim
@@ -158,21 +170,31 @@ keeps one connection per sandbox, or every operation pays an extra round trip.
 The executor facet implements the contract with a **strategy**, named after the
 values `sandbox.backend` already uses:
 
-| Strategy       | Boundary                     | Needs                                                         | Status                                                                                 |
-| -------------- | ---------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `host`         | none                         | a machine that runs Node, including macOS and Windows         | v1                                                                                     |
-| `microsandbox` | VM                           | Linux, KVM, msb + libkrunfw, the runtime image                | v1                                                                                     |
-| `srt`          | process (bubblewrap)         | Linux, bwrap, socat, rg on PATH, unprivileged user namespaces | follow-up: the wrapping moves from the daemon's launch path into the shim's spawn path |
-| `docker`       | container, optionally gVisor | docker or podman, the runtime image (already OCI)             | later                                                                                  |
+| Strategy         | Boundary                     | Needs                                                         | Status                                                                                 |
+| ---------------- | ---------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `host`           | none                         | a Linux machine that runs Node                                | v1                                                                                     |
+| `microsandbox`   | VM                           | Linux, KVM, msb + libkrunfw, the runtime image                | v1                                                                                     |
+| `srt`            | process (bubblewrap)         | Linux, bwrap, socat, rg on PATH, unprivileged user namespaces | follow-up: the wrapping moves from the daemon's launch path into the shim's spawn path |
+| `docker`         | container, optionally gVisor | docker or podman, the runtime image (already OCI)             | later                                                                                  |
+| `host` off Linux | none                         | macOS or Windows                                              | later: a non-Linux read path and path relocation (below)                               |
 
 **`host` is a legitimate strategy.** §9.1 of the architecture already says an
 unsandboxed agent is operator-trusted code; spreading such sessions across the
 operator's own machines changes nothing about that trust. And the shim is an
 ordinary Node process, so "shim as a host process" is not a new mode, only a new
-place to start it. `host` is what makes a Mac build machine or a Windows box a
-usable executor.
+place to start it.
 
-The shim does assume one thing about its surroundings that `host` must supply
+**`host` is Linux-only in v1**, for two reasons the shim carries. Its console read
+path is fd-bound (`shim/safe-descent.ts` refuses with `ENOTSUP` off Linux, as
+cluster-spawn-and-shim.md §5 documents), so a macOS or Windows executor would accept
+sessions and then fail every console file view for them. And its helper locations
+are image-fixed (`shim/sandbox-paths.ts`: the git-credential helper and bridge
+entries under `/opt/agentconnect`, the Git config and skill-staging directories
+under `/run/agentconnect`), which Windows cannot bind as AF_UNIX paths at all. A
+non-Linux `host` needs a read fallback and a relocation of those paths under the
+daemon's own root; both are deferred.
+
+The shim also assumes one thing about its surroundings that `host` must supply
 explicitly: that it owns its filesystem namespace. Its tunnel endpoints are the
 fixed in-sandbox paths `/run/agentconnect/{gitcred,mcp}.sock`, and `TunnelHost`
 removes a stale socket before binding, because inside a pod or a VM the only
@@ -225,12 +247,14 @@ all refuses to start, which preserves today's fail-closed behavior. An explicit
 **What the Control Plane does.** Facts flow down and claims flow up, as the pool
 design put it, and this design adds no exception:
 
-- The heartbeat carries each member's effective strategy table, capacity and current
-  session count, beside the load it already reports. Holders read it; nobody
-  configures executor lists by hand.
-- The CP mints the short-lived token a holder presents when it dials an executor,
-  bound to the session and the pair of daemons, in the shape of the pool's shim
-  binding. Both ends are already-authenticated members of one organization.
+- The heartbeat carries each member's effective strategy table, its **executor
+  endpoint** (address and port — today's `Heartbeat` has none, because no daemon
+  listens), its capacity, and a `hostedSessions` count. That count is a new field
+  beside the existing `activeSessions`: the first counts environments this executor
+  facet hosts for any holder, the second counts sessions this holder facet drives.
+  Holders read all of it; nobody configures executor lists by hand.
+- The CP brokers a **dial rendezvous** (below) and checks the duty ledger before
+  doing so.
 - The session row records `executorDaemonId`, in the shared data-plane store, so a
   successor holder can find a session's environment after failover.
 - Upgrades, restarts and progress reporting reuse `daemon/upgrade` and
@@ -244,19 +268,59 @@ executor. Routing that stream through the CP's WebSocket would put the CP on the
 hot path, make a CP outage end every running remote session, and show the CP the
 `session/update` stream it must never see.
 
+**Authenticating the dial.** The pool binds a shim connection with the pod's own
+rotating Kubernetes credential and a TokenReview, and there is deliberately no
+CP-signed shim grant or key set ([k8s-daemon-pool.md](k8s-daemon-pool.md) §7). A
+self-hosted executor has no such identity source, so the identity authority for the
+dial is the one both ends already authenticate to: the CP, through a rendezvous
+rather than a signed token.
+
+1. The holder asks the CP for a dial to executor E for session S of agent A.
+2. The CP checks the ledger — the requester holds A's duty, E is a member of A's set
+   with its executor facet on — and refuses otherwise.
+3. The CP sends E, over E's own control connection, an _expected dial_: holder id,
+   session id, a one-time nonce, an expiry. It returns the same nonce to the holder.
+4. The holder dials E's endpoint with the nonce. E accepts only a dial it was told to
+   expect, once, before expiry. The preparation request (§7) is the first message on
+   that connection, so the nonce exists before the port gate is met.
+5. Once accepted, the holder mints the session's binding credential locally, exactly
+   as `ShimBindingRegistry` does today — step 6 of cluster-spawn-and-shim.md §3 is
+   unchanged; steps 1–5 are what the rendezvous replaces.
+
+There is one issuer of anything that opens the port — the CP, through step 3 — and
+nothing signed to distribute. A successor holder after failover runs the same steps;
+step 2 is what makes it authorized, since the ledger now names it. A re-dial
+therefore costs one CP round trip plus one dial, and the executor never has to judge
+duty itself.
+
 **Direction.** The executor facet listens; the holder dials. This is the pool's rule
 — the shim listens, the daemon dials the ready pod — applied to a machine instead of
-a pod. It is also the first listener a daemon has ever opened toward the network;
-every other connection a daemon has is outbound. The port is off by default, opened
-only when the executor facet is on, and gated by the CP-minted token. In v1, with the
-LAN assumption, it may be plain WebSocket; TLS is a v1.5 item. The reverse direction
-(executor dials the holder) would make the holder listen instead and was not chosen;
-it buys NAT traversal, which v1 does not need.
+a pod. It is the first listener a daemon opens that carries session traffic. Two
+listeners are prior art for binding and hardening: the readiness HTTP server
+(`readiness.ts`, bound on `AC_READINESS_PORT`) and the shim listener the daemon
+owned before the direction was reversed (cluster-spawn-and-shim.md §2). The port is
+off unless the executor facet is on (§10), and gated by the rendezvous. In v1, with
+the LAN assumption, it may be plain WebSocket; TLS is a v1.5 item. The reverse
+direction (executor dials the holder) would make the holder listen instead and was
+not chosen; it buys NAT traversal, which v1 does not need.
 
-**Placement policy.** `spread` places on the member with the matching strategy and
-the fewest sessions; `local-first` keeps sessions on the holder while it has room.
-The count comes from the executor's own heartbeat, so several holders sharing one
-executor see the same number without coordinating.
+**Placement policy, and which control wins.** Three things decide whether and where
+a session spreads, in this order:
+
+1. The group's switch (§10). Off means no session of any agent in the group spreads,
+   whatever the daemons say.
+2. The holder's own `placement` policy, applied to sessions it creates: `spread`
+   places on the member with the matching strategy and the fewest hosted sessions;
+   `local-first` keeps sessions on the holder while it has room.
+3. The birth predicate (§7): the session is `session`-isolated and some member's
+   effective table matches the agent's ask.
+
+The hosted count in the heartbeat is stale by up to one heartbeat interval plus
+fan-out, which is long enough for a burst of sessions — a webhook storm — to land on
+one executor. Two cheap corrections: the holder keeps an optimistic local increment
+for each session it has placed since the last heartbeat, and the preparation reply
+carries the executor's live count, or `full`, so the holder moves to the next
+candidate instead of queueing behind the serialized starts of §7.
 
 **What the LAN assumption buys**, so nobody over-credits it: no NAT traversal and no
 relay (already out of scope), optional TLS, and enough latency headroom that the
@@ -268,32 +332,70 @@ a guest's published shim port directly.
 
 ## 7. Session lifecycle
 
-**Birth.** The holder decides, at session creation, that this session spreads: it is
-`session`-isolated, the agent's strategy ask matches some member's effective table,
-and the group's spreading switch is on. It sends the executor a preparation request
-over the direct link — strategy, image tag, resource spec, the shim bundle, the
-workspace to clone, the HOME to seed — and receives a shim endpoint plus a binding
-token. The executor creates the environment with its own driver (the existing
-microsandbox manager, or a plain process for `host`), stages the shim, and performs
-the per-session blobless clone and HOME preparation of §11 of the workspace model
-inside that environment. The session row records the executor.
+**Birth.** The holder decides, at session creation, that this session spreads (§6's
+order of controls). It completes the rendezvous, dials, and sends the executor a
+preparation request — strategy, image tag, resource spec, the shim bundle, the
+workspace to clone, the HOME to seed — and receives a shim endpoint and the
+executor's live count. The executor creates the environment with its own driver
+(the existing microsandbox manager, or a plain process for `host`), stages the
+shim, and performs the per-session blobless clone and HOME preparation of §11 of
+the workspace model. The session row records the executor.
+
+**Where the state lives.** The environment's durable state — clone, secondary roots,
+HOME — is an executor-local directory, `<executorRoot>/sessions/<leaf>/{workspace,repos,home}`,
+the layout the local confined tier already uses, mounted into the environment.
+This is what makes it survive the backend's own lifecycle: the microsandbox
+driver's `replace()` retires and destroys a VM whenever its spec or image identity
+changes, with no dirty check, and its disks are disposable across replacement by
+the backend's stated rule. A session's work must therefore not live on those
+disks. The mount is local to the executor; "no mounts across machines" (D8) is
+about the holder never mounting anything of the executor's, and stands.
 
 **Execution.** The holder's driver dials the shim and binds at the session's term.
-Everything above the shim is the pool path. Console workspace reads for that session
-are routed by path to the executor, as they are routed to a session pod today.
+Everything above the shim is the pool path. Console reads of the session's paths
+are routed to the executor, as they are routed to a session pod today; reads of the
+agent's primary checkout stay with the holder, where that checkout is.
+
+**Agent-scoped state.** A session pod on the pool binds and holds the agent's
+companion pod for three agent-scoped things; a remote session has no companion, so
+each needs a named source:
+
+- _Managed memory._ Locally the runtime's memory root is a mount of the holder's
+  scope directory, which cannot cross machines. A spread session therefore requires
+  the agent's memory home to be the Control Plane (`memory.home: control-plane`),
+  the rule the pool already mandates, read and written by the holder over its
+  control connection; the birth predicate refuses to spread an agent whose memory is
+  daemon-homed. Runtime-native state stays in the per-session HOME on the executor,
+  as it does for every confined session.
+- _Merge-when-ready._ On a self-hosted daemon the watcher runs in the holder process
+  for local sessions; it does the same for a spread session, holding nothing on the
+  executor.
+- _The primary checkout._ Stays on the holder; it is not part of a clone-tier
+  session's environment.
 
 **Stickiness.** A session runs where it was born for its whole life. There is no
 turn-level migration.
 
-**Idle, retention, retirement.** Suspension, the dirty and unique-commit rules and
-directory removal run on the executor, judged in the clone, keyed by the session
-row. A `microsandbox` environment suspends and keeps its disk; a `host` environment
-is a directory and a process tree.
+**Idle, retention, retirement.** The judge is the holder, as it is on the pool: the
+holder's workspace manager drives suspension, the dirty and unique-commit rules and
+directory removal over the shim, because those rules need the agent's remote,
+default branch and retention policy, which the executor does not know.
+
+**When there is no holder.** An executor cannot judge, and an agent may lose its
+holder for a long time or be removed outright. So the executor keeps an inventory
+of its environments labelled by agent id and session leaf — the pool's claim labels
+— and reconciles it against the store of record on a schedule, over its own control
+connection: it asks the CP which of its environments still have a live session row,
+and discards those whose rows are gone, under the pool's orphan-reconciliation
+rules (a grace period, and a same-name replacement check so a row recreated after
+the query is never the one deleted). Agent removal deletes the rows; the next
+reconcile removes the environments. Nothing is kept forever for lack of a judge.
 
 **Holder failover.** The successor member claims the agent through the ledger as
-today, reads the session's executor from its row, and re-dials. The environment is
-still there — nothing on the executor depended on which holder was driving it — so
-failover costs one dial, not a re-preparation.
+today, reads the session's executor from its row, completes a rendezvous, and
+re-dials. The environment is still there — nothing on the executor depended on
+which holder was driving it — so failover costs a rendezvous and a dial, not a
+re-preparation.
 
 **Executor loss.** The environment and any uncommitted work in it are gone, as they
 are when a pinned daemon dies. The holder marks the session's executor unreachable
@@ -310,20 +412,29 @@ single starting process avoids.
 
 ## 8. Credentials and secrets
 
-**Runtime sign-in stays per machine.** Every machine that hosts execution runs
-`agentconnect login` for itself, and the executor facet seeds a session's private
-HOME from that host HOME exactly as the daemon seeds a local sandboxed agent today.
-Nothing copies a sign-in across machines, so the compliance shape — the operator's
-own subscription, on the operator's own machine, no platform-held tokens — is
-unchanged. A group member already needs this to be a holder; the executor facet adds
-no requirement.
+**Runtime sign-in is per machine, and it is the runtime's own.** The host HOME an
+executor seeds a session from is populated by the runtime's sign-in — `claude` or
+`codex` login on that machine — or by API-key configuration; no AgentConnect command
+performs it (`agentconnect login` is Control Plane onboarding, which every member
+already has). So the per-machine prerequisite for hosting sessions is: sign the
+runtimes in on that machine, or configure their keys there. Nothing copies a
+sign-in across machines, so the compliance shape — the operator's own subscription,
+on the operator's own machine, no platform-held tokens — is unchanged. The executor
+facet reports which runtimes have a stored login, the way the daemon already reports
+"Login required" per runtime, and a holder does not place a session whose runtime
+the executor cannot authenticate.
 
-**Agent secrets** are materialized by the holder from the Control Plane and travel to
-the executor over the authenticated link, where they enter the environment as they
-enter a local one. A microsandbox executor performs hostname-scoped placeholder
-substitution on its own host, so the real values are held there for the session's
-life. A `host` executor exposes them to the process tree, as a local unsandboxed run
-does.
+**Provider credentials and agent secrets are two mechanisms**, and both cross the
+link:
+
+- _Runtime provider credentials_ — the values `CREDENTIAL_PREPARERS` handles per
+  runtime — are seeded as files into the session HOME, and on a microsandbox
+  executor are additionally protected by hostname-scoped placeholder substitution on
+  that executor's host, exactly as locally.
+- _Agent secrets_ (`runtimeOverrides.secrets`) enter the runtime's environment as
+  plain values on every backend today, output-masked, and do so on an executor the
+  same way. A `host` executor exposes them to the process tree; a microsandbox
+  executor exposes them to the VM. Neither is a change from the local exposure.
 
 ## 9. Upgrades
 
@@ -335,24 +446,37 @@ CP-tracked `daemon/upgrade` with `daemon/lifecycle/progress` for the console.
 
 One phase is added. The sequence becomes `preparing` → **`draining`** →
 `restarting` → READY at the target version. Draining stops accepting new sessions
-and waits, with a cap, for open exec streams to close; the console shows the
-remaining count. Sandboxes are not touched: a microsandbox VM is held by a detached
-supervisor that outlives the daemon process, and a `host` session's process tree is
-re-attached after restart. What a restart costs is the turns in flight at that
-instant, which is what a daemon restart already costs. Holders that lose the shim
-connection re-dial and take a new binding generation.
+and waits, with a cap, for the turns in flight on that executor to finish; the
+console shows the remaining count.
+
+What a restart costs is stated honestly, because neither v1 strategy keeps a
+running process across it. The microsandbox backend's rule is that a daemon restart
+stops recorded owned VMs and retains their disks; it does not adopt running guests,
+so the guest, its ACP process and its socket bridge end. A `host` session's process
+tree is a child of the daemon and ends with it; ACP over stdio ends regardless.
+Environments therefore survive **as disks and directories** (§7), and a session
+resumes from them on its next turn — a VM is started from its retained disk, a
+`host` environment is re-entered — while any turn still running at the instant of
+restart is lost, which is what a daemon restart already costs. Adopting live VMs or
+detached shims across a restart would change the backend's fencing rule and is not
+in scope. Holders that lose the shim connection re-dial and take a new binding
+generation.
 
 Version-sensitive pieces are pushed from the holder rather than installed on the
 executor: the shim bundle comes with each preparation request, and the image tag is
-chosen per session. The executor's own contract is versioned in the dial handshake;
-version N serves holders at N and N−1, and a holder refuses an executor below its
-minimum, so members and executors can roll in either order.
+chosen per session. The executor's own contract is negotiated in the dial
+handshake: each side advertises the versions it speaks — its own and the previous
+one — and the connection uses the highest both share, so a holder at N+1 still
+talks to an executor at N and members can roll in either order. A pair with no
+common version refuses the dial, and the holder moves on.
 
 ## 10. Configuration and console
 
-Daemon configuration grows two keys beside `sandbox`, both daemon-owned:
+Daemon configuration grows three keys, all daemon-owned: `role` at the top level,
+and `share` and `placement` inside `sandbox`:
 
 ```json
+"role": "daemon",
 "sandbox": {
   "backend": "microsandbox",
   "share": true,
@@ -360,9 +484,15 @@ Daemon configuration grows two keys beside `sandbox`, both daemon-owned:
 }
 ```
 
-`share` is the executor facet switch, default on when a sandbox backend is
-configured. `placement` is `spread` or `local-first`. Executor addresses and tokens
-are not configured anywhere: the heartbeat publishes addresses, the CP mints tokens.
+`role` is `daemon` (both facets, the default) or `executor` (holder facet off);
+`--role executor` on the command line is the same key. `share` is the executor
+facet switch and **defaults to off**: the listener opens only when `share` is true
+and the effective strategy table is non-empty — never merely because
+`sandbox.backend` has a value, since it always does (`srt` by default). A machine
+whose table is empty and whose `share` is true starts with the facet dark and says
+why. `role: executor` with `share: false` is refused at startup. `placement` is
+`spread` or `local-first`. Executor addresses and dial credentials are not
+configured anywhere: the heartbeat publishes the endpoint, the CP brokers the dial.
 
 The console adds no new kind of row. On the Infra page each daemon shows the
 sessions it hosts and its capacity beside the strategies it offers. A group has one
@@ -380,10 +510,9 @@ because every executed session is a clone in an environment the shim owns.
 
 This is not part of this project. The order is: land the driver against remote
 executors; add a switch that routes local sessions through a loopback executor;
-run with it as the default for a while; then delete the direct path. Two points to
+run with it as the default for a while; then delete the direct path. One point to
 keep honest when that happens: the simplest install (one laptop, no sandbox) gains a
-shim process and a loopback WebSocket it did not have, and the pool's closed exec
-inventory becomes a policy per strategy rather than a universal constraint (§14).
+shim process and a loopback WebSocket it did not have.
 
 The end state of "a thinner daemon" is a pool member — a holder that executes
 nothing itself — not a daemon folded into the Control Plane. Thin or not, the
@@ -396,14 +525,14 @@ Five to six pull requests, roughly three weeks of focused work plus a week of
 validation on a real multi-machine deployment, which the requester of #2111 offered
 to run.
 
-| PR  | Scope                                                                                                                                                                                                                    |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | Protocol and CP: facet declaration at registration, strategy table and session count in the heartbeat, binding token, `executorDaemonId` on the session row.                                                             |
-| 2   | Executor facet: split "prepare an environment" from "spawn the runtime" in the microsandbox driver, the listener and token check, `host` strategy with per-session tunnel paths and helper configuration (§5), draining. |
-| 3   | Holder: the executor `SpawnDriver`, extracting the shared dial-and-bind layer from `K8sDriver`; placement; the unreachable-executor state.                                                                               |
-| 4   | Console: group switch, per-daemon hosting and capacity, session's executor.                                                                                                                                              |
-| 5   | Tests: a two-daemon, one-CP integration fixture covering holder failover and executor loss; the loopback shim smoke test extended to `host`.                                                                             |
-| 6   | Documents beside the code: this design, the pointers in the group and backend designs, and the workspace model's tier rule gaining the executor arm.                                                                     |
+| PR  | Scope                                                                                                                                                                                                                                                                                                                      |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Protocol and CP: facet declaration at registration; strategy table, executor endpoint and `hostedSessions` in the heartbeat; the dial rendezvous with its ledger check; `executorDaemonId` on the session row; the environment-inventory reconcile query.                                                                  |
+| 2   | Executor facet: split "prepare an environment" from "spawn the runtime" in the microsandbox driver; ACP and both tunnels onto the shim with the `tunnel` grant; the listener and expected-dial check; `host` strategy (Linux) with per-session tunnel paths and helper configuration (§5); the orphan reconcile; draining. |
+| 3   | Holder: the executor `SpawnDriver`, extracting the shared dial-and-bind layer from `K8sDriver`; placement with the optimistic count and the `full` reply; the memory-home gate in the birth predicate; the unreachable-executor state.                                                                                     |
+| 4   | Console: group switch, per-daemon hosting and capacity, session's executor.                                                                                                                                                                                                                                                |
+| 5   | Tests: a two-daemon, one-CP integration fixture covering holder failover, executor loss and executor restart; the loopback shim smoke test extended to `host`.                                                                                                                                                             |
+| 6   | Documents beside the code: this design, the pointers in the group and backend designs, and the workspace model's tier rule gaining the executor arm.                                                                                                                                                                       |
 
 Calibration: `K8sDriver` is about three thousand lines and took five weeks of
 commits, including claim, sleep and orphan machinery this design does not need. The
@@ -411,12 +540,13 @@ shim, at twice that size, is reused unchanged.
 
 ## 13. Open questions
 
-- **Width of the exec surface.** The pool's shim exec handler admits a closed list of
-  Git subcommands, chosen because the pod is the only place that check is a control.
-  A self-hosted executor is in the operator's trust domain, where the list is only a
-  tax. Proposed: one handler, one policy flag — closed on the pool, open on a
-  self-hosted executor — decided before the driver is written, since the driver's
-  Git phrasing depends on it.
+- **Width of the exec surface.** The shim exec handler admits a closed list of Git
+  subcommands, and the same list (`workspace/git-command-policy.ts`) already gates
+  the local microsandbox path, so the list is not a pool-only control and this is
+  not a pool-versus-self-hosted split. The question is narrower: whether the `host`
+  strategy on a trusted machine gets the same list. Proposed: yes, one list
+  everywhere, widened where an operation needs it, so nothing loosens an existing
+  local control.
 - **Executor-loss semantics** (§7): the grace before a session is declared
   unreachable, and whether re-preparation is automatic on the next turn (proposed)
   or requires an operator.
@@ -426,12 +556,13 @@ shim, at twice that size, is reused unchanged.
 
 ## 14. Non-goals
 
-- Cross-organization executors. An executor serves the group it belongs to; a
-  machine serving two organizations' sessions needs CP-verifiable proof of the
-  holder's duty at re-dial, which v1 does not have.
+- Cross-organization executors. An executor serves the group it belongs to; the
+  rendezvous of §6 is checked against one organization's ledger, and a machine
+  serving two organizations would need that check to span both.
 - Turn-level migration or live movement of a running session.
 - Durable environment storage across executor loss. Uncommitted work on a lost
   machine is lost; there is no PVC equivalent and none is designed.
+- Adopting running VMs or detached shims across an executor restart (§9).
 - NAT traversal, relays, or an executor behind a firewall the holder cannot reach.
 - Changing `sandbox.backend`, `security.requireSandbox` or `runInSandbox`. §5 records
   the intended successors; they are separate changes.
@@ -457,6 +588,9 @@ shim, at twice that size, is reused unchanged.
   grant, holder-following delivery and every per-agent authorization read, and the
   socket-mode ingress would still land on one holder and forward.
 - **CP-assigned placement.** Rejected in the pool design; nothing here reopens it.
+- **A CP-signed dial token.** The pool removed its CP-signed shim grant outright;
+  a signed token needs a key set to distribute and verify, and the rendezvous of §6
+  gets the same guarantee from the two control connections that already exist.
 - **Routing the data path through the CP's WebSocket.** Puts the CP on the hot path.
 - **Symmetric daemon↔daemon links** where either side may hold the agent. The
   asymmetry (holder dials, executor listens) is what keeps one holder per agent.
@@ -485,10 +619,11 @@ shim, at twice that size, is reused unchanged.
   workspace model's "tier a session is born in" gains an executor arm that always
   answers "clone".
 - [cluster-spawn-and-shim.md](cluster-spawn-and-shim.md) defines the seam, the shim,
-  the dial direction, the binding proof and the tunnel direction, all of which apply
-  verbatim.
+  the dial direction and the tunnel direction, which apply verbatim, and the binding
+  proof, whose identity steps §6 replaces with the rendezvous while keeping its
+  locally minted session credential.
 - [daemon-sandbox-backends.md](daemon-sandbox-backends.md) describes the backends a
   strategy wraps; the executor facet's `microsandbox` strategy is that backend with
-  the pool's disk layout instead of host mounts.
+  the session's state in an executor-local mount rather than on the VM's disks.
 - [architecture.md](architecture.md) §9.1 is the trust model `host` relies on, and
   the hot-path goal of its §2 is the reason the data path never touches the CP.
