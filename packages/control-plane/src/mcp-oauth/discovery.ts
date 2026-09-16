@@ -124,11 +124,11 @@ export function sameResource(a: string, b: string): boolean {
 /**
  * Whether the `resource` a protected-resource document advertises covers the MCP url we
  * registered: the same url (as {@link sameResource}), or a same-scheme, same-host prefix of it at a
- * path-segment boundary — the origin, or a parent path. Hosted servers commonly publish the origin
- * as their resource identifier while serving the endpoint under `/mcp`, and RFC 9728 §3.1 itself
- * walks from the endpoint path up to the root when locating the document, so a covering resource is
- * the document the spec expects; another host, scheme, port or sibling path is still somebody
- * else's audience. A resource carrying a query must match exactly.
+ * path-segment boundary — the origin, or a parent path. This is an interoperability choice, not a
+ * spec rule: hosted servers commonly publish the origin as their resource identifier while serving
+ * the endpoint under `/mcp` (Front does), and a resource that covers the endpoint is the audience
+ * such a server verifies. Another host, scheme, port or sibling path is still somebody else's
+ * audience. A resource carrying a query must match exactly.
  */
 export function resourceCovers(resource: string, mcpUrl: string): boolean {
   if (sameResource(resource, mcpUrl)) return true

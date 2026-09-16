@@ -94,8 +94,9 @@ This is the easiest thing in the feature to get backwards.
   trailing slash, or a same-scheme, same-host prefix of it at a path-segment boundary (the
   origin, or a parent path). Hosted servers commonly publish the origin as their resource
   identifier while serving the endpoint under `/mcp` (Front: `https://mcp.frontapp.com` for
-  `https://mcp.frontapp.com/mcp`), and RFC 9728 §3.1 itself walks from the endpoint path up
-  to the root to locate the document. Another host, scheme or port, a sibling path, or a
+  `https://mcp.frontapp.com/mcp`). Covering is an interoperability choice, not something RFC
+  9728 prescribes — §3.1 only defines how the well-known URL is built from the resource
+  identifier. Another host, scheme or port, a sibling path, or a
   resource carrying a query is still `resource_mismatch` (`resourceCovers` in
   `mcp-oauth/discovery.ts`). The outbound `resource` is then the advertised string, which is
   the audience the server verifies.
