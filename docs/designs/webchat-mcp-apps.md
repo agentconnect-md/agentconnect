@@ -6,9 +6,10 @@ Status: v1 implemented. Closes the webchat half of
 ## 1. Summary
 
 The built-in admin resource now has a native Console rendering path, specified in
-[webchat-native-integration-ui.md](webchat-native-integration-ui.md). Its trusted
-resource resolver bypasses HTML fetching; the iframe rules below remain the
-contract for other MCP Apps.
+[webchat-native-integration-ui.md](webchat-native-integration-ui.md). Admin MCP stays
+direct HTTP; completed ACP tool results carry the native dialog intent without
+HTML fetching or an MCP proxy. The iframe rules below remain the contract for
+other MCP Apps.
 
 An MCP server may ship an interactive HTML interface for one of its tools
 (**MCP Apps**, the first official MCP extension — SEP-1865, Final 2026-01-26). The

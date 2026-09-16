@@ -67,30 +67,28 @@ describe('native integration UI', () => {
     })
     expect(modal.closeNativeIntegration).toHaveBeenCalledWith(value.appId)
   })
-  it('revalidates the request and opens a native dialog once, without an iframe', async () => {
+  it('opens a native dialog once without an iframe or a second MCP call', async () => {
     const value = app()
     const onRpc = vi.fn(async () => ({ ok: true as const, result: {} }))
     await act(async () => {
       root.render(<McpAppCard step={{ app: value }} onRpc={onRpc} />)
     })
     expect(element.querySelector('iframe')).toBeNull()
-    expect(onRpc).toHaveBeenCalledWith(value.appId, {
-      method: 'tools/call',
-      name: 'configureIntegration',
-      args: value.nativeUi!.intent
-    })
+    expect(onRpc).not.toHaveBeenCalled()
     expect(modal.openNativeIntegration).toHaveBeenCalledTimes(1)
     await act(async () => {
       root.render(<McpAppCard step={{ app: { ...value } }} onRpc={onRpc} />)
     })
     expect(modal.openNativeIntegration).toHaveBeenCalledTimes(1)
   })
-  it('does not open a revoked request or a history card', async () => {
+  it('does not open a settled request or a history card', async () => {
     await act(async () => {
-      root.render(<McpAppCard step={{ app: app() }} onRpc={async () => ({ ok: false, error: 'revoked' })} />)
+      root.render(
+        <McpAppCard step={{ app: { ...app(), outcome: 'expired' } }} onRpc={async () => ({ ok: true, result: {} })} />
+      )
     })
     expect(modal.openNativeIntegration).not.toHaveBeenCalled()
-    expect(element.textContent).toContain('revoked')
+    expect(element.textContent).toContain('no longer active')
     await act(async () => {
       root.render(<McpAppCard step={{ app: app() }} />)
     })
@@ -101,13 +99,13 @@ describe('native integration UI', () => {
     await act(async () => {
       root.render(<McpAppCard step={{ app: app() }} onRpc={onRpc} />)
     })
-    expect(onRpc).toHaveBeenCalledTimes(1)
+    expect(onRpc).not.toHaveBeenCalled()
     const completed = (modal.openNativeIntegration.mock.calls[0] as unknown as [unknown, (text: string) => void])[1]
     await act(async () => {
       completed('Created GitHub subscription.')
       completed('Created GitHub subscription.')
     })
-    expect(onRpc).toHaveBeenCalledTimes(2)
+    expect(onRpc).toHaveBeenCalledTimes(1)
     expect(element.textContent).toContain('Created GitHub subscription.')
   })
 })

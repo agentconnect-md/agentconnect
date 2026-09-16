@@ -3,7 +3,7 @@
 ## Scope
 
 The built-in administrative MCP exposes `configureIntegration` for creating an
-integration or editing an existing one. A trusted declaration of
+integration or editing an existing one. A versioned presentation intent naming
 `ui://agentconnect/integration-setup` maps to a Console React dialog. This path
 does not fetch an HTML template and does not create an iframe. Other MCP Apps
 continue to use the sandboxed iframe renderer.
@@ -37,31 +37,30 @@ versioned `NativeMcpUi` value with the organization id and validated intent.
 Unknown arguments, including credentials, HTML and caller-selected organization
 ids, are rejected. The server supplies the organization from authentication.
 
-Only the conversation-owned admin connection installs a native-resource resolver.
-It checks the tool, resource URI, version and organization. Ordinary provider
-connections cannot populate `nativeUi` by returning matching metadata or content.
-The daemon emits the existing `app` event with an optional `nativeUi` field through
-the relay content stream. Control signaling never carries this interface.
+The result includes the intent in both `structuredContent` and a text content block.
+The runtime calls admin MCP directly over HTTP and reports its normal ACP tool result.
+The daemon projects a successful, schema-valid result into the existing `app` event
+with `nativeUi`, through the relay content stream. It neither calls admin MCP nor
+reads resources. Control signaling never carries this interface. Failed and incomplete
+tool calls do not open dialogs; repeated updates for one call open at most one card.
 
 ## Hosting and authorization
 
-An entitled built-in Webchat session warms a separate admin MCP Apps host using its
-activated remote grant. Connections and template caches are per conversation, not
-per organization. The runtime receives hosted tool descriptors through the existing
-daemon bridge. It does not also receive the direct admin descriptor when hosting
-succeeds. If hosting is unavailable, ordinary administration can fall back to the
-existing runtime HTTP descriptor; native configuration requires the hosted path.
+An entitled built-in Webchat session receives the direct HTTP admin MCP descriptor
+with its activated conversation grant. There is no administrative MCP Apps host,
+connection cache, tool re-publication or stdio forwarding. Generic HTML MCP Apps
+continue using their existing host, independently of native integration configuration.
 
-Rotation closes the previous connection, and local revocation removes the connection
-even if the remote revoke must be retried. Pending dials are invalidated on close.
-A change between hosted and direct delivery reloads the runtime session's tool set.
-The server retains grant authentication, REST authorization, approval operations and
-write idempotency. The host does not implement another administrative authority.
+Grant rotation, revocation and runtime descriptor refresh retain their original direct
+HTTP behavior. The server retains grant authentication, REST authorization, approval
+operations and write idempotency.
 
-Before opening or reopening a dialog, the card calls the read-only configuration
-tool again through its live app RPC. A revoked grant or unavailable target cannot
-open an editor. The dialog also checks the active organization and editable agent.
-Forms use the human's existing Console authentication; GitHub or another provider
+An intent requests presentation, not authority. No signature, source registry or
+second MCP call is needed before opening a dialog. The dialog checks the active
+organization and editable agent, and every data read and write uses the current
+human's Console JWT and existing server-side authorization. A matching result from
+another tool grants no extra access. The schema accepts no arbitrary HTML or URL.
+Native cards cannot call MCP tools or read MCP resources. GitHub or another provider
 may still require its own installation or authorization flow. No Console credential
 is passed to MCP or into an iframe.
 
@@ -86,3 +85,13 @@ and swap: the existing REST endpoint remains authoritative. Multi-conversation
 edits and external provider authorization can partially succeed; errors must not
 claim those earlier operations were rolled back. Existing provider credentials,
 OAuth codes and tokens never enter the completion summary.
+
+## Runtime verification
+
+A local probe using Codex ACP `1.11.0-agentconnect.1` in protected full-access mode
+successfully called a mock HTTP admin MCP. Its `tool_call_update.rawOutput.result`
+preserved `content`, `structuredContent` and `_meta`, along with `rawInput.server`
+and `rawInput.tool`. This establishes the direct result path for that runtime;
+other adapters must preserve a structured result or the text JSON content block.
+The earlier stdio-proxy design failed before `configureIntegration`: that runtime's
+full-access HTTP approval policy cancelled `whoami` on the stdio bridge.

@@ -1,180 +1,123 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createServer } from 'node:http'
-import { INTEGRATION_SETUP_URI, NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
-import { McpAppsHost, type McpAppsHostDeps } from '../src/mcp/apps/host.js'
-import { RemoteWebchatGrantManager } from '../src/mcp/remote-webchat-grant.js'
+import { INTEGRATION_SETUP_URI } from '@agentconnect.md/protocol/mcp-app'
+import { nativeUiFromToolUpdate } from '../src/mcp/native-ui.js'
+import { Daemon } from '../src/daemon.js'
+import { LiveAppRegistry, reviveAppRow } from '../src/mcp/apps/cards.js'
+import { AppSurface } from '../src/mcp/apps/surface.js'
 
-const orgId = '11111111-1111-4111-8111-111111111111'
-const agentId = '22222222-2222-4222-8222-222222222222'
-const ui = NativeMcpUi.parse({
+const ui = {
   resourceUri: INTEGRATION_SETUP_URI,
   resourceVersion: 1,
-  orgId,
-  intent: { mode: 'create', provider: 'github', agentId }
+  orgId: '11111111-1111-4111-8111-111111111111',
+  intent: { mode: 'create', provider: 'github' }
+}
+// Shape captured from a real Codex ACP 1.11.0-agentconnect.1 HTTP MCP call.
+const update = {
+  sessionUpdate: 'tool_call_update',
+  toolCallId: 'http-call-1',
+  status: 'completed',
+  rawInput: {
+    server: 'agentconnect-admin',
+    tool: 'configureIntegration',
+    arguments: { mode: 'create', provider: 'github' }
+  },
+  rawOutput: { result: { content: [{ type: 'text', text: JSON.stringify(ui) }], structuredContent: ui }, error: null }
+}
+
+describe('direct HTTP native UI result', () => {
+  it('reads the original ACP result without a proxy or resource read', () => {
+    expect(nativeUiFromToolUpdate(update)).toEqual(ui)
+    expect(
+      nativeUiFromToolUpdate({ ...update, rawOutput: { result: { content: update.rawOutput.result.content } } })
+    ).toEqual(ui)
+    expect(nativeUiFromToolUpdate({ ...update, rawOutput: update.rawOutput.result })).toEqual(ui)
+  })
+
+  it.each([
+    { ...update, status: 'failed' },
+    { ...update, status: 'in_progress' },
+    { ...update, sessionUpdate: 'agent_message_chunk' },
+    { ...update, rawOutput: { ...update.rawOutput, error: { message: 'cancelled' } } },
+    { ...update, rawOutput: { result: { ...update.rawOutput.result, isError: true } } },
+    { ...update, rawOutput: { content: [{ type: 'text', text: 'ui://agentconnect/integration-setup' }] } },
+    { ...update, rawOutput: { structuredContent: { ...ui, html: '<script>bad</script>' } } },
+    { ...update, rawOutput: { structuredContent: { ...ui, resourceVersion: 2 } } }
+  ])('ignores failed, incomplete, or invalid results', (event) => {
+    expect(nativeUiFromToolUpdate(event)).toBeUndefined()
+  })
+
+  it('treats an intent as presentation data regardless of the tool display name', () => {
+    expect(nativeUiFromToolUpdate({ ...update, rawInput: { server: 'other', tool: 'other' } })).toEqual(ui)
+  })
+
+  it('accepts the default organization identifier as well as UUID organizations', () => {
+    const intent = { ...ui, orgId: 'org_default00000000000000000' }
+    expect(nativeUiFromToolUpdate({ ...update, rawOutput: { structuredContent: intent } })).toEqual(intent)
+  })
 })
-const result = { content: [{ type: 'text', text: JSON.stringify(ui) }] }
 
-describe('native MCP UI', () => {
-  it('negotiates and calls the admin endpoint over HTTP while keeping native rendering free of resource reads', async () => {
-    const methods: string[] = []
-    const authorizations: Array<string | undefined> = []
-    const server = createServer(async (request, response) => {
-      if (request.method !== 'POST') {
-        response.writeHead(405).end()
-        return
-      }
-      const chunks: Buffer[] = []
-      for await (const chunk of request) chunks.push(Buffer.from(chunk))
-      const rpc = JSON.parse(Buffer.concat(chunks).toString()) as { id?: number; method: string }
-      methods.push(rpc.method)
-      authorizations.push(request.headers.authorization)
-      if (rpc.id === undefined) {
-        response.writeHead(202).end()
-        return
-      }
-      const answer =
-        rpc.method === 'initialize'
-          ? {
-              protocolVersion: '2025-03-26',
-              capabilities: { tools: {}, resources: {} },
-              serverInfo: { name: 'admin-test', version: '1' }
-            }
-          : rpc.method === 'tools/list'
-            ? {
-                tools: [
-                  {
-                    name: 'configureIntegration',
-                    inputSchema: { type: 'object', properties: {} },
-                    _meta: { ui: { resourceUri: INTEGRATION_SETUP_URI } }
-                  }
-                ]
-              }
-            : result
-      response
-        .writeHead(200, { 'content-type': 'application/json' })
-        .end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: answer }))
-    })
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const address = server.address() as { port: number }
-    const client = {
-      issueWebchatMcpGrant: async (input: any) => ({
-        ...input,
-        grantId: crypto.randomUUID(),
-        grantRevision: 1,
-        token: 'test-only-token',
-        expiresAt: '2030-01-01T00:00:00.000Z',
-        mcpUrl: `http://127.0.0.1:${address.port}/mcp`
-      }),
-      acceptWebchatMcpGrant: async (input: any) => ({ ...input, activated: true }),
-      revokeWebchatMcpGrant: async (input: any) => ({ ...input, revoked: true })
-    }
-    const manager = new RemoteWebchatGrantManager(client, undefined, () => orgId)
-    try {
-      await manager.provision(
-        'conversation',
-        { authorityId: orgId, authorityGeneration: 1, expiresAt: '2030-01-01T00:00:00.000Z' },
-        Date.now(),
-        agentId
-      )
-      expect(await manager.prepareApps('conversation', agentId)).toBe(true)
-      const host = manager.appsFor('conversation', agentId)!
-      expect(host.cachedToolsFor(undefined, ['agentconnect-admin'])[0]?.name).toBe(
-        'agentconnect-admin__configureIntegration'
-      )
-      const called = await host.call(undefined, 'agentconnect-admin', 'configureIntegration', ui.intent)
-      expect(called.card?.nativeUi).toEqual(ui)
-      expect(called.card?.html).toBeUndefined()
-      expect(methods).toContain('initialize')
-      expect(methods).toContain('tools/call')
-      expect(methods).not.toContain('resources/read')
-      expect(authorizations.every((header) => header === 'Bearer test-only-token')).toBe(true)
-    } finally {
-      await manager.revokeAll('session_closed')
-      await new Promise<void>((resolve) => server.close(() => resolve()))
-    }
-  })
-  it('substitutes a trusted resource without fetching HTML; ordinary providers cannot opt in through their result', async () => {
-    const readResource = vi.fn(async () => ({
-      contents: [{ uri: INTEGRATION_SETUP_URI, mimeType: 'text/html;profile=mcp-app', text: '<p>untrusted</p>' }]
-    }))
-    const conn = {
-      client: { callTool: vi.fn(async () => ({ ...result, nativeUi: ui })), readResource },
-      tools: new Map([
-        [
-          'configureIntegration',
-          {
-            descriptor: { name: 'admin__configureIntegration' },
-            templateUri: INTEGRATION_SETUP_URI,
-            resultVisibleToModel: true,
-            raw: {}
-          }
-        ]
-      ]),
-      templates: new Map()
-    }
-    for (const trusted of [true, false]) {
-      const host = new McpAppsHost({ defs: () => ({}), ...(trusted ? { nativeResource: () => ui } : {}) })
-      vi.spyOn(host as unknown as { connect: () => Promise<unknown> }, 'connect').mockResolvedValue(conn)
-      const called = await host.call(undefined, 'admin', 'configureIntegration', {})
-      if (trusted) {
-        expect(called.card?.nativeUi).toEqual(ui)
-        expect(called.card?.html).toBeUndefined()
-        expect(readResource).not.toHaveBeenCalled()
-      } else {
-        expect(called.card?.nativeUi).toBeUndefined()
-        expect(called.card?.html).toBe('<p>untrusted</p>')
-      }
-    }
+function harness() {
+  const output = vi.fn()
+  const p = {
+    plan: { sessionKey: 'session', transcriptChannel: 'conversation', statusThread: 'thread', agentId: 'agent' },
+    webchat: { conversationId: 'conversation', turnId: 'turn', index: 0, sink: { output, done: vi.fn() } }
+  }
+  const daemon = Object.create(Daemon.prototype) as any
+  daemon.clock = { now: () => 1000 }
+  daemon.liveApps = new LiveAppRegistry()
+  daemon.appSurface = new AppSurface({ turnFor: () => p, log: () => ({ warn: vi.fn(), debug: vi.fn() }) as any })
+  daemon.writeAppRow = vi.fn()
+  daemon.appsHost = { call: vi.fn(), resolveViewTool: vi.fn(), readResource: vi.fn() }
+  daemon.webchatTransport = { dispatchWebchatTurn: vi.fn(async () => ({ accepted: true, turnId: 'completion' })) }
+  daemon.projectNativeIntegration(p, update)
+  return { daemon, p, output }
+}
+
+describe('native UI projection and completion', () => {
+  it('opens once from a completed result, without a connection or MCP capability', () => {
+    const { daemon, p, output } = harness()
+    daemon.projectNativeIntegration(p, update)
+    expect(output).toHaveBeenCalledTimes(1)
+    expect(output.mock.calls[0]?.[0].event).toMatchObject({ kind: 'app', nativeUi: ui })
+    const card = daemon.liveApps.liveIn('conversation')[0]
+    expect(card).toMatchObject({ native: true, server: '', agentId: 'agent' })
+    expect(daemon.appsHost.call).not.toHaveBeenCalled()
+    expect(reviveAppRow(card.appId, 'conversation', { ...card.row, body: JSON.stringify(card.row) })).toBeUndefined()
   })
 
-  it('isolates connections by conversation, rejects a different agent, and retires them on revocation', async () => {
-    const tools = vi.spyOn(McpAppsHost.prototype, 'toolsFor').mockResolvedValue([
-      {
-        name: 'agentconnect-admin__configureIntegration',
-        description: '',
-        inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }
-      }
-    ])
-    const close = vi.spyOn(McpAppsHost.prototype, 'close').mockResolvedValue()
-    const client = {
-      issueWebchatMcpGrant: vi.fn(async (input: any) => ({
-        ...input,
-        grantId: crypto.randomUUID(),
-        grantRevision: 1,
-        token: 'private-test-grant',
-        expiresAt: '2030-01-01T00:00:00.000Z',
-        mcpUrl: 'https://example.test/mcp'
-      })),
-      acceptWebchatMcpGrant: vi.fn(async (input: any) => ({ ...input, activated: true })),
-      revokeWebchatMcpGrant: vi.fn(async (input: any) => ({ ...input, revoked: true }))
+  it('does not project into a non-webchat or continuation turn', () => {
+    const { daemon, p, output } = harness()
+    output.mockClear()
+    daemon.projectNativeIntegration({ ...p, webchat: undefined }, { ...update, toolCallId: 'other' })
+    daemon.projectNativeIntegration(
+      { ...p, webchat: { ...p.webchat, continuation: true } },
+      { ...update, toolCallId: 'other' }
+    )
+    expect(output).not.toHaveBeenCalled()
+  })
+
+  it('refuses tool/resource RPCs and accepts a completion as an ordinary user message', async () => {
+    const { daemon, p, output } = harness()
+    const card = daemon.liveApps.liveIn('conversation')[0]
+    for (const rpc of [
+      { method: 'tools/call', name: 'whoami' },
+      { method: 'resources/read', uri: INTEGRATION_SETUP_URI }
+    ]) {
+      await daemon.handleAppRpc('conversation', card.appId, 'call', rpc, {}, p.webchat)
+      expect(output.mock.calls.at(-1)?.[0].event).toMatchObject({ kind: 'app_rpc_result', outcome: { ok: false } })
     }
-    try {
-      const manager = new RemoteWebchatGrantManager(client, undefined, () => orgId)
-      const entitlement = { authorityId: orgId, authorityGeneration: 1, expiresAt: '2030-01-01T00:00:00.000Z' }
-      for (const conversation of ['a', 'b']) {
-        await manager.provision(conversation, entitlement, Date.now(), agentId)
-        expect(await manager.prepareApps(conversation, agentId)).toBe(true)
-      }
-      const a = manager.appsFor('a', agentId)!
-      expect(a).not.toBe(manager.appsFor('b', agentId))
-      expect(manager.appsFor('a', 'another-agent')).toBeUndefined()
-      const deps = (a as unknown as { deps: McpAppsHostDeps }).deps
-      expect(deps.nativeResource?.('configureIntegration', INTEGRATION_SETUP_URI, result)).toEqual(ui)
-      expect(deps.nativeResource?.('anotherTool', INTEGRATION_SETUP_URI, result)).toBeUndefined()
-      expect(
-        deps.nativeResource?.('configureIntegration', INTEGRATION_SETUP_URI, {
-          content: [{ type: 'text', text: JSON.stringify({ ...ui, orgId: agentId }) }]
-        })
-      ).toBeUndefined()
-      await manager.revokeConversation('a', 'session_closed')
-      expect(manager.appsFor('a', agentId)).toBeUndefined()
-      expect(manager.appsFor('b', agentId)).toBeDefined()
-      expect(deps.defs(undefined)).toEqual({})
-      expect(close).toHaveBeenCalledTimes(1)
-      await manager.revokeAll('session_closed')
-    } finally {
-      tools.mockRestore()
-      close.mockRestore()
-    }
+    expect(daemon.appsHost.resolveViewTool).not.toHaveBeenCalled()
+    expect(daemon.appsHost.readResource).not.toHaveBeenCalled()
+    await daemon.handleAppRpc(
+      'conversation',
+      card.appId,
+      'save',
+      { method: 'ui/message', text: 'Created GitHub subscription.' },
+      {},
+      p.webchat
+    )
+    expect(daemon.webchatTransport.dispatchWebchatTurn).toHaveBeenCalledTimes(1)
+    expect(output.mock.calls.at(-1)?.[0].event).toMatchObject({ kind: 'app_resolved', outcome: 'completed' })
+    expect(daemon.liveApps.liveIn('conversation')).toHaveLength(0)
   })
 })

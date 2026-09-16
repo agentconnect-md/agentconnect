@@ -34,6 +34,7 @@ import { API_V1_PREFIX } from '../version.js'
 import { OrgId } from '../../domain/ids.js'
 import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult } from './tools.js'
 import { INTEGRATION_APP_HTML, INTEGRATION_APP_MIME, INTEGRATION_APP_URI } from './integration-app.js'
+import { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { publicBaseUrl, mcpAuthenticateChallenge } from '../oauth/base.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER } from './internal-invocation-auth.js'
 import type { InvocationContext, ParsedInvocationMetadata } from './remote-grant-authenticator.js'
@@ -563,7 +564,11 @@ export function mcpRoutes(deps: HttpDeps) {
           }
         }
         // 204/202-style successes have no body — still hand the model a definite answer.
-        return { content: [{ type: 'text' as const, text: result.body || `OK (HTTP ${result.statusCode})` }] }
+        const content = [{ type: 'text' as const, text: result.body || `OK (HTTP ${result.statusCode})` }]
+        if (tool.uiResourceUri === INTEGRATION_APP_URI) {
+          return { content, structuredContent: NativeMcpUi.parse(JSON.parse(result.body)) }
+        }
+        return { content }
       })
 
       const dispatch = () => runHandler(server)

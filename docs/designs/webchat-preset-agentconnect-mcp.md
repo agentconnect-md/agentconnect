@@ -1,10 +1,8 @@
 # Preset Webchat AgentConnect MCP
 
-Hosting update: [native integration configuration](webchat-native-integration-ui.md)
-supersedes the runtime-only delivery statements below. An available conversation
-MCP Apps host now proxies the same authenticated admin endpoint through the daemon
-bridge; direct runtime delivery remains a fallback. Grant authority, approvals and
-operation idempotency remain server-owned as specified here.
+Native integration configuration preserves the direct HTTP delivery specified here.
+The Console dialog is projected from the runtime's ordinary ACP tool result, without
+an admin MCP proxy; see [native integration configuration](webchat-native-integration-ui.md).
 
 Status: proposed replacement design. This document is authoritative for the next
 implementation of the feature; the existing daemon-local broker implementation is

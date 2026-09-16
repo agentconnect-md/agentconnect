@@ -573,6 +573,8 @@ export interface TurnSignals {
  *  through it; the mutable rest is grouped by who writes it — platform chrome cursors,
  *  reply accumulation, the approval-wait meter (permissions/), and completion signals. */
 export interface Pending {
+  // Completed tool calls already projected into a native dialog during this turn.
+  nativeAppToolCallIds?: Set<string>
   /** The same trusted workspace link resolver used by every output surface for this turn. */
   resolveFileLink?: WorkspaceFileLinkResolver
   /** The pure decisions this turn was planned with — its identity, coordinates, output

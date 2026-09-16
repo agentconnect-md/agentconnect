@@ -33,10 +33,6 @@ export function NativeIntegrationAppCard({ step, onRpc }: McpAppCardProps) {
     if (!live || !ui || !modal || opening.current) return
     opening.current = true
     try {
-      const checked = await onRpc!(app.appId, { method: 'tools/call', name: 'configureIntegration', args: ui.intent })
-      if (!checked.ok) throw new Error(checked.error)
-      if ((checked.result as { isError?: boolean })?.isError)
-        throw new Error('This configuration is no longer available. Ask the agent to open it again.')
       if (!active.current) return
       const shown = modal.openNativeIntegration(
         ui,

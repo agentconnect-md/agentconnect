@@ -1,26 +1,7 @@
-/**
- * The daemon as MCP Apps HOST (webchat-mcp-apps.md §3).
- *
- * A server marked `ui: true` is not handed to the runtime. The daemon dials it itself, advertises
- * the `io.modelcontextprotocol/ui` extension — which is what makes the server register its
- * UI-enabled tools at all — and re-exposes its tools through the bridge the runtime already
- * mounts. The runtime calls them exactly as it calls a daemon-native tool; the daemon sits on the
- * call, sees `_meta.ui.resourceUri`, reads the template, and streams the card to webchat.
- *
- * WHY THE DAEMON AND NOT THE RUNTIME. Three independent reasons, and each alone decides it: no
- * ACP runtime advertises the extension, so a UI server would never register its UI tools; the
- * HTML is behind a `resources/read` a non-Apps host never issues; and ACP has no frame that means
- * "render this". The HTML cannot reach a browser down the runtime path at all — this is not a
- * preference between two workable seams.
- *
- * One connection per configured server, daemon-wide, because that is the scope its credentials
- * have. Connections are lazy and are not retried in a loop: a UI server that is down costs the
- * agent the tools of that one server, and says so, rather than stalling a turn.
- */
+// Hosts generic HTML MCP Apps; native Console dialogs arrive through ordinary ACP tool results instead.
 import { Client, StreamableHTTPClientTransport, type Transport } from '@modelcontextprotocol/client'
 import { CappedStdioClientTransport } from '../../memory-plugin/stdio-transport.js'
 import { MCP_APP_HTML_MAX_BYTES, type McpAppCsp, type McpAppDimensions } from '@agentconnect.md/protocol'
-import type { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import type { McpServerDef } from '../../config/config-schema.js'
 import type { Logger } from '../../log.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
@@ -101,8 +82,7 @@ export interface AppToolCall {
    */
   interfaceUnavailable?: true
   card?: {
-    html?: string
-    nativeUi?: NativeMcpUi
+    html: string
     csp?: McpAppCsp
     dimensions?: McpAppDimensions
     toolResult: { content?: unknown[]; structuredContent?: Record<string, unknown>; isError?: boolean }
@@ -110,7 +90,6 @@ export interface AppToolCall {
 }
 
 export interface McpAppsHostDeps {
-  nativeResource?: (tool: string, uri: string, result: unknown) => NativeMcpUi | undefined
   /**
    * The servers visible to ONE ORGANIZATION — daemon-local config overlaid with whatever the CP
    * pushed for that org — read through a function so a config reload or a CP push is picked up
@@ -292,8 +271,6 @@ export class McpAppsHost {
 
     const title = upstream.title ?? tool
     if (!upstream.templateUri || isError) return { content, isError, title }
-    const nativeUi = this.deps.nativeResource?.(tool, upstream.templateUri, raw)
-    if (nativeUi) return { content, isError, title, card: { nativeUi, toolResult: { content } } }
     const template = await this.template(orgId, server, upstream.templateUri)
     if (!template) {
       this.deps.log?.warn(

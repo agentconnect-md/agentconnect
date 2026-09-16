@@ -37,8 +37,8 @@ export interface LiveApp {
    *  a `tools/call` naming anything else is refused, which is what keeps one app's frame from
    *  driving another server's tools. */
   readonly server: string
-  // Built-in administration uses a conversation-owned connection instead of an organization provider.
-  readonly admin?: true
+  // Native dialogs expose only completion messages; their forms use Console authorization.
+  readonly native?: true
   /** The organization the card's server was resolved in. Held because a server NAME alone does not
    *  identify a connection: a CP-pushed definition is org-scoped, so two organizations may each
    *  have a `charts` pointing at different proxies under different grants. Without this a view's

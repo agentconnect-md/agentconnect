@@ -20,12 +20,12 @@ export const IntegrationSetupIntent = z.discriminatedUnion('mode', [
 ])
 export type IntegrationSetupIntent = z.infer<typeof IntegrationSetupIntent>
 
-// Only the conversation-owned admin host may populate this field; upstream metadata is never copied into it.
+// A bounded presentation request; Console JWT authorization governs every form read and write.
 export const NativeMcpUi = z
   .object({
     resourceUri: z.literal(INTEGRATION_SETUP_URI),
     resourceVersion: z.literal(1),
-    orgId: z.string().uuid(),
+    orgId: z.string().min(1).max(200),
     intent: IntegrationSetupIntent
   })
   .strict()

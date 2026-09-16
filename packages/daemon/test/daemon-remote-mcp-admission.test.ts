@@ -73,7 +73,7 @@ function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
   return root
 }
 
-function fakeHost(rejectAdminDescriptor = false) {
+function fakeHost(rejectAdminDescriptor = false, toolUpdates: unknown[] = []) {
   let onUpdate!: (sid: string, update: unknown) => void
   const selectedAgents: Array<{ builtin: boolean; runInSandbox: boolean; runtime: string }> = []
   const host = {
@@ -87,6 +87,7 @@ function fakeHost(rejectAdminDescriptor = false) {
     modelOptions: vi.fn(() => null),
     hasSession: vi.fn(() => true),
     prompt: vi.fn(async (sid: string) => {
+      for (const update of toolUpdates) await onUpdate(sid, update)
       onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } })
       return { stopReason: 'end_turn' }
     }),
@@ -120,8 +121,13 @@ function fakeGrantClient() {
   }
 }
 
-async function runTurn(opts: { builtin: boolean; runInSandbox: boolean; rejectAdminDescriptor?: boolean }) {
-  const { factory, host, selectedAgents } = fakeHost(opts.rejectAdminDescriptor)
+async function runTurn(opts: {
+  builtin: boolean
+  runInSandbox: boolean
+  rejectAdminDescriptor?: boolean
+  toolUpdates?: unknown[]
+}) {
+  const { factory, host, selectedAgents } = fakeHost(opts.rejectAdminDescriptor, opts.toolUpdates)
   const daemon = new Daemon({ root: scaffold(opts), hostFactory: factory as never })
   await daemon.start()
   const client = fakeGrantClient()
@@ -158,7 +164,7 @@ async function runTurn(opts: { builtin: boolean; runInSandbox: boolean; rejectAd
     }
   )
   await daemon.stop().catch(() => {})
-  return { client, host, selectedAgents, dones }
+  return { client, host, selectedAgents, dones, outputs }
 }
 
 function adminDescriptor(host: ReturnType<typeof fakeHost>['host']) {
@@ -170,6 +176,26 @@ function adminDescriptor(host: ReturnType<typeof fakeHost>['host']) {
 }
 
 describe('preset admin MCP through the webchat dispatch path', () => {
+  it('projects a direct HTTP tool result into one native card without proxying the admin call', async () => {
+    const nativeUi = {
+      resourceUri: 'ui://agentconnect/integration-setup',
+      resourceVersion: 1,
+      orgId: AUTHORITY,
+      intent: { mode: 'create', provider: 'github' }
+    }
+    const update = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'direct-http-call',
+      status: 'completed',
+      rawInput: { server: 'agentconnect-admin', tool: 'configureIntegration', arguments: nativeUi.intent },
+      rawOutput: { result: { structuredContent: nativeUi }, error: null }
+    }
+    const { host, outputs } = await runTurn({ builtin: true, runInSandbox: true, toolUpdates: [update, update] })
+    expect(adminDescriptor(host)).toMatchObject({ type: 'http', url: 'https://cp.example/api/v1/mcp' })
+    const cards = outputs.filter((output) => output.event?.kind === 'app')
+    expect(cards).toHaveLength(1)
+    expect(cards[0]?.event).toMatchObject({ nativeUi })
+  }, 20_000)
   it.each([
     ['without an OS sandbox', false],
     ['with an OS sandbox', true]

@@ -37,6 +37,7 @@ interface JsonRpcResponse {
 
 interface ToolCallResult {
   isError?: boolean
+  structuredContent?: Record<string, unknown>
   content: Array<{ type: string; text: string }>
 }
 
@@ -650,6 +651,7 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
     const before = await prisma.integration.count({ where: { orgId: DEFAULT_ORG_ID } })
     const out = await callTool(app, key, 'configureIntegration', { mode: 'create', provider: 'github' })
     expect(out.isError).not.toBe(true)
+    expect(out.structuredContent).toEqual(JSON.parse(toolText(out)))
     expect(JSON.parse(toolText(out))).toEqual({
       resourceUri: 'ui://agentconnect/integration-setup',
       resourceVersion: 1,

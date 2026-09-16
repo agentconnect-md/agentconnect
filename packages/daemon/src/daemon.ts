@@ -209,6 +209,7 @@ import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { DAEMON_VERSION } from './version.js'
 import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
+import { nativeUiFromToolUpdate } from './mcp/native-ui.js'
 import { AppSurface, newAppId, type AppStream, type AppTurn } from './mcp/apps/surface.js'
 import {
   APP_RPC_REFUSALS,
@@ -3360,10 +3361,6 @@ export class Daemon {
             ? agent.mcpServers.filter((name) => name !== ADMIN_MCP_SERVER_NAME)
             : agent.mcpServers
         tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
-        if (agent.builtin && platform === 'webchat') {
-          const adminApps = this.remoteWebchatGrants?.appsFor(channel, agent.id)
-          tools.push(...(adminApps?.cachedToolsFor(undefined, [ADMIN_MCP_SERVER_NAME]) ?? []))
-        }
         // Bind the bridge token to the exact integration that delivered this turn.
         // Falling back to agent.integrations[0] can send a title/message through the
         // wrong bot when one agent has multiple integrations. A memory-only session
@@ -12023,10 +12020,9 @@ export class Daemon {
       // A prior provider post-turn operation is serialized. Managed needs this
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
-      // Host admin tools under the conversation grant; fall back to the runtime descriptor if hosting is unavailable.
+      // The runtime calls admin MCP directly over HTTP under the conversation grant.
       if (agent.builtin && webchat?.remoteMcp && this.remoteWebchatGrants) {
         try {
-          const previouslyHosted = !!this.remoteWebchatGrants.appsFor(webchat.conversationId, agentId)
           const provisioned = await this.remoteWebchatGrants.provision(
             webchat.conversationId,
             webchat.remoteMcp,
@@ -12034,13 +12030,7 @@ export class Daemon {
             agentId
           )
           remoteMcpServer = provisioned.server
-          const hosted =
-            this.mcpToolServerReachable() &&
-            (await this.remoteWebchatGrants.prepareApps(webchat.conversationId, agentId))
-          if (hosted) {
-            remoteMcpServer = undefined
-          }
-          if (provisioned.changed || previouslyHosted !== hosted) {
+          if (provisioned.changed) {
             const existing = await this.store.getSession(key)
             // selectedHost is assigned only after handle() for ordinary warm
             // turns. Resolve the already-running agent host directly here so the
@@ -14229,16 +14219,49 @@ export class Daemon {
     }
   }
 
-  /**
-   * Run one tool of a daemon-hosted MCP Apps server and, when it has an interface, open that
-   * interface's card on this turn's surface. Undefined ⇒ `name` is not one of those tools.
-   *
-   * The sequence is the design's §6 contract in code: the tool runs first, the card is built from
-   * what came back, and the MODEL's half of the result is returned either way. A surface with no
-   * renderer, an undeliverable stream and an unreadable template all land in the same place —
-   * the agent still has the tool's words to answer with, and the reader is told what they are not
-   * being shown. Nothing here can fail the call for want of a frame.
-   */
+  // Project an already completed ACP result into UI chrome without making another MCP request.
+  private projectNativeIntegration(p: Pending, update: unknown): void {
+    if (!p.webchat || p.webchat.continuation || p.outputSuppressed) return
+    const nativeUi = nativeUiFromToolUpdate(update)
+    const toolCallId = (update as { toolCallId?: unknown })?.toolCallId
+    if (!nativeUi || typeof toolCallId !== 'string' || !toolCallId) return
+    const opened = (p.nativeAppToolCallIds ??= new Set<string>())
+    if (opened.has(toolCallId)) return
+    opened.add(toolCallId)
+    const appId = newAppId()
+    const title = nativeUi.intent.mode === 'edit' ? 'Edit integration' : 'Add integration'
+    const toolName = 'configureIntegration'
+    const posted = this.appSurface.open(p.plan.sessionKey, { appId, title, toolName, nativeUi })
+    if (!posted.shown) return
+    const row: AppRow = {
+      channel: p.plan.transcriptChannel,
+      thread: p.plan.statusThread,
+      ts: monotonicTs(),
+      sender: p.plan.agentId,
+      appId,
+      conversationId: p.webchat.conversationId,
+      // No MCP server reach is attached to a native form, including in its persisted record.
+      server: '',
+      title,
+      toolName
+    }
+    this.writeAppRow(row)
+    const superseded = this.liveApps.open({
+      appId,
+      conversationId: p.webchat.conversationId,
+      agentId: p.plan.agentId,
+      sessionKey: p.plan.sessionKey,
+      server: '',
+      native: true,
+      toolName,
+      openedAt: this.clock.now(),
+      stream: posted.stream,
+      row
+    })
+    for (const gone of superseded) this.settleAppCard(gone, SUPERSEDED)
+  }
+
+  // Generic iframe apps still use the MCP Apps host; native configuration does not.
   private async runAppTool(
     ctx: SessionContext,
     name: string,
@@ -14247,13 +14270,8 @@ export class Daemon {
     const split = splitAppToolName(name)
     const orgId = this.orgForAgent(ctx.agentId)
     if (!split) return undefined
-    const admin =
-      split.server === ADMIN_MCP_SERVER_NAME &&
-      ctx.platform === 'webchat' &&
-      this.agents.get(ctx.agentId)?.builtin === true
-    const host = admin ? this.remoteWebchatGrants?.appsFor(ctx.channel, ctx.agentId) : this.appsHost
-    const scope = admin ? undefined : orgId
-    if (admin && !host) throw new Error('This administration interface is no longer active')
+    const host = this.appsHost
+    const scope = orgId
     if (!host?.isUiServer(scope, split.server)) return undefined
     const call = await host.call(scope, split.server, split.tool, args)
     if (!call.card) {
@@ -14283,7 +14301,7 @@ export class Daemon {
         appId,
         title: call.title,
         toolName: name,
-        ...(call.card.nativeUi ? { nativeUi: call.card.nativeUi } : inline ? { html } : { htmlBytes: html.length }),
+        ...(inline ? { html } : { htmlBytes: html.length }),
         ...(Object.keys(args).length > 0 ? { toolInput: args } : {}),
         toolResult: call.card.toolResult,
         ...(call.card.csp ? { csp: call.card.csp } : {}),
@@ -14325,7 +14343,6 @@ export class Daemon {
         agentId: ctx.agentId,
         sessionKey: key,
         server: split.server,
-        ...(admin ? { admin: true } : {}),
         ...(orgId ? { orgId } : {}),
         toolName: name,
         openedAt: Date.now(),
@@ -14399,10 +14416,11 @@ export class Daemon {
     const answer = (outcome: McpAppRpcResult): void =>
       this.appSurface.answer(reply ?? app.stream, appId, callId, outcome)
     try {
-      const host = app.admin ? this.remoteWebchatGrants?.appsFor(conversationId, app.agentId ?? '') : this.appsHost
-      const scope = app.admin ? undefined : app.orgId
-      if (!host) {
-        answer({ ok: false, error: APP_RPC_REFUSALS.unknown })
+      const host = this.appsHost
+      const scope = app.orgId
+      // Native forms use Console APIs, never MCP tool or resource RPCs.
+      if (app.native && rpc.method !== 'ui/message') {
+        answer({ ok: false, error: 'This configuration only accepts completion messages' })
         return
       }
       switch (rpc.method) {
@@ -14458,7 +14476,7 @@ export class Daemon {
               ? { ok: true, result: { turnId: ack.turnId } }
               : { ok: false, error: ack.reason ?? 'the message was not accepted' }
           )
-          if (ack.accepted && app.admin && app.toolName === `${ADMIN_MCP_SERVER_NAME}__configureIntegration`) {
+          if (ack.accepted && app.native) {
             const settled = this.liveApps.settle(appId)
             if (settled)
               this.settleAppCard(
@@ -15548,6 +15566,7 @@ export class Daemon {
     // full activity log below, so a webchat session reads back like any other.
     // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
     if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update, p.resolveFileLink)
+    this.projectNativeIntegration(p, update)
     if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.plan.stageAnswer && isAnswerChunk)) {
       // Segment commit: a boundary the live renderer flushes on delivers the staged text
       // ahead of it, so "say → work → say more" reaches the channel as it happens (the
