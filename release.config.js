@@ -28,6 +28,8 @@ export default {
         }
       }
     ],
+    // Append the compare footer readers recognize; the generated heading's own link renders as a bare version.
+    './scripts/semantic-release-full-changelog.js',
     [
       // Publish ONLY the daemon to npm, as the self-contained build bundle.
       // The CP/web ship as Docker images through build.yaml, not npm packages.
