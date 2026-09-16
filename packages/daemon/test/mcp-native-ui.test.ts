@@ -33,10 +33,21 @@ describe('direct HTTP native UI result', () => {
     expect(nativeUiFromToolUpdate({ ...update, rawOutput: update.rawOutput.result })).toEqual(ui)
   })
 
+  it.each([{ rawOutput: JSON.stringify(ui) }, { rawOutput: [{ type: 'text', text: JSON.stringify(ui) }] }])(
+    'reads Claude ACP raw content without a result envelope',
+    ({ rawOutput }) => {
+      expect(nativeUiFromToolUpdate({ ...update, rawOutput })).toEqual(ui)
+      expect(nativeUiFromToolUpdate({ ...update, rawOutput, status: 'failed' })).toBeUndefined()
+    }
+  )
+
   it.each([
     { ...update, status: 'failed' },
     { ...update, status: 'in_progress' },
     { ...update, sessionUpdate: 'agent_message_chunk' },
+    { ...update, rawOutput: 'ui://agentconnect/integration-setup' },
+    { ...update, rawOutput: [{ type: 'text', text: JSON.stringify({ ...ui, resourceVersion: 2 }) }] },
+    { ...update, rawOutput: [{ type: 'text', text: ' '.repeat(4096) + JSON.stringify(ui) }] },
     { ...update, rawOutput: { ...update.rawOutput, error: { message: 'cancelled' } } },
     { ...update, rawOutput: { result: { ...update.rawOutput.result, isError: true } } },
     { ...update, rawOutput: { content: [{ type: 'text', text: 'ui://agentconnect/integration-setup' }] } },
