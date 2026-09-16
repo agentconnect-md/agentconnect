@@ -9,9 +9,9 @@ group, while the agent stays one identity on one holder.
 This document generalizes what the managed pool already does with session pods
 ([k8s-daemon-pool.md](k8s-daemon-pool.md) §4, [git-workspace-model.md](git-workspace-model.md)
 §11) to machines that are not a cluster. Almost everything here is "reuse X". The
-two genuinely new things are a second facet on every daemon (§3) and the first
-listener a daemon opens that carries session traffic (§6); the rest is the pool's
-shape with the Kubernetes-specific parts removed.
+two genuinely new things are a second facet on every daemon (§3) and a listener
+for session traffic on every daemon whose executor facet is on (§6); the rest is the
+pool's shape with the Kubernetes-specific parts removed.
 
 ## 0. Decision summary
 
@@ -80,8 +80,9 @@ two facets, declared at registration:
 - The **holder facet** is today's daemon: it claims duties, owns platform
   connections, runs schedules, drives turns.
 - The **executor facet** hosts session execution for holders in its group. It
-  exposes the shim contract and nothing else. It holds no duty, knows no agent,
-  and cannot become a holder; it is the self-hosted counterpart of a session pod.
+  exposes the shim contract and nothing else. It holds no duty, owns no agent and
+  cannot become a holder — it does carry the session-to-holder metadata it needs,
+  the labels of §7 — and it is the self-hosted counterpart of a session pod.
 
 The two facets are a seam inside one process, not two processes. Two configuration
 keys switch them (§10): `role: "executor"` — `--role executor` on the command line
@@ -126,9 +127,12 @@ and both are in PR 2's scope (§12):
 - **The tunnels.** Locally, the VM's `gitcred` and `mcp` endpoints are AF_VSOCK bridges
   (`microsandbox/socket-bridge.ts`) that the driver wires to the local daemon's host
   sockets, and the VM shim is granted `read` and `skills*` but never `tunnel`. On an
-  executor those bridges would terminate at a daemon that knows no agent, so the
-  `microsandbox` strategy serves both tunnels through the shim's `TunnelHost` and
-  grants `tunnel`, exactly as the pool image does.
+  executor those bridges would terminate at a daemon that owns no agent, so the
+  `microsandbox` strategy serves both tunnels through the shim's `TunnelHost`,
+  grants `tunnel`, and repoints the guest helper endpoints — the git-credential
+  socket variable and the bridge's `mcpServers` spec — at the shim's paths, exactly
+  as the pool image does. The local vsock wiring is not retained for remote
+  sessions.
 
 That is what keeps the contract backend-neutral: a holder never learns whether the
 far side is a VM, a container or a bare process.
@@ -251,8 +255,9 @@ design put it, and this design adds no exception:
   endpoint** (address and port — today's `Heartbeat` has none, because no daemon
   listens), its capacity, and a `hostedSessions` count. That count is a new field
   beside the existing `activeSessions`: the first counts environments this executor
-  facet hosts for any holder, the second counts sessions this holder facet drives.
-  Holders read all of it; nobody configures executor lists by hand.
+  facet hosts for any holder, the second is the holder facet's own pending count
+  and must not silently acquire that meaning. Holders read all of it; nobody
+  configures executor lists by hand.
 - The CP brokers a **dial rendezvous** (below) and checks the duty ledger before
   doing so.
 - The session row records `executorDaemonId`, in the shared data-plane store, so a
@@ -278,28 +283,37 @@ rather than a signed token.
 1. The holder asks the CP for a dial to executor E for session S of agent A.
 2. The CP checks the ledger — the requester holds A's duty, E is a member of A's set
    with its executor facet on — and refuses otherwise.
-3. The CP sends E, over E's own control connection, an _expected dial_: holder id,
-   session id, a one-time nonce, an expiry. It returns the same nonce to the holder.
-4. The holder dials E's endpoint with the nonce. E accepts only a dial it was told to
-   expect, once, before expiry. The preparation request (§7) is the first message on
-   that connection, so the nonce exists before the port gate is met.
-5. Once accepted, the holder mints the session's binding credential locally, exactly
+3. The CP issues an **admission grant**: it sends E, over E's own control
+   connection, an _expected dial_ — holder id, session id, a one-time shared
+   secret, an expiry — and returns the same secret to the holder. The grant is
+   bound to that session and that pair of daemons and is consumed by one dial.
+4. The holder dials E's endpoint. Both sides prove possession of the secret by
+   answering the other's challenge with a keyed hash over it, so the secret never
+   crosses the link in the clear (the link may be plaintext in v1) and the proof is
+   mutual: E admits only a dial it was told to expect, once, before expiry, and the
+   holder learns that the endpoint it reached is the executor the CP intended. The
+   preparation request (§7) is the first message after admission.
+5. Once admitted, the holder mints the session's binding credential locally, exactly
    as `ShimBindingRegistry` does today — step 6 of cluster-spawn-and-shim.md §3 is
-   unchanged; steps 1–5 are what the rendezvous replaces.
+   unchanged; steps 1–5 of that proof are what the admission grant replaces. The
+   grant and the binding credential are two things: the first opens the port and
+   is the CP's, the second scopes a session and is the holder's.
 
 There is one issuer of anything that opens the port — the CP, through step 3 — and
-nothing signed to distribute. A successor holder after failover runs the same steps;
-step 2 is what makes it authorized, since the ledger now names it. A re-dial
-therefore costs one CP round trip plus one dial, and the executor never has to judge
-duty itself.
+nothing signed to distribute. A successor holder after failover runs the same steps
+and needs a fresh grant; step 2 is what makes it authorized, since the ledger now
+names it. A re-dial therefore costs one CP round trip plus one dial, and the
+executor never has to judge duty itself.
 
 **Direction.** The executor facet listens; the holder dials. This is the pool's rule
 — the shim listens, the daemon dials the ready pod — applied to a machine instead of
-a pod. It is the first listener a daemon opens that carries session traffic. Two
-listeners are prior art for binding and hardening: the readiness HTTP server
-(`readiness.ts`, bound on `AC_READINESS_PORT`) and the shim listener the daemon
-owned before the direction was reversed (cluster-spawn-and-shim.md §2). The port is
-off unless the executor facet is on (§10), and gated by the rendezvous. In v1, with
+a pod. It is a new listener for session traffic, not a daemon's first: the readiness
+HTTP server (`readiness.ts`, bound on `AC_READINESS_PORT`) is prior art for binding
+and lifecycle, though its health-only endpoint sets no authentication rule, and the
+shim listener the daemon owned before the direction was reversed
+(cluster-spawn-and-shim.md §2) is prior art for the hardening. The port is off
+unless the executor facet is on (§10), and gated by the admission of the
+rendezvous. In v1, with
 the LAN assumption, it may be plain WebSocket; TLS is a v1.5 item. The reverse
 direction (executor dials the holder) would make the holder listen instead and was
 not chosen; it buys NAT traversal, which v1 does not need.
@@ -307,20 +321,24 @@ not chosen; it buys NAT traversal, which v1 does not need.
 **Placement policy, and which control wins.** Three things decide whether and where
 a session spreads, in this order:
 
-1. The group's switch (§10). Off means no session of any agent in the group spreads,
-   whatever the daemons say.
-2. The holder's own `placement` policy, applied to sessions it creates: `spread`
-   places on the member with the matching strategy and the fewest hosted sessions;
-   `local-first` keeps sessions on the holder while it has room.
-3. The birth predicate (§7): the session is `session`-isolated and some member's
+1. The group's switch (§10) **enables** spreading. Off means no session of any agent
+   in the group spreads, whatever the daemons say.
+2. The birth predicate (§7) decides **eligibility**: the session is
+   `session`-isolated, the agent's memory home allows it, and some member's
    effective table matches the agent's ask.
+3. The holder's own `placement` policy **selects** among the eligible executors for
+   sessions it creates: `spread` picks the member with the fewest hosted sessions;
+   `local-first` keeps sessions on the holder while it has room.
 
-The hosted count in the heartbeat is stale by up to one heartbeat interval plus
-fan-out, which is long enough for a burst of sessions — a webhook storm — to land on
-one executor. Two cheap corrections: the holder keeps an optimistic local increment
-for each session it has placed since the last heartbeat, and the preparation reply
-carries the executor's live count, or `full`, so the holder moves to the next
-candidate instead of queueing behind the serialized starts of §7.
+The counts in the heartbeat are **advisory**. They are stale by up to one heartbeat
+interval plus fan-out, which is long enough for a burst of sessions — a webhook
+storm — to land on one executor, and a live count returned after the fact would
+not stop several holders admitting work at once. Admission is therefore the
+executor's, and atomic: at preparation it reserves capacity against its own limit,
+counting preparations still in flight, releases the reservation if preparation
+fails, and answers `full` when it cannot reserve. The holder keeps a provisional
+count for what it has placed since the last heartbeat and, on `full`, moves to the
+next candidate instead of queueing behind the serialized starts of §7.
 
 **What the LAN assumption buys**, so nobody over-credits it: no NAT traversal and no
 relay (already out of scope), optional TLS, and enough latency headroom that the
@@ -348,8 +366,11 @@ This is what makes it survive the backend's own lifecycle: the microsandbox
 driver's `replace()` retires and destroys a VM whenever its spec or image identity
 changes, with no dirty check, and its disks are disposable across replacement by
 the backend's stated rule. A session's work must therefore not live on those
-disks. The mount is local to the executor; "no mounts across machines" (D8) is
-about the holder never mounting anything of the executor's, and stands.
+disks. Session storage therefore has the session row's lifetime and a VM has the
+backend's; the two are decoupled on purpose, so replacement never touches the mount
+and only the holder's retirement judgement (below) removes it. The mount is local
+to the executor; "no mounts across machines" (D8) is about the holder never
+mounting anything of the executor's, and stands.
 
 **Execution.** The holder's driver dials the shim and binds at the session's term.
 Everything above the shim is the pool path. Console reads of the session's paths
@@ -391,6 +412,14 @@ rules (a grace period, and a same-name replacement check so a row recreated afte
 the query is never the one deleted). Agent removal deletes the rows; the next
 reconcile removes the environments. Nothing is kept forever for lack of a judge.
 
+The row is authoritative the other way too. An environment whose row exists is
+kept however long its agent goes without a holder: retaining a live agent's work is
+intentional, and unassignment is not an orphan signal. The executor discards only
+what has no row **and** no admitted holder connection, and it never judges
+dirtiness — the row's deletion, produced by the holder's retirement or by agent
+removal, is the only evidence it acts on. That gives deletion an owner that
+survives the holder without giving the executor a duty.
+
 **Holder failover.** The successor member claims the agent through the ledger as
 today, reads the session's executor from its row, completes a rendezvous, and
 re-dials. The environment is still there — nothing on the executor depended on
@@ -412,28 +441,33 @@ single starting process avoids.
 
 ## 8. Credentials and secrets
 
-**Runtime sign-in is per machine, and it is the runtime's own.** The host HOME an
-executor seeds a session from is populated by the runtime's sign-in — `claude` or
-`codex` login on that machine — or by API-key configuration; no AgentConnect command
-performs it (`agentconnect login` is Control Plane onboarding, which every member
-already has). So the per-machine prerequisite for hosting sessions is: sign the
-runtimes in on that machine, or configure their keys there. Nothing copies a
-sign-in across machines, so the compliance shape — the operator's own subscription,
-on the operator's own machine, no platform-held tokens — is unchanged. The executor
-facet reports which runtimes have a stored login, the way the daemon already reports
+**Two prerequisites per machine, not one.** Daemon onboarding — `agentconnect login`,
+which every member already has — connects the daemon to the Control Plane and
+populates no runtime authentication. Runtime credentials are the second, separate
+prerequisite, and they are required on the **executor**, where the runtime runs: the
+host HOME an executor seeds a session from is populated by the runtime's own sign-in
+(`claude` or `codex` login under the daemon's OS account) or by configured API-key
+or provider credentials; interactive sign-in is not universally required. A holder
+that only delegates a session needs none of that for it. Nothing copies a sign-in
+across machines, so the compliance shape — the operator's own subscription, on the
+operator's own machine, no platform-held tokens — is unchanged. The executor facet
+reports which runtimes it can authenticate, the way the daemon already reports
 "Login required" per runtime, and a holder does not place a session whose runtime
 the executor cannot authenticate.
 
 **Provider credentials and agent secrets are two mechanisms**, and both cross the
 link:
 
-- _Runtime provider credentials_ — the values `CREDENTIAL_PREPARERS` handles per
-  runtime — are seeded as files into the session HOME, and on a microsandbox
-  executor are additionally protected by hostname-scoped placeholder substitution on
-  that executor's host, exactly as locally.
-- _Agent secrets_ (`runtimeOverrides.secrets`) enter the runtime's environment as
-  plain values on every backend today, output-masked, and do so on an executor the
-  same way. A `host` executor exposes them to the process tree; a microsandbox
+- _Recognized provider credentials_ — what `CREDENTIAL_PREPARERS` handles per
+  runtime, for known provider endpoints — are seeded as files into the session HOME,
+  and on a microsandbox executor are additionally protected by hostname-scoped
+  placeholder substitution on that executor's host, exactly as locally. The
+  distinction is the credential's handling, not where it was configured: a
+  recognized provider credential supplied as an agent secret still takes this path.
+- _Everything else_ configured as an agent secret (`runtimeOverrides.secrets`)
+  enters the runtime's environment as a plain value on every backend today, with
+  output masking as its only protection, and does so on an executor the same way.
+  A `host` executor exposes such values to the process tree; a microsandbox
   executor exposes them to the VM. Neither is a change from the local exposure.
 
 ## 9. Upgrades
