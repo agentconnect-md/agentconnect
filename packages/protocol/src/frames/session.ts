@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { NativeMcpUi } from '../mcp-app.js'
 import { SessionKey } from './route.js'
 import {
   ElicitCard,
@@ -148,6 +149,7 @@ export type ElicitBody = z.infer<typeof ElicitBody>
  * holding it, which reads as unfinished rather than as falsely closed.
  */
 export const McpAppBody = z.object({
+  nativeUi: NativeMcpUi.optional(),
   appId: z.string().min(1).max(200),
   title: z.string().max(200),
   toolName: z.string().min(1).max(200),

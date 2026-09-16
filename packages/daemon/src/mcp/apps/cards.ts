@@ -18,6 +18,7 @@ import {
   McpAppBody,
   type McpAppCsp,
   type McpAppDimensions,
+  type NativeMcpUi,
   type McpAppOutcome
 } from '@agentconnect.md/protocol'
 import type { AppStream } from './surface.js'
@@ -57,9 +58,9 @@ export interface LiveApp {
   readonly row?: AppRow
 }
 
-/** One app card's transcript row coordinates plus the body a settlement re-writes. The template
- *  and the card's reach are in here because the row is what a reloaded page is rebuilt from. */
+// Persisted presentation data and routing facts used to restore a card after reload.
 export interface AppRow {
+  readonly nativeUi?: NativeMcpUi
   readonly channel: string
   readonly thread: string
   readonly ts: string
@@ -76,24 +77,7 @@ export interface AppRow {
   readonly dimensions?: McpAppDimensions
 }
 
-/**
- * Rebuild one card's record from the transcript row that recorded it (webchat-mcp-apps.md §8) —
- * the pure half of reviving a card whose process, or whose reader's page, has been restarted.
- *
- * Undefined is a card that must NOT be revived, and it is the same answer for every reason: a row
- * that will not parse, one from another conversation, one written before templates were kept (no
- * `server`, so nothing records what the card was allowed to reach), and one the reader CLOSED.
- *
- * The dismissal is enforced here rather than left to the console, because the console is not the
- * only thing that can revive a card: an RPC already in flight when the reader closed the frame —
- * or one from a second tab that still had it armed — would otherwise revive the card, clear the
- * outcome from its row, and hand the page back on the next reload. A reader who closed a card has
- * closed it.
- *
- * Refusing to guess at the server is the same rule from the other side — the frame names only its
- * `appId`, and a revived card that inferred its reach from anything else would be a frame choosing
- * its own.
- */
+// Restore only matching recorded cards; native cards must be unfinished and never gain MCP access.
 export function reviveAppRow(
   appId: string,
   conversationId: string,
@@ -107,7 +91,8 @@ export function reviveAppRow(
   }
   if (!parsed.success) return undefined
   const body = parsed.data
-  if (body.appId !== appId || !body.server || body.conversationId !== conversationId) return undefined
+  if (body.appId !== appId || body.conversationId !== conversationId) return undefined
+  if (body.nativeUi ? body.outcome !== undefined : !body.server) return undefined
   if (body.outcome === 'closed' || body.outcome === 'completed') return undefined
   return {
     channel: stored.channel,
@@ -116,7 +101,8 @@ export function reviveAppRow(
     sender: stored.sender,
     appId,
     conversationId,
-    server: body.server,
+    server: body.nativeUi ? '' : body.server!,
+    ...(body.nativeUi ? { nativeUi: body.nativeUi } : {}),
     title: body.title,
     toolName: body.toolName,
     ...(body.toolInput ? { toolInput: body.toolInput } : {}),

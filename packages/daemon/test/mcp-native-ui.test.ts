@@ -77,14 +77,87 @@ function harness() {
   daemon.clock = { now: () => 1000 }
   daemon.liveApps = new LiveAppRegistry()
   daemon.appSurface = new AppSurface({ turnFor: () => p, log: () => ({ warn: vi.fn(), debug: vi.fn() }) as any })
-  daemon.writeAppRow = vi.fn()
+  const rows = new Map<string, any>()
+  daemon.store = {
+    upsertApp: vi.fn(async (row: any) => {
+      rows.set(row.appId, row)
+    }),
+    getAppCard: vi.fn(async (appId: string) => rows.get(appId)),
+    getSession: vi.fn(async () => ({ key: 'session' }))
+  }
+  daemon.log = { debug: vi.fn(), warn: vi.fn() }
+  daemon.orgForAgent = vi.fn(() => ui.orgId)
   daemon.appsHost = { call: vi.fn(), resolveViewTool: vi.fn(), readResource: vi.fn() }
-  daemon.webchatTransport = { dispatchWebchatTurn: vi.fn(async () => ({ accepted: true, turnId: 'completion' })) }
+  daemon.webchatTransport = {
+    webchatSessionKey: () => 'session',
+    dispatchWebchatTurn: vi.fn(async () => ({ accepted: true, turnId: 'completion' }))
+  }
   daemon.projectNativeIntegration(p, update)
   return { daemon, p, output }
 }
 
 describe('native UI projection and completion', () => {
+  it('preserves the intent across disconnect and restores a native-only completion handler', async () => {
+    const { daemon, p, output } = harness()
+    const card = daemon.liveApps.liveIn('conversation')[0]
+    daemon.expireAppCards({ conversationId: 'conversation' })
+    expect(daemon.liveApps.liveIn('conversation')).toHaveLength(0)
+    const stored = await daemon.store.getAppCard(card.appId)
+    expect(JSON.parse(stored.body)).toMatchObject({ nativeUi: ui, server: '' })
+    expect(JSON.parse(stored.body).outcome).toBeUndefined()
+    expect(await daemon.reviveAppCard(card.appId, 'other-conversation', p.webchat)).toBeUndefined()
+    await daemon.handleAppRpc(
+      'conversation',
+      card.appId,
+      'tools',
+      { method: 'tools/call', name: 'whoami' },
+      {},
+      p.webchat
+    )
+    expect(output.mock.calls.at(-1)?.[0].event).toMatchObject({ kind: 'app_rpc_result', outcome: { ok: false } })
+    expect(daemon.appsHost.resolveViewTool).not.toHaveBeenCalled()
+    await daemon.handleAppRpc(
+      'conversation',
+      card.appId,
+      'save',
+      { method: 'ui/message', text: 'Created GitHub subscription.' },
+      {},
+      p.webchat
+    )
+    expect(daemon.webchatTransport.dispatchWebchatTurn).toHaveBeenCalledTimes(1)
+    const completed = JSON.parse((await daemon.store.getAppCard(card.appId)).body)
+    expect(completed).toMatchObject({ nativeUi: ui, outcome: 'completed' })
+    expect(await daemon.reviveAppCard(card.appId, 'conversation', p.webchat)).toBeUndefined()
+  })
+
+  it.each(['closed', 'completed', 'superseded', 'expired'])(
+    'does not revive a native card settled as %s',
+    async (outcome) => {
+      const { daemon, p } = harness()
+      const card = daemon.liveApps.liveIn('conversation')[0]
+      daemon.settleAppCard(card, outcome)
+      expect(await daemon.reviveAppCard(card.appId, 'conversation', p.webchat)).toBeUndefined()
+    }
+  )
+
+  it('refuses revival after the owning session was purged while disconnected', async () => {
+    const { daemon, p } = harness()
+    const card = daemon.liveApps.liveIn('conversation')[0]
+    daemon.expireAppCards({ conversationId: 'conversation' })
+    daemon.store.getSession.mockResolvedValue(undefined)
+    expect(await daemon.reviveAppCard(card.appId, 'conversation', p.webchat)).toBeUndefined()
+  })
+
+  it('still expires a live native card when its session ends', async () => {
+    const { daemon } = harness()
+    const card = daemon.liveApps.liveIn('conversation')[0]
+    daemon.expireAppCards({ sessionKey: 'session' })
+    expect(JSON.parse((await daemon.store.getAppCard(card.appId)).body)).toMatchObject({
+      nativeUi: ui,
+      outcome: 'expired'
+    })
+  })
+
   it('opens once from a completed result, without a connection or MCP capability', () => {
     const { daemon, p, output } = harness()
     daemon.projectNativeIntegration(p, update)
@@ -93,7 +166,10 @@ describe('native UI projection and completion', () => {
     const card = daemon.liveApps.liveIn('conversation')[0]
     expect(card).toMatchObject({ native: true, server: '', agentId: 'agent' })
     expect(daemon.appsHost.call).not.toHaveBeenCalled()
-    expect(reviveAppRow(card.appId, 'conversation', { ...card.row, body: JSON.stringify(card.row) })).toBeUndefined()
+    expect(reviveAppRow(card.appId, 'conversation', { ...card.row, body: JSON.stringify(card.row) })).toMatchObject({
+      nativeUi: ui,
+      server: ''
+    })
   })
 
   it('does not project into a non-webchat or continuation turn', () => {

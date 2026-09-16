@@ -14242,6 +14242,7 @@ export class Daemon {
       conversationId: p.webchat.conversationId,
       // No MCP server reach is attached to a native form, including in its persisted record.
       server: '',
+      nativeUi,
       title,
       toolName
     }
@@ -14509,16 +14510,7 @@ export class Daemon {
     }
   }
 
-  /**
-   * Rebuild one app card from the row this daemon wrote when it opened it (webchat-mcp-apps.md §8),
-   * so a reader who reloaded — or who came back after a restart — is driving a live bridge again
-   * rather than a page whose buttons hang.
-   *
-   * Every authorization fact is taken from the ROW, never from the frame: the card may reach the
-   * one server it was opened on, in the one conversation it was opened in, and the routed frame's
-   * own conversation is re-checked against the row's before anything is revived. A row written
-   * before templates were kept has no server recorded and stays unrevivable — a record, as it was.
-   */
+  // Restore a recorded card within its conversation, preserving native-only or MCP server access.
   private async reviveAppCard(appId: string, conversationId: string, stream: AppStream): Promise<LiveApp | undefined> {
     let stored
     try {
@@ -14529,12 +14521,15 @@ export class Daemon {
     }
     const row = stored ? reviveAppRow(appId, conversationId, stored) : undefined
     if (!row || row.server === ADMIN_MCP_SERVER_NAME) return undefined
+    const sessionKey = this.webchatTransport.webchatSessionKey(conversationId, row.sender)
+    if (row.nativeUi && !(await this.store.getSession(sessionKey))) return undefined
     const orgId = this.orgForAgent(row.sender)
     const app: LiveApp = {
       appId,
       conversationId,
       agentId: row.sender,
-      sessionKey: this.webchatTransport.webchatSessionKey(conversationId, row.sender),
+      sessionKey,
+      ...(row.nativeUi ? { native: true as const } : {}),
       server: row.server,
       ...(orgId ? { orgId } : {}),
       toolName: row.toolName,
@@ -14568,8 +14563,7 @@ export class Daemon {
     if (app.row) this.writeAppRow(app.row, outcome)
   }
 
-  /** Write (or rewrite) one app card's row. Best effort by construction: a card that renders and
-   *  works but does not persist is a smaller failure than a turn that breaks over a store write. */
+  // Persist the complete card and outcome so reloads reproduce its current state.
   private writeAppRow(row: AppRow, outcome?: McpAppOutcome): void {
     const body: McpAppBody = {
       appId: row.appId,
@@ -14577,6 +14571,7 @@ export class Daemon {
       toolName: row.toolName,
       conversationId: row.conversationId,
       server: row.server,
+      ...(row.nativeUi ? { nativeUi: row.nativeUi } : {}),
       ...(row.html ? { html: row.html } : {}),
       ...(row.toolInput ? { toolInput: row.toolInput } : {}),
       ...(row.toolResult ? { toolResult: row.toolResult } : {}),
@@ -14599,16 +14594,17 @@ export class Daemon {
       })
   }
 
-  /** Settle every app card a session or a conversation held, telling each frame's browser — so no
-   *  frame outlives the bridge that served it, and no bridge answers for a frame nobody has. The
-   *  settlement is best effort (a closed conversation has no stream left to hear it); dropping the
-   *  cards from the registry is the part that decides. */
+  // Release disconnected streams; only session expiry also retires native configuration cards.
   private expireAppCards(scope: { sessionKey: string } | { conversationId: string }): void {
     const gone =
       'sessionKey' in scope
         ? this.liveApps.expireSession(scope.sessionKey)
         : this.liveApps.expireConversation(scope.conversationId)
-    for (const app of gone) this.settleAppCard(app, EXPIRED)
+    for (const app of gone) {
+      // Disconnects release the stream; native forms remain reopenable from their recorded intent.
+      if ('conversationId' in scope && app.native) continue
+      this.settleAppCard(app, EXPIRED)
+    }
   }
 
   private sessionLinkSource(platform: string, integrationId?: string): string | undefined {

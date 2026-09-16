@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { INTEGRATION_SETUP_URI } from '@agentconnect.md/protocol/mcp-app'
 import { McpAppCard } from './McpAppCard'
+import { mcpAppCard } from './session-work'
 import type { SessionStep } from '@/lib/data'
 
 const modal = vi.hoisted(() => ({ openNativeIntegration: vi.fn(() => true), closeNativeIntegration: vi.fn() }))
@@ -35,6 +36,28 @@ afterEach(() => {
 })
 
 describe('native integration UI', () => {
+  it('keeps a persisted card reopenable after a refresh without reopening the dialog automatically', async () => {
+    const value = app()
+    const onRpc = vi.fn(async () => ({ ok: true as const, result: {} }))
+    await act(async () => {
+      root.render(<McpAppCard step={{ app: value }} onRpc={onRpc} />)
+    })
+    act(() => root.unmount())
+    root = createRoot(element)
+    const restored = mcpAppCard(JSON.stringify(value))!
+    expect(restored.nativeUi).toEqual(value.nativeUi)
+    await act(async () => {
+      root.render(<McpAppCard step={{ app: restored }} onRpc={onRpc} />)
+    })
+    expect(modal.openNativeIntegration).toHaveBeenCalledTimes(1)
+    expect(element.querySelector('iframe')).toBeNull()
+    expect(element.textContent).toContain('Open configuration')
+    await act(async () => {
+      element.querySelector('button')!.click()
+    })
+    expect(modal.openNativeIntegration).toHaveBeenCalledTimes(2)
+  })
+
   it('waits for an explicit click when another dialog is open', async () => {
     modal.openNativeIntegration.mockReturnValueOnce(false)
     const value = app()

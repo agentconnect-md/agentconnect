@@ -1,3 +1,4 @@
+import { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import type { PlanBody } from '@/lib/api'
 import type { ElicitBody, ElicitFieldSpec, McpAppBody } from '@/lib/data'
 
@@ -62,20 +63,19 @@ const ELICIT_OUTCOMES = new Set(['accepted', 'dismissed', 'cancelled', 'complete
  *  readable card — no body at all (a daemon or control plane predating the row), malformed JSON,
  *  a payload with no request id — and the caller then falls back to rendering the row's own text,
  *  which is at least the question, rather than a card with nothing in it. */
-/** Parse an `app` row's body into the card history shows (webchat-mcp-apps.md §8). A row that
- *  cannot be read yields null and the caller falls back to plain text — the card's title, which is
- *  at least what was opened. `html` is present once the row's full body has been read, and that is
- *  what lets a reloaded page render again instead of standing as a record of itself. */
+// Restore the recorded native intent or iframe presentation and its latest outcome.
 export function mcpAppCard(body: string | undefined): McpAppBody | null {
   if (!body) return null
   try {
     const parsed = JSON.parse(body) as Partial<McpAppBody>
     if (typeof parsed?.appId !== 'string' || !parsed.appId) return null
     if (typeof parsed.toolName !== 'string' || !parsed.toolName) return null
+    const nativeUi = NativeMcpUi.safeParse(parsed.nativeUi)
     const outcome =
       typeof parsed.outcome === 'string' && MCP_APP_OUTCOMES.has(parsed.outcome) ? parsed.outcome : undefined
     return {
       appId: parsed.appId,
+      ...(nativeUi.success ? { nativeUi: nativeUi.data } : {}),
       title: typeof parsed.title === 'string' ? parsed.title : parsed.toolName,
       toolName: parsed.toolName,
       ...(parsed.toolResult ? { toolResult: parsed.toolResult } : {}),
