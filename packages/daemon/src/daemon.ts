@@ -3356,10 +3356,8 @@ export class Daemon {
         // see `_meta.ui` on the way back. `resolveAgentMcpServers` below skips the same servers,
         // so each of their tools has exactly one call path. Read from connections already up: a
         // server still dialing contributes to the next session rather than delaying this one.
-        const enabledApps =
-          agent.builtin && platform === 'webchat'
-            ? agent.mcpServers.filter((name) => name !== ADMIN_MCP_SERVER_NAME)
-            : agent.mcpServers
+        // The admin catalog is a CP-delegated descriptor, never an Apps-host server.
+        const enabledApps = agent.mcpServers.filter((name) => name !== ADMIN_MCP_SERVER_NAME)
         tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
         // Bind the bridge token to the exact integration that delivered this turn.
         // Falling back to agent.integrations[0] can send a title/message through the
@@ -12021,7 +12019,8 @@ export class Daemon {
       // barrier before reading its index; external recordTurn only durably enqueues.
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
       // The runtime calls admin MCP directly over HTTP under the conversation grant.
-      if (agent.builtin && webchat?.remoteMcp && this.remoteWebchatGrants) {
+      // Attaching `agentconnect-admin` is what asks for it — built-in or not.
+      if (agent.mcpServers.includes(ADMIN_MCP_SERVER_NAME) && webchat?.remoteMcp && this.remoteWebchatGrants) {
         try {
           const provisioned = await this.remoteWebchatGrants.provision(
             webchat.conversationId,

@@ -187,8 +187,7 @@ describe('delegated webchat MCP operations', () => {
   }
 
   /** `share` gives a SECOND conversation of the same user on an agent a prior
-   *  fixture already seeded — the org holds one preset agent, so re-seeding it
-   *  would collide, and "another conversation" is the interesting scope anyway. */
+   *  fixture already seeded — "another conversation" is the interesting scope. */
   async function delegatedFixture(
     opts: { registerSession?: boolean; pool?: boolean; share?: { hostAgentId: string; daemonId: string } } = {}
   ) {
@@ -196,7 +195,7 @@ describe('delegated webchat MCP operations', () => {
     const hostAgentId = opts.share?.hostAgentId ?? randomUUID()
     const conversationId = randomUUID()
     if (opts.share) {
-      // nothing to seed: the agent, its member and the preset entitlement exist
+      // nothing to seed: the agent, its member and its admin-catalog attachment exist
     } else if (opts.pool) {
       await seedAgent(prisma, hostAgentId)
       await prisma.agent.update({
@@ -241,8 +240,10 @@ describe('delegated webchat MCP operations', () => {
       }
     })
     if (!opts.share) {
-      await prisma.presetAgent.create({
-        data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: hostAgentId, status: 'created' }
+      // Attaching `agentconnect-admin` is the entitlement every delegated request re-checks.
+      await prisma.agent.update({
+        where: { id: hostAgentId },
+        data: { runtimeOverrides: { mcpServers: ['agentconnect-admin'] } }
       })
     }
     // `registerSession: false` models the `session/new` window: the descriptor is

@@ -584,6 +584,11 @@ describe('PgWebchatMcpOperationRepo (real Postgres)', () => {
     await prisma.presetAgent.create({
       data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
     })
+    // Attaching the catalog IS the entitlement the operation SQL joins on.
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { runtimeOverrides: { mcpServers: ['agentconnect-admin'] } }
+    })
     const authority = (await new PgWebchatMcpDelegationRepo(prisma).establish(establishInput()))!
     const grant = await prisma.webchatMcpAccessGrant.create({
       data: {

@@ -118,14 +118,32 @@ describe('AgentToolsCard', () => {
     expect(host?.querySelector('button[title="Remove from this agent"]')).toBeNull()
   })
 
-  it('says so in the menu when the org registry is empty too', async () => {
+  it('says so in the menu once everything — the built-in catalog included — is attached', async () => {
     const saved = mocks.mcpProviders
     mocks.mcpProviders = []
+    mocks.saved = ['agentconnect-admin']
     try {
       await render(undefined)
       expect(await openAddMenu()).toContain('already attached')
     } finally {
       mocks.mcpProviders = saved
     }
+  })
+
+  // Attaching `agentconnect-admin` IS the admin-catalog entitlement, so the console offers it
+  // on every agent — it belongs to no daemon and no registry, and reads as the built-in it is.
+  it('offers the built-in admin catalog and rows it as a builtin once attached', async () => {
+    await render(undefined)
+    const menu = await openAddMenu()
+    expect(menu).toContain('AgentConnect Admin MCP')
+    expect(menu).toContain('Builtin')
+
+    act(() => root?.unmount())
+    host?.remove()
+    mocks.saved = ['agentconnect-admin']
+    const text = await render(undefined)
+    expect(text).toContain('AgentConnect Admin MCP')
+    expect(text).toContain('Builtin')
+    expect(await openAddMenu()).not.toContain('AgentConnect Admin MCP')
   })
 })

@@ -823,7 +823,7 @@ one `agentId` and the confirmation UX assumes one acting agent
 ([webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md) §3),
 so the **`roster size == 1` condition is checked live in the shared authority
 predicate** (`resolveLiveWebchatMcpAuthority`) that both issuance and every
-delegated request run through. A preset selected into a multi-agent roster
+delegated request run through. An entitled agent selected into a multi-agent roster
 never gets the `agentconnect-admin` descriptor; a mid-conversation join that
 grows the roster past one participant suspends the catalog on the very next
 delegated request — fail-closed, without waiting for grant expiry or a

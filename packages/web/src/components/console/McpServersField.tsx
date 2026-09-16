@@ -1,7 +1,13 @@
 // MCP-server helper functions (no component — MCP is agent-scoped and enabled
 // from the agent's Tools & Skills card, the sole enablement surface).
 
+import { ADMIN_MCP_SERVER_NAME } from '@agentconnect.md/protocol/consts'
 import type { McpServerInfo } from '@/lib/data'
+
+export { ADMIN_MCP_SERVER_NAME }
+
+/** How the built-in admin catalog reads in the console — its wire name is a slug. */
+export const ADMIN_MCP_LABEL = 'AgentConnect Admin MCP'
 
 /** MCP transports a runtime accepts at session/new (protocol `McpTransportCapabilities`). */
 export interface McpTransportCaps {
@@ -51,6 +57,7 @@ export function mcpServersForRuntime(
  *  lives in the edit dialog. A server the org registry doesn't know (daemon-local
  *  definition) is a custom server by definition. */
 export function mcpKindLabel(kind: string | undefined): string {
+  if (kind === 'builtin') return 'Builtin'
   return kind === 'open_connector' ? 'Open connector' : 'Custom MCP server'
 }
 
@@ -63,5 +70,16 @@ export function mcpCandidates(servers: McpServerInfo[], registryNames: readonly 
   const extra = registryNames
     .filter((n) => !known.has(n))
     .map((name): McpServerInfo => ({ name, transport: 'http', registry: true }))
-  return [...servers, ...extra]
+  // The built-in admin catalog belongs to no daemon and no registry: attaching its name IS the
+  // entitlement, and the Control Plane installs the conversation-scoped descriptor over http.
+  const builtin: McpServerInfo[] = known.has(ADMIN_MCP_SERVER_NAME)
+    ? []
+    : [{ name: ADMIN_MCP_SERVER_NAME, transport: 'http', builtin: true }]
+  return [...builtin, ...servers, ...extra]
+}
+
+/** The display line of an MCP server an agent has attached — the built-in catalog states only
+ *  what it is, since its transport and definition are the platform's, not the operator's. */
+export function mcpServerLabel(name: string): string {
+  return name === ADMIN_MCP_SERVER_NAME ? ADMIN_MCP_LABEL : name
 }

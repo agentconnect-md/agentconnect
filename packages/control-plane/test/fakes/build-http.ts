@@ -355,7 +355,6 @@ export function buildHttpApp(
       conversations: webchatConversationRepo,
       orgs: orgRepo,
       agents: agentRepo,
-      presets: presetAgentRepo,
       daemons: liveness,
       placement: placementResolver,
       grants: webchatMcpAccessGrantRepo,

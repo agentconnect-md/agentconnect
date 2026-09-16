@@ -1,5 +1,9 @@
 import type { McpServer } from '@agentclientprotocol/sdk'
-import { RESERVED_MCP_SERVER_NAME, type McpTransportCapabilities } from '@agentconnect.md/protocol'
+import {
+  ADMIN_MCP_SERVER_NAME,
+  RESERVED_MCP_SERVER_NAME,
+  type McpTransportCapabilities
+} from '@agentconnect.md/protocol'
 import type { McpServerDef } from '../config/config-schema.js'
 
 export { RESERVED_MCP_SERVER_NAME }
@@ -18,6 +22,10 @@ export { RESERVED_MCP_SERVER_NAME }
  * not dial (§4) — is attached as an ordinary server with a warn. Skipping it here would delete the
  * tools entirely, since nothing else would carry them: losing the interface is a degradation, and
  * losing the tools is a hole.
+ *
+ * The built-in `agentconnect-admin` name is skipped SILENTLY: it is entitlement,
+ * not a definition — the delegated descriptor is installed per conversation from a
+ * short-lived CP grant, so there is nothing here to resolve and nothing wrong.
  *
  * Skips (with a warn) rather than fails: an unknown name, the reserved bridge
  * name, and an http/sse server the agent's runtime is KNOWN not to accept
@@ -43,6 +51,8 @@ export function resolveAgentMcpServers(opts: {
 }): McpServer[] {
   const out: McpServer[] = []
   for (const name of opts.enabled) {
+    // Entitlement, not a definition — the conversation-scoped descriptor is attached elsewhere.
+    if (name === ADMIN_MCP_SERVER_NAME) continue
     if (name === RESERVED_MCP_SERVER_NAME) {
       opts.warn?.(`mcp: server name "${name}" is reserved for the daemon bridge — skipped`)
       continue

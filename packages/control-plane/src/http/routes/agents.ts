@@ -1,4 +1,5 @@
 import {
+  ADMIN_MCP_SERVER_NAME,
   MemoryEntryCreateRequest,
   MemoryEntryUpdateRequest,
   MemoryEntryDeleteRequest,
@@ -3009,6 +3010,9 @@ export function agentRoutes(deps: HttpDeps) {
             return `target daemon does not support model ${existing.model} for runtime ${existing.runtime}`
           }
           for (const name of existing.mcpServers) {
+            // The built-in admin catalog is CP-installed per conversation, not a daemon def: it
+            // binds the agent to no host, and a daemon without the feature simply omits it.
+            if (name === ADMIN_MCP_SERVER_NAME) continue
             // The CP pushes a registry def only to daemons already serving an enabling agent, so
             // "the target holds no such fact yet" is not "it cannot attach it" — reading that as a
             // refusal pinned every connector-using agent to its daemon (#1192). The move stages the

@@ -42,7 +42,7 @@ it('does not revive a conversation-granted admin card through the organization p
   expect(daemon.orgForAgent).not.toHaveBeenCalled()
 })
 
-function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
+function scaffold(opts: { builtin: boolean; adminMcp: boolean; runInSandbox: boolean }): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-rmcp-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -64,6 +64,8 @@ function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
       status: 'active',
       runtime: 'arbitrary-acp',
       builtin: opts.builtin,
+      // The enable-list, not the preset marker, is what asks for the delegated catalog.
+      mcpServers: opts.adminMcp ? ['agentconnect-admin'] : [],
       runInSandbox: opts.runInSandbox,
       workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
       integrations: [],
@@ -123,6 +125,7 @@ function fakeGrantClient() {
 
 async function runTurn(opts: {
   builtin: boolean
+  adminMcp: boolean
   runInSandbox: boolean
   rejectAdminDescriptor?: boolean
   toolUpdates?: unknown[]
@@ -190,7 +193,12 @@ describe('preset admin MCP through the webchat dispatch path', () => {
       rawInput: { server: 'agentconnect-admin', tool: 'configureIntegration', arguments: nativeUi.intent },
       rawOutput: { result: { structuredContent: nativeUi }, error: null }
     }
-    const { host, outputs } = await runTurn({ builtin: true, runInSandbox: true, toolUpdates: [update, update] })
+    const { host, outputs } = await runTurn({
+      builtin: true,
+      adminMcp: true,
+      runInSandbox: true,
+      toolUpdates: [update, update]
+    })
     expect(adminDescriptor(host)).toMatchObject({ type: 'http', url: 'https://cp.example/api/v1/mcp' })
     const cards = outputs.filter((output) => output.event?.kind === 'app')
     expect(cards).toHaveLength(1)
@@ -200,7 +208,7 @@ describe('preset admin MCP through the webchat dispatch path', () => {
     ['without an OS sandbox', false],
     ['with an OS sandbox', true]
   ] as const)('attaches to an arbitrary preset runtime %s', async (_label, runInSandbox) => {
-    const { client, host, selectedAgents, dones } = await runTurn({ builtin: true, runInSandbox })
+    const { client, host, selectedAgents, dones } = await runTurn({ builtin: true, adminMcp: true, runInSandbox })
 
     expect(dones).toHaveLength(1)
     expect(selectedAgents[0]).toMatchObject({
@@ -215,17 +223,30 @@ describe('preset admin MCP through the webchat dispatch path', () => {
     expect(JSON.stringify(host.prompt.mock.calls)).not.toContain(TOKEN)
   })
 
-  it('does not attach when a non-preset agent is handed a forged entitlement', async () => {
-    const { client, host, dones } = await runTurn({ builtin: false, runInSandbox: false })
+  it('does not attach when an agent without the catalog attached is handed a forged entitlement', async () => {
+    const { client, host, dones } = await runTurn({ builtin: false, adminMcp: false, runInSandbox: false })
 
     expect(dones).toHaveLength(1)
     expect(client.issueWebchatMcpGrant).not.toHaveBeenCalled()
     expect(adminDescriptor(host)).toBeUndefined()
   })
 
+  // The preset marker does not decide this: a built-in agent that dropped the catalog loses it,
+  // and any agent that attaches it asks for it.
+  it('ignores the preset marker and follows the enable-list in both directions', async () => {
+    const attached = await runTurn({ builtin: false, adminMcp: true, runInSandbox: false })
+    expect(attached.client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    expect(adminDescriptor(attached.host)).toMatchObject({ type: 'http' })
+
+    const detached = await runTurn({ builtin: true, adminMcp: false, runInSandbox: false })
+    expect(detached.client.issueWebchatMcpGrant).not.toHaveBeenCalled()
+    expect(adminDescriptor(detached.host)).toBeUndefined()
+  })
+
   it('keeps ordinary preset webchat running when the runtime rejects the admin descriptor', async () => {
     const { client, host, dones } = await runTurn({
       builtin: true,
+      adminMcp: true,
       runInSandbox: true,
       rejectAdminDescriptor: true
     })

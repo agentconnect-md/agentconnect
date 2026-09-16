@@ -706,7 +706,7 @@ export function buildContainer(
     clock
   })
 
-  // Built-in general-preset webchat entitlement and short-lived access grants.
+  // Delegated admin-catalog entitlement (agents carrying `agentconnect-admin`) and its short-lived access grants.
   const webchatMcpGrantToken = new WebchatMcpGrantTokenCodec(config.API_KEY_PEPPER)
   const webchatRemoteMcp = new WebchatRemoteMcpService({
     clock,
@@ -714,7 +714,6 @@ export function buildContainer(
     conversations: repos.webchatConversation,
     orgs: repos.org,
     agents: repos.agent,
-    presets: repos.presetAgent,
     daemons: connReg,
     placement: placementResolver,
     authorities: repos.webchatMcpDelegation,
@@ -729,7 +728,6 @@ export function buildContainer(
     conversations: repos.webchatConversation,
     orgs: repos.org,
     agents: repos.agent,
-    presets: repos.presetAgent,
     daemons: connReg,
     placement: placementResolver,
     grants: repos.webchatMcpAccessGrant,

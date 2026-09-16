@@ -17,6 +17,12 @@
       "import": "./dist/code-host.js",
       "default": "./dist/code-host.js"
     },
+    "./consts": {
+      "development": "./src/consts.ts",
+      "types": "./dist/consts.d.ts",
+      "import": "./dist/consts.js",
+      "default": "./dist/consts.js"
+    },
     "./decimal-amount": {
       "development": "./src/decimal-amount.ts",
       "types": "./dist/decimal-amount.d.ts",
@@ -47,12 +53,6 @@
       "types": "./dist/user-turn-body.d.ts",
       "import": "./dist/user-turn-body.js",
       "default": "./dist/user-turn-body.js"
-    },
-    "./mcp-app": {
-      "development": "./src/mcp-app.ts",
-      "types": "./dist/mcp-app.d.ts",
-      "import": "./dist/mcp-app.js",
-      "default": "./dist/mcp-app.js"
     }
   },
   "main": "dist/index.js",

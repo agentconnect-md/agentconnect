@@ -1,15 +1,15 @@
-import { WEBCHAT_REMOTE_MCP_FEATURE } from '@agentconnect.md/protocol'
+import { ADMIN_MCP_SERVER_NAME, WEBCHAT_REMOTE_MCP_FEATURE } from '@agentconnect.md/protocol'
 import { AgentId, OrgId } from '../domain/ids.js'
 import { canView } from '../authorization/policy.js'
 import type { PlacementRef } from '../domain/placement.js'
 import type { PlacementResolver } from '../orchestrator/placementResolver.js'
-import type { AgentRepo, OrgRepo, PresetAgentStore, WebchatConversationRepo } from '../persistence/ports.js'
+import type { AgentRepo, OrgRepo, WebchatConversationRepo } from '../persistence/ports.js'
 
 export type WebchatMcpAuthorityDenialReason =
   | 'conversation_binding'
   | 'membership_missing'
   | 'agent_not_visible'
-  | 'preset_mismatch'
+  | 'admin_mcp_not_attached'
   | 'placement_mismatch'
   | 'daemon_unavailable'
   | 'daemon_feature_missing'
@@ -25,7 +25,6 @@ export interface LiveWebchatMcpAuthorityDeps {
   conversations: Pick<WebchatConversationRepo, 'findOwner' | 'owns' | 'participants'>
   orgs: Pick<OrgRepo, 'roleOf'>
   agents: Pick<AgentRepo, 'getUnscoped'>
-  presets: Pick<PresetAgentStore, 'get'>
   daemons: { get(daemonId: string): LiveDaemon | undefined }
   /** The only answer to "which daemons serve this agent" / "may this one act for it". */
   placement: Pick<PlacementResolver, 'mayAct' | 'servingDaemons'>
@@ -78,8 +77,10 @@ export async function resolveLiveWebchatMcpAuthority(
     return { ok: false, reason: 'agent_not_visible' }
   }
 
-  const preset = await deps.presets.get(OrgId(input.orgId), 'general')
-  if (preset?.agentId !== input.agentId) return { ok: false, reason: 'preset_mismatch' }
+  // Entitlement is the agent's own enable-list, not its preset identity: the built-in
+  // preset ships with `agentconnect-admin` attached, and removing it withdraws the
+  // catalog exactly as attaching it on another agent grants it.
+  if (!agent.mcpServers.includes(ADMIN_MCP_SERVER_NAME)) return { ok: false, reason: 'admin_mcp_not_attached' }
 
   // Placement is the resolver's answer, never the column: a pool agent names no machine, and the
   // member serving it is whoever holds its duty at this moment.

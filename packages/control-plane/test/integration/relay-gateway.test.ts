@@ -757,15 +757,13 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     expect(res.statusCode).toBe(404)
   })
 
-  it('rc/verify(webchat-token) establishes a preset delegation when the daemon capability passes', async () => {
+  it('rc/verify(webchat-token) establishes a delegation for an attached catalog when the daemon capability passes', async () => {
     const { app, base } = await start({
       PUBLIC_RELAY_URL: RELAY_URL
     })
     const daemonWs = await connectDaemonReady(base, [WEBCHAT_REMOTE_MCP_FEATURE])
-    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
-    await prisma.presetAgent.create({
-      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
-    })
+    // Attaching `agentconnect-admin` is the entitlement; the preset ships with it attached.
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, runtimeOverrides: { mcpServers: ['agentconnect-admin'] } })
     const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as {
       token: string
       conversationId: string
@@ -810,10 +808,8 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       PUBLIC_RELAY_URL: RELAY_URL
     })
     const daemonWs = await connectDaemonReady(base)
-    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
-    await prisma.presetAgent.create({
-      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
-    })
+    // Attaching `agentconnect-admin` is the entitlement; the preset ships with it attached.
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, runtimeOverrides: { mcpServers: ['agentconnect-admin'] } })
     const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
 
     const verified = await verifyWebchat(base, token.token, 'pod-incapable')
@@ -825,7 +821,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     daemonWs.close()
   })
 
-  it('keeps ordinary non-preset webchat when remote-MCP entitlement is denied', async () => {
+  it('keeps ordinary webchat when the agent does not attach the admin catalog', async () => {
     const { app, base } = await start({
       PUBLIC_RELAY_URL: RELAY_URL
     })
@@ -833,7 +829,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
 
-    const verified = await verifyWebchat(base, token.token, 'pod-non-preset')
+    const verified = await verifyWebchat(base, token.token, 'pod-no-admin-mcp')
 
     expect(verified.result).toMatchObject({ ok: true, agentId: AGENT, daemonId: DAEMON })
     expect(verified.result.remoteMcp).toBeUndefined()
@@ -847,10 +843,8 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       PUBLIC_RELAY_URL: RELAY_URL
     })
     const daemonWs = await connectDaemonReady(base, [WEBCHAT_REMOTE_MCP_FEATURE])
-    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
-    await prisma.presetAgent.create({
-      data: { orgId: DEFAULT_ORG_ID, preset: 'general', agentId: AGENT, status: 'created' }
-    })
+    // Attaching `agentconnect-admin` is the entitlement; the preset ships with it attached.
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, runtimeOverrides: { mcpServers: ['agentconnect-admin'] } })
     const token = (await mintWebchatToken(app, AGENT).then((r) => r.json())) as { token: string }
     await prisma.membership.delete({
       where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }

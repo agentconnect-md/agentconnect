@@ -77,7 +77,10 @@ describe('org-creation seam (POST /orgs)', () => {
         createdByUserId: null // system write, like the agent row
       })
       const agentRow = await prisma.agent.findUniqueOrThrow({ where: { id: preset.id } })
-      expect((agentRow.runtimeOverrides as { skills?: string[] }).skills).toEqual([...PRESET_AGENT_SKILLS])
+      const overrides = agentRow.runtimeOverrides as { skills?: string[]; mcpServers?: string[] }
+      expect(overrides.skills).toEqual([...PRESET_AGENT_SKILLS])
+      // The delegated admin catalog is an ordinary enable-list entry the preset is born with.
+      expect(overrides.mcpServers).toEqual(['agentconnect-admin'])
     } finally {
       await close()
     }

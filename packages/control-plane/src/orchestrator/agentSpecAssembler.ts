@@ -424,8 +424,7 @@ export function agentRecordToSpec(
     // to agent.json (the daemon then decides fail-open/closed based on host support).
     runInSandbox: a.runInSandbox,
     // Preset marker (preset-agents.md §3.1). Always shipped (definite record field)
-    // so the daemon can gate preset-only behavior locally — including attaching
-    // `agentconnect-admin` only for the entitled built-in preset.
+    // so the daemon can gate preset-only behavior locally.
     builtin: a.builtin,
     // Ship the memory backend only when set (like pause) — a switch isn't a
     // per-runtime-vocabulary reset, so absent ⇒ the daemon leaves agent.json alone.

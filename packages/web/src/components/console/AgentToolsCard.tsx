@@ -4,7 +4,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchAgentDto, type McpProviderCreatedDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { MOCK_MODE, type DaemonRow } from '@/lib/data'
-import { mcpCandidates, mcpCapsFor, mcpKindLabel, mcpServersForRuntime } from '@/components/console/McpServersField'
+import {
+  ADMIN_MCP_SERVER_NAME,
+  mcpCandidates,
+  mcpCapsFor,
+  mcpKindLabel,
+  mcpServerLabel,
+  mcpServersForRuntime
+} from '@/components/console/McpServersField'
 import { AttachedEmpty, AttachedNote, AttachedRow, AttachMenu } from '@/components/console/AttachedList'
 import { ConnectorsModal } from '@/components/console/ConnectorsModal'
 import { CreateMcpProviderModal } from '@/components/console/McpServersCard'
@@ -125,12 +132,14 @@ export function AgentToolsCard({
   const attached = enabled ?? []
   const eligible = new Map(servers.map((s) => [s.name, s] as const))
   const candidateNames = new Set(candidates.map((c) => c.name))
+  // The built-in catalog is its own kind — it has no registry row to take wording from.
+  const kindOf = (name: string) => (name === ADMIN_MCP_SERVER_NAME ? 'builtin' : providerByName.get(name)?.kind)
   const options = servers
     .filter((s) => !attached.includes(s.name))
     .map((s) => ({
       key: s.name,
-      name: s.name,
-      meta: mcpKindLabel(providerByName.get(s.name)?.kind),
+      name: mcpServerLabel(s.name),
+      meta: mcpKindLabel(kindOf(s.name)),
       onPick: () => void attach(s.name, true)
     }))
   // Why a saved name isn't attachable any more: reported but transport-ineligible,
@@ -179,16 +188,21 @@ export function AgentToolsCard({
                 <AttachedRow
                   key={name}
                   mark={<ProviderMark iconUrl={iconFor(name)} />}
-                  name={name}
+                  name={mcpServerLabel(name)}
                   meta={
-                    server
-                      ? `${server.transport} · ${mcpKindLabel(provider?.kind)}`
-                      : `${mcpKindLabel(provider?.kind)} · ${staleMeta(name)}`
+                    // The built-in catalog's transport is the platform's business, not the operator's.
+                    name === ADMIN_MCP_SERVER_NAME
+                      ? server
+                        ? mcpKindLabel('builtin')
+                        : `${mcpKindLabel('builtin')} · ${staleMeta(name)}`
+                      : server
+                        ? `${server.transport} · ${mcpKindLabel(provider?.kind)}`
+                        : `${mcpKindLabel(provider?.kind)} · ${staleMeta(name)}`
                   }
                   dimmed={!server}
                   badge={
                     <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">
-                      {provider ? 'workspace' : 'daemon'}
+                      {name === ADMIN_MCP_SERVER_NAME ? 'builtin' : provider ? 'workspace' : 'daemon'}
                     </span>
                   }
                   onRemove={canEdit && !saving ? () => void attach(name, false) : undefined}
