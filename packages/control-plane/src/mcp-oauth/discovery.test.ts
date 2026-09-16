@@ -9,6 +9,7 @@ import {
   parseWwwAuthenticate,
   probeMcpEndpoint,
   protectedResourceMetadataUrls,
+  resourceCovers,
   sameResource,
   selectScopes,
   type AuthServerMetadata,
@@ -99,6 +100,28 @@ describe('sameResource', () => {
   })
 })
 
+describe('resourceCovers', () => {
+  it('accepts the url itself, its origin, and a parent path at a segment boundary', () => {
+    expect(resourceCovers(MCP_URL, MCP_URL)).toBe(true)
+    expect(resourceCovers('https://mcp.example.test', MCP_URL)).toBe(true) // Front, and most hosted servers
+    expect(resourceCovers('https://mcp.example.test/', MCP_URL)).toBe(true)
+    expect(resourceCovers('https://MCP.example.test', 'https://mcp.example.test/v1/tenant/mcp')).toBe(true)
+    expect(resourceCovers('https://mcp.example.test/v1', 'https://mcp.example.test/v1/tenant/mcp')).toBe(true)
+    expect(resourceCovers('https://mcp.example.test/v1/', 'https://mcp.example.test/v1/tenant/mcp')).toBe(true)
+  })
+
+  it('still refuses another host, scheme, port, a sibling path, or a partial segment', () => {
+    expect(resourceCovers('https://evil.example.test', MCP_URL)).toBe(false)
+    expect(resourceCovers('http://mcp.example.test', MCP_URL)).toBe(false)
+    expect(resourceCovers('https://mcp.example.test:8443', MCP_URL)).toBe(false)
+    expect(resourceCovers('https://mcp.example.test/other', MCP_URL)).toBe(false)
+    expect(resourceCovers('https://mcp.example.test/m', MCP_URL)).toBe(false)
+    expect(resourceCovers('https://mcp.example.test/mcp/deeper', MCP_URL)).toBe(false)
+    expect(resourceCovers('https://mcp.example.test?tenant=a', MCP_URL)).toBe(false)
+    expect(resourceCovers('not a url', MCP_URL)).toBe(false)
+  })
+})
+
 describe('well-known url ordering', () => {
   it('puts the path-inserted protected-resource location before the root one', () => {
     expect(protectedResourceMetadataUrls('https://example.test/public/mcp')).toEqual([
@@ -184,6 +207,21 @@ describe('discoverProtectedResource', () => {
       })
     })
     expect(await discoverProtectedResource(dial, MCP_URL, null)).toEqual({ ok: false, failure: 'resource_mismatch' })
+  })
+
+  it('accepts a document whose resource is the origin of the registered url', async () => {
+    // Front's server: the challenge points at the ROOT document, which names the origin.
+    const dial = fakeDial({
+      'https://mcp.example.test/.well-known/oauth-protected-resource': ok(200, {
+        resource: 'https://mcp.example.test',
+        authorization_servers: [ISSUER]
+      })
+    })
+    expect(
+      await discoverProtectedResource(dial, MCP_URL, {
+        resource_metadata: 'https://mcp.example.test/.well-known/oauth-protected-resource'
+      })
+    ).toEqual({ ok: true, value: { resource: 'https://mcp.example.test', authorizationServers: [ISSUER] } })
   })
 
   it('refuses metadata with no authorization server', async () => {

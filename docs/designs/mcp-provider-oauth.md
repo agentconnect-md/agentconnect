@@ -90,7 +90,15 @@ This is the easiest thing in the feature to get backwards.
   request): send the protected-resource document's own string, byte for byte. The
   authorization server matches the string it published.
 - **Inbound** (deciding whether a document describes the URL the operator registered):
-  compare leniently, ignoring a single trailing slash.
+  accept a resource that **covers** the registered URL — the URL itself ignoring a single
+  trailing slash, or a same-scheme, same-host prefix of it at a path-segment boundary (the
+  origin, or a parent path). Hosted servers commonly publish the origin as their resource
+  identifier while serving the endpoint under `/mcp` (Front: `https://mcp.frontapp.com` for
+  `https://mcp.frontapp.com/mcp`), and RFC 9728 §3.1 itself walks from the endpoint path up
+  to the root to locate the document. Another host, scheme or port, a sibling path, or a
+  resource carrying a query is still `resource_mismatch` (`resourceCovers` in
+  `mcp-oauth/discovery.ts`). The outbound `resource` is then the advertised string, which is
+  the audience the server verifies.
 
 A strict inbound comparison means a server publishing `https://mcp.example.test/mcp/`
 against an operator who typed it without the slash never connects — and a

@@ -121,6 +121,31 @@ export function sameResource(a: string, b: string): boolean {
   return left !== null && left === norm(b)
 }
 
+/**
+ * Whether the `resource` a protected-resource document advertises covers the MCP url we
+ * registered: the same url (as {@link sameResource}), or a same-scheme, same-host prefix of it at a
+ * path-segment boundary — the origin, or a parent path. Hosted servers commonly publish the origin
+ * as their resource identifier while serving the endpoint under `/mcp`, and RFC 9728 §3.1 itself
+ * walks from the endpoint path up to the root when locating the document, so a covering resource is
+ * the document the spec expects; another host, scheme, port or sibling path is still somebody
+ * else's audience. A resource carrying a query must match exactly.
+ */
+export function resourceCovers(resource: string, mcpUrl: string): boolean {
+  if (sameResource(resource, mcpUrl)) return true
+  let r: URL
+  let m: URL
+  try {
+    r = new URL(resource)
+    m = new URL(mcpUrl)
+  } catch {
+    return false
+  }
+  if (r.protocol !== m.protocol || r.host !== m.host || r.search !== '' || r.hash !== '') return false
+  const prefix = r.pathname.replace(/\/+$/, '')
+  const path = m.pathname.replace(/\/+$/, '')
+  return prefix === '' || (path.startsWith(prefix) && path.charAt(prefix.length) === '/')
+}
+
 /** RFC 9728 §3.1 well-known locations for a resource url, in the order the spec requires. */
 export function protectedResourceMetadataUrls(resourceUrl: string): string[] {
   const u = new URL(resourceUrl)
@@ -179,7 +204,8 @@ export type DiscoveryFailure =
   | 'discovery_malformed'
   /** The metadata document claims an issuer other than the one it was fetched for. */
   | 'issuer_mismatch'
-  /** The metadata describes a different resource than the registered url. */
+  /** The metadata describes a resource that does not cover the registered url (another host,
+   *  scheme, or a sibling path — see {@link resourceCovers}). */
   | 'resource_mismatch'
 
 export type Discovered<T> = { ok: true; value: T } | { ok: false; failure: DiscoveryFailure }
@@ -237,8 +263,10 @@ function readProtectedResource(json: unknown): ProtectedResourceMetadata | null 
 /**
  * Locate and validate the protected-resource metadata for an MCP url. Prefers the
  * challenge's `resource_metadata` pointer; falls back to the well-known probing order.
- * The document must describe the url we registered, or an operator typo would silently
- * bind this provider to somebody else's audience.
+ * The document must describe a resource that covers the url we registered — the url
+ * itself, its origin, or a parent path — or an operator typo would silently bind this
+ * provider to somebody else's audience. The token is then requested for the advertised
+ * resource (RFC 8707), which is the audience the server verifies.
  */
 export async function discoverProtectedResource(
   dial: Dial,
@@ -257,7 +285,7 @@ export async function discoverProtectedResource(
     if (result.response.status !== 200) continue
     const doc = readProtectedResource(result.response.json)
     if (doc === null) return { ok: false, failure: 'discovery_malformed' }
-    if (!sameResource(doc.resource, mcpUrl)) return { ok: false, failure: 'resource_mismatch' }
+    if (!resourceCovers(doc.resource, mcpUrl)) return { ok: false, failure: 'resource_mismatch' }
     return { ok: true, value: doc }
   }
   return { ok: false, failure: sawUnreachable ? 'discovery_unreachable' : 'discovery_not_protected' }
