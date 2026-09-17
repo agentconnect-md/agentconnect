@@ -3,6 +3,7 @@ import { AcpRunner } from '../src/shim/acp-runner.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
 import { createRemoteRuntime } from '../src/k8s/remote-runtime.js'
 import type { ShimConnection } from '../src/shim/connection.js'
+import type { ShimEvent } from '../src/shim/protocol.js'
 import { ShimSession } from '../src/shim/session.js'
 
 // A credential renewal fails the write in flight without saying whether its bytes reached the
@@ -68,7 +69,7 @@ describe('ACP writes across a shim channel renewal', () => {
     // `cat` is the runtime here: whatever reaches its stdin comes straight back as chunk events,
     // which is exactly the evidence this needs — not that the shim answered, but what it wrote.
     const events: Array<{ kind: string; data?: string }> = []
-    const runner = new AcpRunner({ emit: (event) => events.push(event), log: silent } as never)
+    const runner = new AcpRunner({ emit: (event: ShimEvent['event']) => events.push(event), log: silent })
     await runner.apply({ op: 'open', command: 'cat', args: [], env: {} })
 
     const chunk = (text: string, seq: number): Promise<void> =>
@@ -88,7 +89,7 @@ describe('ACP writes across a shim channel renewal', () => {
     // closed can still be inside its stdin write when the re-send lands on the new socket, and a
     // dedupe that only compared against writes already RECORDED would let both through.
     const events: Array<{ kind: string; data?: string }> = []
-    const runner = new AcpRunner({ emit: (event) => events.push(event), log: silent } as never)
+    const runner = new AcpRunner({ emit: (event: ShimEvent['event']) => events.push(event), log: silent })
     await runner.apply({ op: 'open', command: 'cat', args: [], env: {} })
     const child = (runner as unknown as { child: { stdin: { write: unknown } } }).child
     const realWrite = child.stdin.write as (bytes: Buffer, cb: (err?: Error) => void) => void
@@ -114,7 +115,7 @@ describe('ACP writes across a shim channel renewal', () => {
     // The seq is recorded after the write, not before: a write that threw was never applied, and
     // a dedupe that swallowed its retry would silently drop bytes instead of duplicating them.
     const events: Array<{ kind: string; data?: string }> = []
-    const runner = new AcpRunner({ emit: (event) => events.push(event), log: silent } as never)
+    const runner = new AcpRunner({ emit: (event: ShimEvent['event']) => events.push(event), log: silent })
     await runner.apply({ op: 'open', command: 'cat', args: [], env: {} })
     const child = (runner as unknown as { child: { stdin: { write: unknown } } }).child
     const realWrite = child.stdin.write
