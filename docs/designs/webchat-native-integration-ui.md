@@ -49,6 +49,12 @@ body is the created agent with the intent beside it under `nativeUi`, republishe
 structured content. Every other UI tool's whole answer still IS the intent. Readers of a
 tool result therefore accept an intent in either position.
 
+A delegated write does not execute in its own request, so its card has to survive the
+approval hop too. The executed tool's answer is stored as a JSON string inside the bounded
+operation envelope, where no reader of the operation would find it; `getOperation` therefore
+lifts a valid intent out of that string onto the operation itself. A pending operation has no
+result and so no card.
+
 GitHub, GitLab and Gitea remain code hosts, not chat platform modules. Their edit
 targets use `kind: codehost-subscription`; chat bindings use `kind: integration`.
 An edit requires both the target id and its owning agent id. The MCP tool resolves

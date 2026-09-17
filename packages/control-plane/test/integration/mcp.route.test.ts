@@ -504,9 +504,21 @@ describe('delegated webchat MCP operations', () => {
       toolName: string
       status: string
       result?: { statusCode?: number }
+      nativeUi?: { resourceUri: string; intent: { agentId: string; created: boolean } }
     }
     expect(settled).toMatchObject({ operationId: pending.operationId, toolName: 'createAgent', status: 'completed' })
     expect(settled.result?.statusCode).toBe(201)
+    // The card the direct path returns survives the approval hop: the executed tool's answer is a
+    // JSON string inside the bounded envelope, so its intent is lifted out where a reader sees it.
+    const made = await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'approved-agent' } })
+    expect(settled.nativeUi).toEqual({
+      resourceUri: 'ui://agentconnect/agent-setup',
+      resourceVersion: 1,
+      orgId: DEFAULT_ORG_ID,
+      intent: { agentId: made!.id, created: true }
+    })
+    // A pending operation has no result and therefore no card.
+    expect(listed.json()).toEqual([expect.not.objectContaining({ nativeUi: expect.anything() })])
   })
 
   it('scopes the operation reads to the caller’s own conversation', async () => {

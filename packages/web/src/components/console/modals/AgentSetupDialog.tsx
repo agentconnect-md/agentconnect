@@ -5,6 +5,7 @@
 // secrets, placement and sharing are all typed here, under the reader's own Console JWT — the tool
 // only asks for the form to be shown.
 
+import { useEffect, useRef, useState } from 'react'
 import { AGENT_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
@@ -24,13 +25,23 @@ export default function AgentSetupDialog({
   onCompleted: (summary: string) => void
 }) {
   const { activeOrg } = useOrgs()
-  const { agents, loading } = useConsoleData()
+  const { agents, loading, refresh } = useConsoleData()
   const heading = ui.intent.created ? 'Agent created' : 'Edit agent'
-  const notice = (text: string) => <NativeDialogNotice heading={heading} text={text} onClose={onClose} />
-  if (activeOrg?.id !== ui.orgId) return notice('This agent belongs to another organization.')
-  if (loading) return notice('Loading configuration…')
+  const sameOrg = activeOrg?.id === ui.orgId
   const agent = agents.find((item) => item.id === ui.intent.agentId)
-  if (!agent) return notice('This agent is unavailable.')
+  // An agent created through MCP is not in the browser's cached roster, which only revalidates on
+  // its own poll — ask once before calling a row that simply has not arrived yet unavailable.
+  const [revalidated, setRevalidated] = useState(false)
+  const asked = useRef(false)
+  useEffect(() => {
+    if (!sameOrg || loading || agent || asked.current) return
+    asked.current = true
+    void Promise.resolve(refresh()).finally(() => setRevalidated(true))
+  }, [sameOrg, loading, agent, refresh])
+  const notice = (text: string) => <NativeDialogNotice heading={heading} text={text} onClose={onClose} />
+  if (!sameOrg) return notice('This agent belongs to another organization.')
+  if (loading) return notice('Loading configuration…')
+  if (!agent) return notice(revalidated ? 'This agent is unavailable.' : 'Loading configuration…')
   if (!agent.canEdit) return notice('You cannot edit this agent.')
   return (
     <EditAgentModal

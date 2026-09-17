@@ -8,6 +8,7 @@ import { canView } from '../../authorization/policy.js'
 import { ctxOf } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
 import { API_V1_PREFIX } from '../version.js'
+import { NativeMcpUi, NativeUiEnvelope } from '@agentconnect.md/protocol/mcp-app'
 import { findTool, type McpToolCtx } from '../mcp/tools.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER } from '../mcp/internal-invocation-auth.js'
 import type { InvocationContext } from '../mcp/remote-grant-authenticator.js'
@@ -27,7 +28,10 @@ const OperationDto = z.object({
   createdAt: z.string(),
   confirmationExpiresAt: z.string(),
   completedAt: z.string().nullable(),
-  result: z.unknown().optional()
+  result: z.unknown().optional(),
+  // A write tool that earned a card carries it inside its bounded body; hoisted here so the
+  // approval path's reader finds the same intent the direct path returns.
+  nativeUi: NativeMcpUi.optional()
 })
 const ErrorDto = z.object({ error: z.string(), statusCode: z.number(), message: z.string() })
 
@@ -58,6 +62,18 @@ function dto(operation: Awaited<ReturnType<HttpDeps['repos']['webchatMcpOperatio
       result = { message: 'The bounded operation result is not JSON.' }
     }
   }
+  // The executed tool's own answer is a JSON STRING inside the bounded envelope, so an intent it
+  // carries is invisible to a reader of this DTO until it is lifted out of that string.
+  let nativeUi: NativeMcpUi | undefined
+  const body = (result as { body?: unknown } | undefined)?.body
+  if (typeof body === 'string') {
+    try {
+      const envelope = NativeUiEnvelope.safeParse(JSON.parse(body))
+      if (envelope.success) nativeUi = envelope.data.nativeUi
+    } catch {
+      // An ordinary bounded result is not a presentation intent.
+    }
+  }
   return {
     operationId: operation.id,
     toolName: operation.toolName,
@@ -66,7 +82,8 @@ function dto(operation: Awaited<ReturnType<HttpDeps['repos']['webchatMcpOperatio
     createdAt: operation.createdAt.toISOString(),
     confirmationExpiresAt: operation.confirmationExpiresAt.toISOString(),
     completedAt: operation.completedAt?.toISOString() ?? null,
-    ...(result !== undefined ? { result } : {})
+    ...(result !== undefined ? { result } : {}),
+    ...(nativeUi ? { nativeUi } : {})
   }
 }
 

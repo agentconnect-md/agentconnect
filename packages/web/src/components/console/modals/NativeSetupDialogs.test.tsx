@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   role: 'admin' as string,
   canEdit: true,
   updateAgent: vi.fn(),
+  refresh: vi.fn(),
   fetchAgentDto: vi.fn(),
   loading: false,
   editAgentProps: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock('@/lib/data-context', () => ({
     agents: [{ id: mocks.agentId, name: 'my-agent', canEdit: mocks.canEdit }],
     skillSources: [],
     loading: mocks.loading,
+    refresh: mocks.refresh,
     updateAgent: mocks.updateAgent
   })
 }))
@@ -77,6 +79,7 @@ beforeEach(() => {
   mocks.canEdit = true
   mocks.loading = false
   mocks.updateAgent.mockResolvedValue(undefined)
+  mocks.refresh.mockResolvedValue(undefined)
   mocks.fetchAgentDto.mockResolvedValue({ skills: ['other/*'], mcpServers: ['docs'] })
   element = document.createElement('div')
   document.body.append(element)
@@ -119,16 +122,27 @@ describe('native agent editor', () => {
     expect(mocks.editAgentProps).not.toHaveBeenCalled()
   })
 
-  it('mounts no editor for an agent the reader cannot edit or cannot see', async () => {
+  it('mounts no editor for an agent the reader cannot edit', async () => {
     mocks.canEdit = false
     await act(async () => {
       root.render(<AgentSetupDialog ui={agentUi({ agentId: mocks.agentId })} onClose={vi.fn()} onCompleted={vi.fn()} />)
     })
     expect(element.textContent).toContain('cannot edit this agent')
+    expect(mocks.editAgentProps).not.toHaveBeenCalled()
+  })
+
+  it('revalidates the roster once before calling a just-created agent unavailable', async () => {
+    const missing = '33333333-3333-4333-8333-333333333333'
     await act(async () => {
-      root.render(<AgentSetupDialog ui={agentUi({ agentId: mocks.orgId })} onClose={vi.fn()} onCompleted={vi.fn()} />)
+      root.render(<AgentSetupDialog ui={agentUi({ agentId: missing })} onClose={vi.fn()} onCompleted={vi.fn()} />)
     })
+    expect(mocks.refresh).toHaveBeenCalledOnce()
+    // Only after that read comes back empty is the row genuinely gone.
     expect(element.textContent).toContain('unavailable')
+    await act(async () => {
+      root.render(<AgentSetupDialog ui={agentUi({ agentId: missing })} onClose={vi.fn()} onCompleted={vi.fn()} />)
+    })
+    expect(mocks.refresh).toHaveBeenCalledOnce()
     expect(mocks.editAgentProps).not.toHaveBeenCalled()
   })
 })
