@@ -80,7 +80,12 @@ Three steps, each a spec MUST, each a place where being slightly wrong fails muc
 3. **Authorization-server metadata** by the spec's exact URL priority — path-inserted RFC
    8414, path-inserted OIDC, path-appended OIDC for an issuer with a path; the first two
    otherwise — and the document's `issuer` must be **byte-identical** to the issuer the URL
-   was built from, or it is rejected outright rather than retried.
+   was built from, or it is rejected outright rather than retried. One concession, for
+   interoperability: an issuer with no path may be spelled with or without its trailing
+   slash (RFC 3986 §6.2.3 makes the two the same resource; Google's protected-resource
+   documents say `https://accounts.google.com/`, its metadata `https://accounts.google.com`).
+   Any other difference — path, host, scheme, port, query, or a slash on a non-empty path —
+   is still a mismatch, and the document's own spelling is what the flow records.
 
 ### 4.1 `resource` canonicalization cuts both ways
 
@@ -264,7 +269,7 @@ place, so no agent has to re-select it.
 
 `test:unit` covers `WWW-Authenticate` parsing (quoted commas, several challenges), the
 well-known fallback order, the five authorization-server metadata URLs in priority order,
-byte-exact issuer validation, scope selection, the RFC 9207 truth table in full, the token
+issuer validation (byte-exact bar the path-less trailing slash), scope selection, the RFC 9207 truth table in full, the token
 endpoint's refusal-versus-unreachable split, single-flight, lost-CAS, lease hand-off, the
 refresh margin, the three-hop funnel with its refusals, and the refresher's push discipline.
 `test:int` covers the repo's transactions against real Postgres: the CAS, the lease,
