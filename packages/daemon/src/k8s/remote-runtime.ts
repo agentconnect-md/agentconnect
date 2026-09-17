@@ -5,6 +5,8 @@ import type { ShimSession } from '../shim/session.js'
 
 /** How long a re-sent write waits for the replacement channel a renewal is already binding. */
 const REATTACH_GRACE_MS = 10_000
+/** Graceful-stop deadline for a child whose stream is being ended by the failure path. */
+const FAILED_STREAM_CLOSE_DEADLINE_MS = 5_000
 
 /**
  * Bridge a shim ACP stream to the byte-stream pair `AcpHost` consumes.
@@ -80,9 +82,29 @@ export function createRemoteRuntime(opts: {
       if (!streamId) throw new Error('shim did not report a stream id for the ACP runtime')
     })
 
-  /** End the runtime deliberately: the stream cannot carry another byte, so say so once. */
-  const failRuntime = (reason: string): void => {
+  /** Ask the shim to end the child behind this stream, once. Shared by teardown and the failure path. */
+  const closeStream = async (deadlineMs: number): Promise<void> => {
+    if (stopped) return
+    stopped = true
+    await opened.catch(() => undefined)
+    if (!streamId) return
+    // A close that does not land means the rollout cannot confirm this runtime went quiet —
+    // invisible before, because the failure was swallowed to keep teardown best-effort.
+    await opts.session.request('acp', { op: 'close', streamId, deadlineMs }).catch(() => {
+      opts.metrics?.drainTimeout()
+      opts.log.warn(`cluster: runtime for agent ${opts.session.agentId} did not confirm close within ${deadlineMs}ms`)
+    })
+  }
+
+  /**
+   * End the runtime deliberately: the stream cannot carry another byte, so say so once — but only
+   * after asking the shim to stop the child. The exit published here clears `AcpHost`'s spawned
+   * handle, so host teardown will not send this stream a `close` of its own; without this one the
+   * adapter kept running in the pod and the next message launched a second beside it.
+   */
+  const failRuntime = async (reason: string): Promise<void> => {
     opts.log.warn(`cluster: ACP stream for agent ${opts.session.agentId} ended — ${reason}`)
+    await closeStream(FAILED_STREAM_CLOSE_DEADLINE_MS)
     opts.session.offEvent(onEvent)
     finish()
   }
@@ -108,17 +130,19 @@ export function createRemoteRuntime(opts: {
         // move: re-sending could corrupt the stream, and keeping the errored stream would fail
         // every later turn with this same error instead of this one.
         if (!resumableWrites) {
-          failRuntime(`its shim channel was renewed mid-write and this shim cannot resume writes (${err.message})`)
+          await failRuntime(
+            `its shim channel was renewed mid-write and this shim cannot resume writes (${err.message})`
+          )
           throw err
         }
-        await opts.session.waitForAttach(REATTACH_GRACE_MS).catch((waitErr: unknown) => {
-          failRuntime(`its shim channel was renewed and no replacement bound (${(waitErr as Error).message})`)
+        await opts.session.waitForAttach(REATTACH_GRACE_MS).catch(async (waitErr: unknown) => {
+          await failRuntime(`its shim channel was renewed and no replacement bound (${(waitErr as Error).message})`)
           throw err
         })
         try {
           await opts.session.request('acp', frame)
         } catch (retry) {
-          failRuntime(`its shim channel was renewed and the re-sent write failed (${(retry as Error).message})`)
+          await failRuntime(`its shim channel was renewed and the re-sent write failed (${(retry as Error).message})`)
           throw retry
         }
         opts.log.info(`cluster: re-sent one ACP write for agent ${opts.session.agentId} after a channel renewal`)
@@ -140,19 +164,7 @@ export function createRemoteRuntime(opts: {
     fromAgent: inbound.readable,
     onExit: (listener) => exitListeners.push(listener),
     stop: async (deadlineMs) => {
-      if (stopped) return
-      stopped = true
-      await opened.catch(() => undefined)
-      if (streamId) {
-        // A close that does not land means the rollout cannot confirm this runtime went quiet —
-        // invisible before, because the failure was swallowed to keep teardown best-effort.
-        await opts.session.request('acp', { op: 'close', streamId, deadlineMs }).catch(() => {
-          opts.metrics?.drainTimeout()
-          opts.log.warn(
-            `cluster: runtime for agent ${opts.session.agentId} did not confirm close within ${deadlineMs}ms`
-          )
-        })
-      }
+      await closeStream(deadlineMs)
       opts.session.offEvent(onEvent)
     }
   }

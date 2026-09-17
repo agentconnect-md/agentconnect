@@ -169,10 +169,15 @@ describe('ACP writes across a shim channel renewal', () => {
     // A shim that does not announce the dedupe must not be asked twice, so the only correct move
     // is a terminal exit: `reapTerminalHost` then respawns on the next message. Keeping the host
     // warm on an errored stream is the production failure this exists to prevent.
+    const order: string[] = []
     const session = {
       agentId: 'agent-a',
       request: async (_capability: string, payload: Record<string, unknown>) => {
         if (payload.op === 'open') return { streamId: 's1' }
+        if (payload.op === 'close') {
+          order.push(`close:${String(payload.streamId)}`)
+          return {}
+        }
         throw new ShimChannelLostError('shim channel renewed')
       },
       onEvent: () => {},
@@ -181,11 +186,16 @@ describe('ACP writes across a shim channel renewal', () => {
       waitForAttach: async () => undefined
     } as unknown as ShimSession
 
-    let exited = false
     const runtime = createRemoteRuntime({ session, request: { command: 'claude', args: [], env: {} }, log: silent })
-    runtime.onExit(() => (exited = true))
+    runtime.onExit(() => order.push('exit'))
     const writer = runtime.toAgent.getWriter()
     await expect(writer.write(Buffer.from('a'))).rejects.toBeInstanceOf(ShimChannelLostError)
-    expect(exited).toBe(true)
+    // The child in the pod is told to stop BEFORE the exit goes out: that exit clears AcpHost's
+    // spawned handle, after which host teardown sends this stream no close of its own — and a
+    // runner left alive here meant the next message launched a second adapter beside it.
+    expect(order).toEqual(['close:s1', 'exit'])
+    // Teardown that follows finds the stream already closed and does not ask twice.
+    await runtime.stop(1_000)
+    expect(order).toEqual(['close:s1', 'exit'])
   })
 })
