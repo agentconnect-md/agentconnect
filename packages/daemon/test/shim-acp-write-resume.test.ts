@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { AcpRunner } from '../src/shim/acp-runner.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
 import { createRemoteRuntime } from '../src/k8s/remote-runtime.js'
-import type { ShimSession } from '../src/shim/session.js'
+import type { ShimConnection } from '../src/shim/connection.js'
+import { ShimSession } from '../src/shim/session.js'
 
 // A credential renewal fails the write in flight without saying whether its bytes reached the
 // sandbox. Before this, that single lost write errored the runtime's `WritableStream` for good:
@@ -19,6 +20,48 @@ function chunksOf(events: Array<{ kind: string; data?: string }>): string {
     .map((event) => Buffer.from(event.data!, 'base64').toString())
     .join('')
 }
+
+/** A bound connection at one generation, enough for `ShimSession.attach`. */
+function connectionAt(generation: number): ShimConnection {
+  return {
+    binding: {
+      agentId: 'agent-a',
+      sandboxUid: 'sandbox-uid-1',
+      generation,
+      grants: ['acp'],
+      podName: 'p',
+      podUid: 'u',
+      expiresAtMs: Number.MAX_SAFE_INTEGER
+    },
+    issuedCredential: `cred-${Math.random()}`,
+    send: () => {},
+    onFrame: () => {},
+    close: () => {}
+  }
+}
+
+describe('ShimSession.waitForAttach', () => {
+  const timers = {
+    setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+    clearTimeout: (h: unknown) => clearTimeout(h as NodeJS.Timeout)
+  }
+
+  it('settles at once on an attached session, and on the next attach otherwise', async () => {
+    const session = new ShimSession('agent-a', 3, timers)
+    const waited = session.waitForAttach(1_000)
+    session.attach(connectionAt(3))
+    await expect(waited).resolves.toBeUndefined()
+    // Already attached: the re-send has nothing to wait for.
+    await expect(session.waitForAttach(1_000)).resolves.toBeUndefined()
+  })
+
+  it('rejects on the grace window and once the launch is lost, so a retry cannot hang on a gone pod', async () => {
+    const session = new ShimSession('agent-a', 3, timers)
+    await expect(session.waitForAttach(20)).rejects.toThrow(/did not re-attach/)
+    session.lose('pod deleted')
+    await expect(session.waitForAttach(1_000)).rejects.toThrow(/closed/)
+  })
+})
 
 describe('ACP writes across a shim channel renewal', () => {
   it('applies a re-sent chunk once, so a retry cannot duplicate an ND-JSON frame', async () => {
@@ -37,6 +80,33 @@ describe('ACP writes across a shim channel renewal', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 100))
     expect(chunksOf(events)).toBe('first\nsecond\n')
+    await runner.close(1_000).catch(() => undefined)
+  })
+
+  it('dedupes a re-send that arrives while its first attempt is still being written', async () => {
+    // The shim serves requests concurrently. A chunk that reached the pod just before the socket
+    // closed can still be inside its stdin write when the re-send lands on the new socket, and a
+    // dedupe that only compared against writes already RECORDED would let both through.
+    const events: Array<{ kind: string; data?: string }> = []
+    const runner = new AcpRunner({ emit: (event) => events.push(event), log: silent } as never)
+    await runner.apply({ op: 'open', command: 'cat', args: [], env: {} })
+    const child = (runner as unknown as { child: { stdin: { write: unknown } } }).child
+    const realWrite = child.stdin.write as (bytes: Buffer, cb: (err?: Error) => void) => void
+    // Hold the first write's completion, so the second request has to overtake it to duplicate.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    child.stdin.write = (bytes: Buffer, cb: (err?: Error) => void) => {
+      child.stdin.write = realWrite
+      realWrite.call(child.stdin, bytes, () => void held.then(() => cb()))
+    }
+
+    const first = runner.apply({ op: 'chunk', data: Buffer.from('once\n').toString('base64'), seq: 0 })
+    const again = runner.apply({ op: 'chunk', data: Buffer.from('once\n').toString('base64'), seq: 0 })
+    release()
+    await Promise.all([first, again])
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(chunksOf(events)).toBe('once\n')
     await runner.close(1_000).catch(() => undefined)
   })
 
