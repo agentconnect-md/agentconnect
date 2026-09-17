@@ -370,7 +370,8 @@ describe('delegated webchat MCP operations', () => {
         { uri: 'ui://agentconnect/code-host-setup' },
         { uri: 'ui://agentconnect/agent-setup' },
         { uri: 'ui://agentconnect/skill-setup' },
-        { uri: 'ui://agentconnect/mcp-setup' }
+        { uri: 'ui://agentconnect/mcp-setup' },
+        { uri: 'ui://agentconnect/agent-tools' }
       ]
     })
     const off = await remoteMethod({ id: 5, method: 'prompts/list' })

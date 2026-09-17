@@ -20,7 +20,9 @@ import { z } from 'zod'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
 import {
   AGENT_SETUP_URI,
+  AGENT_TOOLS_URI,
   AgentSetupIntent,
+  AgentToolsIntent,
   CODE_HOST_SETUP_URI,
   CodeHostSetupIntent,
   INTEGRATION_SETUP_URI,
@@ -325,11 +327,26 @@ export const MCP_TOOLS: McpToolDef[] = [
     }
   },
   {
+    // Removal is a per-row decision over live state, so the roster is the tool: naming what to take
+    // away in an argument would mean the model guessing at rows it has not seen.
+    name: 'manageAgentTools',
+    description:
+      'Open one agent’s Tools & Skills roster: the MCP servers it has attached and the skills it enables, each row with its own add and remove control. This is how a skill is disabled or removed and how an MCP server is detached — installSkill and installMcpServer only add. Optionally narrow to one roster with focus (mcp or skills). Opening changes nothing; the user acts on the rows.',
+    uiResourceUri: AGENT_TOOLS_URI,
+    schema: AgentToolsIntent,
+    call: async (ctx, args) => {
+      const intent = AgentToolsIntent.parse(args)
+      const agent = await ctx.get(org(ctx, `/agents/${seg(intent.agentId)}`))
+      if (agent.statusCode !== 200) return agent
+      return uiIntent(ctx, AGENT_TOOLS_URI, intent)
+    }
+  },
+  {
     // Registering a source is a Console write under the human's own JWT: the dialog resolves the
     // repository, names the library entry and settles sharing, none of which a tool argument can stand in for.
     name: 'installSkill',
     description:
-      'Open the Console skill installer: search the public skills.sh registry by name (source "registry", optionally preseeded with query) or import a Git repository (source "git"). Pass agentId to also enable the installed skill on that agent. Opening installs nothing; the user picks and confirms in the dialog. To see what is already installed, read the organization’s skill library in the console.',
+      'Open the Console skill installer: search the public skills.sh registry by name (source "registry", optionally preseeded with query) or import a Git repository (source "git"). Pass agentId to also enable the installed skill on that agent. Opening installs nothing; the user picks and confirms in the dialog. To see, disable or remove an agent’s existing skills, use manageAgentTools instead — this dialog only adds.',
     uiResourceUri: SKILL_SETUP_URI,
     schema: SkillSetupIntent,
     call: async (ctx, args) => {
@@ -344,7 +361,7 @@ export const MCP_TOOLS: McpToolDef[] = [
     // the browser, not in a tool argument that an audit log and a transcript would both keep.
     name: 'installMcpServer',
     description:
-      'Open the Console dialog that adds an MCP server to the organization: its name, url, header or OAuth credential, sharing, and whether it may render MCP Apps. Pass agentId to also attach the new server to that agent. Never ask for a token, a client secret or an authorization code in chat — this hands the work to the browser. Opening adds nothing; the user submits the form.',
+      'Open the Console dialog that adds an MCP server to the organization: its name, url, header or OAuth credential, sharing, and whether it may render MCP Apps. Pass agentId to also attach the new server to that agent. Never ask for a token, a client secret or an authorization code in chat — this hands the work to the browser. Opening adds nothing; the user submits the form. To detach a server an agent already has, use manageAgentTools instead — this dialog only adds.',
     uiResourceUri: MCP_SETUP_URI,
     schema: McpSetupIntent,
     call: async (ctx, args) => {

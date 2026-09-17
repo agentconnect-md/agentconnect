@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   AGENT_SETUP_URI,
+  AGENT_TOOLS_URI,
   CODE_HOST_SETUP_URI,
   INTEGRATION_SETUP_URI,
   MCP_SETUP_URI,
@@ -88,7 +89,7 @@ describe('direct HTTP native UI result', () => {
     ).toBeUndefined()
   })
 
-  it('titles the agent, skill and MCP surfaces from the resource too', () => {
+  it('titles the agent, skill, MCP and roster surfaces from the resource too', () => {
     const agentId = '22222222-2222-4222-8222-222222222222'
     for (const [intent, chrome] of [
       [
@@ -106,6 +107,14 @@ describe('direct HTTP native UI result', () => {
       [
         { ...ui, resourceUri: MCP_SETUP_URI, intent: {} },
         { title: 'Add MCP server', toolName: 'installMcpServer' }
+      ],
+      [
+        { ...ui, resourceUri: AGENT_TOOLS_URI, intent: { agentId } },
+        { title: 'Tools & skills', toolName: 'manageAgentTools' }
+      ],
+      [
+        { ...ui, resourceUri: AGENT_TOOLS_URI, intent: { agentId, focus: 'skills' } },
+        { title: 'Skills', toolName: 'manageAgentTools' }
       ]
     ] as const) {
       const event = { ...update, rawOutput: { structuredContent: intent } }

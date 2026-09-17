@@ -57,6 +57,14 @@ export const MCP_SETUP_URI = 'ui://agentconnect/mcp-setup'
 export const McpSetupIntent = z.object({ agentId: z.string().uuid().optional() }).strict()
 export type McpSetupIntent = z.infer<typeof McpSetupIntent>
 
+export const AGENT_TOOLS_URI = 'ui://agentconnect/agent-tools'
+// Which roster to show; omitted shows both, as the Console's Tools & Skills tab does.
+export const AGENT_TOOLS_FOCUS = ['mcp', 'skills'] as const
+export const AgentToolsIntent = z
+  .object({ agentId: z.string().uuid(), focus: z.enum(AGENT_TOOLS_FOCUS).optional() })
+  .strict()
+export type AgentToolsIntent = z.infer<typeof AgentToolsIntent>
+
 const nativeApp = <U extends string, I extends z.ZodTypeAny>(uri: U, intent: I) =>
   z
     .object({
@@ -73,7 +81,8 @@ export const NativeMcpUi = z.discriminatedUnion('resourceUri', [
   nativeApp(CODE_HOST_SETUP_URI, CodeHostSetupIntent),
   nativeApp(AGENT_SETUP_URI, AgentSetupIntent),
   nativeApp(SKILL_SETUP_URI, SkillSetupIntent),
-  nativeApp(MCP_SETUP_URI, McpSetupIntent)
+  nativeApp(MCP_SETUP_URI, McpSetupIntent),
+  nativeApp(AGENT_TOOLS_URI, AgentToolsIntent)
 ])
 export type NativeMcpUi = z.infer<typeof NativeMcpUi>
 
@@ -91,6 +100,8 @@ export function nativeUiTitle(ui: NativeMcpUi): string {
       return 'Install skill'
     case MCP_SETUP_URI:
       return 'Add MCP server'
+    case AGENT_TOOLS_URI:
+      return ui.intent.focus === 'skills' ? 'Skills' : ui.intent.focus === 'mcp' ? 'MCP servers' : 'Tools & skills'
     default:
       return ui.intent.mode === 'edit' ? 'Edit integration' : 'Add integration'
   }

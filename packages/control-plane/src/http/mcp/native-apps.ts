@@ -1,5 +1,6 @@
 import {
   AGENT_SETUP_URI,
+  AGENT_TOOLS_URI,
   CODE_HOST_SETUP_URI,
   INTEGRATION_SETUP_URI,
   MCP_SETUP_URI,
@@ -39,6 +40,11 @@ export const NATIVE_APPS = [
     uri: MCP_SETUP_URI,
     name: 'Add MCP server',
     html: fallbackHtml('Add MCP server', 'add an MCP server to the organization')
+  },
+  {
+    uri: AGENT_TOOLS_URI,
+    name: 'Agent tools and skills',
+    html: fallbackHtml('Agent tools and skills', 'review, add and remove this agent’s MCP servers and skills')
   }
 ] as const
 

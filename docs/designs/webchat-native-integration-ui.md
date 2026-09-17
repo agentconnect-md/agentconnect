@@ -40,7 +40,15 @@ an optional `agentId` and, when the library write lands, also enable the new sou
 attach the new server on that agent; that second write is reported separately, because
 it can fail on its own and a summary claiming both would be untrue.
 
-None of the three carries a credential. A secret env var, an MCP header value and an
+A fifth, `ui://agentconnect/agent-tools`, opens that agent's Tools & Skills rosters — the
+same two cards the Console tab mounts, each row keeping its own add and remove control —
+optionally narrowed to one with `focus`. The installers only ADD; disabling a skill or
+detaching an MCP server is a per-row decision over live state, and naming the row to take
+away in a tool argument would mean the model guessing at rows it has never seen. So removal
+is the roster, not a tool. Each row saves itself as it is toggled, and Done reports the
+resulting counts.
+
+None of the four carries a credential. A secret env var, an MCP header value and an
 OAuth client secret are typed into the dialog under the reader's Console JWT, never into
 a tool argument that the audit log and the transcript would both keep.
 
@@ -78,7 +86,7 @@ Examples:
 { "provider": "gitlab" }
 ```
 
-The agent, skill and MCP intents read:
+The agent, skill, MCP and roster intents read:
 
 ```json
 { "agentId": "<uuid>", "section": "secrets" }
@@ -90,6 +98,10 @@ The agent, skill and MCP intents read:
 
 ```json
 { "agentId": "<uuid>" }
+```
+
+```json
+{ "agentId": "<uuid>", "focus": "skills" }
 ```
 
 Every UI tool is read-only: it opens an editor without submitting any changes. Each

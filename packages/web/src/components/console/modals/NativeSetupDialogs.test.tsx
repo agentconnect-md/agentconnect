@@ -2,8 +2,15 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AGENT_SETUP_URI, MCP_SETUP_URI, SKILL_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import {
+  AGENT_SETUP_URI,
+  AGENT_TOOLS_URI,
+  MCP_SETUP_URI,
+  SKILL_SETUP_URI,
+  type NativeMcpUi
+} from '@agentconnect.md/protocol/mcp-app'
 import AgentSetupDialog from './AgentSetupDialog'
+import AgentToolsDialog from './AgentToolsDialog'
 import SkillSetupDialog from './SkillSetupDialog'
 import McpSetupDialog from './McpSetupDialog'
 
@@ -17,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   fetchAgentDto: vi.fn(),
   loading: false,
   editAgentProps: vi.fn(),
+  toolsCardProps: vi.fn(),
+  skillsCardProps: vi.fn(),
   registryProps: vi.fn(),
   gitProps: vi.fn(),
   mcpProps: vi.fn()
@@ -26,7 +35,8 @@ vi.mock('@/lib/org-context', () => ({
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
-    agents: [{ id: mocks.agentId, name: 'my-agent', canEdit: mocks.canEdit }],
+    agents: [{ id: mocks.agentId, name: 'my-agent', runtime: 'claude', daemon: 'd1', canEdit: mocks.canEdit }],
+    daemons: [{ daemonId: 'd1', mcpServers: [], runtimeModels: [] }],
     skillSources: [],
     loading: mocks.loading,
     refresh: mocks.refresh,
@@ -50,6 +60,18 @@ vi.mock('@/components/console/SkillSourcesCard', () => ({
   CreateSkillSourceModal: (props: unknown) => {
     mocks.gitProps(props)
     return <div>Git import</div>
+  }
+}))
+vi.mock('@/components/console/AgentToolsCard', () => ({
+  AgentToolsCard: (props: unknown) => {
+    mocks.toolsCardProps(props)
+    return <div>MCP roster</div>
+  }
+}))
+vi.mock('@/components/console/AgentSkillsCard', () => ({
+  AgentSkillsCard: (props: unknown) => {
+    mocks.skillsCardProps(props)
+    return <div>Skills roster</div>
   }
 }))
 vi.mock('@/components/console/McpServersCard', () => ({
@@ -144,6 +166,62 @@ describe('native agent editor', () => {
     })
     expect(mocks.refresh).toHaveBeenCalledOnce()
     expect(mocks.editAgentProps).not.toHaveBeenCalled()
+  })
+})
+
+const toolsUi = (intent: Record<string, unknown>) =>
+  ({ resourceUri: AGENT_TOOLS_URI, resourceVersion: 1, orgId: mocks.orgId, intent }) as NativeMcpUi & {
+    resourceUri: typeof AGENT_TOOLS_URI
+  }
+
+describe('native agent tools and skills roster', () => {
+  it('mounts both of the agent’s rosters, so a row can be removed as well as added', async () => {
+    await act(async () => {
+      root.render(<AgentToolsDialog ui={toolsUi({ agentId: mocks.agentId })} onClose={vi.fn()} onCompleted={vi.fn()} />)
+    })
+    expect(element.textContent).toContain('MCP roster')
+    expect(element.textContent).toContain('Skills roster')
+    expect(mocks.toolsCardProps).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: mocks.agentId, runtime: 'claude', canEdit: true })
+    )
+  })
+
+  it('narrows to the named roster', async () => {
+    await act(async () => {
+      root.render(
+        <AgentToolsDialog
+          ui={toolsUi({ agentId: mocks.agentId, focus: 'skills' })}
+          onClose={vi.fn()}
+          onCompleted={vi.fn()}
+        />
+      )
+    })
+    expect(element.textContent).toContain('Skills roster')
+    expect(mocks.toolsCardProps).not.toHaveBeenCalled()
+  })
+
+  it('reports the resulting roster as counts, and only when the reader says they are done', async () => {
+    const completed = vi.fn()
+    mocks.fetchAgentDto.mockResolvedValue({ mcpServers: ['docs'], skills: ['a/*', 'b/x'], managedSkills: ['m1'] })
+    await act(async () => {
+      root.render(
+        <AgentToolsDialog ui={toolsUi({ agentId: mocks.agentId })} onClose={vi.fn()} onCompleted={completed} />
+      )
+    })
+    expect(completed).not.toHaveBeenCalled()
+    await act(async () => click('Done'))
+    expect(completed).toHaveBeenCalledWith(
+      'Reviewed my-agent’s tools and skills — 1 MCP server(s) attached · 3 skill(s) enabled.'
+    )
+  })
+
+  it('still shows a read-only reader the rosters, and says so', async () => {
+    mocks.canEdit = false
+    await act(async () => {
+      root.render(<AgentToolsDialog ui={toolsUi({ agentId: mocks.agentId })} onClose={vi.fn()} onCompleted={vi.fn()} />)
+    })
+    expect(mocks.skillsCardProps).toHaveBeenCalledWith(expect.objectContaining({ canEdit: false }))
+    expect(element.textContent).toContain('not change them')
   })
 })
 

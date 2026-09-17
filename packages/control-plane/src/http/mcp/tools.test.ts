@@ -54,6 +54,7 @@ const AGENT_UUID = '5e0f8a25-31c8-4a1a-bb0e-9a8f6a2b1c22'
 const ARGS: Record<string, Record<string, unknown>> = {
   configureIntegration: { mode: 'create' },
   configureAgent: { agentId: AGENT_UUID },
+  manageAgentTools: { agentId: AGENT_UUID },
   getAgent: { agentId: 'agent-1' },
   getDaemon: { daemonId: 'daemon-1' },
   listWorkspaceFiles: { agentId: 'agent-1', path: 'scripts' },
@@ -160,8 +161,27 @@ describe('MCP tool registry — §6.2 invariants', () => {
     expect(tool.schema.safeParse({ agentId: AGENT_UUID, created: true }).success).toBe(false)
   })
 
+  it('opens one agent’s tools and skills roster, optionally narrowed to one of them', async () => {
+    const tool = findTool('manageAgentTools')!
+    const { ctx, calls } = recordingCtx()
+    expect(JSON.parse((await tool.call(ctx, { agentId: AGENT_UUID, focus: 'skills' })).body)).toEqual({
+      resourceUri: 'ui://agentconnect/agent-tools',
+      resourceVersion: 1,
+      orgId: ORG_ID,
+      intent: { agentId: AGENT_UUID, focus: 'skills' }
+    })
+    expect(calls).toEqual([{ method: 'GET', path: `/orgs/${ORG_ID}/agents/${AGENT_UUID}` }])
+    // Removal is a row the user clicks, never a name the model passes.
+    for (const args of [
+      { agentId: AGENT_UUID, remove: 'brainstorming' },
+      { agentId: AGENT_UUID, focus: 'both' }
+    ]) {
+      expect(tool.schema.safeParse(args).success).toBe(false)
+    }
+  })
+
   it('an unreadable agent is refused before any editor opens', async () => {
-    for (const name of ['configureAgent', 'installSkill', 'installMcpServer']) {
+    for (const name of ['configureAgent', 'installSkill', 'installMcpServer', 'manageAgentTools']) {
       const tool = findTool(name)!
       const { ctx } = recordingCtx()
       ctx.get = async () => ({ statusCode: 404, body: '{"message":"not found"}' })

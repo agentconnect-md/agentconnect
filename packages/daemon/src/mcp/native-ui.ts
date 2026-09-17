@@ -1,5 +1,6 @@
 import {
   AGENT_SETUP_URI,
+  AGENT_TOOLS_URI,
   CODE_HOST_SETUP_URI,
   MCP_SETUP_URI,
   NativeMcpUi,
@@ -59,6 +60,8 @@ function toolFor(nativeUi: NativeMcpUi): string {
       return 'installSkill'
     case MCP_SETUP_URI:
       return 'installMcpServer'
+    case AGENT_TOOLS_URI:
+      return 'manageAgentTools'
     default:
       return 'configureIntegration'
   }

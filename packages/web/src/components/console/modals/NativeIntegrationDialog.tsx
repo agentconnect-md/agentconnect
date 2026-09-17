@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import {
   AGENT_SETUP_URI,
+  AGENT_TOOLS_URI,
   CODE_HOST_SETUP_URI,
   INTEGRATION_SETUP_URI,
   MCP_SETUP_URI,
@@ -65,6 +66,7 @@ import {
 import { AddIntegrationForOrgModal } from './AddIntegrationModal'
 import CodeHostSetupDialog from './CodeHostSetupDialog'
 import AgentSetupDialog from './AgentSetupDialog'
+import AgentToolsDialog from './AgentToolsDialog'
 import SkillSetupDialog from './SkillSetupDialog'
 import McpSetupDialog from './McpSetupDialog'
 import { NativeDialogNotice } from './NativeDialogNotice'
@@ -91,6 +93,8 @@ export default function NativeIntegrationDialog({
       return <CodeHostSetupDialog ui={ui} {...props} />
     case AGENT_SETUP_URI:
       return <AgentSetupDialog ui={ui} {...props} />
+    case AGENT_TOOLS_URI:
+      return <AgentToolsDialog ui={ui} {...props} />
     case SKILL_SETUP_URI:
       return <SkillSetupDialog ui={ui} {...props} />
     case MCP_SETUP_URI:

@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AGENT_SETUP_URI,
+  AGENT_TOOLS_URI,
   CODE_HOST_SETUP_URI,
   INTEGRATION_SETUP_URI,
   MCP_SETUP_URI,
@@ -44,6 +45,7 @@ vi.mock('@/lib/api', () => ({
 }))
 vi.mock('./CodeHostSetupDialog', () => ({ default: () => <div>Code host surface</div> }))
 vi.mock('./AgentSetupDialog', () => ({ default: () => <div>Agent editor</div> }))
+vi.mock('./AgentToolsDialog', () => ({ default: () => <div>Tools roster</div> }))
 vi.mock('./SkillSetupDialog', () => ({ default: () => <div>Skill installer</div> }))
 vi.mock('./McpSetupDialog', () => ({ default: () => <div>MCP installer</div> }))
 vi.mock('./AddIntegrationModal', () => ({
@@ -154,7 +156,8 @@ describe('native integration dialog', () => {
     [CODE_HOST_SETUP_URI, { provider: 'gitea' }, 'Code host surface'],
     [AGENT_SETUP_URI, { agentId: mocks.agentId }, 'Agent editor'],
     [SKILL_SETUP_URI, { source: 'registry' }, 'Skill installer'],
-    [MCP_SETUP_URI, {}, 'MCP installer']
+    [MCP_SETUP_URI, {}, 'MCP installer'],
+    [AGENT_TOOLS_URI, { agentId: mocks.agentId }, 'Tools roster']
   ])('routes by the named resource, not by the intent’s shape (%s)', async (resourceUri, intent, shown) => {
     await act(async () =>
       root.render(

@@ -9,7 +9,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Agent, DaemonRow, IntegrationRow, MemberSetRow } from '@/lib/data'
 import type { CronDto, HookDto } from '@/lib/api'
-import { AGENT_SETUP_URI, nativeUiTitle, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import { AGENT_SETUP_URI, AGENT_TOOLS_URI, nativeUiTitle, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import NativeIntegrationDialog from './modals/NativeIntegrationDialog'
 import AddAgentModal from './modals/AddAgentModal'
 import AddDaemonModal from './modals/AddDaemonModal'
@@ -157,11 +157,13 @@ export function ModalProvider({ children }: { children: ReactNode }) {
             }
             className={
               // Add/Edit agent carry a section rail beside the form — they need the design's
-              // ≥720px so the two-up fields keep their old width, and the native card that
-              // opens that same editor inherits the requirement.
+              // ≥720px so the two-up fields keep their old width, and the native cards that mount
+              // that editor or the agent's own Tools & Skills rosters inherit the requirement.
               open.kind === 'agent' ||
               open.kind === 'editAgent' ||
-              (open.kind === 'nativeIntegration' && open.opts?.nativeUi?.resourceUri === AGENT_SETUP_URI)
+              (open.kind === 'nativeIntegration' &&
+                (open.opts?.nativeUi?.resourceUri === AGENT_SETUP_URI ||
+                  open.opts?.nativeUi?.resourceUri === AGENT_TOOLS_URI))
                 ? 'modal desktop:max-w-[760px]'
                 : open.kind === 'integration' || open.kind === 'nativeIntegration'
                   ? 'modal desktop:max-w-[700px]'
