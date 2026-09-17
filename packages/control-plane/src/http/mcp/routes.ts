@@ -34,7 +34,7 @@ import { API_V1_PREFIX } from '../version.js'
 import { OrgId } from '../../domain/ids.js'
 import { MCP_TOOLS, findTool, toolDescriptor, type McpToolCtx, type RestResult } from './tools.js'
 import { NATIVE_APPS, NATIVE_APP_MIME, nativeApp } from './native-apps.js'
-import { NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import { NativeMcpUi, NativeUiEnvelope } from '@agentconnect.md/protocol/mcp-app'
 import { publicBaseUrl, mcpAuthenticateChallenge } from '../oauth/base.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER } from './internal-invocation-auth.js'
 import type { InvocationContext, ParsedInvocationMetadata } from './remote-grant-authenticator.js'
@@ -564,9 +564,13 @@ export function mcpRoutes(deps: HttpDeps) {
         }
         // 204/202-style successes have no body — still hand the model a definite answer.
         const content = [{ type: 'text' as const, text: result.body || `OK (HTTP ${result.statusCode})` }]
-        // A UI tool's whole answer IS the presentation intent, so it is republished as structured content.
+        // A UI tool's whole answer IS the presentation intent, so it is republished as structured
+        // content; a write tool that earns a card keeps its own answer and carries the intent beside it.
         if (tool.uiResourceUri && nativeApp(tool.uiResourceUri)) {
-          return { content, structuredContent: NativeMcpUi.parse(JSON.parse(result.body)) }
+          const body: unknown = JSON.parse(result.body)
+          if (!tool.uiEnvelope) return { content, structuredContent: NativeMcpUi.parse(body) }
+          const envelope = NativeUiEnvelope.safeParse(body)
+          if (envelope.success) return { content, structuredContent: envelope.data }
         }
         return { content }
       })

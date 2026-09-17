@@ -1,7 +1,14 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { CODE_HOST_SETUP_URI, INTEGRATION_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import {
+  AGENT_SETUP_URI,
+  CODE_HOST_SETUP_URI,
+  INTEGRATION_SETUP_URI,
+  MCP_SETUP_URI,
+  SKILL_SETUP_URI,
+  type NativeMcpUi
+} from '@agentconnect.md/protocol/mcp-app'
 import { isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
 import { Button } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -57,6 +64,10 @@ import {
 } from '@/lib/gitea-events'
 import { AddIntegrationForOrgModal } from './AddIntegrationModal'
 import CodeHostSetupDialog from './CodeHostSetupDialog'
+import AgentSetupDialog from './AgentSetupDialog'
+import SkillSetupDialog from './SkillSetupDialog'
+import McpSetupDialog from './McpSetupDialog'
+import { NativeDialogNotice } from './NativeDialogNotice'
 
 interface Props {
   ui: Extract<NativeMcpUi, { resourceUri: typeof INTEGRATION_SETUP_URI }>
@@ -74,11 +85,19 @@ export default function NativeIntegrationDialog({
   onClose: () => void
   onCompleted: (summary: string) => void
 }) {
-  return ui.resourceUri === CODE_HOST_SETUP_URI ? (
-    <CodeHostSetupDialog ui={ui} onClose={onClose} onCompleted={onCompleted} />
-  ) : (
-    <IntegrationSetupDialog ui={ui} onClose={onClose} onCompleted={onCompleted} />
-  )
+  const props = { onClose, onCompleted }
+  switch (ui.resourceUri) {
+    case CODE_HOST_SETUP_URI:
+      return <CodeHostSetupDialog ui={ui} {...props} />
+    case AGENT_SETUP_URI:
+      return <AgentSetupDialog ui={ui} {...props} />
+    case SKILL_SETUP_URI:
+      return <SkillSetupDialog ui={ui} {...props} />
+    case MCP_SETUP_URI:
+      return <McpSetupDialog ui={ui} {...props} />
+    default:
+      return <IntegrationSetupDialog ui={ui} {...props} />
+  }
 }
 
 function IntegrationSetupDialog({ ui, onClose, onCompleted }: Props) {
@@ -86,11 +105,12 @@ function IntegrationSetupDialog({ ui, onClose, onCompleted }: Props) {
   const { agents, integrations, loading } = useConsoleData()
   const intent = ui.intent
   const agent = agents.find((item) => item.id === intent.agentId)
-  if (activeOrg?.id !== ui.orgId)
-    return <Unavailable onClose={onClose} text="This configuration belongs to another organization." />
-  if (loading) return <Unavailable onClose={onClose} text="Loading configuration…" />
-  if (intent.agentId && !agent?.canEdit)
-    return <Unavailable onClose={onClose} text="You cannot edit this agent's integrations." />
+  const notice = (text: string) => (
+    <NativeDialogNotice heading="Integration configuration" text={text} onClose={onClose} />
+  )
+  if (activeOrg?.id !== ui.orgId) return notice('This configuration belongs to another organization.')
+  if (loading) return notice('Loading configuration…')
+  if (intent.agentId && !agent?.canEdit) return notice("You cannot edit this agent's integrations.")
   if (intent.mode === 'create')
     return (
       <AddIntegrationForOrgModal
@@ -112,23 +132,7 @@ function IntegrationSetupDialog({ ui, onClose, onCompleted }: Props) {
       onCompleted={onCompleted}
     />
   ) : (
-    <Unavailable onClose={onClose} text="This integration is unavailable." />
-  )
-}
-
-function Unavailable({ text, onClose }: { text: string; onClose: () => void }) {
-  return (
-    <>
-      <div className="modalhead">Integration configuration</div>
-      <div className="modalbody" role="status">
-        {text}
-      </div>
-      <div className="modalfoot">
-        <Button variant="secondary" onClick={onClose}>
-          Close
-        </Button>
-      </div>
-    </>
+    notice('This integration is unavailable.')
   )
 }
 

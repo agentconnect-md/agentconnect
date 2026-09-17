@@ -53,6 +53,7 @@ const AGENT_UUID = '5e0f8a25-31c8-4a1a-bb0e-9a8f6a2b1c22'
 /** Minimal happy-path args per tool (tools with no args pass {}). */
 const ARGS: Record<string, Record<string, unknown>> = {
   configureIntegration: { mode: 'create' },
+  configureAgent: { agentId: AGENT_UUID },
   getAgent: { agentId: 'agent-1' },
   getDaemon: { daemonId: 'daemon-1' },
   listWorkspaceFiles: { agentId: 'agent-1', path: 'scripts' },
@@ -142,6 +143,82 @@ describe('MCP tool registry — §6.2 invariants', () => {
       const { calls } = await run(tool)
       expect(calls).toEqual([{ method: 'GET', path: `/orgs/${ORG_ID}${path}` }])
     }
+  })
+
+  it('opens the agent editor for one agent and keeps `created` a server annotation', async () => {
+    const tool = findTool('configureAgent')!
+    const { ctx, calls } = recordingCtx()
+    const result = await tool.call(ctx, { agentId: AGENT_UUID, section: 'secrets' })
+    expect(JSON.parse(result.body)).toEqual({
+      resourceUri: 'ui://agentconnect/agent-setup',
+      resourceVersion: 1,
+      orgId: ORG_ID,
+      intent: { agentId: AGENT_UUID, section: 'secrets' }
+    })
+    expect(calls).toEqual([{ method: 'GET', path: `/orgs/${ORG_ID}/agents/${AGENT_UUID}` }])
+    expect(toolDescriptor(tool)._meta?.ui.resourceUri).toBe('ui://agentconnect/agent-setup')
+    expect(tool.schema.safeParse({ agentId: AGENT_UUID, created: true }).success).toBe(false)
+  })
+
+  it('an unreadable agent is refused before any editor opens', async () => {
+    for (const name of ['configureAgent', 'installSkill', 'installMcpServer']) {
+      const tool = findTool(name)!
+      const { ctx } = recordingCtx()
+      ctx.get = async () => ({ statusCode: 404, body: '{"message":"not found"}' })
+      expect((await tool.call(ctx, { agentId: AGENT_UUID })).statusCode, name).toBe(404)
+    }
+  })
+
+  it('the installers carry no credential and pass their own preferences through', async () => {
+    const skill = findTool('installSkill')!
+    expect(JSON.parse((await skill.call(recordingCtx().ctx, { source: 'git' })).body)).toMatchObject({
+      resourceUri: 'ui://agentconnect/skill-setup',
+      orgId: ORG_ID,
+      intent: { source: 'git' }
+    })
+    const mcp = findTool('installMcpServer')!
+    expect(JSON.parse((await mcp.call(recordingCtx().ctx, {})).body)).toMatchObject({
+      resourceUri: 'ui://agentconnect/mcp-setup',
+      orgId: ORG_ID,
+      intent: {}
+    })
+    for (const [tool, args] of [
+      [skill, { url: 'https://example.test' }],
+      [skill, { orgId: 'another-org' }],
+      [mcp, { headers: { authorization: 'Bearer x' } }],
+      [mcp, { clientSecret: 'secret' }]
+    ] as const) {
+      expect(tool.schema.safeParse(args).success).toBe(false)
+    }
+  })
+
+  it('createAgent keeps its own answer and carries the new agent’s editor beside it', async () => {
+    const tool = findTool('createAgent')!
+    const { ctx, calls } = recordingCtx()
+    ctx.send = async (method, path, body) => {
+      calls.push({ method, path, ...(body ? { body } : {}) })
+      return { statusCode: 201, body: JSON.stringify({ id: AGENT_UUID, name: 'my-agent' }) }
+    }
+    const result = await tool.call(ctx, ARGS.createAgent!)
+    expect(result.statusCode).toBe(201)
+    expect(JSON.parse(result.body)).toEqual({
+      id: AGENT_UUID,
+      name: 'my-agent',
+      nativeUi: {
+        resourceUri: 'ui://agentconnect/agent-setup',
+        resourceVersion: 1,
+        orgId: ORG_ID,
+        intent: { agentId: AGENT_UUID, created: true }
+      }
+    })
+    expect(tool.uiEnvelope).toBe(true)
+  })
+
+  it('a creation that did not answer with an agent id keeps its answer unchanged', async () => {
+    const tool = findTool('createAgent')!
+    const { ctx } = recordingCtx()
+    ctx.send = async () => ({ statusCode: 202, body: JSON.stringify({ operationId: CRON_ID }) })
+    expect(JSON.parse((await tool.call(ctx, ARGS.createAgent!)).body)).toEqual({ operationId: CRON_ID })
   })
 
   it('resolves an edit target under the requested agent and refuses a different owner', async () => {

@@ -14,6 +14,7 @@ import { fetchGiteaConnections, fetchGithubInstallations, fetchGitlabConnections
 import GithubCard from '@/components/console/GithubCard'
 import GitlabCard from '@/components/console/GitlabCard'
 import GiteaCard from '@/components/console/GiteaCard'
+import { NativeDialogNotice } from './NativeDialogNotice'
 
 type CodeHostUi = Extract<NativeMcpUi, { resourceUri: typeof CODE_HOST_SETUP_URI }>
 type Provider = NonNullable<CodeHostUi['intent']['provider']>
@@ -59,17 +60,11 @@ export default function CodeHostSetupDialog({
 
   if (activeOrg?.id !== ui.orgId)
     return (
-      <>
-        <div className="modalhead">Code host connections</div>
-        <div className="modalbody" role="status">
-          These connections belong to another organization.
-        </div>
-        <div className="modalfoot">
-          <Button variant="secondary" onClick={onClose}>
-            Close
-          </Button>
-        </div>
-      </>
+      <NativeDialogNotice
+        heading="Code host connections"
+        text="These connections belong to another organization."
+        onClose={onClose}
+      />
     )
 
   // Done reports the surface was reviewed; closing says nothing, because nothing here is a save

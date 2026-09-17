@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CODE_HOST_SETUP_URI, INTEGRATION_SETUP_URI } from '@agentconnect.md/protocol/mcp-app'
+import {
+  AGENT_SETUP_URI,
+  CODE_HOST_SETUP_URI,
+  INTEGRATION_SETUP_URI,
+  MCP_SETUP_URI,
+  SKILL_SETUP_URI
+} from '@agentconnect.md/protocol/mcp-app'
 import { nativeUiChrome, nativeUiFromToolUpdate } from '../src/mcp/native-ui.js'
 import { Daemon } from '../src/daemon.js'
 import { LiveAppRegistry, reviveAppRow } from '../src/mcp/apps/cards.js'
@@ -79,6 +85,57 @@ describe('direct HTTP native UI result', () => {
         ...event,
         rawOutput: { structuredContent: { ...codeHost, intent: { provider: 'svn' } } }
       })
+    ).toBeUndefined()
+  })
+
+  it('titles the agent, skill and MCP surfaces from the resource too', () => {
+    const agentId = '22222222-2222-4222-8222-222222222222'
+    for (const [intent, chrome] of [
+      [
+        { ...ui, resourceUri: AGENT_SETUP_URI, intent: { agentId } },
+        { title: 'Edit agent', toolName: 'configureAgent' }
+      ],
+      [
+        { ...ui, resourceUri: AGENT_SETUP_URI, intent: { agentId, created: true } },
+        { title: 'Agent created', toolName: 'createAgent' }
+      ],
+      [
+        { ...ui, resourceUri: SKILL_SETUP_URI, intent: { source: 'registry', query: 'postgres' } },
+        { title: 'Install skill', toolName: 'installSkill' }
+      ],
+      [
+        { ...ui, resourceUri: MCP_SETUP_URI, intent: {} },
+        { title: 'Add MCP server', toolName: 'installMcpServer' }
+      ]
+    ] as const) {
+      const event = { ...update, rawOutput: { structuredContent: intent } }
+      expect(nativeUiFromToolUpdate(event)).toEqual(intent)
+      expect(nativeUiChrome(nativeUiFromToolUpdate(event)!)).toEqual(chrome)
+    }
+    // A url or an html payload is not part of any intent's vocabulary.
+    for (const bad of [
+      { ...ui, resourceUri: AGENT_SETUP_URI, intent: { agentId: 'not-a-uuid' } },
+      { ...ui, resourceUri: MCP_SETUP_URI, intent: { url: 'https://example.test' } },
+      { ...ui, resourceUri: SKILL_SETUP_URI, intent: { source: 'npm' } }
+    ]) {
+      expect(nativeUiFromToolUpdate({ ...update, rawOutput: { structuredContent: bad } })).toBeUndefined()
+    }
+  })
+
+  it('finds a write tool’s card beside its own answer, in structured content or in text', () => {
+    const nativeUi = {
+      ...ui,
+      resourceUri: AGENT_SETUP_URI,
+      intent: { agentId: '22222222-2222-4222-8222-222222222222', created: true }
+    }
+    const body = { id: nativeUi.intent.agentId, name: 'my-agent', nativeUi }
+    expect(nativeUiFromToolUpdate({ ...update, rawOutput: { structuredContent: body } })).toEqual(nativeUi)
+    expect(
+      nativeUiFromToolUpdate({ ...update, rawOutput: { content: [{ type: 'text', text: JSON.stringify(body) }] } })
+    ).toEqual(nativeUi)
+    // Only the agreed key carries one — an arbitrary nested object is still ordinary tool output.
+    expect(
+      nativeUiFromToolUpdate({ ...update, rawOutput: { structuredContent: { id: body.id, extra: { nativeUi } } } })
     ).toBeUndefined()
   })
 

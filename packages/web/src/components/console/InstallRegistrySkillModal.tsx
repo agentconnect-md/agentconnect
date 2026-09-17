@@ -51,18 +51,21 @@ export function registrySourceName(skill: string, taken: Iterable<string>): stri
 
 export function InstallRegistrySkillModal({
   existing,
+  initialQuery,
   onClose,
   onCreated
 }: {
   /** The org's current sources — for the "already in your library" state. */
   existing: SkillSourceDto[]
+  /** What to search for on open — the name a native MCP App card was asked to install. */
+  initialQuery?: string
   onClose: () => void
   /** Fired with the registered source, so a caller can enable it on an agent. */
   onCreated?: (created: SkillSourceDto) => void
 }) {
   const { createSkillSource } = useConsoleData()
   const { me } = useProfile()
-  const [q, setQ] = useState('')
+  const [q, setQ] = useState(initialQuery ?? '')
   // Results carry the query they answer, so an edited query hides the previous
   // hits for the whole debounce + network window instead of leaving rows from a
   // different search on screen and clickable.

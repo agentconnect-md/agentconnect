@@ -28,6 +28,27 @@ same state without a dialog is `listGithubInstallations`, `listGitlabConnections
 `listGitlabBots`, `listGitlabProjects`, `listGiteaConnections` and
 `listGiteaRepositories`.
 
+Three further intents open the Console's other configuration surfaces the same way.
+`ui://agentconnect/agent-setup` opens the agent editor on one agent — display name,
+runtime and model, behavior, placement, environment variables, secrets and sharing —
+optionally scrolled to a section. It is what `configureAgent` returns for an existing
+agent, and what `createAgent` attaches to the agent it just created, so the new agent's
+first card is its own editor. `ui://agentconnect/skill-setup` opens the Skills library's
+install dialogs: the skills.sh registry search, optionally preseeded with a name, or the
+Git import. `ui://agentconnect/mcp-setup` opens "Add MCP server". Both installers accept
+an optional `agentId` and, when the library write lands, also enable the new source or
+attach the new server on that agent; that second write is reported separately, because
+it can fail on its own and a summary claiming both would be untrue.
+
+None of the three carries a credential. A secret env var, an MCP header value and an
+OAuth client secret are typed into the dialog under the reader's Console JWT, never into
+a tool argument that the audit log and the transcript would both keep.
+
+`createAgent` is the one write tool with a card, and it keeps its own answer: its result
+body is the created agent with the intent beside it under `nativeUi`, republished as
+structured content. Every other UI tool's whole answer still IS the intent. Readers of a
+tool result therefore accept an intent in either position.
+
 GitHub, GitLab and Gitea remain code hosts, not chat platform modules. Their edit
 targets use `kind: codehost-subscription`; chat bindings use `kind: integration`.
 An edit requires both the target id and its owning agent id. The MCP tool resolves
@@ -49,7 +70,21 @@ Examples:
 { "provider": "gitlab" }
 ```
 
-Both tools are read-only: they open an editor without submitting any changes. Each
+The agent, skill and MCP intents read:
+
+```json
+{ "agentId": "<uuid>", "section": "secrets" }
+```
+
+```json
+{ "source": "registry", "query": "postgres", "agentId": "<uuid>" }
+```
+
+```json
+{ "agentId": "<uuid>" }
+```
+
+Every UI tool is read-only: it opens an editor without submitting any changes. Each
 descriptor declares its own `_meta.ui.resourceUri`, and the resource — never the
 intent's shape — selects the dialog and the card's title. The result contains a strict,
 versioned `NativeMcpUi` value with the organization id and validated intent.

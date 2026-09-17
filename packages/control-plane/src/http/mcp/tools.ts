@@ -19,10 +19,16 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
 import {
+  AGENT_SETUP_URI,
+  AgentSetupIntent,
   CODE_HOST_SETUP_URI,
   CodeHostSetupIntent,
   INTEGRATION_SETUP_URI,
-  IntegrationSetupIntent
+  IntegrationSetupIntent,
+  MCP_SETUP_URI,
+  McpSetupIntent,
+  SKILL_SETUP_URI,
+  SkillSetupIntent
 } from '@agentconnect.md/protocol/mcp-app'
 import { HOOK_KINDS, isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
 
@@ -51,6 +57,9 @@ export interface RestResult {
 export interface McpToolDef {
   name: string
   uiResourceUri?: string
+  /** The result body carries the tool's own answer with the intent under `nativeUi`,
+   *  instead of BEING the intent — how a write tool earns a card without losing what it returned. */
+  uiEnvelope?: true
   description: string
   /** Argument contract — published to clients as JSON Schema via {@link toolDescriptor}. */
   schema: z.ZodType<Record<string, unknown>>
@@ -76,6 +85,25 @@ export interface McpToolDef {
 const seg = (v: unknown): string => encodeURIComponent(String(v))
 
 const org = (ctx: McpToolCtx, sub: string): string => `/orgs/${seg(ctx.orgId)}${sub}`
+
+/** A UI tool's whole answer: the versioned presentation intent, with the organization
+ *  supplied by authentication rather than by the caller. */
+const uiIntent = (ctx: McpToolCtx, resourceUri: string, intent: unknown): RestResult => ({
+  statusCode: 200,
+  body: JSON.stringify({ resourceUri, resourceVersion: 1, orgId: ctx.orgId, intent })
+})
+
+/** A REST answer read as an object, or nothing — an empty or non-object body is not a failure here. */
+function jsonObject(body: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
 
 const NoArgs = z.object({}).strict()
 
@@ -244,15 +272,7 @@ export const MCP_TOOLS: McpToolDef[] = [
         if (!found || (intent.target.kind === 'codehost-subscription' && !isCodeHostProvider(found.kind)))
           return notFound('integration')
       }
-      return {
-        statusCode: 200,
-        body: JSON.stringify({
-          resourceUri: INTEGRATION_SETUP_URI,
-          resourceVersion: 1,
-          orgId: ctx.orgId,
-          intent
-        })
-      }
+      return uiIntent(ctx, INTEGRATION_SETUP_URI, intent)
     }
   },
   {
@@ -285,15 +305,53 @@ export const MCP_TOOLS: McpToolDef[] = [
           }
         if (probe.statusCode !== 200) return probe
       }
-      return {
-        statusCode: 200,
-        body: JSON.stringify({
-          resourceUri: CODE_HOST_SETUP_URI,
-          resourceVersion: 1,
-          orgId: ctx.orgId,
-          intent
-        })
-      }
+      return uiIntent(ctx, CODE_HOST_SETUP_URI, intent)
+    }
+  },
+  {
+    // Every field of an agent's configuration — env vars, secrets, memory, sharing, placement —
+    // is edited here, so the model opens the editor instead of growing a write tool per field.
+    name: 'configureAgent',
+    description:
+      'Open the Console agent editor on one agent, so the user can change its configuration — display name, runtime and model, behavior, placement, environment variables, secrets and sharing. Optionally open it on a section (basics, runtime, access, secrets). Never ask for a secret value in chat; it is typed into the dialog. Opening saves nothing; the user submits the form. For a single field the tool can set on its own, updateAgent is the direct path.',
+    uiResourceUri: AGENT_SETUP_URI,
+    // `created` is the server's own annotation on a createAgent card, never a caller's argument.
+    schema: AgentSetupIntent.omit({ created: true }),
+    call: async (ctx, args) => {
+      const intent = AgentSetupIntent.omit({ created: true }).parse(args)
+      const agent = await ctx.get(org(ctx, `/agents/${seg(intent.agentId)}`))
+      if (agent.statusCode !== 200) return agent
+      return uiIntent(ctx, AGENT_SETUP_URI, intent)
+    }
+  },
+  {
+    // Registering a source is a Console write under the human's own JWT: the dialog resolves the
+    // repository, names the library entry and settles sharing, none of which a tool argument can stand in for.
+    name: 'installSkill',
+    description:
+      'Open the Console skill installer: search the public skills.sh registry by name (source "registry", optionally preseeded with query) or import a Git repository (source "git"). Pass agentId to also enable the installed skill on that agent. Opening installs nothing; the user picks and confirms in the dialog. To see what is already installed, read the organization’s skill library in the console.',
+    uiResourceUri: SKILL_SETUP_URI,
+    schema: SkillSetupIntent,
+    call: async (ctx, args) => {
+      const intent = SkillSetupIntent.parse(args)
+      const probe = await ctx.get(org(ctx, intent.agentId ? `/agents/${seg(intent.agentId)}` : ''))
+      if (probe.statusCode !== 200) return probe
+      return uiIntent(ctx, SKILL_SETUP_URI, intent)
+    }
+  },
+  {
+    // The server's url and its credential — a header value or an OAuth client secret — belong in
+    // the browser, not in a tool argument that an audit log and a transcript would both keep.
+    name: 'installMcpServer',
+    description:
+      'Open the Console dialog that adds an MCP server to the organization: its name, url, header or OAuth credential, sharing, and whether it may render MCP Apps. Pass agentId to also attach the new server to that agent. Never ask for a token, a client secret or an authorization code in chat — this hands the work to the browser. Opening adds nothing; the user submits the form.',
+    uiResourceUri: MCP_SETUP_URI,
+    schema: McpSetupIntent,
+    call: async (ctx, args) => {
+      const intent = McpSetupIntent.parse(args)
+      const probe = await ctx.get(org(ctx, intent.agentId ? `/agents/${seg(intent.agentId)}` : ''))
+      if (probe.statusCode !== 200) return probe
+      return uiIntent(ctx, MCP_SETUP_URI, intent)
     }
   },
   {
@@ -673,7 +731,28 @@ export const MCP_TOOLS: McpToolDef[] = [
           )
       })
       .strict(),
-    call: (ctx, a) => ctx.send('POST', org(ctx, '/agents'), bodyOf(a))
+    uiResourceUri: AGENT_SETUP_URI,
+    uiEnvelope: true,
+    call: async (ctx, a) => {
+      const created = await ctx.send('POST', org(ctx, '/agents'), bodyOf(a))
+      if (created.statusCode < 200 || created.statusCode >= 300) return created
+      // A creation that answered without a usable id — a pending approval, an empty 204 — still
+      // succeeded: hand back its own answer rather than failing the call over the card it could not earn.
+      const agent = jsonObject(created.body)
+      if (!agent || !canonicalUuid(agent.id)) return created
+      return {
+        statusCode: created.statusCode,
+        body: JSON.stringify({
+          ...agent,
+          nativeUi: {
+            resourceUri: AGENT_SETUP_URI,
+            resourceVersion: 1,
+            orgId: ctx.orgId,
+            intent: { agentId: agent.id, created: true }
+          }
+        })
+      }
+    }
   },
   {
     name: 'updateAgent',

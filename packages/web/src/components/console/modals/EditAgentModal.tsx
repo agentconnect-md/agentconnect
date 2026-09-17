@@ -99,6 +99,7 @@ export default function EditAgentModal({
   agent,
   focusSection,
   preselectDaemonId,
+  onSaved,
   onClose
 }: {
   agent: Agent
@@ -106,6 +107,8 @@ export default function EditAgentModal({
   /** A daemon to open the placement picker on — set when a chained Add-daemon dialog just
    *  connected one, so Continue lands on a form already pointed at the new machine. */
   preselectDaemonId?: string
+  /** Fired once the save went through — a native MCP App card reports it back to the agent. */
+  onSaved?: () => void
   onClose: () => void
 }) {
   const acpRegistry = useAcpRegistry()
@@ -694,6 +697,7 @@ export default function EditAgentModal({
       // own visibility. Apply it only after every operation that still needs the
       // editor's authorization, including placement.
       if (hasSharingChanges) await saveSharing('agents', agent.id, sharing)
+      onSaved?.()
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))

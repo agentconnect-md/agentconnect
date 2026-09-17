@@ -365,7 +365,13 @@ describe('delegated webchat MCP operations', () => {
     const resources = await remoteMethod({ id: 4, method: 'resources/list' })
     expect(resources.statusCode).toBe(200)
     expect(mcpMessage(resources).result).toMatchObject({
-      resources: [{ uri: 'ui://agentconnect/integration-setup' }, { uri: 'ui://agentconnect/code-host-setup' }]
+      resources: [
+        { uri: 'ui://agentconnect/integration-setup' },
+        { uri: 'ui://agentconnect/code-host-setup' },
+        { uri: 'ui://agentconnect/agent-setup' },
+        { uri: 'ui://agentconnect/skill-setup' },
+        { uri: 'ui://agentconnect/mcp-setup' }
+      ]
     })
     const off = await remoteMethod({ id: 5, method: 'prompts/list' })
     expect(off.statusCode).toBe(401)
@@ -870,9 +876,29 @@ describe('POST /api/v1/mcp — write tools (P1, §6.2 ✎)', () => {
       displayName: 'MCP Made'
     })
     expect(created.isError).toBeUndefined()
-    const agent = JSON.parse(toolText(created)) as { id: string; name: string; displayName: string | null }
+    const agent = JSON.parse(toolText(created)) as {
+      id: string
+      name: string
+      displayName: string | null
+      nativeUi: unknown
+    }
     expect(agent.name).toBe('mcp-made')
     expect(agent.displayName).toBe('MCP Made')
+    // The creation keeps its own answer and earns the new agent's editor card beside it.
+    expect(agent.nativeUi).toEqual({
+      resourceUri: 'ui://agentconnect/agent-setup',
+      resourceVersion: 1,
+      orgId: DEFAULT_ORG_ID,
+      intent: { agentId: agent.id, created: true }
+    })
+    expect(created.structuredContent).toEqual(agent)
+    const editor = await callTool(app, key, 'configureAgent', { agentId: agent.id, section: 'runtime' })
+    expect(JSON.parse(toolText(editor))).toEqual({
+      resourceUri: 'ui://agentconnect/agent-setup',
+      resourceVersion: 1,
+      orgId: DEFAULT_ORG_ID,
+      intent: { agentId: agent.id, section: 'runtime' }
+    })
 
     const updated = await callTool(app, key, 'updateAgent', { agentId: agent.id, model: 'test-model', pause: true })
     expect(updated.isError).toBeUndefined()
@@ -881,7 +907,7 @@ describe('POST /api/v1/mcp — write tools (P1, §6.2 ✎)', () => {
 
     // The write landed one mcp_tool_call audit row per call, statuses from the REST surface.
     const audits = await prisma.auditEvent.findMany({ where: { kind: 'mcp_tool_call' }, orderBy: { id: 'asc' } })
-    expect(audits.map((r) => (r.details as { tool: string; status: number }).status)).toEqual([201, 200])
+    expect(audits.map((r) => (r.details as { tool: string; status: number }).status)).toEqual([201, 200, 200])
 
     // Wrong confirm (the displayName, not the slug): blocked at 412, agent untouched.
     const blocked = await callTool(app, key, 'deleteAgent', { agentId: agent.id, confirm: 'MCP Made' })

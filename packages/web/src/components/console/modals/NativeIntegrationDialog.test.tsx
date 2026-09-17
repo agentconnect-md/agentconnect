@@ -2,7 +2,14 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CODE_HOST_SETUP_URI, INTEGRATION_SETUP_URI, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
+import {
+  AGENT_SETUP_URI,
+  CODE_HOST_SETUP_URI,
+  INTEGRATION_SETUP_URI,
+  MCP_SETUP_URI,
+  SKILL_SETUP_URI,
+  type NativeMcpUi
+} from '@agentconnect.md/protocol/mcp-app'
 import NativeIntegrationDialog from './NativeIntegrationDialog'
 vi.mock('../platforms/registry', () => ({ channelListSemantics: () => ({}) }))
 
@@ -36,6 +43,9 @@ vi.mock('@/lib/api', () => ({
   updateIntegrationChannel: mocks.updateIntegrationChannel
 }))
 vi.mock('./CodeHostSetupDialog', () => ({ default: () => <div>Code host surface</div> }))
+vi.mock('./AgentSetupDialog', () => ({ default: () => <div>Agent editor</div> }))
+vi.mock('./SkillSetupDialog', () => ({ default: () => <div>Skill installer</div> }))
+vi.mock('./McpSetupDialog', () => ({ default: () => <div>MCP installer</div> }))
 vi.mock('./AddIntegrationModal', () => ({
   AddIntegrationForOrgModal: (props: unknown) => {
     mocks.createProps(props)
@@ -140,22 +150,22 @@ describe('native integration dialog', () => {
     expect(completed).not.toHaveBeenCalled()
     expect(element.textContent).toContain('This subscription changed')
   })
-  it('routes by the named resource, not by the intent’s shape', async () => {
+  it.each([
+    [CODE_HOST_SETUP_URI, { provider: 'gitea' }, 'Code host surface'],
+    [AGENT_SETUP_URI, { agentId: mocks.agentId }, 'Agent editor'],
+    [SKILL_SETUP_URI, { source: 'registry' }, 'Skill installer'],
+    [MCP_SETUP_URI, {}, 'MCP installer']
+  ])('routes by the named resource, not by the intent’s shape (%s)', async (resourceUri, intent, shown) => {
     await act(async () =>
       root.render(
         <NativeIntegrationDialog
-          ui={{
-            resourceUri: CODE_HOST_SETUP_URI,
-            resourceVersion: 1,
-            orgId: mocks.orgId,
-            intent: { provider: 'gitea' }
-          }}
+          ui={{ resourceUri, resourceVersion: 1, orgId: mocks.orgId, intent } as NativeMcpUi}
           onClose={vi.fn()}
           onCompleted={vi.fn()}
         />
       )
     )
-    expect(element.textContent).toContain('Code host surface')
+    expect(element.textContent).toContain(shown)
     expect(mocks.createProps).not.toHaveBeenCalled()
   })
 
