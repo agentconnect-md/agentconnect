@@ -499,7 +499,8 @@ describe('delegated webchat MCP operations', () => {
     // re-issuing the write, which would enqueue a second operation.
     const read2 = await remoteRpc(3, 'getOperation', { operationId: pending.operationId })
     expect(read2.statusCode).toBe(200)
-    const settled = JSON.parse(toolText(mcpMessage(read2).result as unknown as ToolCallResult)) as {
+    const operationResult = mcpMessage(read2).result as unknown as ToolCallResult
+    const settled = JSON.parse(toolText(operationResult)) as {
       operationId: string
       toolName: string
       status: string
@@ -517,6 +518,11 @@ describe('delegated webchat MCP operations', () => {
       orgId: DEFAULT_ORG_ID,
       intent: { agentId: made!.id, created: true }
     })
+    // Republished as structured content too, so finding the card never depends on how long the
+    // operation's own text answer happens to be.
+    expect((operationResult as { structuredContent?: { nativeUi?: unknown } }).structuredContent?.nativeUi).toEqual(
+      settled.nativeUi
+    )
     // A pending operation has no result and therefore no card.
     expect(listed.json()).toEqual([expect.not.objectContaining({ nativeUi: expect.anything() })])
   })

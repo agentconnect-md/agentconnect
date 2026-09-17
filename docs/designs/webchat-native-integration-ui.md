@@ -53,7 +53,9 @@ A delegated write does not execute in its own request, so its card has to surviv
 approval hop too. The executed tool's answer is stored as a JSON string inside the bounded
 operation envelope, where no reader of the operation would find it; `getOperation` therefore
 lifts a valid intent out of that string onto the operation itself. A pending operation has no
-result and so no card.
+result and so no card. Any answer carrying a card — a write tool's own, or the one
+`getOperation` lifts — is republished as structured content, so finding the intent never
+depends on how long the tool's text answer happens to be.
 
 GitHub, GitLab and Gitea remain code hosts, not chat platform modules. Their edit
 targets use `kind: codehost-subscription`; chat bindings use `kind: integration`.

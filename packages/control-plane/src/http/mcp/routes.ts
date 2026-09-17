@@ -564,14 +564,21 @@ export function mcpRoutes(deps: HttpDeps) {
         }
         // 204/202-style successes have no body — still hand the model a definite answer.
         const content = [{ type: 'text' as const, text: result.body || `OK (HTTP ${result.statusCode})` }]
-        // A UI tool's whole answer IS the presentation intent, so it is republished as structured
-        // content; a write tool that earns a card keeps its own answer and carries the intent beside it.
-        if (tool.uiResourceUri && nativeApp(tool.uiResourceUri)) {
-          const body: unknown = JSON.parse(result.body)
-          if (!tool.uiEnvelope) return { content, structuredContent: NativeMcpUi.parse(body) }
-          const envelope = NativeUiEnvelope.safeParse(body)
-          if (envelope.success) return { content, structuredContent: envelope.data }
+        let body: unknown
+        try {
+          body = JSON.parse(result.body)
+        } catch {
+          // A 204/202 success, or a route that answered in something other than JSON.
         }
+        // A UI tool's whole answer IS the presentation intent, so it is republished as structured content.
+        if (tool.uiResourceUri && nativeApp(tool.uiResourceUri) && !tool.uiEnvelope) {
+          return { content, structuredContent: NativeMcpUi.parse(body) }
+        }
+        // ANY answer that carries a card beside it is republished too — a write tool's own, or the
+        // one `getOperation` lifts off an approved operation. A reader must not have to dig the
+        // intent out of a text block whose size the tool does not control.
+        const envelope = NativeUiEnvelope.safeParse(body)
+        if (envelope.success) return { content, structuredContent: envelope.data }
         return { content }
       })
 
