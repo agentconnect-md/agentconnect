@@ -1600,12 +1600,32 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return (text ? JSON.parse(text) : undefined) as T
 }
 
+// The CP rejects a malformed body with one generic message and puts the per-field zod
+// issues in `details.issues`; render those so a dialog names the field it refused.
+function schemaIssueMessage(body: Record<string, unknown>): string | null {
+  const issues = (body.details as { issues?: unknown } | undefined)?.issues
+  if (!Array.isArray(issues)) return null
+  const lines = issues
+    .slice(0, 3)
+    .map((raw) => {
+      const issue = raw as { instancePath?: unknown; message?: unknown }
+      if (typeof issue.message !== 'string' || !issue.message) return null
+      const field =
+        typeof issue.instancePath === 'string' ? issue.instancePath.split('/').filter(Boolean).pop() : undefined
+      // Most refinements already name their field; only prefix the ones that don't.
+      return field && !issue.message.includes(field) ? `${field}: ${issue.message}` : issue.message
+    })
+    .filter((line): line is string => line !== null)
+  return lines.length > 0 ? lines.join('; ') : null
+}
+
 async function apiErrorFromResponse(method: string, path: string, res: Response): Promise<ApiError> {
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
   const message =
-    typeof body.message === 'string' && body.message.length > 0
+    (body.message === 'request does not match schema' ? schemaIssueMessage(body) : null) ??
+    (typeof body.message === 'string' && body.message.length > 0
       ? body.message
-      : `${method} ${path} → ${res.status} ${res.statusText}`
+      : `${method} ${path} → ${res.status} ${res.statusText}`)
   const code = typeof body.code === 'string' ? body.code : undefined
   // The token is still valid but its account was deleted (admin action): nothing in
   // the console can work, and no retry helps, so sign out instead of surfacing the

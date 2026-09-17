@@ -574,6 +574,8 @@ const SkillSourceSubDir = z
   .trim()
   .min(1)
   .max(1_024)
+  // A pasted path often ends in "/"; drop it instead of reading an empty final segment.
+  .transform((s) => s.replace(/\/+$/, ''))
   .refine(
     (s) =>
       !s.startsWith('/') &&

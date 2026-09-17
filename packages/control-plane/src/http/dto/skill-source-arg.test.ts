@@ -75,6 +75,18 @@ describe('SkillSourceArg', () => {
       expect(CreateSkillSourceBody.safeParse({ name: 'kit', source: 'o/r', subDir }).success, subDir).toBe(false)
       expect(UpdateSkillSourceBody.safeParse({ subDir }).success, subDir).toBe(false)
     }
+    // A path pasted with a trailing slash is the same directory, not an empty segment.
+    for (const subDir of ['packs/core/', 'packs/core//']) {
+      expect(CreateSkillSourceBody.safeParse({ name: 'kit', source: 'o/r', subDir }).data?.subDir, subDir).toBe(
+        'packs/core'
+      )
+      expect(UpdateSkillSourceBody.safeParse({ subDir }).data?.subDir, subDir).toBe('packs/core')
+    }
+    // …but a path that is nothing but slashes still has no directory to name.
+    for (const subDir of ['/', '//']) {
+      expect(CreateSkillSourceBody.safeParse({ name: 'kit', source: 'o/r', subDir }).success, subDir).toBe(false)
+      expect(UpdateSkillSourceBody.safeParse({ subDir }).success, subDir).toBe(false)
+    }
     expect(CreateSkillSourceBody.safeParse({ name: 'kit', source: 'o/r', skills: ['same', 'same'] }).success).toBe(
       false
     )

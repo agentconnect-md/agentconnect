@@ -19,6 +19,7 @@ import {
   fetchMemoryAdminSurface,
   fmtCountCompact,
   invalidateGithubRepoRosterCache,
+  createSkillSource,
   putSessionVisibility,
   listMemoryRecordHistory,
   listMemoryFileHistory,
@@ -1001,5 +1002,50 @@ describe('a POST that commands rather than creates', () => {
         })
     )
     await expect(disconnectLinearWorkspace('bot-9')).rejects.toThrow(/only a connected Linear workspace/)
+  })
+})
+
+describe('a schema rejection', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  const stub = (body: unknown) =>
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () => new Response(JSON.stringify(body), { status: 400, headers: { 'content-type': 'application/json' } })
+      )
+    )
+
+  it('reports the field the CP refused instead of its generic sentence', async () => {
+    // The CP answers every malformed body with one message; the dialog that shows it
+    // could only say "request does not match schema" for a fixable typo in one field.
+    setApiOrgId('org-1')
+    stub({
+      error: 'Bad Request',
+      statusCode: 400,
+      message: 'request does not match schema',
+      details: {
+        issues: [
+          { instancePath: '/subDir', message: 'subDir must be a safe relative path' },
+          { instancePath: '/name', message: 'Too small: expected string to have >=1 characters' }
+        ]
+      }
+    })
+
+    await expect(createSkillSource({ name: '', source: 'o/r', skills: [] })).rejects.toThrow(
+      'subDir must be a safe relative path; name: Too small: expected string to have >=1 characters'
+    )
+  })
+
+  it('keeps the generic sentence when the rejection carries no issues', async () => {
+    setApiOrgId('org-1')
+    stub({ error: 'Bad Request', statusCode: 400, message: 'request does not match schema' })
+
+    await expect(createSkillSource({ name: 'kit', source: 'o/r', skills: [] })).rejects.toThrow(
+      'request does not match schema'
+    )
   })
 })
