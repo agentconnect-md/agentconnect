@@ -33,7 +33,7 @@ Two implementation notes, recorded where they will be looked for:
    — `@mention` or not — is what the conversation shows; delivery is the ordinary
    routing ladder's decision, and whether to answer is the reader's.
 3. Keep `sendMessage` for postless agent calls, direct messages, channel-root
-   posts, and parent-session replies.
+   posts, in-thread updates, and parent-session replies.
 4. Make a parent-session reply an injection: the report itself is never published
    to IM, while the parent it resumes runs an ordinary turn and may answer in its
    own conversation.
@@ -59,10 +59,33 @@ The ordinary reply already has the correct channel, thread, transport scope,
 streaming lifecycle, and sender identity. A second sending tool invocation would
 create an unnecessary competing delivery path.
 
-### 2.2 `sendMessage` has no visible in-thread form
+### 2.2 `sendMessage`'s one visible in-thread form is the update
 
-No message-target branch accepts `thread`. A visible `sendMessage` post is either
-a direct message or a channel-root message.
+A visible `sendMessage` post is a direct message, a channel-root message, or an
+UPDATE into an existing thread. Only the bare `channel` branch accepts `thread`,
+and only to name a thread that already exists.
+
+The update form exists for what neither the ordinary reply nor a root post can
+do: place a message in a conversation the agent is NOT answering. The governing
+principle is that an agent should be able to act in everything it already has
+access to. It can READ any thread it can reach (`getThreadHistory` is explicitly
+"a thread the agent is NOT answering") and REACT in one (`addReaction` takes any
+`channel` + `messageTs`), so a write is the one capability withheld — and nothing
+about a thread coordinate is more dangerous in a post than in a reaction.
+
+The case that makes this concrete is the crossposted message. The same request
+lands in several channels, each with its own thread; the agent answers in one and
+has a status update the others are waiting for. Today it can only post that
+update at each channel's ROOT, detaching it from the very discussion it answers
+and leaving each thread looking unanswered. The reader's conversation is the
+right place for it.
+
+That the removed form (see §9) was removed for agent-routing reasons is what made
+this look settled: §2.1 covers the thread the agent is in, and §2.3/§3.2 cover
+activation between agents. Neither speaks to placing an update in a human
+conversation elsewhere.
+
+It is not a second way to speak in the CURRENT thread; §2.1 still governs that.
 
 The complete target union is:
 
@@ -88,6 +111,7 @@ type UserTarget = {
 
 type ChannelTarget = {
   channel: string
+  thread?: string // an EXISTING thread's root id — the update form (§2.4)
   platform?: Platform
   integrationId?: string
   message: string
@@ -106,17 +130,21 @@ The supported forms are:
 | -------------- | --------------------------------------------------- | ------------------------------------------------------------------ |
 | `toAgent`      | Direct, postless agent call                         | One visible channel-root mention plus one logical agent activation |
 | `toUser`       | Direct message to exactly one human                 | One channel-root post mentioning one or more humans                |
-| bare `channel` | Not applicable                                      | One channel-root post with no recipient                            |
+| bare `channel` | Not applicable                                      | One channel-root post, or an update in `thread` when given (§2.4)  |
 | `sessionId`    | Direct insertion into the authorized parent session | Not applicable                                                     |
 
 Consequences:
 
-- `toAgent + channel + thread` is invalid.
-- `toUser + channel + thread` is invalid.
-- bare `channel + thread` is invalid.
+- `toAgent + channel + thread` is invalid. A wake anchors to the post the daemon
+  just created (§3.2); an existing thread offers no such anchor, and the
+  activation rendezvous has no pairing key to converge on.
+- `toUser + channel + thread` is invalid. Recipient rendering stays on the root
+  forms; an update addresses a human by writing the platform mention in its own
+  body, which is what an agent writing into a thread it does not own should do.
+- bare `channel + thread` is the update form (§2.4).
 - A `toUser` array still requires `channel`; it never means group DM.
 - A channel-root post still starts a new platform thread/session according to
-  the platform's conversation model.
+  the platform's conversation model. An update starts none — it joins one.
 
 ### 2.3 Agent-authored messages route like any other message
 
@@ -183,6 +211,55 @@ agent in the channel. A channel with several `auto`-routed agents will reach the
 loop guard quickly, and the guard is a latch that only an explicit `!resume`
 clears. Operators wanting bounded multi-agent chatter should prefer `@mention`
 addressing or a narrower per-channel trigger.
+
+### 2.4 In-thread updates
+
+The update is an ordinary agent-authored message that a tool placed, rather than
+one the turn placed. Everything that follows falls out of that sentence.
+
+**Routing — no special case.** An update takes the §2.3 ladder like any other
+verified agent-authored message: the thread's PARTICIPANTS, author excluded, plus
+any agent its body newly names. It is not muted, and it is not narrowed. A thread
+is a conversation, so an agent in the thread hearing what was said there is the
+rule working, not a leak. Muting it would be the exception needing justification.
+
+The asymmetry with a root post is the same rule meeting a different thread state:
+a root post creates a thread whose participant set is EMPTY, so "everyone minus
+the author" is nobody. A thread that already exists has members. Nothing about
+root posts is inherently safer.
+
+**Hop accounting — inherit, never restart.** The update carries the posting turn's
+source hop, so it is admitted at `depth + 1` against the cap. This is the one rule
+the form genuinely needs. §2.3 promises a multi-agent exchange "terminates because
+it hits a limit"; an update minted at depth `0` would let a cron-woken agent
+re-arm a conversation on every tick, and that promise would quietly stop holding.
+
+**Fences — unchanged and unlifted.** Each recipient is an independent delivery
+under its own `!stop` mute, Off/gated fence, and directional call policy. An
+update can no more lift a thread mute than any other agent traffic can (§2.3);
+`!stop` is a human's direct control over a running exchange. Agent-authored text
+still cannot issue control commands (§6).
+
+**Anchoring — the return path is the real problem, and this is its answer.** A
+session anchors to a post (§3.2 step 4). An agent writing into a thread it does
+not own has no session there, so a human's reply has nowhere to land but a
+lineage-less session — which §8.6 refuses to synthesize. The rule:
+
+1. An update JOINS its author to the target thread, exactly as a mention joins an
+   agent (§2.3).
+2. It seeds a session for the author keyed by that thread, with origin = the
+   posting session — the same lineage edge a root post gets (session-concept case
+   2a), pointed at a thread that already existed instead of one just created.
+3. When the author already has a session on that thread, the update records into
+   it and seeds nothing. Posting where you already are is not a new context.
+4. A reply in that thread therefore resumes a session with a parent, and the work
+   that produced the update is reachable from it.
+
+**Refusals — never repurposed onto the root.** A `thread` that is not a thread
+root, or a platform that cannot address a thread, is REFUSED rather than silently
+posted at the root, which is the existing spirit of §2.2 and matches `shareFile`'s
+treatment of a Feishu topic root. A `thread` equal to the caller's own is refused
+with §2.1's repair named: write the ordinary turn reply.
 
 ## 3. `toAgent` delivery behavior
 
@@ -567,10 +644,11 @@ daemon, never the Control Plane or relay.
 
 The main implementation surfaces are:
 
-- `packages/daemon/src/mcp/tools.ts`: remove every `thread` property and update
-  tool guidance.
-- `packages/daemon/src/mcp/ops.ts`: enforce the new target union, render
-  channel-root mentions, and remove visible in-thread execution.
+- `packages/daemon/src/mcp/tools.ts`: carry `thread` on the bare-`channel`
+  branch only, and update tool guidance.
+- `packages/daemon/src/mcp/ops.ts`: enforce the target union, render channel-root
+  mentions, and execute the update form — post into the named thread, record the
+  outbound row on it, and seed or reuse the author's session there (§2.4).
 - `packages/daemon/src/slack/connection.ts`: retain AgentConnect-authored events,
   stamp response/recipient/pairing state, split only at mention-safe boundaries,
   and surface only the finalized routing event.
@@ -609,7 +687,16 @@ identity, placement, policy, and mention-address metadata.
 
 At minimum, cover:
 
-1. `sendMessage` schemas expose no `thread` property in any branch.
+1. `sendMessage` exposes `thread` on the bare-`channel` branch only; supplying it
+   on `toAgent`, `toUser`, or `sessionId` is rejected, never ignored.
+   1a. An update posts into the named thread, not the root; it reaches the thread's
+   other participants, is excluded from its author, carries the posting turn's
+   hop rather than depth `0`, and is refused by a `!stop` mute it cannot lift.
+   1b. An update seeds the author's session on the target thread with the posting
+   session as origin, reuses that session when one already exists, and a human's
+   reply there resumes it with its lineage intact.
+   1c. A non-root `thread`, a thread-less platform, and a `thread` equal to the
+   caller's own are each refused, and none of them falls back to a root post.
 2. `toAgent` without `channel` is postless and headless.
 3. `toAgent + channel` posts at root, renders the exact agent mention, and
    produces one child activation.
