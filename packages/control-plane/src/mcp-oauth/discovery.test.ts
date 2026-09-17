@@ -6,6 +6,7 @@ import {
   discoverAuthServer,
   discoverMcpAuthorization,
   discoverProtectedResource,
+  issuerEquivalent,
   parseWwwAuthenticate,
   probeMcpEndpoint,
   protectedResourceMetadataUrls,
@@ -278,11 +279,34 @@ describe('discoverAuthServer', () => {
     expect(dial.tried).toHaveLength(1)
   })
 
-  it('rejects a trailing-slash issuer difference — this comparison is byte-exact', async () => {
+  it('accepts a path-less issuer that differs only by its trailing slash (Google spells the two differently)', async () => {
     const dial = fakeDial({
       'https://auth.example.test/.well-known/oauth-authorization-server': ok(200, { ...AS_DOC, issuer: `${ISSUER}/` })
     })
-    expect(await discoverAuthServer(dial, ISSUER)).toEqual({ ok: false, failure: 'issuer_mismatch' })
+    const result = await discoverAuthServer(dial, ISSUER)
+    expect(result.ok).toBe(true)
+    // The document's own spelling is what the flow keeps: it is what `iss` responses will carry.
+    if (result.ok) expect(result.value.issuer).toBe(`${ISSUER}/`)
+    expect(
+      await discoverAuthServer(
+        fakeDial({
+          'https://auth.example.test/.well-known/oauth-authorization-server': ok(200, AS_DOC)
+        }),
+        `${ISSUER}/`
+      )
+    ).toMatchObject({ ok: true })
+  })
+
+  it('still treats every other issuer difference as a mismatch', () => {
+    expect(issuerEquivalent(ISSUER, ISSUER)).toBe(true)
+    expect(issuerEquivalent(`${ISSUER}/`, ISSUER)).toBe(true)
+    expect(issuerEquivalent(`${ISSUER}/tenant/`, `${ISSUER}/tenant`)).toBe(false)
+    expect(issuerEquivalent(`${ISSUER}/tenant`, ISSUER)).toBe(false)
+    expect(issuerEquivalent('https://other.example.test/', ISSUER)).toBe(false)
+    expect(issuerEquivalent('http://auth.example.test/', ISSUER)).toBe(false)
+    expect(issuerEquivalent('https://auth.example.test:8443/', ISSUER)).toBe(false)
+    expect(issuerEquivalent(`${ISSUER}/?x=1`, ISSUER)).toBe(false)
+    expect(issuerEquivalent('not a url', ISSUER)).toBe(false)
   })
 
   it('rejects a document missing a required endpoint', async () => {

@@ -291,6 +291,31 @@ export async function discoverProtectedResource(
   return { ok: false, failure: sawUnreachable ? 'discovery_unreachable' : 'discovery_not_protected' }
 }
 
+/**
+ * RFC 8414 §3.3 / OIDC Discovery §4.3 want the document's `issuer` byte-identical to the
+ * identifier the well-known URL was built from, and a document fetched from one host may never
+ * claim to be another's. One concession, for interoperability: an issuer with no path may be
+ * written with or without its trailing slash. RFC 3986 §6.2.3 makes `https://host` and
+ * `https://host/` the same resource, and real deployments disagree on which spelling to publish —
+ * Google's protected-resource documents name `https://accounts.google.com/` while its metadata
+ * says `https://accounts.google.com`. Any other difference (path, host, scheme, port, a trailing
+ * slash on a non-empty path) is still a mismatch.
+ */
+export function issuerEquivalent(advertised: string, expected: string): boolean {
+  if (advertised === expected) return true
+  let a: URL
+  let b: URL
+  try {
+    a = new URL(advertised)
+    b = new URL(expected)
+  } catch {
+    return false
+  }
+  if (a.pathname !== '/' || b.pathname !== '/') return false
+  if (a.search !== '' || b.search !== '' || a.hash !== '' || b.hash !== '') return false
+  return a.origin === b.origin && a.origin !== 'null'
+}
+
 function readAuthServer(json: unknown, expectedIssuer: string): AuthServerMetadata | 'mismatch' | null {
   if (typeof json !== 'object' || json === null) return null
   const doc = json as Record<string, unknown>
@@ -298,9 +323,7 @@ function readAuthServer(json: unknown, expectedIssuer: string): AuthServerMetada
   const authorizationEndpoint = str(doc.authorization_endpoint)
   const tokenEndpoint = str(doc.token_endpoint)
   if (issuer === undefined || authorizationEndpoint === undefined || tokenEndpoint === undefined) return null
-  // RFC 8414 §3.3 / OIDC Discovery §4.3: byte-identical, no normalization. A document
-  // fetched from one host may not claim to be another's.
-  if (issuer !== expectedIssuer) return 'mismatch'
+  if (!issuerEquivalent(issuer, expectedIssuer)) return 'mismatch'
   const registration = str(doc.registration_endpoint)
   const scopes = strArray(doc.scopes_supported)
   const methods = strArray(doc.code_challenge_methods_supported)
