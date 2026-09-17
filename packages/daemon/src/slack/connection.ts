@@ -2880,9 +2880,14 @@ export class SlackConnection implements PlatformConnection {
   /** Best-effort working indicator: the agent-session lifecycle enum. A non-empty `status`
    *  marks the session `processing` (Slack renders "is working…" + the Stop control in the
    *  DM container) under the acting agent's identity; '' marks it `active`. The text itself
-   *  is never displayed — Slack's enum API takes no custom text. Never throws into dispatch. */
-  async setStatus(channel: string, threadTs: string, status: string, options?: SlackStatusOptions): Promise<void> {
-    await this.queue.enqueue(() =>
+   *  is never displayed — Slack's enum API takes no custom text. Never throws into dispatch.
+   *
+   *  Resolves `true` when Slack accepted the write (or the slot already showed that state),
+   *  `false` when it did not. The turn-start acknowledgement reads it: a `processing` write
+   *  Slack took IS the acknowledgement, and only a refused one falls back to the reaction
+   *  (docs/product-conventions.md, "A trigger is acknowledged before it is answered"). */
+  async setStatus(channel: string, threadTs: string, status: string, options?: SlackStatusOptions): Promise<boolean> {
+    return this.queue.enqueue(() =>
       this.setSessionLifecycle(channel, threadTs, status ? 'processing' : 'active', options)
     )
   }
@@ -2922,14 +2927,15 @@ export class SlackConnection implements PlatformConnection {
     threadTs: string,
     status: 'processing' | 'active',
     options?: SlackStatusOptions
-  ): Promise<void> {
+  ): Promise<boolean> {
     const key = `${channel}:${threadTs}`
     const username = status === 'processing' && !this.statusIdentityUnsupported ? options?.username?.trim() : undefined
     const iconUrl = status === 'processing' && !this.statusIdentityUnsupported ? options?.icon_url?.trim() : undefined
     // The owner joins the dedupe key: an identity-identical handover between two turns must
     // still refire, or the slot's displayed owner would keep pointing the Stop at the old one.
     const signature = `${status}|${username ?? ''}|${iconUrl ?? ''}|${options?.sessionKey ?? ''}`
-    if (this.sessionLifecycle.get(key) === signature) return
+    // A dedupe hit is a write Slack already took: the slot shows this state.
+    if (this.sessionLifecycle.get(key) === signature) return true
     try {
       await this.app.client.agents.sessions.setStatus({
         channel_id: channel,
@@ -2941,6 +2947,7 @@ export class SlackConnection implements PlatformConnection {
       this.sessionLifecycle.set(key, signature)
       if (status === 'processing' && options?.sessionKey) this.slotOwner.set(key, options.sessionKey)
       else if (status === 'active') this.slotOwner.delete(key)
+      return true
     } catch (err) {
       // Identity needs chat:write.customize (the enum alone runs on chat:write). A manually
       // created bot without it keeps the working indicator under the app identity.
@@ -2953,6 +2960,7 @@ export class SlackConnection implements PlatformConnection {
       this.deps.log?.debug(
         `slack: session lifecycle ${status} failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`
       )
+      return false
     }
   }
 

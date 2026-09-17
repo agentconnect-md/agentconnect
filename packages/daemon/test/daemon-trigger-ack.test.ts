@@ -32,7 +32,7 @@ function scaffold(): string {
   return root
 }
 
-async function harness() {
+async function harness(opts: { statusShown?: boolean | Error } = {}) {
   const root = scaffold()
   const fakeHost = {
     __started: true,
@@ -50,15 +50,22 @@ async function harness() {
   })
   await daemon.start()
   const react = vi.fn(async () => {})
+  const statusShown = opts.statusShown ?? true
+  // The Slack lifecycle facet reports whether Slack took the `processing` write.
+  const setStatus = vi.fn(async () => {
+    if (statusShown instanceof Error) throw statusShown
+    return statusShown
+  })
   vi.spyOn(daemon as never as { replyConnFor: () => unknown }, 'replyConnFor').mockReturnValue({
     react,
-    setStatus: vi.fn(async () => {}),
+    setStatus,
     setTitle: vi.fn(async () => {}),
     postMessage: vi.fn(async () => 'reply-ts'),
     postContext: vi.fn(async () => {})
   })
   return {
     react,
+    setStatus,
     dispatch: (msg: Record<string, unknown>) =>
       (daemon as never as { dispatch: (a: string, m: unknown) => Promise<unknown> }).dispatch('bot-a', {
         traceId: 'ack',
@@ -98,6 +105,49 @@ describe('turn-start acknowledgement', () => {
         thread: '99887766'
       })
       expect(h.react).toHaveBeenCalledWith('99887766', '11223344', 'seen')
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('on Slack, a lifecycle write Slack took is the acknowledgement: no reaction', async () => {
+    const h = await harness({ statusShown: true })
+    try {
+      await h.dispatch({ msgId: 'slack:C1:1700000000.000100', platform: 'slack', channel: 'C1', isDm: true })
+      expect(h.setStatus).toHaveBeenCalled() // the turn ran and asked for the indicator
+      expect(h.react).not.toHaveBeenCalled()
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('on Slack, a refused lifecycle write falls back to the reaction, so the turn never shows neither', async () => {
+    const h = await harness({ statusShown: false })
+    try {
+      await h.dispatch({ msgId: 'slack:C1:1700000000.000100', platform: 'slack', channel: 'C1', isDm: true })
+      expect(h.setStatus).toHaveBeenCalled()
+      await vi.waitFor(() => expect(h.react).toHaveBeenCalledWith('C1', '1700000000.000100', 'seen'))
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('on Slack, a lifecycle write that throws also falls back to the reaction', async () => {
+    const h = await harness({ statusShown: new Error('slack down') })
+    try {
+      await h.dispatch({ msgId: 'slack:C1:1700000000.000100', platform: 'slack', channel: 'C1', isDm: true })
+      expect(h.setStatus).toHaveBeenCalled()
+      await vi.waitFor(() => expect(h.react).toHaveBeenCalledWith('C1', '1700000000.000100', 'seen'))
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('a typing hint is not an acknowledgement: Telegram reacts even though its indicator was shown', async () => {
+    const h = await harness({ statusShown: true })
+    try {
+      await h.dispatch({ msgId: 'telegram:-1002233:87', platform: 'telegram', channel: '-1002233' })
+      expect(h.react).toHaveBeenCalledWith('-1002233', '87', 'seen')
     } finally {
       await h.close()
     }

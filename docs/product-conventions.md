@@ -191,21 +191,32 @@ phase, and a cancelled or displaced turn cannot publish late updates into its su
 An agent's answer arrives late by nature: a turn boots a session, runs tools, and
 only then writes. Until it does, whoever mentioned the agent has no way to tell
 "working on it" from "never saw it" — and the surfaces differ in how much silence
-they leave. A Slack assistant thread has a status bar and Telegram has a typing
-hint, but a message in a channel has neither, and an issue or pull request has
-nothing at all until one comment appears at the very end.
+they leave. Telegram has a typing hint that expires on its own, a message in a
+channel has nothing, and an issue or pull request has nothing at all until one
+comment appears at the very end.
 
-So every turn with a real inbound message reacts to that message with 👀 as it
-starts. One rule across chat platforms and code hosts: the reaction lands on the
-exact message that fired the turn — the comment a human wrote, not the thread it
-sits in and not the issue that contains it — and on the issue or pull request
-itself only when the subject is what fired.
+So every turn with a real inbound message is acknowledged as it starts, and the
+default form of that acknowledgement is a 👀 reaction on the exact message that
+fired the turn — the comment a human wrote, not the thread it sits in and not the
+issue that contains it — and on the issue or pull request itself only when the
+subject is what fired. One rule across chat platforms and code hosts.
 
-It is an acknowledgement, not a status: it is placed once and never taken back or
-swapped for an outcome. That is deliberate — it records that the turn was seen,
-which stays true whether the turn answers, is interrupted, or dies with nothing
-to say, and a reader who returns later can still tell a message that was picked
-up from one that was never routed. The answer itself supersedes it.
+Slack is the one surface with a durable indicator of its own: the agent-session
+lifecycle marks the thread "is working…", with a Stop control, for the whole turn
+and withdraws it when the turn ends. Where Slack confirms it took that write, the
+indicator **is** the acknowledgement and no reaction is placed — one signal instead
+of two, and nothing left on the message once the answer has superseded it, which
+matters in workspaces where 👀 already carries a meaning between people. Only when
+the write is refused — the app lacks the scope, the API fails, the turn shows no
+indicator — does the reaction fall back in, so a Slack turn never shows neither.
+A typing hint is not an indicator in this sense: it acknowledges nothing, so
+Telegram and Discord react as before.
+
+The reaction is an acknowledgement, not a status: it is placed once and never
+taken back or swapped for an outcome. That is deliberate — it records that the
+turn was seen, which stays true whether the turn answers, is interrupted, or dies
+with nothing to say, and a reader who returns later can still tell a message that
+was picked up from one that was never routed. The answer itself supersedes it.
 
 It is also chrome, never content. Nothing waits on it, a platform that cannot
 react (or an installation that was never granted permission to) simply shows

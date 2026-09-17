@@ -11726,8 +11726,14 @@ export class Daemon {
       statusThread: plan.statusThread,
       msgId: msg.msgId
     })
-    this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
-    this.acknowledgeTrigger(run)
+    const indicatorShown = this.showActivity(
+      replyConn,
+      msg.channel,
+      plan.statusThread,
+      plan.startupActivityLabel,
+      plan.statusOptions
+    )
+    this.acknowledgeTrigger(run, indicatorShown)
     // Two holds, one release. A platform whose output does NOT go through `replyConn` still
     // needs the reconciler to drain before it stops that transport (§7.5): without a lease the
     // prune pass can stop the client mid-turn and the settling activity is simply lost.
@@ -12403,8 +12409,8 @@ export class Daemon {
       if (p.outputSuppressed || p.plan.sessionKey === exclude) continue
       survivor = p // insertion order: the last match is the newest admitted turn
     }
-    if (survivor) this.showActivity(conn, channel, statusThread, 'is thinking…', survivor.plan.statusOptions)
-    else this.showActivity(conn, channel, statusThread, '')
+    if (survivor) void this.showActivity(conn, channel, statusThread, 'is thinking…', survivor.plan.statusOptions)
+    else void this.showActivity(conn, channel, statusThread, '')
   }
 
   /** Replay the metadata session/new|load emitted before Pending existed, then install the
@@ -12683,7 +12689,7 @@ export class Daemon {
     }
     // Startup observers have settled; a cold host's initial activity now yields to its ordinary turn.
     if (!plan.hostAlreadyRunning)
-      this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
+      void this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
     // Post/refresh the session status bar up front — with the model now known (session
     // created) plus any usage carried over from prior turns — so it sits at the top of
     // the thread before the reply streams in.
@@ -14930,33 +14936,57 @@ export class Daemon {
   }
 
   /** Show the transient "working" indicator: Slack's agent-session working state (non-empty
-   *  text; '' clears) or Telegram's typing chat-action (self-expiring, so a clear is a no-op). */
-  private showActivity(
+   *  text; '' clears) or Telegram's typing chat-action (self-expiring, so a clear is a no-op).
+   *
+   *  Resolves `true` only when a DURABLE indicator is now showing for this turn — Slack's
+   *  lifecycle write, confirmed by the API. A typing hint resolves `false`: it expires on its
+   *  own and acknowledges nothing. Never rejects; callers that only fire it may drop the promise. */
+  private async showActivity(
     conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined,
     channel: string,
     thread: string,
     text: string,
     slackStatusOptions?: SlackStatusOptions
-  ): void {
-    if (!conn) return
+  ): Promise<boolean> {
+    if (!conn) return false
     // Duck-type by method (so test fakes work): Slack has setStatus ('' clears the indicator);
     // Telegram/Discord have sendChatAction (a self-expiring "typing…", so a clear is a no-op).
     const slack = conn as Partial<SlackConnection>
-    if (typeof slack.setStatus === 'function') void slack.setStatus(channel, thread, text, slackStatusOptions)
-    else if (text && typeof (conn as Partial<TelegramConnection>).sendChatAction === 'function')
+    if (typeof slack.setStatus === 'function') {
+      if (!text) {
+        void slack.setStatus(channel, thread, text, slackStatusOptions)
+        return false
+      }
+      try {
+        return (await slack.setStatus(channel, thread, text, slackStatusOptions)) === true
+      } catch {
+        return false
+      }
+    }
+    if (text && typeof (conn as Partial<TelegramConnection>).sendChatAction === 'function')
       void (conn as TelegramConnection).sendChatAction(channel)
+    return false
   }
 
-  /** Light the "seen it" reaction on the message that started this turn — for a code-host
-   *  turn, the only signal a human gets before the single end-of-turn comment lands, and in
-   *  a chat channel the only one outside an assistant thread.
+  /** Acknowledge the message that started this turn before the agent has anything to say
+   *  (docs/product-conventions.md, "A trigger is acknowledged before it is answered"). For a
+   *  code-host turn the "seen it" reaction is the only signal before the single end-of-turn
+   *  comment lands; in a chat channel it is the only one where no durable indicator exists.
    *
-   *  Fire-and-forget chrome: never awaited, never retried, and never withdrawn — it records
-   *  that the turn was seen, which stays true even if the turn later dies with nothing to
-   *  say. Origins with no inbound message to react to (cron, an agent wake, webchat) and
-   *  platforms with no reactions both fall through silently, and a turn whose reply
-   *  connection is withheld stays as silent here as it is everywhere else. */
-  private acknowledgeTrigger(run: TurnRun): void {
+   *  On Slack the durable indicator is the agent-session lifecycle: `showActivity` has just
+   *  asked Slack to mark the thread `processing` ("is working…" + Stop), and when Slack took
+   *  that write it IS the acknowledgement — one signal, withdrawn when the turn ends, instead
+   *  of a reaction that stays on the message forever next to it. Only when the write was
+   *  refused (missing scope, API failure, no indicator for this turn) does the reaction fall
+   *  back in, so a turn never shows neither. `indicatorShown` is that outcome; a platform
+   *  without a durable indicator resolves it `false` and reacts as before.
+   *
+   *  Fire-and-forget chrome: never awaited by dispatch, never retried, and never withdrawn —
+   *  it records that the turn was seen, which stays true even if the turn later dies with
+   *  nothing to say. Origins with no inbound message to react to (cron, an agent wake,
+   *  webchat) and platforms with no reactions both fall through silently, and a turn whose
+   *  reply connection is withheld stays as silent here as it is everywhere else. */
+  private acknowledgeTrigger(run: TurnRun, indicatorShown: Promise<boolean> = Promise.resolve(false)): void {
     const { entry, plan, replyConn } = run
     const { msg } = entry
     if (msg.source !== 'user' && msg.source !== 'hook') return
@@ -14970,7 +15000,13 @@ export class Daemon {
     // Duck-typed like showActivity, so a connection fake without the optional facet is fine.
     const react = (replyConn as Partial<SlackConnection> | undefined)?.react
     const at = nativeMessageCoordinates(msg)
-    if (react && at) void react.call(replyConn, at.channel, at.messageId, 'seen').catch(() => {})
+    if (!react || !at) return
+    const place = () => void react.call(replyConn, at.channel, at.messageId, 'seen').catch(() => {})
+    if (plan.platform !== 'slack') {
+      place()
+      return
+    }
+    void indicatorShown.then((shown) => (shown ? undefined : place()), place)
   }
 
   /** Serialize action application per session so in-place edits never race on the

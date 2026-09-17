@@ -943,6 +943,25 @@ describe('SlackConnection assistant DM threads', () => {
 })
 
 describe('SlackConnection.setStatus', () => {
+  it('reports whether Slack took the lifecycle write: true on success and on a dedupe hit, false on failure', async () => {
+    let fail = false
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        fakeAppWith({
+          setStatus: async () => {
+            if (fail) throw new Error('internal_error')
+            return {}
+          }
+        }) as any
+    )
+    expect(await conn.setStatus('C1', '123.45', 'is thinking…')).toBe(true)
+    // Same signature again: nothing is sent, but the slot already shows the state.
+    expect(await conn.setStatus('C1', '123.45', 'is thinking…')).toBe(true)
+    fail = true
+    expect(await conn.setStatus('C1', '123.45', '')).toBe(false)
+  })
+
   it('maps a working status to agents.sessions.setStatus with the acting agent identity', async () => {
     const calls: any[] = []
     const conn = new SlackConnection(
@@ -1111,7 +1130,7 @@ describe('SlackConnection.setStatus', () => {
     ])
   })
 
-  it('keeps a failing lifecycle call out of dispatch', async () => {
+  it('keeps a failing lifecycle call out of dispatch, reporting it as not shown', async () => {
     const conn = new SlackConnection(
       { ...deps(), sendIntervalMs: 0 } as any,
       () =>
@@ -1121,7 +1140,7 @@ describe('SlackConnection.setStatus', () => {
           }
         }) as any
     )
-    await expect(conn.setStatus('C1', '123.45', 'is thinking…')).resolves.toBeUndefined()
+    await expect(conn.setStatus('C1', '123.45', 'is thinking…')).resolves.toBe(false)
   })
 })
 
