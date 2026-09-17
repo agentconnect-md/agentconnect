@@ -652,15 +652,6 @@ export async function sendMessage(
       ...(ctx.agentName ? { username: ctx.agentName } : {}),
       ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
       agentAuthorId: ctx.agentId,
-      // §3.2/§4: the visible half of a paired call is COMPLETE when posted — no later
-      // finalization edit closes it — so it is stamped `final` with the pairing id here.
-      //
-      // The recipient set NAMES THE TARGET, and must: ingress selects targets from this
-      // field, so an empty set makes the echo unroutable and the platform-first
-      // rendezvous unreachable — a lost wake would then leave no record at all, silently,
-      // instead of the delivery failure §8.6 promises. It cannot double-activate: the
-      // pairing id is checked first at ingress, which routes this event to the
-      // claim-an-observation branch and never to dispatch.
       // §2.4: an update is routed by ingress like any other agent-authored message, so it must
       // arrive FINALIZED and carrying this turn's hop. Unstamped it would either be unroutable
       // or start a fresh chain at depth 0 — and a depth-0 update lets a cron-woken agent re-arm
@@ -675,6 +666,15 @@ export async function sendMessage(
             }
           }
         : {}),
+      // §3.2/§4: the visible half of a paired call is COMPLETE when posted — no later
+      // finalization edit closes it — so it is stamped `final` with the pairing id here.
+      //
+      // The recipient set NAMES THE TARGET, and must: ingress selects targets from this
+      // field, so an empty set makes the echo unroutable and the platform-first
+      // rendezvous unreachable — a lost wake would then leave no record at all, silently,
+      // instead of the delivery failure §8.6 promises. It cannot double-activate: the
+      // pairing id is checked first at ingress, which routes this event to the
+      // claim-an-observation branch and never to dispatch.
       ...(agentCallDeliveryId !== undefined && toAgent !== undefined
         ? {
             response: {
