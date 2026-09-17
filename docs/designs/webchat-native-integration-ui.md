@@ -45,8 +45,9 @@ same two cards the Console tab mounts, each row keeping its own add and remove c
 optionally narrowed to one with `focus`. The installers only ADD; disabling a skill or
 detaching an MCP server is a per-row decision over live state, and naming the row to take
 away in a tool argument would mean the model guessing at rows it has never seen. So removal
-is the roster, not a tool. Each row saves itself as it is toggled, and Done reports the
-resulting counts.
+is the roster, not a tool. Each row saves itself as it is toggled, and Done
+reports the resulting counts — held while a row's write is still in flight, so the counts are
+never stale and a card is never unmounted with an error still to show.
 
 None of the four carries a credential. A secret env var, an MCP header value and an
 OAuth client secret are typed into the dialog under the reader's Console JWT, never into

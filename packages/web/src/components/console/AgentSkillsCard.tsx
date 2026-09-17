@@ -52,7 +52,16 @@ function selectionFor(enabled: string[], name: string): { all: boolean; skills: 
   return { all, skills: new Set(mine.map(skillOf).filter((s) => s !== '*')) }
 }
 
-export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
+export function AgentSkillsCard({
+  agentId,
+  canEdit,
+  onBusyChange
+}: {
+  agentId: string
+  canEdit: boolean
+  /** Reports a write in flight, so a host dialog can hold its own completion until the row settles. */
+  onBusyChange?: (busy: boolean) => void
+}) {
   const { updateAgent, skillSources, skillSourcesLoading } = useConsoleData()
   const [enabled, setEnabled] = useState<string[] | null>(null) // saved refs; null ⇒ not loaded
   const [managedEnabled, setManagedEnabled] = useState<string[] | null>(null)
@@ -65,6 +74,9 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
   const [creating, setCreating] = useState(false)
   const [browsing, setBrowsing] = useState(false)
   const fetched = useRef(false)
+  useEffect(() => {
+    onBusyChange?.(saving)
+  }, [saving, onBusyChange])
 
   useEffect(() => {
     if (fetched.current) return

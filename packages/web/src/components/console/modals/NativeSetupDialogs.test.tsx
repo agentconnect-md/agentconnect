@@ -63,15 +63,15 @@ vi.mock('@/components/console/SkillSourcesCard', () => ({
   }
 }))
 vi.mock('@/components/console/AgentToolsCard', () => ({
-  AgentToolsCard: (props: unknown) => {
+  AgentToolsCard: (props: { onBusyChange?: (busy: boolean) => void }) => {
     mocks.toolsCardProps(props)
-    return <div>MCP roster</div>
+    return <button onClick={() => props.onBusyChange?.(true)}>MCP roster saves</button>
   }
 }))
 vi.mock('@/components/console/AgentSkillsCard', () => ({
-  AgentSkillsCard: (props: unknown) => {
+  AgentSkillsCard: (props: { onBusyChange?: (busy: boolean) => void }) => {
     mocks.skillsCardProps(props)
-    return <div>Skills roster</div>
+    return <button onClick={() => props.onBusyChange?.(true)}>Skills roster saves</button>
   }
 }))
 vi.mock('@/components/console/McpServersCard', () => ({
@@ -213,6 +213,22 @@ describe('native agent tools and skills roster', () => {
     expect(completed).toHaveBeenCalledWith(
       'Reviewed my-agent’s tools and skills — 1 MCP server(s) attached · 3 skill(s) enabled.'
     )
+  })
+
+  it('holds Done while a row is still saving, so the counts it reports are not stale', async () => {
+    const completed = vi.fn()
+    await act(async () => {
+      root.render(
+        <AgentToolsDialog ui={toolsUi({ agentId: mocks.agentId })} onClose={vi.fn()} onCompleted={completed} />
+      )
+    })
+    await act(async () => click('Skills roster saves'))
+    expect(element.textContent).toContain('Saving…')
+    const done = [...element.querySelectorAll('button')].find((item) => item.textContent === 'Done')!
+    expect(done.hasAttribute('disabled')).toBe(true)
+    await act(async () => done.click())
+    expect(mocks.fetchAgentDto).not.toHaveBeenCalled()
+    expect(completed).not.toHaveBeenCalled()
   })
 
   it('still shows a read-only reader the rosters, and says so', async () => {

@@ -43,12 +43,15 @@ export function AgentToolsCard({
   agentId,
   runtime,
   daemon,
-  canEdit
+  canEdit,
+  onBusyChange
 }: {
   agentId: string
   runtime: string
   daemon: DaemonRow | undefined
   canEdit: boolean
+  /** Reports a write in flight, so a host dialog can hold its own completion until the row settles. */
+  onBusyChange?: (busy: boolean) => void
 }) {
   const { updateAgent, mcpProviders, connectorsEnabled } = useConsoleData()
   const [creating, setCreating] = useState(false)
@@ -81,6 +84,9 @@ export function AgentToolsCard({
   const [enabled, setEnabled] = useState<string[] | null>(null)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  useEffect(() => {
+    onBusyChange?.(saving)
+  }, [saving, onBusyChange])
   const fetched = useRef(false)
 
   // Always fetch the saved allow-list (even with no eligible servers) so saved

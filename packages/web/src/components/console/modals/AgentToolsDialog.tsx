@@ -5,7 +5,7 @@
 // roster itself is the surface — the same two cards the tab mounts, each row keeping its own remove
 // control, all under the reader's own Console JWT.
 
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { AGENT_TOOLS_URI, nativeUiTitle, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import { Button } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -31,6 +31,12 @@ export default function AgentToolsDialog({
   const { agents, daemons, loading } = useConsoleData()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // A row saves itself the moment it is toggled, so Done must not read the roster — or close over
+  // a card that still has an error to show — while one of those writes is in flight.
+  const [savingCards, setSavingCards] = useState<Record<string, boolean>>({})
+  const mcpBusy = useCallback((value: boolean) => setSavingCards((cur) => ({ ...cur, mcp: value })), [])
+  const skillsBusy = useCallback((value: boolean) => setSavingCards((cur) => ({ ...cur, skills: value })), [])
+  const rowSaving = Object.values(savingCards).some(Boolean)
   const heading = nativeUiTitle(ui)
   const notice = (text: string) => <NativeDialogNotice heading={heading} text={text} onClose={onClose} />
   const agent = agents.find((item) => item.id === ui.intent.agentId)
@@ -43,7 +49,7 @@ export default function AgentToolsDialog({
   // Every row saved itself the moment it was toggled, so Done reports the resulting roster — counts
   // only, never a server url or a repository address.
   const done = async () => {
-    if (busy) return
+    if (busy || rowSaving) return
     setBusy(true)
     setError('')
     try {
@@ -75,9 +81,10 @@ export default function AgentToolsDialog({
             runtime={agent.runtime}
             daemon={daemons.find((item) => item.daemonId === agent.daemon)}
             canEdit={canEdit}
+            onBusyChange={mcpBusy}
           />
         )}
-        {focus !== 'mcp' && <AgentSkillsCard agentId={agent.id} canEdit={canEdit} />}
+        {focus !== 'mcp' && <AgentSkillsCard agentId={agent.id} canEdit={canEdit} onBusyChange={skillsBusy} />}
         {!canEdit && (
           <p role="status" className="text-[13px] text-(--text-secondary)">
             You can review this agent’s tools and skills, but not change them.
@@ -90,10 +97,15 @@ export default function AgentToolsDialog({
         )}
       </div>
       <div className="modalfoot">
+        {rowSaving && (
+          <span role="status" className="flex-1 text-[13px] text-(--text-secondary)">
+            Saving…
+          </span>
+        )}
         <Button variant="secondary" disabled={busy} onClick={onClose}>
           Close
         </Button>
-        <Button disabled={busy} onClick={done}>
+        <Button disabled={busy || rowSaving} onClick={done}>
           Done
         </Button>
       </div>
