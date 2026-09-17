@@ -4,9 +4,11 @@ import type { MessageGateway, SendIdentity, SessionContext } from './context.js'
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
 import { optionalString, parseArgs, requiredString } from './args.js'
 import {
+  offersThreadUpdates,
   rootPostNeedsThreadMaterialization,
   rootPostThreadName,
   threadKeyForPost,
+  threadKeyForUpdate,
   threadKeyNeedsDmClassification
 } from '../../platforms/thread-keys.js'
 import {
@@ -21,6 +23,7 @@ export const SEND_MESSAGE_TARGET_HELP =
   'user DM {"toUser":"<Slack-user-id>","message":"..."}; ' +
   'channel users {"toUser":["<id-1>","<id-2>"],"channel":"<channel-id>","message":"..."}; ' +
   'channel {"channel":"<channel-id>","message":"..."}; ' +
+  'thread update {"channel":"<channel-id>","thread":"<thread-root-id>","message":"..."}; ' +
   'session {"sessionId":"<Parent session>","message":"..."}'
 
 const AGENT_TARGET_SHAPE_ERROR =
@@ -47,6 +50,9 @@ function targetBranch<T extends z.ZodRawShape>(target: string, shape: T) {
 
 const messageField = requiredString('message')
 const channelField = optionalString('channel')
+/** §2.4: an EXISTING thread's root id. Only the bare-`channel` branch carries it — the
+ *  update form — so every other branch still rejects it as an unrecognized key. */
+const threadField = optionalString('thread')
 /** The name of a file the caller RECEIVED in this conversation, forwarded as-is. Named
  *  rather than id'd because the name is what the agent already has: it reads it in the
  *  `[attached: …]` marker on the triggering message. */
@@ -102,6 +108,7 @@ export const SEND_MESSAGE_BRANCHES = {
   }),
   channel: targetBranch('channel target', {
     channel: requiredString('channel'),
+    thread: threadField,
     platform: platformField,
     integrationId: integrationIdField,
     attachment: attachmentField,
@@ -455,13 +462,13 @@ export async function sendMessage(
       `sendMessage: \`toAgent\` and \`toUser\` are mutually exclusive — pick one mode. ${SEND_MESSAGE_TARGET_HELP}`
     )
   }
-  // send-message-routing-rework.md §2.2: NO branch accepts `thread`. A visible send is
-  // either a direct message or a channel-ROOT post; addressing the CURRENT thread is the
-  // ordinary turn reply's job (§2.1), which already owns the right coordinates, streaming
-  // lifecycle, and sender identity. The selected branch schema is what rejects a `thread` a
-  // caller supplies anyway — a stale client, or a model working from an old example — and it
-  // rejects LOUDLY rather than ignoring it, because silently posting at the root what the
-  // caller meant for a thread is the confusing outcome.
+  // send-message-routing-rework.md §2.2: ONLY the bare-`channel` branch accepts `thread`,
+  // and only to name a thread that already exists — the update form (§2.4). Addressing the
+  // CURRENT thread is still the ordinary turn reply's job (§2.1), which already owns the
+  // right coordinates, streaming lifecycle, and sender identity. The selected branch schema
+  // is what rejects a `thread` on any OTHER branch, and it rejects LOUDLY rather than
+  // ignoring it: silently posting at the root what the caller meant for a thread is the
+  // confusing outcome, and it is the outcome §2.4 exists to end.
   const branch =
     toAgent !== undefined
       ? SEND_MESSAGE_BRANCHES.toAgent
@@ -469,6 +476,8 @@ export async function sendMessage(
         ? SEND_MESSAGE_BRANCHES.toUser
         : SEND_MESSAGE_BRANCHES.channel
   parseArgs(branch, args)
+  // Read only after the branch check, so `thread` on a non-channel branch has already failed.
+  const updateThread = toAgent === undefined && toUsers === undefined ? parseArgs(threadField, args.thread) : undefined
   if (toUsers !== undefined && channel === undefined && Array.isArray(args.toUser)) {
     throw new Error('sendMessage: a `toUser` array requires `channel` — direct messages accept exactly one user id')
   }
@@ -509,11 +518,13 @@ export async function sendMessage(
   // Routing is by `platform` (+ optional `integrationId`) to ANY platform the agent is
   // connected to; identity is stamped from the trusted session.
   //
-  // ALWAYS THE ROOT (send-message-routing-rework.md §2.2): there is no in-thread form at
-  // all. Speaking in the current thread is the ordinary turn reply's job (§2.1), and a
-  // second visible delivery path into the same thread would compete with it. We post
-  // BEFORE any peer wake (B) so the wake can anchor to the post a human sees — that
-  // thread is the post's own `ts`, which only exists after the send.
+  // THE ROOT, unless this is the update form (§2.4): `thread` names a conversation that
+  // already exists and the post lands inside it. Speaking in the CURRENT thread remains the
+  // ordinary turn reply's job (§2.1) — a second visible delivery path into the same thread
+  // would compete with it — which is why an update into the caller's own thread is refused
+  // below rather than served. We post BEFORE any peer wake (B) so the wake can anchor to the
+  // post a human sees — for a root post that thread is the post's own `ts`, which only
+  // exists after the send.
   let post: { platform: string; integrationId: string; channel: string; thread: string | null; ts: string } | undefined
   // What the agent must know inside THIS turn: a root post that forked a conversation it is
   // already in, or a file share that landed without all of its caption. Surfaced in the tool
@@ -547,6 +558,40 @@ export async function sendMessage(
       parseArgs(platformField, args.platform) ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
     const wantIntegrationId = parseArgs(integrationIdField, args.integrationId)
     const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
+    // §2.4 refusals, all BEFORE the post — an update that cannot be honored must not fall back
+    // to the channel root, which loses the message where the caller was looking for it.
+    if (updateThread !== undefined) {
+      if (!offersThreadUpdates(wantPlatform)) {
+        throw new Error(
+          `sendMessage: ${platformLabel(wantPlatform)} cannot post inside an existing thread — ` +
+            'drop `thread` to post at the channel root, or say where else the update should go.'
+        )
+      }
+      // The caller's own thread: the ordinary reply already reaches it, and a second delivery
+      // path would compete with the one this turn is already streaming (§2.1).
+      if (wantPlatform === ctx.platform && requestedChannel === ctx.channel && updateThread === ctx.thread) {
+        throw new Error(
+          'sendMessage: `thread` is the conversation you are answering right now. Your ordinary reply for this ' +
+            'turn already reaches it — no sendMessage needed.'
+        )
+      }
+      // A thread ROOT is what both halves need: the anchor Slack posts against and the segment
+      // an inbound reply canonicalizes to. A reply's own id would post into the right thread but
+      // key a session no reply can reach, so it is refused rather than silently corrected.
+      const head = await gw.getThreadReplies?.(requestedChannel, updateThread, 1).catch(() => undefined)
+      if (head === undefined) {
+        throw new Error(
+          `sendMessage: could not read thread "${updateThread}" in that channel — check the id (and that this bot ` +
+            'is in the channel) before retrying.'
+        )
+      }
+      if (head.length === 0 || head[0]?.ts !== updateThread) {
+        throw new Error(
+          `sendMessage: "${updateThread}" is not a thread root. Pass the id of the message the thread hangs off — ` +
+            '`getChannelHistory` reports it as `threadTs`.'
+        )
+      }
+    }
     // Resolved before anything is posted: a bad name or a fileless target fails the whole send.
     let attachment: { bytes: Buffer; name: string; mimeType: string } | undefined
     if (attachmentName !== undefined) {
@@ -616,6 +661,20 @@ export async function sendMessage(
       // instead of the delivery failure §8.6 promises. It cannot double-activate: the
       // pairing id is checked first at ingress, which routes this event to the
       // claim-an-observation branch and never to dispatch.
+      // §2.4: an update is routed by ingress like any other agent-authored message, so it must
+      // arrive FINALIZED and carrying this turn's hop. Unstamped it would either be unroutable
+      // or start a fresh chain at depth 0 — and a depth-0 update lets a cron-woken agent re-arm
+      // a conversation on every tick, which is exactly the terminating guarantee §2.3 promises.
+      ...(updateThread !== undefined
+        ? {
+            response: {
+              responseId: randomUUID(),
+              deliveryState: 'final' as const,
+              hopCount: deps.currentHopCount?.(ctx) ?? 0,
+              mentionedAgentIds: []
+            }
+          }
+        : {}),
       ...(agentCallDeliveryId !== undefined && toAgent !== undefined
         ? {
             response: {
@@ -634,7 +693,13 @@ export async function sendMessage(
     // raised rather than reported as sent — except `indeterminate`, the queue abandoning a
     // still-running upload, which must say "may have landed" or a retry double-posts.
     if (attachment) {
-      const shared = await gw.uploadFile?.(postChannel, attachment, body, undefined, identity)
+      const shared = await gw.uploadFile?.(
+        postChannel,
+        attachment,
+        body,
+        updateThread !== undefined ? { thread: updateThread } : undefined,
+        identity
+      )
       if (!shared || !shared.ok) {
         const reason = shared && !shared.ok ? shared.reason : 'platform_error'
         if (reason === 'indeterminate') {
@@ -652,31 +717,54 @@ export async function sendMessage(
       providerPostId = shared.messageId
       if (shared.warning) notices.push(`This send partly failed: ${shared.warning}.`)
     } else {
-      providerPostId = await gw.postMessage(postChannel, body, undefined, identity)
+      providerPostId = await gw.postMessage(postChannel, body, updateThread, identity)
     }
     const ts = providerPostId ?? `local-${deps.now()}`
     // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
     // continuous conversation, and no id carries that — ask the platform, once, and only where
     // the answer can change the key. A failed lookup falls back to the non-DM conversation
     // rather than failing the send that already happened.
-    const isDmTarget = threadKeyNeedsDmClassification(wantPlatform)
-      ? ((await gw.getChannelInfo(postChannel).catch(() => undefined))?.isIm ?? false)
-      : false
-    const mustMaterializeThread = !isDmTarget && rootPostNeedsThreadMaterialization(wantPlatform)
+    // An update already has its conversation, so none of the ROOT-post derivations apply: there
+    // is no DM classification to make and no thread to materialize — both exist to decide where
+    // a brand-new conversation begins.
+    const isDmTarget =
+      updateThread === undefined && threadKeyNeedsDmClassification(wantPlatform)
+        ? ((await gw.getChannelInfo(postChannel).catch(() => undefined))?.isIm ?? false)
+        : false
+    const mustMaterializeThread =
+      updateThread === undefined && !isDmTarget && rootPostNeedsThreadMaterialization(wantPlatform)
     const materializedThread =
       providerPostId !== undefined && mustMaterializeThread
         ? await gw.createThread?.(postChannel, providerPostId, rootPostThreadName(body))
         : undefined
+    // An update keys on the thread it joined, which exists whether or not the platform handed
+    // back an id for the post itself.
     const canonicalPostThread =
-      providerPostId === undefined ? undefined : threadKeyForPost(wantPlatform, postChannel, providerPostId, isDmTarget)
+      updateThread !== undefined
+        ? threadKeyForUpdate(wantPlatform, postChannel, updateThread)
+        : providerPostId === undefined
+          ? undefined
+          : threadKeyForPost(wantPlatform, postChannel, providerPostId, isDmTarget)
     postedThread =
-      providerPostId === undefined ? undefined : mustMaterializeThread ? materializedThread : canonicalPostThread
+      updateThread !== undefined
+        ? canonicalPostThread
+        : providerPostId === undefined
+          ? undefined
+          : mustMaterializeThread
+            ? materializedThread
+            : canonicalPostThread
     // Record the post in the thread it BELONGS to — the one it just created for a root post,
     // not the caller's own thread (the daemon's fallback, which for a cross-channel post keys a
     // row to coords that match no session at all). It is also what resolves a later reply to
     // this post back onto this thread, so it must be the same canonical key the session uses.
     await deps.recordOutbound(ctx, postChannel, postedThread ?? canonicalPostThread, body, ts, targetId)
-    post = { platform: wantPlatform, integrationId: targetId, channel: postChannel, thread: null, ts }
+    post = {
+      platform: wantPlatform,
+      integrationId: targetId,
+      channel: postChannel,
+      thread: updateThread ?? null,
+      ts
+    }
     if (providerPostId !== undefined && mustMaterializeThread && postedThread === undefined) {
       throw new Error(
         `sendMessage: posted root message ${ts}, but its required thread could not be created; no session was started`
@@ -687,7 +775,19 @@ export async function sendMessage(
     // IS a `toAgent`, the woken peer owns that thread instead (see (B)) — so skip the
     // caller-owned spawn. Also skip when the platform returned no real ts (synthesized
     // `local-*`), which leaves `postedThread` undefined and nothing to key a session on.
-    if (toAgent === undefined && postedThread !== undefined && deps.spawnChannelRootSession) {
+    //
+    // §2.4 uses the SAME seam for an update, pointed at a thread that already existed. That is
+    // the whole of the anchoring rule: the author joins the thread and gains a session there
+    // whose origin is this posting session, so a human's reply lands on a session WITH lineage
+    // instead of the lineage-less one §8.6 refuses to synthesize. The seam is idempotent by
+    // session key, so an update into a thread this agent already has a session on records into
+    // it rather than opening a second — posting where you already are is not a new context.
+    if (
+      toAgent === undefined &&
+      postedThread !== undefined &&
+      providerPostId !== undefined &&
+      deps.spawnChannelRootSession
+    ) {
       const seeded = await deps.spawnChannelRootSession({
         agentId: ctx.agentId,
         platform: wantPlatform,
@@ -715,8 +815,10 @@ export async function sendMessage(
       // Discord DMs a "root" post maps back onto the continuous conversation, so it forks
       // nothing and the message DID reach the reader — saying otherwise would talk an agent
       // into sending twice. Discord guild posts have already materialized a native thread.
+      // An update forks nothing — it joined a conversation instead of starting one beside it —
+      // so the fork notices below never apply to it.
       const relation =
-        seeded && postedThread !== undefined
+        seeded && postedThread !== undefined && updateThread === undefined
           ? await deps.rootPostRelation?.({
               callerAgentId: ctx.agentId,
               platform: ctx.platform,

@@ -145,17 +145,104 @@ describe('executeTool: sendMessage (channel post)', () => {
     expect(recorded).toEqual([{ channel: 'C_CURRENT', thread: 'ts-123', text: 'hi', ts: 'ts-123' }])
   })
 
-  it('rejects `thread` on a channel post — there is no visible in-thread form', async () => {
-    // send-message-routing-rework.md §2.2: no branch accepts `thread`. Addressing the
-    // current thread is the ordinary turn reply's job (§2.1), so a `thread` here is a
-    // caller working from an old example. Reject LOUDLY: silently posting at the root what
-    // the caller meant for a thread is the outcome that would confuse them.
-    const gw = fakeGateway()
-    const { deps: d } = deps(gw)
-    await expect(
-      executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', thread: '111.1', message: 'hi' }, d)
-    ).rejects.toThrow(/thread/)
-    expect(gw.postMessage).not.toHaveBeenCalled()
+  // The UPDATE form (send-message-routing-rework.md §2.4): `thread` names a conversation that
+  // already exists and the post lands inside it, so an agent can act everywhere it can already
+  // read — the status update for a request crossposted to several channels belongs in each of
+  // those threads, not at each channel's root.
+  describe('update in an existing thread', () => {
+    /** A gateway whose thread reads answer for one real thread root in C_OTHER. */
+    function gatewayWithThread(root = '900.1'): MessageGateway {
+      return fakeGateway({
+        getThreadReplies: vi.fn(async (_c, thread) =>
+          thread === root
+            ? [{ sender: 'U1', ts: root, text: 'root', isBot: false, chrome: false, attachments: [] }]
+            : []
+        )
+      })
+    }
+
+    it('posts inside the named thread and records the row on it', async () => {
+      const gw = gatewayWithThread()
+      const { deps: d, recorded } = deps(gw)
+      const res = (await executeTool(
+        ctx,
+        'sendMessage',
+        { channel: 'C_OTHER', thread: '900.1', message: 'shipped' },
+        d
+      )) as Record<string, unknown>
+
+      // §2.4: routed by ingress like any other agent-authored message, so it arrives FINALIZED
+      // and carrying THIS turn's hop — an update minted at depth 0 would let a cron-woken agent
+      // re-arm a conversation on every tick.
+      expect(gw.postMessage).toHaveBeenCalledWith('C_OTHER', 'shipped', '900.1', {
+        agentAuthorId: 'bot-a',
+        response: { responseId: expect.any(String), deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] }
+      })
+      expect(res).toMatchObject({ post: { channel: 'C_OTHER', thread: '900.1', ts: 'ts-123' } })
+      // Keyed on the thread it JOINED, which is where a reply to it canonicalizes.
+      expect(recorded).toEqual([{ channel: 'C_OTHER', thread: '900.1', text: 'shipped', ts: 'ts-123' }])
+    })
+
+    it('joins the author to that thread with the posting session as origin', async () => {
+      // The anchoring rule, and the reason the form is safe: without a session on the target
+      // thread a human's reply there has no lineage back to the work that produced the update.
+      const gw = gatewayWithThread()
+      const spawn = vi.fn(async () => true)
+      const { deps: d } = deps(gw)
+      d.spawnChannelRootSession = spawn
+      await executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', thread: '900.1', message: 'shipped' }, d)
+      expect(spawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'bot-a',
+          channel: 'C_OTHER',
+          thread: '900.1',
+          postTs: 'ts-123',
+          originChannel: 'C_CURRENT',
+          originThread: '111.1'
+        })
+      )
+    })
+
+    it('refuses the caller’s OWN thread and names the repair', async () => {
+      // §2.1 still governs the current thread: the ordinary reply already reaches it, and a
+      // second delivery path would compete with the one this turn is streaming.
+      const gw = gatewayWithThread('111.1')
+      const { deps: d } = deps(gw)
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_CURRENT', thread: '111.1', message: 'hi' }, d)
+      ).rejects.toThrow(/ordinary reply/)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+
+    it('refuses a thread id that is not a root, rather than posting at the root', async () => {
+      // A reply's own id would post into the right thread but key a session no reply reaches.
+      const gw = gatewayWithThread()
+      const { deps: d } = deps(gw)
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', thread: '900.7', message: 'hi' }, d)
+      ).rejects.toThrow(/not a thread root/)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+
+    it('refuses on a platform that cannot address an existing thread', async () => {
+      // Fail-closed by absence: an unregistered platform must never quietly fall back to the
+      // channel root, which loses the message where the caller was looking for it.
+      const gw = gatewayWithThread()
+      const { deps: d } = deps(gw)
+      const tgCtx: SessionContext = {
+        ...ctx,
+        integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }]
+      }
+      await expect(
+        executeTool(
+          tgCtx,
+          'sendMessage',
+          { channel: 'C_OTHER', thread: '900.1', platform: 'telegram', message: 'hi' },
+          d
+        )
+      ).rejects.toThrow(/cannot post inside an existing thread/)
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
   })
 
   it('posts a cross-channel send at that channel’s root', async () => {

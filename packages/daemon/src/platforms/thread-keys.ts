@@ -68,6 +68,39 @@ export function rootPostThreadName(text: string): string {
   return oneLine || 'Agent thread'
 }
 
+/**
+ * The UPDATE strategies (send-message-routing-rework.md §2.4) — which platforms can
+ * place a post inside a thread that ALREADY exists, and how that thread's own id maps
+ * onto the session segment a reply there resolves to.
+ *
+ * FAIL-CLOSED BY ABSENCE, unlike {@link threadKeyForPost} above. A root post is total
+ * because every platform can post at a root; addressing an existing thread is a real
+ * capability, and §2.4 requires an unsupported platform to be REFUSED rather than have
+ * the update quietly land at the channel root — which is the one outcome that loses the
+ * message where the caller was looking for it.
+ *
+ * Slack alone is registered: its `thread_ts` is both the post anchor and the session
+ * segment, so the two are the same string and the update needs no translation. Discord
+ * addresses a thread as its own CHANNEL, Telegram groups thread by reply into the `tg:`
+ * namespace, and Feishu's topic root is the form `shareFile` already refuses rather than
+ * repurposes — each needs its own anchor mapping through the gateway before it can be
+ * registered here, and none is guessed.
+ */
+const UPDATE_STRATEGIES = new Map<string, { key(channel: string, thread: string): string }>([
+  ['slack', { key: (_channel, thread) => thread }]
+])
+
+/** Can this platform place a post inside an existing thread? */
+export function offersThreadUpdates(platform: string): boolean {
+  return UPDATE_STRATEGIES.has(platform)
+}
+
+/** The session-thread key for an update posted into an EXISTING thread. Callers must
+ *  gate on {@link offersThreadUpdates} first; an unregistered platform has no key. */
+export function threadKeyForUpdate(platform: string, channel: string, thread: string): string | undefined {
+  return UPDATE_STRATEGIES.get(platform)?.key(channel, thread)
+}
+
 /** The session-thread key for a message this daemon just posted at a channel
  *  ROOT. Total by construction: an unregistered platform threads off the post's
  *  own ts, the Slack/core rule. */

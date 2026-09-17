@@ -192,15 +192,29 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
     )
   }
 
-  // Bare channel post: publish a visible message without waking an agent or addressing a human.
+  // Bare channel post: publish a visible message without waking an agent or addressing a human,
+  // at the channel root or — with `thread` — inside a conversation that already exists (§2.4).
   const channelTarget = {
     title: 'Channel post (no recipient)',
     description:
-      'Publish one visible message at a platform channel’s ROOT without waking an agent or @-mentioning a human. ' +
-      'This opens a NEW conversation of your own on that post — it never continues an existing thread.',
+      'Publish one visible message without waking an agent or @-mentioning a human. Without `thread` it lands at ' +
+      'the channel’s ROOT and opens a NEW conversation of your own there. With `thread` it lands INSIDE that ' +
+      'existing conversation — the update form, for a thread you are not the one answering.',
     ...obj(
       {
         channel,
+        thread: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'Post INSIDE this existing thread instead of at the channel root — the root message’s id (Slack ' +
+            '`thread_ts`), as `getChannelHistory` reports it in `threadTs` and `getThreadHistory` reads it. Use ' +
+            'it to put an update where the discussion already is: the same request crossposted to three channels ' +
+            'gets its status update in each of those threads, not at three channel roots. NOT for the thread you ' +
+            'are answering right now — your ordinary reply already goes there, and this refuses it. The thread ' +
+            'must already exist; a reply’s id, a channel with no thread support, and your own thread are all ' +
+            'refused rather than posted at the root.'
+        },
         platform,
         integrationId,
         attachment,
@@ -263,13 +277,18 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'posts once at the channel root and @-mentions every listed user; a single id string also works.\n' +
       '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts at the channel ' +
       'root without waking anyone or @-mentioning anyone; add `platform` or `integrationId` only when needed.\n' +
+      '- Update in an EXISTING thread: `{"channel":"<channel id>","thread":"<thread root id>","message":"..."}` — ' +
+      'posts inside that conversation rather than at the root. This is how a status update reaches a discussion ' +
+      'you are not answering, such as the other channels the same request was crossposted to. Everyone already in ' +
+      'that thread hears it. Never use it for the thread you are in now — that is your ordinary reply.\n' +
       '- attachment (with `toUser` or `channel`) — forward an image this conversation received: ' +
       '`{"channel":"<channel id>","attachment":"<file name>","message":"..."}`. The name is the one in the ' +
       '`[attached: …]` marker. This is the only way a RECEIVED image reaches another platform; for an image you ' +
       'produced, `shareFile` posts it into the current conversation.\n' +
       '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
       'asked this way, never by posting it at their channel root.\n' +
-      'Every visible send lands at the channel ROOT and opens a NEW conversation of your own there. Write ' +
+      'Every visible send except the `thread` update lands at the channel ROOT and opens a NEW conversation of ' +
+      'your own there. Write ' +
       '`message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone. A self ' +
       'wake is valid only in the explicit `toAgent` channel-root form above.',
     inputSchema: unionOf([agentTarget, userTarget, channelTarget, sessionTarget])
