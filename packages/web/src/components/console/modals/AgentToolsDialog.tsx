@@ -44,7 +44,9 @@ export default function AgentToolsDialog({
   if (loading) return notice('Loading configuration…')
   if (!agent) return notice('This agent is unavailable.')
   const focus = ui.intent.focus
-  const canEdit = agent.canEdit
+  // Completion reads the roster back, so the rows close for the duration: an edit accepted during
+  // that read would be reported as part of a state it was not in.
+  const canEdit = agent.canEdit && !busy
 
   // Every row saved itself the moment it was toggled, so Done reports the resulting roster — counts
   // only, never a server url or a repository address.
@@ -85,7 +87,7 @@ export default function AgentToolsDialog({
           />
         )}
         {focus !== 'mcp' && <AgentSkillsCard agentId={agent.id} canEdit={canEdit} onBusyChange={skillsBusy} />}
-        {!canEdit && (
+        {!agent.canEdit && (
           <p role="status" className="text-[13px] text-(--text-secondary)">
             You can review this agent’s tools and skills, but not change them.
           </p>

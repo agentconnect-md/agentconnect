@@ -215,6 +215,18 @@ describe('native agent tools and skills roster', () => {
     )
   })
 
+  it('closes the rows for the duration of that read, so no edit lands outside the reported state', async () => {
+    let settle: (dto: unknown) => void = () => {}
+    mocks.fetchAgentDto.mockReturnValue(new Promise((resolve) => (settle = resolve)))
+    await act(async () => {
+      root.render(<AgentToolsDialog ui={toolsUi({ agentId: mocks.agentId })} onClose={vi.fn()} onCompleted={vi.fn()} />)
+    })
+    await act(async () => click('Done'))
+    expect(mocks.skillsCardProps).toHaveBeenLastCalledWith(expect.objectContaining({ canEdit: false }))
+    await act(async () => settle({ mcpServers: [], skills: [] }))
+    expect(element.textContent).not.toContain('not change them')
+  })
+
   it('holds Done while a row is still saving, so the counts it reports are not stale', async () => {
     const completed = vi.fn()
     await act(async () => {
