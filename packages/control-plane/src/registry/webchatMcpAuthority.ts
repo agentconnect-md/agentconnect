@@ -1,4 +1,4 @@
-import { ADMIN_MCP_SERVER_NAME, WEBCHAT_REMOTE_MCP_FEATURE } from '@agentconnect.md/protocol'
+import { WEBCHAT_REMOTE_MCP_FEATURE } from '@agentconnect.md/protocol'
 import { AgentId, OrgId } from '../domain/ids.js'
 import { canView } from '../authorization/policy.js'
 import type { PlacementRef } from '../domain/placement.js'
@@ -9,7 +9,6 @@ export type WebchatMcpAuthorityDenialReason =
   | 'conversation_binding'
   | 'membership_missing'
   | 'agent_not_visible'
-  | 'admin_mcp_not_attached'
   | 'placement_mismatch'
   | 'daemon_unavailable'
   | 'daemon_feature_missing'
@@ -77,10 +76,8 @@ export async function resolveLiveWebchatMcpAuthority(
     return { ok: false, reason: 'agent_not_visible' }
   }
 
-  // Entitlement is the agent's own enable-list, not its preset identity: the built-in
-  // preset ships with `agentconnect-admin` attached, and removing it withdraws the
-  // catalog exactly as attaching it on another agent grants it.
-  if (!agent.mcpServers.includes(ADMIN_MCP_SERVER_NAME)) return { ok: false, reason: 'admin_mcp_not_attached' }
+  // No further entitlement check: the catalog belongs to the webchat surface, not to an agent
+  // identity — every agent gets it in its owner's private webchat, and nowhere else.
 
   // Placement is the resolver's answer, never the column: a pool agent names no machine, and the
   // member serving it is whoever holds its duty at this moment.

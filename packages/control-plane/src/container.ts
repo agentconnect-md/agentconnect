@@ -706,7 +706,7 @@ export function buildContainer(
     clock
   })
 
-  // Delegated admin-catalog entitlement (agents carrying `agentconnect-admin`) and its short-lived access grants.
+  // Webchat admin-catalog entitlement (every agent, in its owner's private webchat) and its short-lived access grants.
   const webchatMcpGrantToken = new WebchatMcpGrantTokenCodec(config.API_KEY_PEPPER)
   const webchatRemoteMcp = new WebchatRemoteMcpService({
     clock,

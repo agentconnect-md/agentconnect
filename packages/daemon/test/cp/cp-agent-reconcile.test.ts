@@ -22,7 +22,6 @@ const MOVE_ID = '77777777-7777-4777-8777-777777777777'
 const MOVE_ID_2 = '88888888-8888-4888-8888-888888888888'
 const MOVE_ID_3 = '99999999-9999-4999-8999-999999999999'
 const MOVE_ID_4 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-const MOVE_ID_5 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 const GROUP_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
 function root1(): string {
@@ -1054,19 +1053,6 @@ describe('Daemon CP agent → memory + reconcile', () => {
       reason: 'agent/activate: model "missing-model" is not offered by runtime "claude"'
     })
     expect((daemon as any).moveStagedAgents.has('ghost')).toBe(true)
-
-    // The built-in admin catalog is entitlement, not a definition — no daemon configures it,
-    // so the same terminal check must never refuse an agent for carrying the name.
-    await seam(daemon).applyAgentDetach({ agentId: 'ghost-admin', moveId: MOVE_ID_5 })
-    await expect(
-      seam(daemon).applyAgentActivate({
-        agentId: 'ghost-admin',
-        moveId: MOVE_ID_5,
-        spec: { name: 'ghost-admin', runtime: 'claude', mcpServers: ['agentconnect-admin'] },
-        integrations: [],
-        crons: []
-      })
-    ).resolves.toMatchObject({ ok: true })
     await daemon.stop()
   })
 

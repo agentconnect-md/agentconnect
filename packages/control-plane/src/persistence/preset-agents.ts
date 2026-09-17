@@ -27,7 +27,6 @@
  * constants are pinned to the route's slug grammar by unit test.
  */
 import { randomUUID } from 'node:crypto'
-import { ADMIN_MCP_SERVER_NAME } from '@agentconnect.md/protocol'
 import type { AgentIcon } from '@agentconnect.md/protocol'
 import type { PrismaLike } from './prisma.js'
 import type { PresetAgentKind, PresetAgentRecord, PresetAgentStore } from './ports.js'
@@ -156,9 +155,6 @@ export async function provisionPresetAgents(
         }
       : {}),
     ...(skills.length > 0 ? { skills } : {}),
-    // The built-in preset ships with the delegated admin catalog attached; it is an
-    // ordinary enable-list entry from here on, and removing it withdraws the catalog.
-    mcpServers: [ADMIN_MCP_SERVER_NAME],
     ...(args.createdByUserId ? { createdByUserId: args.createdByUserId } : {})
   })
   await db.presetAgent.create({

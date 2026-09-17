@@ -236,9 +236,8 @@ over stdio; they do not create source-level coupling to TypeScript.
 ### D8. MCP Tool Server
 
 - **Responsibilities**: provide **agent-to-agent collaboration and proactive messaging** by injecting daemon-owned tools into agents. The adapter retains platform credentials and the agent never sees them.
-- **Remote admin MCP**: an entitled webchat session whose agent attaches
-  `agentconnect-admin` may also receive it as a private, session-scoped HTTPS MCP
-  descriptor.
+- **Remote admin MCP**: any agent's entitled webchat session may also receive
+  `agentconnect-admin` as a private, session-scoped HTTPS MCP descriptor.
   The runtime calls the CP endpoint directly; the daemon does not proxy the MCP body
   or hold an administrative broker. CP involvement remains limited to explicit
   management-tool calls, not browser message bodies or ACP streams.

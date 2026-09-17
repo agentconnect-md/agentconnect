@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto'
 import type { McpServer } from '@agentclientprotocol/sdk'
-import { ADMIN_MCP_SERVER_NAME } from '@agentconnect.md/protocol'
 import type {
   WebchatMcpGrantAccept,
   WebchatMcpGrantActivate,
@@ -11,7 +10,7 @@ import type {
   WebchatRemoteMcpEntitlement
 } from '@agentconnect.md/protocol'
 
-export { ADMIN_MCP_SERVER_NAME }
+export const ADMIN_MCP_SERVER_NAME = 'agentconnect-admin'
 const RENEW_BEFORE_EXPIRY_MS = 5 * 60_000
 
 export interface RemoteWebchatGrantClient {

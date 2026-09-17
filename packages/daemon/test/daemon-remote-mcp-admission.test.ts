@@ -7,11 +7,11 @@ import { Daemon } from '../src/daemon.js'
 import { RemoteWebchatGrantManager } from '../src/mcp/remote-webchat-grant.js'
 
 /**
- * Integration coverage for preset admin-MCP delivery through the real webchat
- * dispatch path. Runtime identity, launch provenance, ACP probe results, and OS
- * sandbox policy are deliberately absent from admission: the executable is
- * already inside the configured runtime boundary. The trusted preset marker and
- * CP-issued conversation entitlement are the only local attachment conditions.
+ * Integration coverage for admin-MCP delivery through the real webchat dispatch
+ * path. Runtime identity, launch provenance, ACP probe results, the preset marker,
+ * and OS sandbox policy are deliberately absent from admission: the executable is
+ * already inside the configured runtime boundary. A webchat turn carrying the
+ * CP-issued conversation entitlement is the only local attachment condition.
  */
 
 const AGENT_ID = 'bot-a'
@@ -42,7 +42,7 @@ it('does not revive a conversation-granted admin card through the organization p
   expect(daemon.orgForAgent).not.toHaveBeenCalled()
 })
 
-function scaffold(opts: { builtin: boolean; adminMcp: boolean; runInSandbox: boolean }): string {
+function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-rmcp-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -64,8 +64,6 @@ function scaffold(opts: { builtin: boolean; adminMcp: boolean; runInSandbox: boo
       status: 'active',
       runtime: 'arbitrary-acp',
       builtin: opts.builtin,
-      // The enable-list, not the preset marker, is what asks for the delegated catalog.
-      mcpServers: opts.adminMcp ? ['agentconnect-admin'] : [],
       runInSandbox: opts.runInSandbox,
       workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
       integrations: [],
@@ -125,7 +123,6 @@ function fakeGrantClient() {
 
 async function runTurn(opts: {
   builtin: boolean
-  adminMcp: boolean
   runInSandbox: boolean
   rejectAdminDescriptor?: boolean
   toolUpdates?: unknown[]
@@ -178,7 +175,7 @@ function adminDescriptor(host: ReturnType<typeof fakeHost>['host']) {
   return mcpServers.find((server) => server.name === 'agentconnect-admin')
 }
 
-describe('preset admin MCP through the webchat dispatch path', () => {
+describe('admin MCP through the webchat dispatch path', () => {
   it('projects a direct HTTP tool result into one native card without proxying the admin call', async () => {
     const nativeUi = {
       resourceUri: 'ui://agentconnect/integration-setup',
@@ -193,12 +190,7 @@ describe('preset admin MCP through the webchat dispatch path', () => {
       rawInput: { server: 'agentconnect-admin', tool: 'configureIntegration', arguments: nativeUi.intent },
       rawOutput: { result: { structuredContent: nativeUi }, error: null }
     }
-    const { host, outputs } = await runTurn({
-      builtin: true,
-      adminMcp: true,
-      runInSandbox: true,
-      toolUpdates: [update, update]
-    })
+    const { host, outputs } = await runTurn({ builtin: true, runInSandbox: true, toolUpdates: [update, update] })
     expect(adminDescriptor(host)).toMatchObject({ type: 'http', url: 'https://cp.example/api/v1/mcp' })
     const cards = outputs.filter((output) => output.event?.kind === 'app')
     expect(cards).toHaveLength(1)
@@ -207,8 +199,8 @@ describe('preset admin MCP through the webchat dispatch path', () => {
   it.each([
     ['without an OS sandbox', false],
     ['with an OS sandbox', true]
-  ] as const)('attaches to an arbitrary preset runtime %s', async (_label, runInSandbox) => {
-    const { client, host, selectedAgents, dones } = await runTurn({ builtin: true, adminMcp: true, runInSandbox })
+  ] as const)('attaches to an arbitrary runtime %s', async (_label, runInSandbox) => {
+    const { client, host, selectedAgents, dones } = await runTurn({ builtin: true, runInSandbox })
 
     expect(dones).toHaveLength(1)
     expect(selectedAgents[0]).toMatchObject({
@@ -223,30 +215,18 @@ describe('preset admin MCP through the webchat dispatch path', () => {
     expect(JSON.stringify(host.prompt.mock.calls)).not.toContain(TOKEN)
   })
 
-  it('does not attach when an agent without the catalog attached is handed a forged entitlement', async () => {
-    const { client, host, dones } = await runTurn({ builtin: false, adminMcp: false, runInSandbox: false })
+  // The catalog belongs to the webchat surface, not to the preset: an ordinary agent gets it too.
+  it('attaches for an ordinary agent that carries no preset marker', async () => {
+    const { client, host, dones } = await runTurn({ builtin: false, runInSandbox: false })
 
     expect(dones).toHaveLength(1)
-    expect(client.issueWebchatMcpGrant).not.toHaveBeenCalled()
-    expect(adminDescriptor(host)).toBeUndefined()
+    expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    expect(adminDescriptor(host)).toMatchObject({ type: 'http', url: 'https://cp.example/api/v1/mcp' })
   })
 
-  // The preset marker does not decide this: a built-in agent that dropped the catalog loses it,
-  // and any agent that attaches it asks for it.
-  it('ignores the preset marker and follows the enable-list in both directions', async () => {
-    const attached = await runTurn({ builtin: false, adminMcp: true, runInSandbox: false })
-    expect(attached.client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
-    expect(adminDescriptor(attached.host)).toMatchObject({ type: 'http' })
-
-    const detached = await runTurn({ builtin: true, adminMcp: false, runInSandbox: false })
-    expect(detached.client.issueWebchatMcpGrant).not.toHaveBeenCalled()
-    expect(adminDescriptor(detached.host)).toBeUndefined()
-  })
-
-  it('keeps ordinary preset webchat running when the runtime rejects the admin descriptor', async () => {
+  it('keeps ordinary webchat running when the runtime rejects the admin descriptor', async () => {
     const { client, host, dones } = await runTurn({
       builtin: true,
-      adminMcp: true,
       runInSandbox: true,
       rejectAdminDescriptor: true
     })

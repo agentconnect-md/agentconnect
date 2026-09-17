@@ -17,12 +17,6 @@
       "import": "./dist/code-host.js",
       "default": "./dist/code-host.js"
     },
-    "./consts": {
-      "development": "./src/consts.ts",
-      "types": "./dist/consts.d.ts",
-      "import": "./dist/consts.js",
-      "default": "./dist/consts.js"
-    },
     "./decimal-amount": {
       "development": "./src/decimal-amount.ts",
       "types": "./dist/decimal-amount.d.ts",

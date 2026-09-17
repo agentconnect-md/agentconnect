@@ -1,4 +1,3 @@
-import { ADMIN_MCP_SERVER_NAME } from '@agentconnect.md/protocol'
 import { Prisma, type WebchatMcpOperation } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
 import {
@@ -46,9 +45,6 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
              delegated_agent."visibility" = 'org'
              OR authority."userId" = ANY(delegated_agent."sharedWith")
            )
-           -- Entitlement is the agent's own enable-list, locked with this row: detaching the
-           -- admin catalog denies in-flight operations without waiting for grant expiry.
-           AND delegated_agent."runtimeOverrides"->'mcpServers' @> jsonb_build_array(${ADMIN_MCP_SERVER_NAME}::text)
           -- Current-session fence: only the conversation's transactionally
           -- maintained pointer identifies the installed ACP session ('endedAt'
           -- is stamped after every turn and cannot mean "replaced"). Locking
@@ -194,9 +190,6 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
              delegated_agent."visibility" = 'org'
              OR authority."userId" = ANY(delegated_agent."sharedWith")
            )
-           -- Entitlement is the agent's own enable-list, locked with this row: detaching the
-           -- admin catalog denies in-flight operations without waiting for grant expiry.
-           AND delegated_agent."runtimeOverrides"->'mcpServers' @> jsonb_build_array(${ADMIN_MCP_SERVER_NAME}::text)
           -- Same current-session fence as createOrReplay: the pointer, not
           -- endedAt ordering, names the installed session; the row locks below
           -- serialize approval against pointer moves and visibility widening.

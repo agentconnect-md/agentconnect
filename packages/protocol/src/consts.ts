@@ -398,13 +398,3 @@ export const GITLAB_EFFECT_V1_FEATURE = 'gitlab-effect-v1'
 
 /** CP serves the `memory/store` family (memory-evolution.md §3.2.1); a daemon refuses a `control-plane` home without it. */
 export const AGENT_MEMORY_STORE_V1_FEATURE = 'agent-memory-store-v1'
-
-/**
- * MCP-server name of the built-in AgentConnect administrative catalog
- * (webchat-preset-agentconnect-mcp.md). It is not a daemon-configured or registry
- * server: carrying it in `AgentSpec.mcpServers` is what entitles an agent to the
- * CP-delegated admin catalog in its owner's private webchat, and the descriptor
- * itself is installed per conversation from a short-lived grant. It lives here,
- * not with the agent frames, so the console can value-import it as a leaf.
- */
-export const ADMIN_MCP_SERVER_NAME = 'agentconnect-admin'

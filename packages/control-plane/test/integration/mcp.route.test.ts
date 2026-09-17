@@ -195,7 +195,7 @@ describe('delegated webchat MCP operations', () => {
     const hostAgentId = opts.share?.hostAgentId ?? randomUUID()
     const conversationId = randomUUID()
     if (opts.share) {
-      // nothing to seed: the agent, its member and its admin-catalog attachment exist
+      // nothing to seed: the agent and its member exist
     } else if (opts.pool) {
       await seedAgent(prisma, hostAgentId)
       await prisma.agent.update({
@@ -239,13 +239,6 @@ describe('delegated webchat MCP operations', () => {
         activatedAt: new Date()
       }
     })
-    if (!opts.share) {
-      // Attaching `agentconnect-admin` is the entitlement every delegated request re-checks.
-      await prisma.agent.update({
-        where: { id: hostAgentId },
-        data: { runtimeOverrides: { mcpServers: ['agentconnect-admin'] } }
-      })
-    }
     // `registerSession: false` models the `session/new` window: the descriptor is
     // already installed and the adapter is connecting, but the daemon has not yet
     // reported the session, so no current-session pointer exists.

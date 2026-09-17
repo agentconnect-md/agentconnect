@@ -1,4 +1,4 @@
-# Preset Webchat AgentConnect MCP
+# Webchat AgentConnect Admin MCP
 
 Native integration configuration preserves the direct HTTP delivery specified here.
 The Console dialog is projected from the runtime's ordinary ACP tool result, without
@@ -10,15 +10,13 @@ superseded and must not be treated as the target architecture.
 
 ## 1. Summary
 
-An authenticated user chatting privately with an agent that has the built-in
-`agentconnect-admin` MCP server attached may use the curated AgentConnect
-administrative MCP catalog from that private webchat conversation.
+An authenticated user chatting privately with any of their agents in webchat may use
+the curated AgentConnect administrative MCP catalog from that conversation.
 
-Attachment is the entitlement. `agentconnect-admin` is an ordinary entry of the
-agent's `mcpServers` enable-list — offered in the console's Add menu as a Builtin,
-never a daemon-configured or registry server. The built-in `agentconnect` preset is
-provisioned with it attached; removing it withdraws the catalog from that preset, and
-attaching it to another agent grants the catalog there under the same live checks.
+The webchat surface is the entitlement. There is nothing to install and no agent
+setting to attach: a webchat turn that carries the CP-issued conversation entitlement
+receives the catalog, and every other launch surface — Slack, Telegram, Discord, Lark,
+a code host — receives nothing.
 
 The runtime connects directly to the Control Plane's HTTPS MCP endpoint. The Control
 Plane issues a short-lived opaque delegation credential bound to the durable webchat
@@ -41,7 +39,7 @@ where the administrative APIs and their authorization already live.
 ### 2.1 Goals
 
 - Give access to `agentconnect-admin` only from a private, user-owned webchat
-  conversation whose agent has that server attached.
+  conversation, and to no other launch surface.
 - Derive the acting user from the durable `WebchatConversation` owner binding, never
   from model-supplied arguments.
 - Re-run membership, RBAC, resource visibility, catalog, and confirmation checks at
@@ -94,7 +92,7 @@ runtime.
    grant and its durable `WebchatConversation`. Values supplied by the daemon,
    runtime, model, or MCP arguments never select the acting principal.
 2. The grant is accepted only by the AgentConnect MCP endpoint and exposes only the
-   delegated preset catalog. It is not valid for ordinary REST authentication.
+   delegated administrative catalog. It is not valid for ordinary REST authentication.
 3. Every access grant is bound to one immutable logical-authority tuple:
    `(conversationId, userId, orgId, agentId, authorityGeneration)`. Multiple
    short-lived access grants may belong to the same authority generation.
@@ -105,8 +103,8 @@ runtime.
    the relay and never appears in model context, tool schemas or arguments,
    transcript bodies, audit details, metrics, logs, or durable local state.
 6. Every MCP request re-checks current membership, role, resource visibility, the
-   host agent's `agentconnect-admin` attachment, agent placement where relevant,
-   catalog scope, and confirmation policy.
+   conversation's webchat owner binding, agent placement where relevant, catalog
+   scope, and confirmation policy.
 7. Delegated calls cannot mutate their own host agent. `updateAgent` and
    `deleteAgent` fail before REST dispatch when their target is the grant's
    `agentId`.
@@ -212,13 +210,14 @@ high-entropy API credentials. Database compromise alone must not yield a usable 
 
 The CP may issue a grant only when all of the following hold:
 
-- the host agent attaches `agentconnect-admin`;
+- the request comes from a webchat conversation;
 - the authenticated user owns the durable webchat conversation;
 - the conversation maps immutably to the same user, organization, and agent;
 - the target session is private and reports the required session-visibility
   capability;
 - the user may currently view and use the agent; and
-- the selected agent still attaches `agentconnect-admin`.
+- the conversation still holds exactly one participating agent (§10.3 of
+  [webchat-multi-agents.md](webchat-multi-agents.md)).
 
 The raw credential is returned exactly once, in the issuance reply that begins its
 delivery to the runtime. Because the CP retains only its hash, it never attempts to
@@ -348,8 +347,7 @@ delegated token as a personal API key.
 After constant-time token verification, the CP:
 
 1. loads the grant and durable conversation;
-2. verifies expiry, revocation, authority generation, owner tuple, admin-catalog
-   attachment, and feature gate;
+2. verifies expiry, revocation, authority generation, owner tuple, and feature gate;
 3. resolves the acting principal exclusively from stored records;
 4. validates the MCP tool against the delegated catalog;
 5. takes the read-only/side-effect classification from server-owned catalog
@@ -560,8 +558,8 @@ execution claimant:
 2. It verifies the row is still `awaiting_confirmation`, the intent hash and bound
    fields are unchanged, the source grant is active and unexpired, and its authority
    generation is still current.
-3. It re-runs current owner binding, membership, role, resource visibility,
-   admin-catalog attachment, placement, catalog scope, host-agent denial, and feature-gate checks.
+3. It re-runs current owner binding, membership, role, resource visibility, placement,
+   catalog scope, host-agent denial, and feature-gate checks.
 4. It CAS-transitions the row to `executing`. Revocation and generation rotation
    serialize on the same authority fence, so only one ordering can win.
 5. That same CAS writes the unique execution attempt and recovery deadline. The
@@ -646,7 +644,7 @@ organization, and global feature revocation without requiring daemon isolation.
 
 | Failure                                           | Behavior                                                                                             |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Agent without the catalog, or non-webchat session | No `agentconnect-admin` descriptor.                                                                  |
+| Non-webchat session                               | No `agentconnect-admin` descriptor.                                                                  |
 | Runtime ignores or rejects HTTPS MCP descriptors  | Daemon still attempts attachment; surface tools as unavailable and keep ordinary chat when possible. |
 | Grant missing, forged, expired, revoked, or stale | MCP returns authorization expired/invalid; no fallback identity.                                     |
 | CP unavailable                                    | Admin tool returns a retryable error; ordinary chat and local tools continue.                        |
@@ -701,10 +699,9 @@ implementation is active. Runtime identity, package or catalog provenance,
 version, command line, environment, capability probes, and sandbox mode are not
 admission inputs. The runtime is already arbitrary executable code within its
 configured process boundary, so those checks cannot establish a further security
-boundary. At turn time the daemon requires both the CP-issued non-secret
-entitlement and `agentconnect-admin` in the replicated agent spec's `mcpServers`
-enable-list, then attempts descriptor attachment regardless of runtime or sandbox
-mode.
+boundary. At turn time the daemon requires only the CP-issued non-secret entitlement
+on a webchat turn — the preset marker is not read — then attempts descriptor
+attachment regardless of runtime or sandbox mode.
 
 There is no CP-side rollout flag: the feature is on by default, and enablement
 is gated entirely on the daemon advertising `webchat_remote_mcp_v1`. A deployment

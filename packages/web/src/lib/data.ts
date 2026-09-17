@@ -2237,9 +2237,6 @@ export interface McpServerInfo {
    *  registry (not a daemon-configured server) — enable-able before the daemon
    *  reports it; the CP pushes the proxy def on enable. */
   registry?: boolean
-  /** True for the platform's own `agentconnect-admin` catalog — neither daemon-configured nor a
-   *  registry row: attaching its name is the entitlement, and the CP installs the descriptor. */
-  builtin?: boolean
 }
 
 /** A CP-commanded daemon restart/upgrade (cli-daemon-split.md §7) — structurally the

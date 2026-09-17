@@ -743,7 +743,7 @@ agentconnect daemon (Node, one process)
 
 One ACP adapter child can host multiple sessions through its internal `sessions` map. Each session starts one long-lived Query child reused across prompts; it is not one process per message.
 
-The built-in preset's entitled webchat session may receive an additional
+An entitled webchat session — any agent's — may receive an additional
 session-scoped remote HTTPS MCP descriptor. It uses the normal agent-scoped ACP
 host; this feature does not require a dedicated adapter, private socket, or OS
 sandbox. See section 7.6 and
@@ -829,14 +829,14 @@ For cron, Scheduler constructs a `source:"cron"` synthetic `NormalizedMessage` a
 
 Names and shapes follow ACP and `@agentclientprotocol/claude-agent-acp`. Internally, the adapter implements the wire methods `session/new`, `session/prompt`, and `session/update` as `newSession`, `prompt`, and `sessionUpdate`. Declaring `mcpServers` in `session/new` is the tool-injection point. A RuntimeDef declaring `sessionMcpServers: 'unsupported'` (OpenClaw's bridge rejects any non-empty list on `session/new` and `session/load`) skips the injection at dispatch and is clamped to `[]` inside `AcpHost` for every other session creator — those sessions run without the AgentConnect tool server or configured MCP servers, the same degraded shape as a session with no reachable bridge.
 
-### 7.6 Built-in Preset Webchat Admin MCP
+### 7.6 Webchat Admin MCP
 
-The built-in `agentconnect` preset may attach the CP-hosted administrative MCP
-catalog only to a private, user-owned webchat session. It never attaches this
-catalog to an arbitrary agent, an IM session, automation, or an agent-to-agent
+The daemon attaches the CP-hosted administrative MCP catalog only to a private,
+user-owned webchat session. Every agent gets it there — no install, no per-agent
+setting — and it never attaches to an IM session, automation, or an agent-to-agent
 session.
 
-For an entitled built-in preset turn, the daemon attempts the standard ACP HTTPS
+For an entitled webchat turn, the daemon attempts the standard ACP HTTPS
 MCP descriptor regardless of runtime id, artifact, version, launch provenance,
 capability probe, or sandbox mode. The runtime is already arbitrary executable
 code inside its configured boundary, so those properties are compatibility facts,

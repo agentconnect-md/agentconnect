@@ -90,9 +90,9 @@ relay persists no content, and message bodies remain daemon-local.
   agent-scoped.
 - Extending the delegated `agentconnect-admin` MCP
   ([webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md)) to
-  multi-agent conversations. A conversation containing the built-in
-  `agentconnect` preset **may** grow a roster, but the administrative catalog
-  is available only while the conversation is single-participant
+  multi-agent conversations. A webchat conversation **may** grow a roster, but
+  the administrative catalog is available only while the conversation is
+  single-participant
   (section 10.3).
 - Group webchat across organizations.
 
@@ -816,14 +816,13 @@ IM conversations.
 
 ### 10.3 Delegated admin MCP
 
-A conversation containing the built-in `agentconnect` preset **may** be
-multi-agent, but the administrative catalog is available only in
-single-participant conversations. The grant's logical-authority tuple binds
+A webchat conversation **may** be multi-agent, but the administrative catalog is
+available only in single-participant conversations. The grant's logical-authority tuple binds
 one `agentId` and the confirmation UX assumes one acting agent
 ([webchat-preset-agentconnect-mcp.md](webchat-preset-agentconnect-mcp.md) §3),
 so the **`roster size == 1` condition is checked live in the shared authority
 predicate** (`resolveLiveWebchatMcpAuthority`) that both issuance and every
-delegated request run through. An entitled agent selected into a multi-agent roster
+delegated request run through. An agent selected into a multi-agent roster
 never gets the `agentconnect-admin` descriptor; a mid-conversation join that
 grows the roster past one participant suspends the catalog on the very next
 delegated request — fail-closed, without waiting for grant expiry or a
