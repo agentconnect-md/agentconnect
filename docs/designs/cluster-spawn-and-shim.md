@@ -280,6 +280,24 @@ unwritable by the runtime — one it could rewrite is one it could replace with 
 asks the daemon for credentials in its name. It shares its implementation with the daemon's
 CLI helper and differs only in which socket it dials.
 
+### The ACP stream, where a re-send is made safe instead
+
+The runtime's stdin runs over the same channel and meets the same renewal, but it cannot take
+the tunnel's answer. Terminating an ACP stream ends the agent's runtime, and the write in
+flight at a renewal is usually `session/prompt` — the turn itself. Worse, the daemon side
+holds that write inside a `WritableStream`, which stays errored once a write rejects: one lost
+write and every later turn fails with the same stored error while the pod sits there healthy.
+That is not a failed turn, it is an agent that has gone quiet until someone deletes its pod.
+
+So this stream buys the property the tunnels lack rather than living without it. Each chunk
+carries a per-stream `seq`; the runner applies one at most once, recording it **after** the
+write so a write that failed is still owed; and the shim announces the dedupe in its `open`
+reply. The daemon re-sends the lost write unchanged, seq included, and the sandbox either
+applies it (the first attempt never landed) or acknowledges it without writing (it did).
+A shim that does not announce the dedupe is never asked twice — against that one the write
+ends the runtime, and `reapTerminalHost` respawns it on the next message. One failed turn is
+an acceptable outcome; an agent that answers nothing until a human intervenes is not.
+
 ## 7. Runtime-image rollout ownership
 
 The daemon does not force a running agent onto a new runtime image. Agent compute migrates through
