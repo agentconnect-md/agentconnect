@@ -337,7 +337,18 @@ export class ShimClient {
       })
       this.acpStreams.set(streamId, runner)
       await runner.apply(request.payload)
-      transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true, payload: { streamId } }))
+      // `resumableWrites` is the shim announcing that it dedupes numbered chunks, which is the
+      // daemon's licence to re-send a write a renewal failed. Announced rather than assumed:
+      // against a shim without it the daemon must end the runtime instead, and a version that
+      // lied here would corrupt the very stream the retry exists to save.
+      transport.send(
+        JSON.stringify({
+          type: 'shim/response',
+          id: request.id,
+          ok: true,
+          payload: { streamId, resumableWrites: true }
+        })
+      )
       return
     }
     const runner = this.acpStreams.get(streamId)

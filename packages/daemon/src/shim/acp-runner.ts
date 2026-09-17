@@ -130,6 +130,8 @@ export function fillInCodexConfigFloor(
 export class AcpRunner {
   private child?: ChildProcess
   private exited = false
+  /** Highest `seq` whose bytes actually reached stdin; a re-sent write at or below it is a duplicate. */
+  private appliedSeq = -1
 
   constructor(
     private readonly deps: {
@@ -150,11 +152,18 @@ export class AcpRunner {
     if (payload.op === 'chunk') {
       const child = this.child
       if (!child?.stdin) throw new Error('acp stream is not open')
+      // A write the daemon re-sends after a renewal carries the seq it first went out with, and
+      // the daemon cannot know whether that first attempt landed. Answering the duplicate without
+      // writing is the whole point: ND-JSON applied twice is a corrupted frame, which the runtime
+      // has no way to recover from, whereas an acknowledged no-op costs nothing.
+      if (payload.seq !== undefined && payload.seq <= this.appliedSeq) return
       // Report the write's completion so the daemon side can apply backpressure rather than
       // queueing unboundedly into a runtime that is not draining.
       await new Promise<void>((resolve, reject) => {
         child.stdin!.write(Buffer.from(payload.data, 'base64'), (err) => (err ? reject(err) : resolve()))
       })
+      // Recorded AFTER the write, so a write that failed is still owed: the retry must apply.
+      if (payload.seq !== undefined) this.appliedSeq = payload.seq
       return
     }
     await this.close(payload.deadlineMs ?? 5_000)

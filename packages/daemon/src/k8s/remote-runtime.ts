@@ -1,7 +1,10 @@
 import type { SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ClusterMetrics } from '../metrics/cluster-metrics.js'
-import { ShimRequestTimeoutError } from '../shim/channels.js'
+import { ShimChannelLostError, ShimRequestTimeoutError } from '../shim/channels.js'
 import type { ShimSession } from '../shim/session.js'
+
+/** How long a re-sent write waits for the replacement channel a renewal is already binding. */
+const REATTACH_GRACE_MS = 10_000
 
 /**
  * Bridge a shim ACP stream to the byte-stream pair `AcpHost` consumes.
@@ -10,6 +13,13 @@ import type { ShimSession } from '../shim/session.js'
  * than to one socket: a renewal re-attaches underneath, and only a lost session ends the
  * runtime. Writes await their acknowledgement, so a runtime that is not draining applies
  * backpressure instead of letting the daemon queue without bound.
+ *
+ * That acknowledgement is also the one place a renewal can still bite. The abort a renewal
+ * performs rejects the write in flight, and a `WritableStream` that rejects a write is errored
+ * for good — every later write rejects with the SAME stored error. A host kept warm on such a
+ * stream answers every future turn with "shim channel renewed" while the sandbox sits there
+ * healthy, so a lost write is either re-sent (safe only because the shim dedupes by `seq`) or
+ * ends the runtime, which `reapTerminalHost` respawns on the next message. Never neither.
  */
 export function createRemoteRuntime(opts: {
   session: ShimSession
@@ -23,6 +33,10 @@ export function createRemoteRuntime(opts: {
   const exitListeners: Array<() => void> = []
   let stopped = false
   let streamId: string | undefined
+  /** Set from the open reply: whether this shim applies a re-sent `seq` at most once. */
+  let resumableWrites = false
+  /** Numbers the writes. Strictly increasing because `WritableStream` runs them one at a time. */
+  let writeSeq = 0
   const inbound = new TransformStream<Uint8Array, Uint8Array>()
   const writer = inbound.writable.getWriter()
 
@@ -60,9 +74,18 @@ export function createRemoteRuntime(opts: {
       ...(opts.request.hints ? { hints: opts.request.hints } : {})
     })
     .then((payload) => {
-      streamId = (payload as { streamId?: string } | undefined)?.streamId
+      const reply = payload as { streamId?: string; resumableWrites?: boolean } | undefined
+      streamId = reply?.streamId
+      resumableWrites = reply?.resumableWrites === true
       if (!streamId) throw new Error('shim did not report a stream id for the ACP runtime')
     })
+
+  /** End the runtime deliberately: the stream cannot carry another byte, so say so once. */
+  const failRuntime = (reason: string): void => {
+    opts.log.warn(`cluster: ACP stream for agent ${opts.session.agentId} ended — ${reason}`)
+    opts.session.offEvent(onEvent)
+    finish()
+  }
 
   const toAgent = new WritableStream<Uint8Array>({
     write: async (chunk) => {
@@ -70,13 +93,36 @@ export function createRemoteRuntime(opts: {
       // open round trip returns. Awaiting it here queues the write instead of dropping it.
       await opened
       if (!streamId) throw new Error('acp stream is not open')
+      // Numbered so the shim can tell a re-send from a new write. The number travels with the
+      // bytes rather than being derived on the far side, because only this side knows that the
+      // second attempt is the same write.
+      const frame = { op: 'chunk', streamId, data: Buffer.from(chunk).toString('base64'), seq: ++writeSeq }
       // Awaiting the ack is the backpressure: the shim only answers once the runtime's stdin
       // accepted the bytes.
-      await opts.session.request('acp', {
-        op: 'chunk',
-        streamId,
-        data: Buffer.from(chunk).toString('base64')
-      })
+      try {
+        await opts.session.request('acp', frame)
+      } catch (err) {
+        if (!(err instanceof ShimChannelLostError)) throw err
+        // The renewal says the reply was lost, not whether the bytes landed — so only a shim that
+        // dedupes may be asked again. Against one that does not, ending the runtime is the honest
+        // move: re-sending could corrupt the stream, and keeping the errored stream would fail
+        // every later turn with this same error instead of this one.
+        if (!resumableWrites) {
+          failRuntime(`its shim channel was renewed mid-write and this shim cannot resume writes (${err.message})`)
+          throw err
+        }
+        await opts.session.waitForAttach(REATTACH_GRACE_MS).catch((waitErr: unknown) => {
+          failRuntime(`its shim channel was renewed and no replacement bound (${(waitErr as Error).message})`)
+          throw err
+        })
+        try {
+          await opts.session.request('acp', frame)
+        } catch (retry) {
+          failRuntime(`its shim channel was renewed and the re-sent write failed (${(retry as Error).message})`)
+          throw retry
+        }
+        opts.log.info(`cluster: re-sent one ACP write for agent ${opts.session.agentId} after a channel renewal`)
+      }
     }
   })
 

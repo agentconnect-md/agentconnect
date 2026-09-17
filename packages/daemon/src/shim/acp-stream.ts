@@ -24,7 +24,18 @@ export const AcpOpenSchema = z.object({
 export const AcpChunkSchema = z.object({
   op: z.literal('chunk'),
   /** base64: the frame is JSON text, the payload is opaque ND-JSON bytes. */
-  data: z.string()
+  data: z.string(),
+  /**
+   * Per-stream write counter, so a chunk re-sent after a channel renewal is applied ONCE.
+   *
+   * A renewal fails an in-flight write without saying whether the bytes reached the sandbox,
+   * which is why `ShimChannelLostError` is typed — but a caller cannot act on "ask again"
+   * for stdin, where a second application duplicates an ND-JSON frame and corrupts the
+   * stream. Numbering the writes is what makes the retry safe. Optional: a shim that predates
+   * it ignores the field, and the daemon only retries against one that announced the dedupe
+   * in its `open` reply.
+   */
+  seq: z.number().int().nonnegative().optional()
 })
 
 export const AcpCloseSchema = z.object({

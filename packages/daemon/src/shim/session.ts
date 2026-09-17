@@ -98,6 +98,31 @@ export class ShimSession {
     return this.channel !== undefined
   }
 
+  /**
+   * Settle once a usable channel is in place, for a caller that means to retry what a renewal failed.
+   *
+   * Ordinarily this is already true when the rejection arrives — `attach` aborts the old channel
+   * after binding the replacement — so this is the ordering guarantee, not a wait anyone expects
+   * to spend time in. A launch that never rebinds rejects on the grace window rather than hanging
+   * the retry behind a pod that is gone.
+   */
+  waitForAttach(timeoutMs: number): Promise<void> {
+    if (this.isAttached()) return Promise.resolve()
+    if (this.closed) return Promise.reject(new Error(`shim session for agent ${this.agentId} is closed`))
+    return new Promise<void>((resolve, reject) => {
+      const listener = (): void => {
+        this.timers.clearTimeout(handle)
+        this.offAttach(listener)
+        resolve()
+      }
+      const handle = this.timers.setTimeout(() => {
+        this.offAttach(listener)
+        reject(new Error(`shim session for agent ${this.agentId} did not re-attach within ${timeoutMs}ms`))
+      }, timeoutMs)
+      this.onAttach(listener)
+    })
+  }
+
   hasCapability(capability: ShimCapability): boolean {
     return this.connection?.binding.grants.includes(capability) === true
   }
