@@ -289,6 +289,8 @@ export class AcpRunner {
     this.child = undefined
     if (!child) return
     if (child.exitCode !== null || child.signalCode !== null) return
+    // A child that never spawned has no pid, and child.kill() would signal pid 0 — this shim's own process group.
+    if (child.pid === undefined) return
     const kill = (signal: NodeJS.Signals): void => {
       if (child.pid && process.platform !== 'win32') {
         try {
