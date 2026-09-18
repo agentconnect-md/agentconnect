@@ -70,6 +70,7 @@ function fakeVm(guestSockets: Record<TunnelName, string>) {
       readToken: () => token,
       resolveCommand: resolveCommandInPath,
       podEnv: { PATH: process.env.PATH },
+      completeEnv: true,
       handle: async (capability, payload) => {
         if (capability !== 'tunnel') throw new Error(`capability ${capability} is not served by this fake`)
         return tunnels.handle(payload)

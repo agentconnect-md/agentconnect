@@ -61,6 +61,8 @@ async function main(): Promise<number> {
     resolveCommand: resolveCommandInPath,
     // Image-accepted provider config (AC_CLAUDE_*/AC_CODEX_* → the runtime's BASE_URL/API_KEY).
     podEnv: process.env,
+    // A shim handed its identity on stdin was started by the daemon that drives it, on this machine: that daemon's launch environment is whole.
+    completeEnv: localIdentity !== undefined,
     // Serves materialize and git exec, and ENFORCES the declared inventory here rather than
     // trusting that the daemon sent only permitted subcommands; tunnels are served separately
     // because they own long-lived sockets rather than answering one request.

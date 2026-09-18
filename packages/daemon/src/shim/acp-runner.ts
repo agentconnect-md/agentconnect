@@ -142,6 +142,8 @@ export class AcpRunner {
       resolveCommand?: ResolveCommand
       /** Pod environment consulted for SANDBOX_PROVIDER_ENV fill-ins; absent means none. */
       podEnv?: Record<string, string | undefined>
+      /** The driving daemon is on this machine and sends the whole environment, so nothing a pod template would add applies. */
+      completeEnv?: boolean
       /** Test seam: the image directory the DeepSeek preset is seeded from. */
       dshPresetSource?: string
       log?: { info: (m: string) => void; warn: (m: string) => void }
@@ -181,6 +183,12 @@ export class AcpRunner {
 
   private async open(payload: AcpOpen): Promise<void> {
     if (this.child) throw new Error('acp stream is already open')
+    // A local VM's launch gets what a direct spawn of it got: the daemon's environment and its resolved hints, no pod fill-in.
+    if (this.deps.completeEnv) {
+      const env = { ...payload.env }
+      this.fillHints(payload, env)
+      return this.spawnChild(this.deps.resolveCommand?.(payload.command, env) ?? payload.command, payload, env)
+    }
     // The POD's own filesystem and locale basics, under whatever the daemon sent. The daemon
     // composes the agent's configuration but describes a different machine — it was sending its
     // own HOME, and codex then tried to open its sqlite state under a path that exists only on
@@ -191,11 +199,7 @@ export class AcpRunner {
     // After the daemon's env, so an agent's `gh` reaches the image's per-repo wrapper even when a PATH travelled.
     const ghPath = ghWrapperPath(env.PATH)
     if (ghPath !== undefined) env.PATH = ghPath
-    for (const hint of payload.hints ?? []) {
-      if (env[hint.envVar]) continue
-      const resolved = this.deps.resolveCommand?.(hint.command, env)
-      if (resolved) env[hint.envVar] = resolved
-    }
+    this.fillHints(payload, env)
     // Fill-in only, like hints: an env the daemon decided (per-agent key/gateway) stays authoritative.
     const podEnv = this.deps.podEnv ?? {}
     for (const [name, value] of Object.entries(sandboxProviderEnv(payload.command, podEnv))) {
@@ -244,6 +248,14 @@ export class AcpRunner {
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
     return this.spawnChild(command, payload, env)
+  }
+
+  private fillHints(payload: AcpOpen, env: Record<string, string>): void {
+    for (const hint of payload.hints ?? []) {
+      if (env[hint.envVar]) continue
+      const resolved = this.deps.resolveCommand?.(hint.command, env)
+      if (resolved) env[hint.envVar] = resolved
+    }
   }
 
   private spawnChild(command: string, payload: AcpOpen, env: Record<string, string>): void {

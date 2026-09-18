@@ -100,6 +100,42 @@ describe('sandbox spawn environment', () => {
     await runner.close(1_000).catch(() => {})
   })
 
+  // A local VM's shim is started by the daemon on the same machine: that launch environment is whole, and a pod's
+  // fill-ins would change it — an inherited OpenAI key would become codex's login in place of the one the user has.
+  it('adds nothing but resolved hints when the driving daemon sends the whole environment', async () => {
+    const seen: Array<Record<string, string>> = []
+    const runner = new AcpRunner({
+      emit: () => {},
+      completeEnv: true,
+      podEnv: {
+        HOME: '/agent',
+        PATH: '/pod/bin',
+        AC_CODEX_API_KEY: 'pod-key',
+        AC_CODEX_BASE_URL: 'https://gateway.example.test/v1',
+        [SANDBOX_BROWSER_EXECUTABLE_ENV]: '/opt/baked'
+      },
+      // The profile is read off the requested name, so the runtime itself can be any executable that exists.
+      resolveCommand: ((command, env) => {
+        seen.push({ ...env })
+        return command === 'claude' ? '/usr/local/bin/claude' : '/usr/bin/true'
+      }) satisfies ResolveCommand,
+      log: { info: () => {}, warn: () => {} }
+    } as never)
+    await openOf(runner)({
+      op: 'open',
+      command: 'codex-acp',
+      args: [],
+      env: { PATH: '/guest/tools', OPENAI_API_KEY: 'host-key' },
+      hints: [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }]
+    }).catch(() => {})
+    expect(seen.at(-1)).toEqual({
+      PATH: '/guest/tools',
+      OPENAI_API_KEY: 'host-key',
+      CLAUDE_CODE_EXECUTABLE: '/usr/local/bin/claude'
+    })
+    await runner.close(1_000).catch(() => {})
+  })
+
   // `gh` reads a static GH_TOKEN fixed at spawn, so a pod agent gets per-repo tokens only when the image's
   // wrapper is what PATH resolves first. The dir is the IMAGE's, so the decision is made here rather than sent
   // by a daemon that would be naming a path on a machine it is not on.

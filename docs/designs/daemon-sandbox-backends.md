@@ -594,7 +594,11 @@ resolves the command and its executable hints in the guest, starts the runtime a
 the image's ordinary user in its own process group, relays its stdio as numbered
 frames, and reports its exit. The driver sends the image's environment beneath
 the launch environment and names the workspace root as the working directory, as
-a direct guest exec did. Stop closes the runtime's stdin, signals its process
+a direct guest exec did. A shim handed its identity on stdin was started by the
+daemon that drives it, so it treats that environment as whole and adds none of
+the fill-ins a pod template supplies: no provider variables, no Codex auth
+request composed from an inherited key, no DeepSeek preset. Stop closes the
+runtime's stdin, signals its process
 group, and escalates to a kill past the deadline. A lost shim ends every runtime
 on it at once and fences the VM, so the host is rebuilt on the next turn. The
 runtime's stderr arrives on the shim's stream and is written to the daemon's

@@ -2,7 +2,7 @@
 // Usage: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts <image> [transfer-MiB]
 // It reads the guest socket paths from the launch environment and calls only what both sides of the move onto the shim have, so the same file measures the previous mechanism from a checkout of it.
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -88,11 +88,12 @@ socket.on('close', () => {
 socket.on('error', (error) => { process.stderr.write(String(error)); process.exit(1); });
 `
 
-/** Reports where and as whom a runtime started by the driver runs, then waits for stdin to close. */
-const IDENTITY_RUNTIME = `
+/** Reports where, as whom and with what environment a runtime started by the driver runs, then waits for stdin to close. */
+const IDENTITY_RUNTIME = `#!/usr/local/bin/node
 process.stdout.write(JSON.stringify({
   uid: process.getuid(), cwd: process.cwd(), home: process.env.HOME, path: process.env.PATH,
-  imageEnv: process.env.NODE_OPTIONS ?? null, gitcred: process.env.AC_GITCRED_SOCKET
+  imageEnv: process.env.NODE_OPTIONS ?? null, key: process.env.OPENAI_API_KEY ?? null,
+  authRequest: process.env.DEFAULT_AUTH_REQUEST ?? null
 }) + '\\n');
 process.stdin.resume();
 `
@@ -185,10 +186,13 @@ try {
   summary.warmLaunchToInitializeMs = await acpRoundTrip()
   step('acp-initialize-answered-on-the-running-vm', { ms: summary.warmLaunchToInitializeMs })
 
+  // Named like Codex on purpose: a pod's shim would turn an inherited key into that runtime's login, and a VM's must not.
+  const probe = join(cwd, 'codex-smoke')
+  await writeFile(probe, IDENTITY_RUNTIME, { mode: 0o755 })
   const identity = await driver.launch({
-    command: '/usr/local/bin/node',
-    args: ['-e', IDENTITY_RUNTIME],
-    env: launch.env
+    command: probe,
+    args: [],
+    env: { ...launch.env, OPENAI_API_KEY: 'inherited-from-the-host' }
   })
   const who = await firstJsonLine(identity)
   await identity.stop(10_000)
@@ -197,6 +201,8 @@ try {
   assert.equal(who.home, launch.env.HOME)
   assert.equal(who.path, launch.env.PATH)
   assert.equal(who.imageEnv, '--dns-result-order=ipv4first', 'the image environment must reach the runtime')
+  assert.equal(who.key, 'inherited-from-the-host')
+  assert.equal(who.authRequest, null, 'the launch environment must arrive as the daemon sent it')
   step('runtime-identity-directory-and-environment-verified', who)
 
   const guest = async (tunnel: keyof typeof sockets, command: string, bytes?: number) => {

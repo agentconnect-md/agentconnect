@@ -471,9 +471,9 @@ jobs:
       - name: Open /dev/kvm to this user
         if: ${{ steps.filter.outputs.changed == 'true' }}
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          # `ls` first, so a runner without nested virtualization says so instead of failing a bare test.
+          ls -l /dev/kvm
+          sudo chmod 0666 /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
       # The driver stages this daemon's built shim bundle into the VM, so the smoke test needs the build.
       - name: Build the daemon

@@ -50,6 +50,8 @@ export interface ShimClientDeps {
   resolveCommand?: ResolveCommand
   /** Pod environment the ACP runner consults for provider fill-ins (SANDBOX_PROVIDER_ENV). */
   podEnv?: Record<string, string | undefined>
+  /** The driving daemon sends each runtime's whole environment, so the ACP runner adds no pod fill-in. */
+  completeEnv?: boolean
   /** This pod's workspace mount, reported in the hello so the daemon builds pod paths on it. */
   workspaceRoot?: string
   /** Versioned optional surfaces this shim image can accept. */
@@ -333,6 +335,7 @@ export class ShimClient {
         emit: (event) => this.emitEvent(streamId, event),
         ...(this.deps.resolveCommand ? { resolveCommand: this.deps.resolveCommand } : {}),
         ...(this.deps.podEnv ? { podEnv: this.deps.podEnv } : {}),
+        ...(this.deps.completeEnv ? { completeEnv: true } : {}),
         ...(this.deps.log ? { log: this.deps.log } : {})
       })
       this.acpStreams.set(streamId, runner)
