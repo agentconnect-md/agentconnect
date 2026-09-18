@@ -183,10 +183,11 @@ function delay(ms: number): Promise<void> {
 
 export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntimePlane {
   let stopped = false
+  const driver = {
+    claimName: (agentId: string) => `capacity-${agentId}`
+  } as unknown as K8sDriver
   const plane = {
-    driver: {
-      claimName: (agentId: string) => `capacity-${agentId}`
-    } as unknown as K8sDriver,
+    driver,
     dialer: {} as ShimDialer,
     memberId: 'capacity-member',
     // No pool template behind the fake, so the probe path stays on its "probe alone" arm.
@@ -202,6 +203,7 @@ export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntime
     },
     withSandbox: async <T>(_agentId: string, work: () => Promise<T>) => work(),
     probeRuntimes: async () => ({ runtimes: [{ id: RUNTIME_ID, version: 'test', models: [] }] }),
+    spawnFor: () => ({ driver }),
     gitRunnerFor: () => undefined,
     workspaceFilesFor: () => undefined,
     workspaceFsFor: () => undefined,
@@ -221,6 +223,7 @@ export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntime
     suspendIdle: async () => 'absent' as const,
     discardAgent: async () => {},
     discardSession: async () => {},
+    discardSessions: async () => {},
     hasSandbox: async () => false,
     stop: async () => {
       stopped = true

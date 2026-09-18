@@ -395,6 +395,7 @@ import {
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
+import { wireWorkspacePlane, type ExecutionPlane, type PlaneLaunch } from './execution/plane.js'
 import {
   declaredRuntimeCatalog,
   loadK8sRuntimeTable,
@@ -2025,37 +2026,7 @@ export class Daemon {
   private async sandboxPreflight(cfg: Config, root: string): Promise<void> {
     if (cfg.sandbox.backend === 'microsandbox') {
       if (this.k8s) throw new Error('sandbox.backend=microsandbox cannot be combined with --k8s')
-      this.workspaces.setGitRunnerResolver((agentId, cwd, abort) => this.microsandboxGit(agentId, cwd, abort))
-      this.workspaces.setFsResolver((agentId) => {
-        const agent = this.agents.get(agentId)
-        if (!agent || !this.usesMicrosandbox(agent)) return undefined
-        return {
-          fs: new MicrosandboxWorkspaceFs(
-            (path) => {
-              const environment = this.microsandboxWorkspaceEnvironment(agent, path)
-              return environment
-                ? new ShimWorkspaceFs(this.microsandboxRequester(environment), environment.workspaceRoot)
-                : undefined
-            },
-            async (path) => {
-              const manager = this.microsandbox
-              const placement = this.microsandboxPlacement(agent, path)
-              const environment = manager?.environment(placement.id)
-              const mountRoot = environment
-                ? environment.mounts.some(
-                    (mount) => mount.mode === 'writable' && mount.source === path && mount.target === path
-                  )
-                : placement.trustedSessionDir === path ||
-                  agent.workspace.path === path ||
-                  this.workspaces.trustedWorkspaceWriteRoots(agent).includes(path)
-              if (!manager || !mountRoot) return false
-              await manager.suspend(placement.id)
-              return true
-            }
-          )
-        }
-      })
-      this.workspaces.setSessionsDiscarder((agentId, exceptLeaf) => this.discardSessionSandboxes(agentId, exceptLeaf))
+      wireWorkspacePlane(this.workspaces, this.microsandboxPlane)
       try {
         this.microsandbox = await installMicrosandbox({
           root,
@@ -2143,19 +2114,11 @@ export class Daemon {
         this.dataPlane = undefined
         throw error
       }
-      // Workspace git then runs where the workspace actually is. Registered for ALL agents; the
-      // resolver answers undefined for any without a bound channel, so an agent this daemon has
-      // not launched into a sandbox keeps its local behaviour.
-      this.workspaces.setGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
-      // And its filesystem twin, so the worktree paths ask the POD and compose the POD's coordinates.
-      this.workspaces.setFsResolver((agentId) => this.k8sPlane?.workspaceFsFor(agentId))
-      // And the one destructive operation a cluster workspace needs, for the same reason: a
-      // partial clone sits on a volume no `rmSync` here can reach.
+      // Workspace git, files and session retirement then run where the workspace is; an agent with no bound channel answers undefined and keeps its local behaviour.
+      wireWorkspacePlane(this.workspaces, this.k8sPlane)
+      // And the one destructive operation a cluster workspace needs: a partial clone sits on a volume no `rmSync` here can reach.
       this.workspaces.setPathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
-      // And the pool's form of `clearSessionWorktrees`: a replaced workspace retires every session pod (§11), when its conversion runs.
-      this.workspaces.setSessionsDiscarder((agentId, exceptLeaf) => this.discardSessionSandboxes(agentId, exceptLeaf))
-      // And the mode itself, which decides what workspace operations are available at all: an
-      // in-place conversion has no pod-side implementation of its rollback contract.
+      // And the mode itself, which decides what workspace operations exist at all: an in-place conversion has no pod-side rollback.
       this.workspaces.setSandboxMode(true)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
     }
@@ -4084,6 +4047,65 @@ export class Daemon {
     }
   }
 
+  private microsandboxWorkspaceFs(agentId: string) {
+    const agent = this.agents.get(agentId)
+    if (!agent || !this.usesMicrosandbox(agent)) return undefined
+    return {
+      fs: new MicrosandboxWorkspaceFs(
+        (path) => {
+          const environment = this.microsandboxWorkspaceEnvironment(agent, path)
+          return environment
+            ? new ShimWorkspaceFs(this.microsandboxRequester(environment), environment.workspaceRoot)
+            : undefined
+        },
+        async (path) => {
+          const manager = this.microsandbox
+          const placement = this.microsandboxPlacement(agent, path)
+          const environment = manager?.environment(placement.id)
+          const mountRoot = environment
+            ? environment.mounts.some(
+                (mount) => mount.mode === 'writable' && mount.source === path && mount.target === path
+              )
+            : placement.trustedSessionDir === path ||
+              agent.workspace.path === path ||
+              this.workspaces.trustedWorkspaceWriteRoots(agent).includes(path)
+          if (!manager || !mountRoot) return false
+          await manager.suspend(placement.id)
+          return true
+        }
+      )
+    }
+  }
+
+  /** The microsandbox backend as an execution plane: a thin view over the private methods above. */
+  private readonly microsandboxPlane: ExecutionPlane = {
+    // The environment names the VM; the host key rides along on every launch.
+    spawnFor: ({ agent, hostKey, cwd, prepared }) => ({
+      driver: this.microsandbox!.driverFor({
+        id: this.microsandboxPlacement(agent, cwd, hostKey).id,
+        ...prepared.microsandbox!
+      }),
+      hostKey
+    }),
+    gitRunnerFor: (agentId, cwd, abort) => this.microsandboxGit(agentId, cwd, abort),
+    workspaceFsFor: (agentId) => this.microsandboxWorkspaceFs(agentId),
+    discardSessions: async (agentId, exceptLeaf) => {
+      if (!this.microsandbox) return
+      for (const id of await this.microsandbox.environmentIds()) {
+        if (id.startsWith(`${agentId}/session-`) && id !== `${agentId}/${exceptLeaf}`) {
+          await this.microsandbox.discard(id)
+        }
+      }
+    }
+  }
+
+  /** Where one host's runtime executes; undefined is this daemon's own host, where AcpHost keeps its LocalDriver. */
+  private planeFor(launch: PlaneLaunch): ExecutionPlane | undefined {
+    if (this.k8sPlane) return this.k8sPlane
+    // Only a launch prepared for a VM runs in one: an agent that runs unsandboxed beside it stays on this host.
+    return launch.prepared.microsandbox ? this.microsandboxPlane : undefined
+  }
+
   private workspaceFilesFor(agentId: string) {
     const cluster = this.k8sPlane?.workspaceFilesFor(agentId)
     if (cluster) return cluster
@@ -5230,18 +5252,16 @@ export class Daemon {
     // Filled right after construction, so the terminal reap can prove the host that exited is
     // still the memoized one before evicting anything.
     const constructed: { host?: AcpHost } = {}
-    const podSubject = this.k8sPlane ? this.podSubjectFor(agent, opts.hostKey) : undefined
+    const planeLaunch: PlaneLaunch = {
+      agent,
+      hostKey: opts.hostKey,
+      cwd: opts.cwd,
+      prepared: launch,
+      confined: () => this.podSubjectFor(agent, opts.hostKey) !== undefined
+    }
     const host = new AcpHost(launchRuntime, {
-      ...(microPlacement && launch.microsandbox
-        ? {
-            driver: this.microsandbox!.driverFor({ id: microPlacement.id, ...launch.microsandbox }),
-            hostKey: opts.hostKey
-          }
-        : {}),
-      // In --k8s the runtime runs in a Sandbox pod — the agent's own, or the session's own for an isolated
-      // session's host (§11); everywhere else AcpHost falls back to its LocalDriver, which is what a
-      // self-hosted daemon wants.
-      ...(this.k8sPlane ? { driver: this.k8sPlane.driver, ...(podSubject ? { hostKey: opts.hostKey } : {}) } : {}),
+      // A plane runs the runtime in a sandbox pod or a VM; with none AcpHost falls back to its LocalDriver, which is what a self-hosted daemon wants.
+      ...this.planeFor(planeLaunch)?.spawnFor(planeLaunch),
       onUpdate,
       onPermission: (sid, params) => this.permissions.onAcpPermission(opts.hostKey, sid, params),
       ...(this.evalHooks.enabled
@@ -18270,23 +18290,6 @@ export class Daemon {
         `cluster: could not delete the sandbox of retired session ${sessionKey} (${formatErr(err)}) — ` +
           `sandboxclaim "${plane.driver.claimName(sessionSandboxSubject(agentId, leaf))}" is left for the orphan reconciler`
       )
-    }
-  }
-
-  /** Cluster only: retire every session pod of the agent but the leaf named — a replaced workspace leaves them holding the old repository (§11). */
-  private async discardSessionSandboxes(agentId: string, exceptLeaf?: string): Promise<void> {
-    if (this.microsandbox) {
-      for (const id of await this.microsandbox.environmentIds()) {
-        if (id.startsWith(`${agentId}/session-`) && id !== `${agentId}/${exceptLeaf}`) {
-          await this.microsandbox.discard(id)
-        }
-      }
-    }
-    const plane = this.k8sPlane
-    if (!plane) return
-    for (const subject of await plane.driver.sessionClaimSubjects(agentId)) {
-      const leaf = sandboxSubjectSessionLeaf(subject)!
-      if (leaf !== exceptLeaf) await plane.discardSession(agentId, leaf)
     }
   }
 

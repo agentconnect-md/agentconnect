@@ -37,6 +37,7 @@ import type { TunnelName } from '../shim/tunnel.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 import { deferredGitRunner } from '../workspace/git-runner.js'
+import type { ExecutionPlane } from '../execution/plane.js'
 
 const SILENT = { info: () => {}, warn: () => {} }
 
@@ -139,7 +140,7 @@ export function k8sPlaneSettings(env: NodeJS.ProcessEnv): K8sPlaneSettings {
  *  cwd a session must use — the POD's mount, never a path on the daemon's disk. */
 export type ProbeSandboxSweep = (table: K8sRuntimeTable, sandbox: { agentId: string; cwd: string }) => Promise<void>
 
-export interface K8sRuntimePlane {
+export interface K8sRuntimePlane extends ExecutionPlane {
   driver: K8sDriver
   dialer: ShimDialer
   /** This member's stable identity — one half of the pool-wide probe election. */
@@ -395,6 +396,12 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     releaseSubject(agentSandboxSubject(agentId), reason)
   }
 
+  async function discardSession(agentId: string, leaf: string): Promise<void> {
+    const subject = sessionSandboxSubject(agentId, leaf)
+    releaseSubject(subject, 'session retired')
+    await driver.removeSandbox(subject)
+  }
+
   // A claim this member is USING must not look like a leak to the orphan sweep, and a launch served from
   // the registry never touches the API — so the stamp is refreshed on a tick derived from the SAME grace
   // the sweep reads, never a constant of its own: an install that shortens the grace would otherwise let a
@@ -420,6 +427,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     withSandbox: (subject, work) => driver.withSandbox(subject as SandboxSubject, work),
     probeRuntimes,
+    // The driver claims the pod a host key names, so only a confined session's host hands it one; every other host shares the agent's pod (§11).
+    spawnFor: ({ hostKey, confined }) => ({ driver, ...(confined() ? { hostKey } : {}) }),
     gitRunnerFor: (agentId, cwd, abort) => {
       // No channel means this path has no bound sandbox to run git in. Returning undefined keeps the
       // caller on its local runner rather than failing the operation — which is what a
@@ -523,10 +532,13 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       releaseAgent(agentId, 'agent removed')
       await driver.removeAgentSandboxes(agentId)
     },
-    discardSession: async (agentId, leaf) => {
-      const subject = sessionSandboxSubject(agentId, leaf)
-      releaseSubject(subject, 'session retired')
-      await driver.removeSandbox(subject)
+    discardSession,
+    // Listed from the cluster, not from this member's launches: a session pod it never launched holds the old repository too.
+    discardSessions: async (agentId, exceptLeaf) => {
+      for (const subject of await driver.sessionClaimSubjects(agentId)) {
+        const leaf = sandboxSubjectSessionLeaf(subject)!
+        if (leaf !== exceptLeaf) await discardSession(agentId, leaf)
+      }
     },
     hasSandbox: (subject) => driver.hasClaim(subject as SandboxSubject),
     stop: async () => {
