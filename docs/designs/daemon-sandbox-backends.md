@@ -600,7 +600,8 @@ the fill-ins a pod template supplies: no provider variables, no Codex auth
 request composed from an inherited key, no DeepSeek preset. Stop closes the
 runtime's stdin, signals its process
 group, and escalates to a kill past the deadline. A lost shim ends every runtime
-on it at once and fences the VM, so the host is rebuilt on the next turn. The
+on it at once and fences the VM, so the host is rebuilt on the next turn; a
+stop the shim does not confirm with the runtime's exit fences the VM as well. The
 runtime's stderr arrives on the shim's stream and is written to the daemon's
 stderr; the shim's own tagged lines go to the debug log. Native tools run inside
 the existing harness and VM. There is no external CLI invocation for each tool

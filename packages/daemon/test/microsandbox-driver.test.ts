@@ -388,6 +388,8 @@ class FakeShim implements MicrosandboxShim {
   readonly closes: Array<{ streamId: string; deadlineMs?: number }> = []
   readonly session: ShimSession
   readonly stop = vi.fn(async () => this.session.lose('microsandbox shim stopped'))
+  /** Answer a close without the runtime ever exiting: a child that survived SIGKILL, or a close that never landed. */
+  unconfirmedClose = false
   private deliver: (text: string) => void = () => {}
 
   constructor(readonly input: ShimInput) {
@@ -442,7 +444,7 @@ class FakeShim implements MicrosandboxShim {
       reply()
     } else {
       this.closes.push({ streamId: payload.streamId, deadlineMs: payload.deadlineMs })
-      this.exit(payload.streamId)
+      if (!this.unconfirmedClose) this.exit(payload.streamId)
       reply()
     }
   }
@@ -1154,6 +1156,25 @@ describe('microsandbox process and VM ownership', () => {
     const bytes = new TextEncoder().encode('recovered\n')
     await recovered.toAgent.getWriter().write(bytes)
     expect(new Uint8Array((await recovered.fromAgent.getReader().read()).value!)).toEqual(bytes)
+    await recovered.stop(0)
+    await manager.discard(environment.id)
+  })
+
+  it('fences the VM when a stop is not confirmed by the runtime exiting', async () => {
+    const { manager, environment, request, created, shims } = await fixture()
+    const driver = manager.driverFor(environment)
+    const runtime = await driver.launch(request)
+    const terminal = vi.fn()
+    runtime.onExit(terminal)
+    shims[0]!.unconfirmedClose = true
+    await runtime.stop(1)
+    // Stopping the VM ends what the shim could not, and releases the execution the runtime held.
+    await vi.waitFor(() => expect(created[0]!.status).toBe('stopped'))
+    expect(terminal).toHaveBeenCalledOnce()
+    expect(shims[0]!.stop).toHaveBeenCalledOnce()
+    const recovered = await driver.launch(request)
+    expect(created).toHaveLength(1)
+    expect(shims).toHaveLength(2)
     await recovered.stop(0)
     await manager.discard(environment.id)
   })

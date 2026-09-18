@@ -1042,12 +1042,21 @@ export class MicrosandboxManager {
       })
       if (request.suppressChildStderr) state.quiet++
       state.processes.add(runtime)
+      let exited = false
       runtime.onExit(() => {
+        exited = true
         if (request.suppressChildStderr) state.quiet--
         state.processes.delete(runtime)
         release()
       })
-      return runtime
+      return {
+        ...runtime,
+        stop: async (deadlineMs, eofGraceMs) => {
+          await runtime.stop(deadlineMs, eofGraceMs)
+          // A stop the shim never confirmed leaves a runtime nobody can reach, so the VM is fenced as it was for a lost exec stream.
+          if (!exited) this.stopFailedEnvironment(environment.id)
+        }
+      }
     } catch (error) {
       release()
       throw error
