@@ -211,7 +211,7 @@ try {
       environment,
       '/usr/local/bin/node',
       ['-e', GUEST_CLIENT, join(guestSockets, `${tunnel}.sock`), command, ...(bytes ? [String(bytes)] : [])],
-      { cwd: environment.workspaceRoot, env: launch.env, timeoutMs: 300_000 }
+      { cwd: environment.workspaceRoot, env: launch.env, timeoutMs: 60_000 }
     )
     assert.equal(result.exitCode, 0, `${tunnel} ${command}: ${result.stderr}`)
     return JSON.parse(result.stdout) as { reply: string; received: number; ms: number }
@@ -221,18 +221,30 @@ try {
   }
   step('both-helper-endpoints-reach-their-own-daemon-socket', { guestSockets })
 
-  const mib = transferBytes / (1024 * 1024)
-  const pushed = await guest('mcp', 'push', transferBytes)
-  assert.equal(pushed.reply, String(transferBytes))
-  summary.guestToDaemonMiBps = Number((mib / (pushed.ms / 1000)).toFixed(1))
-  const pulled = await guest('mcp', 'pull', transferBytes)
-  assert.equal(pulled.received, transferBytes)
-  summary.daemonToGuestMiBps = Number((mib / (pulled.ms / 1000)).toFixed(1))
-  step('bulk-transfer-through-the-mcp-endpoint', {
-    mib,
-    guestToDaemonMiBps: summary.guestToDaemonMiBps,
-    daemonToGuestMiBps: summary.daemonToGuestMiBps
-  })
+  // Ascending sizes per direction, so a path that stalls on a large transfer still reports what it carried before that.
+  let stalled: string | undefined
+  for (const [command, label] of [
+    ['push', 'guestToDaemon'],
+    ['pull', 'daemonToGuest']
+  ] as const) {
+    for (const mib of [...new Set([1, 8, transferBytes / (1024 * 1024)])]) {
+      const bytes = mib * 1024 * 1024
+      try {
+        const moved = await guest('mcp', command, bytes)
+        assert.equal(command === 'push' ? Number(moved.reply) : moved.received, bytes)
+        summary[`${label}MiBps@${mib}MiB`] = Number((mib / (moved.ms / 1000)).toFixed(1))
+      } catch (error) {
+        stalled ??= `${label} ${mib} MiB: ${(error as Error).message}`
+        summary[`${label}MiBps@${mib}MiB`] = 'failed'
+        break
+      }
+    }
+  }
+  step('bulk-transfer-through-the-mcp-endpoint', summary)
+  if (stalled) {
+    console.log(JSON.stringify({ summary }))
+    throw new Error(`bulk transfer through the mcp endpoint did not complete (${stalled})`)
+  }
 
   await manager.suspend(environment.id)
   summary.resumedLaunchToInitializeMs = await acpRoundTrip()
