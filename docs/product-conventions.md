@@ -1287,12 +1287,15 @@ host runtime unavailable. Self-hosted models and capabilities continue to use th
 existing host probe; this switch does not add another probe sweep.
 
 Installation and login are independent. Each view shows an installed runtime even
-without a stored login, with **Login required** in that case. A stored login keeps
-a missing runtime visible with **Binary not installed on host** or **Binary not
-installed in image**, according to the selected view. Only a runtime with neither
-an installation in that environment nor a stored login is hidden. Missing binaries
-take precedence over login warnings. Enumerating models does not prove that the
-runtime is signed in; expired credentials remain visible and may require login.
+without a stored login, with **Login required** in that case. A stored login, or
+provider credentials Claude Code accepts without that login (an API key, auth
+token, or OAuth token in host env or `settings.json` env), keeps a missing runtime
+visible with **Binary not installed on host** or **Binary not installed in image**,
+according to the selected view. Only a runtime with neither an installation in that
+environment nor credentials is hidden. Missing binaries take precedence over login
+warnings. Enumerating models does not prove that the runtime is signed in; expired
+credentials remain visible and may require login. A custom provider base URL
+without a secret is not credentials.
 Runtime pickers group choices displaying **Login required** at the end, preserving
 the order within each group. These choices remain selectable.
 

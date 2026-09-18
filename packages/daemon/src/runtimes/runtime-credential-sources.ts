@@ -22,6 +22,14 @@ export function sharedCredentialProfile(runtimeId: string, runtime?: RuntimeDef)
   return undefined
 }
 
+/** Secrets Claude Code itself accepts without `claude login` / `primaryApiKey`. */
+const CLAUDE_PROVIDER_SECRET_ENV = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_IDENTITY_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN'
+] as const
+
 function hostHome(env: NodeJS.ProcessEnv): string {
   return (process.platform === 'win32' ? env.USERPROFILE || env.HOME : env.HOME) || homedir()
 }
@@ -61,21 +69,12 @@ export function resolveClaudeCredentialSources(env: NodeJS.ProcessEnv): {
   const { configDir } = config
   let configuredSecureDir = env.CLAUDE_SECURESTORAGE_CONFIG_DIR
   if (!configuredSecureDir) {
-    const settingsPath = join(configDir, 'settings.json')
-    const settings = existsSync(settingsPath) ? (JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown) : {}
-    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
-      throw new Error(`Claude settings must contain a JSON object: ${settingsPath}`)
-    }
-    const rawSettingsEnv = (settings as Record<string, unknown>).env
-    if (
-      rawSettingsEnv !== undefined &&
-      (!rawSettingsEnv || typeof rawSettingsEnv !== 'object' || Array.isArray(rawSettingsEnv))
-    ) {
-      throw new Error(`Claude settings.env must contain a JSON object: ${settingsPath}`)
-    }
-    const setting = (rawSettingsEnv as Record<string, unknown> | undefined)?.CLAUDE_SECURESTORAGE_CONFIG_DIR
+    const settingsEnv = claudeSettingsEnv(configDir)
+    const setting = settingsEnv?.CLAUDE_SECURESTORAGE_CONFIG_DIR
     if (setting !== undefined && typeof setting !== 'string') {
-      throw new Error(`Claude settings env.CLAUDE_SECURESTORAGE_CONFIG_DIR must be a string: ${settingsPath}`)
+      throw new Error(
+        `Claude settings env.CLAUDE_SECURESTORAGE_CONFIG_DIR must be a string: ${join(configDir, 'settings.json')}`
+      )
     }
     configuredSecureDir = setting
   }
@@ -123,6 +122,25 @@ function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
+function claudeSettingsEnv(configDir: string): Record<string, unknown> | undefined {
+  const settingsPath = join(configDir, 'settings.json')
+  if (!existsSync(settingsPath)) return undefined
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    throw new Error(`Claude settings must contain a JSON object: ${settingsPath}`)
+  }
+  const rawSettingsEnv = (settings as Record<string, unknown>).env
+  if (rawSettingsEnv === undefined) return undefined
+  if (!rawSettingsEnv || typeof rawSettingsEnv !== 'object' || Array.isArray(rawSettingsEnv)) {
+    throw new Error(`Claude settings.env must contain a JSON object: ${settingsPath}`)
+  }
+  return rawSettingsEnv as Record<string, unknown>
+}
+
+function claudeProviderSecretPresent(source: NodeJS.ProcessEnv | Record<string, unknown> | undefined): boolean {
+  return !!source && CLAUDE_PROVIDER_SECRET_ENV.some((name) => hasText(source[name]))
+}
+
 function hasText(value: unknown): boolean {
   return typeof value === 'string' && value.trim().length > 0
 }
@@ -151,13 +169,22 @@ export function discoverSharedRuntimeCredentials(
 ): RuntimeCredentialDiscovery {
   const paths: string[] = []
   const providers: string[] = []
+  // Host env is enough for Claude Code; keep it even if settings/login files are unreadable.
+  if (profile === 'claude' && claudeProviderSecretPresent(env)) providers.push('anthropic')
   try {
     if (profile === 'claude') {
       const source = resolveClaudeCredentialSources(env)
       const oauth = object(credentialObject(source.credentialFile).claudeAiOauth)
       if (hasText(oauth.accessToken) || hasText(oauth.refreshToken)) paths.push(source.credentialFile)
       if (hasText(credentialObject(source.globalConfigFile, false).primaryApiKey)) paths.push(source.globalConfigFile)
-      if (paths.length > 0) providers.push('anthropic')
+      if (
+        paths.length === 0 &&
+        providers.length === 0 &&
+        claudeProviderSecretPresent(claudeSettingsEnv(source.configDir))
+      ) {
+        paths.push(join(source.configDir, 'settings.json'))
+      }
+      if (paths.length > 0 && providers.length === 0) providers.push('anthropic')
     } else if (profile === 'codex') {
       const source = resolveCodexCredentialSources(env)
       const auth = credentialObject(source.credentialFile)

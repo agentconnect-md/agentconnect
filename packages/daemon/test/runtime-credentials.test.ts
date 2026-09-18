@@ -14,7 +14,10 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
-import { discoverRuntimeCredentials } from '../src/runtimes/runtime-credential-discovery.js'
+import {
+  discoverRuntimeCredentials,
+  runtimeCredentialsConfigured
+} from '../src/runtimes/runtime-credential-discovery.js'
 import { resolveQoderCredentialSources } from '../src/runtimes/runtime-credential-sources.js'
 
 const roots: string[] = []
@@ -135,6 +138,47 @@ describe('stored runtime credential discovery', () => {
     expect(discoverRuntimeCredentials('claude-acp', undefined, env).paths).toEqual([])
     writeFileSync(join(configDir, '.config.json'), '{"primaryApiKey":"synthetic-key"}')
     expect(discoverRuntimeCredentials('claude-acp', undefined, env).paths).toEqual([join(configDir, '.config.json')])
+  })
+
+  it('recognizes Claude custom-provider secrets in host env or settings.env', () => {
+    const { hostHome } = fixture()
+    const env = { HOME: hostHome }
+    mkdirSync(join(hostHome, '.claude'))
+    writeFileSync(
+      join(hostHome, '.claude', 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8318' } })
+    )
+    expect(discoverRuntimeCredentials('claude-acp', undefined, env)).toEqual({ paths: [], providers: [] })
+    expect(runtimeCredentialsConfigured('claude-acp', undefined, env)).toBe(false)
+
+    writeFileSync(
+      join(hostHome, '.claude', 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'synthetic-bearer' } })
+    )
+    expect(discoverRuntimeCredentials('claude-acp', undefined, env)).toEqual({
+      paths: [join(hostHome, '.claude', 'settings.json')],
+      providers: ['anthropic']
+    })
+    expect(runtimeCredentialsConfigured('claude-acp', undefined, env)).toBe(true)
+
+    writeFileSync(
+      join(hostHome, '.claude', 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_API_KEY: 'synthetic-key' } })
+    )
+    expect(discoverRuntimeCredentials('claude-acp', undefined, env).providers).toEqual(['anthropic'])
+
+    const hostToken = { HOME: hostHome, ANTHROPIC_AUTH_TOKEN: 'synthetic-host-bearer' }
+    expect(discoverRuntimeCredentials('claude-acp', undefined, hostToken)).toEqual({
+      paths: [],
+      providers: ['anthropic']
+    })
+    expect(runtimeCredentialsConfigured('claude-acp', undefined, hostToken)).toBe(true)
+
+    writeFileSync(join(hostHome, '.claude', 'settings.json'), 'not-json')
+    expect(discoverRuntimeCredentials('claude-acp', undefined, hostToken)).toEqual({
+      paths: [],
+      providers: ['anthropic']
+    })
   })
 
   it('recognizes Codex file login and respects CODEX_HOME without falling back to another login', () => {

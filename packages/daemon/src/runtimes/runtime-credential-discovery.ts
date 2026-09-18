@@ -21,7 +21,8 @@ export function runtimeCredentialsConfigured(
     !runtimeStateLocations(runtimeId, hostEnv).some((location) => location.credentialFiles?.length)
   )
     return undefined
-  return discoverRuntimeCredentials(runtimeId, runtime, hostEnv).paths.length > 0
+  const found = discoverRuntimeCredentials(runtimeId, runtime, hostEnv)
+  return found.paths.length > 0 || found.providers.length > 0
 }
 
 export function discoverRuntimeCredentials(
