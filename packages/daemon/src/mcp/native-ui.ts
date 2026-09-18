@@ -83,16 +83,32 @@ export function namesNativeUi(update: unknown): boolean {
   const output = record(event.rawOutput) ?? { content: event.rawOutput }
   const result = record(output.result) ?? output
   const structured = record(result.structuredContent)
+  const declared = structured?.resourceUri ?? record(structured?.nativeUi)?.resourceUri
+  if (typeof declared === 'string' && declared.startsWith(NATIVE_UI_URI_PREFIX)) return true
   // The same candidates the reader itself looks at — never a stringify of a result that can hold a whole file.
   const texts = [
     ...(Array.isArray(event.content) ? event.content.map(blockText) : []),
     ...(Array.isArray(result.content) ? result.content.map(blockText) : []),
     typeof result.content === 'string' ? result.content : undefined,
-    typeof result.output === 'string' ? result.output : undefined,
-    structured?.resourceUri,
-    record(structured?.nativeUi)?.resourceUri
+    typeof result.output === 'string' ? result.output : undefined
   ]
-  return texts.some((text) => typeof text === 'string' && text.includes(NATIVE_UI_URI_PREFIX))
+  return texts.some((text) => typeof text === 'string' && declaresSurface(text))
+}
+
+/**
+ * Does this text DECLARE a surface, rather than merely mention one? A tool that read
+ * `mcp-app.ts` or a design doc reports a `ui://` string through the very same candidates, and a
+ * warning that fired on it would be noise. The substring is only the cheap gate on the parse.
+ */
+function declaresSurface(text: string): boolean {
+  if (!text.includes(NATIVE_UI_URI_PREFIX)) return false
+  try {
+    const value = record(JSON.parse(text))
+    const uri = value?.resourceUri ?? record(value?.nativeUi)?.resourceUri
+    return typeof uri === 'string' && uri.startsWith(NATIVE_UI_URI_PREFIX)
+  } catch {
+    return false
+  }
 }
 
 /** Which tool an intent came from — the resource names the surface, so neither is guessed from arguments. */

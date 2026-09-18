@@ -106,9 +106,18 @@ describe('direct HTTP native UI result', () => {
       true
     )
     expect(namesNativeUi({ ...update, rawOutput: { structuredContent: { ...ui, resourceVersion: 2 } } })).toBe(true)
+    expect(namesNativeUi({ ...update, rawOutput: { structuredContent: { id: 'a', nativeUi: ui } } })).toBe(true)
     expect(namesNativeUi({ ...update, rawOutput: { output: 'listed 3 agents' } })).toBe(false)
-    // A tool that merely READ a file naming the surface is not one that meant to open it.
-    expect(namesNativeUi({ ...update, rawOutput: { file: `see ${INTEGRATION_SETUP_URI}` } })).toBe(false)
+    // A tool that merely READ a file naming the surface is not one that meant to open it — and it
+    // reports that text through the very candidates scanned here, so the URI alone cannot be the signal.
+    const mention = `export const INTEGRATION_SETUP_URI = '${INTEGRATION_SETUP_URI}'`
+    const read = {
+      ...update,
+      rawOutput: undefined,
+      content: [{ type: 'content', content: { type: 'text', text: mention } }]
+    }
+    expect(namesNativeUi(read)).toBe(false)
+    expect(namesNativeUi({ ...update, rawOutput: { output: mention } })).toBe(false)
     expect(namesNativeUi({ rawInput: { tool: 'configureIntegration' } })).toBe(false)
   })
 
