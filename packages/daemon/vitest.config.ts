@@ -32,6 +32,7 @@ export const WINDOWS_EXCLUDED = [
   'test/mcp-bridge-e2e.test.ts',
   'test/shim-gh-token.test.ts',
   'test/shim-tunnel.test.ts',
+  'test/microsandbox-shim.test.ts',
   'test/sandbox-credential-helper.test.ts',
   'test/gitlab-self-managed-host.test.ts',
   // `mode & 0o777` assertions throughout: Windows carries no POSIX mode bits to assert on.

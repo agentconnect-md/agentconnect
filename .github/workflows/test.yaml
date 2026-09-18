@@ -418,6 +418,75 @@ jobs:
           test/skill-workspace-lock.test.ts
           test/skill-install-ledger.test.ts
 
+  # The microsandbox backend against a real VM: the daemon's own startup probe, then one session VM from
+  # the pool's runtime image with the image's ACP runtime started through the shim, its identity, directory
+  # and environment checked, and both helper endpoints exchanged with from inside the guest. Unit suites
+  # fake the guest agent, so this is the only leg where the staged shim, the guest's `/run` permissions and
+  # the tunnels meet a real kernel. Pull requests that reach that path only: it needs KVM and a registry
+  # pull, and neither is something a release gate should wait on.
+  sandbox-microsandbox:
+    name: Sandbox (microsandbox VM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Does this diff reach the microsandbox path?
+        id: filter
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          skip() { echo 'changed=false' >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "${{ github.event_name }}" = 'pull_request' ] || skip
+          files=$(git diff --name-only "$BASE...$HEAD") || skip
+          if grep -qE '^(packages/daemon/(src/(microsandbox|shim|remote)/|scripts/smoke-microsandbox-runtime\.mts$)|packages/connection/src/|\.github/workflows/test\.yaml$)' <<<"$files"; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            skip
+          fi
+      - uses: pnpm/action-setup@v6
+        if: ${{ steps.filter.outputs.changed == 'true' }}
+        with:
+          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
+          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
+          cache: true
+          # Its own primary key, for the reason the sandbox job gives.
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/daemon/package.json
+      - uses: actions/setup-node@v7
+        if: ${{ steps.filter.outputs.changed == 'true' }}
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        if: ${{ steps.filter.outputs.changed == 'true' }}
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
+      # Hosted runners expose /dev/kvm to root alone; the daemon opens it as an ordinary user.
+      - name: Open /dev/kvm to this user
+        if: ${{ steps.filter.outputs.changed == 'true' }}
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      # The driver stages this daemon's built shim bundle into the VM, so the smoke test needs the build.
+      - name: Build the daemon
+        if: ${{ steps.filter.outputs.changed == 'true' }}
+        env:
+          pnpm_config_enable_pre_post_scripts: false
+        run: pnpm --filter @agentconnect.md/daemon build
+      - name: Runtime and helper tunnels through the shim, in a real VM
+        if: ${{ steps.filter.outputs.changed == 'true' }}
+        run: >
+          pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts
+          ghcr.io/agentconnect-md/runtime-sandbox:latest
+
   # The daemon's store suites again, with `LocalStore` opened over `PostgresSyncDatabase`
   # instead of `node:sqlite`, against a Testcontainers `postgres:16-alpine`. The pool runs
   # that SQL for real, so a SQLite-only construct fails here rather than on a cluster.

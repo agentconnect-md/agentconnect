@@ -7,6 +7,8 @@ import type { ShimSession } from '../shim/session.js'
 const REATTACH_GRACE_MS = 10_000
 /** Graceful-stop deadline for a child whose stream is being ended by the failure path. */
 const FAILED_STREAM_CLOSE_DEADLINE_MS = 5_000
+/** Bytes per write frame: base64 of this, plus the envelope, stays under the 256 KiB a shim socket accepts. */
+const MAX_WRITE_FRAME_BYTES = 128 * 1024
 
 /**
  * Bridge a shim ACP stream to the byte-stream pair `AcpHost` consumes.
@@ -120,43 +122,40 @@ export function createRemoteRuntime(opts: {
     finish()
   }
 
-  const toAgent = new WritableStream<Uint8Array>({
-    write: async (chunk) => {
-      // AcpHost writes `initialize` the moment it has the stream, which can be before the
-      // open round trip returns. Awaiting it here queues the write instead of dropping it.
-      await opened
-      if (!streamId) throw new Error('acp stream is not open')
-      // Numbered so the shim can tell a re-send from a new write. The number travels with the
-      // bytes rather than being derived on the far side, because only this side knows that the
-      // second attempt is the same write.
-      const frame = { op: 'chunk', streamId, data: Buffer.from(chunk).toString('base64'), seq: ++writeSeq }
-      // Awaiting the ack is the backpressure: the shim only answers once the runtime's stdin
-      // accepted the bytes.
+  // Send one numbered slice and await its ack, which is the backpressure: the shim answers once the runtime's stdin took the bytes.
+  const writeFrame = async (bytes: Uint8Array): Promise<void> => {
+    const frame = { op: 'chunk', streamId, data: Buffer.from(bytes).toString('base64'), seq: ++writeSeq }
+    try {
+      await opts.session.request('acp', frame)
+    } catch (err) {
+      if (!(err instanceof ShimChannelLostError)) throw err
+      // A renewal lost the reply, not necessarily the bytes, so only a shim that dedupes by seq is asked again; otherwise the runtime ends.
+      if (!resumableWrites) {
+        await failRuntime(`its shim channel was renewed mid-write and this shim cannot resume writes (${err.message})`)
+        throw err
+      }
+      await opts.session.waitForAttach(REATTACH_GRACE_MS).catch(async (waitErr: unknown) => {
+        await failRuntime(`its shim channel was renewed and no replacement bound (${(waitErr as Error).message})`)
+        throw err
+      })
       try {
         await opts.session.request('acp', frame)
-      } catch (err) {
-        if (!(err instanceof ShimChannelLostError)) throw err
-        // The renewal says the reply was lost, not whether the bytes landed — so only a shim that
-        // dedupes may be asked again. Against one that does not, ending the runtime is the honest
-        // move: re-sending could corrupt the stream, and keeping the errored stream would fail
-        // every later turn with this same error instead of this one.
-        if (!resumableWrites) {
-          await failRuntime(
-            `its shim channel was renewed mid-write and this shim cannot resume writes (${err.message})`
-          )
-          throw err
-        }
-        await opts.session.waitForAttach(REATTACH_GRACE_MS).catch(async (waitErr: unknown) => {
-          await failRuntime(`its shim channel was renewed and no replacement bound (${(waitErr as Error).message})`)
-          throw err
-        })
-        try {
-          await opts.session.request('acp', frame)
-        } catch (retry) {
-          await failRuntime(`its shim channel was renewed and the re-sent write failed (${(retry as Error).message})`)
-          throw retry
-        }
-        opts.log.info(`cluster: re-sent one ACP write for agent ${opts.session.agentId} after a channel renewal`)
+      } catch (retry) {
+        await failRuntime(`its shim channel was renewed and the re-sent write failed (${(retry as Error).message})`)
+        throw retry
+      }
+      opts.log.info(`cluster: re-sent one ACP write for agent ${opts.session.agentId} after a channel renewal`)
+    }
+  }
+
+  const toAgent = new WritableStream<Uint8Array>({
+    write: async (chunk) => {
+      // AcpHost writes `initialize` the moment it has the stream, so a write waits for the open instead of being dropped.
+      await opened
+      if (!streamId) throw new Error('acp stream is not open')
+      // One ND-JSON message can exceed a frame (a prompt with an inline image), and an oversized frame closes the socket.
+      for (let offset = 0; offset < chunk.byteLength; offset += MAX_WRITE_FRAME_BYTES) {
+        await writeFrame(chunk.subarray(offset, offset + MAX_WRITE_FRAME_BYTES))
       }
     }
   })

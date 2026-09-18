@@ -40,10 +40,12 @@ for (const path of Object.values(sockets)) {
   })
   servers.push(server)
 }
+let generation = 0
 const managerOptions = {
   root,
   sdk,
   sockets,
+  nextShimGeneration: async () => ++generation,
   msbCommand: { command: resolve(msbBinary), args: [] },
   config: { image, cpus: 2, memoryMiB: 2048, diskGiB: 8 },
   log: { info: console.log, warn: console.warn, error: console.error, debug: () => {}, trace: () => {} }

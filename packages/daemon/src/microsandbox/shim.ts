@@ -108,6 +108,8 @@ export async function startMicrosandboxShim(input: {
   runtimeStderr: (text: string) => void
   failed: () => void
   log?: Logger
+  // Overridden by tests; the real one reads this daemon's built shim bundle.
+  artifacts?: () => Promise<string>
 }): Promise<MicrosandboxShim> {
   const { sdk, sandbox, subject, generation } = input
   const staged = await openExecStream(sdk, sandbox, '/usr/bin/python3', ['-I', '-c', STAGE], { user: '0:0', cwd: '/' })
@@ -128,7 +130,12 @@ export async function startMicrosandboxShim(input: {
       .object({ runtime: z.object({ user: z.string().nullable().optional() }) })
       .parse(await sandbox.config())
     await stdin.write(
-      Buffer.from(JSON.stringify({ user: config.runtime.user ?? null, files: JSON.parse(await shimArtifacts()) }))
+      Buffer.from(
+        JSON.stringify({
+          user: config.runtime.user ?? null,
+          files: JSON.parse(await (input.artifacts ?? shimArtifacts)())
+        })
+      )
     )
     await stdin.close()
     await output

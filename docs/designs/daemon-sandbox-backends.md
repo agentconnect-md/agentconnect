@@ -276,17 +276,22 @@ temporary preparation VM has a stable name and is reclaimed before it is
 recreated; a start interrupted before its teardown would otherwise leave a VM
 behind that pins a retired image.
 
-Workspace filesystem operations and skill publication use the same persistent
-Node shim and WebSocket protocol as Kubernetes. The local driver carries that
-WebSocket over agentd's TCP stream to guest loopback; it does not publish a host
-port or add a forwarding process. Git and ACP continue to use direct SDK exec.
-The shim starts once per running VM and does not prevent idle suspension. Each
-request holds the VM until it finishes, and a resumed VM gets a new binding
-generation and identity token.
+The ACP runtime, its two helper endpoints, workspace filesystem operations and
+skill publication use the same persistent Node shim and WebSocket protocol as
+Kubernetes, so a VM and a pool pod are driven the same way. The local driver
+carries that WebSocket over agentd's TCP stream to guest loopback; it does not
+publish a host port or add a forwarding process. Daemon-run Git continues to use
+direct SDK exec. The shim starts with each running VM, before anything else runs
+in it, and a VM whose shim or helper endpoints cannot start is refused. It does
+not prevent idle suspension. Each request holds the VM until it finishes, and a
+resumed VM gets a new binding generation and identity token. The binding grants
+`acp`, `tunnel`, `read` and the skill channels, and nothing else.
 
 The daemon stages its bundled shim and audited skills CLI in root-owned `/run`
 files on startup, including when the VM retains an older runtime image. This
-updates preparation code without replacing the session's image or disks. Skill
+updates preparation code without replacing the session's image or disks. The
+same root step creates the shim's runtime directory, `/run/agentconnect`, for
+the image's ordinary user, which is the pool image's layout. Skill
 source acquisition and the authoritative journal remain on the daemon; workspace
 inspection, installation, verification, and cleanup execute inside the VM. A
 legacy daemon-owned skill receipt can seed the new journal after its original
@@ -583,11 +588,19 @@ and measure there; do not extrapolate bare-metal or desktop boot numbers.
 
 ## 3. Session environment and image contract
 
-`MicrosandboxManager` supplies the existing `SpawnDriver` contract. ACP uses the
-SDK's bidirectional byte streams with persistent stdin and process exit/signals;
-stop sends a termination signal and escalates to a kill when needed. Native tools
-run inside the existing harness and VM. There is no external CLI invocation for
-each tool call.
+`MicrosandboxManager` supplies the existing `SpawnDriver` contract. ACP runs
+through the VM's shim with the same `createRemoteRuntime` the pool uses: the shim
+resolves the command and its executable hints in the guest, starts the runtime as
+the image's ordinary user in its own process group, relays its stdio as numbered
+frames, and reports its exit. The driver sends the image's environment beneath
+the launch environment and names the workspace root as the working directory, as
+a direct guest exec did. Stop closes the runtime's stdin, signals its process
+group, and escalates to a kill past the deadline. A lost shim ends every runtime
+on it at once and fences the VM, so the host is rebuilt on the next turn. The
+runtime's stderr arrives on the shim's stream and is written to the daemon's
+stderr; the shim's own tagged lines go to the debug log. Native tools run inside
+the existing harness and VM. There is no external CLI invocation for each tool
+call.
 
 Daemon-owned Git operations for mounted workspaces execute Git through the SDK,
 sharing command policy and result parsing with the pool runner. A small shell
@@ -598,13 +611,15 @@ directories mounted at the same guest paths. Once a VM exists, workspace mutatio
 run a small Python operation in the guest: renaming a staged clone on the host
 can leave the VM's cached directory view stale, while a guest rename is immediately
 visible to guest Git. Initial directory preparation remains local before VM boot.
-This does not require a second filesystem copy or a Kubernetes tunnel. Command
-lookup and generated launch files use the guest execution/file APIs. Filesystem
+This does not require a second filesystem copy or a Kubernetes tunnel. The
+runtime's command lookup happens in the shim, and generated launch files use the
+guest file API. Filesystem
 mutations retain descriptor-anchored paths, no-follow checks, and atomic writes;
 write content streams over stdin and its complete byte count is checked before
-publication. A Python process bridges MCP and Git credential sockets over vsock;
-the image's Kubernetes
-entrypoint and control connection are not started.
+publication. The shim's tunnel host serves the MCP and Git credential sockets at
+the pool's in-guest paths and proxies each connection over the channel to this
+daemon's own socket, so the guest reaches those two servers and nothing else;
+the image's Kubernetes entrypoint and control connection are not started.
 
 New sessions use their own `agent/session-…` environment, writable runtime HOME,
 disk, and guest network namespace. Retained legacy sessions and canonical
@@ -617,14 +632,14 @@ paths. This change does not redesign Git storage.
 ### Current image contract and VM storage
 
 The resolved OCI image must contain Node at
-`/usr/local/bin/node`, `/usr/bin/git`, Python 3.11+ for filesystem operations and socket bridges, the declared runtime tools,
+`/usr/local/bin/node`, `/usr/bin/git`, Python 3.11+ for filesystem operations and shim staging, the declared runtime tools,
 and `/opt/agentconnect/runtime/k8s-runtimes.json`. The daemon's full image also
 includes `bubblewrap` and `socat` for the native Claude sandbox.
 Startup reads and validates that table in a real VM; individual
 runtime execution and full-session compatibility still need workload checks.
 
 The SDK's `create()` does not execute OCI ENTRYPOINT/CMD automatically. The manager
-explicitly starts the Python socket bridge and requested runtime commands.
+explicitly stages and starts the shim, which starts the requested runtime commands.
 The pool's Kubernetes security context, volumes, and resource limits do not
 travel inside its OCI image. In particular, the pool's shim startup and UID/HOME
 configuration are not a substitute for the local VM's launch settings. See the
@@ -635,7 +650,9 @@ the pinned SDK's exec protocol and explicitly closes that client before reportin
 process completion or releasing the VM's active-execution count. Closing stdin
 sends EOF; it does not close a process that is still running. This avoids relying
 on garbage collection of the SDK's high-level exec handles, while retaining
-independent ACP streams, cancellation, backpressure, and live output limits.
+cancellation, backpressure, and live output limits. The shim itself and
+daemon-run Git are the executions that use this channel; ACP streams are
+multiplexed on the shim's WebSocket instead.
 After an output-limit failure, the daemon kills the process and drains its
 terminal event before closing: the pinned relay can otherwise reuse the client
 ID while old output is still arriving. Losing transport before that terminal
@@ -660,9 +677,9 @@ contention for up to one second after shutdown.
 
 Each VM mounts `/run` as tmpfs so process IDs and service sockets cannot survive
 a stop/start while application data remains on the persistent disks. Operator
-mounts cannot replace `/run` or `/var/lib/docker`. The Python bridge creates its private socket
-directory at `/tmp/agentconnect` as the image's ordinary user; the pool keeps its
-existing `/run/agentconnect` paths.
+mounts cannot replace `/run` or `/var/lib/docker`. Shim staging creates
+`/run/agentconnect` on that tmpfs for the image's ordinary user, so a VM and a
+pool pod serve the helper sockets at the same paths.
 
 In pinned version `0.6.17`, starting a retained flat-disk VM still validates the
 OCI image's VMDK cache. The manager runs the official
@@ -868,7 +885,7 @@ added for them.
   ACP; use runtime `session/load` when supported. It does not resume process memory,
   an old TCP connection, or an interrupted guest process.
 - Before admitting new VM launches, daemon restart stops recorded owned VMs that
-  are still running. It retains their disks and replaces the socket bridge and ACP
+  are still running. It retains their disks and replaces the shim and ACP
   processes on the next start; it does not adopt the old running processes.
 - Agent installation starts a background workspace prefetch that refreshes changed
   agent-level VMs without awaiting all agents before daemon readiness. Unchanged
@@ -901,8 +918,9 @@ Delivery is split into independently reviewable steps:
    the pool and unsandboxed-agent paths.
 2. **Implemented, workload validation pending — minimal microsandbox execution:**
    explicit image and resources, Linux VM boot/runtime-table/stop-start checks,
-   SDK-backed ACP streams and guest Git, shared host filesystem paths, and retained
-   environment lifecycle. Keep upstream public-only networking and SRT as default.
+   shim-backed ACP streams and helper tunnels, SDK-backed guest Git, shared host
+   filesystem paths, and retained environment lifecycle. Keep upstream public-only
+   networking and SRT as default.
 3. **Implemented — release image and Docker:** bundle the shared release image
    reference with explicit override support, and provide Docker/Compose tools
    and manual startup permissions in the image. Verify actual workloads and
@@ -916,7 +934,12 @@ Delivery is split into independently reviewable steps:
    support it.
 
 Implementation status above does not establish successful end-to-end daemon
-execution. The current VM slice still needs complete-session and lifecycle
+execution. Pull requests that reach this path boot one real VM in CI
+(`packages/daemon/scripts/smoke-microsandbox-runtime.mts`): the startup probe, the
+image's ACP runtime answering `initialize` through the shim on a cold, a running
+and a resumed VM, the runtime's user, directory and environment, and both helper
+endpoints reached from inside the guest. It submits no model turn and checks no
+network policy. The current VM slice still needs complete-session and lifecycle
 evidence, with the following acceptance checks:
 
 | Area                       | Required evidence                                                                                                                                                                                                                                                           |

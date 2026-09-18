@@ -118,21 +118,19 @@ through it" layer is extracted from `K8sDriver` when the second remote implement
 arrives, per the repository's rule of extracting on the second implementer rather
 than guessing an interface from one.
 
-Two things the local microsandbox path does differently today move onto the shim,
-and both are in PR 2's scope (§12):
+The local microsandbox path already has this shape, so there is one microsandbox
+mode rather than a local one and a remote one
+([daemon-sandbox-backends.md](daemon-sandbox-backends.md) §3):
 
-- **ACP.** Locally, ACP is spawned through agentd's exec channel and the shim serves
-  only filesystem and skills. A remote session spawns ACP **through the shim**, as a
-  pod does.
-- **The tunnels.** Locally, the VM's `gitcred` and `mcp` endpoints are AF_VSOCK bridges
-  (`microsandbox/socket-bridge.ts`) that the driver wires to the local daemon's host
-  sockets, and the VM shim is granted `read` and `skills*` but never `tunnel`. On an
-  executor those bridges would terminate at a daemon that owns no agent, so the
-  `microsandbox` strategy serves both tunnels through the shim's `TunnelHost`,
-  grants `tunnel`, and repoints the guest helper endpoints — the git-credential
-  socket variable and the bridge's `mcpServers` spec — at the shim's paths, exactly
-  as the pool image does. The local vsock wiring is not retained for remote
-  sessions.
+- **ACP.** The driver starts the runtime **through the VM's shim**, with the same
+  `createRemoteRuntime` a pool member uses against a pod. agentd's exec channel
+  carries the shim itself and daemon-run Git, and no runtime.
+- **The tunnels.** The VM's `gitcred` and `mcp` endpoints are served by the shim's
+  `TunnelHost` under the `tunnel` grant and proxied to the driving daemon's own
+  sockets, and the guest helper endpoints — the git-credential socket variable and
+  the bridge's `mcpServers` spec — name the shim's paths, exactly as the pool image
+  does. The AF_VSOCK bridges that once served them are gone: on an executor they
+  would have terminated at a daemon that owns no agent.
 
 That is what keeps the contract backend-neutral: a holder never learns whether the
 far side is a VM, a container or a bare process.
@@ -148,9 +146,9 @@ version or image.
 The pinned microsandbox SDK has no self-hostable server: its two backends are
 `local` and a hosted control plane in private beta, and the hosted one lacks host
 mounts, disk volumes, published ports and force-kill. But the daemon's data path
-never goes through that backend abstraction. `microsandbox/exec.ts`, `tcp.ts` and
-the socket bridges talk to agentd through its relay unix socket via `AgentClient`,
-and `AgentClient.connect(path)` accepts any path. A probe forwarded a VM's relay
+never goes through that backend abstraction. `microsandbox/exec.ts` and `tcp.ts`
+talk to agentd through its relay unix socket via `AgentClient`, and
+`AgentClient.connect(path)` accepts any path. A probe forwarded a VM's relay
 socket from a Linux test host to a developer machine over SSH and drove it with the
 unmodified SDK:
 
@@ -494,7 +492,7 @@ console shows the remaining count.
 What a restart costs is stated honestly, because neither v1 strategy keeps a
 running process across it. The microsandbox backend's rule is that a daemon restart
 stops recorded owned VMs and retains their disks; it does not adopt running guests,
-so the guest, its ACP process and its socket bridge end. A `host` session's process
+so the guest, its shim and its ACP process end. A `host` session's process
 tree is a child of the daemon and ends with it; ACP over stdio ends regardless.
 Environments therefore survive **as disks and directories** (§7), and a session
 resumes from them on its next turn — a VM is started from its retained disk, a
@@ -570,7 +568,7 @@ to run.
 | PR  | Scope                                                                                                                                                                                                                                                                                                                      |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | Protocol and CP: facet declaration at registration; strategy table, executor endpoint and `hostedSessions` in the heartbeat; the dial rendezvous with its ledger check; `executorDaemonId` on the session row; the agent-existence answer the reconcile asks the CP for.                                                   |
-| 2   | Executor facet: split "prepare an environment" from "spawn the runtime" in the microsandbox driver; ACP and both tunnels onto the shim with the `tunnel` grant; the listener and expected-dial check; `host` strategy (Linux) with per-session tunnel paths and helper configuration (§5); the orphan reconcile; draining. |
+| 2   | Executor facet: split "prepare an environment" from "spawn the runtime" in the microsandbox driver (ACP and both tunnels already ride the VM's shim, as in §4); the listener and expected-dial check; `host` strategy (Linux) with per-session tunnel paths and helper configuration (§5); the orphan reconcile; draining. |
 | 3   | Holder: the executor `SpawnDriver`, extracting the shared dial-and-bind layer from `K8sDriver`; placement with the optimistic count and the `full` reply; the memory-home gate in the birth predicate; the unreachable-executor state.                                                                                     |
 | 4   | Console: group switch, per-daemon hosting and capacity, session's executor.                                                                                                                                                                                                                                                |
 | 5   | Tests: a two-daemon, one-CP integration fixture covering holder failover, executor loss and executor restart; the loopback shim smoke test extended to `host`.                                                                                                                                                             |
