@@ -293,11 +293,11 @@ describe('the plaintext key-server warning', () => {
     // crossing something that is not obviously the cluster — not a rule about schemes.
     for (const address of [
       'https://keys.example.com',
-      'https://hub.agentconnect-test.svc:8080',
-      'http://test-agentconnect-aigw-hub:8080',
-      'http://test-agentconnect-aigw-hub.agentconnect-test:8080',
-      'http://test-agentconnect-aigw-hub.agentconnect-test.svc:8080',
-      'http://test-agentconnect-aigw-hub.agentconnect-test.svc.cluster.local:8080',
+      'https://hub.example-ns.svc:8080',
+      'http://key-hub:8080',
+      'http://key-hub.example-ns:8080',
+      'http://key-hub.example-ns.svc:8080',
+      'http://key-hub.example-ns.svc.cluster.local:8080',
       'http://localhost:8080',
       'http://127.0.0.1:8080',
       'http://[::1]:8080',

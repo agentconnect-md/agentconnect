@@ -5,7 +5,7 @@ import { flattenUnsafeLinks } from '../src/messages/agent-links.js'
 describe('flattenUnsafeLinks', () => {
   it('flattens the host path a runtime links to its file, keeping the label and the basename', () => {
     const written =
-      'Created [today’s Reddit engagement digest](/home/sentio/.agentconnect/agents/agentconnect/workspace/reddit-research/digests/reddit-engagement-digest-2026-08-29.md).'
+      'Created [today’s Reddit engagement digest](/home/agent/.agentconnect/agents/agentconnect/workspace/reddit-research/digests/reddit-engagement-digest-2026-08-29.md).'
 
     expect(flattenUnsafeLinks(written)).toBe(
       'Created today’s Reddit engagement digest (`reddit-engagement-digest-2026-08-29.md`).'
@@ -25,7 +25,7 @@ describe('flattenUnsafeLinks', () => {
     { dest: '/var/log/agent.log', display: 'agent.log' },
     { dest: 'C:\\Users\\agent\\notes.md', display: 'notes.md' },
     { dest: 'file:///srv/data/report.csv', display: 'report.csv' },
-    { dest: '/home/sentio/workspace/', display: 'workspace' }
+    { dest: '/home/agent/workspace/', display: 'workspace' }
   ])('reduces the host-absolute target $dest to its basename', ({ dest, display }) => {
     expect(flattenUnsafeLinks(`open [it](${dest})`)).toBe(`open it (\`${display}\`)`)
   })
@@ -220,7 +220,7 @@ describe('flattenUnsafeLinks', () => {
     )
 
     it('still flattens a host-absolute target, which resolves nowhere and names the daemon host', () => {
-      expect(onCodeHost('wrote [the report](/home/sentio/workspace/report.md)')).toBe('wrote the report (`report.md`)')
+      expect(onCodeHost('wrote [the report](/home/agent/workspace/report.md)')).toBe('wrote the report (`report.md`)')
     })
 
     it('keeps repository and fragment references while removing a host reference from the same reply', () => {

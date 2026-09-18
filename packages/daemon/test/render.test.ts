@@ -125,7 +125,7 @@ describe('OutputConverger', () => {
   it('flattens a host path a runtime linked, even when the link straddles chunk boundaries', () => {
     const c = new OutputConverger('low')
     // The split is the point: ACP delivers a reply as token deltas, so a per-chunk rewrite misses.
-    for (const chunk of ['Created [today’s dig', 'est](/home/sentio/agents/x/workspace/o', 'ut.md).']) {
+    for (const chunk of ['Created [today’s dig', 'est](/home/agent/agents/x/workspace/o', 'ut.md).']) {
       c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } } as any)
     }
     expect(c.onFinal()).toEqual([

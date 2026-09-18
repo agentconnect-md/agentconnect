@@ -36,7 +36,7 @@ function SearchHarness() {
       title="Agent"
       value={value}
       options={[
-        { value: 'a1', label: 'sentio-reviewer' },
+        { value: 'a1', label: 'code-reviewer' },
         { value: 'a2', label: 'Processor Doctor' },
         { value: 'a3', label: 'Move Builder' }
       ]}
@@ -109,7 +109,7 @@ describe('ComposerMenu', () => {
     expect(menu.textContent).not.toContain('Agent')
     expect(menu.getAttribute('aria-label')).toBe('Agent')
     expect(menu.getAttribute('aria-labelledby')).toBeNull()
-    expect(labels(menu)).toEqual(['sentio-reviewer', 'Processor Doctor', 'Move Builder'])
+    expect(labels(menu)).toEqual(['code-reviewer', 'Processor Doctor', 'Move Builder'])
 
     await act(async () => setInput(search, 'DOC'))
     expect(labels(menu)).toEqual(['Processor Doctor'])
@@ -146,7 +146,7 @@ describe('ComposerMenu', () => {
       search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }))
     })
     expect(container.querySelector('[role="menu"]')).not.toBeNull()
-    expect(trigger.textContent).toContain('sentio-reviewer')
+    expect(trigger.textContent).toContain('code-reviewer')
 
     // ...nor may a candidate-cancelling Escape close the menu.
     await act(async () => {
