@@ -384,7 +384,7 @@ one-shot job has, since it keeps no memory of an earlier run. Every delete
 carries the UID and resourceVersion from the LIST snapshot, so a same-name
 replacement created after the list is never the object deleted. Each run logs
 one summary line (candidates, orphaned, deleted, skipped-live, skipped-grace,
-failed).
+moved, moved-marked, failed).
 
 **The admission fence.** A session row's absence is a snapshot, and a session
 can come back between that read and the delete — its admission REUSES the
@@ -420,13 +420,28 @@ placement no longer puts on that set. Gated on the `agent-placement-v1` server
 feature; an older control plane drops the field and answers existence alone,
 which is the pre-placement sweep and collects strictly less. On that answer:
 
-- the claims and Sandboxes of a departed agent — its own pod's and its session
-  pods' — age out on their own window, `AC_MOVED_AGENT_GRACE_MS` (default 7
-  days), NOT the leak grace. A leak is a mistake to clean up in minutes; a move
-  is deliberate, and the volume left behind is the promise that the work is
-  still there to move back to. The window is where that promise ends, and the
-  age runs from the same admission stamp, which stopped moving when the last
-  member released the claim.
+- the claims of a departed agent — its own pod's and its session pods' — age out
+  on their own window, `AC_MOVED_AGENT_GRACE_MS` (default 7 days), NOT the leak
+  grace. A leak is a mistake to clean up in minutes; a move is deliberate, and
+  the volume left behind is the promise that the work is still there to move back
+  to. The window is where that promise ends.
+
+  That window runs from a stamp **the sweep writes itself**
+  (`agentconnect.md/moved-observed-at`), and the first sweep that sees a
+  departure only ever writes it. The admission stamp cannot answer the question:
+  it says when a member last USED the claim, and a pod suspended before the move
+  stopped being stamped long before it — so reading the departure off it would
+  take the volume of an agent moved five minutes ago, the exact case the window
+  exists for. Writing it here rather than at handover also covers the moves no
+  source daemon acknowledged: a forced reassign, a member that died mid-move.
+  Collection takes the later of that stamp, the admission stamp and creation, so
+  an agent that came back and re-admitted its claim is young again; a claim whose
+  agent reads as this pool's again has its departure stamp cleared, or a later
+  move would inherit the earlier one's window and skip it. A stamp the API server
+  refuses (a Role without `patch`) collects nothing and says so once. A claimless
+  Sandbox of a departed agent is left alone — there is nowhere on one to write
+  the stamp, and its agent's pods were stopped by the detach.
+
 - its expired session rows are purged on the same window by the same job
   (`purgeMovedAgentSessions`), through the ordinary `deleteSession` — receipt
   and all. The rule above already takes those sessions' pods; this is the store
@@ -437,8 +452,12 @@ which is the pre-placement sweep and collects strictly less. On that answer:
   agent-gone proof below, under the same dry-run flag.
 
 **Dry run by default.** The reconciler ships reporting only; deletion is
-enabled per deployment with `AC_K8S_ORPHAN_DELETE=true` after an observation
-window in which the summary lines show it collecting exactly what an operator
+enabled per deployment with `AC_K8S_ORPHAN_DELETE=true` (and
+`AC_STORE_ORPHAN_DELETE=true` for the store half — the chart's
+`daemonPool.reconciler.delete` projects both from one decision, because the two
+halves collect the two halves of the same thing and enabling one alone reclaims
+a departed agent's pods and PVCs while their rows stay dry-run forever) after an
+observation window in which the summary lines show it collecting exactly what an operator
 would (`AC_K8S_ORPHAN_GRACE_MS` tunes the grace). It replaced the dedicated
 probe-claim GC, and agent removal's sandbox teardown is best-effort because of
 it: `discardAgent` deletes the claim once and logs a failure, and the

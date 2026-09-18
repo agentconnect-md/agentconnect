@@ -298,7 +298,9 @@ describe('reconcile --once', () => {
     })
     expect(code).toBe(1)
     expect(deletes).toHaveLength(1)
-    expect(logged.at(-1)).toContain('orphaned=1 deleted=0 skipped-live=1 skipped-grace=0 moved=0 failed=1')
+    expect(logged.at(-1)).toContain(
+      'orphaned=1 deleted=0 skipped-live=1 skipped-grace=0 moved=0 moved-marked=0 failed=1'
+    )
   })
 
   it('exits 1 when the control plane cannot be reached, deleting nothing', async () => {

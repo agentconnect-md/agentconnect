@@ -79,12 +79,29 @@ spec:
                 # The same partial the members read (daemon-pool.yaml), so the namespace swept,
                 # the warm pool and the control-plane address cannot drift from the pool's.
                 {{- include "agentconnect.daemonPoolClusterEnv" . | nindent 16 }}
+                {{- with $reconciler.movedGraceMs }}
+                # AC_MOVED_AGENT_GRACE_MS: how long the objects and session rows of an agent that
+                # MOVED off this pool are kept. Its own window, deliberately much longer than the
+                # leak grace above — a move is reversible by design and the volume left behind is
+                # that promise, so this is where the promise ends. Unset ⇒ the daemon's 7-day
+                # default, which matches its default session retention.
+                - name: AC_MOVED_AGENT_GRACE_MS
+                  value: {{ . | quote }}
+                {{- end }}
                 {{- if $reconciler.delete }}
                 # Collection is opt-in and off by default: deleting a claim deletes the agent's
                 # workspace PVC with it, so observe the dry-run summary lines first and turn
                 # this on afterwards. Unset ⇒ the sweep reports what it would collect and
                 # deletes nothing.
+                #
+                # BOTH flags ride the one decision, on purpose. The sweep's two halves collect the
+                # two halves of the same thing — a departed agent's claims and the session rows
+                # those claims exist for — so an install that enabled one would delete the pods and
+                # PVCs while their rows stayed dry-run forever, and the leak this exists to close
+                # would stay half open with nothing in the summary lines saying so.
                 - name: AC_K8S_ORPHAN_DELETE
+                  value: 'true'
+                - name: AC_STORE_ORPHAN_DELETE
                   value: 'true'
                 {{- end }}
               securityContext:

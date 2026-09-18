@@ -302,14 +302,26 @@ daemonPool:
     # Every 10 minutes. Nothing here is urgent — a skipped tick is picked up by the next one,
     # which sweeps the same objects only older.
     schedule: '*/10 * * * *'
-    # AC_K8S_ORPHAN_DELETE. FALSE = dry run: the sweep reports what it would collect and deletes
-    # nothing. Deleting a claim deletes the agent's workspace PVC with it and there is no undo, so
-    # read the dry-run summary lines for an observation window before flipping this to true.
+    # AC_K8S_ORPHAN_DELETE and AC_STORE_ORPHAN_DELETE, which this one flag projects together.
+    # FALSE = dry run: the sweep reports what it would collect and deletes nothing. Deleting a
+    # claim deletes the agent's workspace PVC with it and there is no undo, so read the dry-run
+    # summary lines for an observation window before flipping this to true.
+    #
+    # One flag for both because the sweep's two halves collect the two halves of the same thing —
+    # a departed or forgotten agent's claims, and the store rows those claims exist for. Enabling
+    # only one would reclaim the pods and PVCs while their rows stayed dry-run forever.
     delete: false
     # AC_K8S_ORPHAN_GRACE_MS: how old an object must be before the sweep may call it orphaned,
     # which is what keeps a creation still racing the control plane's write out of the candidate
     # set. Empty ⇒ the daemon's own 10-minute default.
     graceMs: ''
+    # AC_MOVED_AGENT_GRACE_MS: the separate, much longer window for an agent that MOVED off this
+    # pool. Its objects and session rows have no owner left anywhere — no member holds its duty,
+    # and the daemon that holds it now reads a different store — but a move is reversible by
+    # design and the volume left behind is that promise, so this is where the promise ends rather
+    # than the leak grace above. Empty ⇒ the daemon's 7-day default, matching its default session
+    # retention. Raise it for an install that wants a departed agent's workspace kept longer.
+    movedGraceMs: ''
     # One short sweep: two list calls, one `agent/exists` read, then exit.
     resources:
       requests:
