@@ -11826,7 +11826,7 @@ export class Daemon {
       const storedTitle = (await this.store.getSession(run.plan.sessionKey))?.title?.trim()
       if (storedTitle) p.chrome.sessionTitleToPush = await this.displayTitle(storedTitle)
     }
-    const activeTurn = await this.installActiveTurnContext(run, sessionId)
+    const activeTurn = await this.installActiveTurnContext(run, sessionId, outwardSessionId)
     this.activeMemorySourceTurns.set(
       key,
       memorySourceTurnId(agentId, p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg))
@@ -12437,7 +12437,8 @@ export class Daemon {
    *  per-key active-turn context (§6.7 callMeta, GitHub turn + reply batch) for this turn. */
   private async installActiveTurnContext(
     run: TurnRun,
-    sessionId: string
+    sessionId: string,
+    outwardSessionId: string
   ): Promise<{
     github?: ActiveGithubTurnMeta
     githubReplyBatch?: ActiveGithubReplyBatchMeta
@@ -12490,7 +12491,7 @@ export class Daemon {
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
     // §17.2: the provider-neutral start barrier attaches the head this turn runs on to the accepted
     // run before the prompt, which is what a review authorization fences and §16 opens `running` on.
-    const barrier = await this.startCodeHostHookTurn(hookContext, sessionId)
+    const barrier = await this.startCodeHostHookTurn(hookContext, outwardSessionId)
     // A refused barrier keeps the ordinary turn but withholds the formal-review surface, exactly as a
     // failed GitHub barrier does: a run whose started head was not recorded must never reach a lease.
     const reviewTurn = {
@@ -12532,7 +12533,7 @@ export class Daemon {
   /** Cross the hook/start barrier (§17.2): started = head recorded, legacy = CP without the barrier, failed = an advertised barrier refused. */
   private async startCodeHostHookTurn(
     hook: HookDispatchContext | undefined,
-    sessionId: string
+    outwardSessionId: string
   ): Promise<'started' | 'legacy' | 'failed'> {
     const host = hook && codeHostHookMetadataOf(hook)
     const snapshot = hook?.snapshot
@@ -12547,7 +12548,8 @@ export class Daemon {
       hookId: hook.hookId,
       agentId: hook.agentId,
       deliveryKey: hook.deliveryKey,
-      sessionId,
+      // The CP links the in-progress note or status from this, so it is the outward id (§1.1), never the hop's.
+      sessionId: outwardSessionId,
       ...(hook.event ? { event: hook.event } : {}),
       ...pickCodeHostHookMembers(hook),
       ...snapshot

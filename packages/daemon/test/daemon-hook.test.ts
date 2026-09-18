@@ -14,6 +14,7 @@ import { Daemon } from '../src/daemon.js'
 import {
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
+  GITEA_V1_FEATURE,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
   hookSubjectSessionKey,
@@ -171,6 +172,35 @@ const gitlabReviewFire = (dispatchDaemonId: string): RdMsgHook => {
     }
   }
 }
+
+const GITEA_REPO = '556677'
+
+/** A Gitea pull-request delivery with a complete accepted dispatch tuple and an authoritative head (§10.3). */
+const giteaReviewFire = (dispatchDaemonId: string): RdMsgHook =>
+  fire({
+    sessionKey: `gitea:${GITEA_REPO}:pull:12`,
+    event: 'merge_request:opened',
+    configRevision: '1',
+    dispatchRevision: '1',
+    dispatchDaemonId,
+    reviewPolicy: 'full',
+    reportingMode: 'off',
+    gateMode: 'informational',
+    gitea: {
+      repoId: GITEA_REPO,
+      repoPath: 'example-org/example-repo',
+      target: { kind: 'pull', index: 12, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) }
+    },
+    context: {
+      source: 'gitea',
+      event: 'merge_request',
+      action: 'opened',
+      repo: 'example-org/example-repo',
+      number: 12,
+      title: 'tighten retry',
+      truncated: false
+    }
+  })
 
 describe('Daemon rd/msg hook fires', () => {
   it('uses the display agent, runtime, and session model in code-host attribution', async () => {
@@ -334,6 +364,38 @@ describe('Daemon rd/msg hook fires', () => {
       const report = cp.hookReports[0]!
       expect(report.gitlab).toEqual(gitlabReviewFire(dispatchDaemonId).gitlab)
       expect(report.github).toBeUndefined()
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  // §1.1: the CP deep-links the in-progress note or status from the barrier's session, and knows it only by the outward id.
+  it.each([
+    { provider: 'gitlab', review: gitlabReviewFire, feature: CODEHOST_NOTE_PROJECTION_V1_FEATURE },
+    { provider: 'gitea', review: giteaReviewFire, feature: GITEA_V1_FEATURE }
+  ])(
+    'names the session by its outward id on the $provider hook/start barrier',
+    async ({ provider, review, feature }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const startHook = vi.fn(async (_payload: HookStart, _orgId?: string) => ({ accepted: true }))
+      const cp = { ...fakeCpClient(), startHook, supportsServerFeature: (name: string) => name === feature }
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => ({ provider, kind: 'comment', externalId: '9001' })) },
+        collector: new GithubReplyCollector()
+      }))
+
+      await (daemon as any).handleRelayMsg(review((daemon as any).cfg.daemonId as string), () => {})
+
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      const outward = (await (daemon as any).store.getSessionByAcpId('acp-hook-1'))!.sessionId
+      expect(outward).not.toBe('acp-hook-1')
+      expect(startHook).toHaveBeenCalledOnce()
+      expect(startHook.mock.calls[0]![0].sessionId).toBe(outward)
+      // The terminal report names the same session, so the in-progress link and the final one agree.
+      expect(cp.hookReports[0]!.sessionId).toBe(outward)
       await daemon.stop()
     },
     15_000
@@ -761,7 +823,7 @@ describe('Daemon rd/msg hook fires', () => {
 
     const cp = {
       ...fakeCpClient(),
-      startHook: vi.fn(async () => ({ accepted: true })),
+      startHook: vi.fn(async (_payload: HookStart) => ({ accepted: true })),
       authorizeGithubReview: vi.fn(async () => {
         throw new Error('must not authorize')
       })
@@ -818,6 +880,10 @@ describe('Daemon rd/msg hook fires', () => {
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
     await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
     expect(cp.startHook).toHaveBeenCalledOnce()
+    // The in-progress check links the console from the start's session, which it knows by the outward id (§1.1).
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-inline-reply'))!.sessionId
+    expect(outward).not.toBe('acp-inline-reply')
+    expect(cp.startHook.mock.calls[0]![0].sessionId).toBe(outward)
     expect(activeReviewAuthorities).toBe(0)
     expect(submitError?.message).toContain('only available during the active PR hook turn')
     expect(cp.authorizeGithubReview).not.toHaveBeenCalled()
