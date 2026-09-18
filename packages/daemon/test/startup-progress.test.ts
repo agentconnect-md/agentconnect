@@ -48,6 +48,20 @@ describe('startup progress lifetime', () => {
     expect(second).toHaveBeenCalledWith('runtime')
   })
 
+  it('lets work spawned inside a shared start wait on that start without observing itself', async () => {
+    // A host's event handlers are created inside its shared start and inherit its context, so a
+    // later wake fired from one of them reaches ensureHostStarted with the start's own broadcaster
+    // as observer. Registering that as a listener made every report recurse until the stack blew.
+    const report = vi.fn()
+    const wake = deferred<unknown>()
+    const operation: Promise<void> = shareStartup(async () => {
+      setTimeout(() => wake.resolve(awaitStartup(operation)), 0)
+    })
+    await operation
+    await expect(wake.promise).resolves.toBeUndefined()
+    await expect(observeStartup(report, () => awaitStartup(operation))).resolves.toBeUndefined()
+  })
+
   it('stops queued edits on cancellation and retains a post already sent', async () => {
     const posted = deferred<string>()
     const conn = {
