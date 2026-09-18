@@ -989,10 +989,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       select: { channelId: true, name: true, integration: { select: { platform: true } } },
       orderBy: [{ integrationId: 'asc' }, { channelId: 'asc' }]
     })
-    const wanted = new Set(conversations.map((c) => `${c.platform} ${c.channelId}`))
+    const wanted = new Set(conversations.map((c) => `${c.platform}\u0000${c.channelId}`))
     const named = new Map<string, IntegrationChannelNameRecord>()
     for (const row of rows) {
-      const key = `${row.integration.platform} ${row.channelId}`
+      const key = `${row.integration.platform}\u0000${row.channelId}`
       // Shared-bot siblings repeat the conversation; the ordered first row wins so the
       // answer is stable across requests rather than whichever row the planner emits.
       if (!wanted.has(key) || named.has(key)) continue
