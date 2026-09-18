@@ -496,6 +496,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       })
       if (adopted.length > 0)
         options.log?.info(`cluster: agent ${agentId} taken over with ${adopted.length} session pod(s)`)
+      // Adoption records Running pods only, so mark the rest as served here too: a claim whose pod
+      // slept through a departure and this return is otherwise untouched by the takeover, and the
+      // orphan sweep's version fence would have nothing to refuse a collection in flight with.
+      await driver.markServed(agentId)
     },
     releaseAgent,
     suspendAgent: async (agentId) => {

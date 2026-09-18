@@ -271,6 +271,26 @@ export class K8sDriver implements SpawnDriver {
     })
   }
 
+  /**
+   * Mark every claim of an agent this member has just started serving, suspended pods included.
+   *
+   * The takeover below only records RUNNING pods, so a pod asleep across a placement return is
+   * never touched by it — and the orphan sweep's version fence, which is what makes a return beat a
+   * collection already in flight, then has nothing to collide with. The stamp says "last seen in
+   * use by a member", and a member taking the agent over is exactly that.
+   */
+  async markServed(agentId: string): Promise<void> {
+    const subjects = await this.sessionClaimSubjects(agentId).catch((err: unknown) => {
+      this.deps.log.warn(`cluster: could not list the session claims of agent ${agentId} — ${(err as Error).message}`)
+      return [] as SandboxSubject[]
+    })
+    for (const subject of [...subjects, agentSandboxSubject(agentId)]) {
+      const outcome = await this.writeStamp(subject).catch(() => 'failed' as const)
+      if (outcome === 'failed')
+        this.deps.log.warn(`cluster: could not mark claim ${this.claimName(subject)} as served here`)
+    }
+  }
+
   /** Takeover of every session pod the agent has in the cluster — listed by label, since their sessions are not known here. */
   async adoptSessions(agentId: string): Promise<SandboxSubject[]> {
     const adopted: SandboxSubject[] = []

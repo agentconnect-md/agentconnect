@@ -27,6 +27,12 @@ import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
  * own, much longer window ({@link MOVED_GRACE_ENV}), because a move is reversible by design and the
  * volume left behind is that promise; the window is where the promise ends.
  *
+ * The placement answer is a SNAPSHOT, so a departure is re-confirmed immediately before the
+ * destructive pass rather than trusted from the top of the run, and what lands inside that last
+ * round trip is refused by the same UID/resourceVersion precondition every other delete carries —
+ * which is why a member taking an agent over marks every claim of it, including the suspended ones
+ * adoption skips. A live agent placed on this set is never touched, on either side of that boundary.
+ *
  * That window runs from the control plane's own record of WHEN the placement changed, which the
  * placement answer carries. Nothing this sweep can observe would do: a claim's admission stamp dates
  * its last USE, and for a pod suspended before the move that is long before the move, so it would
@@ -242,8 +248,15 @@ export class OrphanReconciler {
       }
       orphans.push(candidate)
     }
-    summary.orphaned = orphans.length
-    for (const orphan of orphans) {
+    // Re-ask about the ones a DEPARTURE condemned, as late as possible. The answer above was read
+    // before the whole sweep's work, and a returning agent must not be deleted against a snapshot
+    // that predates its return. This narrows that to one round trip; what lands inside it is the
+    // version fence's to refuse, which is why a takeover marks the claims it did not adopt.
+    const confirmed = await this.stillGone(orphans, moved)
+    summary.moved -= orphans.length - confirmed.length
+    summary.skippedLive += orphans.length - confirmed.length
+    summary.orphaned = confirmed.length
+    for (const orphan of confirmed) {
       if (!settings.deleteEnabled) {
         log.info(`k8s orphans: would delete ${orphan.kind} ${orphan.name} (${ownerOf(orphan)}) — dry run`)
         continue
@@ -268,6 +281,19 @@ export class OrphanReconciler {
         (settings.deleteEnabled ? '' : ' (dry run)')
     )
     return summary
+  }
+
+  /** The orphans still worth deleting: everything a departure did not condemn, plus those whose
+   *  agent the control plane STILL places elsewhere. A read that fails keeps only the first group,
+   *  which is the safe direction — an agent whose placement nobody can confirm is not collected. */
+  private async stillGone(orphans: Candidate[], moved: Map<string, number>): Promise<Candidate[]> {
+    const departed = [...new Set(orphans.map((o) => o.agentId).filter((id) => moved.has(id)))]
+    if (departed.length === 0) return orphans
+    const still = await this.movedAway(departed)
+    const returned = departed.filter((id) => !still.has(id))
+    for (const id of returned)
+      this.deps.log.info(`k8s orphans: agent ${id} is this pool's again — leaving what it left behind`)
+    return orphans.filter((o) => !moved.has(o.agentId) || still.has(o.agentId))
   }
 
   // Fail-closed like every other read here: a control plane that cannot say where an agent is placed

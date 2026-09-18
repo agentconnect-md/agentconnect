@@ -362,6 +362,37 @@ describe('orphan reconciler and agents that moved off this pool', () => {
     expect(deletes).toEqual([])
   })
 
+  it('re-asks before deleting, and spares an agent that came back since the first answer', async () => {
+    // The placement answer at the top of a run is a snapshot, and the run does a lot of work
+    // between reading it and deleting against it. A return inside that gap must not lose its
+    // volume; what lands inside the LAST round trip is the claim's own version fence's to refuse.
+    const left = T0 - MOVED_GRACE - HOUR
+    const { api, deletes } = await cluster([claim(MOVED, { createdAt: left, sandbox: 'sb' })], [])
+    let answers = 0
+    const r = away(left, {
+      api,
+      movedAgents: async (ids) => (answers++ === 0 ? new Map(ids.map((id) => [id, left])) : new Map())
+    })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, moved: 0, skippedLive: 1 })
+    expect(deletes).toEqual([])
+    expect(r.infos.some((line) => line.includes(`agent ${MOVED} is this pool's again`))).toBe(true)
+  })
+
+  it('keeps a condemned object when the re-ask itself fails', async () => {
+    const left = T0 - MOVED_GRACE - HOUR
+    const { api, deletes } = await cluster([claim(MOVED, { createdAt: left, sandbox: 'sb' })], [])
+    let answers = 0
+    const r = away(left, {
+      api,
+      movedAgents: async (ids) => {
+        if (answers++ > 0) throw new Error('control plane blinked')
+        return new Map(ids.map((id) => [id, left]))
+      }
+    })
+    expect(await r.it.sweep()).toMatchObject({ orphaned: 0, moved: 0 })
+    expect(deletes).toEqual([])
+  })
+
   it('leaves every live agent alone when the control plane cannot say where one is placed', async () => {
     // A control plane without the placement answer is the pre-placement sweep: less, never more.
     const { api, deletes } = await cluster([claim(MOVED, { createdAt: T0 - 5 * MOVED_GRACE, sandbox: 'sb' })], [])

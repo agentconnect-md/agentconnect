@@ -114,8 +114,8 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     const url = opts.apiUrl ?? env[CP_URL_ENV]?.trim()
     if (!url) throw new Error(`reconcile requires the control plane's address in ${CP_URL_ENV}`)
     cp = await (opts.connectCp ?? connectObserver)(url)
-    // ONE standing per agent for the whole run, however many sweeps ask: the three questions below
-    // are the same question, and asking it twice could answer them differently mid-run.
+    // Existence is cached for the run; placement never is — an agent that left can come back, and a
+    // destructive pass must not act on a snapshot that predates its return.
     const standing = standingCache(cp.readAgents)
     const liveAgents = standing.live
     const movedAgents = standing.moved
@@ -170,36 +170,41 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
 }
 
 /**
- * The run's one answer per agent, reused by every sweep that asks. The cache is per RUN, not
- * per sweep: a placement that changed between two sweeps would otherwise let one of them collect
- * on a standing the other had already contradicted.
+ * The two questions the sweeps ask the control plane, and how long each answer may be believed.
+ *
+ * EXISTENCE is cached for the run. An agent can only stop existing, never start, so a cached
+ * "still known" can be stale only in the direction that keeps objects — and a second read could
+ * only ever turn a kept object into a collected one on a snapshot the first read contradicted.
+ *
+ * PLACEMENT is not cached, ever. It moves both ways: an agent that left can come back, and that is
+ * precisely the answer a destructive pass must not hold a stale copy of. So every caller re-asks,
+ * and the one that deletes re-asks again immediately before it does.
  */
 function standingCache(read: ExistenceReader['readAgents']): {
-  /** Every asked id the control plane still knows, wherever it is placed. */
+  /** Every asked id the control plane still knows, wherever it is placed. Cached per run. */
   live: (agentIds: string[]) => Promise<Set<string>>
-  /** Those of them this pool no longer holds, each with when its placement changed. */
+  /** Those of them this pool no longer holds, each with when its placement changed. Read fresh. */
   moved: (agentIds: string[]) => Promise<Map<string, number>>
 } {
   const known = new Map<string, AgentStanding>()
-  const load = async (agentIds: string[]): Promise<void> => {
-    const unknown = [...new Set(agentIds)].filter((id) => !known.has(id))
-    if (unknown.length === 0) return
-    for (const [id, state] of await read(unknown)) known.set(id, state)
+  const ask = async (agentIds: string[]): Promise<Map<string, AgentStanding>> => {
+    const answer = await read([...new Set(agentIds)])
+    for (const [id, state] of answer) known.set(id, state)
     // An id the control plane did not name at all is gone; that is what the reply's silence means.
-    for (const id of unknown) if (!known.has(id)) known.set(id, { at: 'gone' })
+    for (const id of agentIds) if (!known.has(id)) known.set(id, { at: 'gone' })
+    return answer
   }
   return {
     live: async (agentIds) => {
-      await load(agentIds)
-      return new Set(agentIds.filter((id) => known.get(id)?.at !== undefined && known.get(id)!.at !== 'gone'))
+      const unknown = [...new Set(agentIds)].filter((id) => !known.has(id))
+      if (unknown.length > 0) await ask(unknown)
+      return new Set(agentIds.filter((id) => (known.get(id) ?? { at: 'gone' }).at !== 'gone'))
     },
     moved: async (agentIds) => {
-      await load(agentIds)
+      if (agentIds.length === 0) return new Map()
+      const answer = await ask(agentIds)
       const moved = new Map<string, number>()
-      for (const id of agentIds) {
-        const state = known.get(id)
-        if (state?.at === 'elsewhere') moved.set(id, state.since)
-      }
+      for (const [id, state] of answer) if (state.at === 'elsewhere') moved.set(id, state.since)
       return moved
     }
   }

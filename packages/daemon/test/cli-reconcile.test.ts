@@ -106,7 +106,10 @@ describe('reconcile --once', () => {
       log: { info: (m) => infos.push(m), warn: (m) => infos.push(m) }
     })
     expect(code).toBe(0)
-    expect(cp.asked).toEqual([[LIVE, GONE]])
+    // Existence is asked once and cached — an agent can only stop existing. Placement is re-asked,
+    // because it moves both ways and a destructive pass must not hold a stale copy of it.
+    expect(cp.asked[0]).toEqual([LIVE, GONE])
+    expect(cp.asked.slice(1).every((ids) => ids.every((id) => [LIVE, GONE].includes(id)))).toBe(true)
     expect(deletes).toEqual([
       `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxclaims/agent-${GONE}`
     ])
@@ -115,10 +118,10 @@ describe('reconcile --once', () => {
     expect(cp.wasClosed()).toBe(true)
   })
 
-  it('sweeps the shared store in the same run, on the same control-plane answer', async () => {
+  it('sweeps the shared store in the same run, on the same existence answer', async () => {
     // One CronJob covers both halves because they ask the same question: `agent/exists` decides
-    // whether a SandboxClaim and an outbox row alike are leaked — and it is asked ONCE, so the two
-    // halves can never act on standings that disagree.
+    // whether a SandboxClaim and an outbox row alike are leaked. Existence is asked ONCE — an agent
+    // can only stop existing, so a cached answer can only ever be stale towards keeping things.
     const { api } = await cluster()
     const cp = fakeCp()
     const infos: string[] = []
@@ -138,7 +141,9 @@ describe('reconcile --once', () => {
       log: { info: (m) => infos.push(m), warn: (m) => infos.push(m) }
     })
     expect(code).toBe(0)
-    expect(cp.asked).toEqual([[LIVE, GONE]])
+    // One existence read for both halves; the placement re-reads that follow name only live agents.
+    expect(cp.asked[0]).toEqual([LIVE, GONE])
+    expect(cp.asked.slice(1).every((ids) => !ids.includes(GONE))).toBe(true)
     expect(deleted).toEqual(['row-session-purge'])
     expect(infos.at(-1)).toContain('store retention: swept 2 candidates — collected=1 deleted=1 kept=1 failed=0')
     expect(infos.at(-1)).toContain('agent-gone=1 agent-moved=0 horizon=0')
@@ -392,7 +397,7 @@ describe('observer connection', () => {
     expect((sent[0]!.payload as { serviceAccountToken: string }).serviceAccountToken).toBe('projected-token')
     expect(sent[1]!.payload).toMatchObject({ observer: true, maxAgents: 0 })
 
-    expect(await cp.readAgents([LIVE, GONE])).toEqual(new Map([[LIVE, 'here']]))
+    expect(await cp.readAgents([LIVE, GONE])).toEqual(new Map([[LIVE, { at: 'here' }]]))
     cp.close()
     expect(transport.closed?.code).toBe(1000)
   })
