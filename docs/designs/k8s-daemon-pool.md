@@ -486,21 +486,51 @@ write — a placement generation the control plane hands out as a cleanup
 authorization and invalidates in the same transaction as the columns, or the
 collection decision moved into the control plane across two CronJob runs. That is
 a control-plane design change, and it is deliberately not taken here. The residual
-is accepted instead, because every condition has to hold at once for it to cost
-anything:
+is accepted instead. It is not one residual, though: the three destructive paths
+this section describes are exposed differently, and only the first two are covered
+by the window and the re-ask at all.
 
-- the agent has been off this pool for at least `AC_MOVED_AGENT_GRACE_MS`
-  (default 7 days), and the object it left is at least that old too;
-- it returns inside the one round trip between the sweep's final placement read
-  and its delete;
-- no member touches its claims in that same interval;
-- and the deployment has turned collection on at all — it ships dry-run.
+**The claims.** Four things have to hold at once: the agent has been off this pool
+for at least `AC_MOVED_AGENT_GRACE_MS` (default 7 days) and the object it left is
+at least that old too; it returns inside the one round trip between the sweep's
+final placement read and its delete; no member touches its claims in that same
+interval; and the deployment has turned collection on, which it ships without.
 
-What is lost when all four coincide is the pool-side workspace archive of an agent
-that has been away a week. A move is a hard cutover that does not migrate
-workspace bytes (`orchestrator/agentMove.ts`), so the return re-materializes the
-workspace regardless; the archive is a shortcut, not the work. An operator who
-wants that shortcut held longer raises the window rather than relying on this gap.
+What that costs is **possible permanent loss of retained pool-local workspace
+state** — not a cache, and not merely a slower next start. The claim's PVC IS the
+durable workspace: a move is a hard cutover that does not migrate workspace bytes
+(`orchestrator/agentMove.ts`), so scratch files and uncommitted edits left on it
+may exist nowhere else, and an agent that returns while the claim survives resumes
+onto exactly those bytes. Deleting the claim is what forces a fresh
+materialization, and it is why the window exists at all. An operator who wants
+that state held longer raises the window rather than relying on this gap.
+
+**The moved-session purge** carries the same window and the same late re-ask, so
+it needs the first two conditions too. Its rows have no version fence of their own,
+so what protects it is the re-ask alone; a purge that wins the race deletes the
+session row, and the next sweep then takes that session's pod and volume on the
+rule above.
+
+**The generic store sweep is the wide one, and it shares none of that.**
+`StoreRetentionSweeper.classify()` returns `agent-moved` before it evaluates any
+horizon, so a departed agent's rows are collected however new they are — no moved
+window, no object age — and the sweep reads placement once and then deletes row by
+row, so the exposed interval is that whole delete loop rather than a round trip.
+A return inside it discards rows that are the returned agent's again, and they are
+obligations rather than history: an unacknowledged terminal `hook-report` is a
+turn's result the control plane then never receives; a `delivery-receipt` is the
+dedup record whose loss lets a provider redelivery re-run a settled turn; a
+`session-purge` receipt is the only record that a transcript was deleted; plus
+queued `session-metadata`, the `webchat-grant` ledger, `outward-id`s and terminal
+memory captures.
+
+That path is left as it is because the trigger is an operator moving an agent off
+this pool and back onto it inside a seconds-wide loop that runs once every ten
+minutes, and because for an agent that really left, deleting those rows promptly is
+the whole point — nothing in this pool will ever drain them. Narrowing it would
+mean giving `agent-moved` the moved window and the late re-ask the other two paths
+have, which is the change to make if this is ever observed rather than reasoned
+about.
 
 **Dry run by default.** The reconciler ships reporting only; deletion is
 enabled per deployment with `AC_K8S_ORPHAN_DELETE=true` (and

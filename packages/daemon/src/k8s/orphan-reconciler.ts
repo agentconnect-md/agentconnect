@@ -40,8 +40,10 @@ import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
  * deliberately: closing it needs a fence the control plane invalidates in the same transaction as
  * the placement write, which is a CP design change and not taken here. It costs something only when
  * an agent a week gone returns inside that round trip, before any member reaches its claims, on an
- * install that has turned collection on — and what it costs is a workspace archive a hard-cutover
- * move would have re-materialized anyway (k8s-daemon-pool.md §4).
+ * install that has turned collection on — and then it costs the pool-local workspace state that
+ * volume holds, which a return would otherwise have resumed onto and which a hard-cutover move
+ * never copied anywhere else. §4 records that, and the wider residual the generic store sweep
+ * carries, which shares neither this window nor this re-ask.
  *
  * That window runs from the control plane's own record of WHEN the placement changed, which the
  * placement answer carries. Nothing this sweep can observe would do: a claim's admission stamp dates
