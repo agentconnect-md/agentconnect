@@ -162,6 +162,8 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
   const tailReadyRef = useRef(false)
   const tailInFlightRef = useRef<Promise<void> | null>(null)
   const tailDirtyRef = useRef(false)
+  // Rows a busy-skipped reconcile never saw: the tail passes only its increment and the cursor is already past them, so they ride along next time or a prompt row never retires its live echo.
+  const pendingReconcileRef = useRef<SessionMessageDto[]>([])
 
   useEffect(() => {
     if (!wantTranscript || !sid || !aid) return
@@ -175,6 +177,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     liveCursorRef.current = null
     tailInFlightRef.current = null
     tailDirtyRef.current = false
+    pendingReconcileRef.current = []
     setTailReady(false)
     setMsgLoading(true)
     setMsgErr(null)
@@ -261,6 +264,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       tailReadyRef.current = true
       setTailReady(true)
       if (!sessionBusyRef.current) reconcileLiveSteps(sid, page.messages, aid)
+      else pendingReconcileRef.current = page.messages
     })().catch((e) => {
       if (!active) return
       setMsgErr(e instanceof Error ? e.message : String(e))
@@ -365,7 +369,15 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
         }
         if (!page.liveMore || page.liveCursor === null) break
       }
-      if (tailSessionRef.current === sid && !sessionBusyRef.current) reconcileLiveSteps(sid, persisted, aid ?? '')
+      if (tailSessionRef.current !== sid) return
+      const pending = pendingReconcileRef.current
+      const rows = pending.length > 0 ? [...pending, ...persisted] : persisted
+      if (sessionBusyRef.current) {
+        pendingReconcileRef.current = rows
+        return
+      }
+      pendingReconcileRef.current = []
+      reconcileLiveSteps(sid, rows, aid ?? '')
     })()
       .catch(() => {
         // Keep the last good transcript. The next SSE signal or reconnect retries without replacing
