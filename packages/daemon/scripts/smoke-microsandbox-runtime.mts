@@ -199,7 +199,8 @@ try {
   assert.equal(who.uid, 10001, 'the runtime must run as the image user')
   assert.equal(who.cwd, environment.workspaceRoot)
   assert.equal(who.home, launch.env.HOME)
-  assert.equal(who.path, launch.env.PATH)
+  // A direct guest exec puts the guest agent's own script directory in front; the shim starts the runtime with the PATH it was sent.
+  assert.ok(String(who.path).endsWith(launch.env.PATH!), `unexpected PATH: ${String(who.path)}`)
   assert.equal(who.imageEnv, '--dns-result-order=ipv4first', 'the image environment must reach the runtime')
   assert.equal(who.key, 'inherited-from-the-host')
   assert.equal(who.authRequest, null, 'the launch environment must arrive as the daemon sent it')
