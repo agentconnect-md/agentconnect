@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayDaemonFrame,
   GITEA_V1_FEATURE,
+  RD_HOOK_NOTICE_V1,
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   RD_HEADLESS_AGENT_DELIVERY_V1,
@@ -119,7 +120,8 @@ describe('RelayClient (daemon → one relay)', () => {
         RD_WEBCHAT_ATTACH_V1,
         GITLAB_COM_V1_FEATURE,
         GITLAB_INSTANCE_V1_FEATURE,
-        GITEA_V1_FEATURE
+        GITEA_V1_FEATURE,
+        RD_HOOK_NOTICE_V1
       ]
     })
     expect(client.state).toBe('READY')
