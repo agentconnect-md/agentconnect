@@ -46,7 +46,9 @@ export function createRemoteRuntime(opts: {
   const inbound = new TransformStream<Uint8Array, Uint8Array>()
   const writer = inbound.writable.getWriter()
 
+  let finished = false
   const finish = (): void => {
+    finished = true
     void writer.close().catch(() => undefined)
     for (const listener of exitListeners.splice(0)) listener()
   }
@@ -70,9 +72,9 @@ export function createRemoteRuntime(opts: {
     }
   }
   opts.session.onEvent(onEvent)
-  // A lost session is a dead runtime: report terminal exit rather than leaving AcpHost
-  // waiting on a stream that can never produce another byte.
+  // A lost session is a dead runtime, so AcpHost is told it exited; one that already ended is not news, since a session outlives its runtimes.
   opts.session.onLost((reason) => {
+    if (finished) return
     opts.log.warn(`cluster: shim channel lost for agent ${opts.session.agentId} (${reason})`)
     opts.session.offEvent(onEvent)
     finish()

@@ -49,6 +49,26 @@ describe('createRemoteRuntime', () => {
     expect(exited).toHaveBeenCalledOnce()
   })
 
+  it('reports a lost session to a running runtime, and says nothing for one that already ended', async () => {
+    const warnings: string[] = []
+    const lost: Array<(reason: string) => void> = []
+    const { session, emit, open } = heldSession()
+    ;(session as unknown as { onLost: (listener: (reason: string) => void) => void }).onLost = (listener) =>
+      void lost.push(listener)
+    const log = { info: () => {}, warn: (message: string) => void warnings.push(message) }
+    const ended = createRemoteRuntime({ session, request, log })
+    open('acp-1')
+    await ended.toAgent.getWriter().write(Buffer.from('x'))
+    emit('acp-1', { kind: 'exit', code: 0, signal: null })
+    const running = createRemoteRuntime({ session, request, log })
+    const exited = vi.fn()
+    running.onExit(exited)
+    // An idle VM being suspended ends the session every runtime it ever carried was opened on.
+    for (const listener of lost) listener('sandbox suspended')
+    expect(exited).toHaveBeenCalledOnce()
+    expect(warnings).toHaveLength(1)
+  })
+
   it('starts the runtime in the directory its caller names, and leaves it to the shim otherwise', () => {
     const named = heldSession()
     createRemoteRuntime({ session: named.session, request, cwd: '/workspace', log: silent })

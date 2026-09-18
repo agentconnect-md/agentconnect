@@ -47,10 +47,7 @@ class FrameQueue {
   }
 }
 
-/**
- * A VM as the daemon's shim starter sees it: the guest agent's exec and TCP streams are faked, and the shim they
- * start and reach is the real one, in this process — its server, its client, its ACP runner and its tunnel host.
- */
+/** A VM as the shim starter sees it: only the guest agent's exec and TCP streams are faked, and the shim they start and reach is the real one. */
 function fakeVm(guestSockets: Record<TunnelName, string>) {
   const execs: Array<{ cmd: string; args: string[]; env: string[]; user: string | null; stdin: string }> = []
   const cleanup: Array<() => void | Promise<void>> = []
