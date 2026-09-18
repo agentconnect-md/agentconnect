@@ -164,6 +164,8 @@ export class RelayCpClient {
   /** FIFO of `rc/run-report` EVTs the link wasn't up for, replayed on READY. */
   private readonly pendingRunReports: RcRunReport[] = []
   private serverFeatures = new Set<string>()
+  /** Controls that arrived with `rc/registered`, before this link turned READY. */
+  private registerControls?: RelayCpFrame[]
 
   constructor(private readonly deps: RelayCpClientDeps) {
     this.correlator = new ReqRep<RelayCpFrame>(deps.clock, ACK_TIMEOUT_MS)
@@ -553,6 +555,7 @@ export class RelayCpClient {
 
     // ── register (upsert by name → relayId; re-sent every reconnect) ──
     this.state = 'REGISTERING'
+    this.registerControls = undefined
     const registered = await this.sendRequest(
       buildRelayCpFrame('rc/register', {
         name: this.deps.name,
@@ -587,6 +590,15 @@ export class RelayCpClient {
     this.flushPendingRunReports()
     this.releaseReadyWaiters(true)
     this.deps.onReady?.()
+    // After onReady, like any later control: it clears the memory bindings this replay restores.
+    this.drainRegisterControls()
+  }
+
+  /** Apply the controls held behind `rc/registered`, in arrival order. */
+  private drainRegisterControls(): void {
+    const held = this.registerControls ?? []
+    this.registerControls = undefined
+    for (const frame of held) this.dispatch(frame)
   }
 
   private sendRequest(frame: RelayCpFrame, opts?: RequestOpts): Promise<RelayCpFrame> {
@@ -605,9 +617,18 @@ export class RelayCpClient {
     }
     const frame = decoded.frame
     // A correlated REP/error settles a pending relay-issued REQ.
-    if (frame.corr && this.correlator.settle(frame)) return
+    if (frame.corr && this.correlator.settle(frame)) {
+      // One socket read can carry rc/registered and the CP's replay behind it; hold that replay until READY.
+      if (frame.type === 'rc/registered' && this.state === 'REGISTERING') this.registerControls = []
+      return
+    }
+    if (this.state === 'REGISTERING' && this.registerControls) {
+      this.registerControls.push(frame)
+      return
+    }
     // Control frames (EVTs) are only legal once READY.
     if (this.state !== 'READY') {
+      this.deps.log.warn(`relay: refused ${frame.type} in ${this.state}`)
       this.sendError(frame.id, 'PROTOCOL_STATE', `${frame.type} illegal in ${this.state}`, false)
       return
     }

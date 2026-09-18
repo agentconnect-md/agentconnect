@@ -39,6 +39,14 @@ const REREQUEST = {
   headSha: 'a'.repeat(40),
   deliveryKey: 'delivery-rerun-1'
 } as const
+const HOOK_RULE = {
+  hookId: COMMENT_AUTHZ.hookId,
+  kind: 'webhook',
+  agentId: RUN_REPORT.agentId,
+  daemonId: DAEMON_ID,
+  sessionMode: 'perDelivery',
+  webhook: { urlToken: 'whk_example' }
+} as const
 const silentLog: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
 /** Flush the native promise microtask/macrotask queue (the FSM's handshake chain
@@ -195,6 +203,50 @@ describe('RelayCpClient', () => {
     expect(client.isReady()).toBe(true)
     expect(onRegistered).toHaveBeenCalledWith(RELAY_ID)
     expect(onReady).toHaveBeenCalledOnce()
+  })
+
+  it('applies a replay that arrives in the same turn as rc/registered, after onReady', async () => {
+    const calls: string[] = []
+    const { client, transport } = makeClient({
+      onReady: () => calls.push('ready'),
+      onHookAssign: (rule) => calls.push(`hook-assign ${rule.hookId}`)
+    })
+    client.start()
+    await flush()
+    const auth = transport.lastReq('rc/auth')!
+    transport.inject(
+      buildRelayCpFrame('rc/auth/ok', { heartbeatSec: 15, serverTime: new Date(0).toISOString() }, { corr: auth.id })
+    )
+    await flush()
+    const reg = transport.lastReq('rc/register')!
+    // One socket read: the register reply and the first rule the CP replays right behind it.
+    transport.inject(buildRelayCpFrame('rc/registered', { relayId: RELAY_ID }, { corr: reg.id }))
+    transport.inject(buildRelayCpFrame('rc/hook-assign', HOOK_RULE))
+    await flush()
+
+    expect(client.state).toBe('READY')
+    expect(calls).toEqual(['ready', `hook-assign ${HOOK_RULE.hookId}`])
+    expect(transport.sent.filter((f) => f.type === 'error')).toEqual([])
+  })
+
+  it('still refuses a control that precedes the register reply', async () => {
+    const onHookAssign = vi.fn()
+    const { client, transport } = makeClient({ onHookAssign })
+    client.start()
+    await flush()
+    const auth = transport.lastReq('rc/auth')!
+    transport.inject(
+      buildRelayCpFrame('rc/auth/ok', { heartbeatSec: 15, serverTime: new Date(0).toISOString() }, { corr: auth.id })
+    )
+    await flush()
+    transport.inject(buildRelayCpFrame('rc/hook-assign', HOOK_RULE))
+    expect(transport.lastReq('error')?.payload).toMatchObject({ code: 'PROTOCOL_STATE' })
+
+    const reg = transport.lastReq('rc/register')!
+    transport.inject(buildRelayCpFrame('rc/registered', { relayId: RELAY_ID }, { corr: reg.id }))
+    await flush()
+    expect(client.state).toBe('READY')
+    expect(onHookAssign).not.toHaveBeenCalled()
   })
 
   it('applies the authenticated deployment snapshot during startup', async () => {
