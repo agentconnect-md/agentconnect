@@ -368,6 +368,49 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await daemon.stop()
   })
 
+  it('detach stops the departing agent’s cluster pods, keeping their claims and volumes', async () => {
+    // Releasing an agent drops the launches the idle sweep reads, and the orphan sweep never
+    // touches a live agent's objects — so a pod not stopped by the detach itself is one nothing
+    // on this member will ever stop again.
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    const suspended: string[] = []
+    ;(daemon as any).k8sPlane = {
+      suspendAgent: async (agentId: string) => void suspended.push(agentId),
+      releaseAgent: () => {},
+      stop: async () => {}
+    }
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
+
+    await expect(seam(daemon).applyAgentDetach({ agentId: 'bot-a', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
+    // Asked while the agent is still on the roster: releasing it first would take its pods out of
+    // the sight of the only sweep that could have stopped them.
+    expect(suspended).toEqual(['bot-a'])
+    expect((daemon as any).agents.has('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
+  it('does not touch the cluster on the destination’s staging detach, where the agent is absent', async () => {
+    const root = root1()
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    const suspended: string[] = []
+    ;(daemon as any).k8sPlane = {
+      suspendAgent: async (agentId: string) => void suspended.push(agentId),
+      releaseAgent: () => {},
+      stop: async () => {}
+    }
+
+    await expect(seam(daemon).applyAgentDetach({ agentId: 'ghost', moveId: MOVE_ID })).resolves.toEqual({ ok: true })
+    expect(suspended).toEqual([])
+    await daemon.stop()
+  })
+
   it('hard cutover uses immediate quiescence instead of the graceful drain', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')

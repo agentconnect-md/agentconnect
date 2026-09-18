@@ -138,6 +138,8 @@ export interface ConfigApplyRuntimeHost {
   gitCredServer(): GitCredServer | undefined
   quiesceAgentWorkspaceAuthority(agentId: string): Promise<void>
   discardClusterSandbox(agentId: string): Promise<void>
+  /** Stop a departing agent's cluster pods, keeping their claims and volumes. */
+  suspendClusterSandboxes(agentId: string): Promise<void>
   revokeRemoteWebchatGrantsForAgent(
     agentId: string,
     reason: Parameters<RemoteWebchatGrantManager['revokeAgent']>[1]
@@ -529,6 +531,11 @@ export function applyAgentDetach(host: ConfigApplyHost, detach: AgentDetach): Pr
     }
     host.gitCreds()?.remove(agentId)
     host.gitCredServer()?.revoke(agentId)
+    // Before the roster drops the agent: the release that follows takes its pods out of the idle
+    // sweep's sight, so a pod not stopped HERE is one nothing on this member will stop again.
+    // Only for an agent this daemon actually served — on the destination's staging detach there is
+    // nothing of it here, and the adopt behind this would be a pointless pair of reads.
+    if (currentWorkspace) await host.suspendClusterSandboxes(agentId)
     host.cpAgents()?.detach(agentId)
     await host.flushReconcile()
     // Retry the strict close even when a previous detach pass already removed

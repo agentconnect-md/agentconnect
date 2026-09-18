@@ -217,6 +217,7 @@ export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntime
     launched: () => [],
     adoptAgent: async () => {},
     releaseAgent: () => {},
+    suspendAgent: async () => {},
     suspendIdle: async () => 'absent' as const,
     discardAgent: async () => {},
     discardSession: async () => {},

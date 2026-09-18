@@ -207,6 +207,11 @@ export interface K8sRuntimePlane {
   adoptAgent: (agentId: string) => Promise<void>
   /** No longer served here: launches, channels, tunnels and loss watches of every pod of the agent go; claims and volumes stay. */
   releaseAgent: (agentId: string) => void
+  /** Stop every pod of an agent this member is handing over, keeping the claims and volumes. What
+   *  `releaseAgent` alone cannot do: releasing drops the launches the idle sweep reads, so an agent
+   *  moved away would keep a Running pod nobody is left to suspend. Adopts first, so a pod this
+   *  member never launched is stopped too. Reports what it could not stop; never throws. */
+  suspendAgent: (agentId: string) => Promise<void>
   /** Suspend a quiet subject's pod, keeping its Sandbox and workspace volume. `busy` means work
    *  still holds it and the caller should try again later; `absent` means there is nothing to
    *  suspend. Waking is not a separate call — the next launch's bind does it. */
@@ -493,6 +498,23 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
         options.log?.info(`cluster: agent ${agentId} taken over with ${adopted.length} session pod(s)`)
     },
     releaseAgent,
+    suspendAgent: async (agentId) => {
+      // Adoption records only Running pods and creates nothing, so this wakes none and skips the rest.
+      await driver.adopt(agentSandboxSubject(agentId)).catch(() => undefined)
+      await driver.adoptSessions(agentId).catch((err: unknown) => {
+        options.log?.warn(`k8s: could not list the session sandboxes of agent ${agentId}: ${(err as Error).message}`)
+        return []
+      })
+      for (const subject of [...driver.sessionSubjectsOf(agentId), agentSandboxSubject(agentId)]) {
+        const outcome = await driver.suspendIfIdle(subject).catch((err: unknown) => `failed: ${(err as Error).message}`)
+        // `busy` is a hold this member still owns; it lapses within a TTL and the idle sweep is gone by
+        // then, so say so rather than letting a Running pod look handled.
+        if (outcome === 'suspended')
+          options.log?.info(`cluster: suspended the sandbox "${subject}" — the agent is no longer served here`)
+        else if (outcome !== 'absent')
+          options.log?.warn(`cluster: could not suspend the sandbox "${subject}" of the departing agent (${outcome})`)
+      }
+    },
     discardAgent: async (agentId) => {
       releaseAgent(agentId, 'agent removed')
       await driver.removeAgentSandboxes(agentId)

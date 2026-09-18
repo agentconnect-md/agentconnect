@@ -17,11 +17,22 @@
  * The connection registers as an OBSERVER. It presents the same projected pool identity a member
  * does, so the control plane admits it on the same TokenReview path, but it is enrolled in no
  * member set and is granted no duty — a job that sweeps must never be handed work to serve.
+ *
+ * It asks that one question about PLACEMENT, not existence alone, because the two differ in the one
+ * case neither sweep could otherwise reach: an agent MOVED off this pool. Its objects and rows stay
+ * behind, and every guard reads them as live — no member holds its duty, so none sweeps its sessions
+ * or suspends its pods, while `agent/exists` says the agent is perfectly alive. Nothing here would
+ * ever collect them. So a moved agent gets its own, deliberately long window
+ * ({@link MOVED_GRACE_ENV}): the move is meant to be reversible and the volume left behind is that
+ * promise, but a promise with no end is a pod and a PVC per move, forever. Past the window the
+ * sessions are purged like any expired ones, and the claims — the pods and their volumes with
+ * them — are collected.
  */
 import { existsSync } from 'node:fs'
-import type { AnyFrame, AgentExistsOk, FrameType } from '@agentconnect.md/protocol'
+import type { AnyFrame, AgentExistsOk, AuthOk, FrameType, RegisterOk } from '@agentconnect.md/protocol'
 import {
   AGENT_EXISTS_MAX,
+  AGENT_PLACEMENT_FEATURE,
   buildEnvelope,
   CP_SUBPROTOCOL,
   CP_URL_ENV,
@@ -45,15 +56,22 @@ import { DAEMON_VERSION } from '../version.js'
 
 const REQUEST_TIMEOUT_MS = 15_000
 
+/** How the control plane reads for these agents: gone, live here, or live but placed elsewhere. */
+export type AgentStanding = 'gone' | 'here' | 'elsewhere'
+
 /** What the sweep needs from the control plane, and nothing more. */
 export interface ExistenceReader {
-  liveAgents: (agentIds: string[]) => Promise<Set<string>>
+  /** One batched read per chunk. An id missing from the answer is `gone`; `elsewhere` is only ever
+   *  reported when the control plane answered the placement question, so a CP that cannot is
+   *  indistinguishable from a pool that still holds everything — which collects less, never more. */
+  readAgents: (agentIds: string[]) => Promise<Map<string, AgentStanding>>
   close: () => void
 }
 
 /** The shared data-plane store, plus how to give it back; one that lists session keys also answers for session pods. */
 export interface ReapableStore {
-  store: RetentionCapableStore & Partial<Pick<LocalStore, 'sessionKeysForAgent'>>
+  store: RetentionCapableStore &
+    Partial<Pick<LocalStore, 'sessionKeysForAgent' | 'listExpiredSessions' | 'deleteSession'>>
   close: () => Promise<void>
 }
 
@@ -94,7 +112,11 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     const url = opts.apiUrl ?? env[CP_URL_ENV]?.trim()
     if (!url) throw new Error(`reconcile requires the control plane's address in ${CP_URL_ENV}`)
     cp = await (opts.connectCp ?? connectObserver)(url)
-    const liveAgents = cp.liveAgents
+    // ONE standing per agent for the whole run, however many sweeps ask: the three questions below
+    // are the same question, and asking it twice could answer them differently mid-run.
+    const standing = standingCache(cp.readAgents)
+    const liveAgents = standing.matching('here', 'elsewhere')
+    const movedAgents = standing.matching('elsewhere')
     // The store first: it is what answers for a session pod's row (git-workspace-model.md §11).
     mounted = await (opts.openStore ?? openSharedStore)()
     const sessionKeys = mounted?.store.sessionKeysForAgent?.bind(mounted.store)
@@ -102,6 +124,7 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     const reconciler = new OrphanReconciler({
       api,
       liveAgents,
+      movedAgents,
       ...(liveSessionLeaves ? { liveSessionLeaves } : {}),
       settings,
       log
@@ -110,11 +133,29 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     // No data plane is not a failure: this deployment keeps no shared store to sweep.
     // No `ownerId`: a one-shot job owns no rows, so every rule keeps its conservative window.
     const storeSummary = mounted
-      ? await new StoreRetentionSweeper({ store: mounted.store, liveAgents, settings: storeSettings, log }).sweep()
+      ? await new StoreRetentionSweeper({
+          store: mounted.store,
+          liveAgents,
+          movedAgents,
+          settings: storeSettings,
+          log
+        }).sweep()
+      : { failed: 0 }
+    // The rows the sweep above cannot reach: a departed agent's pods are claims, and the orphan sweep
+    // took those, but its SESSIONS are rows in a store no member of this pool judges any more. Same
+    // window as the moved claims, and the same dry run, so one decision covers the pod and its row.
+    const purged = mounted
+      ? await purgeMovedAgentSessions({
+          store: mounted.store,
+          movedAgents,
+          movedGraceMs: settings.movedGraceMs,
+          deleteEnabled: storeSettings.deleteOrphans,
+          log
+        })
       : { failed: 0 }
     // A delete that failed is counted, not thrown, so the run reports the whole picture — but a run
     // that left an orphan behind is not a successful Job, or the cluster hides a leak that repeats.
-    return summary?.failed === 0 && storeSummary?.failed === 0 ? 0 : 1
+    return summary?.failed === 0 && storeSummary?.failed === 0 && purged.failed === 0 ? 0 : 1
   } catch (err) {
     log.warn(`reconcile: sweep failed — ${(err as Error).message}`)
     return 1
@@ -122,6 +163,94 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     cp?.close()
     await mounted?.close().catch(() => undefined)
   }
+}
+
+/**
+ * The run's one answer per agent, reused by every sweep that asks. The cache is per RUN, not
+ * per sweep: a placement that changed between two sweeps would otherwise let one of them collect
+ * on a standing the other had already contradicted.
+ */
+function standingCache(read: ExistenceReader['readAgents']): {
+  matching: (...wanted: AgentStanding[]) => (agentIds: string[]) => Promise<Set<string>>
+} {
+  const known = new Map<string, AgentStanding>()
+  const load = async (agentIds: string[]): Promise<void> => {
+    const unknown = [...new Set(agentIds)].filter((id) => !known.has(id))
+    if (unknown.length === 0) return
+    for (const [id, state] of await read(unknown)) known.set(id, state)
+    // An id the control plane did not name at all is gone; that is what the reply's silence means.
+    for (const id of unknown) if (!known.has(id)) known.set(id, 'gone')
+  }
+  return {
+    matching:
+      (...wanted) =>
+      async (agentIds) => {
+        await load(agentIds)
+        return new Set(agentIds.filter((id) => wanted.includes(known.get(id) ?? 'gone')))
+      }
+  }
+}
+
+/**
+ * Purge the expired sessions of agents this pool no longer holds.
+ *
+ * A member's own retention sweep is holder-only, because its active-turn exclusions are member-local
+ * and only the holder can judge a row. That leaves exactly one set of rows unjudged: those of an
+ * agent whose duty no member holds any more. Nobody here will ever serve them, and the daemon that
+ * does hold the agent now reads a different store, so their sessions never expire and their pods and
+ * volumes are never released. This is that judgement, made by the one process that can prove the
+ * agent left: the same expiry rule, on the moved window rather than the install's retention one. It
+ * is the store's half of the same decision the orphan sweep makes about that agent's claims — and
+ * it is also the backstop for its session pods, whose claims live exactly as long as their rows.
+ *
+ * `deleteSession` writes the control plane's purge receipt in the same transaction, exactly as the
+ * members' sweep does; no member of this pool will drain it, and it ages out on its own rule.
+ */
+async function purgeMovedAgentSessions(deps: {
+  store: ReapableStore['store']
+  movedAgents: (agentIds: string[]) => Promise<Set<string>>
+  movedGraceMs: number
+  deleteEnabled: boolean
+  log: { info: (m: string) => void; warn: (m: string) => void }
+}): Promise<{ failed: number }> {
+  const { store, log } = deps
+  if (!store.listExpiredSessions || !store.deleteSession) return { failed: 0 }
+  const now = systemClock.now()
+  let expired
+  try {
+    expired = await store.listExpiredSessions(now - deps.movedGraceMs)
+  } catch (err) {
+    log.warn(`moved sessions: listing expired sessions failed — ${(err as Error).message}`)
+    return { failed: 1 }
+  }
+  if (expired.length === 0) return { failed: 0 }
+  let moved: Set<string>
+  try {
+    moved = await deps.movedAgents([...new Set(expired.map((rec) => rec.agentId))])
+  } catch (err) {
+    log.warn(`moved sessions: could not ask which agents left this pool — ${(err as Error).message}`)
+    return { failed: 1 }
+  }
+  const collectable = expired.filter((rec) => moved.has(rec.agentId))
+  let purged = 0
+  let failed = 0
+  for (const rec of collectable) {
+    if (!deps.deleteEnabled) {
+      log.info(`moved sessions: would purge ${rec.key} (agent ${rec.agentId} left this pool) — dry run`)
+      continue
+    }
+    try {
+      if (await store.deleteSession(rec.key, { reason: 'retention', at: now })) purged += 1
+    } catch (err) {
+      failed += 1
+      log.warn(`moved sessions: purging ${rec.key} failed — ${(err as Error).message}`)
+    }
+  }
+  log.info(
+    `moved sessions: ${collectable.length} expired session(s) of departed agents — purged=${purged} failed=${failed}` +
+      (deps.deleteEnabled ? '' : ' (dry run)')
+  )
+  return { failed }
 }
 
 /** Which session pods still have a row: one store read per agent, the leaves derived as the host keys derive them. */
@@ -166,6 +295,7 @@ export async function connectObserver(url: string, seams: ObserverSeams = {}): P
   if (!token) throw new Error("reconcile requires this pod's projected control-plane identity token")
   const correlator = new ReqRep<AnyFrame>(systemClock, REQUEST_TIMEOUT_MS, 1)
   const transport: Transport = await (seams.dial ?? dialCp)(url)
+  let placedOnSetId: string | undefined
   const request = async (type: FrameType, payload: unknown): Promise<AnyFrame> =>
     correlator.request(buildEnvelope(type, payload), (encoded) => transport.send(encoded), {
       maxTries: 1,
@@ -179,6 +309,10 @@ export async function connectObserver(url: string, seams: ObserverSeams = {}): P
     transport.onClose(() => correlator.rejectAll(new Error('control-plane connection closed')))
     const auth = await request('auth', { serviceAccountToken: token, agentVersion: DAEMON_VERSION })
     if (auth.type !== 'auth/ok') throw new Error(`expected auth/ok, got ${auth.type}`)
+    // The pool this job sweeps for, as the control plane itself resolved it from this pod's identity.
+    // Read at AUTH, because the observer registration that follows withdraws the membership again —
+    // which is the point of an observer, and why there is nothing left to read it from afterwards.
+    const setId = (auth.payload as AuthOk).memberSet?.setId
     const registered = await request('register', {
       host: 'reconcile',
       observer: true,
@@ -187,6 +321,11 @@ export async function connectObserver(url: string, seams: ObserverSeams = {}): P
       localState: { assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }
     })
     if (registered.type !== 'register/ok') throw new Error(`expected register/ok, got ${registered.type}`)
+    // Asked only of a control plane that answers it: an older one would drop the field and report
+    // every surviving agent as this pool's, which is the pre-placement sweep.
+    placedOnSetId = (registered.payload as RegisterOk).serverFeatures.includes(AGENT_PLACEMENT_FEATURE)
+      ? setId
+      : undefined
   } catch (err) {
     correlator.rejectAll(new Error('observer registration failed'))
     transport.close(1011, 'observer registration failed')
@@ -195,14 +334,21 @@ export async function connectObserver(url: string, seams: ObserverSeams = {}): P
   return {
     // Chunked at the frame's own cap; an error reply throws, which fails the sweep rather than
     // letting an unanswerable question read as "these agents are gone".
-    liveAgents: async (agentIds) => {
-      const live = new Set<string>()
+    readAgents: async (agentIds) => {
+      const standing = new Map<string, AgentStanding>()
       for (let at = 0; at < agentIds.length; at += AGENT_EXISTS_MAX) {
-        const reply = await request('agent/exists', { agentIds: agentIds.slice(at, at + AGENT_EXISTS_MAX) })
+        const reply = await request('agent/exists', {
+          agentIds: agentIds.slice(at, at + AGENT_EXISTS_MAX),
+          ...(placedOnSetId ? { placedOnSetId } : {})
+        })
         if (reply.type !== 'agent/exists/ok') throw new Error(`expected agent/exists/ok, got ${reply.type}`)
-        for (const id of (reply.payload as AgentExistsOk).existing) live.add(id)
+        const payload = reply.payload as AgentExistsOk
+        for (const id of payload.existing) standing.set(id, 'here')
+        // Only an answered placement question moves an agent off this pool; an absent `elsewhere`
+        // is "not answered", and reading it as "none left" is the same either way.
+        for (const id of payload.elsewhere ?? []) standing.set(id, 'elsewhere')
       }
-      return live
+      return standing
     },
     close: () => {
       correlator.rejectAll(new Error('reconcile complete'))

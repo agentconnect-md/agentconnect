@@ -346,6 +346,16 @@ presents, admitted on the same TokenReview path, but enrolled in no member set
 — so the duty ledger can never grant work to a process whose only job is to
 sweep — and marked so the pool-member reaper retires its row promptly.
 
+**A departing agent's pods are stopped by the detach itself.** Handing an agent
+over is not removal, so its claims and volumes stay — but `releaseAgent` drops
+the launches the idle sweep reads, and that sweep is the holder's alone, so a pod
+not stopped at the handover is one nothing on this member will ever stop again.
+`agent/detach` therefore suspends the agent's own pod and every session pod it
+can adopt before it releases them (`suspendClusterSandboxes`), leaving the
+objects and the volumes untouched. Best effort, and never a reason to fail the
+ACK: a pod left running is cost, not incorrectness, and refusing the move over it
+would strand the agent between two daemons — the sweep above is the backstop.
+
 **What it collects.** It lists the claims and Sandboxes that carry the
 install's agent label (`agentconnect.md/agent` on the pod metadata), asks the
 control plane in **one batched read per run** which of those agent ids still
@@ -391,6 +401,41 @@ makes its preconditioned delete fail — reported as "replaced since it was
 listed", with the pod and its volume left alone and the next run re-deciding.
 A second uncoordinated row read would only have narrowed that window.
 
+**An agent that MOVED off the pool.** Placement, not existence, is the question
+the sweep actually has, and the two differ in exactly the case neither guard
+could reach. When an agent moves to a self-hosted daemon (or to any placement
+that is not this member set), its claims, volumes and session rows stay behind,
+and every rule reads them as live: no member holds its duty, so none suspends
+its pods (§4, the idle sweep is the holder's) or sweeps its sessions (the
+retention sweep is holder-only, because its active-turn exclusions are
+member-local), while `agent/exists` reports the agent as perfectly alive. The
+daemon that holds it now reads a different store. Nothing would ever collect
+them.
+
+So the observer asks `agent/exists` with `placedOnSetId` — the pool it sweeps
+for, as the control plane itself resolved it from this pod's identity at `auth`
+(the observer registration that follows withdraws that membership again, which
+is why it is read there) — and the reply adds `elsewhere`: the surviving ids
+placement no longer puts on that set. Gated on the `agent-placement-v1` server
+feature; an older control plane drops the field and answers existence alone,
+which is the pre-placement sweep and collects strictly less. On that answer:
+
+- the claims and Sandboxes of a departed agent — its own pod's and its session
+  pods' — age out on their own window, `AC_MOVED_AGENT_GRACE_MS` (default 7
+  days), NOT the leak grace. A leak is a mistake to clean up in minutes; a move
+  is deliberate, and the volume left behind is the promise that the work is
+  still there to move back to. The window is where that promise ends, and the
+  age runs from the same admission stamp, which stopped moving when the last
+  member released the claim.
+- its expired session rows are purged on the same window by the same job
+  (`purgeMovedAgentSessions`), through the ordinary `deleteSession` — receipt
+  and all. The rule above already takes those sessions' pods; this is the store
+  half of the same decision, and the backstop for a session pod whose claim the
+  cluster half could not reach, since such a claim lives exactly as long as its
+  row.
+- its store rows collect on **agent moved**, the store half's sibling of the
+  agent-gone proof below, under the same dry-run flag.
+
 **Dry run by default.** The reconciler ships reporting only; deletion is
 enabled per deployment with `AC_K8S_ORPHAN_DELETE=true` after an observation
 window in which the summary lines show it collecting exactly what an operator
@@ -427,6 +472,10 @@ Two proofs collect a row:
   member can ever drain it. This needs the batched `agent/exists` answer the
   cluster half already asked for, so only `reconcile --once` can apply it, and
   it ships dry-run behind `AC_STORE_ORPHAN_DELETE=true`.
+- **agent moved** — the agent lives, but the control plane no longer places it
+  on this set. Same dead end and same proof shape: no member here holds its
+  duty, so none will ever drain the row, and the daemon that holds the agent now
+  reads a different store. Same answer, same dry-run flag.
 
 `ownerColumn` carries the third case: a row written by a process that is not the
 sweeper. An `ownerId` dies with the process that minted it, so the catalog rules

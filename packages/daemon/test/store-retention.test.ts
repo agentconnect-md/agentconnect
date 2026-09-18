@@ -22,6 +22,7 @@ import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-
 const pg = usingPostgresStore()
 const LIVE = '11111111-1111-4111-8111-111111111111'
 const GONE = '22222222-2222-4222-8222-222222222222'
+const MOVED = '33333333-3333-4333-8333-333333333333'
 const AT = 1_800_000_000_000
 const DAY = 24 * 3_600_000
 
@@ -145,6 +146,7 @@ function sweeper(
     scale?: number
     ownerId?: string
     liveAgents?: (ids: string[]) => Promise<Set<string>>
+    movedAgents?: (ids: string[]) => Promise<Set<string>>
   } = {}
 ) {
   const logs: string[] = []
@@ -152,6 +154,7 @@ function sweeper(
     store: s,
     ...(opts.rules ? { rules: opts.rules } : {}),
     ...(opts.liveAgents ? { liveAgents: opts.liveAgents } : {}),
+    ...(opts.movedAgents ? { movedAgents: opts.movedAgents } : {}),
     ...(opts.ownerId !== undefined ? { ownerId: opts.ownerId } : {}),
     settings: { scale: opts.scale ?? 1, deleteOrphans: opts.deleteOrphans ?? false },
     clock: { now: () => now } as never,
@@ -336,6 +339,40 @@ describe('store retention rule table', () => {
     expect(logs.at(-1)).not.toContain('(orphan dry run)')
     expect(await remaining(b, 'hook-report')).toBe(1) // the live agent's
     await a.close() // one database backs the pair
+  })
+
+  it('collects the rows of an agent that moved off this pool, on the same proof shape', async () => {
+    // The agent is alive; it just is not this pool's any more. No member here holds its duty, so
+    // no member here will ever drain these rows — the same dead end as a deleted agent.
+    const [a, b] = await sharedMembers('member-a', 'member-b')
+    await seedEveryTable(a, LIVE, 'live', AT, 'member-a')
+    await seedEveryTable(a, MOVED, 'moved', AT, 'member-a')
+
+    const { instance, logs } = sweeper(b, AT + 1_000, {
+      liveAgents: async (ids) => new Set(ids.filter((id) => id === LIVE || id === MOVED)),
+      movedAgents: async (ids) => new Set(ids.filter((id) => id === MOVED)),
+      deleteOrphans: true
+    })
+    const summary = await instance.sweep()
+
+    expect(summary).toMatchObject({ agentMoved: 7, agentGone: 0, horizon: 0, deleted: 7, failed: 0 })
+    expect(logs.at(-1)).toContain('agent-moved=7')
+    expect(await remaining(b, 'hook-report')).toBe(1) // the agent still placed here
+    await a.close()
+  })
+
+  it('rides the same dry run as the agent-gone proof', async () => {
+    const [a, b] = await sharedMembers('member-a', 'member-b')
+    await seedEveryTable(a, MOVED, 'moved', AT, 'member-a')
+
+    const { instance, logs } = sweeper(b, AT + 1_000, {
+      liveAgents: async (ids) => new Set(ids),
+      movedAgents: async (ids) => new Set(ids)
+    })
+    expect(await instance.sweep()).toMatchObject({ agentMoved: 7, collected: 7, deleted: 0 })
+    expect(logs.some((line) => line.includes('agent left this pool'))).toBe(true)
+    expect(await remaining(b, 'hook-report')).toBe(1)
+    await a.close()
   })
 
   it('counts the agent-gone proof without deleting until the deployment turns it on', async () => {

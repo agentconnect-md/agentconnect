@@ -22,6 +22,10 @@ import type { LocalStore } from './local-store.js'
  * - **agent gone** — the control plane no longer knows the row's agent, so no member can
  *   ever drain it. This is the new proof, it needs an existence read the sweeper only has
  *   inside `reconcile --once`, and it ships dry-run behind {@link STORE_ORPHAN_DELETE_ENV}.
+ * - **agent moved** — the agent lives, but the control plane no longer places it on this pool.
+ *   Same consequence and same proof shape: no member here holds its duty, so no member here will
+ *   ever drain the row, and the daemon that does hold the agent now reads a different store. It
+ *   rides the same dry-run flag.
  *
  * Two callers, one table. The daemon's own hourly sweep runs the rules age-only against its
  * own store — a local single-daemon install keeps working exactly as it did, because
@@ -240,6 +244,7 @@ export interface StoreRetentionSummary {
   failed: number
   /** Why each collected row was collected. */
   agentGone: number
+  agentMoved: number
   horizon: number
   /** Collected rows per rule, counted whether or not the delete was allowed to run. */
   byRule: Record<string, number>
@@ -250,6 +255,8 @@ export interface StoreRetentionSweeperDeps {
   settings: StoreRetentionSettings
   /** Present only where the control plane can be asked; absent ⇒ an age-only sweep. */
   liveAgents?: (agentIds: string[]) => Promise<Set<string>>
+  /** Which of the live agents this pool no longer holds. Absent ⇒ a live agent's rows always keep. */
+  movedAgents?: (agentIds: string[]) => Promise<Set<string>>
   /** This sweeper's own owner id. Absent ⇒ it owns nothing and every row keeps the long horizon. */
   ownerId?: string
   rules?: readonly StoreRetentionRule[]
@@ -288,7 +295,8 @@ export class StoreRetentionSweeper {
   async sweep(): Promise<StoreRetentionSummary | undefined> {
     try {
       const found = await this.read()
-      return await this.collect(found, await this.askLive(found))
+      const live = await this.askLive(found)
+      return await this.collect(found, live, await this.askMoved(live))
     } catch (err) {
       this.deps.log.warn(`store retention: sweep failed — ${(err as Error).message}`)
       return undefined
@@ -316,9 +324,17 @@ export class StoreRetentionSweeper {
     return this.deps.liveAgents && askable.length > 0 ? await this.deps.liveAgents(askable) : undefined
   }
 
+  /** Which of the live agents left this pool. Asked of the live ones only — a gone agent already
+   *  has its proof — and only where the control plane can answer it. */
+  private async askMoved(live: Set<string> | undefined): Promise<Set<string> | undefined> {
+    if (!live || !this.deps.movedAgents || live.size === 0) return undefined
+    return await this.deps.movedAgents([...live])
+  }
+
   private async collect(
     found: { rule: StoreRetentionRule; rows: StoreRetentionCandidate[] }[],
-    live: Set<string> | undefined
+    live: Set<string> | undefined,
+    moved?: Set<string>
   ): Promise<StoreRetentionSummary> {
     const { settings, log, store } = this.deps
     const now = this.clock.now()
@@ -326,7 +342,7 @@ export class StoreRetentionSweeper {
     for (const { rows } of found) summary.candidates += rows.length
     for (const { rule, rows } of found) {
       for (const row of rows) {
-        const reason = this.classify(rule, row, now, live)
+        const reason = this.classify(rule, row, now, live, moved)
         if (!reason) {
           summary.kept += 1
           continue
@@ -334,11 +350,13 @@ export class StoreRetentionSweeper {
         summary.collected += 1
         summary.byRule[rule.id] = (summary.byRule[rule.id] ?? 0) + 1
         if (reason === 'agent-gone') summary.agentGone += 1
+        else if (reason === 'agent-moved') summary.agentMoved += 1
         else summary.horizon += 1
-        // The horizon proof IS the retention these rules replaced, so it always deletes. The
-        // agent-gone proof is the new one and only reports until the deployment turns it on.
-        if (reason === 'agent-gone' && !settings.deleteOrphans) {
-          log.info(`store retention: would delete ${rule.id} ${describe(row)} (agent gone) — dry run`)
+        // The horizon proof IS the retention these rules replaced, so it always deletes. The two
+        // ownership proofs are the new ones and only report until the deployment turns them on.
+        if (reason !== 'horizon' && !settings.deleteOrphans) {
+          const why = reason === 'agent-gone' ? 'agent gone' : 'agent left this pool'
+          log.info(`store retention: would delete ${rule.id} ${describe(row)} (${why}) — dry run`)
           continue
         }
         try {
@@ -353,7 +371,7 @@ export class StoreRetentionSweeper {
     log.info(
       `store retention: swept ${summary.candidates} candidates — collected=${summary.collected} ` +
         `deleted=${summary.deleted} kept=${summary.kept} failed=${summary.failed} ` +
-        `agent-gone=${summary.agentGone} horizon=${summary.horizon} ` +
+        `agent-gone=${summary.agentGone} agent-moved=${summary.agentMoved} horizon=${summary.horizon} ` +
         this.rules.map((rule) => `${rule.id}=${summary.byRule[rule.id] ?? 0}`).join(' ') +
         (settings.deleteOrphans ? '' : ' (orphan dry run)')
     )
@@ -366,9 +384,12 @@ export class StoreRetentionSweeper {
     rule: StoreRetentionRule,
     row: StoreRetentionCandidate,
     now: number,
-    live: Set<string> | undefined
-  ): 'agent-gone' | 'horizon' | undefined {
-    if (live && rule.agentColumn && row.agentId && UUID.test(row.agentId) && !live.has(row.agentId)) return 'agent-gone'
+    live: Set<string> | undefined,
+    moved: Set<string> | undefined
+  ): 'agent-gone' | 'agent-moved' | 'horizon' | undefined {
+    const named = rule.agentColumn && row.agentId && UUID.test(row.agentId) ? row.agentId : undefined
+    if (live && named && !live.has(named)) return 'agent-gone'
+    if (moved && named && moved.has(named)) return 'agent-moved'
     // A row this sweeper did not write has a departed owner; that is the shorter window.
     const foreign = this.deps.ownerId !== undefined && row.ownerId !== this.deps.ownerId
     const horizon = (foreign ? (rule.foreignHorizonMs ?? rule.horizonMs) : rule.horizonMs) * this.deps.settings.scale
@@ -384,6 +405,7 @@ function emptySummary(rules: readonly StoreRetentionRule[]): StoreRetentionSumma
     kept: 0,
     failed: 0,
     agentGone: 0,
+    agentMoved: 0,
     horizon: 0,
     byRule: Object.fromEntries(rules.map((rule) => [rule.id, 0]))
   }

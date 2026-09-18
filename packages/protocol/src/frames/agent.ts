@@ -517,13 +517,21 @@ export const AGENT_EXISTS_MAX = 1000
  * decides whether a leaked sandbox object may be collected, nothing more.
  */
 export const AgentExists = z.object({
-  agentIds: z.array(z.string().uuid()).min(1).max(AGENT_EXISTS_MAX)
+  agentIds: z.array(z.string().uuid()).min(1).max(AGENT_EXISTS_MAX),
+  /** The member set whose objects the caller sweeps, to also learn which asked agents EXIST but
+   *  this set no longer holds. Sent only against `agent-placement-v1`; an older CP drops it and
+   *  answers existence alone, which collects strictly less. */
+  placedOnSetId: z.string().min(1).optional()
 })
 export type AgentExists = z.infer<typeof AgentExists>
 
 /** C→D REP to `agent/exists`: the subset of the asked ids that exist. An id absent here is gone. */
 export const AgentExistsOk = z.object({
-  existing: z.array(z.string().uuid()).max(AGENT_EXISTS_MAX)
+  existing: z.array(z.string().uuid()).max(AGENT_EXISTS_MAX),
+  /** Present only for a request that named a set: the `existing` ids placement no longer puts on
+   *  it. Live agents, but not this set's — nothing in it will ever serve their objects or rows
+   *  again. Absent (an older CP, or a request without a set) is NOT "none": it is "not answered". */
+  elsewhere: z.array(z.string().uuid()).max(AGENT_EXISTS_MAX).optional()
 })
 export type AgentExistsOk = z.infer<typeof AgentExistsOk>
 

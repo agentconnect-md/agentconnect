@@ -18191,6 +18191,27 @@ export class Daemon {
   }
 
   /**
+   * Cluster only: stop the pods of an agent leaving this member, keeping their claims and volumes.
+   *
+   * Handing an agent over is not removal, so its volumes stay — but its pods must not keep running.
+   * Nothing else would stop them: the idle sweep only sees subjects this member still holds a launch
+   * for and only while it holds the duty, so the release that follows a detach takes the pod out of
+   * the sweep's sight rather than shutting it down, and the orphan reconciler never touches a live
+   * agent's object. A moved agent would leave a pod Running until someone noticed.
+   *
+   * Best effort, before the ACK but never failing it: a pod left up is cost, not incorrectness, and
+   * refusing the move over it would strand the agent between two daemons.
+   */
+  private async suspendClusterSandboxes(agentId: string): Promise<void> {
+    if (!this.k8sPlane) return
+    try {
+      await this.k8sPlane.suspendAgent(agentId)
+    } catch (err) {
+      this.log.warn(`cluster: suspending the sandboxes of departing agent "${agentId}" failed: ${formatErr(err)}`)
+    }
+  }
+
+  /**
    * Cluster only: destroy an agent's sandbox and, with it, its workspace volume. Called where the
    * local path deletes the agent's checkout — removal, and only removal. A detached or moved agent
    * keeps its volume, because both are reversible and the archive they leave behind is the promise
@@ -19102,6 +19123,7 @@ export class Daemon {
       gitCredServer: () => this.gitCredServer,
       quiesceAgentWorkspaceAuthority: (agentId) => this.quiesceAgentWorkspaceAuthority(agentId),
       discardClusterSandbox: (agentId) => this.discardClusterSandbox(agentId),
+      suspendClusterSandboxes: (agentId) => this.suspendClusterSandboxes(agentId),
       revokeRemoteWebchatGrantsForAgent: (agentId, reason) =>
         this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(agentId, reason),
       stopAgent: (agentId) => this.stopAgent(agentId),

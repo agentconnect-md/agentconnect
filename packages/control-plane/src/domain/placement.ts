@@ -107,6 +107,13 @@ export function samePlacementRef(a: PlacementRef, b: PlacementRef): boolean {
   return samePlacement(placementTargetOf(a), placementTargetOf(b))
 }
 
+/** Is this agent placed on exactly this member set? The question a pool asks about objects and
+ *  rows it holds for an agent: false means nothing in the set will ever serve them again —
+ *  the agent moved to a machine, to another set, or nowhere. */
+export function placedOnSet(agent: PlacementRef, setId: string): boolean {
+  return samePlacement(placementTargetOf(agent), onSet(setId))
+}
+
 /** A stable label for logs and conflict messages — never a raw member id for a set placement. */
 export function placementLabel(target: PlacementTarget): string {
   return target.kind === 'daemon' ? target.daemonId : target.kind

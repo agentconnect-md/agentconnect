@@ -9,13 +9,13 @@ const LIVE = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const OTHER_ORG = 'b0b0b0b0-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const GONE = 'c0c0c0c0-cccc-4ccc-8ccc-cccccccccccc'
 
-function existsFrame(agentIds: string[]): AnyFrame {
+function existsFrame(agentIds: string[], placedOnSetId?: string): AnyFrame {
   return {
     v: 1,
     id: crypto.randomUUID(),
     ts: '2026-08-14T00:00:00.000Z',
     type: 'agent/exists',
-    payload: { agentIds }
+    payload: { agentIds, ...(placedOnSetId ? { placedOnSetId } : {}) }
   } as AnyFrame
 }
 
@@ -25,10 +25,12 @@ function fakeConn(orgId: string | null) {
   }
 }
 
+const POOL = 'set-pool'
+/** `LIVE` sits on the pool; `OTHER_ORG` was moved to a machine of its own. */
 const listByIds = vi.fn(async (ids: readonly string[]) =>
   [
-    { id: LIVE, orgId: 'org-a' },
-    { id: OTHER_ORG, orgId: 'org-b' }
+    { id: LIVE, orgId: 'org-a', placementKind: 'set' as const, daemonId: null, setId: POOL },
+    { id: OTHER_ORG, orgId: 'org-b', placementKind: 'daemon' as const, daemonId: 'daemon-1', setId: null }
   ].filter((agent) => ids.includes(agent.id))
 )
 const deps = { agent: { listByIds } } as unknown as DaemonWsDeps
@@ -45,5 +47,33 @@ describe('agent/exists', () => {
     const conn = fakeConn('org-a')
     await handleAgentExists(existsFrame([LIVE, OTHER_ORG, GONE]), conn, deps)
     expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'agent/exists/ok', { existing: [LIVE] })
+  })
+
+  it('also names the surviving agents the asked set no longer holds', async () => {
+    // What tells a moved agent from a live one: both exist, only one is still this pool's.
+    const conn = fakeConn(null)
+    await handleAgentExists(existsFrame([LIVE, OTHER_ORG, GONE], POOL), conn, deps)
+    expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'agent/exists/ok', {
+      existing: [LIVE, OTHER_ORG],
+      elsewhere: [OTHER_ORG]
+    })
+  })
+
+  it('answers no placement at all when the request names no set', async () => {
+    // Absent is "not answered", never "none left" — the caller collects less, never more.
+    const conn = fakeConn(null)
+    await handleAgentExists(existsFrame([LIVE, OTHER_ORG]), conn, deps)
+    expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'agent/exists/ok', {
+      existing: [LIVE, OTHER_ORG]
+    })
+  })
+
+  it('reports an agent moved to ANOTHER set, and one left unplaced, as no longer this pool’s', async () => {
+    const conn = fakeConn(null)
+    await handleAgentExists(existsFrame([LIVE, OTHER_ORG], 'set-other'), conn, deps)
+    expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'agent/exists/ok', {
+      existing: [LIVE, OTHER_ORG],
+      elsewhere: [LIVE, OTHER_ORG]
+    })
   })
 })

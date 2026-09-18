@@ -321,6 +321,12 @@ export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'
  *  skips the sweep rather than emit a frame an older CP rejects as `UNKNOWN_FRAME`. */
 export const AGENT_EXISTS_FEATURE = 'agent-exists-v1'
 
+/** CP also answers `agent/exists` with WHERE each surviving agent is placed, so the pool's
+ *  reconciler can tell an agent that is gone from one that merely moved off this member set.
+ *  A daemon that does not see it omits `placedOnSetId` and sweeps on existence alone — the
+ *  pre-placement behavior, which collects strictly less and never more. */
+export const AGENT_PLACEMENT_FEATURE = 'agent-placement-v1'
+
 // ── GitLab.com code-host features (gitlab-com-integration.md §17.3) ─────────
 // Each string is advertised only when its COMPLETE slice is live; the CP must
 // never place a GitLab-shaped workspace, grant, or hook on a peer without it.

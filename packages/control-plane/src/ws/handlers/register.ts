@@ -15,6 +15,7 @@ import {
   MEMORY_CAPTURE_FENCE_V1_FEATURE,
   isFrame,
   AGENT_EXISTS_FEATURE,
+  AGENT_PLACEMENT_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
   AGENT_MEMORY_STORE_V1_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
@@ -121,6 +122,9 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       SESSION_VISIBILITY_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
       AGENT_EXISTS_FEATURE,
+      // k8s-daemon-pool.md §4: …and says WHERE a surviving agent is placed, so the pool's
+      // reconciler can tell one that is gone from one that moved off the set.
+      AGENT_PLACEMENT_FEATURE,
       // slack-approval-dm.md §4.2: this CP resolves and revalidates approval-DM recipients.
       APPROVAL_DM_ROUTE_V1_FEATURE,
       // memory-evolution.md §3.2.1: this CP serves the whole `memory/store` family, the migration completion included.
