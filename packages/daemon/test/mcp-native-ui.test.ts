@@ -7,7 +7,7 @@ import {
   MCP_SETUP_URI,
   SKILL_SETUP_URI
 } from '@agentconnect.md/protocol/mcp-app'
-import { nativeUiChrome, nativeUiFromToolUpdate } from '../src/mcp/native-ui.js'
+import { namesNativeUi, nativeUiChrome, nativeUiFromToolUpdate } from '../src/mcp/native-ui.js'
 import { Daemon } from '../src/daemon.js'
 import { LiveAppRegistry, reviveAppRow } from '../src/mcp/apps/cards.js'
 import { AppSurface } from '../src/mcp/apps/surface.js'
@@ -54,7 +54,9 @@ describe('direct HTTP native UI result', () => {
     { ...update, sessionUpdate: 'agent_message_chunk' },
     { ...update, rawOutput: 'ui://agentconnect/integration-setup' },
     { ...update, rawOutput: [{ type: 'text', text: JSON.stringify({ ...ui, resourceVersion: 2 }) }] },
-    { ...update, rawOutput: [{ type: 'text', text: ' '.repeat(4096) + JSON.stringify(ui) }] },
+    { ...update, rawOutput: [{ type: 'text', text: ' '.repeat(160 * 1024) + JSON.stringify(ui) }] },
+    { ...update, rawOutput: { output: 'ui://agentconnect/integration-setup', isError: false } },
+    { ...update, rawOutput: { output: JSON.stringify(ui), isError: true } },
     { ...update, rawOutput: { ...update.rawOutput, error: { message: 'cancelled' } } },
     { ...update, rawOutput: { result: { ...update.rawOutput.result, isError: true } } },
     { ...update, rawOutput: { content: [{ type: 'text', text: 'ui://agentconnect/integration-setup' }] } },
@@ -62,6 +64,52 @@ describe('direct HTTP native UI result', () => {
     { ...update, rawOutput: { structuredContent: { ...ui, resourceVersion: 2 } } }
   ])('ignores failed, incomplete, or invalid results', (event) => {
     expect(nativeUiFromToolUpdate(event)).toBeUndefined()
+  })
+
+  // ACP's own `content`, captured from the dsh-acp call whose Console dialog never opened.
+  it('reads the intent from ACP’s specified content channel, whatever the adapter put in rawOutput', () => {
+    const content = [{ type: 'content', content: { type: 'text', text: JSON.stringify(ui) } }]
+    for (const rawOutput of [undefined, { output: 'Added integration.', isError: false }, { result: {} }]) {
+      expect(nativeUiFromToolUpdate({ ...update, content, rawOutput })).toEqual(ui)
+    }
+    // The channel is read, not trusted blindly: a failed or still-running call carries no card.
+    expect(nativeUiFromToolUpdate({ ...update, content, status: 'failed' })).toBeUndefined()
+    expect(nativeUiFromToolUpdate({ ...update, content, rawOutput: { output: '', isError: true } })).toBeUndefined()
+    // A non-text block is not a candidate, and neither is ordinary tool prose.
+    for (const bad of [
+      [{ type: 'diff', path: '/a', oldText: null, newText: JSON.stringify(ui) }],
+      [{ type: 'content', content: { type: 'text', text: 'Added the integration.' } }]
+    ]) {
+      expect(nativeUiFromToolUpdate({ ...update, content: bad, rawOutput: undefined })).toBeUndefined()
+    }
+  })
+
+  // Shape captured from dsh-acp, which flattens the whole CallToolResult into one `output` string.
+  it('reads a flattened `output` result, whose structured content the runtime dropped', () => {
+    expect(nativeUiFromToolUpdate({ ...update, rawOutput: { output: JSON.stringify(ui), isError: false } })).toEqual(ui)
+    // The same shape carrying a write tool's own record, well past a single line's worth of text.
+    const nativeUi = {
+      ...ui,
+      resourceUri: AGENT_SETUP_URI,
+      intent: { agentId: '22222222-2222-4222-8222-222222222222', created: true }
+    }
+    const body = { id: nativeUi.intent.agentId, name: 'my-agent', description: 'x'.repeat(8192), nativeUi }
+    expect(nativeUiFromToolUpdate({ ...update, rawOutput: { output: JSON.stringify(body), isError: false } })).toEqual(
+      nativeUi
+    )
+  })
+
+  it('recognizes a result that meant to open a surface, so a miss can be explained', () => {
+    expect(namesNativeUi(update)).toBe(true)
+    // The unreadable shapes this projection used to drop in silence.
+    expect(namesNativeUi({ ...update, rawOutput: { output: JSON.stringify({ ...ui, resourceVersion: 9 }) } })).toBe(
+      true
+    )
+    expect(namesNativeUi({ ...update, rawOutput: { structuredContent: { ...ui, resourceVersion: 2 } } })).toBe(true)
+    expect(namesNativeUi({ ...update, rawOutput: { output: 'listed 3 agents' } })).toBe(false)
+    // A tool that merely READ a file naming the surface is not one that meant to open it.
+    expect(namesNativeUi({ ...update, rawOutput: { file: `see ${INTEGRATION_SETUP_URI}` } })).toBe(false)
+    expect(namesNativeUi({ rawInput: { tool: 'configureIntegration' } })).toBe(false)
   })
 
   it('treats an intent as presentation data regardless of the tool display name', () => {

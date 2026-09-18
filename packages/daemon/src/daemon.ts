@@ -209,7 +209,7 @@ import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { DAEMON_VERSION } from './version.js'
 import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
-import { nativeUiChrome, nativeUiFromToolUpdate } from './mcp/native-ui.js'
+import { namesNativeUi, nativeUiChrome, nativeUiFromToolUpdate } from './mcp/native-ui.js'
 import { AppSurface, newAppId, type AppStream, type AppTurn } from './mcp/apps/surface.js'
 import {
   APP_RPC_REFUSALS,
@@ -14241,6 +14241,9 @@ export class Daemon {
     if (!p.webchat || p.webchat.continuation || p.outputSuppressed) return
     const nativeUi = nativeUiFromToolUpdate(update)
     const toolCallId = (update as { toolCallId?: unknown })?.toolCallId
+    // A result that named a surface and yielded nothing is a card the reader is still waiting for.
+    if (!nativeUi && namesNativeUi(update))
+      this.log.warn(`mcp apps: a result naming a native surface carried no readable intent (tool call ${toolCallId})`)
     if (!nativeUi || typeof toolCallId !== 'string' || !toolCallId) return
     const opened = (p.nativeAppToolCallIds ??= new Set<string>())
     if (opened.has(toolCallId)) return

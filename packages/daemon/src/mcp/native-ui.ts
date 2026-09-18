@@ -1,3 +1,4 @@
+import { MCP_APP_CARD_MAX_BYTES } from '@agentconnect.md/protocol'
 import {
   AGENT_SETUP_URI,
   AGENT_TOOLS_URI,
@@ -14,6 +15,9 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
+/** A write tool's card rides beside its own full record, so one candidate is capped at the card's budget, not a line. */
+const INTENT_TEXT_MAX_CHARS = MCP_APP_CARD_MAX_BYTES
+
 /** An intent either IS the value or rides beside a write tool's own answer under `nativeUi`. */
 function intentIn(value: unknown): NativeMcpUi | undefined {
   const direct = NativeMcpUi.safeParse(value)
@@ -27,26 +31,68 @@ export function nativeUiFromToolUpdate(update: unknown): NativeMcpUi | undefined
   const event = record(update)
   if (!event || !['tool_call', 'tool_call_update'].includes(String(event.sessionUpdate))) return undefined
   if (event.status !== 'completed') return undefined
-  // Claude emits raw text/content blocks; Codex emits a CallToolResult envelope.
+  // Claude emits raw text/content blocks; Codex emits a CallToolResult envelope; dsh flattens both to `output`.
   const output = record(event.rawOutput) ?? { content: event.rawOutput }
   if (output.error) return undefined
   const result = record(output.result) ?? output
   if (result.isError === true) return undefined
   const structured = intentIn(result.structuredContent)
   if (structured) return structured
-  const content = typeof result.content === 'string' ? [{ type: 'text', text: result.content }] : result.content
-  if (!Array.isArray(content)) return undefined
-  for (const value of content) {
-    const block = record(value)
-    if (block?.type !== 'text' || typeof block.text !== 'string' || block.text.length > 4096) continue
+  // ACP SPECIFIES `content` and leaves `rawOutput` an unknown passthrough, so the specified channel is read first.
+  const spoken = intentInBlocks(event.content)
+  if (spoken) return spoken
+  // Then the passthrough, in the spellings the adapters have shipped: a bare block list, or one flattened string.
+  const flattened = typeof result.content === 'string' ? result.content : result.output
+  return intentInBlocks(typeof flattened === 'string' ? [{ type: 'text', text: flattened }] : result.content)
+}
+
+/** The text of one block in either spelling: ACP's wrapped `ToolCallContent`, or a bare content block. */
+function blockText(value: unknown): string | undefined {
+  const block = record(value)
+  const wrapped = block?.type === 'content' ? record(block.content) : undefined
+  const text = wrapped?.type === 'text' ? wrapped.text : block?.type === 'text' ? block.text : undefined
+  return typeof text === 'string' ? text : undefined
+}
+
+/** The first block whose text parses into an intent. Anything else is ordinary tool output. */
+function intentInBlocks(blocks: unknown): NativeMcpUi | undefined {
+  if (!Array.isArray(blocks)) return undefined
+  for (const value of blocks) {
+    const text = blockText(value)
+    if (text === undefined || text.length > INTENT_TEXT_MAX_CHARS) continue
     try {
-      const parsed = intentIn(JSON.parse(block.text))
+      const parsed = intentIn(JSON.parse(text))
       if (parsed) return parsed
     } catch {
       // Ordinary tool text is not a UI intent.
     }
   }
   return undefined
+}
+
+/** Every native surface's resource id shares this prefix, so one marker recognizes a payload that meant to carry one. */
+const NATIVE_UI_URI_PREFIX = 'ui://agentconnect/'
+
+/**
+ * Did this result MEAN to open a surface? Read only to explain a miss: a payload that names a native
+ * resource and still yields no intent is the one failure the projection would otherwise drop in silence.
+ */
+export function namesNativeUi(update: unknown): boolean {
+  const event = record(update)
+  if (!event) return false
+  const output = record(event.rawOutput) ?? { content: event.rawOutput }
+  const result = record(output.result) ?? output
+  const structured = record(result.structuredContent)
+  // The same candidates the reader itself looks at — never a stringify of a result that can hold a whole file.
+  const texts = [
+    ...(Array.isArray(event.content) ? event.content.map(blockText) : []),
+    ...(Array.isArray(result.content) ? result.content.map(blockText) : []),
+    typeof result.content === 'string' ? result.content : undefined,
+    typeof result.output === 'string' ? result.output : undefined,
+    structured?.resourceUri,
+    record(structured?.nativeUi)?.resourceUri
+  ]
+  return texts.some((text) => typeof text === 'string' && text.includes(NATIVE_UI_URI_PREFIX))
 }
 
 /** Which tool an intent came from — the resource names the surface, so neither is guessed from arguments. */
