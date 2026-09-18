@@ -28,10 +28,20 @@ import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
  * volume left behind is that promise; the window is where the promise ends.
  *
  * The placement answer is a SNAPSHOT, so a departure is re-confirmed immediately before the
- * destructive pass rather than trusted from the top of the run, and what lands inside that last
- * round trip is refused by the same UID/resourceVersion precondition every other delete carries —
- * which is why a member taking an agent over marks every claim of it, including the suspended ones
- * adoption skips. A live agent placed on this set is never touched, on either side of that boundary.
+ * destructive pass rather than trusted from the top of the run, and the timestamp has to MATCH: an
+ * agent that returned and left again reads as departed both times, and the second departure has
+ * served none of its window.
+ *
+ * One round trip is left between that read and the delete. A return inside it is meant to be refused
+ * by the UID/resourceVersion precondition every delete carries — which is why a member taking an
+ * agent over marks every claim of it, the suspended ones adoption skips included — but that mark is
+ * EVENTUAL, not ordered with the placement commit (the CP commits the columns, recomputes duties
+ * after, and grant → adopt → mark run asynchronously after that). So the gap is real and accepted
+ * deliberately: closing it needs a fence the control plane invalidates in the same transaction as
+ * the placement write, which is a CP design change and not taken here. It costs something only when
+ * an agent a week gone returns inside that round trip, before any member reaches its claims, on an
+ * install that has turned collection on — and what it costs is a workspace archive a hard-cutover
+ * move would have re-materialized anyway (k8s-daemon-pool.md §4).
  *
  * That window runs from the control plane's own record of WHEN the placement changed, which the
  * placement answer carries. Nothing this sweep can observe would do: a claim's admission stamp dates

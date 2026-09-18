@@ -454,6 +454,54 @@ On that answer:
 - its store rows collect on **agent moved**, the store half's sibling of the
   agent-gone proof below, under the same dry-run flag.
 
+**A departure is re-confirmed at the destructive boundary.** The placement answer
+is a snapshot, and the run does two store sweeps' worth of work between reading it
+and deleting against it, so the departures a sweep condemned are re-asked
+immediately before it deletes — and the same re-ask guards
+`purgeMovedAgentSessions`, because a row purged after its agent came back takes
+the session's pod and volume with it on the next run. The timestamp has to MATCH,
+not merely still be present: an agent that returned and left again reads as
+departed both times, and the second departure has served none of its window, so a
+changed `placementChangedAt` is a return and the next run judges the new departure
+from the start. A re-ask that fails keeps everything.
+
+Placement is therefore never cached across a run, unlike existence. An agent can
+only stop existing, so a cached "still known" is stale only towards keeping
+objects; placement moves both ways, and that is exactly what a destructive pass
+must not hold an old copy of.
+
+**The residual window, accepted deliberately.** What the re-ask leaves is the gap
+between that last read and the DELETE itself — one round trip. Inside it, a
+return is supposed to be refused by the UID/resourceVersion precondition every
+delete carries, which is why a member taking an agent over marks every claim of
+it (`markServed`), the suspended ones `adopt()` skips included. But that mark is
+EVENTUAL, not ordered with the placement commit: `movePlacement()` commits the
+columns, `recomputeDuties()` updates the ledger after it, and `duty/grant` →
+`adoptClusterSandbox()` → `markServed()` run asynchronously after that. A return
+that lands in the gap before any member reaches the claim therefore still matches
+the version the delete carries.
+
+Closing it properly needs a fence whose invalidation is ordered with the placement
+write — a placement generation the control plane hands out as a cleanup
+authorization and invalidates in the same transaction as the columns, or the
+collection decision moved into the control plane across two CronJob runs. That is
+a control-plane design change, and it is deliberately not taken here. The residual
+is accepted instead, because every condition has to hold at once for it to cost
+anything:
+
+- the agent has been off this pool for at least `AC_MOVED_AGENT_GRACE_MS`
+  (default 7 days), and the object it left is at least that old too;
+- it returns inside the one round trip between the sweep's final placement read
+  and its delete;
+- no member touches its claims in that same interval;
+- and the deployment has turned collection on at all — it ships dry-run.
+
+What is lost when all four coincide is the pool-side workspace archive of an agent
+that has been away a week. A move is a hard cutover that does not migrate
+workspace bytes (`orchestrator/agentMove.ts`), so the return re-materializes the
+workspace regardless; the archive is a shortcut, not the work. An operator who
+wants that shortcut held longer raises the window rather than relying on this gap.
+
 **Dry run by default.** The reconciler ships reporting only; deletion is
 enabled per deployment with `AC_K8S_ORPHAN_DELETE=true` (and
 `AC_STORE_ORPHAN_DELETE=true` for the store half — the chart's
