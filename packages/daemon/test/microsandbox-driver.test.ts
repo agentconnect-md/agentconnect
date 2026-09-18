@@ -12,6 +12,10 @@ import {
   type MicrosandboxManagerOptions
 } from '../src/microsandbox/driver.js'
 import { MICROSANDBOX_NODE } from '../src/microsandbox/exec.js'
+import type { MicrosandboxShim } from '../src/microsandbox/shim.js'
+import type { ShimConnection } from '../src/shim/connection.js'
+import type { ShimFrame } from '../src/shim/protocol.js'
+import { ShimSession } from '../src/shim/session.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../src/shim/sandbox-paths.js'
 import { OVERLAY_BASE_ROOT } from '../src/microsandbox/overlay.js'
 import { prepareMicrosandboxLaunch } from '../src/microsandbox/launch.js'
@@ -182,7 +186,7 @@ function fakeSdk() {
       })
       expect(python).toHaveBeenCalledWith(
         '/usr/bin/python3',
-        ['-I', '-c', expect.stringContaining('socket.socket(socket.AF_VSOCK')],
+        ['-I', '-c', expect.stringContaining('shutil.rmtree.avoids_symlink_attacks')],
         { timeout: 10_000 }
       )
       return { success: true, code: 0, stdout: () => stdout }
@@ -209,12 +213,8 @@ function fakeSdk() {
             process.request = decode(message.p) as NonNullable<FakeExec['request']>
             sandbox.processes.push(process)
             process.push({ kind: 'started', pid: 1 })
-            if (process.request.cmd === '/usr/bin/python3')
-              process.push({ kind: 'stdout', data: Buffer.from('ready\n') })
-            else {
-              processes.push(process)
-              await onRun?.(process)
-            }
+            processes.push(process)
+            await onRun?.(process)
             return process
           },
           async send(id: number, flags: number, body: Uint8Array) {
@@ -339,9 +339,6 @@ function fakeSdk() {
             if (source) mounts.push({ source, target, readonly })
             return builder
           },
-          vsock() {
-            return builder
-          },
           async create() {
             for (const name of volumeNames) {
               if (volumes.has(name)) throw new Error('volume already exists')
@@ -382,6 +379,75 @@ function fakeSdk() {
   }
 }
 
+type ShimInput = Parameters<NonNullable<MicrosandboxManagerOptions['startShim']>>[0]
+
+/** One VM's shim, scripted: it opens ACP streams, echoes what is written to them, and ends one when asked to close it. */
+class FakeShim implements MicrosandboxShim {
+  readonly incarnation = 'fake-vm'
+  readonly opens: Array<{ command: string; args: string[]; env: Record<string, string>; cwd?: string }> = []
+  readonly closes: Array<{ streamId: string; deadlineMs?: number }> = []
+  readonly session: ShimSession
+  readonly stop = vi.fn(async () => this.session.lose('microsandbox shim stopped'))
+  private deliver: (text: string) => void = () => {}
+
+  constructor(readonly input: ShimInput) {
+    this.session = new ShimSession(input.subject, input.generation, {
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (timer) => clearTimeout(timer as NodeJS.Timeout)
+    })
+    const connection: ShimConnection = {
+      binding: {
+        agentId: input.agentId,
+        subject: input.subject,
+        sandboxUid: 'fake-vm',
+        generation: input.generation,
+        grants: ['acp', 'tunnel'],
+        podName: input.subject,
+        podUid: 'fake-vm',
+        expiresAtMs: Number.MAX_SAFE_INTEGER
+      },
+      issuedCredential: 'fake-credential',
+      send: (frame) => queueMicrotask(() => this.serve(frame)),
+      onFrame: (listener) => (this.deliver = listener),
+      close: () => {}
+    }
+    this.session.attach(connection)
+  }
+
+  /** The shim process died: what the real pump reports when its exec stream ends. */
+  die(): void {
+    this.session.lose('sandbox shim exited')
+    this.input.failed()
+  }
+
+  /** The runtime behind a stream ended on its own. */
+  exit(streamId: string, error?: string): void {
+    this.event(streamId, { kind: 'exit', code: error ? null : 0, signal: null, ...(error ? { error } : {}) })
+  }
+
+  event(streamId: string, event: Extract<ShimFrame, { type: 'shim/event' }>['event']): void {
+    this.deliver(JSON.stringify({ type: 'shim/event', streamId, event }))
+  }
+
+  private serve(frame: ShimFrame): void {
+    if (frame.type !== 'shim/request') return
+    const payload = frame.payload as { op: string; streamId: string; data: string; deadlineMs?: number }
+    const reply = (value?: unknown) =>
+      this.deliver(JSON.stringify({ type: 'shim/response', id: frame.id, ok: true, payload: value }))
+    if (payload.op === 'open') {
+      this.opens.push(frame.payload as FakeShim['opens'][number])
+      reply({ streamId: frame.id, resumableWrites: true })
+    } else if (payload.op === 'chunk') {
+      this.event(payload.streamId, { kind: 'chunk', data: payload.data })
+      reply()
+    } else {
+      this.closes.push({ streamId: payload.streamId, deadlineMs: payload.deadlineMs })
+      this.exit(payload.streamId)
+      reply()
+    }
+  }
+}
+
 const roots: string[] = []
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -391,18 +457,26 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'microsandbox-driver-'))
   roots.push(root)
   const fake = fakeSdk()
+  const shims: FakeShim[] = []
+  let generation = 0
   const options: MicrosandboxManagerOptions = {
     root,
     config: { image: 'test-image', cpus: 2, memoryMiB: 2048, diskGiB: 10 },
     sdk: fake.sdk,
     msbCommand: { command: process.execPath, args: ['-e', ''] },
     kvmPreflight: () => {},
-    sockets: { mcp: '/host/mcp.sock', gitcred: '/host/gitcred.sock' }
+    sockets: { mcp: '/host/mcp.sock', gitcred: '/host/gitcred.sock' },
+    nextShimGeneration: async () => ++generation,
+    startShim: async (input) => {
+      const shim = new FakeShim(input)
+      shims.push(shim)
+      return shim
+    }
   }
   const manager = new MicrosandboxManager(options)
   const environment = { id: 'agent/session-example', mounts: [], workspaceRoot: '/workspace' }
   const request = { command: '/usr/local/bin/node', args: ['agent.js'], env: {} }
-  return { ...fake, manager, options, environment, request }
+  return { ...fake, shims, manager, options, environment, request }
 }
 
 /** Wrap the fake builder's terminal create() so a test can stall or fail a VM start. */
@@ -464,7 +538,7 @@ describe('microsandbox process and VM ownership', () => {
   it.each(['api.deepseek.com', ['api.example.test', 'alternate.example.test']])(
     'keeps secrets scoped to %j and rotates them when the retained VM resumes',
     async (host) => {
-      const { manager, options, environment, request, created, processes } = await fixture()
+      const { manager, options, environment, request, created, shims } = await fixture()
       let key = 'fixture-first-key'
       const secret = {
         env: 'DEEPSEEK_API_KEY',
@@ -480,8 +554,8 @@ describe('microsandbox process and VM ownership', () => {
       await (await manager.driverFor(env).launch(launch)).stop(0)
       expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.value).toBe(key)
       expect(created[0]!.spec.secrets.DEEPSEEK_API_KEY!.host).toEqual([host].flat())
-      expect(JSON.stringify(processes[0]!.request)).not.toContain(key)
-      expect(JSON.stringify(processes[0]!.request)).toContain('NODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem')
+      expect(JSON.stringify(shims[0]!.opens[0])).not.toContain(key)
+      expect(shims[0]!.opens[0]!.env).toMatchObject({ NODE_EXTRA_CA_CERTS: '/.msb/tls/ca.pem' })
       const directory = join(options.root, 'microsandbox', 'bindings')
       const path = join(directory, (await readdir(directory))[0]!)
       expect(await readFile(path, 'utf8')).not.toContain(key)
@@ -651,72 +725,101 @@ describe('microsandbox process and VM ownership', () => {
     expect(removeVolume).not.toHaveBeenCalled()
   })
 
-  it('shares a VM, preserves binary ACP data, and refuses suspend while another execution is active', async () => {
-    const { manager, environment, request, created, processes } = await fixture()
+  it('starts one shim with the VM and runs every runtime through it, under the image environment', async () => {
+    const { manager, options, environment, request, created, shims, processes } = await fixture()
     const [first, second] = await Promise.all([
-      manager.driverFor(environment).launch({ ...request, env: { PATH: '/session/bin' } }),
+      manager.driverFor(environment).launch({
+        ...request,
+        env: { PATH: '/session/bin' },
+        hints: [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }]
+      }),
       manager.driverFor(environment).launch(request)
     ])
     expect(created).toHaveLength(1)
-    expect(created[0]!.processes[0]!.request).toMatchObject({
-      cwd: '/image',
-      env: ['PATH=/image/bin'],
-      user: 'agent'
+    expect(shims).toHaveLength(1)
+    expect(shims[0]!.input).toMatchObject({
+      subject: environment.id,
+      agentId: 'agent',
+      generation: 1,
+      workspaceRoot: '/workspace',
+      sockets: options.sockets
     })
-    expect(processes[0]!.request).toMatchObject({
-      cmd: request.command,
+    await vi.waitFor(() => expect(shims[0]!.opens).toHaveLength(2))
+    // The launch environment wins over the image's, the runtime starts in the workspace, and hints resolve in the guest.
+    expect(shims[0]!.opens[0]).toEqual({
+      op: 'open',
+      command: request.command,
       args: request.args,
+      env: { PATH: '/session/bin' },
       cwd: '/workspace',
-      env: ['PATH=/session/bin'],
-      user: 'agent',
-      tty: false
+      hints: [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }]
     })
-    expect(processes[1]!.request?.env).toEqual(['PATH=/image/bin'])
+    expect(shims[0]!.opens[1]!.env).toEqual({ PATH: '/image/bin' })
+    // No process of the runtime's is started over the guest agent's exec channel any more.
+    expect(processes).toHaveLength(0)
     const writer = first.toAgent.getWriter()
     const reader = first.fromAgent.getReader()
     const bytes = Uint8Array.of(0, 255, 10, 13, 128)
     await writer.write(bytes)
-    expect((await reader.read()).value).toEqual(bytes)
+    expect(new Uint8Array((await reader.read()).value!)).toEqual(bytes)
     await expect(manager.suspend(environment.id)).rejects.toThrow('2 active executions')
-    let releaseClose!: () => void
-    const closeGate = new Promise<void>((resolve) => {
-      releaseClose = resolve
-    })
-    processes[0]!.close.mockImplementationOnce(() => closeGate)
     const terminal = vi.fn()
-    const exited = new Promise<void>((resolve) => first.onExit(resolve))
     first.onExit(terminal)
-    processes[0]!.push({ kind: 'exited', code: 0 })
-    await vi.waitFor(() => expect(processes[0]!.close).toHaveBeenCalledOnce())
-    expect(terminal).not.toHaveBeenCalled()
-    const stopped = vi.fn()
-    const stdinClosed = vi.fn()
-    const stopping = first.stop(1).then(stopped)
-    const closingStdin = writer.close().then(stdinClosed)
-    await expect(manager.suspend(environment.id)).rejects.toThrow('2 active executions')
-    await second.toAgent.getWriter().write(bytes)
-    expect((await second.fromAgent.getReader().read()).value).toEqual(bytes)
-    expect(processes[1]!.close).not.toHaveBeenCalled()
-    expect(processes[0]!.signal).not.toHaveBeenCalled()
-    expect(processes[0]!.kill).not.toHaveBeenCalled()
-    expect(processes[0]!.stdin).toHaveBeenCalledExactlyOnceWith(bytes)
-    expect(stopped).not.toHaveBeenCalled()
-    expect(stdinClosed).not.toHaveBeenCalled()
-    releaseClose()
-    await Promise.all([exited, stopping, closingStdin])
-    expect(stopped).toHaveBeenCalledOnce()
-    expect(stdinClosed).toHaveBeenCalledOnce()
+    await first.stop(1_234)
+    expect(shims[0]!.closes).toEqual([{ streamId: expect.any(String), deadlineMs: 1_234 }])
+    expect(terminal).toHaveBeenCalledOnce()
     await expect(manager.suspend(environment.id)).rejects.toThrow('1 active executions')
-    processes[1]!.signal.mockImplementation(async () => {})
+    await second.toAgent.getWriter().write(bytes)
+    expect(new Uint8Array((await second.fromAgent.getReader().read()).value!)).toEqual(bytes)
     await second.stop(1)
-    expect(processes[1]!.kill).toHaveBeenCalledOnce()
-    expect(processes[1]!.close).toHaveBeenCalledOnce()
     await manager.suspendIdle(Date.now())
     expect(created[0]!.status).toBe('stopped')
-    expect(created[0]!.processes[0]!.close).toHaveBeenCalledOnce()
+    expect(shims[0]!.stop).toHaveBeenCalledOnce()
     expect(await manager.environmentIds()).toEqual([environment.id])
+    // A resumed VM is a new incarnation: its shim is started again, at the next generation.
+    await (await manager.driverFor(environment).launch(request)).stop(0)
+    expect(created).toHaveLength(1)
+    expect(shims).toHaveLength(2)
+    expect(shims[1]!.input.generation).toBe(2)
     await manager.discard(environment.id)
     expect(await manager.environmentIds()).toEqual([])
+  })
+
+  it('keeps one runtime out of another stream on the same shim, and a tunnel out of both', async () => {
+    const { manager, environment, request, shims } = await fixture()
+    const first = await manager.driverFor(environment).launch(request)
+    const second = await manager.driverFor(environment).launch(request)
+    const exited = vi.fn()
+    second.onExit(exited)
+    const reader = second.fromAgent.getReader()
+    // A helper connection closing in the VM is an `exit` on the same session, for a stream neither runtime owns.
+    shims[0]!.exit('00000000-0000-4000-8000-000000000000')
+    await first.toAgent.getWriter().write(Buffer.from('first only\n'))
+    await second.toAgent.getWriter().write(Buffer.from('second\n'))
+    expect(Buffer.from((await reader.read()).value!).toString()).toBe('second\n')
+    expect(exited).not.toHaveBeenCalled()
+    await Promise.all([first.stop(0), second.stop(0)])
+    await manager.discard(environment.id)
+  })
+
+  it('drops the runtime stderr of a launch that asked for silence, and passes every other one through', async () => {
+    const { manager, environment, request, shims } = await fixture()
+    const written = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const loud = await manager.driverFor(environment).launch(request)
+      shims[0]!.input.runtimeStderr('runtime warning\n')
+      expect(written).toHaveBeenCalledExactlyOnceWith('runtime warning\n')
+      const quiet = await manager.driverFor(environment).launch({ ...request, suppressChildStderr: true })
+      shims[0]!.input.runtimeStderr('probe output\n')
+      expect(written).toHaveBeenCalledOnce()
+      await quiet.stop(0)
+      shims[0]!.input.runtimeStderr('runtime warning\n')
+      expect(written).toHaveBeenCalledTimes(2)
+      await loud.stop(0)
+    } finally {
+      written.mockRestore()
+    }
+    await manager.discard(environment.id)
   })
 
   it('streams large UTF-8 stdin while draining output and replaces the image environment when requested', async () => {
@@ -743,8 +846,8 @@ describe('microsandbox process and VM ownership', () => {
     await manager.stopAll()
   })
 
-  it('closes a terminal failure before releasing the execution without hanging readers', async () => {
-    const { manager, environment, request, processes, runWith } = await fixture()
+  it('closes a terminal failure before releasing the execution', async () => {
+    const { manager, environment, processes, runWith } = await fixture()
     let releaseClose!: () => void
     const closeGate = new Promise<void>((resolve) => {
       releaseClose = resolve
@@ -753,17 +856,14 @@ describe('microsandbox process and VM ownership', () => {
       process.close.mockImplementationOnce(() => closeGate)
       process.push(undefined)
     })
-    const runtime = await manager.driverFor(environment).launch(request)
-    const exited = new Promise<void>((resolve) => runtime.onExit(resolve))
-    const terminal = vi.fn()
-    runtime.onExit(terminal)
-    const read = expect(runtime.fromAgent.getReader().read()).rejects.toThrow('guest execution failed')
+    const settled = vi.fn()
+    const execution = manager.exec(environment, 'test', [])
+    void execution.catch(settled)
     await vi.waitFor(() => expect(processes[0]!.close).toHaveBeenCalledOnce())
-    expect(terminal).not.toHaveBeenCalled()
+    expect(settled).not.toHaveBeenCalled()
     await expect(manager.suspend(environment.id)).rejects.toThrow('1 active executions')
     releaseClose()
-    await read
-    await exited
+    await expect(execution).rejects.toThrow('guest execution failed')
     expect(processes[0]!.kill).not.toHaveBeenCalled()
     await manager.suspend(environment.id)
   })
@@ -785,7 +885,7 @@ describe('microsandbox process and VM ownership', () => {
   })
 
   it('reuses an alias with the same platform digest and refreshes a changed image without ACP', async () => {
-    const { manager, options, environment, created, imageDigests, imageCache, processes } = await fixture()
+    const { manager, options, environment, created, imageDigests, imageCache, shims } = await fixture()
     await manager.prepareEnvironment(environment)
     await manager.stopAll()
     const identity = await imageCache.get('test-image')
@@ -805,7 +905,7 @@ describe('microsandbox process and VM ownership', () => {
     expect(created).toHaveLength(2)
     expect(created[0]!.destroy).toHaveBeenCalledOnce()
     expect(created[1]!.spec.image).toBe('next-image')
-    expect(processes).toHaveLength(0)
+    expect(shims.flatMap((shim) => shim.opens)).toHaveLength(0)
     await changed.stopAll()
     const restarted = new MicrosandboxManager(upgraded)
     await restarted.prepareEnvironment(environment)
@@ -826,7 +926,7 @@ describe('microsandbox process and VM ownership', () => {
   })
 
   it('waits for VM preparation during shutdown without launching ACP', async () => {
-    const { manager, environment, created, processes } = await fixture()
+    const { manager, environment, created, shims } = await fixture()
     let enter!: () => void
     const entered = new Promise<void>((resolve) => {
       enter = resolve
@@ -835,8 +935,8 @@ describe('microsandbox process and VM ownership', () => {
     const blocked = new Promise<void>((resolve) => {
       release = resolve
     })
-    const start = (manager as any).startBridge.bind(manager)
-    vi.spyOn(manager as any, 'startBridge').mockImplementation(async (...args) => {
+    const start = (manager as any).startShim.bind(manager)
+    vi.spyOn(manager as any, 'startShim').mockImplementation(async (...args) => {
       enter()
       await blocked
       await start(...args)
@@ -850,7 +950,7 @@ describe('microsandbox process and VM ownership', () => {
     release()
     await Promise.all([preparation, stopping])
     expect(created[0]!.status).toBe('stopped')
-    expect(processes).toHaveLength(0)
+    expect(shims.flatMap((shim) => shim.opens)).toHaveLength(0)
     await manager.discard(environment.id)
   })
 
@@ -914,7 +1014,7 @@ describe('microsandbox process and VM ownership', () => {
   })
 
   it('keeps active executions and replaces idle VMs when mounts change', async () => {
-    const { manager, options, environment, request, created, processes } = await fixture()
+    const { manager, options, environment, request, created, shims } = await fixture()
     const workspace = join(options.root, 'workspace')
     await mkdir(workspace)
     await writeFile(join(workspace, 'uncommitted.txt'), 'keep')
@@ -935,7 +1035,7 @@ describe('microsandbox process and VM ownership', () => {
     expect(created[0]!.destroy).toHaveBeenCalledOnce()
     expect(created[1]!.mounts).toContainEqual({ source: workspace, target: '/workspace', readonly: false })
     expect(await readFile(join(workspace, 'uncommitted.txt'), 'utf8')).toBe('keep')
-    expect(processes).toHaveLength(1)
+    expect(shims.map((shim) => shim.opens.length)).toEqual([1, 0])
     await manager.discard(environment.id)
     expect(await readFile(join(workspace, 'uncommitted.txt'), 'utf8')).toBe('keep')
   })
@@ -1012,8 +1112,8 @@ describe('microsandbox process and VM ownership', () => {
     await manager.discard(environment.id)
   })
 
-  it('drains a failed bridge before retrying VM stop and resuming from the retained disk', async () => {
-    const { manager, environment, request, created, processes } = await fixture()
+  it('ends the runtime when its shim is lost, then stops the VM before resuming it from the retained disk', async () => {
+    const { manager, environment, request, created, shims } = await fixture()
     const driver = manager.driverFor(environment)
     const runtime = await driver.launch(request)
     const terminal = vi.fn()
@@ -1026,21 +1126,22 @@ describe('microsandbox process and VM ownership', () => {
     const stopped = new Promise<void>((resolve) => {
       stopping = resolve
     })
-    processes[0]!.signal.mockImplementationOnce(async () => {
+    shims[0]!.stop.mockImplementationOnce(async () => {
       stopping()
       await blocked
-      processes[0]!.push({ kind: 'exited', code: 0 })
     })
     const vm = created[0]!
     vm.stopWithTimeout.mockRejectedValueOnce(new Error('temporary VM stop failure'))
-    vm.processes[0]!.push({ kind: 'exited', code: 1 })
+    shims[0]!.die()
+    // The host learns at once, the way it did from a dead exec stream: its runtime is over and the next turn rebuilds it.
+    expect(terminal).toHaveBeenCalledOnce()
+    expect((await runtime.fromAgent.getReader().read()).done).toBe(true)
     await stopped
     await expect(driver.launch(request)).rejects.toThrow('is stopping')
     expect(vm.stopWithTimeout).not.toHaveBeenCalled()
     const firstStop = manager.suspend(environment.id)
     release()
     await expect(firstStop).rejects.toThrow('temporary VM stop failure')
-    expect(terminal).toHaveBeenCalledOnce()
     expect(await manager.environmentIds()).toEqual([environment.id])
 
     await expect(driver.launch(request)).rejects.toThrow('transport failed')
@@ -1049,10 +1150,24 @@ describe('microsandbox process and VM ownership', () => {
     const recovered = await driver.launch(request)
     expect(created).toHaveLength(1)
     expect(vm.status).toBe('running')
+    expect(shims).toHaveLength(2)
     const bytes = new TextEncoder().encode('recovered\n')
     await recovered.toAgent.getWriter().write(bytes)
-    expect((await recovered.fromAgent.getReader().read()).value).toEqual(bytes)
+    expect(new Uint8Array((await recovered.fromAgent.getReader().read()).value!)).toEqual(bytes)
     await recovered.stop(0)
+    await manager.discard(environment.id)
+  })
+
+  it('refuses the VM when its shim cannot start, and starts it again on the next launch', async () => {
+    const { manager, options, environment, request, created, shims } = await fixture()
+    const start = options.startShim!
+    options.startShim = vi.fn(start).mockRejectedValueOnce(new Error('tunnel gitcred could not listen'))
+    await expect(manager.driverFor(environment).launch(request)).rejects.toThrow('tunnel gitcred could not listen')
+    expect(shims).toHaveLength(0)
+    expect(created[0]!.destroy).toHaveBeenCalledOnce()
+    await (await manager.driverFor(environment).launch(request)).stop(0)
+    expect(created).toHaveLength(2)
+    expect(shims).toHaveLength(1)
     await manager.discard(environment.id)
   })
 
@@ -1078,14 +1193,15 @@ describe('microsandbox process and VM ownership', () => {
   it('stops a VM after transport failure before allowing another execution', async () => {
     const { manager, environment, request, created, processes, runWith } = await fixture()
     const driver = manager.driverFor(environment)
-    const runtime = await driver.launch(request)
+    const running = manager.exec(environment, 'test', [])
+    await vi.waitFor(() => expect(processes).toHaveLength(1))
     const vm = created[0]!
     let releaseOpening!: () => void
     const openingGate = new Promise<void>((resolve) => {
       releaseOpening = resolve
     })
     runWith(() => openingGate)
-    const opening = expect(driver.launch(request)).rejects.toThrow('is stopping')
+    const opening = expect(manager.exec(environment, 'test', [])).rejects.toThrow('is stopping')
     await vi.waitFor(() => expect(processes).toHaveLength(2))
     let releaseStop!: () => void
     const stopGate = new Promise<void>((resolve) => {
@@ -1095,9 +1211,9 @@ describe('microsandbox process and VM ownership', () => {
       await stopGate
       vm.status = 'stopped'
     })
-    const read = expect(runtime.fromAgent.getReader().read()).rejects.toThrow('transport disconnected')
+    const failed = expect(running).rejects.toThrow('transport disconnected')
     processes[0]!.push(new Error('transport disconnected'))
-    await read
+    await failed
     expect(processes[0]!.close).toHaveBeenCalledOnce()
     await expect(driver.launch(request)).rejects.toThrow('is stopping')
     expect(vm.stopWithTimeout).not.toHaveBeenCalled()
@@ -1120,12 +1236,11 @@ describe('microsandbox process and VM ownership', () => {
     const { manager, environment, request, processes } = await fixture()
     const runtime = await manager.driverFor(environment).launch(request)
     await expect(manager.exec(environment, 'test', [], { timeoutMs: 1 })).rejects.toThrow('timed out')
-    expect(processes[1]!.signal).toHaveBeenCalledWith(15)
-    expect(processes[1]!.close).toHaveBeenCalledOnce()
-    expect(processes[0]!.close).not.toHaveBeenCalled()
+    expect(processes[0]!.signal).toHaveBeenCalledWith(15)
+    expect(processes[0]!.close).toHaveBeenCalledOnce()
     const bytes = new TextEncoder().encode('still running\n')
     await runtime.toAgent.getWriter().write(bytes)
-    expect((await runtime.fromAgent.getReader().read()).value).toEqual(bytes)
+    expect(new Uint8Array((await runtime.fromAgent.getReader().read()).value!)).toEqual(bytes)
     await runtime.stop(0)
     await manager.suspend(environment.id)
   })

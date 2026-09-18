@@ -528,7 +528,7 @@ describe('prepareMicrosandboxLaunch', () => {
       expect(launch.env[name]).toBeUndefined()
     }
     expect(launch.env.TMPDIR).toBe('/tmp')
-    expect(launch.env.AC_GITCRED_SOCKET).toBe('/tmp/agentconnect/gitcred.sock')
+    expect(launch.env.AC_GITCRED_SOCKET).toBe('/run/agentconnect/gitcred.sock')
     const dockerConfig = join(opts.scopeDir, 'run', 'config-files', 'docker')
     const explicit = prepareMicrosandboxLaunch({
       ...opts,
@@ -671,7 +671,7 @@ describe('prepareMicrosandboxLaunch', () => {
     }
   })
 
-  it('rejects operator mounts shadowing private data or socket bridges', () => {
+  it('rejects operator mounts shadowing private data or the shim runtime directory', () => {
     const opts = fixture()
     const source = join(opts.root, 'replacement')
     mkdirSync(source)
@@ -682,10 +682,9 @@ describe('prepareMicrosandboxLaunch', () => {
       '/run',
       '/var/run',
       '/run/docker',
+      '/run/agentconnect',
       '/var/lib/docker',
-      '/var/lib/docker/containerd',
-      '/tmp/agentconnect',
-      '/tmp'
+      '/var/lib/docker/containerd'
     ]) {
       expect(() => prepareMicrosandboxLaunch({ ...opts, mounts: [{ source, target, mode: 'writable' }] })).toThrow(
         'overlaps an automatic'

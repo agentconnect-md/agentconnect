@@ -22,9 +22,9 @@ import {
 } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome, runtimeHomeEnvironment } from '../runtimes/runtime-home.js'
+import { SANDBOX_TUNNEL_PATHS } from '../shim/sandbox-paths.js'
 import { TLS_TRUST_ENV } from '../config/tls-trust-env.js'
 import { SESSIONS_DIR } from '../workspace/session-layout.js'
-import { MICROSANDBOX_SOCKET_BRIDGES, MICROSANDBOX_TUNNEL_PATHS } from './socket-bridge.js'
 import { OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT } from './overlay.js'
 import { prepareMicrosandboxCredentials, type MicrosandboxSecret } from './secrets.js'
 import { replaceEnvironmentSecrets } from './secret-values.js'
@@ -182,8 +182,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
     OVERLAY_BASE_ROOT,
     OVERLAY_STATE_ROOT,
     join(runtimeHome, '.run'),
-    ...automatic.map((mount) => mount.target),
-    ...MICROSANDBOX_SOCKET_BRIDGES.map((bridge) => bridge.path)
+    ...automatic.map((mount) => mount.target)
   ]
   for (const mount of configured) {
     const withinHome = mount.target !== runtimeHome && contains(runtimeHome, mount.target)
@@ -232,7 +231,7 @@ export function prepareMicrosandboxLaunch(opts: PrepareMicrosandboxLaunchOptions
     throw new Error('microsandbox private XDG runtime path must be a real directory')
   }
   mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 })
-  env[GITCRED_SOCKET_ENV] = MICROSANDBOX_TUNNEL_PATHS.gitcred
+  env[GITCRED_SOCKET_ENV] = SANDBOX_TUNNEL_PATHS.gitcred
   const mounts = [...automatic, ...configured]
   const protectedSourcesForLaunch = protectedCredentials?.sources.map((path) => canonicalPath(path, hostEnv)) ?? []
   if (mounts.some(({ source }) => protectedSourcesForLaunch.some((path) => contains(source, path)))) {

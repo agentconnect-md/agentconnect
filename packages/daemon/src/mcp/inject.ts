@@ -42,11 +42,10 @@ export function buildMcpServers(opts: {
   ]
 }
 
-/** Use the image's bridge command with the local guest socket; pool paths remain the default. */
+/** The image's bridge command, reaching this daemon through the sandbox shim's `mcp` tunnel. */
 export function buildSandboxMcpServers(opts: {
   bridge: { command: string; args: string[] }
   token: string
-  socketPath?: string
 }): McpStdioServer[] {
   return [
     {
@@ -54,7 +53,7 @@ export function buildSandboxMcpServers(opts: {
       command: opts.bridge.command,
       args: [...opts.bridge.args],
       env: [
-        { name: 'AC_MCP_ENDPOINT', value: opts.socketPath ?? SANDBOX_TUNNEL_PATHS.mcp },
+        { name: 'AC_MCP_ENDPOINT', value: SANDBOX_TUNNEL_PATHS.mcp },
         { name: 'AC_MCP_TOKEN', value: opts.token }
       ]
     }

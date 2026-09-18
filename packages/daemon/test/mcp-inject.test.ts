@@ -53,7 +53,5 @@ describe('buildSandboxMcpServers', () => {
       { name: 'AC_MCP_TOKEN', value: 'tok-1' }
     ])
     expect(server!.args).not.toContain('tok-1')
-    const [localVm] = buildSandboxMcpServers({ bridge, token: 'tok-1', socketPath: '/tmp/agentconnect/mcp.sock' })
-    expect(localVm!.env).toContainEqual({ name: 'AC_MCP_ENDPOINT', value: '/tmp/agentconnect/mcp.sock' })
   })
 })

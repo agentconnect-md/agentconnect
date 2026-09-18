@@ -26,6 +26,8 @@ const FAILED_STREAM_CLOSE_DEADLINE_MS = 5_000
 export function createRemoteRuntime(opts: {
   session: ShimSession
   request: SpawnRequest
+  /** Where the runtime starts, in the sandbox's coordinates; absent leaves it in the shim's own directory. */
+  cwd?: string
   log: { info: (m: string) => void; warn: (m: string) => void }
   metrics?: ClusterMetrics
   /** Reports how the ACP open resolved. A timeout is separated from a failure because the two
@@ -47,8 +49,15 @@ export function createRemoteRuntime(opts: {
     for (const listener of exitListeners.splice(0)) listener()
   }
 
-  const onEvent = (frame: { streamId: string; event: { kind: string; data?: string } }): void => {
-    if (streamId && frame.streamId !== streamId) return
+  type StreamEvent = { streamId: string; event: { kind: string; data?: string } }
+  // Held until the open reply names this stream: the session carries tunnel streams too, and one of their events read as ours would end the runtime.
+  const early: StreamEvent[] = []
+  const onEvent = (frame: StreamEvent): void => {
+    if (!streamId) {
+      early.push(frame)
+      return
+    }
+    if (frame.streamId !== streamId) return
     if (frame.event.kind === 'chunk' && frame.event.data) {
       void writer.write(Buffer.from(frame.event.data, 'base64'))
       return
@@ -73,6 +82,7 @@ export function createRemoteRuntime(opts: {
       command: opts.request.command,
       args: opts.request.args,
       env: opts.request.env,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
       ...(opts.request.hints ? { hints: opts.request.hints } : {})
     })
     .then((payload) => {
@@ -80,6 +90,7 @@ export function createRemoteRuntime(opts: {
       streamId = reply?.streamId
       resumableWrites = reply?.resumableWrites === true
       if (!streamId) throw new Error('shim did not report a stream id for the ACP runtime')
+      for (const frame of early.splice(0)) onEvent(frame)
     })
 
   /** Ask the shim to end the child behind this stream, once. Shared by teardown and the failure path. */
@@ -155,6 +166,7 @@ export function createRemoteRuntime(opts: {
     (err: unknown) => {
       opts.log.warn(`cluster: runtime failed to start in the sandbox (${(err as Error).message})`)
       opts.onRuntimeOpen?.(err instanceof ShimRequestTimeoutError ? 'timeout' : 'error')
+      opts.session.offEvent(onEvent)
       finish()
     }
   )

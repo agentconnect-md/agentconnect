@@ -10,8 +10,10 @@ import type { Logger } from '../log.js'
 import { ShimDialer } from '../shim/dialer.js'
 import { ShimSession } from '../shim/session.js'
 import { ClusterSkillClient } from '../shim/skill-client.js'
-import { SANDBOX_SKILL_STAGING_DIR } from '../shim/sandbox-paths.js'
+import { DEFAULT_SHIM_RUNTIME_ROOT, SANDBOX_SKILL_STAGING_DIR } from '../shim/sandbox-paths.js'
 import { DEFAULT_SHIM_LISTEN_PORT, SHIM_LISTEN_PORT_ENV, SHIM_WORKSPACE_ROOT_ENV } from '../shim/protocol.js'
+import { TunnelNameSchema, type TunnelName } from '../shim/tunnel.js'
+import { TunnelProxy } from '../shim/tunnel-proxy.js'
 import { openExecStream, MICROSANDBOX_NODE, type MicrosandboxExecStream } from './exec.js'
 import { openGuestTcp } from './tcp.js'
 
@@ -52,7 +54,10 @@ except KeyError:
 if group:
     gid = int(group) if group.isdecimal() else grp.getgrnam(group).gr_gid
 os.makedirs('${SANDBOX_SKILL_STAGING_DIR}', mode=0o700, exist_ok=True)
-os.chown('${SANDBOX_SKILL_STAGING_DIR}', uid, gid)
+# The shim binds its tunnel sockets in the runtime root as the runtime user, which is the pool image's layout.
+for path in ('${DEFAULT_SHIM_RUNTIME_ROOT}', '${SANDBOX_SKILL_STAGING_DIR}'):
+    os.chown(path, uid, gid)
+os.chmod('${DEFAULT_SHIM_RUNTIME_ROOT}', 0o700)
 root = tempfile.mkdtemp(prefix='agentconnect-shim-', dir='/run')
 os.chmod(root, 0o755)
 with open(os.path.join(root, 'package.json'), 'x') as output:
@@ -97,6 +102,10 @@ export async function startMicrosandboxShim(input: {
   subject: string
   workspaceRoot: string
   generation: number
+  /** This daemon's own servers, which the VM reaches through the shim's tunnels and nothing else. */
+  sockets: Record<TunnelName, string>
+  /** What the runtime writes to stderr: the shim starts it with its own stderr, so it arrives on the shim's stream. */
+  runtimeStderr: (text: string) => void
   failed: () => void
   log?: Logger
 }): Promise<MicrosandboxShim> {
@@ -131,6 +140,9 @@ export async function startMicrosandboxShim(input: {
   if (!/^\/run\/agentconnect-shim-[a-zA-Z0-9_-]+$/.test(directory)) throw new Error('invalid sandbox shim directory')
   const token = randomBytes(32).toString('base64url')
   const log = { info: (s: string) => input.log?.debug(s), warn: (s: string) => input.log?.warn(s) }
+  // Only the shim's own lines carry its tag; the rest is the runtime's, which a process spawn would have sent to this daemon's stderr.
+  const stderrLine = (line: string): void =>
+    line.startsWith('[shim] ') ? log.info(line) : input.runtimeStderr(`${line}\n`)
   const session = new ShimSession(subject, generation, {
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (timer) => clearTimeout(timer as NodeJS.Timeout)
@@ -193,6 +205,8 @@ export async function startMicrosandboxShim(input: {
     pump = (async () => {
       let output = ''
       let started = false
+      let tail = ''
+      const text = new TextDecoder()
       for await (const event of handle!) {
         if (event.kind === 'stdout') {
           const chunk = Buffer.from(event.data).toString()
@@ -207,8 +221,13 @@ export async function startMicrosandboxShim(input: {
             } else if (!'ready\n'.startsWith(output)) throw new Error('invalid sandbox shim readiness response')
           }
         }
-        if (event.kind === 'stderr') log.info(Buffer.from(event.data).toString().trim())
+        if (event.kind === 'stderr') {
+          const lines = (tail + text.decode(event.data, { stream: true })).split('\n')
+          tail = lines.pop() ?? ''
+          for (const line of lines) stderrLine(line)
+        }
       }
+      if (tail) stderrLine(tail)
       if (!stopping) throw new Error('sandbox shim exited')
     })().catch((error: Error) => {
       reject(error)
@@ -230,11 +249,14 @@ export async function startMicrosandboxShim(input: {
           subject,
           sandboxUid: sandbox.id,
           generation,
-          grants: ['read', 'skills', 'skills-wide', 'skills-receipts'],
+          grants: ['acp', 'tunnel', 'read', 'skills', 'skills-wide', 'skills-receipts'],
           podName: subject
         },
         TIMEOUT_MS
       )
+      // Both helper endpoints exist before anything runs in the VM, and a VM without them is refused rather than degraded.
+      const tunnels = new TunnelProxy({ session, socketPathFor: (tunnel) => input.sockets[tunnel], log })
+      for (const tunnel of TunnelNameSchema.options) await tunnels.ensure(tunnel)
     } finally {
       clearTimeout(timer)
     }

@@ -27,6 +27,11 @@ const ConfigSchema = z.object({
   runtime: z.object({ workdir: z.string().nullable().optional(), user: z.string().nullable().optional() })
 })
 
+/** The image's own environment, which every process in the VM starts from unless its caller replaces it. */
+export async function imageEnv(sandbox: Sandbox): Promise<Record<string, string>> {
+  return Object.fromEntries(ConfigSchema.parse(await sandbox.config()).env.map(({ key, value }) => [key, value]))
+}
+
 // The pinned SDK exposes deterministic close on AgentClient, but not on its typed exec handles.
 export async function openExecStream(
   sdk: Pick<typeof import('microsandbox'), 'AgentClient'>,

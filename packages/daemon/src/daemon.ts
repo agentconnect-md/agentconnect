@@ -79,7 +79,6 @@ import type { ShimRequester } from './shim/channels.js'
 import type { ClusterSkillLedger } from './store/cluster-skill-ledger.js'
 import { legacySandboxSkillLedger } from './skills/sandbox-skill-ledger.js'
 import { microsandboxSkillTarget } from './microsandbox/shim.js'
-import { MICROSANDBOX_TUNNEL_PATHS } from './microsandbox/socket-bridge.js'
 import { MicrosandboxWorkspaceFs } from './microsandbox/workspace-fs.js'
 import { microsandboxSupportMounts } from './microsandbox/support.js'
 import { GITCRED_SOCKET_ENV } from './gitcred/env.js'
@@ -4415,7 +4414,7 @@ export class Daemon {
     if (agent && this.usesMicrosandbox(agent)) {
       const bridge = this.microsandboxTable?.mcpBridge
       if (!bridge) throw new Error('microsandbox image does not provide the AgentConnect MCP bridge')
-      return buildSandboxMcpServers({ bridge, token, socketPath: MICROSANDBOX_TUNNEL_PATHS.mcp })
+      return buildSandboxMcpServers({ bridge, token })
     }
     if (!this.k8sPlane) {
       return buildMcpServers({

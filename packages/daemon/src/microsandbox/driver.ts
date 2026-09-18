@@ -12,15 +12,16 @@ import { formatErr } from '../daemon/text.js'
 import { shareStartup, awaitStartup, withStartupPhase } from '../session/startup-progress.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import { canonicalPath, contains } from '../runtimes/read-roots.js'
+import { createRemoteRuntime } from '../remote/remote-runtime.js'
 import { SinkRelPathSchema } from '../shim/file-sink.js'
 import { SANDBOX_MCP_BRIDGE_ENTRY } from '../shim/sandbox-paths.js'
 import { assertKvmAvailable } from './kvm.js'
-import { MICROSANDBOX_SOCKET_BRIDGE_COMMAND, MICROSANDBOX_SOCKET_BRIDGE_ARGS } from './socket-bridge.js'
 import { overlayMounts, OVERLAY_BASE_ROOT, OVERLAY_STATE_ROOT, prepareOverlayMounts } from './overlay.js'
 import type { MicrosandboxSecret } from './secrets.js'
 import { startMicrosandboxShim, type MicrosandboxShim } from './shim.js'
 import {
   MICROSANDBOX_NODE,
+  imageEnv,
   openExecStream,
   type MicrosandboxExecuteOptions,
   type MicrosandboxExecStdin,
@@ -34,7 +35,7 @@ const RUNTIME_TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 const IMAGE_PROBE_SCRIPT = `
 const { existsSync, readFileSync } = require('node:fs');
 const { execFileSync } = require('node:child_process');
-execFileSync('/usr/bin/python3', ['-I', '-c', 'import shutil, socket, sys; assert sys.version_info >= (3, 11) and shutil.rmtree.avoids_symlink_attacks, "Python 3.11+ with safe directory removal is required"; socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM).close()'], { timeout: 10000 });
+execFileSync('/usr/bin/python3', ['-I', '-c', 'import shutil, sys; assert sys.version_info >= (3, 11) and shutil.rmtree.avoids_symlink_attacks, "Python 3.11+ with safe directory removal is required"'], { timeout: 10000 });
 const table = JSON.parse(readFileSync(process.argv[1], 'utf8'));
 const bridge = process.argv[2];
 if (existsSync(bridge)) table.mcpBridge = { command: process.execPath, args: [bridge] };
@@ -92,6 +93,8 @@ export interface MicrosandboxManagerOptions {
   log?: Logger
   sockets: { mcp: string; gitcred: string }
   nextShimGeneration?: (subject: string) => Promise<number>
+  // Overridden by tests; the real one stages this daemon's shim into the VM and dials it.
+  startShim?: typeof startMicrosandboxShim
 }
 
 interface EnvironmentState {
@@ -102,10 +105,11 @@ interface EnvironmentState {
   active: number
   closing?: Promise<void>
   failed?: boolean
-  processes: Set<MicrosandboxProcess>
+  processes: Set<SpawnedRuntime>
   pending: Set<Promise<void>>
   lastUsed: number
-  shim?: Promise<MicrosandboxShim>
+  // Live launches that asked for their runtime's stderr to be dropped.
+  quiet: number
 }
 
 interface OwnedSandbox {
@@ -135,7 +139,8 @@ const SpecImageSchema = z.object({ config: z.object({ image: z.string().min(1) }
 /** Owns VM lifecycle while exposing the existing ACP process-stream contract. */
 export class MicrosandboxManager {
   private readonly environments = new Map<string, EnvironmentState>()
-  private readonly bridges = new Map<string, MicrosandboxProcess>()
+  // One per running VM, up before anything runs in it: the runtime, its two helper tunnels and the workspace channels all ride it.
+  private readonly shims = new Map<string, MicrosandboxShim>()
   private preparation?: Promise<K8sRuntimeTable>
   private closed = false
   private startGate: Promise<void> = Promise.resolve()
@@ -197,26 +202,10 @@ export class MicrosandboxManager {
     })
     state.pending.add(pending)
     try {
-      const sandbox = await awaitStartup(state.sandbox)
-      state.shim ??= (async () => {
-        if (!this.options.nextShimGeneration) throw new Error('microsandbox shim generation allocator is unavailable')
-        return startMicrosandboxShim({
-          sdk: this.options.sdk,
-          sandbox,
-          subject: environment.id,
-          agentId: environment.id.split('/')[0]!,
-          workspaceRoot: environment.workspaceRoot,
-          generation: await this.options.nextShimGeneration(environment.id),
-          failed: () => this.stopFailedEnvironment(environment.id),
-          log: this.options.log
-        })
-      })()
-      const shim = await state.shim
-      if (this.closed || state.closing || state.failed) throw new Error('microsandbox environment is stopping')
+      await awaitStartup(state.sandbox)
+      const shim = this.shims.get(environment.id)
+      if (this.closed || state.closing || state.failed || !shim) throw new Error('microsandbox environment is stopping')
       return await work(shim)
-    } catch (error) {
-      if (state.shim) void state.shim.catch(() => this.stopFailedEnvironment(environment.id))
-      throw error
     } finally {
       state.pending.delete(pending)
       resolve()
@@ -479,7 +468,7 @@ export class MicrosandboxManager {
       await sandbox.detach()
       sandbox = await this.startVm(name, async () => (await this.options.sdk.Sandbox.get(name)).startDetached())
       await sandbox.ping()
-      this.options.log?.info('microsandbox: image, Node, Python/vsock, runtime table and disk resume verified')
+      this.options.log?.info('microsandbox: image, Node, Python, runtime table and disk resume verified')
       return table
     } finally {
       await (await this.options.sdk.Sandbox.get(name)).destroy({ timeoutMs: STOP_TIMEOUT_MS })
@@ -729,7 +718,7 @@ export class MicrosandboxManager {
       const sandbox = await this.startVm(environment.id, () => existing.connectOrStart({ detached: true }))
       try {
         await prepareOverlayMounts(sandbox, environment.mounts)
-        await this.startBridge(environment.id, sandbox)
+        await this.startShim(environment, sandbox)
         return sandbox
       } catch (error) {
         await sandbox.stopWithTimeout(STOP_TIMEOUT_MS)
@@ -738,10 +727,7 @@ export class MicrosandboxManager {
       }
     }
     const sandbox = await this.startVm(environment.id, () =>
-      this.builder(name, environment.mounts, environment.secrets)
-        .vsock(this.options.sockets.mcp, 5000)
-        .vsock(this.options.sockets.gitcred, 5001)
-        .create()
+      this.builder(name, environment.mounts, environment.secrets).create()
     )
     try {
       const persisted = await this.options.sdk.Sandbox.get(name)
@@ -757,7 +743,7 @@ export class MicrosandboxManager {
       }
       await this.writeBinding(binding)
       await prepareOverlayMounts(sandbox, environment.mounts)
-      await this.startBridge(environment.id, sandbox)
+      await this.startShim(environment, sandbox)
       return sandbox
     } catch (error) {
       await sandbox.destroy({ timeoutMs: STOP_TIMEOUT_MS })
@@ -821,11 +807,7 @@ export class MicrosandboxManager {
     let next: Binding
     try {
       sandbox = await this.startVm(environment.id, () =>
-        this.builder(name, environment.mounts, environment.secrets)
-          .label(REPLACEMENT_LABEL, token)
-          .vsock(this.options.sockets.mcp, 5000)
-          .vsock(this.options.sockets.gitcred, 5001)
-          .create()
+        this.builder(name, environment.mounts, environment.secrets).label(REPLACEMENT_LABEL, token).create()
       )
       await prepareOverlayMounts(sandbox, environment.mounts)
       const checked = await sandbox.exec(MICROSANDBOX_NODE, [
@@ -834,7 +816,7 @@ export class MicrosandboxManager {
         JSON.stringify(environment.mounts)
       ])
       if (!checked.success) throw new Error(`microsandbox replacement mount check failed: ${checked.stderr().trim()}`)
-      await this.startBridge(environment.id, sandbox)
+      await this.startShim(environment, sandbox)
       const persisted = await this.options.sdk.Sandbox.get(name)
       const old: OwnedSandbox = {
         sandboxName: binding.sandboxName,
@@ -857,9 +839,9 @@ export class MicrosandboxManager {
       }
       await this.writeBinding(next)
     } catch (error) {
-      const bridge = this.bridges.get(environment.id)
-      this.bridges.delete(environment.id)
-      await bridge?.stop(STOP_TIMEOUT_MS).catch(() => {})
+      const shim = this.shims.get(environment.id)
+      this.shims.delete(environment.id)
+      await shim?.stop().catch(() => {})
       await sandbox?.stopWithTimeout(STOP_TIMEOUT_MS).catch(() => {})
       await sandbox?.detach().catch(() => {})
       await this.cleanReplacement(binding).catch((cleanup: unknown) =>
@@ -885,55 +867,28 @@ export class MicrosandboxManager {
     }
   }
 
-  private async startBridge(id: string, sandbox: Sandbox): Promise<void> {
-    const handle = await openExecStream(
-      this.options.sdk,
+  // Runs inside the VM's start, so nothing can launch into a VM whose shim or helper tunnels are missing.
+  private async startShim(environment: MicrosandboxEnvironment, sandbox: Sandbox): Promise<void> {
+    const id = environment.id
+    if (!this.options.nextShimGeneration) throw new Error('microsandbox shim generation allocator is unavailable')
+    const shim = await (this.options.startShim ?? startMicrosandboxShim)({
+      sdk: this.options.sdk,
       sandbox,
-      MICROSANDBOX_SOCKET_BRIDGE_COMMAND,
-      MICROSANDBOX_SOCKET_BRIDGE_ARGS
-    )
-    const stdin = await handle.takeStdin()
-    if (!stdin) {
-      await handle.close()
-      throw new Error('microsandbox socket bridge did not provide a stream')
-    }
-    const bridge = new MicrosandboxProcess(
-      handle,
-      stdin,
-      (data) => process.stderr.write(data),
-      () => {},
-      () => this.stopFailedEnvironment(id)
-    )
-    try {
-      const reader = bridge.fromAgent.getReader()
-      let ready = ''
-      const timer = setTimeout(() => {
-        void bridge.stop(STOP_TIMEOUT_MS).catch((error: unknown) => bridge.fail(error))
-      }, STOP_TIMEOUT_MS)
-      try {
-        while (ready !== 'ready\n') {
-          const chunk = await reader.read()
-          if (chunk.done) throw new Error('microsandbox socket bridge exited before becoming ready')
-          ready += Buffer.from(chunk.value).toString('utf8')
-          if (!'ready\n'.startsWith(ready))
-            throw new Error('microsandbox socket bridge returned invalid readiness output')
-        }
-      } finally {
-        clearTimeout(timer)
-        reader.releaseLock()
-      }
-      this.bridges.set(id, bridge)
-      bridge.onExit(() => {
-        if (this.bridges.get(id) === bridge) {
-          this.bridges.delete(id)
-          this.options.log?.error(`microsandbox: socket bridge exited for ${id}`)
-          this.stopFailedEnvironment(id)
-        }
-      })
-    } catch (error) {
-      await bridge.stop(STOP_TIMEOUT_MS)
-      throw error
-    }
+      subject: id,
+      agentId: id.split('/')[0]!,
+      workspaceRoot: environment.workspaceRoot,
+      generation: await this.options.nextShimGeneration(id),
+      sockets: this.options.sockets,
+      runtimeStderr: (text) => {
+        if (!this.environments.get(id)?.quiet) process.stderr.write(text)
+      },
+      failed: () => {
+        this.options.log?.error(`microsandbox: shim exited for ${id}`)
+        this.stopFailedEnvironment(id)
+      },
+      log: this.options.log
+    })
+    this.shims.set(id, shim)
   }
 
   private stopFailedEnvironment(id: string): void {
@@ -973,7 +928,8 @@ export class MicrosandboxManager {
         active: 0,
         processes: new Set(),
         pending: new Set(),
-        lastUsed: Date.now()
+        lastUsed: Date.now(),
+        quiet: 0
       }
       this.environments.set(environment.id, state)
       const opening = state
@@ -1004,9 +960,7 @@ export class MicrosandboxManager {
     command: string,
     args: string[],
     options: Pick<MicrosandboxExecOptions, 'env' | 'cwd' | 'abort' | 'inheritEnv'>,
-    stderr: (data: Uint8Array) => void,
-    files: SpawnRequest['files'] = [],
-    hints: SpawnRequest['hints'] = []
+    stderr: (data: Uint8Array) => void
   ): Promise<MicrosandboxProcess> {
     const { state, release } = this.acquire(environment)
     let ready!: () => void
@@ -1018,30 +972,11 @@ export class MicrosandboxManager {
       const sandbox = await awaitStartup(state.sandbox)
       if (this.closed) throw new Error('microsandbox manager is shutting down')
       options.abort?.throwIfAborted()
-      if (!this.bridges.has(environment.id))
-        throw new Error(`microsandbox environment ${environment.id} socket bridge is not running`)
-      const env = { ...options.env }
-      for (const hint of hints ?? []) {
-        if (env[hint.envVar]) continue
-        const output = await sandbox.execWith('/bin/sh', (exec) =>
-          exec.args(['-c', 'command -v -- "$1"', 'sh', hint.command]).envs(env)
-        )
-        const path = output.stdout().trim()
-        if (output.success && posix.isAbsolute(path)) env[hint.envVar] = path
-      }
-      for (const file of files ?? []) {
-        SinkRelPathSchema.parse(file.relPath)
-        if (!posix.isAbsolute(file.root)) throw new Error('microsandbox materialization root must be absolute')
-        const path = posix.join(file.root, ...file.relPath)
-        await sandbox.fs().mkdir(posix.dirname(path))
-        await sandbox.fs().write(path, file.content)
-        const output = await sandbox.exec('chmod', ['0600', path])
-        if (!output.success) throw new Error('microsandbox could not protect materialized file permissions')
-      }
-      options.abort?.throwIfAborted()
+      if (!this.shims.has(environment.id))
+        throw new Error(`microsandbox environment ${environment.id} shim is not running`)
       const handle = await openExecStream(this.options.sdk, sandbox, command, args, {
         cwd: options.cwd ?? environment.workspaceRoot,
-        env,
+        env: options.env,
         inheritEnv: options.inheritEnv
       })
       const stdin = await handle.takeStdin()
@@ -1074,18 +1009,52 @@ export class MicrosandboxManager {
     }
   }
 
-  private launch(environment: MicrosandboxEnvironment, request: SpawnRequest): Promise<SpawnedRuntime> {
-    return this.startProcess(
-      environment,
-      request.command,
-      request.args,
-      { env: request.env },
-      (data) => {
-        if (!request.suppressChildStderr) process.stderr.write(data)
-      },
-      request.files,
-      request.hints
-    )
+  // The runtime starts through the VM's shim, the way a pool member starts one in a pod; the shim resolves the command and its hints in the guest.
+  private async launch(environment: MicrosandboxEnvironment, request: SpawnRequest): Promise<SpawnedRuntime> {
+    const { state, release } = this.acquire(environment)
+    let ready!: () => void
+    const pending = new Promise<void>((resolve) => {
+      ready = resolve
+    })
+    state.pending.add(pending)
+    try {
+      const sandbox = await awaitStartup(state.sandbox)
+      if (this.closed) throw new Error('microsandbox manager is shutting down')
+      for (const file of request.files ?? []) {
+        SinkRelPathSchema.parse(file.relPath)
+        if (!posix.isAbsolute(file.root)) throw new Error('microsandbox materialization root must be absolute')
+        const path = posix.join(file.root, ...file.relPath)
+        await sandbox.fs().mkdir(posix.dirname(path))
+        await sandbox.fs().write(path, file.content)
+        const output = await sandbox.exec('chmod', ['0600', path])
+        if (!output.success) throw new Error('microsandbox could not protect materialized file permissions')
+      }
+      // A process in the VM starts from the image's environment, which the shim's own allowlist would otherwise drop.
+      const env = { ...(await imageEnv(sandbox)), ...request.env }
+      const shim = this.shims.get(environment.id)
+      if (state.failed || state.closing || !shim)
+        throw new Error(`microsandbox environment ${environment.id} is stopping`)
+      const runtime = createRemoteRuntime({
+        session: shim.session,
+        request: { ...request, env },
+        cwd: environment.workspaceRoot,
+        log: { info: (message) => this.options.log?.info(message), warn: (message) => this.options.log?.warn(message) }
+      })
+      if (request.suppressChildStderr) state.quiet++
+      state.processes.add(runtime)
+      runtime.onExit(() => {
+        if (request.suppressChildStderr) state.quiet--
+        state.processes.delete(runtime)
+        release()
+      })
+      return runtime
+    } catch (error) {
+      release()
+      throw error
+    } finally {
+      state.pending.delete(pending)
+      ready()
+    }
   }
 
   private async closeEnvironment(id: string, remove: boolean, drain = false): Promise<void> {
@@ -1103,21 +1072,16 @@ export class MicrosandboxManager {
           await Promise.all([...state.processes].map((process) => process.stop(STOP_TIMEOUT_MS)))
         }
         const binding = await this.readBinding(id)
-        if (state?.shim)
-          await state.shim.then(
-            (shim) => shim.stop(),
-            () => {}
-          )
+        const shim = this.shims.get(id)
+        if (shim) {
+          this.shims.delete(id)
+          await shim.stop()
+        }
         if (binding) await this.cleanReplacement(binding)
         const handle = await this.find(this.sandboxName(id, binding))
         if (handle) {
           if (!binding || handle.id !== binding.sandboxId)
             throw new Error(`microsandbox environment ${id} identity changed`)
-          const bridge = this.bridges.get(id)
-          if (bridge) {
-            this.bridges.delete(id)
-            await bridge.stop(STOP_TIMEOUT_MS)
-          }
           if (remove) await handle.destroy({ timeoutMs: STOP_TIMEOUT_MS })
           else await handle.stopWithTimeout(STOP_TIMEOUT_MS)
         }
