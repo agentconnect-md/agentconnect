@@ -55,7 +55,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "@types/hast": "^3.0.4",
-    "@types/node": "^24.13.4",
+    "@types/node": "^24.13.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.2.7",
     "happy-dom": "^20.14.5",

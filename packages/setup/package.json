@@ -36,7 +36,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^24.13.4",
+    "@types/node": "^24.13.5",
     "json": "^11.0.0",
     "tsdown": "^0.23.0",
     "tsx": "^4.23.13",
