@@ -5076,8 +5076,15 @@ export default function SessionDetailView() {
                                 </span>
                               )}
                               {turn.steer && (
-                                <span className="pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                                  {turn.steered ? 'Steered into the running reply' : 'Steering into the running reply…'}
+                                // A glyph and one word; the full meaning sits in the tooltip.
+                                <span
+                                  className="flex items-center gap-1 pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
+                                  title={
+                                    turn.steered ? 'Steered into the running reply' : 'Steering into the running reply…'
+                                  }
+                                >
+                                  {turn.steered ? <Icon name="corner-down-right" size={11} /> : <Spinner size={10} />}
+                                  {turn.steered ? 'Steered' : 'Steering…'}
                                 </span>
                               )}
                               <div className={SELF_BUBBLE}>

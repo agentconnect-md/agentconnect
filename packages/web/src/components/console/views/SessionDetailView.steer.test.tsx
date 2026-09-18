@@ -165,7 +165,8 @@ async function render() {
   })
 }
 
-const text = () => container?.textContent ?? ''
+// The steer mark on the bubble: a glyph plus one word, with the full meaning in its tooltip.
+const steerMark = () => container?.querySelector('span[title^="Steer"]')
 // One transcript turn per `gap-[5px]` column: a user bubble or an agent block, in reading order.
 const turnColumns = () =>
   [...(container?.querySelectorAll('div') ?? [])].filter((d) => d.className === 'flex flex-col gap-[5px]')
@@ -204,8 +205,8 @@ describe('a message steered into the running reply', () => {
     expect(columns[1]?.textContent).toContain('review-bot 137 sessions')
     expect(columns[1]?.textContent).toContain('review-bot-private 6 sessions')
     expect(columns[2]?.textContent).toContain('retry')
-    expect(text()).toContain('Steering into the running reply…')
-    expect(text()).not.toContain('Steered into the running reply')
+    expect(steerMark()?.textContent).toBe('Steering…')
+    expect(steerMark()?.getAttribute('title')).toBe('Steering into the running reply…')
   })
 
   it('splits the reply into a fresh block below the message once the steer is confirmed', async () => {
@@ -219,7 +220,7 @@ describe('a message steered into the running reply', () => {
     expect(columns[1]?.textContent).not.toContain('review-bot-private 6 sessions')
     expect(columns[2]?.textContent).toContain('retry')
     expect(columns[3]?.textContent).toContain('review-bot-private 6 sessions')
-    expect(text()).toContain('Steered into the running reply')
-    expect(text()).not.toContain('Steering into the running reply…')
+    expect(steerMark()?.textContent).toBe('Steered')
+    expect(steerMark()?.getAttribute('title')).toBe('Steered into the running reply')
   })
 })
