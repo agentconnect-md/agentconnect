@@ -77,7 +77,7 @@ export async function resolveLiveWebchatMcpAuthority(
   }
 
   // No further entitlement check: the catalog belongs to the webchat surface, not to an agent
-  // identity — every agent gets it in its owner's private webchat, and nowhere else.
+  // identity — every agent gets it in its owner's webchat conversation, and nowhere else.
 
   // Placement is the resolver's answer, never the column: a pool agent names no machine, and the
   // member serving it is whoever holds its duty at this moment.

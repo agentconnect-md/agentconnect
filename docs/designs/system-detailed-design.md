@@ -214,7 +214,7 @@ over stdio; they do not create source-level coupling to TypeScript.
 ### D6. ACP Host (ACP Client)
 
 - **Responsibilities**: act as the ACP **client** (the role normally played by an IDE/editor); start the corresponding ACP adapter under the 1 agent : 1 machine rule — a local subprocess self-hosted, a sandbox pod it dials in the pool; manage the ACP session lifecycle (new/prompt/load/cancel); handle reverse agent→client calls (file reads/writes, permission requests, and incremental `session/update` streams); **condense** agent output before returning it to D3, addressing the requirement that a channel show only start/plan/problem/end plus a link.
-- **Preset webchat admin MCP**: an entitled private webchat conversation on the
+- **Preset webchat admin MCP**: an entitled webchat conversation on the
   built-in preset receives a session-scoped remote HTTPS MCP descriptor. The runtime
   calls the CP-hosted catalog directly with a short-lived opaque conversation grant;
   no dedicated ACP host or OS sandbox is required by this feature. Support is

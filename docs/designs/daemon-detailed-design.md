@@ -1506,7 +1506,7 @@ WebSocket drop -> CP-Client enters DEGRADED and reconnects with backoff. Daemon 
 
 This feature is on by default on the CP; enablement is gated on the daemon
 advertising `webchat_remote_mcp_v1`. Before deploying, ship compatible CP,
-relay, daemon, and runtime builds; verify private webchat session enforcement,
+relay, daemon, and runtime builds; verify the live authority predicate,
 credential redaction, exact grant revocation, revision-fenced descriptor
 activation, and CP-owned operation idempotency; then confirm live registration
 advertises both `session-visibility-v1` and `webchat_remote_mcp_v1`.
