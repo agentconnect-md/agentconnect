@@ -31,17 +31,17 @@
   },
   "dependencies": {
     "@agentconnect.md/control-plane": "workspace:*",
-    "fastify": "^5.12.3",
+    "fastify": "^5.12.4",
     "jose": "^6.2.12",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
+    "@types/node": "^24.13.4",
     "json": "^11.0.0",
     "tsdown": "^0.23.0",
     "tsx": "^4.23.13",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.1"
   },
   "keywords": [
     "agentconnect",
