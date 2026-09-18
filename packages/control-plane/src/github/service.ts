@@ -602,6 +602,27 @@ export class GithubService {
     return this.userRepoPermissionWithPolicy(ins, owner, repo, username, 'comment-authz')
   }
 
+  /**
+   * The numeric identity behind one login (`GET /users/{login}`), or null when no such
+   * user exists. The "Trusted users" list stores this id, never the login: the permission
+   * lookup above cannot supply it for a non-collaborator on a private repository (404),
+   * which is exactly the user a maintainer would vouch for.
+   */
+  async userByLogin(ins: GithubInstallationRecord, login: string): Promise<{ id: bigint; login: string } | null> {
+    const token = await this.tokens.metadataToken(ins.installationId)
+    try {
+      const user = await githubRequest<{ id?: number; login?: string; type?: string }>(
+        `/users/${encodeURIComponent(login)}`,
+        { auth: token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl }
+      )
+      if (typeof user.id !== 'number' || typeof user.login !== 'string') return null
+      return { id: BigInt(user.id), login: user.login }
+    } catch (e) {
+      if (e instanceof GithubApiError && e.status === 404) return null
+      throw e
+    }
+  }
+
   private async userRepoPermissionWithPolicy(
     ins: GithubInstallationRecord,
     owner: string,

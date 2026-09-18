@@ -3375,6 +3375,35 @@ export interface CodeHostRepositoryRecord {
   defaultBranch: string | null
 }
 
+/** One vouched-for user on one repository ("Trusted users"): `actorExternalId` is the authority, the login display only. */
+export interface CodeHostTrustedActorRecord {
+  id: string
+  orgId: OrgId
+  provider: CodeHostProvider
+  repoExternalId: bigint
+  actorExternalId: bigint
+  actorLogin: string
+  addedByUserId: string | null
+  createdAt: Date
+}
+
+export interface CodeHostTrustedActorRepo {
+  listForRepo(orgId: OrgId, provider: CodeHostProvider, repoExternalId: bigint): Promise<CodeHostTrustedActorRecord[]>
+  /** The gate's read: every trusted numeric user id on one repository, as decimal strings. */
+  actorIdsForRepo(orgId: OrgId, provider: CodeHostProvider, repoExternalId: bigint): Promise<Set<string>>
+  /** Idempotent on the (org, provider, repo, actor) key; a re-add refreshes the display login. */
+  add(input: {
+    orgId: OrgId
+    provider: CodeHostProvider
+    repoExternalId: bigint
+    actorExternalId: bigint
+    actorLogin: string
+    addedByUserId?: string
+  }): Promise<CodeHostTrustedActorRecord>
+  /** True when a row was removed. */
+  remove(orgId: OrgId, id: string): Promise<boolean>
+}
+
 export interface CodeHostRepositoryRepo {
   /** Convergent catalog write: insert or refresh the mutable hints for one referenced repo. */
   upsert(input: {

@@ -14,6 +14,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { buildGiteaSeam, type GiteaSeam } from '../fakes/gitea-seam.js'
 import { GiteaMembershipAuthzService } from '../../src/gitea/membership-authz.service.js'
 import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
+import { PgCodeHostTrustedActorRepo } from '../../src/persistence/repositories/code-host-trusted-actor.repo.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { trackedTestClock } from '../fakes/tracked-clock.js'
 import { HookId, OrgId } from '../../src/domain/ids.js'
@@ -261,6 +262,7 @@ describe('rc/codehost-membership-authz — the gitea arm (§8)', () => {
       bindings: h.seam.bindings,
       connections: h.seam.connectionRepo,
       tokens: h.seam.connections,
+      trustedActors: new PgCodeHostTrustedActorRepo(prisma),
       api: h.fake.api
     })
     const request = (over: Record<string, unknown> = {}) => ({
@@ -275,6 +277,50 @@ describe('rc/codehost-membership-authz — the gitea arm (§8)', () => {
     })
     return { service, request, hook }
   }
+
+  // "Trusted users" (webhook-triggers-and-github-events.md): the route resolves the login through the
+  // connection token and stores the numeric id; the gate then admits that id below the write bar.
+  it('lets a maintainer vouch for a below-bar user by login, matched by id, until the vouch is withdrawn', async () => {
+    const h = await harness()
+    const { service, request, hook } = await authz(h)
+    h.fake.permissions.alice = 'read'
+    expect(await service.allowed(request())).toBe(false)
+
+    const added = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks/${hook.id}/trusted-actors`,
+      payload: { login: 'alice' }
+    })
+    expect(added.statusCode).toBe(201)
+    expect(added.json()).toMatchObject({
+      provider: 'gitea',
+      repoId: REPO.toString(),
+      actorId: '515151',
+      login: 'alice'
+    })
+    const listed = await h.a.app.inject({ method: 'GET', url: `${ORG}/hooks/${hook.id}/trusted-actors` })
+    expect(listed.statusCode).toBe(200)
+    expect(listed.json()).toHaveLength(1)
+
+    // Below the bar, but vouched for.
+    expect(await service.allowed(request())).toBe(true)
+    // A login whose id does not match is an identity failure the vouch never rescues.
+    expect(await service.allowed(request({ actorExternalId: '606060', actorUsername: 'alice' }))).toBe(false)
+    // A login the host does not know is refused at the door, not stored.
+    const unknown = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks/${hook.id}/trusted-actors`,
+      payload: { login: 'nobody' }
+    })
+    expect(unknown.statusCode).toBe(404)
+
+    const removed = await h.a.app.inject({
+      method: 'DELETE',
+      url: `${ORG}/hooks/${hook.id}/trusted-actors/${(added.json() as { id: string }).id}`
+    })
+    expect(removed.statusCode).toBe(204)
+    expect(await service.allowed(request())).toBe(false)
+  })
 
   it('admits write, admin and owner; refuses none, an unknown login, and a login whose id does not match', async () => {
     const h = await harness()

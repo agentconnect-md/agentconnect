@@ -369,6 +369,11 @@ export const HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED = 'provider_auth_required
  * judged and the same work can simply be run again. */
 export const HOOK_REPORT_REASON_AGENT_HANDOVER = 'agent_handover' as const
 
+/** A `notice` delivery posted its fixed text; the run row records a post, not a model turn. */
+export const HOOK_REPORT_REASON_NOTICE_POSTED = 'notice_posted' as const
+/** A `notice` delivery found its thread already carried one — a thread is told once. */
+export const HOOK_REPORT_REASON_NOTICE_ALREADY_POSTED = 'notice_already_posted' as const
+
 /**
  * `hook/report` (D→C REQ → generic `ack`) — the dispatched turn ended; closes
  * the `HookRun` row the relay's `rc/run-report` opened. Same discipline as

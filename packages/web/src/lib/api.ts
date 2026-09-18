@@ -4236,6 +4236,49 @@ export type UpdateGithubHookInput = Omit<CreateGithubHookInput, 'family'>
 export type UpdateGitlabHookInput = Omit<CreateGitlabHookInput, 'family'>
 export type UpdateGiteaHookInput = Omit<CreateGiteaHookInput, 'family'>
 
+// ── trusted users ── the per-repository vouch list a code-host hook's settings edit.
+// Reached through a hook (that is the row the console holds), stored per repository: every
+// hook row on the repository shares it. `actorId` is the host's numeric user id — what the
+// gates match; `login` is display only and refreshes on re-add.
+export interface TrustedActorDto {
+  id: string
+  provider: CodeHostProvider
+  repoId: string
+  actorId: string
+  login: string
+  addedBy: string | null
+  createdAt: string
+}
+
+export async function fetchTrustedActors(hookId: string, orgId?: string): Promise<TrustedActorDto[]> {
+  return apiGet<TrustedActorDto[]>(`${orgBase(orgId)}/hooks/${encodeURIComponent(hookId)}/trusted-actors`)
+}
+
+// Not apiPost: the denial body is what the field words inline — 404 for a login the host does
+// not know, 409 when no credential this deployment holds can ask the host right now.
+export async function addTrustedActor(hookId: string, login: string): Promise<TrustedActorDto> {
+  const path = `${orgBase()}/hooks/${encodeURIComponent(hookId)}/trusted-actors`
+  const res = await authenticatedFetch(
+    path,
+    { method: 'POST', body: JSON.stringify({ login }) },
+    { 'content-type': 'application/json' }
+  )
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
+    throw new ApiError(body.message ?? `POST ${path} → ${res.status} ${res.statusText}`, res.status, body.code)
+  }
+  return (await res.json()) as TrustedActorDto
+}
+
+export async function removeTrustedActor(hookId: string, actorId: string): Promise<void> {
+  const path = `${orgBase()}/hooks/${encodeURIComponent(hookId)}/trusted-actors/${encodeURIComponent(actorId)}`
+  const res = await authenticatedFetch(path, { method: 'DELETE' })
+  if (!res.ok && res.status !== 404) {
+    const body = (await res.json().catch(() => ({}))) as { code?: string; message?: string }
+    throw new ApiError(body.message ?? `DELETE ${path} → ${res.status} ${res.statusText}`, res.status, body.code)
+  }
+}
+
 // A hook is subordinate to its agent (like an Integration), so there is no
 // org-wide hook list — you fetch ONE agent's hooks, gated server-side by that
 // agent's visibility (404 for an agent you can't see).

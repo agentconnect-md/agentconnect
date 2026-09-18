@@ -96,6 +96,7 @@ model Org {
   crons                     CronDef[]
   hooks                     HookDef[]
   codeHostRepositories      CodeHostRepository[]
+  codeHostTrustedActors     CodeHostTrustedActor[]
   apiKeys                   ApiKey[]
   integrations              Integration[]
   bots                      Bot[]
@@ -167,6 +168,7 @@ model User {
   modifiedCrons                    CronDef[]                  @relation("CronModifiedBy")
   createdHooks                     HookDef[]                  @relation("HookCreatedBy")
   modifiedHooks                    HookDef[]                  @relation("HookModifiedBy")
+  addedTrustedActors               CodeHostTrustedActor[]     @relation("CodeHostTrustedActorAddedBy")
   createdRepoAuths                 AgentRepoAuthorization[]   @relation("AgentRepoAuthCreatedBy")
   gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
   giteaConnections                 GiteaConnection[]          @relation("GiteaConnectionCreatedBy")
@@ -1011,6 +1013,30 @@ model CodeHostRepositoryClaim {
   @@unique([provider, externalId])
   @@index([orgId])
   @@map("code_host_repository_claim")
+}
+
+/// A user a maintainer vouched for on one repository
+/// (webhook-triggers-and-github-events.md, "Trusted users"): they may fire that
+/// repository's hooks exactly as a role-holder would, so the list is repository-wide
+/// — one hook row per subject family, but trust is in a person, not a family.
+/// `actorExternalId` (the host's numeric user id) is the authority; `actorLogin` is
+/// display only and never matched, the repoId/repoFullName rule.
+model CodeHostTrustedActor {
+  id              String   @id @default(uuid()) @db.Uuid
+  orgId           String
+  provider        String // 'github' | 'gitlab' | 'gitea' — app-layer closed set
+  repoExternalId  BigInt // numeric repository/project id — the match key
+  actorExternalId BigInt // numeric user id — the match key
+  actorLogin      String // login as the host cases it — display only
+  addedByUserId   String? // audit
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  org     Org   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  addedBy User? @relation("CodeHostTrustedActorAddedBy", fields: [addedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, provider, repoExternalId, actorExternalId])
+  @@index([orgId, provider, repoExternalId])
+  @@map("code_host_trusted_actor")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

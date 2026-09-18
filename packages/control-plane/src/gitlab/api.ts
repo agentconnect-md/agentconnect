@@ -274,6 +274,28 @@ export async function gitlabCurrentUser(accessToken: string, client: GitlabApiCl
   return user
 }
 
+export interface GitlabUserRef {
+  id: number
+  username: string
+}
+
+/** One user by username (`GET /users?username=`), or null when the instance knows none — the
+ *  "Trusted users" list stores the numeric id this resolves, never the username itself. */
+export async function gitlabUserByUsername(
+  accessToken: string,
+  username: string,
+  client: GitlabApiClient
+): Promise<GitlabUserRef | null> {
+  const users = await gitlabRequest<GitlabUserRef[]>(`/users?username=${encodeURIComponent(username)}`, {
+    auth: accessToken,
+    client
+  })
+  if (!Array.isArray(users)) return null
+  const wanted = username.toLowerCase()
+  const user = users.find((u) => typeof u?.id === 'number' && u.username?.toLowerCase() === wanted)
+  return user ? { id: user.id, username: user.username } : null
+}
+
 /** The instance's self-reported version (`GET /version`, §24.2). */
 export interface GitlabVersion {
   version: string

@@ -55,6 +55,7 @@ import type {
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
   CodeHostRepositoryRepo,
+  CodeHostTrustedActorRepo,
   GitlabConnectionRepo,
   GitlabAgentAccountRepo,
   GitlabInstanceStateRepo,
@@ -68,6 +69,7 @@ import type {
 import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
+import type { CodeHostTrustedActorService } from '../codehost/trusted-actor.service.js'
 import type { McpProviderOauthService } from '../mcp-oauth/service.js'
 import type { McpTokenResolver } from '../orchestrator/mcpUpstreamHeaders.js'
 import type { OrgId } from '../domain/ids.js'
@@ -274,6 +276,8 @@ export interface HttpDeps {
     agentRepoAuth: AgentRepoAuthorizationRepo
     /** Provider-qualified repository catalog (gitlab-com-integration.md §8.1) — readers-first write side. */
     codeHostRepository: CodeHostRepositoryRepo
+    /** Per-repository "Trusted users" — the maintainer vouch the hook gates read beside the role check. */
+    codeHostTrustedActor: CodeHostTrustedActorRepo
     /** GitLab.com OAuth connection metadata (§8.2); token pair lives behind its secret store. */
     gitlabConnection: GitlabConnectionRepo
     /** Managed GitLab project bindings (§8.2/§10). */
@@ -428,6 +432,9 @@ export interface HttpDeps {
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService
+  /** Resolves a typed login to the host's numeric user id for the "Trusted users" list; per-provider arms
+   *  are present only where that host is configured, so an unconfigured host answers 409 rather than 404. */
+  trustedActors: CodeHostTrustedActorService
   /** The MCP-provider authorization funnel (mcp-provider-oauth.md); absent ⇒ routes 404. */
   mcpProviderOauth?: McpProviderOauthService
   /** Token custody, so EVERY live publication resolves an oauth2 provider's header the same

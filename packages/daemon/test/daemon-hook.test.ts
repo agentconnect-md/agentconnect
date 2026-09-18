@@ -3795,6 +3795,78 @@ describe('Daemon rd/msg hook fires', () => {
   })
 })
 
+// webhook-triggers-and-github-events.md, "Trusted users": a relay-authored notice is a fixed-text
+// post on the thread — no model turn — and a thread is told once however many arrive.
+describe('Daemon rd/msg hook notices', () => {
+  const notice = (deliveryKey: string): RdMsgHook =>
+    fire({
+      sessionKey: 'example-org/example-repo#42',
+      msgId: `${HOOK_ID}:${deliveryKey}`,
+      deliveryKey,
+      event: 'issue_comment:created',
+      notice: 'actor_not_trusted',
+      github: {
+        repoId: '123',
+        repoFullName: 'example-org/example-repo',
+        sourceInstallationId: '456',
+        subjectKind: 'issue'
+      },
+      context: {
+        source: 'github',
+        event: 'issue_comment',
+        action: 'created',
+        repo: 'example-org/example-repo',
+        number: 42
+      }
+    })
+
+  it('posts the fixed text once per thread and never opens a model turn', async () => {
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    const publish = vi.fn(async () => ({ commentId: '1', htmlUrl: 'https://github.example.test/c/1' }))
+    ;(daemon as any).githubReviews.makeNoticePoster = vi.fn(() => ({ publish }))
+
+    const first = await (daemon as any).handleRelayMsg(notice('d-1:notice'), () => {})
+    expect(first).toEqual({ msgId: `${HOOK_ID}:d-1:notice`, accepted: true })
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(publish).toHaveBeenCalledOnce()
+    expect(publish).toHaveBeenCalledWith(
+      expect.stringContaining("this repository's maintainers and trusted contributors")
+    )
+    expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'd-1:notice', status: 'success', reason: 'notice_posted' })
+
+    // A second refused mention on the same thread closes its own run row and posts nothing.
+    const second = await (daemon as any).handleRelayMsg(notice('d-2:notice'), () => {})
+    expect(second).toEqual({ msgId: `${HOOK_ID}:d-2:notice`, accepted: true })
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(2), WAIT)
+    expect(publish).toHaveBeenCalledOnce()
+    expect(cp.hookReports[1]).toMatchObject({
+      deliveryKey: 'd-2:notice',
+      status: 'success',
+      reason: 'notice_already_posted'
+    })
+    expect(host.prompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('fails the run row when the host refuses the post', async () => {
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeNoticePoster = vi.fn(() => ({ publish: vi.fn(async () => undefined) }))
+
+    await (daemon as any).handleRelayMsg(notice('d-1:notice'), () => {})
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ status: 'failed', reason: 'notice_post_failed' })
+    await daemon.stop()
+  })
+})
+
 describe('buildHookMessage', () => {
   it('keeps a displayable fired-at timestamp for the transcript', async () => {
     const firedAt = '2026-07-12T07:08:09.123Z'

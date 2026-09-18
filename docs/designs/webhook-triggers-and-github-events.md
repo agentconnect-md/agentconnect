@@ -309,6 +309,35 @@ the Agent onto an externally authored thread. Missing identity metadata, denial,
 timeout, or an unavailable lookup fails closed. Matching comment rules with the
 same actor requirement share one fenced authorization decision.
 
+### Trusted Users
+
+A repository's maintainers may vouch for users the role gate would refuse. The
+list is repository-wide — every hook row on the repository, whichever agent or
+subject family, reads the same one — because trust is in a person, not in a
+subject family. A user on it passes every actor check above exactly as a
+role-holder does: as the commenter, as the subject author of an unmentioned
+continuation, and as the author of a pull request that would otherwise wait for
+a maintainer request. Nothing about the resulting turn differs; the vouch is the
+same human decision as granting `triage` on GitHub, made without touching the
+repository's own permission model, and it is the only path on GitLab and Gitea
+— whose role bars are push permissions — to let a non-committer fire an agent.
+
+Entries are matched by the host's numeric user id, never by login: the console
+takes a login, the Control Plane resolves it through the repository's own
+credential, and stores the id with the login as a display hint. A login that
+no longer resolves, or resolves to a different account after a rename, vouches
+for nobody. On Gitea, whose gate re-resolves the delivered login to its id, a
+failed identity check is never rescued by the list. The list is read only when
+an actor fell below the bar, so a role-holder costs no extra request.
+
+An explicit `@`-mention by an actor neither the role gate nor the list admits
+receives one fixed-text reply on its thread, posted by the App as a
+relay-authored maintenance delivery (`hook-notice-v1`): no model turn opens, the
+delivery carries nothing the actor wrote, and the text names no one — not the
+actor, not what they lacked, not who is trusted. The daemon keys the receipt on
+the thread, so a thread is told once however many refused mentions it collects;
+an unmentioned comment from such an actor stays silent as before.
+
 A native `pull_request:review_requested` event can explicitly request the App
 bot as reviewer. It bypasses cadence, labels, and mention filters only after a
 live maintainer authorization.

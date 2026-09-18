@@ -58,6 +58,7 @@ import { orgRoutes, orgScopedRoutes } from './routes/orgs.js'
 import { makeOrgScope } from './org-scope.js'
 import { cronRoutes } from './routes/crons.js'
 import { hookRoutes } from './routes/hooks.js'
+import { trustedActorRoutes } from './routes/trusted-actors.js'
 import { sessionRoutes } from './routes/sessions.js'
 import { usageRoutes } from './routes/usage.js'
 import { usageServiceAuth, unlessUsageService } from './usage-service-auth.js'
@@ -338,6 +339,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(orgInviteLinkRoutes(deps))
           await scope.register(cronRoutes(deps))
           await scope.register(hookRoutes(deps))
+          await scope.register(trustedActorRoutes(deps))
           await scope.register(sessionRoutes(deps))
           await scope.register(streamRoutes(deps))
           await scope.register(githubRoutes(deps))

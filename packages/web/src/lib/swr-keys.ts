@@ -106,6 +106,9 @@ export const consoleKeys = {
   cronRuns: (orgId: string | null | undefined, cronId: string) => consoleKey(orgId, 'cron-runs', cronId),
   agentHooks: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-hooks', agentId) : null,
+  // Per-repository list reached through one hook row (the settings dialog's).
+  hookTrustedActors: (orgId: string | null | undefined, hookId: string | null | undefined) =>
+    hookId ? consoleKey(orgId, 'hook-trusted-actors', hookId) : null,
   agentRepos: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-repos', agentId) : null,
   /** The Integrations card's bot roster. The bound-project signature is part of the key, so

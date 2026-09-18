@@ -9,7 +9,13 @@
  */
 import type { RcCodeHostMembershipAuthz } from '@agentconnect.md/protocol'
 import { HookId } from '../domain/ids.js'
-import type { GiteaConnectionRepo, GiteaRepositoryBindingRepo, HookRecord, HookRepo } from '../persistence/ports.js'
+import type {
+  CodeHostTrustedActorRepo,
+  GiteaConnectionRepo,
+  GiteaRepositoryBindingRepo,
+  HookRecord,
+  HookRepo
+} from '../persistence/ports.js'
 import {
   giteaCollaboratorPermission,
   giteaPermissionAdmits,
@@ -26,6 +32,8 @@ export interface GiteaMembershipAuthzDeps {
   bindings: Pick<GiteaRepositoryBindingRepo, 'byRepo'>
   connections: Pick<GiteaConnectionRepo, 'get'>
   tokens: GiteaTokenSource
+  /** The repository's "Trusted users": a maintainer's vouch admits an actor below the write bar. */
+  trustedActors: Pick<CodeHostTrustedActorRepo, 'actorIdsForRepo'>
   api: GiteaApiClient
   /** Test override; production stays below the relay's 5 second correlator. */
   timeoutMs?: number
@@ -102,9 +110,10 @@ export class GiteaMembershipAuthzService {
     } catch {
       return false
     }
+    const trusted = await this.deps.trustedActors.actorIdsForRepo(first.orgId, 'gitea', repoId)
     try {
       for (const actor of actors) {
-        if (!(await this.actorAdmitted(token, path, actor))) return false
+        if (!(await this.actorAdmitted(token, path, actor, trusted))) return false
       }
     } catch (e) {
       // A rejected token is the connection's verdict (§4.3), and this delivery's denial.
@@ -131,8 +140,15 @@ export class GiteaMembershipAuthzService {
     })
   }
 
-  /** §8: the login re-resolved to its id must match the delivered id, then the permission must admit. */
-  private async actorAdmitted(token: string, path: { owner: string; repo: string }, actor: Actor): Promise<boolean> {
+  /** §8: the login re-resolved to its id must match the delivered id, then the permission must admit — or,
+   *  identity established, the repository's "Trusted users" list must carry that id. A failed identity
+   *  re-resolution is never rescued by the list: it means the delivery could not say who was asking. */
+  private async actorAdmitted(
+    token: string,
+    path: { owner: string; repo: string },
+    actor: Actor,
+    trusted: ReadonlySet<string>
+  ): Promise<boolean> {
     const user = await giteaUser(token, actor.username!, this.deps.api)
     if (!user || BigInt(user.id) !== actor.id) return false
     let permission
@@ -144,7 +160,7 @@ export class GiteaMembershipAuthzService {
       return false
     }
     if (permission.user?.id !== undefined && BigInt(permission.user.id) !== actor.id) return false
-    return giteaPermissionAdmits(permission.permission)
+    return giteaPermissionAdmits(permission.permission) || trusted.has(actor.id.toString())
   }
 
   private matchesAuthorizedHook(

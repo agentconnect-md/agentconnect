@@ -126,6 +126,7 @@ import {
   PgGithubInstallStateStore,
   PgAgentRepoAuthorizationRepo,
   PgCodeHostRepositoryRepo,
+  PgCodeHostTrustedActorRepo,
   PgCodeHostRunProjectionRepo,
   PgGitlabConnectionRepo,
   PgGitlabAgentAccountRepo,
@@ -261,6 +262,7 @@ import { createDiscordBotProfileSyncer } from './http/discord-bot-profile.js'
 import type { CpPlatformRegistry } from './platforms/provider.js'
 import { buildCpPlatformRegistry } from './platforms/registry.js'
 import { codeHostProviders } from './codehost/registry.js'
+import { CodeHostTrustedActorService } from './codehost/trusted-actor.service.js'
 import { botIdentityProjector } from './platforms/bot-identity.js'
 import { buildPendingInstallReapers, platformBackgroundLoops } from './platforms/lifecycle.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
@@ -501,6 +503,7 @@ export function buildContainer(
     githubInstallState: new PgGithubInstallStateStore(prisma),
     agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
     codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
+    codeHostTrustedActor: new PgCodeHostTrustedActorRepo(prisma),
     gitlabConnection: new PgGitlabConnectionRepo(prisma),
     gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
     gitlabAgentAccount: new PgGitlabAgentAccountRepo(prisma),
@@ -1221,6 +1224,7 @@ export function buildContainer(
         accounts: repos.gitlabAgentAccount,
         credentials: new PgGitlabProjectCredentialRepo(prisma),
         credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+        trustedActors: repos.codeHostTrustedActor,
         clock,
         api: gitlabApi!
       })
@@ -1328,6 +1332,7 @@ export function buildContainer(
     bindings: repos.giteaRepositoryBinding,
     connections: repos.giteaConnection,
     tokens: giteaConnectionService,
+    trustedActors: repos.codeHostTrustedActor,
     api: giteaApi
   })
 
@@ -1481,7 +1486,8 @@ export function buildContainer(
     ? new GithubCommentAuthzService({
         hooks: repos.hook,
         installations: repos.githubInstallation,
-        github
+        github,
+        trustedActors: repos.codeHostTrustedActor
       })
     : undefined
   const githubRerequest = githubAppCfg
@@ -1611,6 +1617,29 @@ export function buildContainer(
   const syncDiscordBotProfile = createDiscordBotProfileSyncer(iconStore)
   const syncFeishuAppIcon = createFeishuAppIconSyncer(iconStore)
 
+  // "Trusted users" (webhook-triggers-and-github-events.md): the route resolves a typed login to the
+  // host's numeric id through the repository's own credential; each arm exists only where that host is.
+  const trustedActors = new CodeHostTrustedActorService({
+    trustedActors: repos.codeHostTrustedActor,
+    ...(github ? { github: { installations: repos.githubInstallation, service: github } } : {}),
+    ...(gitlab
+      ? {
+          gitlab: {
+            bindings: repos.gitlabProjectBinding,
+            accounts: repos.gitlabAgentAccount,
+            credentials: new PgGitlabProjectCredentialRepo(prisma),
+            credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+            api: gitlabApi!
+          }
+        }
+      : {}),
+    gitea: {
+      bindings: repos.giteaRepositoryBinding,
+      connections: repos.giteaConnection,
+      tokens: giteaConnectionService,
+      api: giteaApi
+    }
+  })
   const httpDeps: HttpDeps = {
     runtimeConfig:
       opts.deploymentConfig || gitlab
@@ -1693,6 +1722,7 @@ export function buildContainer(
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
       codeHostRepository: repos.codeHostRepository,
+      codeHostTrustedActor: repos.codeHostTrustedActor,
       gitlabConnection: repos.gitlabConnection,
       gitlabProjectBinding: repos.gitlabProjectBinding,
       gitlabAgentAccount: repos.gitlabAgentAccount,
@@ -1742,6 +1772,7 @@ export function buildContainer(
     readiness,
     searchSkillRegistry,
     resolvePublicRepo: createPublicRepoResolver(),
+    trustedActors,
     ...(github ? { github } : {}),
     ...(gitlab ? { gitlab } : {}),
     gitea,

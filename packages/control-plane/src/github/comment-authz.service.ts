@@ -1,12 +1,20 @@
 import type { RcGithubCommentAuthz } from '@agentconnect.md/protocol'
 import { HookId } from '../domain/ids.js'
-import type { GithubInstallationRepo, HookRecord, HookRepo } from '../persistence/ports.js'
+import type {
+  CodeHostTrustedActorRepo,
+  GithubInstallationRecord,
+  GithubInstallationRepo,
+  HookRecord,
+  HookRepo
+} from '../persistence/ports.js'
 import type { GithubRepoRole, GithubService } from './service.js'
 
 export interface GithubCommentAuthzDeps {
   hooks: Pick<HookRepo, 'getManyUnscoped'>
   installations: Pick<GithubInstallationRepo, 'getByInstallationId'>
-  github: Pick<GithubService, 'repoRefForCommentAuthz' | 'userRepoPermissionForCommentAuthz'>
+  github: Pick<GithubService, 'repoRefForCommentAuthz' | 'userRepoPermissionForCommentAuthz' | 'userByLogin'>
+  /** The repository's "Trusted users": a maintainer's vouch admits an actor the role gate does not. */
+  trustedActors: Pick<CodeHostTrustedActorRepo, 'actorIdsForRepo'>
   /** Test override; production stays below the relay's 5 second correlator. */
   timeoutMs?: number
 }
@@ -94,7 +102,8 @@ export class GithubCommentAuthzService {
     )
     // Triage is GitHub's role for a trusted non-committer: requesting a pull request review is one
     // of its listed permissions, so it authorizes a trigger even though it grants no push access.
-    if (permissions.some((permission) => !TRIGGER_ROLES.has(permission))) return false
+    const belowBar = actorLogins.filter((_login, index) => !TRIGGER_ROLES.has(permissions[index]!))
+    if (belowBar.length > 0 && !(await this.everyTrusted(hook, installation, belowBar))) return false
 
     // The GitHub calls above can take seconds. Re-read immediately before the
     // allow verdict so a concurrent disable, retarget, or reassignment cannot
@@ -111,6 +120,24 @@ export class GithubCommentAuthzService {
         })
       )
     })
+  }
+
+  /**
+   * Every actor the role gate refused must be on the repository's "Trusted users" list.
+   * Matched by NUMERIC id: the webhook login only names whom to resolve, and a login that
+   * no longer resolves — or resolves to someone else after a rename — vouches for nobody.
+   * The resolution runs only for refused actors, so a role-holder costs no extra request.
+   */
+  private async everyTrusted(
+    hook: HookRecord,
+    installation: GithubInstallationRecord,
+    logins: readonly string[]
+  ): Promise<boolean> {
+    if (hook.repoId === null) return false
+    const trusted = await this.deps.trustedActors.actorIdsForRepo(hook.orgId, 'github', hook.repoId)
+    if (trusted.size === 0) return false
+    const users = await Promise.all(logins.map((login) => this.deps.github.userByLogin(installation, login)))
+    return users.every((user) => user !== null && trusted.has(user.id.toString()))
   }
 
   private matchesAuthorizedHook(

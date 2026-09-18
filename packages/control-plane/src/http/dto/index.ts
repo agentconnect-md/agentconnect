@@ -2232,6 +2232,25 @@ export const UpdateAgentRepoAuthBody = z.strictObject({ access: RepoAccessDto })
 
 export const AgentRepoAuthParam = z.object({ agentId: z.string(), repoAuthId: z.string() })
 
+// ── trusted users (webhook-triggers-and-github-events.md, "Trusted users") ──
+/** One vouched-for user on the hook's repository. `actorId` is the host's numeric user id — the
+ *  authority the gates match; `login` is display only and refreshes on re-add. */
+export const TrustedActorDto = z.object({
+  id: z.string(),
+  provider: z.enum(CODE_HOST_PROVIDERS),
+  repoId: z.string(), // rename-proof numeric repository/project id the list belongs to
+  actorId: z.string(),
+  login: z.string(),
+  addedBy: z.string().nullable(), // app_user id (member directory resolves display)
+  createdAt: z.string() // ISO-8601
+})
+export const TrustedActorListDto = z.array(TrustedActorDto)
+export type TrustedActorDtoT = z.infer<typeof TrustedActorDto>
+/** `POST /hooks/:hookId/trusted-actors` — the login as the maintainer knows it; the server resolves the id. */
+export const AddTrustedActorBody = z.strictObject({ login: z.string().trim().min(1).max(100) })
+export const TrustedActorHookParam = z.object({ hookId: z.string() })
+export const TrustedActorParam = z.object({ hookId: z.string(), actorId: z.string() })
+
 // ── me (the caller's own profile) ────────────────────────────────────────
 /** `GET /me` / `PATCH /me` — the signed-in user. */
 export const MeDto = z.object({

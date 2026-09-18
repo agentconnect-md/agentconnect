@@ -11,6 +11,8 @@
 import { randomUUID } from 'node:crypto'
 import { WireError } from '@agentconnect.md/connection'
 import {
+  HOOK_REPORT_REASON_NOTICE_ALREADY_POSTED,
+  HOOK_REPORT_REASON_NOTICE_POSTED,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   pickCodeHostHookMembers,
@@ -18,6 +20,7 @@ import {
   type GithubHookMetadata,
   type HookReviewResult,
   type RdAck,
+  type RdHookNotice,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
@@ -53,6 +56,7 @@ import { initiatorLabel } from '../workspace/session-branch.js'
 import { effectiveSessionIsolation, type PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
 import { GithubReplyCollector, type GithubCommentAttribution } from './poster.js'
 import { acknowledgeCodeHostTrigger } from '../codehost/ack.js'
+import { HOOK_NOTICE_TEXT } from '../codehost/notice.js'
 import { codeHostLinkSource } from '../platforms/link-source.js'
 import { replyTargetProvider, type CodeHostReplyTarget } from '../codehost/reply-target.js'
 import {
@@ -107,7 +111,7 @@ export interface GithubReviewHost {
   persistInbox(
     entry: QueueEntry,
     key: string,
-    options?: { required?: boolean; adoptExisting?: boolean; existingId?: string }
+    options?: { required?: boolean; adoptExisting?: boolean; existingId?: string; receiptId?: string }
   ): Promise<'inserted' | 'adopted' | 'existing' | 'skipped' | 'failed'>
   persistHookState(
     entry: QueueEntry,
@@ -268,6 +272,7 @@ export class GithubReviewOrchestrator {
    * without one the fire runs headless.
    */
   async onHookFire(msg: RdMsgHook): Promise<{ accepted: boolean; reason?: string }> {
+    if (msg.notice !== undefined) return this.postHookNotice(msg, msg.notice)
     const cleanup = codeHostThreadWorktreeCleanup(msg)
     const deleted = githubDeletedHookEvent(msg)
     // A lifecycle cleanup always addresses the stable GitHub thread session,
@@ -358,6 +363,78 @@ export class GithubReviewOrchestrator {
       return { accepted: false, reason: reason === 'draining' && anchor.postAttempted ? 'anchor_side_effect' : reason }
     }
     return { accepted: true }
+  }
+
+  /**
+   * A relay-authored `notice` delivery: one fixed-text post on the thread, no model turn. The
+   * durable inbox key is the THREAD's, not the delivery's, so a thread is told once — a second
+   * refused mention finds the first receipt and only closes its own run row.
+   */
+  private async postHookNotice(msg: RdMsgHook, notice: RdHookNotice): Promise<{ accepted: boolean; reason?: string }> {
+    const nmsg = buildHookMessage({ ...msg, target: undefined }, randomUUID())
+    const snapshot = hookSnapshot(msg)
+    const hookContext: HookDispatchContext = {
+      hookId: msg.hookId,
+      agentId: msg.agentId,
+      deliveryKey: msg.deliveryKey,
+      firedAt: msg.firedAt,
+      ...(msg.event ? { event: msg.event } : {}),
+      ...(snapshot ? { snapshot } : {}),
+      ...pickCodeHostHookMembers(msg)
+    }
+    const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
+    const entry: QueueEntry = {
+      agentId: msg.agentId,
+      msg: nmsg,
+      initAbort: new AbortController(),
+      hookContext,
+      resolve: () => {},
+      reject: () => {}
+    }
+    // The admission row is per delivery and is retired with the run; the RECEIPT is per thread and
+    // outlives it, so the second refused mention loses this CAS and posts nothing. The row's own key
+    // stays off the session's inbox key so retention never reads a notice as a pending model turn.
+    const persistence = await this.host.persistInbox(entry, `notice:${key}`, {
+      required: true,
+      receiptId: `notice:${notice}:${key}`
+    })
+    if (persistence === 'existing') {
+      await this.host.emitHookCompletion(
+        hookContext,
+        'success',
+        { reason: HOOK_REPORT_REASON_NOTICE_ALREADY_POSTED },
+        entry
+      )
+      return { accepted: true }
+    }
+    if (persistence !== 'inserted' && persistence !== 'adopted') return { accepted: false, reason: 'durability' }
+    void this.completeHookNotice(msg, notice, hookContext, entry)
+    return { accepted: true }
+  }
+
+  private async completeHookNotice(
+    msg: RdMsgHook,
+    notice: RdHookNotice,
+    hook: HookDispatchContext,
+    owner: HookCompletionOwner
+  ): Promise<void> {
+    try {
+      const target = codeHostReplyTarget(msg)
+      if (!target) {
+        await this.host.emitHookCompletion(hook, 'success', { reason: 'notice_no_reply_target' }, owner)
+        return
+      }
+      const published = await this.makeNoticePoster(msg.agentId, target).publish(HOOK_NOTICE_TEXT[notice])
+      await this.host.emitHookCompletion(
+        hook,
+        published ? 'success' : 'failed',
+        { reason: published ? HOOK_REPORT_REASON_NOTICE_POSTED : 'notice_post_failed' },
+        owner
+      )
+    } catch (err) {
+      this.log.warn(`hook notice: ${notice} on ${msg.sessionKey} failed: ${formatErr(err)}`)
+      await this.host.emitHookCompletion(hook, 'failed', { reason: 'notice_post_failed' }, owner).catch(() => undefined)
+    }
   }
 
   async completeGithubThreadWorktreeCleanup(
@@ -976,6 +1053,15 @@ export class GithubReviewOrchestrator {
   /** Build the per-turn final-answer selector and the owning host's poster, tokened via that
    *  host's effect lease. Attribution is resolved at publish time so the completed comment
    *  carries the session's final runtime/model selection. */
+  /** The notice's poster: the same provider member as a turn's, minus the footer — a notice has no session to link. */
+  makeNoticePoster(agentId: string, ref: CodeHostReplyTarget): CodeHostFinalPoster {
+    const turnFinal = turnFinalFor(ref)
+    return turnFinal.finalPoster(ref, {
+      ...turnFinal.effectLease(agentId, ref, this.turnFinalHost),
+      log: { warn: (m: string) => this.log.warn(m) }
+    })
+  }
+
   makeCodeHostReply(
     agentId: string,
     ref: CodeHostReplyTarget,

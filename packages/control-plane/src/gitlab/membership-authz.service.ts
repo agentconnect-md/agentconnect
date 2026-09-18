@@ -6,6 +6,7 @@ import type {
   GitlabProjectBindingRepo,
   GitlabProjectCredentialRepo,
   GitlabProjectCredentialSecretStore,
+  CodeHostTrustedActorRepo,
   HookRecord,
   HookRepo
 } from '../persistence/ports.js'
@@ -17,6 +18,8 @@ export interface GitlabMembershipAuthzDeps {
   accounts: Pick<GitlabAgentAccountRepo, 'listForBinding'>
   credentials: Pick<GitlabProjectCredentialRepo, 'get'>
   credentialSecrets: Pick<GitlabProjectCredentialSecretStore, 'get'>
+  /** The project's "Trusted users": a maintainer's vouch admits an actor below the Developer bar. */
+  trustedActors: Pick<CodeHostTrustedActorRepo, 'actorIdsForRepo'>
   clock: Clock
   api: GitlabApiClient
   /** Test override; production stays below the relay's 5 second correlator. */
@@ -109,8 +112,14 @@ export class GitlabMembershipAuthzService {
     const memberships = await Promise.all(
       actorIds.map((id) => gitlabEffectiveMembership(token, projectId, id, this.deps.api))
     )
-    if (memberships.some((membership) => !membershipSatisfies(membership, GITLAB_ACCESS_DEVELOPER, nowMs))) {
-      return false
+    // GitLab actors arrive as numeric ids, so the vouch needs no resolution: the list is read
+    // only when someone fell below the bar, and every such actor must be on it.
+    const belowBar = actorIds.filter(
+      (_id, index) => !membershipSatisfies(memberships[index]!, GITLAB_ACCESS_DEVELOPER, nowMs)
+    )
+    if (belowBar.length > 0) {
+      const trusted = await this.deps.trustedActors.actorIdsForRepo(first.orgId, 'gitlab', projectId)
+      if (!belowBar.every((id) => trusted.has(id.toString()))) return false
     }
 
     // The GitLab calls above can take seconds. Re-read immediately before the

@@ -100,6 +100,20 @@ export const RD_AGENT_IMPLICIT_ROUTING_V1 = 'agent-implicit-routing-v1'
 export const RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2 = 'github-thread-worktree-cleanup-v2'
 
 /**
+ * `hook-notice-v1`: this daemon treats a hook delivery carrying {@link RdMsgHook.notice}
+ * as a fixed-text post on the thread — no model turn, no prompt, no agent output.
+ *
+ * A relay must not send one to a daemon without it: an older daemon ignores the
+ * optional field and would run the delivery as an ordinary hook prompt — which is
+ * exactly the actor the notice exists to say was NOT admitted.
+ */
+export const RD_HOOK_NOTICE_V1 = 'hook-notice-v1'
+
+/** The fixed-text posts a relay can ask for; each is a daemon-authored constant, never wire text. */
+export const RdHookNotice = z.enum(['actor_not_trusted'])
+export type RdHookNotice = z.infer<typeof RdHookNotice>
+
+/**
  * `webchat-attach-v1`: this daemon answers the webchat `attach` probe — naming the
  * live reply stream for (conversation, agent) so a browser that reloaded mid-turn
  * can rediscover and resume it. The relay refuses the probe locally
@@ -541,7 +555,11 @@ export const RdMsgHook = z.object({
   // sees it (dispatch is gated on the daemon advertising gitea-v1).
   gitea: GiteaHookMetadata.optional(),
   context: HookContext.optional(), // trimmed envelope; message extraction/fencing happens on the daemon
-  target: CronTarget.optional() // output anchoring; absent ⇒ headless
+  target: CronTarget.optional(), // output anchoring; absent ⇒ headless
+  // A relay-authored maintenance post instead of a model turn: an explicit @-mention by an actor
+  // the CP did not admit gets one fixed-text reply on its thread so the silence is explained.
+  // The delivery is body-free — no excerpt, no author — and dispatch is gated on `hook-notice-v1`.
+  notice: RdHookNotice.optional()
 })
 export type RdMsgHook = z.infer<typeof RdMsgHook>
 

@@ -28,12 +28,13 @@ import {
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
   type RcRunReport,
+  type RdHookNotice,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import type { RelayDaemonServer } from '../../relay-daemon-server.js'
 import type { HookTable } from '../hook-table.js'
 import type { HookRateLimiter } from '../rate-limit.js'
-import { dispatchHookFire } from '../ingress.js'
+import { dispatchHookFire, noticeDelivery } from '../ingress.js'
 import { hookSnapshotForDelivery } from '../hook-snapshot.js'
 import { verifyHexHmacSha256 } from '../signature.js'
 import type { Logger } from '../../log.js'
@@ -185,7 +186,7 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
       if (!ctx) return reply.code(202).send({ deliveryKey })
       const context = buildGiteaContext(payload, ctx)
 
-      const dispatchRule = (rule: RcHookAssign): void => {
+      const dispatchRule = (rule: RcHookAssign, notice?: RdHookNotice): void => {
         if (!deps.limiter.allow(rule.hookId)) {
           deps.log.info(`gitea ingress: rate-limited ${rule.hookId}:${deliveryKey} (${ctx.eventAction})`)
           return
@@ -212,9 +213,11 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
         void dispatchHookFire(
           { table: deps.table, daemons: deps.daemons, report: deps.report, clock: deps.clock, log: deps.log },
           rule,
-          msg
+          notice ? noticeDelivery(msg, notice) : msg
         )
-        deps.log.info(`gitea ingress: queued ${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`)
+        deps.log.info(
+          `gitea ingress: queued ${notice ?? ''}${notice ? ' ' : ''}${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`
+        )
       }
 
       const reportReviewRequestRequired = (rule: RcHookAssign): void => {
@@ -314,6 +317,10 @@ export function registerGiteaIngress(app: FastifyInstance, deps: GiteaIngressDep
           deps.log.info(
             `gitea ingress: authz denied ${representative.hookId}:${deliveryKey} (${ctx.eventAction} actor ${actorId})`
           )
+          // An explicit @-mention by an actor the CP did not admit gets one fixed-text reply on its
+          // thread — the daemon tells a thread once — so the silence is explained. Anything less
+          // deliberate than a mention stays silent, and the reply carries nothing the actor wrote.
+          if (fanout.some((rule) => giteaRuleIsSummoned(rule, ctx))) dispatchRule(representative, 'actor_not_trusted')
           if (onDenied === 'request-review') for (const rule of fanout) reportReviewRequestRequired(rule)
           return
         }

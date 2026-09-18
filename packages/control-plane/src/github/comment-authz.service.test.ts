@@ -85,6 +85,10 @@ function make(
     hooks?: HookRecord[]
     permission?: Permission
     permissions?: Partial<Record<string, Permission>>
+    /** What `GET /users/{login}` answers; a login absent here does not exist on the host. */
+    users?: Partial<Record<string, bigint>>
+    /** The repository's "Trusted users" — numeric ids. */
+    trusted?: bigint[]
     timeoutMs?: number
   } = {}
 ) {
@@ -99,16 +103,30 @@ function make(
     async (_installation: GithubInstallationRecord, _owner: string, _repo: string, username: string) =>
       opts.permissions?.[username] ?? opts.permission ?? 'write'
   )
+  const userByLogin = vi.fn(async (_installation: GithubInstallationRecord, login: string) => {
+    const id = opts.users?.[login]
+    return id === undefined ? null : { id, login }
+  })
+  const actorIdsForRepo = vi.fn(async () => new Set((opts.trusted ?? []).map((id) => id.toString())))
   const service = new GithubCommentAuthzService({
     hooks: { getManyUnscoped: getMany } as unknown as Pick<HookRepo, 'getManyUnscoped'>,
     installations: { getByInstallationId } as unknown as Pick<GithubInstallationRepo, 'getByInstallationId'>,
-    github: { repoRefForCommentAuthz, userRepoPermissionForCommentAuthz } as unknown as Pick<
+    github: { repoRefForCommentAuthz, userRepoPermissionForCommentAuthz, userByLogin } as unknown as Pick<
       GithubService,
-      'repoRefForCommentAuthz' | 'userRepoPermissionForCommentAuthz'
+      'repoRefForCommentAuthz' | 'userRepoPermissionForCommentAuthz' | 'userByLogin'
     >,
+    trustedActors: { actorIdsForRepo },
     timeoutMs: opts.timeoutMs
   })
-  return { service, getMany, getByInstallationId, repoRefForCommentAuthz, userRepoPermissionForCommentAuthz }
+  return {
+    service,
+    getMany,
+    getByInstallationId,
+    repoRefForCommentAuthz,
+    userRepoPermissionForCommentAuthz,
+    userByLogin,
+    actorIdsForRepo
+  }
 }
 
 describe('GithubCommentAuthzService', () => {
@@ -180,6 +198,42 @@ describe('GithubCommentAuthzService', () => {
 
     await expect(h.service.allowed(batchRequest)).resolves.toBe(false)
     expect(h.userRepoPermissionForCommentAuthz).toHaveBeenCalledOnce()
+  })
+
+  // "Trusted users" (webhook-triggers-and-github-events.md): a maintainer's vouch, matched by id.
+  it('admits an actor the role gate refuses when the repository trusts that numeric id', async () => {
+    const h = make({ permission: 'read', users: { octocat: 583231n }, trusted: [583231n] })
+    await expect(h.service.allowed(request)).resolves.toBe(true)
+    expect(h.actorIdsForRepo).toHaveBeenCalledWith(ORG_ID, 'github', REPO_ID)
+    expect(h.userByLogin).toHaveBeenCalledWith(expect.objectContaining({ installationId: INSTALLATION_ID }), 'octocat')
+  })
+
+  it('never resolves a login for an actor the role gate already admitted', async () => {
+    const h = make({ permission: 'write', trusted: [583231n] })
+    await expect(h.service.allowed(request)).resolves.toBe(true)
+    expect(h.actorIdsForRepo).not.toHaveBeenCalled()
+    expect(h.userByLogin).not.toHaveBeenCalled()
+  })
+
+  it('denies a refused actor whose login is unknown to the host, even with an id on the list', async () => {
+    // A renamed-away login vouches for nobody: only the resolved id can match.
+    const h = make({ permission: 'read', users: {}, trusted: [583231n] })
+    await expect(h.service.allowed(request)).resolves.toBe(false)
+  })
+
+  it('denies a refused actor whose resolved id is not the one the maintainer vouched for', async () => {
+    const h = make({ permission: 'read', users: { octocat: 9n }, trusted: [583231n] })
+    await expect(h.service.allowed(request)).resolves.toBe(false)
+  })
+
+  it('requires every refused actor of an unmentioned continuation to be trusted', async () => {
+    // The commenter is vouched for; the subject author is neither vouched for nor a role-holder.
+    const h = make({
+      permissions: { octocat: 'read', outsider: 'none' },
+      users: { octocat: 583231n, outsider: 77n },
+      trusted: [583231n]
+    })
+    await expect(h.service.allowed({ ...request, subjectAuthorLogin: 'outsider' })).resolves.toBe(false)
   })
 
   it('propagates operational GitHub failures', async () => {

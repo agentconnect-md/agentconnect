@@ -122,6 +122,7 @@ import { orderedGiteaHookRows, orderedGithubHookRows, orderedGitlabHookRows } fr
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
+import { TrustedUsersField } from '@/components/console/TrustedUsersField'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -2693,6 +2694,10 @@ export default function AgentDetailView() {
                 rowCarriesReviews(reviewSettingsHook),
                 rowCarriesLabels(reviewSettingsHook)
               )}
+              {/* Repository-wide, so it saves itself rather than riding the row's PUT. */}
+              <div className="mt-4">
+                <TrustedUsersField hookId={reviewSettingsHook.id} provider={reviewSettingsDraft.kind} />
+              </div>
               {reviewSettingsError && (
                 <div className="mt-3 flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                   <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />

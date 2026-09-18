@@ -31,7 +31,8 @@ import {
   PgGitlabProjectCredentialRepo,
   PgGitlabProjectCredentialSecretStore,
   PgGitlabWebhookSecretStore,
-  PgHookRepo
+  PgHookRepo,
+  PgCodeHostTrustedActorRepo
 } from '../../src/persistence/index.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
 import { trackedTestClock } from '../fakes/tracked-clock.js'
@@ -787,6 +788,7 @@ describe('rc/codehost-membership-authz (§12.2)', () => {
       accounts: h.accounts,
       credentials: new PgGitlabProjectCredentialRepo(prisma),
       credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+      trustedActors: new PgCodeHostTrustedActorRepo(prisma),
       clock,
       api: h.fake.api
     })

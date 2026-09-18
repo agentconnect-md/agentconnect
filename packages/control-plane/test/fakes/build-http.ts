@@ -33,6 +33,7 @@ import {
   PgGithubInstallationRepo,
   PgAgentRepoAuthorizationRepo,
   PgCodeHostRepositoryRepo,
+  PgCodeHostTrustedActorRepo,
   PgGitlabConnectionRepo,
   PgGitlabAgentAccountRepo,
   PgGitlabInstanceStateStore,
@@ -77,6 +78,7 @@ import {
   PgIntegrationChannelRepo,
   PgDutyGroupRepo
 } from '../../src/persistence/index.js'
+import { CodeHostTrustedActorService } from '../../src/codehost/trusted-actor.service.js'
 import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
 import { PgAgentMemoryHistoryRepo } from '../../src/persistence/repositories/agent-memory.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
@@ -456,6 +458,20 @@ export function buildHttpApp(
   const deps: HttpDeps = {
     runtimeConfig: {},
     maxOrgsPerNonAdminUser: 1,
+    // The Gitea arm rides the seam when a test brings one, so the route can resolve a login end to end.
+    trustedActors: new CodeHostTrustedActorService({
+      trustedActors: new PgCodeHostTrustedActorRepo(prisma),
+      ...(giteaSeam
+        ? {
+            gitea: {
+              bindings: new PgGiteaRepositoryBindingRepo(prisma),
+              connections: new PgGiteaConnectionRepo(prisma),
+              tokens: giteaSeam.connections,
+              api: giteaSeam.api
+            }
+          }
+        : {})
+    }),
     clock,
     repos: {
       agent: agentRepo,
@@ -476,6 +492,7 @@ export function buildHttpApp(
       githubInstallation: githubInstallationRepo,
       agentRepoAuth: agentRepoAuthRepo,
       codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
+      codeHostTrustedActor: new PgCodeHostTrustedActorRepo(prisma),
       gitlabConnection: new PgGitlabConnectionRepo(prisma),
       gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
       gitlabAgentAccount: new PgGitlabAgentAccountRepo(prisma),
