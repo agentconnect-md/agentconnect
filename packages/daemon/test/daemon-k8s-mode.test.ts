@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
+import { wireWorkspacePlane } from '../src/execution/plane.js'
 import { sandboxSubjectFor } from '../src/k8s/sandbox-identity.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
@@ -229,6 +230,29 @@ describe('daemon --k8s mode', () => {
         await instance.stop()
       }
     }
+  })
+
+  it('places every workspace on the cluster plane — off this disk before any pod is bound, emptied through the plane — until it stops', async () => {
+    const clearPath = vi.fn(async () => 'no bound sandbox channel')
+    const instance = daemon({ root: root(), k8s: true, plane: { clearPath } })
+    try {
+      await instance.start()
+      // The plane's placement, not a channel's: `gitRunnerFor` answers undefined here, and an operation guarded by that would clone onto this disk.
+      expect(instance.workspaces.resolveGitRunner('bot-a', '/agent/repo')).toBeUndefined()
+      expect(instance.workspaces.offDisk({ agentId: 'bot-a' })).toBe(true)
+      expect(await instance.workspaces.clearPath('bot-a', '/agent/repo')).toBe('no bound sandbox channel')
+      expect(clearPath).toHaveBeenCalledWith('bot-a', '/agent/repo')
+    } finally {
+      await instance.stop()
+    }
+    expect(instance.workspaces.offDisk({ agentId: 'bot-a' })).toBe(false)
+  })
+
+  it('keeps a microsandbox workspace on this disk, since a VM mounts directories of this host', () => {
+    const local = daemon({ root: root(), k8s: false })
+    // Wired as the microsandbox backend wires it: having a plane is not living off this disk.
+    wireWorkspacePlane(local.workspaces, (local as any).microsandboxPlane)
+    expect(local.workspaces.offDisk({ agentId: 'bot-a', path: '/agents/bot-a/workspace' })).toBe(false)
   })
 
   it('does not inspect or open the PostgreSQL data plane outside k8s mode', async () => {

@@ -3,8 +3,12 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Agent } from '../src/agents/agent-schema.js'
 import { workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
 import { bundlePathsFromCheckoutRoot, excludeManagedSkillBundles } from '../src/workspace/git-exclude.js'
+import type { GitRunner } from '../src/workspace/git-runner.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+import { wireTestPlane } from './workspace-plane-support.js'
 
 const env = {
   ...workspaceGitLocalEnv(),
@@ -159,4 +163,35 @@ describe('excludeManagedSkillBundles', () => {
       expect(git(repoWithSkills.worktree, 'status', '--porcelain').trim()).toBe('')
     }
   )
+})
+
+describe('the workspace manager recording the bundles its skills step installs', () => {
+  const agent = { id: 'agent-a' } as Agent
+
+  it('excludes them for a cwd on this disk, and asks nothing of a cwd that is off it', async () => {
+    const local = fixture('manager', false)
+    try {
+      installBundle(local.worktree, BUNDLE)
+      const workspaces = new WorkspaceManager()
+      // A prepared cwd is canonical; taking Git's own name for it keeps the bundle anchored at the root Git reports.
+      const cwd = git(local.worktree, 'rev-parse', '--show-toplevel').trim()
+      await workspaces.withSkills(agent, cwd, { installSkills: async () => [BUNDLE] })
+      expect(git(local.worktree, 'status', '--porcelain').trim()).toBe('')
+
+      // Off this disk the bundles live outside the checkout, and a rev-parse answered in the plane's coordinates would have this write create those paths here.
+      const asked: string[][] = []
+      const runner = {
+        withEnv: () => runner,
+        raw: async (args: string[]) => {
+          asked.push(args)
+          return ''
+        }
+      } as unknown as GitRunner
+      wireTestPlane(workspaces, { workspacesOffDisk: true, gitRunnerFor: () => runner })
+      await workspaces.withSkills(agent, '/agent/repo', { installSkills: async () => [BUNDLE] })
+      expect(asked).toEqual([])
+    } finally {
+      rmSync(local.base, { recursive: true, force: true })
+    }
+  })
 })

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { Agent } from '../src/agents/agent-schema.js'
 import { wireWorkspacePlane, type ExecutionPlane, type PlaneScope } from '../src/execution/plane.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import { LocalWorkspaceFs, localWorkspaceFs } from '../src/workspace/workspace-fs.js'
@@ -74,5 +75,58 @@ describe('the plane resolver', () => {
       { agentId: 'agent-a' },
       { agentId: 'agent-a', path: '/agents/a/sessions/leaf' }
     ])
+  })
+})
+
+// Every plane answers alike for every scope of an agent today, so only this pins that a question keeps the narrowest locator its caller holds.
+describe('the scope each workspace question carries', () => {
+  const KEY = 'slack:C1:1700000000.000100'
+  const CWD = '/agent/repo/services/api'
+  const workspaceOf = (mode: 'git-repo' | 'from-scratch') => ({
+    mode,
+    path: '/daemon/agents/agent-a/workspace',
+    gitRepo: 'https://github.com/acme/repo.git',
+    gitBranch: 'main',
+    agentDir: 'services/api'
+  })
+  const agent = { id: 'agent-a', dir: '/daemon/agents/agent-a', workspace: workspaceOf('git-repo') } as unknown as Agent
+  const scratch = { ...agent, workspace: workspaceOf('from-scratch') } as unknown as Agent
+  type Internals = {
+    withLocalSkills(agent: Agent, cwd: string, opts: object): Promise<string>
+    convergeSessionCloneOrigins(agent: Agent): Promise<string[]>
+  }
+
+  const session = { agentId: 'agent-a', sessionKey: KEY }
+  const path = { agentId: 'agent-a', path: CWD }
+  const whole = { agentId: 'agent-a' }
+  // What each question asks FIRST: its own placement, before whatever it goes on to ask of the agent's mount or filesystem.
+  const questions: Array<[string, PlaneScope[], (workspaces: WorkspaceManager) => unknown]> = [
+    ['sessionDir', [session], (w) => w.sessionDir(agent, KEY)],
+    ['confinedSessionDir', [session], (w) => w.confinedSessionDir(agent, KEY)],
+    ['sessionTierOnDisk', [session], (w) => w.sessionTierOnDisk(agent, KEY)],
+    [
+      'consoleWorkspaceRoot',
+      [session],
+      (w) => w.consoleWorkspaceRoot(agent, '/x', '/agent', { isolation: 'session', sessionKey: KEY })
+    ],
+    // The runner is resolved first, on the same path the refusal is then asked about.
+    ['consoleWorkspaceGitRunner', [path, path], (w) => w.consoleWorkspaceGitRunner('agent-a', CWD)],
+    ['the installed-skills exclusion', [path], (w) => w.withSkills(agent, CWD, { installSkills: async () => [] })],
+    ['the local skills step', [path], (w) => (w as unknown as Internals).withLocalSkills(agent, CWD, {})],
+    ['the widened cwd root', [path], (w) => w.additionalWorkspaceDirectories(agent, CWD)],
+    ['mayOwnSessionWorktrees', [whole], (w) => w.mayOwnSessionWorktrees(scratch)],
+    ['session clone origins', [whole], (w) => (w as unknown as Internals).convergeSessionCloneOrigins(agent)],
+    ['workspace activation', [whole], (w) => w.prepareWorkspaceForActivation(agent)]
+  ]
+
+  it.each(questions)('%s', async (_name, leading, ask) => {
+    const asked: PlaneScope[] = []
+    const workspaces = new WorkspaceManager()
+    workspaces.setPlaneResolver((given) => {
+      asked.push(given)
+      return testPlane({ workspacesOffDisk: true })
+    })
+    await ask(workspaces)
+    expect(asked.slice(0, leading.length)).toEqual(leading)
   })
 })

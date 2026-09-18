@@ -361,6 +361,8 @@ describe('k8s runtime plane assembly', () => {
     // Before any launch there is no channel, and the caller must stay on its local runner rather
     // than fail — a self-hosted agent beside a cluster-backed one depends on that.
     expect(plane.gitRunnerFor('agent-a')).toBeUndefined()
+    // Its workspace is on a pod's volume all the same: the placement never waits for the channel.
+    expect(plane.workspacesOffDisk).toBe(true)
 
     const port = shimPort(plane)
     const launching = plane.driver.launch({
