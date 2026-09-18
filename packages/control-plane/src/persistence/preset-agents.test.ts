@@ -54,15 +54,16 @@ describe('PRESET_SKILL_SOURCE validation parity', () => {
     expect(PRESET_SKILL_SOURCE.ref).toBeTruthy()
   })
 
-  it('every default enable-ref resolves to this source and survives its skill filter', () => {
+  it('follows the source repo head: an unfiltered source, enabled whole', () => {
+    // Both halves must stay open, or adding a skill to the repo would need a CP
+    // release again: a filter here, or a specific-skill enable-ref there, re-pins
+    // the roster (resolveAgentSkillEntries intersects the two).
+    expect(PRESET_SKILL_SOURCE.skills).toEqual([])
     expect(PRESET_AGENT_SKILLS.length).toBeGreaterThan(0)
     for (const ref of PRESET_AGENT_SKILLS) {
       const { source, skill } = parseSkillRef(ref)
       expect(source).toBe(PRESET_SKILL_SOURCE.name)
-      // A whole-source ref would broaden beyond the filter; a filtered-out pick
-      // would make resolveAgentSkillEntries omit the source entirely.
-      expect(skill).not.toBeNull()
-      expect(PRESET_SKILL_SOURCE.skills).toContain(skill!)
+      expect(skill).toBeNull()
     }
   })
 })
