@@ -1,10 +1,11 @@
 /**
  * Stateful fake Gitea edge for integration tests — the `FetchLike` twin of `gitlab-api.ts`.
  * Serves the token's user, the version, the scope-probed listings, repositories by id and path,
- * the collaborator permission lookup, and the managed-webhook surface with the two provider
- * quirks the probe recorded (gitea-integration.md §16): unknown subscription names are silently
- * dropped, umbrella names expand. Route matching is base-relative, so one fake serves gitea.com
- * and a path-prefixed self-hosted instance alike.
+ * the collaborator permission lookup, the organization teams behind the §8 fallback with the
+ * 1.27 visibility guards, and the managed-webhook surface with the two provider quirks the probe
+ * recorded (gitea-integration.md §16): unknown subscription names are silently dropped, umbrella
+ * names expand. Route matching is base-relative, so one fake serves gitea.com and a
+ * path-prefixed self-hosted instance alike.
  *
  * Every identifier here is synthetic.
  */
@@ -18,6 +19,27 @@ export interface FakeGiteaRepo {
   /** Whether the bot holds `admin` (§4.4); flipped mid-test to drive admin_degraded. */
   admin: boolean
 }
+
+export type FakeGiteaTeamVisibility = 'public' | 'limited' | 'private'
+
+/** One organization team (§8 fallback): the flat mode Gitea ≥ 1.24 stores beside the unit grants it no longer reflects. */
+export interface FakeGiteaTeam {
+  id: number
+  name: string
+  /** The flat `AccessMode`: `read` for a UI-created General Access team, `admin` for Administrator Access. */
+  permission: 'none' | 'read' | 'write' | 'admin' | 'owner'
+  /** `units_map` on the wire, e.g. `{ 'repo.code': 'write', 'repo.issues': 'write' }`. */
+  units: Record<string, string>
+  /** Repositories the team is granted; absent ⇒ `includes_all_repositories`. */
+  repoIds?: number[]
+  /** Member logins. */
+  members: string[]
+  /** The UI default is `private` (1.27+). */
+  visibility?: FakeGiteaTeamVisibility
+}
+
+/** The bot's standing in the organization — what the `/teams/:id` routes answer hinges on it (1.27 guards). */
+export type FakeGiteaBotRole = 'org_owner' | 'org_member' | 'collaborator_only'
 
 export interface FakeGiteaOptions {
   /** The instance this fake stands in for; default gitea.com. */
@@ -36,6 +58,10 @@ export interface FakeGiteaOptions {
   users?: Record<string, number>
   /** The collaborator permission each login holds on every repository (§8). */
   permissions?: Record<string, 'none' | 'read' | 'write' | 'admin' | 'owner'>
+  /** The organization's teams (§8 fallback); default none. */
+  teams?: FakeGiteaTeam[]
+  /** The bot's standing in the organization; default an owner, the documented requirement. */
+  botRole?: FakeGiteaBotRole
   /** Subscription names the instance silently drops on hook create/update (§16). */
   dropEvents?: string[]
   maxResponseItems?: number
@@ -135,6 +161,10 @@ export class FakeGitea {
   token: string
   repositories: FakeGiteaRepo[]
   permissions: Record<string, 'none' | 'read' | 'write' | 'admin' | 'owner'>
+  /** The organization's teams NOW — a test grants a team before it asks the gate. */
+  teams: FakeGiteaTeam[]
+  /** The bot's standing NOW — demote it to model a bot outside the Owners team. */
+  botRole: FakeGiteaBotRole
   hooks = new Map<number, FakeGiteaHook>()
   /** Every commit status ever written, in order. */
   statuses: FakeGiteaStatus[] = []
@@ -157,6 +187,8 @@ export class FakeGitea {
       organizations: options.organizations ?? ['example-org'],
       users: options.users ?? { alice: 515151, mallory: 606060, 'example-bot': 9042 },
       permissions: options.permissions ?? { alice: 'write', mallory: 'none' },
+      teams: options.teams ?? [],
+      botRole: options.botRole ?? 'org_owner',
       maxResponseItems: options.maxResponseItems ?? 50,
       ...options
     }
@@ -164,6 +196,8 @@ export class FakeGitea {
     this.token = this.opts.token
     this.repositories = this.opts.repositories.map((repo) => ({ ...repo }))
     this.permissions = { ...this.opts.permissions }
+    this.teams = this.opts.teams.map((team) => ({ ...team, units: { ...team.units }, members: [...team.members] }))
+    this.botRole = this.opts.botRole
     this.api = new GiteaApiClient(this.opts.baseUrl, this.fetch())
   }
 
@@ -214,6 +248,35 @@ export class FakeGitea {
     }
   }
 
+  private teamJson(team: FakeGiteaTeam): Record<string, unknown> {
+    return {
+      id: team.id,
+      name: team.name,
+      description: '',
+      organization: null,
+      includes_all_repositories: team.repoIds === undefined,
+      permission: team.permission,
+      units: Object.keys(team.units),
+      units_map: { ...team.units },
+      can_create_org_repo: false,
+      visibility: team.visibility ?? 'private'
+    }
+  }
+
+  /** The 1.27 `reqTeamReadAccess` guard: owners and members always; otherwise visibility decides for an org member. */
+  private teamReadable(team: FakeGiteaTeam): boolean {
+    if (this.botRole === 'org_owner' || team.members.includes(this.opts.bot.login)) return true
+    if (this.botRole !== 'org_member') return false
+    return (team.visibility ?? 'private') !== 'private'
+  }
+
+  /** `denyNonTeamMember`: 403 for an organization member, 404 for anyone outside the organization. */
+  private teamRefusal(): Response {
+    return this.botRole === 'collaborator_only'
+      ? Response.json({ message: "The target couldn't be found." }, { status: 404 })
+      : Response.json({ message: 'Must be a team member' }, { status: 403 })
+  }
+
   /** What the instance actually stores: unknown names dropped, umbrellas expanded (§16). */
   private storedEvents(requested: unknown): string[] {
     const asked = Array.isArray(requested) ? requested.filter((e): e is string => typeof e === 'string') : []
@@ -240,7 +303,7 @@ export class FakeGitea {
   private categoryOf(route: string): GiteaScopeCategory | null {
     if (route === '/user' || route.startsWith('/users/')) return 'user'
     if (route === '/user/repos' || route.startsWith('/repositories/')) return 'repository'
-    if (route === '/user/orgs' || route.startsWith('/orgs/')) return 'organization'
+    if (route === '/user/orgs' || route.startsWith('/orgs/') || route.startsWith('/teams/')) return 'organization'
     if (/^\/repos\/[^/]+\/[^/]+\/issues(?:\/|$)/.test(route)) return 'issue'
     if (route.startsWith('/repos/')) return 'repository'
     return null
@@ -359,6 +422,32 @@ export class FakeGitea {
           return Response.json({ message: `user does not exist [uid: 0, name: ${login}]` }, { status: 404 })
         const answer = this.permissions[login] ?? 'none'
         return Response.json({ permission: answer, role_name: answer, user: { id, login, username: login } })
+      }
+
+      const repoTeams = /^\/repos\/([^/]+)\/([^/]+)\/teams$/.exec(route)
+      if (repoTeams && method === 'GET') {
+        const repo = this.repositories.find((candidate) => candidate.full_name === `${repoTeams[1]}/${repoTeams[2]}`)
+        if (!repo) return Response.json({ message: "The target couldn't be found." }, { status: 404 })
+        // Upstream `ListTeams`: 405 outside an organization, otherwise EVERY team in one body — no paging, no X-Total-Count.
+        if (!this.opts.organizations.includes(repoTeams[1]!)) {
+          return Response.json({ message: 'repo is not owned by an organization' }, { status: 405 })
+        }
+        const rows = this.teams.filter((team) => team.repoIds === undefined || team.repoIds.includes(repo.id))
+        return Response.json(rows.map((team) => this.teamJson(team)))
+      }
+      const teamRoute = /^\/teams\/(\d+)(?:\/members\/([^/]+))?$/.exec(route)
+      if (teamRoute && method === 'GET') {
+        const team = this.teams.find((candidate) => candidate.id === Number(teamRoute[1]))
+        if (!team) return Response.json({ message: "The target couldn't be found." }, { status: 404 })
+        if (!this.teamReadable(team)) return this.teamRefusal()
+        if (teamRoute[2] === undefined) return Response.json(this.teamJson(team))
+        const login = decodeURIComponent(teamRoute[2])
+        const id = this.opts.users[login]
+        // `GetTeamMember`: an unknown login and a non-member are the same 404.
+        if (id === undefined || !team.members.includes(login)) {
+          return Response.json({ message: "The target couldn't be found." }, { status: 404 })
+        }
+        return Response.json({ id, login, username: login })
       }
 
       const statusRoute = /^\/repos\/([^/]+)\/([^/]+)\/statuses\/([^/]+)$/.exec(route)

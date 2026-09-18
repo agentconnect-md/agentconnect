@@ -387,6 +387,87 @@ export async function giteaCollaboratorPermission(
   return answer
 }
 
+// ── organization teams — the gate's fallback (§8) ─────────────────────────────
+
+export interface GiteaTeam {
+  id: number
+  name?: string
+  /** The flat access mode; `read` for every General Access team on Gitea ≥ 1.24 (go-gitea/gitea#34128). */
+  permission?: string
+  /** The per-unit grants (`"repo.code": "write"`, …) the flat mode stopped reflecting. */
+  units_map?: Record<string, string>
+  includes_all_repositories?: boolean
+  /** `public` | `limited` | `private` on 1.27+; decides what a non-owner bot may read. */
+  visibility?: string
+}
+
+/** The unit whose grant is push permission — the same bar `write` sets on the collaborator lookup. */
+const CODE_UNIT = 'repo.code'
+
+/** Whether a team reaches the write bar: `repo.code` at write or above, or a flat admin/owner mode; pull or issue write alone never counts. */
+export function giteaTeamUnitAdmits(
+  unitsMap: Record<string, string> | undefined,
+  flatPermission: string | undefined
+): boolean {
+  if (flatPermission === 'admin' || flatPermission === 'owner') return true
+  return giteaPermissionAdmits(unitsMap?.[CODE_UNIT])
+}
+
+function isTeam(row: unknown): row is GiteaTeam {
+  return typeof (row as Partial<GiteaTeam> | null)?.id === 'number'
+}
+
+/** `GET /repos/:owner/:repo/teams` — every team in ONE response (Gitea does not page this listing); a personal repository's 405 is no teams. */
+export async function giteaListRepositoryTeams(
+  token: string,
+  owner: string,
+  repo: string,
+  client: GiteaApiClient
+): Promise<GiteaTeam[]> {
+  let rows: unknown
+  try {
+    rows = await giteaRequest<unknown>(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/teams`, {
+      token,
+      client
+    })
+  } catch (e) {
+    if (e instanceof GiteaApiError && e.status === 405) return []
+    throw e
+  }
+  if (!Array.isArray(rows)) throw new GiteaApiError('gitea teams listing is not an array', 0, 'INTERNAL', false)
+  return rows.filter(isTeam)
+}
+
+/** One team by id (`GET /teams/:id`); null when the bot cannot read it — 404 for a non-member bot, 403 for an org member the visibility excludes. */
+export async function giteaTeam(token: string, teamId: number, client: GiteaApiClient): Promise<GiteaTeam | null> {
+  try {
+    const team = await giteaRequest<unknown>(`/teams/${teamId}`, { token, client })
+    if (!isTeam(team)) throw new GiteaApiError('gitea team response is not a team', 0, 'INTERNAL', false)
+    return team
+  } catch (e) {
+    if (e instanceof GiteaApiError && (e.code === 'NOT_FOUND' || e.code === 'FORBIDDEN')) return null
+    throw e
+  }
+}
+
+/** `GET /teams/:id/members/:username` — the user when a member; null on the 404 Gitea also answers for a team the bot cannot see, so read the team first. */
+export async function giteaTeamMember(
+  token: string,
+  teamId: number,
+  username: string,
+  client: GiteaApiClient
+): Promise<GiteaUser | null> {
+  try {
+    return asUser(
+      await giteaRequest(`/teams/${teamId}/members/${encodeURIComponent(username)}`, { token, client }),
+      '/teams/:id/members'
+    )
+  } catch (e) {
+    if (e instanceof GiteaApiError && e.code === 'NOT_FOUND') return null
+    throw e
+  }
+}
+
 // ── the managed webhook (§7) ──────────────────────────────────────────────────
 
 export interface GiteaWebhook {

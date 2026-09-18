@@ -12,7 +12,11 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { buildGiteaSeam, type GiteaSeam } from '../fakes/gitea-seam.js'
-import { GiteaMembershipAuthzService } from '../../src/gitea/membership-authz.service.js'
+import type { FakeGitea, FakeGiteaTeam } from '../fakes/gitea-api.js'
+import {
+  GiteaMembershipAuthzService,
+  TEAM_LOOKUP_UNAVAILABLE_REASON
+} from '../../src/gitea/membership-authz.service.js'
 import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
 import { PgCodeHostTrustedActorRepo } from '../../src/persistence/repositories/code-host-trusted-actor.repo.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
@@ -88,6 +92,19 @@ function channel(features?: string[]) {
   } as unknown as RelayChannel
   return { ch, sent }
 }
+
+/** Every path the CP asked the fake for, base-relative, in order. */
+const paths = (fake: FakeGitea) => fake.requests.map((r) => r.url.replace(`${fake.opts.baseUrl}/api/v1`, ''))
+
+/** A General Access team as Gitea ≥ 1.24 stores it (go-gitea/gitea#34128): flat `read`, the grants only in the units. */
+const codeWriters = (over: Partial<FakeGiteaTeam> = {}): FakeGiteaTeam => ({
+  id: 31,
+  name: 'developers',
+  permission: 'read',
+  units: { 'repo.code': 'write', 'repo.issues': 'write', 'repo.pulls': 'write', 'repo.wiki': 'read' },
+  members: ['alice'],
+  ...over
+})
 
 const body = (agentId: string, over: Record<string, unknown> = {}) => ({
   agentId,
@@ -257,13 +274,15 @@ describe('rc/codehost-membership-authz — the gitea arm (§8)', () => {
       OrgId(DEFAULT_ORG_ID),
       HookId((created.json() as { id: string }).id)
     ))!
+    const warnings: Array<{ obj: Record<string, unknown>; msg: string }> = []
     const service = new GiteaMembershipAuthzService({
       hooks: new PgHookRepo(prisma),
       bindings: h.seam.bindings,
       connections: h.seam.connectionRepo,
       tokens: h.seam.connections,
       trustedActors: new PgCodeHostTrustedActorRepo(prisma),
-      api: h.fake.api
+      api: h.fake.api,
+      log: { warn: (obj, msg) => warnings.push({ obj: obj as Record<string, unknown>, msg }) }
     })
     const request = (over: Record<string, unknown> = {}) => ({
       hookId: hook.id,
@@ -275,8 +294,11 @@ describe('rc/codehost-membership-authz — the gitea arm (§8)', () => {
       dispatchRevision: hook.dispatchRevision.toString(),
       ...over
     })
-    return { service, request, hook }
+    return { service, request, hook, warnings }
   }
+
+  /** The team routes among the calls made — empty when the gate settled above the bar. */
+  const teamPaths = (fake: FakeGitea) => paths(fake).filter((p) => p.startsWith('/teams/') || p.endsWith('/teams'))
 
   // "Trusted users" (webhook-triggers-and-github-events.md): the route resolves the login through the
   // connection token and stores the numeric id; the gate then admits that id below the write bar.
@@ -284,6 +306,8 @@ describe('rc/codehost-membership-authz — the gitea arm (§8)', () => {
     const h = await harness()
     const { service, request, hook } = await authz(h)
     h.fake.permissions.alice = 'read'
+    // A qualifying team alice is not on: the teams refuse her, so only the vouch can admit.
+    h.fake.teams.push(codeWriters({ members: ['mallory'] }))
     expect(await service.allowed(request())).toBe(false)
 
     const added = await h.a.app.inject({
@@ -302,8 +326,10 @@ describe('rc/codehost-membership-authz — the gitea arm (§8)', () => {
     expect(listed.statusCode).toBe(200)
     expect(listed.json()).toHaveLength(1)
 
-    // Below the bar, but vouched for.
+    // Below the bar, but vouched for — and the list is read before any team is, so none was.
+    h.fake.requests.length = 0
     expect(await service.allowed(request())).toBe(true)
+    expect(teamPaths(h.fake)).toEqual([])
     // A login whose id does not match is an identity failure the vouch never rescues.
     expect(await service.allowed(request({ actorExternalId: '606060', actorUsername: 'alice' }))).toBe(false)
     // A login the host does not know is refused at the door, not stored.
@@ -325,11 +351,12 @@ describe('rc/codehost-membership-authz — the gitea arm (§8)', () => {
   it('admits write, admin and owner; refuses none, an unknown login, and a login whose id does not match', async () => {
     const h = await harness()
     const { service, request } = await authz(h)
+    // A qualifying team with nobody on it: never consulted above the bar, and admitting no one below it.
+    h.fake.teams.push(codeWriters({ members: [] }))
     h.fake.requests.length = 0
     expect(await service.allowed(request())).toBe(true)
-    // The login was re-resolved to its numeric id before the permission was read, with the bot token.
-    const calls = h.fake.requests.map((r) => r.url.replace('https://gitea.com/api/v1', ''))
-    expect(calls).toEqual(['/users/alice', '/repos/example-org/example-repo/collaborators/alice/permission'])
+    // The login was re-resolved to its numeric id before the permission was read, with the bot token; no team call.
+    expect(paths(h.fake)).toEqual(['/users/alice', '/repos/example-org/example-repo/collaborators/alice/permission'])
     expect(h.fake.requests.every((r) => r.token === h.fake.token)).toBe(true)
     for (const permission of ['admin', 'owner'] as const) {
       h.fake.permissions.alice = permission
@@ -369,5 +396,117 @@ describe('rc/codehost-membership-authz — the gitea arm (§8)', () => {
     expect(await service.allowed(request())).toBe(false)
     expect((await h.seam.connectionRepo.get(DEFAULT_ORG_ID, h.connection.id))!.state).toBe('token_rejected')
     expect((await h.seam.bindings.get(DEFAULT_ORG_ID, h.binding.id))!.state).toBe('runtime_degraded')
+  })
+
+  // Gitea ≥ 1.24 stores a General Access team as flat `read` (go-gitea/gitea#34128), so the lookup alone refuses every member.
+  it('admits a member of a team whose repo.code unit reaches write when the lookup reads back read', async () => {
+    const h = await harness()
+    const { service, request, warnings } = await authz(h)
+    h.fake.permissions.alice = 'read'
+    h.fake.teams.push(codeWriters())
+    h.fake.requests.length = 0
+    expect(await service.allowed(request())).toBe(true)
+    // Identity first, the flat permission second, the teams only once it fell short; the team is read before its roster.
+    expect(paths(h.fake)).toEqual([
+      '/users/alice',
+      '/repos/example-org/example-repo/collaborators/alice/permission',
+      '/repos/example-org/example-repo/teams',
+      '/teams/31',
+      '/teams/31/members/alice'
+    ])
+    expect(h.fake.requests.every((r) => r.token === h.fake.token)).toBe(true)
+    // The `synchronize` that follows an `opened` is the same question asked live again: nothing cached, the same verdict.
+    h.fake.requests.length = 0
+    expect(await service.allowed(request())).toBe(true)
+    expect(paths(h.fake)).toHaveLength(5)
+    expect(warnings).toEqual([])
+  })
+
+  it('refuses a team whose write stops at issues, and a non-member of a qualifying team', async () => {
+    const h = await harness()
+    const { service, request, warnings } = await authz(h)
+    h.fake.permissions.alice = 'read'
+    // Issue or pull write alone is not push permission: the bar stays where `write` puts it, so no team is even read.
+    h.fake.teams.push(codeWriters({ units: { 'repo.code': 'read', 'repo.issues': 'write', 'repo.pulls': 'write' } }))
+    h.fake.requests.length = 0
+    expect(await service.allowed(request())).toBe(false)
+    expect(teamPaths(h.fake)).toEqual(['/repos/example-org/example-repo/teams'])
+    // A qualifying team alice is not on: a readable team's 404 is definitive, refused without a warning.
+    h.fake.teams.push(codeWriters({ id: 32, name: 'maintainers', members: ['mallory'] }))
+    h.fake.requests.length = 0
+    expect(await service.allowed(request())).toBe(false)
+    expect(teamPaths(h.fake)).toEqual(['/repos/example-org/example-repo/teams', '/teams/32', '/teams/32/members/alice'])
+    expect(warnings).toEqual([])
+    // Administrator Access is a flat mode above the bar whatever the units say.
+    h.fake.teams.push(codeWriters({ id: 33, name: 'admins', permission: 'admin', units: {}, members: ['alice'] }))
+    expect(await service.allowed(request())).toBe(true)
+  })
+
+  it('fails closed, logging team_lookup_unavailable, when the bot can read no qualifying team', async () => {
+    const h = await harness()
+    const { service, request, warnings } = await authz(h)
+    h.fake.permissions.alice = 'read'
+    h.fake.teams.push(codeWriters({ visibility: 'private' }))
+    // An organization member outside the Owners team: a private team answers it 403 (§4.4).
+    h.fake.botRole = 'org_member'
+    h.fake.requests.length = 0
+    expect(await service.allowed(request())).toBe(false)
+    expect(teamPaths(h.fake)).toEqual(['/repos/example-org/example-repo/teams', '/teams/31'])
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        obj: expect.objectContaining({ reason: TEAM_LOOKUP_UNAVAILABLE_REASON, repoId: REPO.toString(), teams: 1 })
+      })
+    ])
+    // A bot that is only a repository collaborator is outside the organization: the same route answers 404.
+    h.fake.botRole = 'collaborator_only'
+    expect(await service.allowed(request())).toBe(false)
+    expect(warnings).toHaveLength(2)
+    // A `limited` team is readable by any organization member (1.27+), so the member is admitted.
+    h.fake.botRole = 'org_member'
+    h.fake.teams[0]!.visibility = 'limited'
+    expect(await service.allowed(request())).toBe(true)
+    // One readable team refusing beside one unreadable is the user's refusal, not the bot's: no warning.
+    h.fake.teams[0]!.visibility = 'private'
+    h.fake.teams.push(codeWriters({ id: 32, name: 'maintainers', visibility: 'public', members: ['mallory'] }))
+    expect(await service.allowed(request())).toBe(false)
+    expect(warnings).toHaveLength(2)
+  })
+
+  it('refuses a roster answer whose id is not the delivered one', async () => {
+    const h = await harness()
+    const { service, request } = await authz(h)
+    h.fake.permissions.alice = 'read'
+    h.fake.teams.push(codeWriters())
+    // A members route answering another account under alice's login: identity is checked on every hop.
+    h.fake.opts.intercept = (method, route) =>
+      method === 'GET' && route === '/teams/31/members/alice'
+        ? Response.json({ id: 999999, login: 'alice' })
+        : undefined
+    expect(await service.allowed(request())).toBe(false)
+    delete h.fake.opts.intercept
+    expect(await service.allowed(request())).toBe(true)
+  })
+
+  it('reads the whole unpaged listing but only the qualifying team, and treats a personal repository as teamless', async () => {
+    const h = await harness()
+    const { service, request, warnings } = await authz(h)
+    h.fake.permissions.alice = 'read'
+    // Gitea answers every team in one body whatever `limit` says: the qualifying team is the 60th, past any page size.
+    for (let index = 0; index < 59; index++) {
+      h.fake.teams.push(codeWriters({ id: 100 + index, name: `readers-${index}`, units: { 'repo.code': 'read' } }))
+    }
+    h.fake.teams.push(codeWriters())
+    h.fake.requests.length = 0
+    expect(await service.allowed(request())).toBe(true)
+    expect(teamPaths(h.fake)).toEqual(['/repos/example-org/example-repo/teams', '/teams/31', '/teams/31/members/alice'])
+    // A user-owned repository has no teams: upstream answers 405, a plain refusal that warns of nothing.
+    h.fake.opts.intercept = (method, route) =>
+      method === 'GET' && route === '/repos/example-org/example-repo/teams'
+        ? Response.json({ message: 'repo is not owned by an organization' }, { status: 405 })
+        : undefined
+    h.fake.requests.length = 0
+    expect(await service.allowed(request())).toBe(false)
+    expect(teamPaths(h.fake)).toEqual(['/repos/example-org/example-repo/teams'])
+    expect(warnings).toEqual([])
   })
 })

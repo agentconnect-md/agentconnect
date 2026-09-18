@@ -1326,14 +1326,15 @@ export function buildContainer(
     clock,
     log: { warn: (obj, msg) => http.log.warn(obj, msg) }
   })
-  // The Gitea arm of rc/codehost-membership-authz (§8): the live collaborator permission through the bot token.
+  // The Gitea arm of rc/codehost-membership-authz (§8): the live collaborator permission through the bot token, then the teams.
   const giteaMembershipAuthz = new GiteaMembershipAuthzService({
     hooks: repos.hook,
     bindings: repos.giteaRepositoryBinding,
     connections: repos.giteaConnection,
     tokens: giteaConnectionService,
     trustedActors: repos.codeHostTrustedActor,
-    api: giteaApi
+    api: giteaApi,
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
   })
 
   // §16 informational run projection: the CP records the desired generation, the OWNING DAEMON

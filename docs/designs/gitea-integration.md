@@ -66,7 +66,7 @@ parity table holds with `gitlab` replaced by `gitea`.
 | Rotation                 | Automatic, create-before-revoke                   | Manual replacement in the Console                                                                         |
 | Repository discovery     | OAuth project search                              | Repositories the bot can reach, filtered to `admin`                                                       |
 | Webhook signature        | Standard Webhooks HMAC with timestamp             | `X-Gitea-Signature`, HMAC-SHA256 hex over the raw body, no timestamp                                      |
-| Collaborator gate        | Developer or higher, live membership              | `write` or higher, live `collaborators/:user/permission` lookup                                           |
+| Collaborator gate        | Developer or higher, live membership              | `write` or higher, live `collaborators/:user/permission` lookup, then the repository's teams (§8)         |
 | Inline formal review     | Draft notes + bulk publish                        | One `POST /pulls/:index/reviews` that stages then submits a pending review; **single-line comments only** |
 | Request changes          | Needs a reviewer record; advisory on Free         | Native `REQUEST_CHANGES`, no precondition                                                                 |
 | Approve                  | Separate SHA-fenced approval call                 | Native `APPROVED` in the same call; **refused when the bot authored the pull request**                    |
@@ -190,6 +190,17 @@ permission lookup of §8 is refused unless the caller is an instance
 administrator, the subject itself, or an admin of that repository (§16). So
 `admin_degraded` fails every membership authorization closed; it must never
 fall back to trusting the delivery.
+
+Repository `admin` is not enough for the team half of that gate (§8). The team
+routes it falls back to, `GET /teams/:id` and `GET /teams/:id/members/:username`,
+answer only an organization owner, a site administrator, or a member of that
+team on 1.23–1.26, and from 1.27 also any organization member for a team whose
+visibility is `limited` or `public`; a team created in the web UI is `private`.
+A bot holding `admin` only as a direct collaborator is not an organization
+member and reads 404 on every team. So **team-granted access counts only when
+the connection bot is in the organization's Owners team.** Without it the gate
+still fails closed, logging `team_lookup_unavailable` (§8), and "Trusted users"
+remains the manual alternative for a user the lookup refuses.
 
 ## 5. Resource Model
 
@@ -451,7 +462,25 @@ the veto set has one member; per-agent identities would widen it (§14).
 **Collaborator gate.** Lifecycle, comment, and external pull-request deliveries
 are live-authorized through `rc/codehost-membership-authz`, whose Gitea arm
 calls `GET /repos/:owner/:repo/collaborators/:username/permission` with the
-connection token and accepts `write`, `admin`, or `owner`. The lookup of
+connection token and accepts `write`, `admin`, or `owner`. That answer is the
+flat access mode of Gitea's `access` table, which a team feeds with its flat
+`AccessMode` alone — and since Gitea 1.24 (go-gitea/gitea#34128) a team created
+or edited under "General Access" stores `read` there whatever its units grant,
+so every member of an ordinary team reads back `read`; on 1.23 the flat mode
+was the minimum non-none unit, so only a team with a read-only unit collapsed.
+An answer below the bar for an actor the "Trusted users" list does not carry
+therefore continues to the repository's teams. `GET /repos/:owner/:repo/teams`
+returns every team in one body (Gitea does not page it; a personal repository
+answers 405, which is simply no teams). A candidate is a team whose
+`units_map["repo.code"]` is `write` or above or whose flat `permission` is
+`admin` or `owner` — push permission, the same bar, so `repo.pulls` or
+`repo.issues` write alone never counts. Each candidate is read
+(`GET /teams/:id`) and then its roster asked for the login
+(`GET /teams/:id/members/:username`), concurrently across candidates; the actor
+is admitted when one roster answers 200 with the delivered id. A team the bot
+cannot read admits nobody (§4.4), and when no candidate is readable the denial
+logs `team_lookup_unavailable`, so an operator can tell the bot's standing from
+the user's. The lookup of
 another user's permission requires the bot to be an admin of that repository,
 so the gate and §4.4's `admin` requirement stand or fall together; a user with
 no access answers 200 with `"none"` rather than 404, and every instance
@@ -895,6 +924,27 @@ as `none`. Accepting `write|admin|owner` therefore admits every instance
 administrator by construction — acceptable, but a stated property rather than an
 accident.
 
+**1a. The flat answer stopped reflecting team grants at 1.24.** Found live
+(#2148) and verified against the `v1.24.0` through `v1.27.3` sources; the probe
+above tested direct collaborators only and missed it. `GetRepoPermissions`
+returns `permission.AccessMode` from `GetIndividualUserRepoPermission`, whose
+`accessLevel()` reads the `access` table that `RecalculateTeamAccesses` fills
+with each team's flat `team.AccessMode`; `team_unit` never feeds it. Since
+go-gitea/gitea#34128 (1.24.0) the web UI's "General Access" radio offers only
+`read` or `admin` and `NewTeamPost`/`EditTeamPost` store that value directly,
+so a team granting `repo.code: write` still reads back `read`: only direct
+collaborators, Administrator-Access teams, organization owners, and site
+administrators pass the lookup alone. The team fallback of §8 is the fix, and
+its routes carry their own guards. `GET /repos/:owner/:repo/teams` sits under
+`reqAnyRepoReader()` and returns every team in one body, with no paging and no
+`X-Total-Count`. `GET /teams/:id` and `GET /teams/:id/members/:username` sit
+under `read:organization` and `reqTeamMembership()` on 1.23–1.26, or
+`reqOrgMembership()` plus `reqTeamReadAccess()` on 1.27+, and refuse through
+`denyNonTeamMember`: 403 to an organization member the team's visibility
+excludes, 404 to anyone outside the organization — hence the Owners-team
+requirement of §4.4, and why the team is read before its roster: a members 404
+alone cannot tell a non-member from a team the bot cannot see.
+
 **2. A review is one delivery, and the inline comments are not in it.**
 Submitting `POST /pulls/:index/reviews` with `event: COMMENT`, a summary body,
 and one inline comment on `probe.txt` produced exactly one POST to the capture
@@ -1044,6 +1094,11 @@ scopes remains the recommendation to verify at connect time.
   `https://docs.gitea.com/development/oauth2-provider`
 - Gitea configuration cheat sheet (`[webhook]`, `[ui] REACTIONS`, `[api]`) —
   `https://docs.gitea.com/administration/config-cheat-sheet`
+- go-gitea/gitea#34128 "Fix team permission" (1.24.0) — why a General Access
+  team's flat mode reads `read` — `https://github.com/go-gitea/gitea/pull/34128`
+- `routers/api/v1/repo/collaborators.go` at `v1.27.3`, `GetRepoPermissions` —
+  the flat answer the gate reads first —
+  `https://github.com/go-gitea/gitea/blob/v1.27.3/routers/api/v1/repo/collaborators.go`
 - [gitlab-com-integration.md](gitlab-com-integration.md) — the parent design
   every unchanged section is inherited from.
 - [github-pr-review-checks.md](github-pr-review-checks.md) — the Check writer

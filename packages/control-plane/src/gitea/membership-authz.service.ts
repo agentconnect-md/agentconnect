@@ -1,12 +1,4 @@
-/**
- * The Gitea arm of `rc/codehost-membership-authz` (gitea-integration.md §8): re-resolve every
- * relevant actor's CURRENT repository permission with the connection token — never a
- * webhook-carried relationship label. Gitea looks up by username, so the delivered login is first
- * re-resolved to its numeric id and a mismatch refused; the lookup itself needs the bot's `admin`,
- * so an `admin_degraded` binding fails closed. Local metadata mismatches deny before any Gitea
- * request; operational failures and the bounded timeout propagate so the wire handler can tell
- * them from a definitive denial.
- */
+// The Gitea arm of `rc/codehost-membership-authz` (gitea-integration.md §8): the actor's CURRENT permission through the connection token, never a delivered label; the login is re-resolved to its id first and the bot's `admin` carries the lookup, so `admin_degraded` fails closed.
 import type { RcCodeHostMembershipAuthz } from '@agentconnect.md/protocol'
 import { HookId } from '../domain/ids.js'
 import type {
@@ -18,7 +10,11 @@ import type {
 } from '../persistence/ports.js'
 import {
   giteaCollaboratorPermission,
+  giteaListRepositoryTeams,
   giteaPermissionAdmits,
+  giteaTeam,
+  giteaTeamMember,
+  giteaTeamUnitAdmits,
   giteaUser,
   isGiteaAuthRejection,
   splitGiteaRepoPath,
@@ -35,16 +31,28 @@ export interface GiteaMembershipAuthzDeps {
   /** The repository's "Trusted users": a maintainer's vouch admits an actor below the write bar. */
   trustedActors: Pick<CodeHostTrustedActorRepo, 'actorIdsForRepo'>
   api: GiteaApiClient
+  /** Where the team fallback names a bot that cannot read the teams; a plain denial stays silent. */
+  log?: { warn(obj: object, msg: string): void }
   /** Test override; production stays below the relay's 5 second correlator. */
   timeoutMs?: number
 }
 
 const DEFAULT_TIMEOUT_MS = 4_000
+/** The structured reason logged when every qualifying team is unreadable through the bot — its standing, not the user's. */
+export const TEAM_LOOKUP_UNAVAILABLE_REASON = 'team_lookup_unavailable'
 
 interface Actor {
   id: bigint
   username: string | undefined
 }
+
+interface RepoPath {
+  owner: string
+  repo: string
+}
+
+/** `unreadable` is the bot's problem (a team it cannot see), `absent` the actor's; only `member` admits. */
+type TeamVerdict = 'member' | 'absent' | 'unreadable'
 
 export class GiteaMembershipAuthzService {
   constructor(private readonly deps: GiteaMembershipAuthzDeps) {}
@@ -113,7 +121,7 @@ export class GiteaMembershipAuthzService {
     const trusted = await this.deps.trustedActors.actorIdsForRepo(first.orgId, 'gitea', repoId)
     try {
       for (const actor of actors) {
-        if (!(await this.actorAdmitted(token, path, actor, trusted))) return false
+        if (!(await this.actorAdmitted(token, path, actor, trusted, repoId))) return false
       }
     } catch (e) {
       // A rejected token is the connection's verdict (§4.3), and this delivery's denial.
@@ -140,14 +148,13 @@ export class GiteaMembershipAuthzService {
     })
   }
 
-  /** §8: the login re-resolved to its id must match the delivered id, then the permission must admit — or,
-   *  identity established, the repository's "Trusted users" list must carry that id. A failed identity
-   *  re-resolution is never rescued by the list: it means the delivery could not say who was asking. */
+  // §8: the re-resolved id must match the delivered one, then the permission, the "Trusted users" list, or a team admits; a failed identity check is rescued by neither.
   private async actorAdmitted(
     token: string,
-    path: { owner: string; repo: string },
+    path: RepoPath,
     actor: Actor,
-    trusted: ReadonlySet<string>
+    trusted: ReadonlySet<string>,
+    repoId: bigint
   ): Promise<boolean> {
     const user = await giteaUser(token, actor.username!, this.deps.api)
     if (!user || BigInt(user.id) !== actor.id) return false
@@ -160,7 +167,51 @@ export class GiteaMembershipAuthzService {
       return false
     }
     if (permission.user?.id !== undefined && BigInt(permission.user.id) !== actor.id) return false
-    return giteaPermissionAdmits(permission.permission) || trusted.has(actor.id.toString())
+    if (giteaPermissionAdmits(permission.permission) || trusted.has(actor.id.toString())) return true
+    return this.teamAdmits(token, path, actor, repoId)
+  }
+
+  // Gitea ≥ 1.24 stores a General Access team as flat `read` whatever its units grant (go-gitea/gitea#34128), so a below-bar answer asks the teams whose `repo.code` reaches write.
+  private async teamAdmits(token: string, path: RepoPath, actor: Actor, repoId: bigint): Promise<boolean> {
+    let candidates
+    try {
+      const teams = await giteaListRepositoryTeams(token, path.owner, path.repo, this.deps.api)
+      candidates = teams.filter((team) => giteaTeamUnitAdmits(team.units_map, team.permission))
+    } catch (e) {
+      if (isGiteaAuthRejection(e)) throw e
+      this.warnUnavailable(repoId, 0, e)
+      return false
+    }
+    if (candidates.length === 0) return false
+    const verdicts = await Promise.all(candidates.map((team) => this.teamVerdict(token, team.id, actor)))
+    if (verdicts.includes('member')) return true
+    // Every qualifying team unreadable is the bot's standing, not the user's: name it so an operator can tell the two apart.
+    if (verdicts.every((verdict) => verdict === 'unreadable')) this.warnUnavailable(repoId, candidates.length)
+    return false
+  }
+
+  // The team read first: its 200 makes a members 404 a definitive "not a member" rather than a team the bot cannot see.
+  private async teamVerdict(token: string, teamId: number, actor: Actor): Promise<TeamVerdict> {
+    try {
+      if ((await giteaTeam(token, teamId, this.deps.api)) === null) return 'unreadable'
+      const member = await giteaTeamMember(token, teamId, actor.username!, this.deps.api)
+      return member !== null && BigInt(member.id) === actor.id ? 'member' : 'absent'
+    } catch (e) {
+      if (isGiteaAuthRejection(e)) throw e
+      return 'unreadable'
+    }
+  }
+
+  private warnUnavailable(repoId: bigint, teams: number, err?: unknown): void {
+    this.deps.log?.warn(
+      {
+        repoId: repoId.toString(),
+        teams,
+        reason: TEAM_LOOKUP_UNAVAILABLE_REASON,
+        ...(err !== undefined ? { err } : {})
+      },
+      'gitea membership authz: no qualifying team is readable through the connection bot — add it to the organization Owners team'
+    )
   }
 
   private matchesAuthorizedHook(
