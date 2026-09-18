@@ -9,6 +9,13 @@
 -- identity, so a differently-sourced row that happens to share the name is never touched.
 --
 -- Order matters: the agent rewrite reads the source row, so it runs before the widening.
+--
+-- Explicitly wrapped: Prisma 7 does NOT run a `migrate deploy` file in a transaction (verified
+-- against 7.9 — a statement after a failing one leaves the earlier ones committed). Without
+-- BEGIN/COMMIT a CP serving `register/ok` mid-migration could hand a daemon the widened skills
+-- at its pre-bump revision, which the daemon refuses as equal-revision/different-digest until
+-- the next push; the wrap removes that window rather than leaving it to self-heal.
+BEGIN;
 
 -- The preset agents' enable-list: the whole source, in place of the two pinned refs.
 -- Entries from other sources keep their order; an already-widened list is left alone.
@@ -56,7 +63,7 @@ WHERE "name" = 'agentconnect'
 -- The repo path does this through `bumpAgentsReferencingSkillSource`; mirror its predicate
 -- exactly, over-approximation included (every agent in the org whose enable-list names the
 -- source, not only those whose resolved content moved): a spurious bump costs one identical
--- re-apply, a missing one wedges the agent. Same transaction as the rewrites, so no reader
+-- re-apply, a missing one wedges the agent. Inside this file's explicit transaction, so no reader
 -- observes new content at an old revision.
 UPDATE "agent" AS a
 SET "configRevision" = a."configRevision" + 1
@@ -70,3 +77,5 @@ WHERE s."orgId" = a."orgId"
     FROM jsonb_array_elements(a."runtimeOverrides" -> 'skills') AS e
     WHERE split_part(e #>> '{}', '/', 1) = 'agentconnect'
   );
+
+COMMIT;
