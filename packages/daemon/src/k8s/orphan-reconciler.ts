@@ -283,17 +283,32 @@ export class OrphanReconciler {
     return summary
   }
 
-  /** The orphans still worth deleting: everything a departure did not condemn, plus those whose
-   *  agent the control plane STILL places elsewhere. A read that fails keeps only the first group,
-   *  which is the safe direction — an agent whose placement nobody can confirm is not collected. */
+  /**
+   * The orphans still worth deleting: everything a departure did not condemn, plus those whose agent
+   * the control plane still places elsewhere on the SAME departure it was condemned on.
+   *
+   * The timestamp has to match, not merely be present. An agent that returned and left again reads
+   * as departed both times, but the second departure is a new one and has served none of its window —
+   * deleting it against the first one's expired window would give it no grace at all. A changed
+   * timestamp is therefore a return, and the next run judges the new departure from the start.
+   *
+   * A read that fails keeps everything, which is the safe direction: an agent whose placement nobody
+   * can confirm is not collected.
+   */
   private async stillGone(orphans: Candidate[], moved: Map<string, number>): Promise<Candidate[]> {
     const departed = [...new Set(orphans.map((o) => o.agentId).filter((id) => moved.has(id)))]
     if (departed.length === 0) return orphans
     const still = await this.movedAway(departed)
-    const returned = departed.filter((id) => !still.has(id))
-    for (const id of returned)
-      this.deps.log.info(`k8s orphans: agent ${id} is this pool's again — leaving what it left behind`)
-    return orphans.filter((o) => !moved.has(o.agentId) || still.has(o.agentId))
+    const condemned = new Set(departed.filter((id) => still.get(id) === moved.get(id)))
+    for (const id of departed) {
+      if (condemned.has(id)) continue
+      this.deps.log.info(
+        still.has(id)
+          ? `k8s orphans: agent ${id} left this pool again since this sweep read it — its new window starts fresh`
+          : `k8s orphans: agent ${id} is this pool's again — leaving what it left behind`
+      )
+    }
+    return orphans.filter((o) => !moved.has(o.agentId) || condemned.has(o.agentId))
   }
 
   // Fail-closed like every other read here: a control plane that cannot say where an agent is placed

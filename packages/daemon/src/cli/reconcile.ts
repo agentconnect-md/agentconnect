@@ -259,7 +259,19 @@ async function purgeMovedAgentSessions(deps: {
   const collectable = expired.filter(departed)
   let purged = 0
   let failed = 0
-  for (const rec of collectable) {
+  if (collectable.length === 0) return { failed: 0 }
+  // The same late re-read the claim sweep does, for the same reason: the answer above is a snapshot,
+  // and a row purged after its agent came back takes the session's pod and volume with it on the next
+  // sweep. An agent that left AGAIN reads as departed with a new timestamp and starts a fresh window.
+  let confirmed: Map<string, number>
+  try {
+    confirmed = await deps.movedAgents([...new Set(collectable.map((rec) => rec.agentId))])
+  } catch (err) {
+    log.warn(`moved sessions: could not re-confirm which agents left this pool — ${(err as Error).message}`)
+    return { failed: 1 }
+  }
+  const still = collectable.filter((rec) => confirmed.get(rec.agentId) === moved.get(rec.agentId))
+  for (const rec of still) {
     if (!deps.deleteEnabled) {
       log.info(`moved sessions: would purge ${rec.key} (agent ${rec.agentId} left this pool) — dry run`)
       continue
@@ -272,7 +284,8 @@ async function purgeMovedAgentSessions(deps: {
     }
   }
   log.info(
-    `moved sessions: ${collectable.length} expired session(s) of departed agents — purged=${purged} failed=${failed}` +
+    `moved sessions: ${still.length} expired session(s) of departed agents — purged=${purged} failed=${failed}` +
+      (collectable.length > still.length ? `, ${collectable.length - still.length} left (agent came back)` : '') +
       (deps.deleteEnabled ? '' : ' (dry run)')
   )
   return { failed }

@@ -378,6 +378,21 @@ describe('orphan reconciler and agents that moved off this pool', () => {
     expect(r.infos.some((line) => line.includes(`agent ${MOVED} is this pool's again`))).toBe(true)
   })
 
+  it('gives a departure that happened SINCE the first read its own window, not the old one', async () => {
+    // Departed both times, but not the same departure: deleting against the first one's expired
+    // window would hand the second move no grace at all. The next run judges it from the start.
+    const left = T0 - MOVED_GRACE - HOUR
+    const { api, deletes } = await cluster([claim(MOVED, { createdAt: left, sandbox: 'sb' })], [])
+    let answers = 0
+    const r = away(left, {
+      api,
+      movedAgents: async (ids) => new Map(ids.map((id) => [id, answers++ === 0 ? left : T0 - 60_000]))
+    })
+    expect(await r.it.sweep()).toMatchObject({ orphaned: 0, moved: 0, skippedLive: 1 })
+    expect(deletes).toEqual([])
+    expect(r.infos.some((line) => line.includes('left this pool again since this sweep read it'))).toBe(true)
+  })
+
   it('keeps a condemned object when the re-ask itself fails', async () => {
     const left = T0 - MOVED_GRACE - HOUR
     const { api, deletes } = await cluster([claim(MOVED, { createdAt: left, sandbox: 'sb' })], [])
