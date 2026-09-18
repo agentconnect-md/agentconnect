@@ -2068,6 +2068,8 @@ type Turn =
       cronId: string | null
       /** Sent into the agent's running turn (#1847) rather than as a turn of its own. */
       steer?: boolean
+      /** The daemon confirmed the steer landed; until then the reply keeps streaming in the block above. */
+      steered?: boolean
       /** The platform this message was authored on — see `FmtStep.platform`. */
       platform?: string
       /** The facts behind a delivery turn (transcript-full-tool-body.md §9) — the bubble's "more". */
@@ -4151,14 +4153,13 @@ export default function SessionDetailView() {
     }
   } else {
     let firstMsg = true
-    // Steers fence the running turn's block: the reply that continues after one starts a
-    // fresh block below it instead of merging back into the block above (#1847).
+    // A confirmed steer fences the running turn's block: the reply after it starts a fresh block below it; a pending one keeps the block above growing (#1847).
     let steerSegment = 0
     const segmentedKey = (turnKey: string | undefined): string | undefined =>
       turnKey && steerSegment > 0 ? `${turnKey}:s${steerSegment}` : turnKey
     session.steps.forEach((stp) => {
       if (stp.kind === 'msg') {
-        if (stp.steer) steerSegment += 1
+        if (stp.steered) steerSegment += 1
         const who = stp.who ?? session.user
         if (isBgTaskWake(stp.who)) {
           pushOwnerWakeTurn(
@@ -4199,7 +4200,7 @@ export default function SessionDetailView() {
           image: stp.image,
           isCron: !!cron,
           cronId: cron?.id ?? null,
-          ...(stp.steer ? { steer: true } : {}),
+          ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),
           platform: session.platform
         })
         firstMsg = false
@@ -4250,7 +4251,7 @@ export default function SessionDetailView() {
       turnKey && steerSegment > 0 ? `${turnKey}:s${steerSegment}` : turnKey
     for (const stp of liveSteps) {
       if (stp.kind === 'msg') {
-        if (stp.steer) steerSegment += 1
+        if (stp.steered) steerSegment += 1
         const who = stp.who ?? session.user
         if (isBgTaskWake(stp.who)) {
           pushOwnerWakeTurn(
@@ -4286,7 +4287,7 @@ export default function SessionDetailView() {
           image: stp.image,
           isCron: false,
           cronId: null,
-          ...(stp.steer ? { steer: true } : {}),
+          ...(stp.steer ? { steer: true, ...(stp.steered ? { steered: true } : {}) } : {}),
           platform: session.platform
         })
       } else {
@@ -5076,7 +5077,7 @@ export default function SessionDetailView() {
                               )}
                               {turn.steer && (
                                 <span className="pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                                  Steered into the running reply
+                                  {turn.steered ? 'Steered into the running reply' : 'Steering into the running reply…'}
                                 </span>
                               )}
                               <div className={SELF_BUBBLE}>

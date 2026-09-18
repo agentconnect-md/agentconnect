@@ -1264,6 +1264,63 @@ describe('mid-turn steering', () => {
     expect(kinds.indexOf('tool')).toBeLessThan(kinds.indexOf('steer'))
   })
 
+  it('keeps the reply in the block above a steer until the daemon confirms it, then fences it', async () => {
+    vi.useFakeTimers()
+    try {
+      const { socket, turnId } = await openSteerableStream()
+      // Text deltas coalesce in the delta buffer; its latency cap is what lands them here.
+      const say = async (index: number, text: string) => {
+        act(() =>
+          feed(socket, {
+            type: 'output',
+            output: { turnId, agentId: 'agent-1', index, event: { kind: 'message', text } }
+          })
+        )
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(100)
+        })
+      }
+      await say(1, 'first half')
+      await act(async () => {
+        expect(pgSend('s1', 'agent-1', 'retry', 'c1')).toBe(true)
+      })
+      const steer = frames(socket).find((f) => f.steer === true)!
+      // Unconfirmed: the text that keeps streaming extends the block the reader was already in.
+      await say(2, ' second half')
+      let steps = getLiveSteps('s1')
+      expect(steps.filter((s) => s.kind === 'done').map((s) => s.text)).toEqual(['first half second half'])
+      expect(steps.findIndex((s) => s.kind === 'done')).toBeLessThan(steps.findIndex((s) => s.steer))
+      expect(steps.find((s) => s.steer)).not.toHaveProperty('steered')
+
+      // Confirmed: the step carries the verdict and what follows starts a fresh block below it.
+      act(() =>
+        feed(socket, { type: 'ack', ack: { accepted: true, turnId: steer.turnId, agentId: 'agent-1', steered: true } })
+      )
+      await say(3, 'third')
+      steps = getLiveSteps('s1')
+      expect(steps.find((s) => s.steer)).toMatchObject({ steered: true })
+      expect(steps.filter((s) => s.kind === 'done').map((s) => s.text)).toEqual(['first half second half', 'third'])
+      expect(steps.findIndex((s) => s.steer)).toBeLessThan(steps.findIndex((s) => s.text === 'third'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('takes the steer’s own steered done as the confirmation when it lands ahead of the ack', async () => {
+    const { socket } = await openSteerableStream()
+    await act(async () => {
+      expect(pgSend('s1', 'agent-1', 'retry', 'c1')).toBe(true)
+    })
+    const steer = frames(socket).find((f) => f.steer === true)!
+    act(() => {
+      feed(socket, {
+        type: 'done',
+        done: { turnId: steer.turnId, agentId: 'agent-1', stopReason: 'steered_into_turn' }
+      })
+    })
+    expect(getLiveSteps('s1').find((s) => s.steer)).toMatchObject({ steered: true })
+  })
+
   it('re-sends a steer nobody acked when the socket drops and reconnects', async () => {
     vi.useFakeTimers()
     try {

@@ -631,7 +631,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         const laneIndex = (() => {
           for (let i = steps.length - 1; i >= 0; i--) {
             const step = steps[i]!
-            if (step.kind === 'msg' && step.agentId === undefined) return -1
+            if (step.kind === 'msg' && step.agentId === undefined) {
+              // A steer the daemon has not confirmed is no fence: the reply keeps extending the block above it.
+              if (step.steer && !step.steered) continue
+              return -1
+            }
             if ((step.agentId ?? undefined) !== agentId) continue
             // A stable stream turn is also a hard boundary. This covers
             // coalesced/resumed turns that have no newly pushed user row.
@@ -1024,6 +1028,16 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   /** Steers of a session still awaiting the daemon's verdict — they keep their turnId until it comes. */
   const hasUnackedSteers = (id: string): boolean => (steerTurns.current.get(id)?.size ?? 0) > 0
 
+  /** The daemon took this steer into the running turn: the step now fences the reply that follows it. */
+  const markSteered = useCallback(
+    (id: string, turnId: string): void => {
+      mutateSteps(id, (steps) =>
+        steps.map((s) => (s.turnId === turnId && s.steer && !s.steered ? { ...s, steered: true } : s))
+      )
+    },
+    [mutateSteps]
+  )
+
   const failStream = useCallback(
     (id: string, message: string): void => {
       dropLanes(id)
@@ -1250,6 +1264,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const steered = steerTurns.current.get(id)?.has(done.turnId) === true
       if (steered && (done.stopReason === 'steered_into_turn' || done.stopReason === 'coalesced_into_turn')) {
         steerTurns.current.get(id)?.delete(done.turnId)
+        markSteered(id, done.turnId)
         return
       }
       if (steered) steerTurns.current.get(id)?.delete(done.turnId)
@@ -1984,6 +1999,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // may have landed already (the daemon emits it inside admission) or is harmless later.
       if (ack.steered) {
         steerTurns.current.get(id)?.delete(turnId)
+        markSteered(id, turnId)
         return
       }
       // Not steered while an older lane is still open: the daemon ran this message as its own turn
@@ -2000,7 +2016,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // pulls its replay from the daemon instead of waiting on frames that went out before.
       openSteerTurnLane(id, turnId, steer, ack.agentId, steer.resent === true)
     },
-    [mutateSteps, openSteerTurnLane, participantName, pushStep, requeueSteer]
+    [markSteered, mutateSteps, openSteerTurnLane, participantName, pushStep, requeueSteer]
   )
 
   /** Deliver one turn's worth of input: steer the live turn, queue behind what is

@@ -1192,9 +1192,10 @@ export interface SessionStep {
    *  history view gets, via the existing `fetchToolBody` read. */
   toolCallId?: string
   toolStatus?: string
-  /** A `msg` step sent INTO a running turn (#1847): rendered as a steer, and a grouping fence
-   *  so the reply that continues after it starts a fresh block below it. */
+  /** A `msg` step sent INTO a running turn (#1847), awaiting the daemon's verdict until `steered` lands. */
   steer?: boolean
+  /** The daemon confirmed it delivered this steer into the running turn: from here the reply that follows starts a fresh block below it. */
+  steered?: boolean
   /** The daemon session that recorded this tool call — set on live multi-agent
    *  steps where the owning participant's session differs from the row's
    *  primary `realSessionId`; the on-demand tool-body read targets it. */

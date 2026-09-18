@@ -236,10 +236,12 @@ no second answer, and the message is never re-asked once the turn ends.
 The visible acknowledgement follows the delivery, not the queue. A surface that
 would have said "queued behind the current task" says the message was added to the
 running task instead. In the console, a message typed while a steerable turn
-streams leaves the composer at once, appears in the conversation marked as steered
-into the running reply, and the reply that follows it continues below it; only when
-the runtime cannot take it does the message wait in the composer's queue, where it
-can still be cancelled. The running turn's own status and reactions are unchanged.
+streams leaves the composer at once and appears in the conversation. Until the runtime
+confirms it took the message, the reply keeps streaming in the block above it; once the
+message is marked as steered into the running reply, the reply that follows it continues
+in a fresh block below it. Only when the runtime cannot take it does the message wait in
+the composer's queue, where it can still be cancelled. The running turn's own status and
+reactions are unchanged.
 
 Steering is for ordinary human messages on chat platforms and the console. The
 explicit `!queue` command still parks its text until the agent is idle; scheduled
