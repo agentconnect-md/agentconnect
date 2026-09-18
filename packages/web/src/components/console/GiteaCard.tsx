@@ -657,7 +657,7 @@ export default function GiteaCard({ canWrite }: { canWrite: boolean }) {
                       onClick={() => void add(choice)}
                     >
                       <Icon
-                        name={choice.private ? 'lock' : 'book-marked'}
+                        name={choice.private ? 'lock' : 'book-bookmark'}
                         size={16}
                         color="var(--text-tertiary)"
                         className="flex-none"

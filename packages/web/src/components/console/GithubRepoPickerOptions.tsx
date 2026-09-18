@@ -38,7 +38,7 @@ export function GithubRepoPickerOptions({
         <GithubRepositoryOption
           key={`installation:${installedExact.installationId}:${installedExact.fullName}`}
           fullName={installedExact.fullName}
-          icon={installedExact.private ? 'lock' : 'book-marked'}
+          icon={installedExact.private ? 'lock' : 'book-bookmark'}
           description="Available through the GitHub App"
           selected={is(installedExact.fullName)}
           onSelect={() => onPickInstalled(installedExact)}
@@ -48,7 +48,7 @@ export function GithubRepoPickerOptions({
         <GithubRepositoryOption
           key={`public-exact:${publicExact.fullName}`}
           fullName={publicExact.fullName}
-          icon="book-marked"
+          icon="book-bookmark"
           description="Use public repository — credential-free read-only clone"
           badge="public"
           onSelect={() => onPickPublic(publicExact)}
@@ -60,7 +60,7 @@ export function GithubRepoPickerOptions({
           <GithubRepositoryOption
             key={repo.fullName}
             fullName={repo.fullName}
-            icon={repo.private ? 'lock' : 'book-marked'}
+            icon={repo.private ? 'lock' : 'book-bookmark'}
             description={
               row?.description ?? (
                 <>
@@ -79,7 +79,7 @@ export function GithubRepoPickerOptions({
         <GithubRepositoryOption
           key={`public:${repo.fullName}`}
           fullName={repo.fullName}
-          icon="book-marked"
+          icon="book-bookmark"
           description={
             <>
               {repo.description ?? 'Public GitHub repository'}

@@ -204,7 +204,7 @@ export interface RepositoryPickerProps {
   /** Overrides the wrapper's field label where a surface needs another noun. */
   label?: string
   value: string
-  icon?: 'lock' | 'book-marked'
+  icon?: 'lock' | 'book-bookmark'
   badge?: string
   loading: boolean
   open: boolean
@@ -561,7 +561,7 @@ export function PublicGitlabProjectOption({
   return (
     <button type="button" className="fopt min-h-[46px] items-center gap-3 px-2 py-2" onClick={() => onSelect(path)}>
       <span className="flex h-4 w-4 flex-none items-center justify-center">
-        <Icon name="book-marked" size={14} color="var(--text-tertiary)" />
+        <Icon name="book-bookmark" size={14} color="var(--text-tertiary)" />
       </span>
       <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
         <span className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)">
@@ -725,7 +725,7 @@ export function GithubRepositoryOption({
 }: {
   fullName: string
   description: ReactNode
-  icon?: 'lock' | 'book-marked'
+  icon?: 'lock' | 'book-bookmark'
   badge?: string
   selected?: boolean
   onSelect: () => void
@@ -804,7 +804,7 @@ export function RepositoryAccessField({
       {!repositorySelected ? (
         <div className="inp min-w-0 cursor-not-allowed pl-[10px] opacity-70" aria-disabled="true">
           <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
-            <Icon name="book-marked" size={16} color="var(--text-tertiary)" className="flex-none" />
+            <Icon name="book-bookmark" size={16} color="var(--text-tertiary)" className="flex-none" />
             <span className="truncate font-sans text-[13px] font-medium leading-normal text-(--text-tertiary)">
               {unselectedLabel}
             </span>

@@ -1744,7 +1744,7 @@ export default function AddIntegrationModal({
                           {ghRepoPick ? (
                             <>
                               <Icon
-                                name={pickedRepo && !pickedRepo.private ? 'book-marked' : 'lock'}
+                                name={pickedRepo && !pickedRepo.private ? 'book-bookmark' : 'lock'}
                                 size={16}
                                 color="var(--text-tertiary)"
                                 className="flex-none"
@@ -1828,7 +1828,7 @@ export default function AddIntegrationModal({
                                       }}
                                     >
                                       <Icon
-                                        name={repo.private ? 'lock' : 'book-marked'}
+                                        name={repo.private ? 'lock' : 'book-bookmark'}
                                         size={16}
                                         color="var(--text-tertiary)"
                                         className="flex-none"
@@ -1891,7 +1891,7 @@ export default function AddIntegrationModal({
                                     }}
                                   >
                                     <Icon
-                                      name="book-marked"
+                                      name="book-bookmark"
                                       size={16}
                                       color="var(--text-tertiary)"
                                       className="flex-none"
@@ -2058,7 +2058,7 @@ export default function AddIntegrationModal({
                 <div className="mb-[18px]">
                   <GiteaRepositoryField
                     value={gtPicked?.repoPath ?? ''}
-                    icon="book-marked"
+                    icon="book-bookmark"
                     loading={false}
                     open={gtOpen}
                     query={gtQ}
@@ -2168,7 +2168,7 @@ export default function AddIntegrationModal({
                 <div className="mb-4">
                   <GitlabProjectField
                     value={glPicked?.projectPath ?? ''}
-                    icon="book-marked"
+                    icon="book-bookmark"
                     loading={false}
                     open={glOpen}
                     query={glQ}

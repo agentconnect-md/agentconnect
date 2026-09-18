@@ -693,7 +693,7 @@ export default function EditWorkspaceModal({
                 <>
                   <GitlabProjectField
                     value={glPickLabel}
-                    icon="book-marked"
+                    icon="book-bookmark"
                     loading={false}
                     open={glPickOpen}
                     query={glQ}
@@ -817,7 +817,7 @@ export default function EditWorkspaceModal({
                 <>
                   <GiteaRepositoryField
                     value={gtPickLabel}
-                    icon="book-marked"
+                    icon="book-bookmark"
                     loading={false}
                     open={gtPickOpen}
                     query={gtQ}
@@ -920,7 +920,7 @@ export default function EditWorkspaceModal({
                 )}
                 <GithubRepositoryField
                   value={pick}
-                  icon={publicSelected || (picked && !picked.private) ? 'book-marked' : 'lock'}
+                  icon={publicSelected || (picked && !picked.private) ? 'book-bookmark' : 'lock'}
                   badge={publicSelected ? 'public' : undefined}
                   loading={repos === null}
                   open={pickOpen}

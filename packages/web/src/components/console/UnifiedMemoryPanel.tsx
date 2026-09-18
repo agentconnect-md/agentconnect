@@ -560,7 +560,7 @@ function Entries({
             openPreview()
           }}
         >
-          <Icon name="book-marked" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+          <Icon name="book-bookmark" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
           <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
             <span
               className={`mono truncate text-[12.5px] ${overviewOpen ? 'text-(--text-primary)' : 'text-(--text-secondary)'}`}

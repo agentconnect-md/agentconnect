@@ -789,7 +789,7 @@ export function MemoryPanel({
         files.map((file) => (
           <FileBrowserRow
             key={file.name}
-            icon={file.name === INDEX ? 'book-marked' : 'file-text'}
+            icon={file.name === INDEX ? 'book-bookmark' : 'file-text'}
             name={file.name}
             selected={selected === file.name}
             onClick={() => {
@@ -800,7 +800,7 @@ export function MemoryPanel({
         ))}
       {!listLoading && !files.some((file) => file.name === selected) && (
         <FileBrowserRow
-          icon={selected === INDEX ? 'book-marked' : fileExists === false ? 'file-plus' : 'file-text'}
+          icon={selected === INDEX ? 'book-bookmark' : fileExists === false ? 'file-plus' : 'file-text'}
           name={selected}
           selected
           onClick={() => {

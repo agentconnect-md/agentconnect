@@ -31,7 +31,7 @@ const FEISHU_REGISTRATION_FAILURES: Record<string, string> = {
 // and each fails silently if missed — surfaced as a transport-aware checklist.
 const FEISHU_COMMON_REQS: { icon: string; title: string; desc: string }[] = [
   {
-    icon: 'building-2',
+    icon: 'building-complex',
     title: 'Use the same organization',
     desc: 'Create every Bot App in the same Lark/Feishu organization as the App used to sign in to AgentConnect.'
   },

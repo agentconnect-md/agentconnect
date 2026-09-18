@@ -419,7 +419,7 @@ export default function AddAgentRepoModal({
           <div className="mb-[18px]">
             <GiteaRepositoryField
               value={gtPicked?.repoPath ?? ''}
-              icon="book-marked"
+              icon="book-bookmark"
               loading={false}
               open={gtPickOpen}
               query={gtQ}
@@ -544,7 +544,7 @@ export default function AddAgentRepoModal({
                 {pick ? (
                   <>
                     <Icon
-                      name={picked && !picked.private ? 'book-marked' : 'lock'}
+                      name={picked && !picked.private ? 'book-bookmark' : 'lock'}
                       size={16}
                       color="var(--text-tertiary)"
                       className="flex-none"
@@ -614,7 +614,7 @@ export default function AddAgentRepoModal({
                         }}
                       >
                         <Icon
-                          name={r.private ? 'lock' : 'book-marked'}
+                          name={r.private ? 'lock' : 'book-bookmark'}
                           size={16}
                           color="var(--text-tertiary)"
                           className="flex-none"
@@ -657,7 +657,7 @@ export default function AddAgentRepoModal({
                         setPickOpen(false)
                       }}
                     >
-                      <Icon name="book-marked" size={16} color="var(--text-tertiary)" className="flex-none" />
+                      <Icon name="book-bookmark" size={16} color="var(--text-tertiary)" className="flex-none" />
                       <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
                         <span className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)">
                           {typedRepo}
@@ -762,7 +762,7 @@ export default function AddAgentRepoModal({
           <div className="mb-[18px]">
             <GitlabProjectField
               value={glPicked?.projectPath ?? ''}
-              icon="book-marked"
+              icon="book-bookmark"
               loading={false}
               open={glPickOpen}
               query={glQ}

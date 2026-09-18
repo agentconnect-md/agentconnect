@@ -582,7 +582,7 @@ export default function AgentsView() {
               ? 'folder'
               : a.workspace.provider === 'github'
                 ? 'lock'
-                : 'book-marked'
+                : 'book-bookmark'
             const repoLabel = isGitWorkspace(a.workspace) ? a.repo : 'scratch'
             return (
               <Link

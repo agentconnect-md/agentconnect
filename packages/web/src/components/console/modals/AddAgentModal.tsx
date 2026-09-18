@@ -1105,7 +1105,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
                   <GithubRepositoryField
                     value={picked?.fullName ?? publicRepo ?? ''}
-                    icon={picked?.private ? 'lock' : 'book-marked'}
+                    icon={picked?.private ? 'lock' : 'book-bookmark'}
                     badge={manualPublicRepo ? 'public' : undefined}
                     loading={ghLoading}
                     open={ghRepoOpen}
@@ -1274,7 +1274,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">
                     <GitlabProjectField
                       value={glPublicPath ?? glPicked?.projectPath ?? ''}
-                      icon="book-marked"
+                      icon="book-bookmark"
                       loading={false}
                       open={glOpen}
                       query={glQ}
@@ -1383,7 +1383,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">
                     <GiteaRepositoryField
                       value={gtPicked?.repoPath ?? ''}
-                      icon="book-marked"
+                      icon="book-bookmark"
                       loading={false}
                       open={gtOpen}
                       query={gtQ}
