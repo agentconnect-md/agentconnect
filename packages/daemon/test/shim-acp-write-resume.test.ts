@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { describe, expect, it } from 'vitest'
 import { AcpRunner } from '../src/shim/acp-runner.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
@@ -20,6 +22,14 @@ function chunksOf(events: Array<{ kind: string; data?: string }>): string {
     .filter((event) => event.kind === 'chunk' && event.data)
     .map((event) => Buffer.from(event.data!, 'base64').toString())
     .join('')
+}
+
+/** End `cat`'s stdin and wait for it to close, so every byte it was given has been echoed back. */
+async function drained(runner: AcpRunner): Promise<void> {
+  const child = (runner as unknown as { child: ChildProcess }).child
+  const closed = once(child, 'close')
+  child.stdin!.end()
+  await closed
 }
 
 /** A bound connection at one generation, enough for `ShimSession.attach`. */
@@ -79,9 +89,8 @@ describe('ACP writes across a shim channel renewal', () => {
     await chunk('first\n', 0)
     await chunk('second\n', 1)
 
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await drained(runner)
     expect(chunksOf(events)).toBe('first\nsecond\n')
-    await runner.close(1_000).catch(() => undefined)
   })
 
   it('dedupes a re-send that arrives while its first attempt is still being written', async () => {
@@ -106,9 +115,8 @@ describe('ACP writes across a shim channel renewal', () => {
     release()
     await Promise.all([first, again])
 
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await drained(runner)
     expect(chunksOf(events)).toBe('once\n')
-    await runner.close(1_000).catch(() => undefined)
   })
 
   it('still applies a re-sent chunk whose first attempt failed', async () => {
@@ -127,9 +135,8 @@ describe('ACP writes across a shim channel renewal', () => {
     child.stdin.write = realWrite
     await runner.apply({ op: 'chunk', data: Buffer.from('only\n').toString('base64'), seq: 0 })
 
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await drained(runner)
     expect(chunksOf(events)).toBe('only\n')
-    await runner.close(1_000).catch(() => undefined)
   })
 
   it('re-sends a write the renewal failed, with the seq it first went out with', async () => {
