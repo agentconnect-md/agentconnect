@@ -1471,26 +1471,6 @@ export class PgSessionRepo implements SessionRepo {
     return { marked, alreadyPurged: sessionIds.length - marked.length }
   }
 
-  async hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean> {
-    if (!UUID_RE.test(conversationId)) return false
-    // The conversation's transactionally maintained current-session pointer is
-    // the ONLY session identity this authorization trusts. `endedAt` cannot
-    // express "replaced": the daemon stamps phase 'end' after every turn (see
-    // findThreadOwner), so an idle-between-turns session is still current, and
-    // unordered historical rows must never authorize a widened replacement.
-    const rows = await this.db.$queryRaw<Array<{ visibility: string }>>(Prisma.sql`
-      SELECT s."visibility"
-      FROM "webchat_conversation" AS c
-      JOIN "session_meta" AS s
-        ON s."id" = c."currentSessionId"
-       AND s."agentId" = c."agentId"
-       AND s."platform" = 'webchat'
-       AND s."channel" = c."id"::text
-      WHERE c."id" = ${conversationId}::uuid AND c."agentId" = ${agentId}::uuid
-    `)
-    return rows[0]?.visibility === 'private'
-  }
-
   async listExternalScopes(q: SessionFilterQuery): Promise<ExternalScopeRecord[]> {
     if (queryAgentIds(q).length === 0) return []
     // Over the MEMBERSHIP agents, not the filtered ones. The scopes resolved here

@@ -48,14 +48,14 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
           -- Current-session fence: only the conversation's transactionally
           -- maintained pointer identifies the installed ACP session ('endedAt'
           -- is stamped after every turn and cannot mean "replaced"). Locking
-          -- conversation + session serializes with pointer moves and visibility
-          -- changes.
+          -- conversation + session serializes with pointer moves. Visibility is
+          -- deliberately NOT a condition: the catalog follows the conversation
+          -- owner, not the session's audience (webchat-preset-agentconnect-mcp.md §7).
           JOIN "session_meta" AS active_session
             ON active_session."id" = conversation."currentSessionId"
            AND active_session."agentId" = authority."agentId"
            AND active_session."platform" = 'webchat'
            AND active_session."channel" = authority."conversationId"::text
-           AND active_session."visibility" = 'private'
           WHERE access_grant."id" = ${input.grantId}
             AND access_grant."status" = 'active'
             AND access_grant."revokedAt" IS NULL
@@ -192,13 +192,12 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
            )
           -- Same current-session fence as createOrReplay: the pointer, not
           -- endedAt ordering, names the installed session; the row locks below
-          -- serialize approval against pointer moves and visibility widening.
+          -- serialize approval against pointer moves. Visibility is not a condition.
           JOIN "session_meta" AS active_session
             ON active_session."id" = conversation."currentSessionId"
            AND active_session."agentId" = authority."agentId"
            AND active_session."platform" = 'webchat'
            AND active_session."channel" = authority."conversationId"::text
-           AND active_session."visibility" = 'private'
           WHERE operation."id" = ${input.operationId}::uuid
             AND operation."conversationId" = ${input.conversationId}::uuid
             AND operation."userId" = ${input.userId}

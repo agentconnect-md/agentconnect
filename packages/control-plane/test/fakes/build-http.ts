@@ -359,7 +359,6 @@ export function buildHttpApp(
       placement: placementResolver,
       grants: webchatMcpAccessGrantRepo,
       authorities: webchatMcpDelegationRepo,
-      sessions: sessionRepo,
       isCuratedTool: (toolName) => findTool(toolName) !== undefined
     })
   const internalInvocationAuth = depsOverrides?.internalInvocationAuth ?? new InternalInvocationAuth()

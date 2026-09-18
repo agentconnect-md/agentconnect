@@ -38,8 +38,8 @@ where the administrative APIs and their authorization already live.
 
 ### 2.1 Goals
 
-- Give access to `agentconnect-admin` only from a private, user-owned webchat
-  conversation, and to no other launch surface.
+- Give access to `agentconnect-admin` only from a user-owned webchat conversation,
+  and to no other launch surface. Session visibility does not gate it (§7).
 - Derive the acting user from the durable `WebchatConversation` owner binding, never
   from model-supplied arguments.
 - Re-run membership, RBAC, resource visibility, catalog, and confirmation checks at
@@ -213,8 +213,7 @@ The CP may issue a grant only when all of the following hold:
 - the request comes from a webchat conversation;
 - the authenticated user owns the durable webchat conversation;
 - the conversation maps immutably to the same user, organization, and agent;
-- the target session is private and reports the required session-visibility
-  capability;
+- the target session reports the required session-visibility capability;
 - the user may currently view and use the agent; and
 - the conversation still holds exactly one participating agent (§10.3 of
   [webchat-multi-agents.md](webchat-multi-agents.md)).
@@ -369,17 +368,20 @@ client cannot issue any tool request before initializing, so denying the handsha
 denies the whole server, and the session loses `agentconnect-admin` entirely. Every
 other JSON-RPC method stays denied.
 
-The private-current-session predicate (§5.2) is re-checked at request time for
-`tools/call` only. The descriptor is installed during `session/new`, and the daemon
-registers the resulting session with the CP only after that call returns — so the
-adapter's `initialize` and immediate `tools/list` always precede the
-current-session pointer and would deterministically lose that race (adapters do
-not retry a failed connect; the session would show no administration tools until
-the next descriptor rotation). Both are safe without the predicate: the handshake
-reaches no tool and `tools/list` serves the static curated catalog with no
-org-scoped data. `tools/call` — the step that actually wields the delegated
-authority — is issued mid-turn, after registration, and is denied whenever the
-conversation's current session is not private.
+Session visibility is **not** a condition of the catalog. The entitlement follows the
+conversation OWNER — the authority tuple binds one user, organization and agent, and every
+request re-resolves it live — so widening a session to org visibility publishes its
+transcript without withdrawing the owner's administration tools mid-run. An earlier
+revision denied `tools/call` unless the conversation's current session was private; that
+predicate also made the grant depend on the current-session pointer, so a conversation
+whose session had not yet been registered, or had just been widened, lost the catalog with
+a bare 401 the agent could not interpret.
+
+The accepted consequence is recorded in §10.2: because `session.continue` admits any
+non-viewer member to an org-visible session, and the descriptor carries one credential for
+the conversation rather than one per turn, a member who continues a widened session drives
+the OWNER's delegated authority. Narrowing that to the acting user requires a turn-scoped
+entitlement and is out of scope here.
 
 Nested REST calls receive an already resolved internal principal. The raw grant is
 not replayed as REST Bearer authentication and cannot authenticate an external REST
@@ -620,9 +622,14 @@ tools are unavailable.
 Resume succeeds for the conversation owner, and for any other non-viewer
 member the `session.continue` policy admits to every session the conversation
 currently stands on (org-visible sessions; private ones stay owner-only). The
-delegated admin MCP is owner-only regardless: the authority resolver fences the
-token's user against the conversation owner, so a non-owner's turns run without
-the `agentconnect-admin` entitlement. The CP keeps the current logical authority
+delegated admin MCP is bound to the conversation OWNER, not to the member taking
+the turn: the authority resolver fences the token's user against the conversation
+owner, and that comparison is owner-against-owner — it does not read who authored
+the current turn. A non-owner continuing an org-visible session therefore acts
+through the owner's `agentconnect-admin` entitlement, at full organization
+authority, with reads executing unapproved and writes still requiring the owner's
+confirmation card. Keeping a conversation private is what prevents this, since
+`session.continue` admits nobody but the owner there. The CP keeps the current logical authority
 generation for the owner, while the
 daemon completes a fresh revision-fenced grant activation because stored hashes
 cannot be re-delivered when the daemon no longer retains the active credential.
@@ -718,7 +725,7 @@ CP. Production enablement still requires:
    replacement — including JSON-RPC id reuse after a runtime restart and a
    higher-level retry that mints a fresh id — without any AgentConnect-specific
    ACP field or retry header;
-5. private session visibility enforcement; and
+5. the live authority predicate (owner, organization, agent, placement, roster size); and
 6. a tested revoke path.
 
 Roll out by daemon canary. Runtime integration coverage detects compatibility

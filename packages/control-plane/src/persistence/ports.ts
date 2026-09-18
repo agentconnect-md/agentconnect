@@ -1427,11 +1427,6 @@ export interface SessionRepo {
    *  the parent of a child session it is reporting. Never call this from the
    *  HTTP surface; lint enforces it (§6). */
   getUnscoped(id: SessionId): Promise<SessionMetaRecord | null>
-  /** Fail-closed proof that the durable webchat session for this conversation
-   * remains private before a remote administrative MCP invocation executes.
-   * System-tier (§3.4): fenced by the conversation's own `agentId`, which the
-   * MCP authority has already bound to the delegated agent. */
-  hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean>
   /** Distinct settled scopes referenced by external rows matching the non-page
    *  filters. Called before ORDER/LIMIT so membership filtering is pagination-safe. */
   listExternalScopes(q: SessionFilterQuery): Promise<ExternalScopeRecord[]>

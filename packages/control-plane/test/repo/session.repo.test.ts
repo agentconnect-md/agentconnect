@@ -80,10 +80,11 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     const row = await prisma.sessionMeta.findUnique({ where: { id: 'acp-current' } })
     expect(row?.endedAt).not.toBeNull()
     expect(row?.visibility).toBe('private')
-    expect(await repo.hasPrivateWebchatSession(CONVERSATION, AgentId(AGENT))).toBe(true)
+    const current = await prisma.webchatConversation.findUnique({ where: { id: CONVERSATION } })
+    expect(current?.currentSessionId).toBe('acp-current')
   })
 
-  it('never lets an old private row authorize once the pointer moved to a widened replacement', async () => {
+  it('never lets an old row steal the pointer back from a replacement', async () => {
     await webchatFixture()
     const repo = new PgSessionRepo(prisma)
     await repo.recordMilestone(webchatEv('acp-old-private', 'start', new Date('2026-07-05T10:00:00.000Z')))
@@ -94,16 +95,14 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
 
     const conversation = await prisma.webchatConversation.findUnique({ where: { id: CONVERSATION } })
     expect(conversation?.currentSessionId).toBe('acp-replacement')
-    expect(await repo.hasPrivateWebchatSession(CONVERSATION, AgentId(AGENT))).toBe(false)
 
     // A late re-emit from the OLD session must not steal the pointer back.
     await repo.recordMilestone(webchatEv('acp-old-private', 'end', new Date('2026-07-05T11:30:00.000Z')))
     const after = await prisma.webchatConversation.findUnique({ where: { id: CONVERSATION } })
     expect(after?.currentSessionId).toBe('acp-replacement')
-    expect(await repo.hasPrivateWebchatSession(CONVERSATION, AgentId(AGENT))).toBe(false)
   })
 
-  it('fails closed when the conversation has no current-session pointer', async () => {
+  it('leaves the conversation pointer null when nothing maintained it', async () => {
     await webchatFixture()
     const repo = new PgSessionRepo(prisma)
     // Historical rows exist, but nothing maintained the pointer (e.g. the
@@ -123,7 +122,8 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
         startedAt: new Date()
       }
     })
-    expect(await repo.hasPrivateWebchatSession(CONVERSATION, AgentId(AGENT))).toBe(false)
+    const conversation = await prisma.webchatConversation.findUnique({ where: { id: CONVERSATION } })
+    expect(conversation?.currentSessionId).toBeNull()
   })
 
   it('creates a session row on the first milestone with the launch tie', async () => {

@@ -732,7 +732,6 @@ export function buildContainer(
     placement: placementResolver,
     grants: repos.webchatMcpAccessGrant,
     authorities: repos.webchatMcpDelegation,
-    sessions: repos.session,
     isCuratedTool: (toolName) => findTool(toolName) !== undefined
   })
   const internalInvocationAuth = new InternalInvocationAuth()

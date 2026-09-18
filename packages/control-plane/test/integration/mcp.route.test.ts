@@ -372,7 +372,7 @@ describe('delegated webchat MCP operations', () => {
     expect(off.headers['www-authenticate']).toBeUndefined()
   })
 
-  it('admits handshake and catalog before the daemon registers the session, but holds tools/call', async () => {
+  it('admits handshake, catalog AND tools/call before the daemon registers the session', async () => {
     // The adapter connects DURING session/new; the daemon can register the session
     // (currentSessionId → session_meta) only after that call returns. initialize and
     // the immediate tools/list must not lose that race — adapters do not retry a
@@ -392,11 +392,11 @@ describe('delegated webchat MCP operations', () => {
     expect(listed.statusCode).toBe(200)
     expect((mcpMessage(listed).result as { tools: Array<{ name: string }> }).tools.length).toBeGreaterThan(0)
 
-    // The authority-wielding step still fails closed until a private current
-    // session exists.
+    // The current-session pointer is no longer a condition of the grant: authorization is the
+    // live authority tuple (owner, org, agent, placement) alone, so the authority-wielding step
+    // is admitted here too, before any session row exists.
     const call = await remoteRpc(3, 'listAgents', {})
-    expect(call.statusCode).toBe(401)
-    expect(call.headers['www-authenticate']).toBeUndefined()
+    expect(call.statusCode).toBe(200)
   })
 
   // A pool agent names no machine of its own: `agent.daemonId` is null and the member serving it
@@ -430,20 +430,34 @@ describe('delegated webchat MCP operations', () => {
     expect((await remoteRpc(3, 'listAgents', {})).statusCode).toBe(200)
   })
 
-  it('keeps denying tools/call while the current session is not private', async () => {
-    const { conversationId, remoteMethod, remoteRpc } = await delegatedFixture()
+  // The catalog follows the conversation OWNER, not the session's audience: widening a session
+  // to org visibility publishes its transcript, and deliberately does not withdraw the owner's
+  // administration tools mid-run (webchat-preset-agentconnect-mcp.md §7).
+  it('keeps serving the owner’s catalog after the session is widened to org visibility', async () => {
+    const { conversationId, remoteMethod, remoteRpc, decisionPath: path, app } = await delegatedFixture()
     await prisma.sessionMeta.update({
       where: { id: `webchat-${conversationId}` },
       data: { visibility: 'org' }
     })
 
-    // The static catalog stays listable — it carries no org-scoped data…
-    const listed = await remoteMethod({ id: 1, method: 'tools/list' })
-    expect(listed.statusCode).toBe(200)
+    expect((await remoteMethod({ id: 1, method: 'tools/list' })).statusCode).toBe(200)
+    expect((await remoteRpc(2, 'listAgents', {})).statusCode).toBe(200)
 
-    // …but no tool executes against a widened session.
-    const call = await remoteRpc(2, 'listAgents', {})
-    expect(call.statusCode).toBe(401)
+    // The write path is fenced by the same current-session join, so it must widen with it.
+    const write = await remoteRpc(3, 'createAgent', { name: 'widened-agent', runtime: 'codex' })
+    expect(write.statusCode).toBe(200)
+    const pending = JSON.parse(toolText(mcpMessage(write).result as unknown as ToolCallResult)) as {
+      status: string
+      operationId: string
+    }
+    expect(pending.status).toBe('awaiting_confirmation')
+    const decided = await app.app.inject({
+      method: 'POST',
+      url: `${path}/${pending.operationId}/decision`,
+      payload: { decision: 'approve' }
+    })
+    expect(decided.statusCode).toBe(200)
+    expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'widened-agent' } })).not.toBeNull()
   })
 
   it('refuses the handshake once the grant is revoked — no anonymous transport', async () => {
