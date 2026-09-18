@@ -47,3 +47,26 @@ SET "skills" = '{}'::text[]
 WHERE "name" = 'agentconnect'
   AND "githubRepoId" = 1322557433
   AND "skills" <> '{}'::text[];
+
+-- The fence both rewrites above would otherwise skip. `AgentSpec.skills` is RESOLVED from
+-- these rows, so changing either one changes spec content without touching the agent's
+-- `configRevision` — and the daemon persists the greatest applied revision to disk and
+-- refuses an equal revision carrying a different digest, so an affected agent would reject
+-- the migrated spec on every reconnect, permanently, until an unrelated edit bumped it.
+-- The repo path does this through `bumpAgentsReferencingSkillSource`; mirror its predicate
+-- exactly, over-approximation included (every agent in the org whose enable-list names the
+-- source, not only those whose resolved content moved): a spurious bump costs one identical
+-- re-apply, a missing one wedges the agent. Same transaction as the rewrites, so no reader
+-- observes new content at an old revision.
+UPDATE "agent" AS a
+SET "configRevision" = a."configRevision" + 1
+FROM "skill_source" AS s
+WHERE s."orgId" = a."orgId"
+  AND s."name" = 'agentconnect'
+  AND s."githubRepoId" = 1322557433
+  AND jsonb_typeof(a."runtimeOverrides" -> 'skills') = 'array'
+  AND EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(a."runtimeOverrides" -> 'skills') AS e
+    WHERE split_part(e #>> '{}', '/', 1) = 'agentconnect'
+  );
