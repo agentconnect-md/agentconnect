@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
-import { LaunchRegistry, type Launch } from '../src/remote/launch-registry.js'
+import { LaunchRegistry } from '../src/remote/launch-registry.js'
+import type { SandboxLaunch } from '../src/k8s/endpoint-provider.js'
 import { fakeGenerations } from './fake-generations.js'
 
 function registry(clock = new FakeClock()) {
-  return { subject: new LaunchRegistry({ generations: fakeGenerations(), clock }), clock }
+  return { subject: new LaunchRegistry<SandboxLaunch>({ generations: fakeGenerations(), clock }), clock }
 }
 
 describe('launch registry records', () => {
@@ -12,13 +13,19 @@ describe('launch registry records', () => {
     const { subject, clock } = registry()
     clock.advance(1_000)
 
-    const first = await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1')
+    const first = await subject.recordLaunch('agent-a', 'sandbox-uid-1', {
+      sandboxName: 'sb-1',
+      claimUid: 'sandbox-uid-1'
+    })
     expect(first).toMatchObject({ agentId: 'agent-a', sandboxName: 'sb-1', generation: 1, since: clock.now() })
     expect(subject.currentLaunch('agent-a')).toBe(first)
     expect(subject.launched()).toEqual([{ subject: 'agent-a', agentId: 'agent-a', since: clock.now() }])
 
     // A replacement pod must never reuse the fence the departed incarnation was bound against.
-    const second = await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-2')
+    const second = await subject.recordLaunch('agent-a', 'sandbox-uid-2', {
+      sandboxName: 'sb-1',
+      claimUid: 'sandbox-uid-2'
+    })
     expect(second.generation).toBe(2)
 
     expect(subject.forgetLaunch('agent-a')).toBe(second)
@@ -62,10 +69,10 @@ describe('launch registry release fence', () => {
 describe('launch registry takeover', () => {
   it('single-flights concurrent re-derivations and clears the entry when they settle', async () => {
     const { subject } = registry()
-    let finish: ((launch: Launch | undefined) => void) | undefined
+    let finish: ((launch: SandboxLaunch | undefined) => void) | undefined
     const derive = vi.fn(
       async () =>
-        await new Promise<Launch | undefined>((resolve) => {
+        await new Promise<SandboxLaunch | undefined>((resolve) => {
           finish = resolve
         })
     )
@@ -76,14 +83,17 @@ describe('launch registry takeover', () => {
     expect(subject.adoptInFlight('agent-a')).toBe(first)
     expect(derive).toHaveBeenCalledTimes(1)
 
-    finish?.(await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1'))
+    finish?.(await subject.recordLaunch('agent-a', 'sandbox-uid-1', { sandboxName: 'sb-1', claimUid: 'sandbox-uid-1' }))
     expect(await first).toBe(subject.currentLaunch('agent-a'))
     expect(subject.adoptInFlight('agent-a')).toBeUndefined()
   })
 
   it('answers from the cached launch without reaching the cluster', async () => {
     const { subject } = registry()
-    const launch = await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1')
+    const launch = await subject.recordLaunch('agent-a', 'sandbox-uid-1', {
+      sandboxName: 'sb-1',
+      claimUid: 'sandbox-uid-1'
+    })
     const derive = vi.fn(async () => undefined)
 
     expect(await subject.adopt('agent-a', derive)).toBe(launch)

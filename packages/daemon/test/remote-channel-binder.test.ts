@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
-import { ChannelBinder } from '../src/k8s/channel-binder.js'
+import { ChannelBinder } from '../src/remote/channel-binder.js'
 import { LaunchRegistry } from '../src/remote/launch-registry.js'
-import { SandboxLease } from '../src/k8s/sandbox-lease.js'
 import { noopClusterMetrics } from '../src/metrics/cluster-metrics.js'
 import { fakeGenerations } from './fake-generations.js'
-import type { Sandbox, SandboxApi } from '../src/k8s/sandbox-api.js'
+import type { ShimEndpointProvider } from '../src/remote/shim-endpoint.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 
 const log = { info: () => {}, warn: () => {}, debug: () => {} }
@@ -22,10 +21,12 @@ function stubConnection(generation: number, workspaceRoot?: string): ShimConnect
   } as unknown as ShimConnection
 }
 
-/** A Sandbox that is already Running, so the bind's wake is a no-op read. */
-const runningApi = {
-  getSandbox: async () => ({ metadata: { name: 'sb-1' }, spec: { operatingMode: 'Running' } }) as Sandbox
-} as unknown as SandboxApi
+/** An endpoint that is already up, so resolving it costs the bind nothing. */
+const endpoints: ShimEndpointProvider = {
+  resolve: async () => ({ address: '10.0.0.8', peer: { podName: 'p' } }),
+  retain: () => {},
+  release: () => {}
+}
 
 function binder(
   registry: LaunchRegistry,
@@ -34,15 +35,13 @@ function binder(
     throw new Error('the bind must not reach the pod')
   }
 ) {
-  const lease = new SandboxLease({ api: runningApi, warmPoolName: 'pool', log, metrics: noopClusterMetrics })
   return new ChannelBinder({
     registry,
-    lease,
+    endpoints,
     clock,
     log,
     metrics: noopClusterMetrics,
     channelTimeoutMs: 1_000,
-    awaitReady: async () => ({ podName: 'p', podIp: '10.0.0.8' }),
     connectChannel
   })
 }
@@ -50,7 +49,7 @@ function binder(
 async function withLaunch() {
   const clock = new FakeClock()
   const registry = new LaunchRegistry({ generations: fakeGenerations(), clock })
-  return { clock, registry, launch: await registry.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1') }
+  return { clock, registry, launch: await registry.recordLaunch('agent-a', 'sandbox-uid-1', {}) }
 }
 
 describe('cluster channel binder', () => {

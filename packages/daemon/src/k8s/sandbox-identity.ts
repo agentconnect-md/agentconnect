@@ -73,14 +73,7 @@ export const RUNTIME_GRANTS: ShimCapability[] = [
  *  agent's runtime an authority it never exercises — which the direct-connect grant test catches. */
 export const PROBE_GRANTS: ShimCapability[] = ['probe', 'acp']
 
-/** A launch stage that ran out of time. Typed, because a missed target and a broken cluster are
- *  different operational stories and telling them apart by error text is a liability. */
-export class LaunchTimeoutError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'LaunchTimeoutError'
-  }
-}
+export { LaunchTimeoutError } from '../remote/shim-endpoint.js'
 
 /**
  * The runtime image the pool's template pins, resolved from the cluster rather than from any

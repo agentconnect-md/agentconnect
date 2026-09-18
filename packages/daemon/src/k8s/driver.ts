@@ -1,16 +1,16 @@
-import { LaunchTimer, noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
+import { noopClusterMetrics, type LaunchTimer, type ClusterMetrics } from '../metrics/cluster-metrics.js'
 import { systemClock, type Clock } from '@agentconnect.md/connection'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
-import { ShimFileSink } from '../shim/channels.js'
-import { ShimSession } from '../shim/session.js'
-import { createRemoteRuntime } from '../remote/remote-runtime.js'
+import type { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'
 import { isSandboxReady, type OperatingMode, type SandboxClaim, type SandboxApi } from './sandbox-api.js'
 import { SandboxLease } from './sandbox-lease.js'
-import { LaunchRegistry, type Launch, type LaunchGenerations } from '../remote/launch-registry.js'
-import { ChannelBinder } from './channel-binder.js'
+import { LaunchRegistry, type LaunchGenerations } from '../remote/launch-registry.js'
+import { ChannelBinder } from '../remote/channel-binder.js'
+import { RemoteShimDriver } from '../remote/shim-driver.js'
+import { sandboxEndpointProvider, type SandboxLaunch } from './endpoint-provider.js'
 import type { SandboxReadiness } from '../remote/channel-loss-watcher.js'
 import { withStartupPhase } from '../session/startup-progress.js'
 import { awaitBoundSandbox, awaitReady, readIfPresent, type SandboxWaitDeps } from './sandbox-waits.js'
@@ -18,14 +18,12 @@ import {
   AC_ANNOTATION_ADMITTED,
   AC_LABEL_AGENT,
   AC_LABEL_SESSION,
-  LaunchTimeoutError,
   RUNTIME_GRANTS,
   agentSandboxSubject,
   resolvePodIp,
   sandboxClaimName,
   sandboxPodLabels,
   sandboxSubjectAgentId,
-  sandboxSubjectFor,
   sandboxSubjectSessionLeaf,
   sessionSandboxSubject,
   type SandboxSubject
@@ -70,9 +68,10 @@ const DEFAULT_READY_TIMEOUT_MS = 90_000
 // invariants whose halves live in two of those objects at once.
 export class K8sDriver implements SpawnDriver {
   private readonly metrics: ClusterMetrics
-  private readonly registry: LaunchRegistry
+  private readonly registry: LaunchRegistry<SandboxLaunch>
   private readonly lease: SandboxLease
-  private readonly binder: ChannelBinder
+  private readonly binder: ChannelBinder<SandboxLaunch>
+  private readonly shim: RemoteShimDriver<SandboxLaunch>
   private readonly clock: Clock
   /** So a Role without `patch` on claims says so once, not on every admission it degrades. */
   private stampRefusalReported = false
@@ -87,17 +86,30 @@ export class K8sDriver implements SpawnDriver {
       log: deps.log,
       metrics: this.metrics
     })
+    const endpoints = sandboxEndpointProvider({
+      lease: this.lease,
+      awaitReady: (sandboxName) => awaitReady(sandboxName, this.waits)
+    })
     this.binder = new ChannelBinder({
       registry: this.registry,
-      lease: this.lease,
+      endpoints,
       clock: this.clock,
       log: deps.log,
       metrics: this.metrics,
       channelTimeoutMs: this.podUpTimeoutMs,
-      awaitReady: (sandboxName) => awaitReady(sandboxName, this.waits),
       connectChannel: deps.connectChannel,
       ...(deps.revokeChannel ? { revokeChannel: deps.revokeChannel } : {}),
       ...(deps.onChannelReady ? { onChannelReady: deps.onChannelReady } : {})
+    })
+    this.shim = new RemoteShimDriver({
+      ensureLaunch: (subject, timer) => this.ensureSandbox(subject, timer),
+      endpoints,
+      binder: this.binder,
+      grantsFor: (subject) => this.grantsFor(subject),
+      holdCompanion: (subject, held) => this.holdCompanion(subject, held),
+      clock: this.clock,
+      log: deps.log,
+      metrics: this.metrics
     })
   }
 
@@ -121,12 +133,12 @@ export class K8sDriver implements SpawnDriver {
   // snapshot. Nothing per-agent or per-session goes in the claim SPEC beyond the pod labels, or it would
   // bypass warm-pool adoption; the same labels ride the claim's own metadata so a member can list an
   // agent's session claims without knowing their sessions.
-  async ensureSandbox(subject: SandboxSubject, timer?: LaunchTimer): Promise<Launch> {
+  async ensureSandbox(subject: SandboxSubject, timer?: LaunchTimer): Promise<SandboxLaunch> {
     const ensure = () => this.ensureSandboxInner(subject, timer)
     return this.sessionFor(subject)?.isAttached() ? await ensure() : await withStartupPhase('sandbox', ensure)
   }
 
-  private async ensureSandboxInner(subject: SandboxSubject, timer?: LaunchTimer): Promise<Launch> {
+  private async ensureSandboxInner(subject: SandboxSubject, timer?: LaunchTimer): Promise<SandboxLaunch> {
     const suspending = this.lease.suspensionOf(subject)
     if (suspending) await suspending
     const adopting = this.registry.adoptInFlight(subject)
@@ -171,7 +183,7 @@ export class K8sDriver implements SpawnDriver {
     if (!sandboxUid) throw new Error(`sandbox ${sandboxName} has no metadata.uid to bind against`)
     const claimUid = ensured.claim.metadata?.uid ?? sandboxUid
     this.registry.assertStillServed(subject, releasedAt)
-    return this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
+    return this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid })
   }
 
   /**
@@ -245,7 +257,7 @@ export class K8sDriver implements SpawnDriver {
   /** Takeover: re-derive the launch from the cluster (claim → bound Sandbox → mode), creating nothing. */
   // Only a Running pod is recorded — its idleness is now this member's to own; a suspended or unclaimed
   // subject needs no launch until its next turn claims one.
-  adopt(subject: SandboxSubject): Promise<Launch | undefined> {
+  adopt(subject: SandboxSubject): Promise<SandboxLaunch | undefined> {
     return this.registry.adopt(subject, async (releasedAt) => {
       const claim = await readIfPresent(() => this.deps.api.getClaim(this.claimName(subject)))
       const sandboxName = claim?.status?.sandbox?.name
@@ -265,7 +277,7 @@ export class K8sDriver implements SpawnDriver {
       // the next duty tick or the next turn tries again.
       if (!(await this.fenceLaunch(subject))) return undefined
       this.deps.log.info(`cluster: sandbox ${subject} taken over with sandbox ${sandboxName} running`)
-      return this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
+      return this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid: claimUid ?? sandboxUid })
     })
   }
 
@@ -329,7 +341,7 @@ export class K8sDriver implements SpawnDriver {
   }
 
   // `ensureSandbox` without the ensure: the same suspension, takeover and release fences, then a READ of the claim the caller named — re-judged against the object AFTER that gap, so a claim that is gone or replaced refuses.
-  private async resumeSandbox(subject: SandboxSubject, claimUid: string): Promise<Launch> {
+  private async resumeSandbox(subject: SandboxSubject, claimUid: string): Promise<SandboxLaunch> {
     const suspending = this.lease.suspensionOf(subject)
     if (suspending) await suspending
     const adopting = this.registry.adoptInFlight(subject)
@@ -354,7 +366,7 @@ export class K8sDriver implements SpawnDriver {
     if (!(await this.fenceLaunch(subject))) {
       throw new Error(`sandbox ${subject} claim ${name} could not be marked in use — not resuming onto it`)
     }
-    return await this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
+    return await this.registry.recordLaunch(subject, sandboxUid, { sandboxName, claimUid })
   }
 
   // Whether the pod that should hold this subject's channel is up — what tells an unbound channel apart
@@ -477,20 +489,13 @@ export class K8sDriver implements SpawnDriver {
     this.deps.revokeChannel?.(subject)
   }
 
-  currentLaunch(subject: string): Launch | undefined {
+  currentLaunch(subject: string): SandboxLaunch | undefined {
     return this.registry.currentLaunch(subject)
   }
 
-  // Bring the Sandbox up and bind its shim WITHOUT starting a runtime: for a cluster agent a
-  // "prepared workspace" is cloned onto the sandbox's own volume, before the runtime starts.
-  async ensureBoundChannel(
-    subject: SandboxSubject,
-    timer?: LaunchTimer,
-    grants?: ShimCapability[]
-  ): Promise<ShimConnection> {
-    const launch = await this.ensureSandbox(subject, timer)
-    const bind = () => this.binder.bindChannel(subject, launch, timer, grants ?? this.grantsFor(subject))
-    return this.sessionFor(subject)?.isAttached() ? await bind() : await withStartupPhase('sandbox', bind)
+  // Bring the Sandbox up and bind its shim WITHOUT starting a runtime: for a cluster agent a "prepared workspace" is cloned onto the sandbox's own volume, before the runtime starts.
+  ensureBoundChannel(subject: SandboxSubject, timer?: LaunchTimer, grants?: ShimCapability[]): Promise<ShimConnection> {
+    return this.shim.ensureBoundChannel(subject, timer, grants)
   }
 
   /** What this subject's channel may do — decided per agent. */
@@ -508,78 +513,23 @@ export class K8sDriver implements SpawnDriver {
     return this.binder.workspaceRootFor(subject)
   }
 
-  // Start the runtime and hand `AcpHost` a stream pair. Command resolution is deliberately NOT done
-  // here: the shim resolves it in the filesystem the runtime will read.
-  async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
-    const agentId = request.env.AC_AGENT_ID
-    if (!agentId) throw new Error('cluster launch requires AC_AGENT_ID in the runtime environment')
-    // The host key names the pod (§11): a session-bound host launches into the session's own; the agent's host, into the agent's.
-    const subject = request.hostKey ? sandboxSubjectFor(request.hostKey) : agentSandboxSubject(agentId)
-    if (sandboxSubjectAgentId(subject) !== agentId) {
-      throw new Error(
-        `cluster launch host key names agent ${sandboxSubjectAgentId(subject)}, its environment ${agentId}`
-      )
-    }
-    const timer = new LaunchTimer(this.metrics, () => this.clock.now())
-    // The Sandbox is held from before bind until runtime exit and released on every failure path.
-    const held: string[] = []
-    const releaseHeld = (): void => {
-      for (const sandboxName of held.splice(0)) this.lease.release(sandboxName)
-    }
-    try {
-      const bound = await this.ensureSandbox(subject, timer)
-      this.lease.retain(bound.sandboxName)
-      held.push(bound.sandboxName)
-      // A session runtime keeps its agent's pod reachable for the agent-scoped seams (managed memory, merge-when-ready, the console's primary checkout): bound and held for the runtime's life, so "a runtime is running" still implies "the agent's pod is up"; a companion that will not come up degrades those seams, never the launch.
-      const companion = sandboxSubjectSessionLeaf(subject) === undefined ? undefined : agentSandboxSubject(agentId)
-      // Settled TOGETHER: a companion still binding when the session bind fails would retain its Sandbox after the catch below drained `held`, and nothing would ever release it.
-      const [channel] = await Promise.allSettled([
-        this.ensureBoundChannel(subject, timer),
-        companion === undefined ? Promise.resolve() : this.holdCompanion(companion, held)
-      ])
-      if (channel.status === 'rejected') throw channel.reason
-      this.metrics.channel('bound')
-      const session = this.binder.sessionFor(subject)
-      if (!session) throw new Error(`no shim session for ${subject} after binding its channel`)
-      // Fail-closed and per-launch: the env below points at these files, and a resumed Sandbox is a
-      // NEW pod whose tmpfs starts empty — so the write belongs to every launch, not to the bind.
-      const sink = new ShimFileSink(session)
-      for (const file of request.files ?? []) await sink.write(file.root, file.relPath, file.content)
-      const runtime = createRemoteRuntime({
-        session,
-        request,
-        log: this.deps.log,
-        metrics: this.metrics,
-        // The open is asynchronous, so the stage closes when the runtime reports — and only a
-        // successful one, or a rejection would sit in runtime-ready latency as a fast success.
-        onRuntimeOpen: (outcome) => {
-          if (outcome === 'ok') timer.mark('runtime_ready')
-          timer.finish(outcome)
-        }
-      })
-      // Runtime exit releases the holds so the next idle sweep can suspend the Sandboxes.
-      const released = held.splice(0)
-      runtime.onExit(() => {
-        for (const sandboxName of released) this.lease.release(sandboxName)
-      })
-      return runtime
-    } catch (err) {
-      releaseHeld()
-      timer.finish(err instanceof LaunchTimeoutError ? 'timeout' : 'error')
-      throw err
-    }
+  /** Start the runtime through the subject's shim; the dial, bind and hold logic is the generic driver's. */
+  launch(request: SpawnRequest): Promise<SpawnedRuntime> {
+    return this.shim.launch(request)
   }
 
-  /** Bind and hold the agent's own pod beside a session launch; reported rather than raised. */
-  private async holdCompanion(companion: SandboxSubject, held: string[]): Promise<void> {
-    let sandboxName: string | undefined
+  // A session runtime keeps its agent's pod reachable for the agent-scoped seams (managed memory, merge-when-ready, the console's primary checkout): bound and held for the runtime's life, reported rather than raised, so a companion that will not come up degrades those seams, never the launch.
+  private async holdCompanion(subject: SandboxSubject, held: SandboxLaunch[]): Promise<void> {
+    if (sandboxSubjectSessionLeaf(subject) === undefined) return
+    const companion = agentSandboxSubject(sandboxSubjectAgentId(subject))
+    let launch: SandboxLaunch | undefined
     try {
-      sandboxName = (await this.ensureSandbox(companion)).sandboxName
-      this.lease.retain(sandboxName)
+      launch = await this.ensureSandbox(companion)
+      this.lease.retain(launch.sandboxName)
       await this.ensureBoundChannel(companion)
-      held.push(sandboxName)
+      held.push(launch)
     } catch (err) {
-      if (sandboxName) this.lease.release(sandboxName)
+      if (launch) this.lease.release(launch.sandboxName)
       this.deps.log.warn(
         `cluster: agent ${companion} pod is not reachable beside its session pod — ${(err as Error).message}`
       )

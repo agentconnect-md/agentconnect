@@ -6,14 +6,13 @@ export interface LaunchGenerations {
   nextSandboxGeneration(subject: string): Promise<number>
 }
 
-/** Per-subject launch state the driver keeps: the Sandbox it bound and which launch it is. */
+/** Per-subject launch state every shim driver keeps: which incarnation it bound and which launch it is. */
 export interface Launch {
   /** What the pod is claimed for: the agent, or one of its confined sessions (sandbox-identity.ts). */
   subject: SandboxSubject
   agentId: string
-  sandboxName: string
+  /** The incarnation the shim binding is fenced on — `SpawnRecord.sandboxUid`. */
   sandboxUid: string
-  claimUid: string
   generation: number
   /** When this member started holding the launch; the idle floor when no activity is recorded. */
   since: number
@@ -35,10 +34,10 @@ export interface LaunchRegistryDeps {
  * and workspace-root state is one invariant spanning both, so its ORCHESTRATION stays in the
  * `K8sDriver` methods that own the other halves.
  */
-export class LaunchRegistry {
-  private readonly launches = new Map<string, Launch>()
+export class LaunchRegistry<L extends Launch = Launch> {
+  private readonly launches = new Map<string, L>()
   /** Takeover re-derivations in flight, per subject; a concurrent acquisition waits for the answer. */
-  private readonly adopting = new Map<string, Promise<Launch | undefined>>()
+  private readonly adopting = new Map<string, Promise<L | undefined>>()
   /** Bumped by `bumpRelease`; an acquisition in flight across a bump records nothing. */
   // Never cleaned, deliberately: a fence that forgot a departed subject would let a request issued
   // before its release record a launch after it. The entry is two numbers keyed by a subject.
@@ -48,38 +47,32 @@ export class LaunchRegistry {
 
   // The allocation is a durable round trip, so a concurrent launch can resolve out of order — an
   // older generation never overwrites a newer one, keeping the recorded launch the highest.
-  async recordLaunch(
-    subject: SandboxSubject,
-    sandboxName: string,
-    sandboxUid: string,
-    claimUid = sandboxUid
-  ): Promise<Launch> {
+  async recordLaunch(subject: SandboxSubject, sandboxUid: string, extension: Omit<L, keyof Launch>): Promise<L> {
     // Allocated from durable install-wide state, not from this process: the pod this launch is
     // about to dial may have been bound by a member that has since been rolled away.
     const generation = await this.deps.generations.nextSandboxGeneration(subject)
     const current = this.launches.get(subject)
     if (current && current.generation > generation) return current
-    const launch: Launch = {
+    const launch = {
+      ...extension,
       subject,
       agentId: sandboxSubjectAgentId(subject),
-      sandboxName,
       sandboxUid,
-      claimUid,
       generation,
       since: this.deps.clock.now()
-    }
+    } as L
     this.launches.set(subject, launch)
     return launch
   }
 
   /** Drop the cached launch, reporting the one that was there so the caller can settle its holds. */
-  forgetLaunch(subject: string): Launch | undefined {
+  forgetLaunch(subject: string): L | undefined {
     const launch = this.launches.get(subject)
     this.launches.delete(subject)
     return launch
   }
 
-  currentLaunch(subject: string): Launch | undefined {
+  currentLaunch(subject: string): L | undefined {
     return this.launches.get(subject)
   }
 
@@ -114,15 +107,15 @@ export class LaunchRegistry {
   }
 
   /** A takeover re-derivation in flight, or undefined — the same answer from the cluster. */
-  adoptInFlight(subject: string): Promise<Launch | undefined> | undefined {
+  adoptInFlight(subject: string): Promise<L | undefined> | undefined {
     return this.adopting.get(subject)
   }
 
   /** Single-flight the takeover re-derivation, handing `derive` the fence snapshot to compare against. */
-  adopt(subject: string, derive: (releasedAt: number) => Promise<Launch | undefined>): Promise<Launch | undefined> {
+  adopt(subject: string, derive: (releasedAt: number) => Promise<L | undefined>): Promise<L | undefined> {
     const inFlight = this.adopting.get(subject)
     if (inFlight) return inFlight
-    const run = (async (): Promise<Launch | undefined> => {
+    const run = (async (): Promise<L | undefined> => {
       const existing = this.launches.get(subject)
       if (existing) return existing
       const releasedAt = this.releaseFence(subject)

@@ -4,22 +4,21 @@ import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
 import { ShimSession } from '../shim/session.js'
 import { spawnSubject, type SpawnRecord } from '../shim/binding.js'
-import type { SandboxLease } from './sandbox-lease.js'
-import { LaunchTimeoutError, sandboxSubjectAgentId } from './sandbox-identity.js'
-import type { LaunchRegistry, Launch } from '../remote/launch-registry.js'
+import { sandboxSubjectAgentId } from './sandbox-subject.js'
+import type { LaunchRegistry, Launch } from './launch-registry.js'
+import { LaunchTimeoutError, type ShimEndpointProvider } from './shim-endpoint.js'
 
-export interface ChannelBinderDeps {
-  registry: LaunchRegistry
-  lease: SandboxLease
+export interface ChannelBinderDeps<L extends Launch = Launch> {
+  registry: LaunchRegistry<L>
+  /** Where the launch's shim can be dialed; it also holds the sandbox for the length of the bind. */
+  endpoints: ShimEndpointProvider<L>
   clock: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   metrics: ClusterMetrics
   /** How long a bind may wait for the pod's shim to dial back. */
   channelTimeoutMs: number
-  /** Wait for the launch's Sandbox to report Ready and name its pod. */
-  awaitReady: (sandboxName: string) => Promise<{ podName: string; podIp: string }>
-  /** Dials the ready pod and binds the shim channel for this launch. */
-  connectChannel: (record: SpawnRecord, podIp: string, timeoutMs: number) => Promise<ShimConnection>
+  /** Dials the resolved endpoint and binds the shim channel for this launch. */
+  connectChannel: (record: SpawnRecord, address: string, timeoutMs: number) => Promise<ShimConnection>
   /** Stops any outbound channel when a bind is abandoned. */
   revokeChannel?: (subject: string) => void
   /** Prepares a freshly bound channel before anything runs on it; failures degrade, never fail the bind. */
@@ -36,32 +35,32 @@ export interface ChannelBinderDeps {
  * invariant spanning this class and `LaunchRegistry`, so its ORCHESTRATION stays in the
  * `K8sDriver` methods that own the other half.
  */
-export class ChannelBinder {
+export class ChannelBinder<L extends Launch = Launch> {
   /** Logical channels per subject, which survive the shim's credential renewals. */
   private readonly sessions = new Map<string, ShimSession>()
   /** Workspace mount per subject, as the bound pod's shim reported it. */
   private readonly workspaceRoots = new Map<string, string>()
 
-  constructor(private readonly deps: ChannelBinderDeps) {}
+  constructor(private readonly deps: ChannelBinderDeps<L>) {}
 
   /** Resume the launch's pod, wait for it, and bind the shim channel onto the subject's session. */
   async bindChannel(
     subject: string,
-    launch: Launch,
+    launch: L,
     timer: LaunchTimer | undefined,
     grants: ShimCapability[]
   ): Promise<ShimConnection> {
-    this.deps.lease.retain(launch.sandboxName)
+    this.deps.endpoints.retain(launch)
     try {
       return await this.bindHeld(subject, launch, timer, grants)
     } finally {
-      this.deps.lease.release(launch.sandboxName)
+      this.deps.endpoints.release(launch)
     }
   }
 
   private async bindHeld(
     subject: string,
-    launch: Launch,
+    launch: L,
     timer: LaunchTimer | undefined,
     grants: ShimCapability[]
   ): Promise<ShimConnection> {
@@ -72,15 +71,7 @@ export class ChannelBinder {
     if (this.deps.registry.currentLaunch(subject) !== launch) {
       throw new Error(`sandbox ${subject} left this member before its sandbox channel was bound`)
     }
-    // Resume before waiting because suspension deleted the pod and readiness cannot arrive first.
-    const modeBeforeWake = await this.deps.lease.queueMode(launch.sandboxName, 'Running')
-    // A launch this daemon already has cached returns from ensureSandbox before any sandbox
-    // read, so this is where the ordinary `launch → suspend → launch` resume learns what it is.
-    // Without it that path — the COMMON one — reported `warm` and never entered resume p95.
-    if (modeBeforeWake) timer?.observedPath(modeBeforeWake === 'Suspended' ? 'resume' : 'warm')
-    timer?.mark('mode_running')
-    const pod = await this.deps.awaitReady(launch.sandboxName)
-    timer?.mark('pod_ready')
+    const endpoint = await this.deps.endpoints.resolve(launch, timer)
     const channelTimeoutMs = this.deps.channelTimeoutMs
     const waitingSince = this.deps.clock.now()
     const connection = await this.deps
@@ -91,9 +82,9 @@ export class ChannelBinder {
           sandboxUid: launch.sandboxUid,
           generation: launch.generation,
           grants: [...grants],
-          podName: pod.podName
+          podName: endpoint.peer.podName
         },
-        pod.podIp,
+        endpoint.address,
         channelTimeoutMs
       )
       .catch((err: unknown) => {
