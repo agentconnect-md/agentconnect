@@ -221,6 +221,14 @@ try {
   }
   step('both-helper-endpoints-reach-their-own-daemon-socket', { guestSockets })
 
+  await manager.suspend(environment.id)
+  summary.resumedLaunchToInitializeMs = await acpRoundTrip()
+  step('acp-initialize-answered-after-resuming-the-stopped-vm', { ms: summary.resumedLaunchToInitializeMs })
+  for (const tunnel of ['mcp', 'gitcred'] as const) {
+    assert.equal((await guest(tunnel, 'echo resumed')).reply, `${tunnel}:resumed`)
+  }
+  step('both-helper-endpoints-served-again-on-the-resumed-vm')
+
   // Ascending sizes per direction, so a path that stalls on a large transfer still reports what it carried before that.
   let stalled: string | undefined
   for (const [command, label] of [
@@ -246,9 +254,6 @@ try {
     throw new Error(`bulk transfer through the mcp endpoint did not complete (${stalled})`)
   }
 
-  await manager.suspend(environment.id)
-  summary.resumedLaunchToInitializeMs = await acpRoundTrip()
-  step('acp-initialize-answered-after-resuming-the-stopped-vm', { ms: summary.resumedLaunchToInitializeMs })
   passed = true
 } finally {
   await manager.discard(environmentId).catch((error: unknown) => console.error(error))

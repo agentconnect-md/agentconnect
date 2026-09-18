@@ -483,58 +483,6 @@ jobs:
           pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts
           ghcr.io/agentconnect-md/runtime-sandbox:latest
 
-  # TEMPORARY, removed before merge: both arms, three samples, one run, for the numbers in the pull request.
-  measure-microsandbox:
-    name: TEMP measure (${{ matrix.arm }} ${{ matrix.sample }})
-    if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        arm: [before, after]
-        sample: [1, 2, 3]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Select the arm
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if [ "${{ matrix.arm }}" = before ]; then
-            cp packages/daemon/scripts/smoke-microsandbox-runtime.mts /tmp/smoke.mts
-            git checkout --detach "$BASE"
-            cp /tmp/smoke.mts packages/daemon/scripts/smoke-microsandbox-runtime.mts
-          fi
-          git log --oneline -1
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.19.0
-          cache: true
-          cache_dependency_path: |
-            pnpm-lock.yaml
-            packages/daemon/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .nvmrc
-      - name: Install
-        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
-      - name: Open /dev/kvm to this user
-        run: |
-          ls -l /dev/kvm
-          sudo chmod 0666 /dev/kvm
-      - name: Build the daemon
-        env:
-          pnpm_config_enable_pre_post_scripts: false
-        run: pnpm --filter @agentconnect.md/daemon build
-      - name: Measure
-        run: >
-          pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-microsandbox-runtime.mts
-          ghcr.io/agentconnect-md/runtime-sandbox:latest 32
-
   # The daemon's store suites again, with `LocalStore` opened over `PostgresSyncDatabase`
   # instead of `node:sqlite`, against a Testcontainers `postgres:16-alpine`. The pool runs
   # that SQL for real, so a SQLite-only construct fails here rather than on a cluster.
