@@ -221,6 +221,55 @@ it.skipIf(process.platform === 'win32')(
   }
 )
 
+it.skipIf(process.platform === 'win32')(
+  'launches a host through the plane that runs it: a VM only when prepared for one, a cluster plane whenever there is one',
+  async () => {
+    const root = scaffold({ workspace: { mode: 'from-scratch', path: 'workspace' } }, 'shared')
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      const manager = useMicrosandbox(daemon)
+      const agent = (daemon as any).agents.get('bot-a')
+      const hostKey = sessionHostKey(agent.id, KEY('plane'))
+      const build = (runInSandbox: boolean) =>
+        (daemon as any).buildAcpHost(agent, (daemon as any).cfg, { hostKey, runInSandbox, cwd: agent.workspace.path })
+          .host.opts
+
+      // Prepared for a VM: the manager's driver for this host's own environment, and its key rides along.
+      const vm = build(true)
+      expect(vm.driver).toBe(manager.driverFor.mock.results.at(-1)!.value)
+      expect((manager.driverFor.mock.calls.at(-1) as any)[0]).toMatchObject({
+        id: `bot-a/${hostKeyDirName(hostKey)}`,
+        workspaceRoot: realpathSync(agent.dir)
+      })
+      expect(vm.hostKey).toBe(hostKey)
+
+      // An unsandboxed launch beside it names no plane, so AcpHost keeps its LocalDriver on this host.
+      const local = build(false)
+      expect(local.driver).toBeUndefined()
+      expect(local.hostKey).toBeUndefined()
+
+      // A cluster plane answers every host, and its own rule decides whether the driver sees the key.
+      const driver = {}
+      const spawnFor = vi.fn((launch: { hostKey: string; confined: () => boolean }) => ({
+        driver,
+        ...(launch.confined() ? { hostKey: launch.hostKey } : {})
+      }))
+      ;(daemon as any).k8sPlane = { spawnFor, stop: async () => {} }
+      const podSubject = vi.spyOn(daemon as any, 'podSubjectFor').mockReturnValue(undefined)
+      const sharedPod = build(false)
+      expect(sharedPod.driver).toBe(driver)
+      expect(sharedPod.hostKey).toBeUndefined()
+      podSubject.mockReturnValue(`bot-a/${hostKeyDirName(hostKey)}`)
+      expect(build(false).hostKey).toBe(hostKey)
+      expect(spawnFor.mock.calls.at(-1)![0]).toMatchObject({ agent, hostKey, cwd: agent.workspace.path })
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
 const dm = (ts: string, text: string, thread: string) => ({
   msgId: `slack:C1:${ts}`,
   traceId: ts,

@@ -16,7 +16,7 @@ export interface PlaneLaunch {
   confined: () => boolean
 }
 
-/** What AcpHost launches with: the plane's driver, and the host key only when that driver routes the launch by it. */
+/** What AcpHost launches with: the plane's driver, and the host key when the plane names the host to it. */
 export interface PlaneSpawn {
   driver: SpawnDriver
   hostKey?: HostKey

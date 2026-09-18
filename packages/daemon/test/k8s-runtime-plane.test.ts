@@ -7,7 +7,13 @@ import {
   sandboxMemoryRoot
 } from '../src/k8s/runtime-plane.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, probeAgentId } from '../src/k8s/probe-claim.js'
-import { sandboxSubjectFor } from '../src/k8s/sandbox-identity.js'
+import {
+  AC_LABEL_AGENT,
+  AC_LABEL_SESSION,
+  sandboxSubjectFor,
+  sessionSandboxSubject
+} from '../src/k8s/sandbox-identity.js'
+import type { PlaneLaunch } from '../src/execution/plane.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
@@ -638,5 +644,32 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     // And nothing was woken behind the refusal: the claim is untouched and no launch was recorded.
     expect(plane.launched()).toEqual([])
     expect(cluster.claims.has(plane.driver.claimName(session))).toBe(true)
+  })
+
+  it('hands the driver a host key only for a confined session host, so every other host lands in the agent pod', async () => {
+    const plane = await planeUnderTest(fakeApi())
+    const hostKey = sessionHostKey('agent-a', 'slack:C1:T1:agent-a')
+    const launch = (confined: boolean) => ({ hostKey, confined: () => confined }) as PlaneLaunch
+
+    expect(plane.spawnFor(launch(true))).toStrictEqual({ driver: plane.driver, hostKey })
+    // A dream or model-session host is session-keyed too, and must not claim a pod of its own.
+    expect(plane.spawnFor(launch(false))).toStrictEqual({ driver: plane.driver })
+  })
+
+  it('retires every session claim of the agent but the leaf spared, whether or not this member launched it', async () => {
+    const cluster = fakeCluster()
+    const plane = await planeUnderTest(cluster as never)
+    const claim = (agentId: string, leaf?: string) => {
+      const name = plane.driver.claimName(leaf === undefined ? agentId : sessionSandboxSubject(agentId, leaf))
+      const labels = { [AC_LABEL_AGENT]: agentId, ...(leaf === undefined ? {} : { [AC_LABEL_SESSION]: leaf }) }
+      cluster.claims.set(name, { metadata: { name, labels } } as SandboxClaim)
+      return name
+    }
+    const kept = [claim('agent-a'), claim('agent-a', 'session-spared'), claim('agent-b', 'session-other')]
+    claim('agent-a', 'session-one')
+    claim('agent-a', 'session-two')
+
+    await plane.discardSessions('agent-a', 'session-spared')
+    expect([...cluster.claims.keys()].sort()).toEqual([...kept].sort())
   })
 })
