@@ -285,7 +285,11 @@ direct SDK exec. The shim starts with each running VM, before anything else runs
 in it, and a VM whose shim or helper endpoints cannot start is refused. It does
 not prevent idle suspension. Each request holds the VM until it finishes, and a
 resumed VM gets a new binding generation and identity token. The binding grants
-`acp`, `tunnel`, `read` and the skill channels, and nothing else.
+`acp`, `tunnel`, `read` and the skill channels, and nothing else. Its credential
+lives for a day rather than a pod's ten minutes. The shim renews at half that
+lifetime by presenting the same one-time token again, which proves nothing new,
+and a renewal ends any helper stream with a frame in flight, such as the MCP
+bridge's connection.
 
 The daemon stages its bundled shim and audited skills CLI in root-owned `/run`
 files on startup, including when the VM retains an older runtime image. This

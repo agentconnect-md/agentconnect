@@ -18,6 +18,8 @@ import { openExecStream, MICROSANDBOX_NODE, type MicrosandboxExecStream } from '
 import { openGuestTcp } from './tcp.js'
 
 const TIMEOUT_MS = 15_000
+// Renewal re-presents the same one-time token, so it proves nothing new here and only ends tunnel streams with a frame in flight.
+const CREDENTIAL_TTL_MS = 24 * 60 * 60_000
 const ARTIFACTS = ['index.js', 'skills/dist/cli.js', 'skills/package.json', 'skills/workspace-mutation.js']
 let artifacts: Promise<string> | undefined
 
@@ -175,6 +177,7 @@ export async function startMicrosandboxShim(input: {
       }
     },
     onConnection: (connection) => session.attach(connection),
+    credentialTtlMs: CREDENTIAL_TTL_MS,
     log
   })
   let handle: MicrosandboxExecStream | undefined

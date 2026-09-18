@@ -53,7 +53,9 @@ function fakeVm(guestSockets: Record<TunnelName, string>) {
   const cleanup: Array<() => void | Promise<void>> = []
   let shimStream: FrameQueue | undefined
   let shimServer: ShimServer | undefined
+  let shimClient: ShimClient | undefined
   let port: number | undefined
+  let hold: { reached: () => void; released: Promise<void> } | undefined
 
   async function startShim(token: string, stream: FrameQueue): Promise<void> {
     const server = new ShimServer()
@@ -70,6 +72,12 @@ function fakeVm(guestSockets: Record<TunnelName, string>) {
       completeEnv: true,
       handle: async (capability, payload) => {
         if (capability !== 'tunnel') throw new Error(`capability ${capability} is not served by this fake`)
+        const held = hold
+        if (held && (payload as { op: string }).op === 'data') {
+          hold = undefined
+          held.reached()
+          await held.released
+        }
         return tunnels.handle(payload)
       },
       workspaceRoot: '/workspace',
@@ -78,6 +86,7 @@ function fakeVm(guestSockets: Record<TunnelName, string>) {
       log: silent
     })
     shimServer = server
+    shimClient = client
     port = await server.start(0, '127.0.0.1')
     void client.start().catch(() => undefined)
     cleanup.push(
@@ -155,6 +164,15 @@ function fakeVm(guestSockets: Record<TunnelName, string>) {
         1000,
         'rebinding'
       ),
+    /** Holds the next daemon-to-guest tunnel frame inside the guest until released, so a renewal can land while it is in flight. */
+    holdNextTunnelFrame: () => {
+      let release!: () => void
+      const released = new Promise<void>((resolve) => (release = resolve))
+      const reached = new Promise<void>((resolve) => (hold = { reached: resolve, released }))
+      return { reached, release }
+    },
+    /** The binding the guest's shim holds, including the lifetime it renews against. */
+    binding: () => shimClient?.binding(),
     close: async () => {
       for (const step of cleanup.splice(0).reverse()) await step()
     }
@@ -185,6 +203,18 @@ const closers: Array<() => void | Promise<void>> = []
 afterEach(async () => {
   for (const close of closers.splice(0).reverse()) await close()
 })
+
+/** A guest client that stays connected, so what its stream goes through across a renewal shows. */
+function guestClient(path: string) {
+  const socket = connect(path)
+  let received = ''
+  let closed = false
+  socket.on('data', (data) => (received += data.toString()))
+  socket.on('close', () => (closed = true))
+  socket.on('error', () => {})
+  closers.push(() => void socket.destroy())
+  return { write: (text: string) => socket.write(text), received: () => received, closed: () => closed }
+}
 
 async function fixture(options: { guestDir?: string } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'ms-shim-'))
@@ -305,6 +335,36 @@ describe('microsandbox shim', () => {
     expect(ticks).toEqual(ticks.map((_, index) => index + 1))
     expect(output.match(/echo mid-renewal\n/g)).toHaveLength(1)
     await runtime.stop(2_000)
+  })
+
+  it('ends a tunnel stream whose daemon-to-guest frame is in flight across a renewal, and keeps an idle one', async () => {
+    const { vm, start, guestSockets } = await fixture()
+    const shim = await start()
+    const idle = guestClient(guestSockets.mcp)
+    idle.write('initialize')
+    await vi.waitFor(() => expect(idle.received()).toBe('mcp:initialize'))
+    const busy = guestClient(guestSockets.mcp)
+    const held = vm.holdNextTunnelFrame()
+    busy.write('tools/call')
+    // The daemon's reply is inside the guest's shim, not yet written to the client, when the shim hangs up to renew.
+    await held.reached
+    const attached = new Promise<void>((resolve) => shim.session.onAttach(resolve))
+    vm.renew()
+    await attached
+    await vi.waitFor(() => expect(busy.closed()).toBe(true))
+    held.release()
+    expect(busy.received()).toBe('')
+    idle.write('tools/list')
+    await vi.waitFor(() => expect(idle.received()).toBe('mcp:initializemcp:tools/list'))
+    expect(idle.closed()).toBe(false)
+  })
+
+  it('binds the VM for a day, so its shim does not renew the channel every few minutes', async () => {
+    const { vm, start } = await fixture()
+    await start()
+    // The shim renews at half this, and each renewal ends any tunnel stream with a frame in flight.
+    expect(vm.binding()?.expiresInSeconds).toBeGreaterThan(23 * 60 * 60)
+    expect(vm.binding()?.expiresInSeconds).toBeLessThanOrEqual(24 * 60 * 60)
   })
 
   it('keeps the runtime stderr apart from the shim log it shares a stream with', async () => {
