@@ -37,7 +37,7 @@ export interface ExecutionPlane {
   discardSessions: (agentId: string, exceptLeaf?: string) => Promise<void>
 }
 
-/** What a workspace operation knows about where it lands: the agent, plus the narrowest locator its caller holds — a session key, else a path, else neither. */
+/** What a workspace operation knows about where it lands: the agent, plus the narrowest locator its caller holds — a session key, else a path in the coordinates the workspace is addressed in, else neither. */
 export interface PlaneScope {
   agentId: string
   sessionKey?: string
