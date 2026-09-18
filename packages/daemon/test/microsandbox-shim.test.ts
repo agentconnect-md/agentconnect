@@ -52,7 +52,6 @@ function fakeVm(guestSockets: Record<TunnelName, string>) {
   const execs: Array<{ cmd: string; args: string[]; env: string[]; user: string | null; stdin: string }> = []
   const cleanup: Array<() => void | Promise<void>> = []
   let shimStream: FrameQueue | undefined
-  let shimServer: ShimServer | undefined
   let shimClient: ShimClient | undefined
   let port: number | undefined
   let hold: { reached: () => void; released: Promise<void> } | undefined
@@ -85,7 +84,6 @@ function fakeVm(guestSockets: Record<TunnelName, string>) {
       backoff: new Backoff({ baseMs: 5, jitter: () => 0 }),
       log: silent
     })
-    shimServer = server
     shimClient = client
     port = await server.start(0, '127.0.0.1')
     void client.start().catch(() => undefined)
@@ -158,12 +156,8 @@ function fakeVm(guestSockets: Record<TunnelName, string>) {
     stderr: (text: string) => shimStream!.push('core.exec.stderr', { data: Buffer.from(text) }),
     /** The shim process ends without being asked to. */
     crash: () => shimStream!.push('core.exec.exited', { code: 1 }, true),
-    /** The shim hangs up the way its half-TTL credential renewal does, so the daemon dials again at once. */
-    renew: () =>
-      (shimServer as unknown as { active: { close: (code: number, reason: string) => void } }).active.close(
-        1000,
-        'rebinding'
-      ),
+    /** The shim renews through its own half-TTL path: it drops its binding before hanging up, so nothing is sent into the closing socket. */
+    renew: () => (shimClient as unknown as { channel?: { end?: (reason: 'renew') => void } }).channel?.end?.('renew'),
     /** Holds the next daemon-to-guest tunnel frame inside the guest until released, so a renewal can land while it is in flight. */
     holdNextTunnelFrame: () => {
       let release!: () => void
