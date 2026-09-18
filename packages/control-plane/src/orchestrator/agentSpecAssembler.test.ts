@@ -54,6 +54,7 @@ const AGENT: AgentRecord = {
   memory: null,
   status: 'active',
   placementKind: 'daemon',
+  placementChangedAt: new Date(0),
   daemonId: null,
   setId: null,
   workspace: { mode: 'scratch' },

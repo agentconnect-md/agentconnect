@@ -773,6 +773,9 @@ export interface AgentRecord {
   daemonId: DaemonId | null
   /** The `set`-kind ref, null for a `daemon` placement. Which MEMBER serves it is the ledger's. */
   setId: string | null
+  /** When the placement above last changed. The one clock a reader that was not here to see it
+   *  move can trust — the pool's orphan reconciler dates a departure from it (k8s-daemon-pool §4). */
+  placementChangedAt: Date
   workspace: AgentWorkspace
   /** Nullable on scratch/anonymous and pre-R2a rows; action-time authorization
    *  fails closed until a legacy github workspace is lazily repaired. */

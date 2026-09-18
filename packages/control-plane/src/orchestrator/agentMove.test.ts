@@ -80,6 +80,7 @@ function agent(daemonId: string | null): AgentRecord {
     memory: null,
     status: daemonId ? 'active' : 'inactive',
     placementKind: 'daemon',
+    placementChangedAt: new Date(0),
     daemonId: daemonId ? DaemonId(daemonId) : null,
     setId: null,
     workspace: { mode: 'scratch' },

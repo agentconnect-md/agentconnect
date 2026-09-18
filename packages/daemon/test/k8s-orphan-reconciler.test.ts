@@ -15,7 +15,6 @@ import {
 } from '../src/k8s/orphan-reconciler.js'
 import {
   AC_ANNOTATION_ADMITTED,
-  AC_ANNOTATION_MOVED,
   AC_LABEL_AGENT,
   AC_LABEL_ORG,
   AC_LABEL_SESSION,
@@ -113,21 +112,10 @@ function sandbox(name: string, agentId?: string, createdAt = T0 - HOUR): Sandbox
 async function cluster(
   claims: SandboxClaim[],
   sandboxes: Sandbox[],
-  opts: { sandboxList?: number; deleteConflict?: boolean; stampRefused?: boolean } = {}
+  opts: { sandboxList?: number; deleteConflict?: boolean } = {}
 ) {
   const deletes: Array<{ path: string; preconditions: unknown }> = []
-  const stamps: Array<{ name: string; annotations: Record<string, string | null> }> = []
   const { config } = await fakeApiServer(({ method, url, body }) => {
-    if (method === 'PATCH') {
-      const name = url.pathname.split('/').pop()!
-      const annotations = JSON.parse(body).metadata.annotations as Record<string, string | null>
-      stamps.push({ name, annotations })
-      if (opts.stampRefused) return { status: 403, json: { kind: 'Status', reason: 'Forbidden' } }
-      // The object as the sweep will read it NEXT run: the stamp merged onto it.
-      const claim = claims.find((entry) => entry.metadata?.name === name)
-      if (claim) claim.metadata!.annotations = { ...claim.metadata?.annotations, ...clean(annotations) }
-      return { json: claim ?? {} }
-    }
     if (method === 'DELETE') {
       deletes.push({ path: url.pathname, preconditions: JSON.parse(body).preconditions })
       // What the API server answers when the object's version moved since it was listed.
@@ -144,17 +132,7 @@ async function cluster(
     }
     return { status: 404, json: { kind: 'Status', reason: 'NotFound' } }
   })
-  return { api: new SandboxApi(new K8sHttp(config), 'agent-sandboxes'), deletes, stamps }
-}
-
-/** The same claim with extra annotations merged on — what the sweep reads on a LATER run. */
-function withAnnotations(claim: SandboxClaim, annotations: Record<string, string>): SandboxClaim {
-  return { ...claim, metadata: { ...claim.metadata, annotations: { ...claim.metadata?.annotations, ...annotations } } }
-}
-
-/** A merge patch's `null` removes the key; the fake server applies that like the API server does. */
-function clean(annotations: Record<string, string | null>): Record<string, string> {
-  return Object.fromEntries(Object.entries(annotations).filter(([, v]) => v !== null)) as Record<string, string>
+  return { api: new SandboxApi(new K8sHttp(config), 'agent-sandboxes'), deletes }
 }
 
 function reconciler(over: Partial<OrphanReconcilerDeps> & { api: OrphanReconcilerDeps['api'] }) {
@@ -232,9 +210,7 @@ describe('orphan reconciler', () => {
     ])
     // One existence read per run, covering every agent-bearing candidate at once.
     expect(r.asked).toEqual([[GONE, LIVE]])
-    expect(r.infos.at(-1)).toContain(
-      'orphaned=1 deleted=1 skipped-live=1 skipped-grace=0 moved=0 moved-marked=0 failed=0'
-    )
+    expect(r.infos.at(-1)).toContain('orphaned=1 deleted=1 skipped-live=1 skipped-grace=0 moved=0 failed=0')
   })
 
   it('never touches an object of a live agent, claimless Sandbox included', async () => {
@@ -325,123 +301,78 @@ describe('orphan reconciler', () => {
 describe('orphan reconciler and agents that moved off this pool', () => {
   const MOVED = '33333333-3333-4333-8333-333333333333'
   const LEAF = 'session-cccccccccccccccccccccccc'
-  // Live to `agent/exists`, but placed somewhere this pool is not.
-  const away = (over: Partial<OrphanReconcilerDeps> & { api: OrphanReconcilerDeps['api'] }) =>
+  // Live to `agent/exists`, but placed somewhere this pool is not, since `departedAt`.
+  const away = (departedAt: number, over: Partial<OrphanReconcilerDeps> & { api: OrphanReconcilerDeps['api'] }) =>
     reconciler({
       liveAgents: async (ids) => new Set(ids.filter((id) => id === LIVE || id === MOVED)),
-      movedAgents: async (ids) => new Set(ids.filter((id) => id === MOVED)),
+      movedAgents: async (ids) => new Map(ids.filter((id) => id === MOVED).map((id) => [id, departedAt])),
       ...over
     })
-  const departedAt = (at: number) => ({ [AC_ANNOTATION_MOVED]: new Date(at).toISOString() })
 
-  it('only STAMPS a departure on the sweep that first sees it, however old the object is', async () => {
-    // The whole point: a pod suspended months ago stopped being admission-stamped long before the
-    // move, so judging the departure by that stamp would take its volume on the first sweep after it.
-    const ancient = T0 - 10 * MOVED_GRACE
-    const { api, deletes, stamps } = await cluster(
-      [
-        claim(MOVED, { createdAt: ancient, sandbox: 'sb-moved' }),
-        sessionClaim(MOVED, LEAF, { createdAt: ancient, admittedAt: ancient, sandbox: 'sb-moved-session' })
-      ],
-      []
-    )
-    const r = away({ api })
-    expect(await r.it.sweep()).toMatchObject({ candidates: 2, orphaned: 0, moved: 0, movedMarked: 2 })
-    expect(deletes).toEqual([])
-    expect(stamps.map((entry) => entry.annotations[AC_ANNOTATION_MOVED])).toEqual([
-      new Date(T0).toISOString(),
-      new Date(T0).toISOString()
-    ])
-  })
-
-  it('collects the agent pod AND the session pods once the stamped window is up', async () => {
+  it('collects the agent pod AND the session pods once the placement change is past the window', async () => {
     // Nothing here holds its duty any more, so no member suspends these pods or sweeps these
     // sessions, and the daemon that holds the agent now reads a different store. This sweep is
     // the only thing left that can reclaim them.
     const left = T0 - MOVED_GRACE - HOUR
     const { api, deletes } = await cluster(
       [
-        withAnnotations(claim(MOVED, { createdAt: left, sandbox: 'sb-moved' }), departedAt(left)),
-        withAnnotations(sessionClaim(MOVED, LEAF, { createdAt: left, sandbox: 'sb-s' }), departedAt(left)),
+        claim(MOVED, { createdAt: left, sandbox: 'sb-moved' }),
+        sessionClaim(MOVED, LEAF, { createdAt: left, sandbox: 'sb-moved-session' }),
         claim(LIVE, { sandbox: 'sb-live' })
       ],
-      []
+      // A claimless Sandbox of a departed agent goes the same way; there is nothing special about it.
+      [sandbox('sb-stray', MOVED, left)]
     )
-    const r = away({ api })
-    expect(await r.it.sweep()).toMatchObject({ candidates: 3, orphaned: 2, deleted: 2, moved: 2, skippedLive: 1 })
-    expect(deletes).toHaveLength(2)
+    const r = away(left, { api })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 4, orphaned: 3, deleted: 3, moved: 3, skippedLive: 1 })
     // The one agent still placed here is untouched, pod and volume.
     expect(deletes.every((entry) => !entry.path.includes(LIVE))).toBe(true)
   })
 
-  it('keeps a stamped departure inside its window, long past the leak grace', async () => {
-    // The window IS the promise that a move can be undone; only its end may take the volume.
-    const left = T0 - GRACE - HOUR
-    const { api, deletes } = await cluster(
-      [withAnnotations(claim(MOVED, { createdAt: T0 - 5 * MOVED_GRACE, sandbox: 'sb' }), departedAt(left))],
-      []
-    )
-    const r = away({ api })
-    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, moved: 0, movedMarked: 0 })
-    expect(deletes).toEqual([])
-  })
-
-  it('runs the window from the LATER of the departure and a re-admission that followed it', async () => {
-    // A member served this claim after the stamp was written, so it is not an object nobody serves.
-    const left = T0 - 2 * MOVED_GRACE
+  it('keeps a departed agent inside its window, however old and however long since its pod ran', async () => {
+    // The window IS the promise that a move can be undone; only its end may take the volume. The
+    // claim's own stamps say nothing about the move — a pod suspended before it stopped being
+    // stamped long before it — which is exactly why the control plane dates the departure.
+    const ancient = T0 - 10 * MOVED_GRACE
     const { api, deletes } = await cluster(
       [
-        withAnnotations(
-          sessionClaim(MOVED, LEAF, { createdAt: left, admittedAt: T0 - HOUR, sandbox: 'sb' }),
-          departedAt(left)
-        )
+        claim(MOVED, { createdAt: ancient, sandbox: 'sb' }),
+        sessionClaim(MOVED, LEAF, { createdAt: ancient, admittedAt: ancient, sandbox: 'sb-s' })
       ],
       []
     )
-    const r = away({ api })
-    expect(await r.it.sweep()).toMatchObject({ orphaned: 0, moved: 0 })
+    const r = away(T0 - GRACE, { api })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 2, orphaned: 0, moved: 0, skippedGrace: 2 })
     expect(deletes).toEqual([])
   })
 
-  it('clears the departure stamp of an agent that came back, so a later move starts a fresh window', async () => {
-    const { api, stamps } = await cluster(
-      [withAnnotations(claim(LIVE, { sandbox: 'sb' }), departedAt(T0 - 5 * MOVED_GRACE))],
-      []
-    )
-    const r = away({ api })
-    expect(await r.it.sweep()).toMatchObject({ orphaned: 0, skippedLive: 1 })
-    expect(stamps).toEqual([{ name: `agent-${LIVE}`, annotations: { [AC_ANNOTATION_MOVED]: null } }])
+  it('gives a second move its own full window rather than the remainder of the first', async () => {
+    // The case a mark the sweep wrote itself could never get right: an agent that left, came back
+    // and left again entirely between two ten-minute runs. The control plane saw all three.
+    const { api, deletes } = await cluster([claim(MOVED, { createdAt: T0 - 10 * MOVED_GRACE, sandbox: 'sb' })], [])
+    const r = away(T0 - 60_000, { api })
+    expect(await r.it.sweep()).toMatchObject({ orphaned: 0, moved: 0, skippedGrace: 1 })
+    expect(deletes).toEqual([])
   })
 
-  it('collects nothing, and says why once, when the API server refuses the departure stamp', async () => {
-    const { api, deletes } = await cluster([claim(MOVED, { createdAt: T0 - 5 * MOVED_GRACE, sandbox: 'sb' })], [], {
-      stampRefused: true
-    })
-    const r = away({ api })
-    expect(await r.it.sweep()).toMatchObject({ orphaned: 0, moved: 0, movedMarked: 0 })
+  it('keeps an object minted since the move, which the move cannot have left behind', async () => {
+    const { api, deletes } = await cluster([claim(MOVED, { createdAt: T0 - HOUR, sandbox: 'sb' })], [])
+    const r = away(T0 - 5 * MOVED_GRACE, { api })
+    expect(await r.it.sweep()).toMatchObject({ orphaned: 0, moved: 0, skippedGrace: 1 })
     expect(deletes).toEqual([])
-    expect(r.warns.filter((line) => line.includes('refused the departure stamp'))).toHaveLength(1)
   })
 
   it('leaves every live agent alone when the control plane cannot say where one is placed', async () => {
     // A control plane without the placement answer is the pre-placement sweep: less, never more.
-    const { api, deletes, stamps } = await cluster(
-      [withAnnotations(claim(MOVED, { createdAt: T0 - 5 * MOVED_GRACE, sandbox: 'sb' }), departedAt(T0 - MOVED_GRACE))],
-      []
-    )
+    const { api, deletes } = await cluster([claim(MOVED, { createdAt: T0 - 5 * MOVED_GRACE, sandbox: 'sb' })], [])
     const r = reconciler({ api, liveAgents: async (ids) => new Set(ids) })
     expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, moved: 0, skippedLive: 1 })
     expect(deletes).toEqual([])
-    // …and the stale stamp is cleared, because to this sweep the agent is simply still here.
-    expect(stamps).toHaveLength(1)
   })
 
   it('keeps a departed agent’s objects when the placement read itself fails', async () => {
-    const { api, deletes } = await cluster(
-      [withAnnotations(claim(MOVED, { createdAt: T0 - 5 * MOVED_GRACE, sandbox: 'sb' }), departedAt(T0 - MOVED_GRACE))],
-      []
-    )
-    const r = away({
+    const { api, deletes } = await cluster([claim(MOVED, { createdAt: T0 - 5 * MOVED_GRACE, sandbox: 'sb' })], [])
+    const r = away(T0 - 5 * MOVED_GRACE, {
       api,
       movedAgents: async () => {
         throw new Error('control plane blinked')
@@ -450,13 +381,6 @@ describe('orphan reconciler and agents that moved off this pool', () => {
     expect(await r.it.sweep()).toMatchObject({ orphaned: 0, moved: 0, skippedLive: 1 })
     expect(deletes).toEqual([])
     expect(r.warns.some((line) => line.includes('left this pool'))).toBe(true)
-  })
-
-  it('never collects a claimless Sandbox of a departed agent — there is nowhere to stamp one', async () => {
-    const { api, deletes } = await cluster([], [sandbox('sb-stray', MOVED, T0 - 5 * MOVED_GRACE)])
-    const r = away({ api })
-    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, moved: 0 })
-    expect(deletes).toEqual([])
   })
 })
 

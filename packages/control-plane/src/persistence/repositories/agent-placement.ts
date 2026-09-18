@@ -64,8 +64,20 @@ export async function revokeActiveWebchatMcpDelegations(
  * same target is not a change and must not churn revisions.
  */
 export async function settlePlacementChange(tx: Prisma.TransactionClient, agentId: string): Promise<void> {
+  await stampPlacementChange(tx, agentId)
   await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
   await tx.hookDef.updateMany({ where: { agentId }, data: { dispatchRevision: { increment: 1 } } })
+}
+
+/** WHEN the placement moved, for a reader that is not here to see it move. The pool's orphan
+ *  reconciler is a ten-minute CronJob, so it can neither date a departure from a claim's admission
+ *  stamp (that dates the last USE, and a pod suspended before the move stopped being stamped long
+ *  before it) nor from a stamp of its own (a departure, return and second departure between two
+ *  runs is invisible to it, and the second move would inherit the first's spent window). Written
+ *  here, beside the other things a real change settles, so a placement writer cannot record the
+ *  columns and forget the clock. */
+async function stampPlacementChange(tx: Prisma.TransactionClient, agentId: string): Promise<void> {
+  await tx.agent.update({ where: { id: agentId }, data: { placementChangedAt: new Date() } })
 }
 
 export async function settleCascadedUnplacement(tx: Prisma.TransactionClient, agentId: string): Promise<boolean> {
@@ -78,7 +90,7 @@ export async function settleCascadedUnplacement(tx: Prisma.TransactionClient, ag
     // No daemonId write — the cascade already did that; what is missing is everything
     // `setPlacement(unplaced)` pairs with it, including the revision the next owner compares.
     where: { id: agentId },
-    data: { status: 'inactive', configRevision: { increment: 1 } }
+    data: { status: 'inactive', configRevision: { increment: 1 }, placementChangedAt: new Date() }
   })
   await revokeActiveWebchatMcpDelegations(tx, agentId, new Date())
   await tx.hookDef.updateMany({ where: { agentId }, data: { dispatchRevision: { increment: 1 } } })

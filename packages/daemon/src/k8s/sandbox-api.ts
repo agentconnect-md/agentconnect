@@ -155,7 +155,7 @@ export class SandboxApi {
   // orphan sweep, and refusing every resume of an existing claim over it would trade a race for an outage.
   private async mergeClaimAnnotations(
     name: string,
-    annotations: Record<string, string | null> | undefined
+    annotations: Record<string, string> | undefined
   ): Promise<{ claim: SandboxClaim; stampRefused?: boolean }> {
     if (!annotations || Object.keys(annotations).length === 0) return { claim: await this.getClaim(name) }
     try {
@@ -167,16 +167,15 @@ export class SandboxApi {
     }
   }
 
-  /** Merge annotations onto a claim that is known to exist, degrading on a refused permission like an
-   *  admission does. A `null` value REMOVES that annotation, as a merge patch defines it. */
+  /** Merge annotations onto a claim that is known to exist, degrading on a refused permission like an admission does. */
   async stampClaim(
     name: string,
-    annotations: Record<string, string | null>
+    annotations: Record<string, string>
   ): Promise<{ claim: SandboxClaim; stampRefused?: boolean }> {
     return await this.mergeClaimAnnotations(name, annotations)
   }
 
-  private patchClaimAnnotations(name: string, annotations: Record<string, string | null>): Promise<SandboxClaim> {
+  private patchClaimAnnotations(name: string, annotations: Record<string, string>): Promise<SandboxClaim> {
     return this.http.json<SandboxClaim>({
       method: 'PATCH',
       path: `${this.claims()}/${name}`,

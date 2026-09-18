@@ -384,7 +384,7 @@ one-shot job has, since it keeps no memory of an earlier run. Every delete
 carries the UID and resourceVersion from the LIST snapshot, so a same-name
 replacement created after the list is never the object deleted. Each run logs
 one summary line (candidates, orphaned, deleted, skipped-live, skipped-grace,
-moved, moved-marked, failed).
+moved, failed).
 
 **The admission fence.** A session row's absence is a snapshot, and a session
 can come back between that read and the delete — its admission REUSES the
@@ -416,9 +416,23 @@ So the observer asks `agent/exists` with `placedOnSetId` — the pool it sweeps
 for, as the control plane itself resolved it from this pod's identity at `auth`
 (the observer registration that follows withdraws that membership again, which
 is why it is read there) — and the reply adds `elsewhere`: the surviving ids
-placement no longer puts on that set. Gated on the `agent-placement-v1` server
+placement no longer puts on that set, **each with when its placement last
+changed** (`Agent.placementChangedAt`, written by `settlePlacementChange` in the
+same transaction as the columns). Gated on the `agent-placement-v1` server
 feature; an older control plane drops the field and answers existence alone,
-which is the pre-placement sweep and collects strictly less. On that answer:
+which is the pre-placement sweep and collects strictly less.
+
+That timestamp has to come from the control plane, because nothing at the
+sweeping end can derive it. A claim's admission stamp dates its last USE, and a
+pod suspended before the move stopped being stamped long before it, so reading
+the departure off it would take the volume of an agent moved five minutes ago. A
+mark the sweep wrote itself on first observation fixes that case and not the next
+one: an agent that left, came back and left again entirely between two of these
+ten-minute runs is invisible to the sweep, and the second move would inherit the
+first's spent window. A scheduled observer cannot infer an unobserved round trip
+from the current placement alone, so the writer of the change records it.
+
+On that answer:
 
 - the claims of a departed agent — its own pod's and its session pods' — age out
   on their own window, `AC_MOVED_AGENT_GRACE_MS` (default 7 days), NOT the leak
@@ -426,21 +440,10 @@ which is the pre-placement sweep and collects strictly less. On that answer:
   the volume left behind is the promise that the work is still there to move back
   to. The window is where that promise ends.
 
-  That window runs from a stamp **the sweep writes itself**
-  (`agentconnect.md/moved-observed-at`), and the first sweep that sees a
-  departure only ever writes it. The admission stamp cannot answer the question:
-  it says when a member last USED the claim, and a pod suspended before the move
-  stopped being stamped long before it — so reading the departure off it would
-  take the volume of an agent moved five minutes ago, the exact case the window
-  exists for. Writing it here rather than at handover also covers the moves no
-  source daemon acknowledged: a forced reassign, a member that died mid-move.
-  Collection takes the later of that stamp, the admission stamp and creation, so
-  an agent that came back and re-admitted its claim is young again; a claim whose
-  agent reads as this pool's again has its departure stamp cleared, or a later
-  move would inherit the earlier one's window and skip it. A stamp the API server
-  refuses (a Role without `patch`) collects nothing and says so once. A claimless
-  Sandbox of a departed agent is left alone — there is nowhere on one to write
-  the stamp, and its agent's pods were stopped by the detach.
+  Both clocks have to be past the window: the placement change, and the object's
+  own age as every other rule reads it. The first is what the window is about;
+  the second keeps an object minted since the move — which the move cannot have
+  left behind — out of it.
 
 - its expired session rows are purged on the same window by the same job
   (`purgeMovedAgentSessions`), through the ordinary `deleteSession` — receipt

@@ -26,12 +26,15 @@ function fakeConn(orgId: string | null) {
 }
 
 const POOL = 'set-pool'
+const CHANGED_AT = new Date('2026-08-13T09:00:00.000Z')
 /** `LIVE` sits on the pool; `OTHER_ORG` was moved to a machine of its own. */
 const listByIds = vi.fn(async (ids: readonly string[]) =>
   [
     { id: LIVE, orgId: 'org-a', placementKind: 'set' as const, daemonId: null, setId: POOL },
     { id: OTHER_ORG, orgId: 'org-b', placementKind: 'daemon' as const, daemonId: 'daemon-1', setId: null }
-  ].filter((agent) => ids.includes(agent.id))
+  ]
+    .filter((agent) => ids.includes(agent.id))
+    .map((agent) => ({ ...agent, placementChangedAt: CHANGED_AT }))
 )
 const deps = { agent: { listByIds } } as unknown as DaemonWsDeps
 
@@ -49,13 +52,14 @@ describe('agent/exists', () => {
     expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'agent/exists/ok', { existing: [LIVE] })
   })
 
-  it('also names the surviving agents the asked set no longer holds', async () => {
-    // What tells a moved agent from a live one: both exist, only one is still this pool's.
+  it('also names the surviving agents the asked set no longer holds, and WHEN they left', async () => {
+    // What tells a moved agent from a live one: both exist, only one is still this pool's. The
+    // timestamp comes from here because nothing at the sweeping end can derive it.
     const conn = fakeConn(null)
     await handleAgentExists(existsFrame([LIVE, OTHER_ORG, GONE], POOL), conn, deps)
     expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'agent/exists/ok', {
       existing: [LIVE, OTHER_ORG],
-      elsewhere: [OTHER_ORG]
+      elsewhere: [{ agentId: OTHER_ORG, since: CHANGED_AT.toISOString() }]
     })
   })
 
@@ -73,7 +77,10 @@ describe('agent/exists', () => {
     await handleAgentExists(existsFrame([LIVE, OTHER_ORG], 'set-other'), conn, deps)
     expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'agent/exists/ok', {
       existing: [LIVE, OTHER_ORG],
-      elsewhere: [LIVE, OTHER_ORG]
+      elsewhere: [
+        { agentId: LIVE, since: CHANGED_AT.toISOString() },
+        { agentId: OTHER_ORG, since: CHANGED_AT.toISOString() }
+      ]
     })
   })
 })

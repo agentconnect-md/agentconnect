@@ -71,7 +71,7 @@ async function cluster(opts: { deleteStatus?: number; extraClaims?: SandboxClaim
 
 /** A control plane that knows only `LIVE`, recording what the sweep asked it. `moved` names ids it
  *  reports as living somewhere other than this pool. */
-function fakeCp(moved: readonly string[] = []) {
+function fakeCp(moved: readonly string[] = [], movedSince = 0) {
   const asked: string[][] = []
   let closed = false
   const connectCp = async (): Promise<ExistenceReader> => ({
@@ -80,7 +80,10 @@ function fakeCp(moved: readonly string[] = []) {
       return new Map(
         ids
           .filter((id) => id === LIVE || moved.includes(id))
-          .map((id) => [id, moved.includes(id) ? ('elsewhere' as const) : ('here' as const)])
+          .map((id) => [
+            id,
+            moved.includes(id) ? ({ at: 'elsewhere', since: movedSince } as const) : ({ at: 'here' } as const)
+          ])
       )
     },
     close: () => {
@@ -298,9 +301,7 @@ describe('reconcile --once', () => {
     })
     expect(code).toBe(1)
     expect(deletes).toHaveLength(1)
-    expect(logged.at(-1)).toContain(
-      'orphaned=1 deleted=0 skipped-live=1 skipped-grace=0 moved=0 moved-marked=0 failed=1'
-    )
+    expect(logged.at(-1)).toContain('orphaned=1 deleted=0 skipped-live=1 skipped-grace=0 moved=0 failed=1')
   })
 
   it('exits 1 when the control plane cannot be reached, deleting nothing', async () => {

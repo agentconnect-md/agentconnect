@@ -5,9 +5,9 @@
 // objects are never touched. An org-scoped connection sees only its own org's agents.
 //
 // A request that names the set it sweeps for also gets `elsewhere`: the surviving ids
-// placement no longer puts on that set. Those agents are live, but nothing in the set will
-// ever serve their objects or rows again — the caller ages them out on its own longer
-// window rather than on the leak grace, because a move is meant to be reversible.
+// placement no longer puts on that set, each with when its placement last changed. Those
+// agents are live, but nothing in the set will ever serve their objects or rows again, and
+// the timestamp is the only trustworthy age a scheduled sweep has for that departure.
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId } from '../../domain/ids.js'
 import { placedOnSet } from '../../domain/placement.js'
@@ -20,6 +20,10 @@ export const handleAgentExists: Handler = async (frame, conn, deps) => {
   const agents = await deps.agent.listByIds(asked)
   const visible = agents.filter((agent) => conn.orgId === null || agent.orgId === conn.orgId)
   const existing = visible.map((agent) => agent.id)
-  const elsewhere = setId ? visible.filter((agent) => !placedOnSet(agent, setId)).map((agent) => agent.id) : undefined
+  const elsewhere = setId
+    ? visible
+        .filter((agent) => !placedOnSet(agent, setId))
+        .map((agent) => ({ agentId: agent.id, since: agent.placementChangedAt.toISOString() }))
+    : undefined
   conn.replyTo(frame, 'agent/exists/ok', { existing, ...(elsewhere ? { elsewhere } : {}) })
 }

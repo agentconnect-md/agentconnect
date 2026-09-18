@@ -767,6 +767,11 @@ model Agent {
   placementKind         AgentPlacementKind @default(daemon)
   daemonId              String?            @db.Uuid // the `daemon`-kind ref: 1 agent : 1 machine (null until placed)
   setId                 String?            @db.Uuid // the `set`-kind ref, null for a `daemon` placement as daemonId is for a `set` one
+  // When the placement above last CHANGED, written by `settlePlacementChange` in the same
+  // transaction as the columns. The pool's orphan reconciler has no other trustworthy clock for a
+  // departure: a claim's admission stamp dates its last USE, and a stamp the sweep writes itself
+  // cannot see a round trip that happened between two of its runs (k8s-daemon-pool.md §4).
+  placementChangedAt    DateTime           @default(now()) @db.Timestamptz(6)
   // ── workspace (inline; §3.5) — daemon-generated path ──
   workspaceMode         WorkspaceMode      @default(scratch)
   workspaceIsolation    WorkspaceIsolation @default(shared)

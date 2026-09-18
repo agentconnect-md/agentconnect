@@ -305,6 +305,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     placementKind: a.placementKind,
     daemonId: a.daemonId ? DaemonId(a.daemonId) : null,
     setId: a.setId,
+    placementChangedAt: a.placementChangedAt,
     workspace: workspaceOf(a),
     ...(a.workspaceRepoId !== null ? { workspaceRepoId: a.workspaceRepoId } : {}),
     capabilities: a.capabilities,

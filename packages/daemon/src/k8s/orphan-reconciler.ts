@@ -1,13 +1,6 @@
 import { systemClock, type Clock } from '@agentconnect.md/connection'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import {
-  AC_ANNOTATION_MOVED,
-  AC_LABEL_AGENT,
-  AC_LABEL_SESSION,
-  claimAdmittedAt,
-  claimMovedAt,
-  sessionSandboxSubject
-} from './sandbox-identity.js'
+import { AC_LABEL_AGENT, AC_LABEL_SESSION, claimAdmittedAt, sessionSandboxSubject } from './sandbox-identity.js'
 import { probeClaimExpiry } from './probe-claim.js'
 import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
 
@@ -34,14 +27,12 @@ import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
  * own, much longer window ({@link MOVED_GRACE_ENV}), because a move is reversible by design and the
  * volume left behind is that promise; the window is where the promise ends.
  *
- * That window runs from a stamp this sweep writes itself (`agentconnect.md/moved-observed-at`), not
- * from the admission stamp, and the first sweep that sees a departure only ever writes it. The
- * admission stamp answers "when did a member last USE this claim", and for a pod suspended before
- * the move that is long before the move — so reading the departure off it would delete the volume of
- * an agent moved five minutes ago, which is exactly the promise this window exists to keep. Writing
- * it here rather than at handover also covers the moves no source daemon acknowledged: a forced
- * reassign, a member that died mid-move. A claim of an agent that came back is young again through
- * its re-admission, which the window takes the later of.
+ * That window runs from the control plane's own record of WHEN the placement changed, which the
+ * placement answer carries. Nothing this sweep can observe would do: a claim's admission stamp dates
+ * its last USE, and for a pod suspended before the move that is long before the move, so it would
+ * delete the volume of an agent moved five minutes ago; and a mark the sweep wrote itself could not
+ * see a departure, return and second departure that all happened between two of its ten-minute runs,
+ * so the second move would inherit the first's spent window. Only the writer of the change knows.
  *
  * The absence proof is a SNAPSHOT, so it is fenced by the claim's own version rather than trusted on
  * its own. A member stamps every claim it admits AND every claim it currently holds a launch for
@@ -116,20 +107,16 @@ export interface OrphanSweepSummary {
   failed: number
   /** Of `orphaned`, those collected because their agent moved off this pool rather than vanished. */
   moved: number
-  /** Claims newly stamped as departed this run. They start the moved window; none is collected yet. */
-  movedMarked: number
 }
 
 export interface OrphanReconcilerDeps {
-  api: Pick<
-    SandboxApi,
-    'listClaims' | 'deleteClaimIfCurrent' | 'listSandboxes' | 'deleteSandboxIfCurrent' | 'stampClaim'
-  >
+  api: Pick<SandboxApi, 'listClaims' | 'deleteClaimIfCurrent' | 'listSandboxes' | 'deleteSandboxIfCurrent'>
   /** Which of these agents the control plane still knows; a throw fails the sweep. */
   liveAgents: (agentIds: string[]) => Promise<Set<string>>
-  /** Which of the live ones the control plane no longer places on THIS pool. Absent, or an empty
-   *  answer from a control plane that cannot tell, leaves every live agent's objects alone. */
-  movedAgents?: (agentIds: string[]) => Promise<Set<string>>
+  /** Of the live ones, those the control plane no longer places on THIS pool, each mapped to the
+   *  epoch ms its placement last changed. Absent, or an empty answer from a control plane that
+   *  cannot tell, leaves every live agent's objects alone. */
+  movedAgents?: (agentIds: string[]) => Promise<Map<string, number>>
   /** Which of these session pods still have a session row, as `<agentId>/<leaf>` subjects; absent or throwing ⇒ every session pod reads as live. */
   liveSessionLeaves?: (sessions: Array<{ agentId: string; leaf: string }>) => Promise<Set<string>>
   settings: OrphanReconcilerSettings
@@ -152,14 +139,11 @@ interface Candidate {
   admittedAt?: number
   /** A probe claim's own window, stamped by the probe that made it. */
   probeExpiresAt?: number
-  /** Epoch ms this sweep first saw the agent placed elsewhere; absent until it has. */
-  movedAt?: number
 }
 
 export class OrphanReconciler {
   private readonly clock: Clock
   private sandboxListDenied = false
-  private stampRefusalReported = false
 
   constructor(private readonly deps: OrphanReconcilerDeps) {
     this.clock = deps.clock ?? systemClock
@@ -199,8 +183,7 @@ export class OrphanReconciler {
       skippedLive: 0,
       skippedGrace: 0,
       failed: 0,
-      moved: 0,
-      movedMarked: 0
+      moved: 0
     }
     // Probe agents are member-local and never known to the control plane, so they are not asked about.
     const askable = [
@@ -230,18 +213,18 @@ export class OrphanReconciler {
       if (live.has(candidate.agentId)) {
         // An agent the control plane moved off this pool: nothing here will ever serve this object
         // again, so it ages out — on the moved window, from the departure stamp this sweep writes.
-        if (moved.has(candidate.agentId)) {
-          const outcome = await this.judgeMoved(candidate, now, settings.movedGraceMs)
-          if (outcome === 'collect') {
-            summary.moved += 1
-            orphans.push(candidate)
-          } else if (outcome === 'marked') summary.movedMarked += 1
-          else summary.skippedGrace += 1
+        const departedAt = moved.get(candidate.agentId)
+        if (departedAt !== undefined) {
+          // The object's own age still applies — it must be at least as old as the window too — so a
+          // claim minted after the move is not taken for one the move left behind.
+          if (now - departedAt < settings.movedGraceMs || !pastWindow(candidate, now, settings.movedGraceMs)) {
+            summary.skippedGrace += 1
+            continue
+          }
+          summary.moved += 1
+          orphans.push(candidate)
           continue
         }
-        // Back on this pool with a departure stamp still on it: clear it, or a LATER move would
-        // inherit this one's window and skip it entirely.
-        if (candidate.movedAt !== undefined) await this.clearMovedStamp(candidate)
         // A live agent's own pod is never touched; its session pod only when its row is PROVABLY gone (§11).
         const leaf = candidate.sessionLeaf
         if (
@@ -281,89 +264,24 @@ export class OrphanReconciler {
     log.info(
       `k8s orphans: swept ${summary.candidates} candidates — orphaned=${summary.orphaned} deleted=${summary.deleted} ` +
         `skipped-live=${summary.skippedLive} skipped-grace=${summary.skippedGrace} moved=${summary.moved} ` +
-        `moved-marked=${summary.movedMarked} failed=${summary.failed}` +
+        `failed=${summary.failed}` +
         (settings.deleteEnabled ? '' : ' (dry run)')
     )
     return summary
   }
 
-  /**
-   * What to do with the object of an agent that left this pool: start its window, wait out the one
-   * already running, or collect it.
-   *
-   * A claimless Sandbox is left alone. There is nowhere to write the departure stamp on one, and
-   * without the stamp the only clock available is the admission stamp this exists to stop trusting.
-   * It is a leak of a live agent, which this sweep has always reported rather than collected; the
-   * departing agent's own pods are stopped by its detach.
-   */
-  private async judgeMoved(
-    candidate: Candidate,
-    now: number,
-    movedGraceMs: number
-  ): Promise<'collect' | 'marked' | 'wait'> {
-    if (candidate.kind !== 'claim') return 'wait'
-    if (candidate.movedAt === undefined) return (await this.markMoved(candidate, now)) ? 'marked' : 'wait'
-    // The LATER of the departure and anything that touched the claim since: a re-admission means a
-    // member served it after the stamp, and this sweep is about objects nobody serves.
-    return pastWindow(candidate, now, movedGraceMs, candidate.movedAt) ? 'collect' : 'wait'
-  }
-
-  // Fail-closed: a stamp that did not land leaves the object alone and the next run tries again.
-  // A Role without `patch` therefore never collects a moved claim, which is the safe direction.
-  private async markMoved(candidate: Candidate, now: number): Promise<boolean> {
-    try {
-      const { stampRefused } = await this.deps.api.stampClaim(candidate.name, {
-        [AC_ANNOTATION_MOVED]: new Date(now).toISOString()
-      })
-      if (stampRefused) {
-        this.reportStampRefused()
-        return false
-      }
-      this.deps.log.info(
-        `k8s orphans: ${candidate.name} (${ownerOf(candidate)}) left this pool — its window starts now`
-      )
-      return true
-    } catch (err) {
-      this.deps.log.warn(`k8s orphans: marking ${candidate.name} as departed failed — ${(err as Error).message}`)
-      return false
-    }
-  }
-
-  // Best effort: a stamp left behind only matters if the agent leaves again, and the next sweep retries.
-  private async clearMovedStamp(candidate: Candidate): Promise<void> {
-    if (candidate.kind !== 'claim') return
-    try {
-      await this.deps.api.stampClaim(candidate.name, { [AC_ANNOTATION_MOVED]: null })
-    } catch (err) {
-      this.deps.log.warn(
-        `k8s orphans: clearing the departure stamp on ${candidate.name} failed — ${(err as Error).message}`
-      )
-    }
-  }
-
-  // Said once per run: without the patch verb no moved claim is ever collectable, and an operator
-  // watching the summary line would otherwise only see a count that never moves.
-  private reportStampRefused(): void {
-    if (this.stampRefusalReported) return
-    this.stampRefusalReported = true
-    this.deps.log.warn(
-      `k8s orphans: the API server refused the departure stamp — objects of agents that left this pool ` +
-        `cannot be collected until the sweep's Role is granted patch on sandboxclaims`
-    )
-  }
-
   // Fail-closed like every other read here: a control plane that cannot say where an agent is placed
   // leaves every live agent's objects exactly as the pre-placement sweep left them.
-  private async movedAway(liveIds: string[]): Promise<Set<string>> {
+  private async movedAway(liveIds: string[]): Promise<Map<string, number>> {
     const ask = this.deps.movedAgents
-    if (!ask || liveIds.length === 0) return new Set()
+    if (!ask || liveIds.length === 0) return new Map()
     try {
       return await ask(liveIds)
     } catch (err) {
       this.deps.log.warn(
         `k8s orphans: could not ask which agents left this pool — keeping every live agent's objects (${(err as Error).message})`
       )
-      return new Set()
+      return new Map()
     }
   }
 
@@ -415,9 +333,9 @@ export class OrphanReconciler {
  * in use — or one a returning session re-admitted — is young again, and only the stamp says so. An
  * age nobody can read never passes any window.
  */
-function pastWindow(candidate: Candidate, now: number, windowMs: number, ...also: number[]): boolean {
-  const stamps = [candidate.createdAt, ...(candidate.admittedAt === undefined ? [] : [candidate.admittedAt]), ...also]
-  const since = Math.max(...stamps)
+function pastWindow(candidate: Candidate, now: number, windowMs: number): boolean {
+  const since =
+    candidate.admittedAt === undefined ? candidate.createdAt : Math.max(candidate.createdAt, candidate.admittedAt)
   return Number.isFinite(since) && now - since >= windowMs
 }
 
@@ -444,7 +362,6 @@ function candidateOf(object: SandboxClaim | Sandbox, kind: 'claim' | 'sandbox'):
   const probeExpiresAt = kind === 'claim' ? probeClaimExpiry(object as SandboxClaim) : undefined
   // Only a claim is admitted; a Sandbox is the controller's object and nothing stamps it.
   const admittedAt = kind === 'claim' ? claimAdmittedAt(object.metadata?.annotations) : Number.NaN
-  const movedAt = kind === 'claim' ? claimMovedAt(object.metadata?.annotations) : Number.NaN
   return {
     kind: probeExpiresAt === undefined ? kind : 'probe-claim',
     name,
@@ -454,7 +371,6 @@ function candidateOf(object: SandboxClaim | Sandbox, kind: 'claim' | 'sandbox'):
     ...(sessionLeaf ? { sessionLeaf } : {}),
     ...(Number.isFinite(admittedAt) ? { admittedAt } : {}),
     createdAt: Date.parse(object.metadata?.creationTimestamp ?? ''),
-    ...(Number.isFinite(movedAt) ? { movedAt } : {}),
     ...(probeExpiresAt === undefined ? {} : { probeExpiresAt })
   }
 }

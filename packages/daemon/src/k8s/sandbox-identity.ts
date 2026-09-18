@@ -10,10 +10,6 @@ export const AC_LABEL_AGENT = 'agentconnect.md/agent'
 export const AC_LABEL_SESSION = 'agentconnect.md/session'
 // When a claim was last admitted, RFC 3339, on the CLAIM's own metadata and never in its spec or its pod's — warm-pool adoption reads the spec, and this is bookkeeping between admission and the orphan sweep (k8s-daemon-pool.md §4).
 export const AC_ANNOTATION_ADMITTED = 'agentconnect.md/last-admitted-at'
-// When the pool's sweep FIRST saw this claim's agent placed somewhere else, RFC 3339, written by the
-// sweep itself. The admission stamp cannot answer that question — a pod suspended before the move
-// stopped being stamped long before it — so the moved window runs from here instead (§4).
-export const AC_ANNOTATION_MOVED = 'agentconnect.md/moved-observed-at'
 
 // What a Sandbox is claimed for: the agent's shared pod, or one confined session's own (git-workspace-model §11). A plain agent id IS the agent pod's subject, so the alias is deliberate: every agent-keyed caller is already a subject-keyed one.
 export type SandboxSubject = string
@@ -70,11 +66,6 @@ export function sandboxSubjectForPath(agentId: string, path: string | undefined,
 /** When these annotations say the claim was last admitted, epoch ms, or NaN when they do not say. */
 export function claimAdmittedAt(annotations: Record<string, string> | undefined): number {
   return Date.parse(annotations?.[AC_ANNOTATION_ADMITTED] ?? '')
-}
-
-/** When the sweep first saw this claim's agent placed elsewhere, epoch ms, or NaN when it has not. */
-export function claimMovedAt(annotations: Record<string, string> | undefined): number {
-  return Date.parse(annotations?.[AC_ANNOTATION_MOVED] ?? '')
 }
 
 /** The pod labels a subject's claim carries: the tenant, the agent, and — for a session pod — its leaf. */

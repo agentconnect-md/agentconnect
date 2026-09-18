@@ -529,9 +529,17 @@ export type AgentExists = z.infer<typeof AgentExists>
 export const AgentExistsOk = z.object({
   existing: z.array(z.string().uuid()).max(AGENT_EXISTS_MAX),
   /** Present only for a request that named a set: the `existing` ids placement no longer puts on
-   *  it. Live agents, but not this set's — nothing in it will ever serve their objects or rows
-   *  again. Absent (an older CP, or a request without a set) is NOT "none": it is "not answered". */
-  elsewhere: z.array(z.string().uuid()).max(AGENT_EXISTS_MAX).optional()
+   *  it, each with WHEN placement last changed. Live agents, but not this set's — nothing in it
+   *  will ever serve their objects or rows again, and `since` is how long that has been true.
+   *
+   *  The timestamp comes from here because nothing at the other end can derive it: a claim's
+   *  admission stamp dates its last USE, and a mark the sweeper writes itself cannot see a
+   *  departure and return that happened between two of its runs. Absent (an older CP, or a request
+   *  without a set) is NOT "none": it is "not answered". */
+  elsewhere: z
+    .array(z.object({ agentId: z.string().uuid(), since: z.string().datetime() }))
+    .max(AGENT_EXISTS_MAX)
+    .optional()
 })
 export type AgentExistsOk = z.infer<typeof AgentExistsOk>
 

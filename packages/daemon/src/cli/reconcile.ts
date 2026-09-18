@@ -56,8 +56,10 @@ import { DAEMON_VERSION } from '../version.js'
 
 const REQUEST_TIMEOUT_MS = 15_000
 
-/** How the control plane reads for these agents: gone, live here, or live but placed elsewhere. */
-export type AgentStanding = 'gone' | 'here' | 'elsewhere'
+/** How the control plane reads for these agents: gone, live here, or live but placed elsewhere —
+ *  and for that last one, the epoch ms its placement changed, which is the only clock a scheduled
+ *  sweep can trust for a departure. */
+export type AgentStanding = { at: 'gone' } | { at: 'here' } | { at: 'elsewhere'; since: number }
 
 /** What the sweep needs from the control plane, and nothing more. */
 export interface ExistenceReader {
@@ -115,8 +117,8 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     // ONE standing per agent for the whole run, however many sweeps ask: the three questions below
     // are the same question, and asking it twice could answer them differently mid-run.
     const standing = standingCache(cp.readAgents)
-    const liveAgents = standing.matching('here', 'elsewhere')
-    const movedAgents = standing.matching('elsewhere')
+    const liveAgents = standing.live
+    const movedAgents = standing.moved
     // The store first: it is what answers for a session pod's row (git-workspace-model.md §11).
     mounted = await (opts.openStore ?? openSharedStore)()
     const sessionKeys = mounted?.store.sessionKeysForAgent?.bind(mounted.store)
@@ -136,7 +138,9 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
       ? await new StoreRetentionSweeper({
           store: mounted.store,
           liveAgents,
-          movedAgents,
+          // The store's proof is ownership, not age: a row of an agent no member here holds will
+          // never be drained by one, whether it left a minute or a month ago.
+          movedAgents: async (ids) => new Set((await movedAgents(ids)).keys()),
           settings: storeSettings,
           log
         }).sweep()
@@ -171,7 +175,10 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
  * on a standing the other had already contradicted.
  */
 function standingCache(read: ExistenceReader['readAgents']): {
-  matching: (...wanted: AgentStanding[]) => (agentIds: string[]) => Promise<Set<string>>
+  /** Every asked id the control plane still knows, wherever it is placed. */
+  live: (agentIds: string[]) => Promise<Set<string>>
+  /** Those of them this pool no longer holds, each with when its placement changed. */
+  moved: (agentIds: string[]) => Promise<Map<string, number>>
 } {
   const known = new Map<string, AgentStanding>()
   const load = async (agentIds: string[]): Promise<void> => {
@@ -179,15 +186,22 @@ function standingCache(read: ExistenceReader['readAgents']): {
     if (unknown.length === 0) return
     for (const [id, state] of await read(unknown)) known.set(id, state)
     // An id the control plane did not name at all is gone; that is what the reply's silence means.
-    for (const id of unknown) if (!known.has(id)) known.set(id, 'gone')
+    for (const id of unknown) if (!known.has(id)) known.set(id, { at: 'gone' })
   }
   return {
-    matching:
-      (...wanted) =>
-      async (agentIds) => {
-        await load(agentIds)
-        return new Set(agentIds.filter((id) => wanted.includes(known.get(id) ?? 'gone')))
+    live: async (agentIds) => {
+      await load(agentIds)
+      return new Set(agentIds.filter((id) => known.get(id)?.at !== undefined && known.get(id)!.at !== 'gone'))
+    },
+    moved: async (agentIds) => {
+      await load(agentIds)
+      const moved = new Map<string, number>()
+      for (const id of agentIds) {
+        const state = known.get(id)
+        if (state?.at === 'elsewhere') moved.set(id, state.since)
       }
+      return moved
+    }
   }
 }
 
@@ -208,7 +222,7 @@ function standingCache(read: ExistenceReader['readAgents']): {
  */
 async function purgeMovedAgentSessions(deps: {
   store: ReapableStore['store']
-  movedAgents: (agentIds: string[]) => Promise<Set<string>>
+  movedAgents: (agentIds: string[]) => Promise<Map<string, number>>
   movedGraceMs: number
   deleteEnabled: boolean
   log: { info: (m: string) => void; warn: (m: string) => void }
@@ -224,14 +238,20 @@ async function purgeMovedAgentSessions(deps: {
     return { failed: 1 }
   }
   if (expired.length === 0) return { failed: 0 }
-  let moved: Set<string>
+  let moved: Map<string, number>
   try {
     moved = await deps.movedAgents([...new Set(expired.map((rec) => rec.agentId))])
   } catch (err) {
     log.warn(`moved sessions: could not ask which agents left this pool — ${(err as Error).message}`)
     return { failed: 1 }
   }
-  const collectable = expired.filter((rec) => moved.has(rec.agentId))
+  // Both clocks, as the claim rule takes both: the departure itself must be past the window, and
+  // the row must have gone untouched for it. An agent that left minutes ago keeps its sessions.
+  const departed = (rec: { agentId: string }): boolean => {
+    const since = moved.get(rec.agentId)
+    return since !== undefined && now - since >= deps.movedGraceMs
+  }
+  const collectable = expired.filter(departed)
   let purged = 0
   let failed = 0
   for (const rec of collectable) {
@@ -343,10 +363,14 @@ export async function connectObserver(url: string, seams: ObserverSeams = {}): P
         })
         if (reply.type !== 'agent/exists/ok') throw new Error(`expected agent/exists/ok, got ${reply.type}`)
         const payload = reply.payload as AgentExistsOk
-        for (const id of payload.existing) standing.set(id, 'here')
+        for (const id of payload.existing) standing.set(id, { at: 'here' })
         // Only an answered placement question moves an agent off this pool; an absent `elsewhere`
-        // is "not answered", and reading it as "none left" is the same either way.
-        for (const id of payload.elsewhere ?? []) standing.set(id, 'elsewhere')
+        // is "not answered", and reading it as "none left" is the same either way. A timestamp the
+        // control plane sent but nobody can parse leaves the agent where it was: still this pool's.
+        for (const row of payload.elsewhere ?? []) {
+          const since = Date.parse(row.since)
+          if (Number.isFinite(since)) standing.set(row.agentId, { at: 'elsewhere', since })
+        }
       }
       return standing
     },
