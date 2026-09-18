@@ -5,7 +5,7 @@ import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { existsSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
 import { applyFileSinkPayload } from './file-sink.js'
-import { SANDBOX_MCP_BRIDGE_ENTRY, SANDBOX_SKILL_STAGING_DIR } from './sandbox-paths.js'
+import { DEFAULT_SHIM_PATHS, type ShimPaths } from './sandbox-paths.js'
 import { ClusterSkillHandler } from './skill-handler.js'
 import type { ClusterSkillRequestContext } from './skill-handler.js'
 import { GitExecPayloadSchema, type GitExecResult } from './git-exec.js'
@@ -50,6 +50,8 @@ export interface ExecHandlerDeps {
   workspaceRoot: string
   /** Ceiling on the caller-supplied deadline, so a hung child cannot pin the channel. */
   timeoutMs?: number
+  /** Where this shim keeps its staging and finds its bridge; the image's layout unless the entrypoint names another root. */
+  paths?: ShimPaths
   log?: { info: (m: string) => void; warn: (m: string) => void }
 }
 
@@ -111,8 +113,9 @@ export function createExecHandler(
   abort?: AbortSignal,
   context?: ClusterSkillRequestContext
 ) => Promise<unknown> {
+  const paths = deps.paths ?? DEFAULT_SHIM_PATHS
   const skillHandler = new ClusterSkillHandler({
-    stagingRoot: SANDBOX_SKILL_STAGING_DIR,
+    stagingRoot: paths.skillStagingDir,
     workspaceRoot: deps.workspaceRoot,
     stateRoot: join(deps.workspaceRoot, '.agentconnect', 'cluster-skill-state')
   })
@@ -136,7 +139,7 @@ export function createExecHandler(
       let handler = workspaceSkills.get(cwd)
       if (!handler) {
         handler = new ClusterSkillHandler({
-          stagingRoot: join(SANDBOX_SKILL_STAGING_DIR, createHash('sha256').update(cwd).digest('hex')),
+          stagingRoot: join(paths.skillStagingDir, createHash('sha256').update(cwd).digest('hex')),
           workspaceRoot: cwd,
           stateRoot: join(cwd, '.agentconnect', 'cluster-skill-state')
         })
@@ -188,8 +191,9 @@ async function probeRuntimes(deps: ExecHandlerDeps, abort?: AbortSignal): Promis
           // which interpreter runs it, are facts of THIS filesystem — and an older image, whose
           // probe simply reports neither, is the version skew the daemon has to read rather than
           // guess. `process.execPath` because the daemon must not have to trust the pod's PATH.
-          const bridge = existsSync(SANDBOX_MCP_BRIDGE_ENTRY)
-            ? { mcpBridge: { command: process.execPath, args: [SANDBOX_MCP_BRIDGE_ENTRY] } }
+          const bridgeEntry = (deps.paths ?? DEFAULT_SHIM_PATHS).mcpBridgeEntry
+          const bridge = existsSync(bridgeEntry)
+            ? { mcpBridge: { command: process.execPath, args: [bridgeEntry] } }
             : {}
           resolvePromise({ ...table, ...bridge })
         } catch (err) {

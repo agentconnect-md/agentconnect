@@ -26,6 +26,9 @@ export const SHIM_WORKSPACE_ROOT_ENV = 'AC_SHIM_WORKSPACE_ROOT'
  *  predates workspace-root reporting — every such image mounted the volume here. */
 export const DEFAULT_SHIM_WORKSPACE_ROOT = '/agent'
 
+/** Root of the shim's own runtime files (tunnel sockets, Git config, skill staging); unset keeps the image's fixed layout. */
+export const SHIM_RUNTIME_ROOT_ENV = 'AC_SHIM_RUNTIME_ROOT'
+
 /** `cluster-skills-v2` admits the widened skill manifest; a v1-only shim still gets the narrow one. */
 export const ShimFeatureSchema = z.enum(['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>

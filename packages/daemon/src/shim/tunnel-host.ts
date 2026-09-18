@@ -34,7 +34,7 @@ export interface TunnelHostDeps {
   /** Emit an event on a stream the shim owns. Goes through the client so a chunk produced while
    *  the channel is rebinding is buffered rather than lost, exactly like ACP output. */
   emit: (streamId: string, event: ShimEvent['event']) => void
-  /** Where each tunnel is served. The image's fixed map unless a test names another root. */
+  /** Where each tunnel is served. The image's fixed map unless the entrypoint or a test names another root. */
   socketPathFor?: (tunnel: TunnelName) => string
   maxStreams?: number
   log?: { info: (m: string) => void; warn: (m: string) => void }

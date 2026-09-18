@@ -10,8 +10,10 @@ import {
   DEFAULT_SHIM_LISTEN_PORT,
   DEFAULT_SHIM_WORKSPACE_ROOT,
   SHIM_LISTEN_PORT_ENV,
+  SHIM_RUNTIME_ROOT_ENV,
   SHIM_WORKSPACE_ROOT_ENV
 } from './protocol.js'
+import { shimPaths } from './sandbox-paths.js'
 import { ShimServer } from './server.js'
 import { TunnelHost } from './tunnel-host.js'
 
@@ -39,12 +41,18 @@ async function main(): Promise<number> {
     return 2
   }
   const workspaceRoot = process.env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT
-  const exec = createExecHandler({ workspaceRoot, log })
+  // Unset (every image today) derives exactly the fixed layout; `||` so an empty value cannot root paths at '/'.
+  const paths = shimPaths(process.env[SHIM_RUNTIME_ROOT_ENV]?.trim() || undefined)
+  const exec = createExecHandler({ workspaceRoot, paths, log })
   // Watchers own long-lived processes and stay outside the git-only exec inventory.
-  const automerge = createAutoMergeHandler({ log })
+  const automerge = createAutoMergeHandler({ paths, log })
   const server = new ShimServer({ log })
   // Tunnel listeners follow pod lifetime so credential renewal cannot break client sockets.
-  const tunnels = new TunnelHost({ emit: (streamId, event) => client.emit(streamId, event), log })
+  const tunnels = new TunnelHost({
+    emit: (streamId, event) => client.emit(streamId, event),
+    socketPathFor: (tunnel) => paths.tunnels[tunnel],
+    log
+  })
   const client = new ShimClient({
     endpoint: 'accepted-daemon-channel',
     dial: () => server.nextTransport(),

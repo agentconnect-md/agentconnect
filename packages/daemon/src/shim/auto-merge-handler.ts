@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { MAX_AUTO_MERGE_DETAIL } from '@agentconnect.md/protocol'
 import { z } from 'zod'
 import { GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
-import { SANDBOX_AUTO_MERGE_ENTRY, SANDBOX_TUNNEL_PATHS } from './sandbox-paths.js'
+import { DEFAULT_SHIM_PATHS, type ShimPaths } from './sandbox-paths.js'
 
 /**
  * The `automerge` capability, served IN THE POD: one watcher process per armed pull request.
@@ -55,6 +55,8 @@ export interface AutoMergeHandlerDeps {
   /** Seams for tests; production spawns the image's own entry with the shim's interpreter. */
   spawnChild?: (args: string[], env: NodeJS.ProcessEnv) => ChildProcess
   entryPath?: string
+  /** The shim's own layout: the watcher entry and the gitcred socket its child dials. */
+  paths?: ShimPaths
 }
 
 /** The refusal text an image with no watcher answers with. Exported because a shim response carries a
@@ -79,7 +81,8 @@ export function createAutoMergeHandler(
   deps: AutoMergeHandlerDeps = {}
 ): (payload: unknown) => Promise<AutoMergeHandlerState> {
   const entries = new Map<string, Entry>()
-  const entryPath = deps.entryPath ?? SANDBOX_AUTO_MERGE_ENTRY
+  const paths = deps.paths ?? DEFAULT_SHIM_PATHS
+  const entryPath = deps.entryPath ?? paths.autoMergeEntry
   const spawnChild =
     deps.spawnChild ??
     ((args, env) => spawn(process.execPath, [entryPath, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] }))
@@ -117,7 +120,7 @@ export function createAutoMergeHandler(
     const child = spawnChild([p.agentId, p.repoFullName, String(p.prNumber)], {
       ...process.env,
       [GITCRED_CAPABILITY_ENV]: p.capability,
-      [GITCRED_SOCKET_ENV]: process.env[GITCRED_SOCKET_ENV] ?? SANDBOX_TUNNEL_PATHS.gitcred
+      [GITCRED_SOCKET_ENV]: process.env[GITCRED_SOCKET_ENV] ?? paths.tunnels.gitcred
     })
     const created: Entry = { child, status: { armed: true }, buffer: '' }
     entries.set(id, created)
