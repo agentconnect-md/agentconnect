@@ -527,7 +527,13 @@ describe('noticeDelivery', () => {
     hookId: '88888888-8888-4888-8888-888888888888',
     deliveryKey: 'd-1',
     firedAt: '2026-01-01T00:00:00.000Z',
-    event: 'issue_comment:created',
+    configRevision: '3',
+    dispatchRevision: '5',
+    dispatchDaemonId: '44444444-4444-4444-8444-444444444444',
+    reviewPolicy: 'full',
+    reportingMode: 'check',
+    gateMode: 'informational',
+    event: 'pull_request:opened',
     github: {
       repoId: '456',
       repoFullName: 'example-org/example-repo',
@@ -556,6 +562,18 @@ describe('noticeDelivery', () => {
     expect(notice.notice).toBe('actor_not_trusted')
     expect(notice.github).toEqual(delivery.github)
     expect(notice.sessionKey).toBe(delivery.sessionKey)
+    // Neither a revision event nor a projectable run: the refused revision keeps its own state.
+    expect(notice.event).toBe('notice:actor_not_trusted')
+    for (const field of [
+      'configRevision',
+      'dispatchRevision',
+      'dispatchDaemonId',
+      'reviewPolicy',
+      'reportingMode',
+      'gateMode'
+    ] as const) {
+      expect(notice).not.toHaveProperty(field)
+    }
     expect(notice.context).toEqual({
       source: 'github',
       event: 'issue_comment',

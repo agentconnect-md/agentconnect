@@ -372,15 +372,14 @@ export class GithubReviewOrchestrator {
    */
   private async postHookNotice(msg: RdMsgHook, notice: RdHookNotice): Promise<{ accepted: boolean; reason?: string }> {
     const nmsg = buildHookMessage({ ...msg, target: undefined }, randomUUID())
-    const snapshot = hookSnapshot(msg)
+    // No snapshot and no subject on the completion: the run row must stay inert to every Check,
+    // note and status projection, so it can never displace what the refused revision left behind.
     const hookContext: HookDispatchContext = {
       hookId: msg.hookId,
       agentId: msg.agentId,
       deliveryKey: msg.deliveryKey,
       firedAt: msg.firedAt,
-      ...(msg.event ? { event: msg.event } : {}),
-      ...(snapshot ? { snapshot } : {}),
-      ...pickCodeHostHookMembers(msg)
+      ...(msg.event ? { event: msg.event } : {})
     }
     const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
     const entry: QueueEntry = {

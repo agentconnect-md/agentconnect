@@ -3803,7 +3803,7 @@ describe('Daemon rd/msg hook notices', () => {
       sessionKey: 'example-org/example-repo#42',
       msgId: `${HOOK_ID}:${deliveryKey}`,
       deliveryKey,
-      event: 'issue_comment:created',
+      event: 'notice:actor_not_trusted',
       notice: 'actor_not_trusted',
       github: {
         repoId: '123',
@@ -3837,6 +3837,9 @@ describe('Daemon rd/msg hook notices', () => {
       expect.stringContaining("this repository's maintainers and trusted contributors")
     )
     expect(cp.hookReports[0]).toMatchObject({ deliveryKey: 'd-1:notice', status: 'success', reason: 'notice_posted' })
+    // The completion names no subject and no snapshot, so no Check, note or status can key on it.
+    expect(cp.hookReports[0]).not.toHaveProperty('github')
+    expect(cp.hookReports[0]).not.toHaveProperty('snapshot')
 
     // A second refused mention on the same thread closes its own run row and posts nothing.
     const second = await (daemon as any).handleRelayMsg(notice('d-2:notice'), () => {})

@@ -1273,8 +1273,13 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
             : {})
         }
         let allowed = false
+        // Only the CP's own `false` is a verdict on the actor. A timeout, a transient failure or
+        // an older peer leaves `allowed` false too, and none of those may tell anyone they were
+        // refused — least of all a maintainer whose lookup merely failed.
+        let refused = false
         try {
           allowed = await deps.authorizeComment(authzRequest)
+          refused = !allowed
         } catch (err) {
           // Rolling upgrade against an old CP (UNKNOWN_FRAME), timeout, and
           // transient CP/GitHub failures all fail closed.
@@ -1283,7 +1288,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         // An explicit @-mention by an actor the CP did not admit gets one fixed-text reply on its
         // thread — the daemon tells a thread once — so the silence is explained. Anything less
         // deliberate than a mention stays silent, and the reply carries nothing the actor wrote.
-        if (!allowed && fanout.some((rule) => githubRuleIsSummoned(rule, ctx))) {
+        if (refused && fanout.some((rule) => githubRuleIsSummoned(rule, ctx))) {
           dispatchRule(representative, false, 'actor_not_trusted')
         }
         // A silent skip is indistinguishable from "GitHub never delivered it" without this line.

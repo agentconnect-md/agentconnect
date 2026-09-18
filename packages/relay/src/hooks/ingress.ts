@@ -179,11 +179,25 @@ function retryRuleIsAuthorized(captured: RcHookAssign, current: RcHookAssign): b
  */
 export function noticeDelivery(msg: RdMsgHook, notice: RdHookNotice): RdMsgHook {
   const deliveryKey = `${msg.deliveryKey}:notice`
-  const { context, ...rest } = msg
+  // The hook config snapshot is what lets a run project a Check, note or status, and the event is
+  // what classifies it as a revision — a notice must never do either, so it carries no snapshot
+  // and names itself, not the revision the actor was refused on. The provider member stays: it
+  // is how the daemon finds the thread to post on.
+  const {
+    context,
+    configRevision: _configRevision,
+    dispatchRevision: _dispatchRevision,
+    dispatchDaemonId: _dispatchDaemonId,
+    reviewPolicy: _reviewPolicy,
+    reportingMode: _reportingMode,
+    gateMode: _gateMode,
+    ...rest
+  } = msg
   return {
     ...rest,
     deliveryKey,
     msgId: `${msg.hookId}:${deliveryKey}`,
+    event: `notice:${notice}`,
     ...(context ? { context: withoutAuthoredText(context) } : {}),
     notice
   }
@@ -214,6 +228,8 @@ function messageForRetry(rule: RcHookAssign, msg: RdMsgHook): RdMsgHook {
   delete stable.reviewPolicy
   delete stable.reportingMode
   delete stable.gateMode
+  // A notice never regains the snapshot a retry would otherwise refresh: without one, nothing can project it.
+  if (msg.notice !== undefined) return { ...stable, agentId: rule.agentId }
   return {
     ...stable,
     agentId: rule.agentId,
@@ -222,15 +238,20 @@ function messageForRetry(rule: RcHookAssign, msg: RdMsgHook): RdMsgHook {
 }
 
 function reportBase(rule: RcHookAssign, msg: RdMsgHook): Omit<RcRunReport, 'status' | 'reason'> {
+  // A notice run's row must be inert to every code-host projection: no snapshot (nothing may
+  // project without one) and no subject metadata (no pull number, revision or head for a Check,
+  // note or status repair to key it by), so it can never displace the actionable state the
+  // refused revision itself left behind.
+  const notice = msg.notice !== undefined
   return {
     hookId: rule.hookId,
     deliveryKey: msg.deliveryKey,
     firedAt: msg.firedAt,
     agentId: rule.agentId,
     daemonId: rule.daemonId,
-    ...hookSnapshotForDelivery(rule),
+    ...(notice ? {} : hookSnapshotForDelivery(rule)),
     ...(msg.event ? { event: msg.event } : {}),
-    ...pickCodeHostHookMembers(msg)
+    ...(notice ? {} : pickCodeHostHookMembers(msg))
   }
 }
 

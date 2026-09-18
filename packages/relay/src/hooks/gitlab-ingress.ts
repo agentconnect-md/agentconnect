@@ -648,8 +648,12 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
             : {})
         }
         let allowed = false
+        // Only the CP's own `false` is a verdict on the actor; an operational failure leaves
+        // `allowed` false too and earns nobody a notice.
+        let refused = false
         try {
           allowed = await deps.authorizeMembership(request)
+          refused = !allowed
         } catch (err) {
           // Rolling upgrade against an older CP (UNKNOWN_FRAME), timeout, and
           // transient failures all fail closed (§12.2).
@@ -662,7 +666,8 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
           // An explicit @-mention by an actor the CP did not admit gets one fixed-text reply on its
           // thread — the daemon tells a thread once — so the silence is explained. Anything less
           // deliberate than a mention stays silent, and the reply carries nothing the actor wrote.
-          if (fanout.some((rule) => gitlabRuleIsSummoned(rule, ctx))) dispatchRule(representative, 'actor_not_trusted')
+          if (refused && fanout.some((rule) => gitlabRuleIsSummoned(rule, ctx)))
+            dispatchRule(representative, 'actor_not_trusted')
           if (onDenied === 'request-review') for (const rule of fanout) reportReviewRequestRequired(rule)
           return
         }

@@ -900,14 +900,41 @@ describe('github ingress', () => {
         hookId: HOOK,
         agentId: AGENT,
         sessionKey: 'acme/infra#42',
-        event: 'issue_comment:created',
+        event: 'notice:actor_not_trusted',
         github: expect.objectContaining({ subjectKind: 'issue', repoId: String(REPO_ID) })
       })
       expect(notice.deliveryKey).toMatch(/:notice$/)
       expect(notice.msgId).toBe(`${HOOK}:${notice.deliveryKey}`)
       expect(notice.context).toMatchObject({ source: 'github', event: 'issue_comment', number: 42 })
+      expect(notice).not.toHaveProperty('reviewPolicy')
       expect(JSON.stringify(notice)).not.toMatch(/stranger|ignore all previous/)
-      expect(h.reports).toEqual([expect.objectContaining({ deliveryKey: notice.deliveryKey, status: 'accepted' })])
+      // The run row is inert to every projection: no snapshot, no subject, an event of its own.
+      expect(h.reports).toEqual([
+        expect.objectContaining({
+          deliveryKey: notice.deliveryKey,
+          status: 'accepted',
+          event: 'notice:actor_not_trusted'
+        })
+      ])
+      expect(h.reports[0]).not.toHaveProperty('github')
+      expect(h.reports[0]).not.toHaveProperty('reviewPolicy')
+      expect(h.reports[0]).not.toHaveProperty('configRevision')
+    })
+
+    it('posts no notice when authorization failed rather than refused', async () => {
+      // A CP timeout, a transient failure or an older peer must not tell anyone they were
+      // refused — and must not burn the thread's one notice on a false verdict.
+      h.table.upsert(summonRule())
+      h.authzResult = async () => {
+        throw new Error('CP unavailable')
+      }
+
+      await post('issue_comment', strangerComment('@example-review-app please look'))
+      await flush()
+
+      expect(h.authzRequests).toHaveLength(1)
+      expect(h.sent).toHaveLength(0)
+      expect(h.reports).toHaveLength(0)
     })
 
     it('stays silent for a refused comment that mentioned nobody', async () => {
