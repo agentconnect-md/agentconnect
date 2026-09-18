@@ -3,13 +3,14 @@ import { sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
+import { DEFAULT_MODEL_KEY_TTL_SECONDS } from '../src/key-server/client.js'
 import { offClusterPlaintext } from '../src/key-server/session-hosts.js'
 
-function harness(grants: Array<Record<string, unknown>>) {
+function harness(grants: Array<Record<string, unknown>>, opts: Record<string, unknown> = {}) {
   const clock = new FakeClock(1_000)
   const issue = vi.fn(async () => grants.shift())
   const revoke = vi.fn(async () => {})
-  const daemon = new Daemon({ k8s: true, clock, keyServerClient: { issue, revoke } as never })
+  const daemon = new Daemon({ k8s: true, clock, keyServerClient: { issue, revoke } as never, ...opts })
   const firstHost = { start: vi.fn(), stop: vi.fn(async () => {}) }
   const secondHost = { start: vi.fn(), stop: vi.fn(async () => {}) }
   const starts = vi.fn().mockResolvedValueOnce(firstHost).mockResolvedValueOnce(secondHost)
@@ -39,6 +40,20 @@ describe('daemon model-key session lifecycle', () => {
     expect(() => new Daemon({ keyServerTokenPath: '/token' })).not.toThrow()
   })
 
+  it('asks for the configured credential lifetime, and keeps the default when the value is unusable', async () => {
+    // The default is effectively permanent; a deployment that would rather bound a leaked credential than keep every session alive sets its own window.
+    const configured = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }], {
+      keyServerTtlSeconds: '900'
+    })
+    await configured.daemon.modelSessions.ensure(agent, 'session-ttl')
+    expect(configured.issue).toHaveBeenCalledWith(expect.objectContaining({ ttlSeconds: 900 }))
+
+    // A value the protocol would reject falls back rather than taking the daemon down, and the fallback is announced.
+    const bogus = harness([{ keyId: 'key-2', key: 'secret', requestedAtMs: 1_000 }], { keyServerTtlSeconds: 'a while' })
+    await bogus.daemon.modelSessions.ensure(agent, 'session-ttl-bogus')
+    expect(bogus.issue).toHaveBeenCalledWith(expect.objectContaining({ ttlSeconds: DEFAULT_MODEL_KEY_TTL_SECONDS }))
+  })
+
   it('issues once per logical session, caches the host, and revokes on release', async () => {
     const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
     const first = await h.daemon.modelSessions.ensure(agent, 'slack:C:T:agent-a')
@@ -52,7 +67,8 @@ describe('daemon model-key session lifecycle', () => {
       agentId: 'agent-a',
       sessionId: 'outward-of-slack:C:T:agent-a',
       provider: 'anthropic',
-      ttlSeconds: 3_600
+      // Effectively permanent: a busy session never reaches a refresh, so the gateway's per-request question bounds a credential, not this window.
+      ttlSeconds: DEFAULT_MODEL_KEY_TTL_SECONDS
     })
 
     await h.daemon.modelSessions.release('slack:C:T:agent-a')

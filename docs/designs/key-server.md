@@ -74,8 +74,10 @@ Cloud daemons accept `--key-server <url>` — **http or https, the deployment's 
 is a projected ServiceAccount token, and a daemon that already reaches its control plane over an
 in-cluster `ws://` gains nothing from one hop being stricter than the boundary it sits in. A
 deployment that terminates TLS on this hop simply configures an https address. Beside it they accept
-`--key-server-token-path <path>`. The equivalent deployment environment names are
-`KEY_SERVER` and `KEY_SERVER_TOKEN_PATH`; explicit CLI values win. A token path
+`--key-server-token-path <path>` and `--key-server-ttl <seconds>` (§3). The equivalent deployment
+environment names are `KEY_SERVER`, `KEY_SERVER_TOKEN_PATH` and `KEY_SERVER_TTL_SECONDS`; explicit
+CLI values win. A `--key-server-ttl` that is not a positive integer is ignored with a warning rather
+than refused, like the two below. A token path
 without a server does nothing and says so, as does a server without a token — that one sends every
 request with no `Authorization` header at all, which a server that reviews its callers refuses. Both
 are warnings rather than refusals: a key server may be configured to trust its callers by network
@@ -118,6 +120,28 @@ overstating the degradation window by the same amount.
 - `refreshInSeconds` is a renew-from hint on the same scale, legal only alongside
   `expiresInSeconds` and strictly less than it. Daemons renew inside that window
   instead of inventing their own margin.
+
+**What this daemon asks for, and why it is effectively permanent.** `refreshInSeconds` is worth only
+as much as the daemon's opportunity to act on it, and that opportunity is narrower than the hint
+suggests: the window is checked when a turn asks for a host, and the refresh is _skipped_ while the
+session's SDK work is still live — a started host is authoritative for its whole working life, and
+nothing swaps a runtime out from under work in flight. A session that stays continuously busy
+therefore keeps its start-time credential until `exp`, with no refresh path at all.
+
+Any finite window consequently breaks exactly the sessions that matter most, and a larger finite
+number only moves the date. So the daemon asks for **a hundred years** and treats `exp` as not being
+the control at all: what stops traffic is §6's per-request question to the issuer, which reads the
+org's standing rather than anything about the credential. The tradeoff this accepts is that a
+**leaked** credential stays usable for as long as its org is allowed — `RevokeKey` retracts nothing
+in flight, and the per-request question is org-level — so the levers against one are stopping the org
+and rotating the signing key.
+
+That is the default, not the rule. `--key-server-ttl <seconds>` / `KEY_SERVER_TTL_SECONDS` sets the
+requested window per deployment, for an install that would rather have sessions end at a deadline
+than leave a leaked credential usable for as long as its org is. Lowering it always binds; raising it
+past the issuer's own ceiling changes nothing, since the issuer may only narrow. A value that is not
+a positive integer is ignored with a warning rather than refusing to start — the daemon's other
+agents are unaffected by one bad knob — and the warning names the window actually in force.
 
 ## 4. Injection: the key is issued, the base URL is deployed
 

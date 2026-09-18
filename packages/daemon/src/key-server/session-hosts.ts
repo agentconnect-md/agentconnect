@@ -13,7 +13,7 @@ import {
   type ModelRuntimeKind,
   type StaticModelCredentials
 } from '../runtimes/model-provider-config.js'
-import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, type KeyGrant } from './client.js'
+import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, parseModelKeyTtlSeconds, type KeyGrant } from './client.js'
 
 /** The daemon-internal session keys that address a credential lifecycle with no chat session
  *  behind it. Constructors rather than literals so the `internal:` namespace has one owner. */
@@ -54,6 +54,8 @@ export interface ModelSessionHostPoolOptions {
   k8s: boolean
   address?: string
   tokenPath?: string
+  /** `--key-server-ttl` / `KEY_SERVER_TTL_SECONDS`: requested credential lifetime in seconds; the issuer caps it, so lowering binds and raising past that ceiling does not. Unset ⇒ the default. */
+  ttlSeconds?: string | number
   client?: KeyServerClient
   now: () => number
 }
@@ -100,6 +102,8 @@ export function offClusterPlaintext(address: string): boolean {
 export class ModelSessionHostPool {
   private readonly entries = new Map<string, ModelSessionHost>()
   readonly keyServer?: KeyServerClient
+  /** Resolved once at construction: the lifetime every issuance asks for. */
+  private readonly ttlSeconds: number
   /** Deployment-wide provider credentials; base URLs always come from here, key server or not. */
   staticModelCredentials?: StaticModelCredentials
 
@@ -109,6 +113,14 @@ export class ModelSessionHostPool {
   ) {
     if ((opts.address || opts.client) && !opts.k8s) {
       throw new Error('key-server is supported only by cloud daemons running with --k8s')
+    }
+    const ttl = parseModelKeyTtlSeconds(opts.ttlSeconds)
+    this.ttlSeconds = ttl ?? DEFAULT_MODEL_KEY_TTL_SECONDS
+    // Warned rather than swallowed — an operator who set a window and silently kept the default has nothing to notice it by — but not fatal, like the two warnings below.
+    if (ttl === null) {
+      this.log.warn(
+        `key-server-ttl must be a positive integer number of seconds; ignoring the configured value and asking for ${this.ttlSeconds}s`
+      )
     }
     // A token path with no server is a configuration that does nothing — say so and carry on, rather
     // than refusing to start a daemon whose every other agent is fine.
@@ -185,7 +197,7 @@ export class ModelSessionHostPool {
       agentId: agent.id,
       sessionId,
       provider: target.provider,
-      ttlSeconds: DEFAULT_MODEL_KEY_TTL_SECONDS
+      ttlSeconds: this.ttlSeconds
     })
   }
 

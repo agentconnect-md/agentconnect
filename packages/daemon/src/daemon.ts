@@ -1507,6 +1507,8 @@ export class Daemon {
       keyServer?: string
       /** Bearer-token file re-read for every key-server request. */
       keyServerTokenPath?: string
+      /** Credential lifetime to ask the key server for, in seconds. The issuer caps it. */
+      keyServerTtlSeconds?: string | number
       /** Test seam for key issuance without network access. */
       keyServerClient?: KeyServerClient
       /** Test seam for the daemon-private memory-plugin transport. */
@@ -1534,6 +1536,7 @@ export class Daemon {
       k8s: this.k8s,
       address: opts.keyServer?.trim() || process.env.KEY_SERVER?.trim(),
       tokenPath: opts.keyServerTokenPath?.trim() || process.env.KEY_SERVER_TOKEN_PATH?.trim(),
+      ttlSeconds: opts.keyServerTtlSeconds ?? process.env.KEY_SERVER_TTL_SECONDS,
       ...(opts.keyServerClient ? { client: opts.keyServerClient } : {}),
       now: modelKeyNow
     })

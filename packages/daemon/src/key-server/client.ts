@@ -11,7 +11,17 @@ import {
   type IssueKeyResponse
 } from '@agentconnect.md/protocol'
 
-export const DEFAULT_MODEL_KEY_TTL_SECONDS = 3_600
+// Requested credential lifetime, which the issuer may only narrow. A hundred years: a continuously busy session never reaches a refresh, so any finite window breaks the sessions that matter most — key-server.md §3 has the reasoning and what it costs. Overridable per deployment.
+export const DEFAULT_MODEL_KEY_TTL_SECONDS = 3_153_600_000
+
+// `--key-server-ttl` / `KEY_SERVER_TTL_SECONDS` as the operator wrote it: seconds, undefined when unset, null when set to something the protocol would reject — null so the caller can say the value was ignored rather than silently defaulting.
+export function parseModelKeyTtlSeconds(value: string | number | undefined): number | null | undefined {
+  if (value === undefined) return undefined
+  const raw = typeof value === 'number' ? value : value.trim()
+  if (raw === '') return undefined
+  const seconds = Number(raw)
+  return Number.isInteger(seconds) && seconds > 0 ? seconds : null
+}
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 
 export class KeyServerError extends Error {

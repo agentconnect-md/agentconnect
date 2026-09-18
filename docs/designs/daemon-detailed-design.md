@@ -140,9 +140,10 @@ The daemon does not implement these, but interacts with them through the section
 | `--k8s`                          | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
 | `--key-server <url>`             | `KEY_SERVER`                   | Cloud-only service for session-scoped model credentials, http or https as the deployment chooses; see [key-server.md](key-server.md).              |
 | `--key-server-token-path <path>` | `KEY_SERVER_TOKEN_PATH`        | File re-read as the key-server bearer token on every request.                                                                                      |
+| `--key-server-ttl <seconds>`     | `KEY_SERVER_TTL_SECONDS`       | Credential lifetime to request; the issuer caps it. Defaults to effectively permanent — see [key-server.md](key-server.md) §3 for why.             |
 | `--dry-run`                      | n/a                            | Load and validate all configuration and print the reconcile plan without opening connections/processes.                                            |
 
-General environment equivalents use the `AGENTCONNECT_` prefix, such as `AGENTCONNECT_CP_URL`, `AGENTCONNECT_CP_KEY`, and `AGENTCONNECT_ROOT`. The cloud model seam uses `MODEL_TOKEN`, `MODEL_BASE_URL`, their runtime-scoped replacements (`ANTHROPIC_MODEL_*`, `OPENAI_MODEL_*`, `DEEPSEEK_MODEL_*`), `KEY_SERVER`, and `KEY_SERVER_TOKEN_PATH` as documented above.
+General environment equivalents use the `AGENTCONNECT_` prefix, such as `AGENTCONNECT_CP_URL`, `AGENTCONNECT_CP_KEY`, and `AGENTCONNECT_ROOT`. The cloud model seam uses `MODEL_TOKEN`, `MODEL_BASE_URL`, their runtime-scoped replacements (`ANTHROPIC_MODEL_*`, `OPENAI_MODEL_*`, `DEEPSEEK_MODEL_*`), `KEY_SERVER`, `KEY_SERVER_TOKEN_PATH`, and `KEY_SERVER_TTL_SECONDS` as documented above.
 
 ### 2.4 Mapping In-Process Responsibilities to CLI
 

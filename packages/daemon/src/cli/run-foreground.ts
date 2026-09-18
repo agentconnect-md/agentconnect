@@ -17,6 +17,7 @@ export interface ForegroundOpts {
   k8s?: boolean
   keyServer?: string
   keyServerTokenPath?: string
+  keyServerTtlSeconds?: string
 }
 
 export interface ForegroundDeps {

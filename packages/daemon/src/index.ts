@@ -61,6 +61,7 @@ program
   .option('--k8s', 'run runtimes in cluster sandbox pods instead of on this host (no probing, no local runtimes)')
   .option('--key-server <url>', 'http(s) endpoint for session-scoped model credentials')
   .option('--key-server-token-path <path>', 'file containing the key-server bearer token')
+  .option('--key-server-ttl <seconds>', 'credential lifetime to request, in seconds (the key server caps it)')
   .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
   .option('--agent <name>', 'select a single agent by id (run/chat)')
 
@@ -125,6 +126,7 @@ program
         k8s: opts.k8s === true,
         keyServer: opts.keyServer,
         keyServerTokenPath: opts.keyServerTokenPath,
+        keyServerTtlSeconds: opts.keyServerTtl,
         overrides: {
           apiUrl: opts.apiUrl,
           apiKey: opts.apiKey,
