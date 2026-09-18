@@ -1,4 +1,5 @@
-import type { SandboxReadiness } from './driver.js'
+/** `starting` means the pod is not up yet, so nothing was lost; `absent` means none is coming. */
+export type SandboxReadiness = 'ready' | 'starting' | 'absent'
 
 /** How long a pod that is UP may go without a shim channel before the launch counts as lost. */
 export const DEFAULT_REBIND_GRACE_MS = 20_000

@@ -6,7 +6,7 @@ import { ShimSession } from '../shim/session.js'
 import { spawnSubject, type SpawnRecord } from '../shim/binding.js'
 import type { SandboxLease } from './sandbox-lease.js'
 import { LaunchTimeoutError, sandboxSubjectAgentId } from './sandbox-identity.js'
-import type { LaunchRegistry, Launch } from './launch-registry.js'
+import type { LaunchRegistry, Launch } from '../remote/launch-registry.js'
 
 export interface ChannelBinderDeps {
   registry: LaunchRegistry

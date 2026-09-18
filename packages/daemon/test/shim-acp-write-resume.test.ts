@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AcpRunner } from '../src/shim/acp-runner.js'
 import { ShimChannelLostError } from '../src/shim/channels.js'
-import { createRemoteRuntime } from '../src/k8s/remote-runtime.js'
+import { createRemoteRuntime } from '../src/remote/remote-runtime.js'
 import type { ShimConnection } from '../src/shim/connection.js'
 import type { ShimEvent } from '../src/shim/protocol.js'
 import { ShimSession } from '../src/shim/session.js'

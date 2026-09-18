@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
-import { LaunchRegistry, type Launch } from '../src/k8s/launch-registry.js'
+import { LaunchRegistry, type Launch } from '../src/remote/launch-registry.js'
 import { fakeGenerations } from './fake-generations.js'
 
 function registry(clock = new FakeClock()) {

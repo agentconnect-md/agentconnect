@@ -1,6 +1,6 @@
 import { TunnelProxy, type TunnelProxyDeps } from '../shim/tunnel-proxy.js'
 import type { TunnelName } from '../shim/tunnel.js'
-import { sandboxSubjectAgentId } from './sandbox-identity.js'
+import { sandboxSubjectAgentId } from './sandbox-subject.js'
 
 /** What a bound channel has to offer this binder: the proxy's own session surface plus the
  *  generation that says which pod incarnation it belongs to. `ShimSession` satisfies it. */

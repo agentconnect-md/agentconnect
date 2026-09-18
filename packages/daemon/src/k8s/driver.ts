@@ -5,12 +5,13 @@ import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
 import { ShimFileSink } from '../shim/channels.js'
 import { ShimSession } from '../shim/session.js'
-import { createRemoteRuntime } from './remote-runtime.js'
+import { createRemoteRuntime } from '../remote/remote-runtime.js'
 import type { SpawnRecord } from '../shim/binding.js'
 import { isSandboxReady, type OperatingMode, type SandboxClaim, type SandboxApi } from './sandbox-api.js'
 import { SandboxLease } from './sandbox-lease.js'
-import { LaunchRegistry, type Launch, type LaunchGenerations } from './launch-registry.js'
+import { LaunchRegistry, type Launch, type LaunchGenerations } from '../remote/launch-registry.js'
 import { ChannelBinder } from './channel-binder.js'
+import type { SandboxReadiness } from '../remote/channel-loss-watcher.js'
 import { withStartupPhase } from '../session/startup-progress.js'
 import { awaitBoundSandbox, awaitReady, readIfPresent, type SandboxWaitDeps } from './sandbox-waits.js'
 import {
@@ -61,9 +62,6 @@ export interface K8sDriverDeps {
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 90_000
-
-/** `starting` means the pod is not up yet, so nothing was lost; `absent` means none is coming. */
-export type SandboxReadiness = 'ready' | 'starting' | 'absent'
 
 // Runs an ACP runtime in its own Sandbox pod — one per SUBJECT: the agent's shared pod, or a confined
 // session's own (git-workspace-model §11). A facade over `LaunchRegistry` (launches, release fence,

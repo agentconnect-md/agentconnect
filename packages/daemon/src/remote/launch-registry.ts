@@ -1,5 +1,5 @@
 import type { Clock } from '@agentconnect.md/connection'
-import { sandboxSubjectAgentId, type SandboxSubject } from './sandbox-identity.js'
+import { sandboxSubjectAgentId, type SandboxSubject } from './sandbox-subject.js'
 
 /** Allocator for the per-subject shim-binding generation; the daemon store is the durable one. */
 export interface LaunchGenerations {

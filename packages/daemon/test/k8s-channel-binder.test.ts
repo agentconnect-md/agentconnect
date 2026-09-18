@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { ChannelBinder } from '../src/k8s/channel-binder.js'
-import { LaunchRegistry } from '../src/k8s/launch-registry.js'
+import { LaunchRegistry } from '../src/remote/launch-registry.js'
 import { SandboxLease } from '../src/k8s/sandbox-lease.js'
 import { noopClusterMetrics } from '../src/metrics/cluster-metrics.js'
 import { fakeGenerations } from './fake-generations.js'

@@ -1,6 +1,6 @@
 import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import { K8sDriver } from './driver.js'
-import type { LaunchGenerations } from './launch-registry.js'
+import type { LaunchGenerations } from '../remote/launch-registry.js'
 import {
   PROBE_GRANTS,
   RUNTIME_GRANTS,
@@ -22,8 +22,8 @@ import { ShimGitRunner } from '../shim/git-exec.js'
 import { ShimFileSink } from '../shim/channels.js'
 import type { ShimSession } from '../shim/session.js'
 import { ClusterSkillClient } from '../shim/skill-client.js'
-import { ChannelLossWatcher } from './channel-loss-watcher.js'
-import { TunnelBinder } from './tunnel-binder.js'
+import { ChannelLossWatcher } from '../remote/channel-loss-watcher.js'
+import { TunnelBinder } from '../remote/tunnel-binder.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
 import { ShimMemoryFs } from '../shim/memory-fs-channel.js'
 import { ShimWorkspaceFs } from '../shim/workspace-fs-channel.js'

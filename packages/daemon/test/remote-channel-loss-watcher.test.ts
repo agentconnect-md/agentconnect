@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ChannelLossWatcher } from '../src/k8s/channel-loss-watcher.js'
-import type { SandboxReadiness } from '../src/k8s/driver.js'
+import { ChannelLossWatcher, type SandboxReadiness } from '../src/remote/channel-loss-watcher.js'
 
 const log = { info: () => {}, warn: () => {}, debug: () => {} }
 
