@@ -174,6 +174,13 @@ describe('stored runtime credential discovery', () => {
     })
     expect(runtimeCredentialsConfigured('claude-acp', undefined, hostToken)).toBe(true)
 
+    const hostIdentity = { HOME: hostHome, ANTHROPIC_IDENTITY_TOKEN: 'synthetic-identity' }
+    expect(discoverRuntimeCredentials('claude-acp', undefined, hostIdentity)).toEqual({
+      paths: [],
+      providers: ['anthropic']
+    })
+    expect(runtimeCredentialsConfigured('claude-acp', undefined, hostIdentity)).toBe(true)
+
     writeFileSync(join(hostHome, '.claude', 'settings.json'), 'not-json')
     expect(discoverRuntimeCredentials('claude-acp', undefined, hostToken)).toEqual({
       paths: [],
