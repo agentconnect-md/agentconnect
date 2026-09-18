@@ -105,6 +105,7 @@ function daemon(opts: {
               memberId: 'member-under-test',
               runtimeImage: async () => 'runtime-sandbox:test',
               listener: { listeningPort: () => 0 } as never,
+              workspacesOffDisk: true,
               gitRunnerFor: () => undefined,
               launched: () => [],
               suspendIdle: async () => 'absent',

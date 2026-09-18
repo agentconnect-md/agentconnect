@@ -9,6 +9,7 @@ import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
 import { localWorkspaceFiles, type WorkspaceFiles } from '../src/workspace/workspace-files.js'
+import { wireTestPlane } from './workspace-plane-support.js'
 
 /**
  * The routing half: the reader must ask the filesystem the agent's workspace is ON.
@@ -116,8 +117,8 @@ describe('createWorkspaceReader routing', () => {
 })
 
 describe('createLocalSkillsReader routing', () => {
-  // The mode is module state, so leaving it set makes the NEXT test read as a cluster daemon.
-  afterEach(() => workspaces.setSandboxMode(false))
+  // The plane is shared by the file, so leaving it wired makes the NEXT test read as a cluster daemon.
+  afterEach(() => workspaces.setPlaneResolver(undefined))
 
   function skill(root: string, dir: string, name: string, description: string): void {
     mkdirSync(join(root, '.claude', 'skills', dir), { recursive: true })
@@ -159,7 +160,7 @@ describe('createLocalSkillsReader routing', () => {
 
   it('does not read this daemon disk for an unbound cluster agent', async () => {
     const { daemonSide, podSide } = split()
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     // The root is already in POD coordinates, so an `existsSync`/`listLocalSkills` fallback inspects
     // whatever sits at that path HERE — the daemon-disk fallback the git and file seams had removed,
     // still open on the skills surface. Unreachable reports unmaterialized; the wire has no third
@@ -189,14 +190,11 @@ describe('an unreachable sandbox workspace', () => {
   // it is simply not reachable from here until the agent's next turn wakes it. Both seams have to say
   // that, because the alternatives are the two answers a reader cannot act on: "not a git checkout"
   // and an empty file tree, each about a workspace that is fine.
-  afterEach(() => {
-    workspaces.setSandboxMode(false)
-    workspaces.setGitRunnerResolver(undefined)
-  })
+  afterEach(() => workspaces.setPlaneResolver(undefined))
 
   it('is a refusal with a machine-readable reason, not an empty listing', async () => {
     const { daemonSide } = split()
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     // No seam registered for this agent — exactly what the plane answers with no bound channel.
     const reader = createWorkspaceReader(workspaces, async () => ({ root: '/agent', scratch: true }), pass)
     for (const read of [
@@ -217,7 +215,7 @@ describe('an unreachable sandbox workspace', () => {
 
   it('says nothing of the kind once a channel is bound', async () => {
     const { daemonSide, podSide } = split()
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     const reader = createWorkspaceReader(
       workspaces,
       async () => ({ root: daemonSide, scratch: true }),
@@ -234,10 +232,7 @@ describe('a channel that drops between resolutions', () => {
   // check-then-use: the second answer can be this daemon's filesystem, against a root in the POD's
   // coordinates. Reads would report an empty workspace; a create would `mkdir -p` that pod path here
   // and publish into it. Both seams resolve once and hold what they got.
-  afterEach(() => {
-    workspaces.setSandboxMode(false)
-    workspaces.setGitRunnerResolver(undefined)
-  })
+  afterEach(() => workspaces.setPlaneResolver(undefined))
 
   /** Answers the first call and nothing after it — a detach timed to land between two resolutions. */
   function detachAfterFirst<T>(value: T): () => T | undefined {
@@ -251,7 +246,7 @@ describe('a channel that drops between resolutions', () => {
 
   it('does not publish a scratch file onto this disk when the channel drops mid-request', async () => {
     const { daemonSide, podSide } = split()
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     const reader = createWorkspaceReader(
       workspaces,
       // A root in POD coordinates, as the real resolver returns: what a local fallback would create.
@@ -267,7 +262,7 @@ describe('a channel that drops between resolutions', () => {
 
   it('does not read this disk when the channel drops mid-request', async () => {
     const { daemonSide, podSide } = split()
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     const reader = createWorkspaceReader(
       workspaces,
       async () => ({ root: daemonSide, scratch: true }),

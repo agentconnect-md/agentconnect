@@ -31,6 +31,7 @@ import { sessionHomeIn } from '../src/workspace/session-layout.js'
 import { WorkspaceManager, type PrepareSessionWorkspaceRequest } from '../src/workspace/workspace-manager.js'
 import { MicrosandboxWorkspaceFs } from '../src/microsandbox/workspace-fs.js'
 import { LocalWorkspaceFs } from '../src/workspace/workspace-fs.js'
+import { wireTestPlane } from './workspace-plane-support.js'
 
 // Real git against real repositories (git-workspace-model.md §11): the claims are about the disk — where a confined session's clones land, that nothing of theirs reaches the primary, that a review is fetched and verified inside the clone, and what retirement removes or keeps.
 
@@ -55,8 +56,7 @@ afterAll(() => rmSync(join(SHIM, '..'), { recursive: true, force: true }))
 afterEach(() => {
   vi.restoreAllMocks()
   gitRuns.length = 0
-  workspaces.setGitRunnerResolver(undefined)
-  workspaces.setFsResolver(undefined)
+  workspaces.setPlaneResolver(undefined)
   remotes.clear()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -224,7 +224,7 @@ function shimRunner(workspaceRoot: string, cwd: string | undefined, abort: Abort
 
 /** Serve the primary (when there is one) and every secondary root from fresh bare repositories. */
 function serveAll(agent: Agent, branches: Record<string, string> = {}): Record<string, ReturnType<typeof bareRepo>> {
-  workspaces.setGitRunnerResolver((_agentId, cwd, abort) => new SeamRunner(cwd, abort))
+  wireTestPlane(workspaces, { gitRunnerFor: (_agentId, cwd, abort) => new SeamRunner(cwd, abort) })
   const served: Record<string, ReturnType<typeof bareRepo>> = {}
   if (agent.workspace.mode === 'git-repo') {
     served.primary = bareRepo('main')
@@ -241,7 +241,7 @@ function serveAll(agent: Agent, branches: Record<string, string> = {}): Record<s
 function serveAllThroughShim(agent: Agent): Record<string, ReturnType<typeof bareRepo>> {
   const served = serveAll(agent)
   const root = workspaces.agentRootFor(agent)
-  workspaces.setGitRunnerResolver((_agentId, cwd, abort) => shimRunner(root, cwd, abort))
+  wireTestPlane(workspaces, { gitRunnerFor: (_agentId, cwd, abort) => shimRunner(root, cwd, abort) })
   return served
 }
 
@@ -495,7 +495,7 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     const root = workspaces.secondaryRoots(agent).find((root) => root.repoFullName === 'example-co/review')!
     for (const path of [root.path, cwd]) git(path, ['remote', 'set-url', 'origin', root.cloneUrl])
     const fresh = new WorkspaceManager()
-    fresh.setGitRunnerResolver((_agentId, path, abort) => new SeamRunner(path, abort))
+    wireTestPlane(fresh, { gitRunnerFor: (_agentId, path, abort) => new SeamRunner(path, abort) })
     const resumed = { sessionKey: KEY, isolation: 'shared' as const }
 
     expect(await fresh.prepareSessionWorkspace(agent, resumed)).toBe(cwd)
@@ -824,7 +824,11 @@ describe('retiring a confined session', () => {
         return true
       }
     )
-    workspaces.setFsResolver(() => ({ fs }))
+    // The runner `serveAll` wired, now beside the VM-backed filesystem: one plane answers both.
+    wireTestPlane(workspaces, {
+      gitRunnerFor: (_agentId, path, abort) => new SeamRunner(path, abort),
+      workspaceFsFor: () => ({ fs })
+    })
     gitRuns.length = 0
     const dirty = join(cwd, 'wip.md')
     writeFileSync(dirty, 'keep until safe')

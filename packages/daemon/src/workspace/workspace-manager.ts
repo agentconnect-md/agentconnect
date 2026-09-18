@@ -31,6 +31,7 @@ import {
   type CodeHostSpecHosts
 } from '../codehost/credentials.js'
 import { formatErr } from '../daemon/text.js'
+import type { ExecutionPlane, PlaneResolver, PlaneScope } from '../execution/plane.js'
 import { makeLogger } from '../log.js'
 import { withStartupPhase } from '../session/startup-progress.js'
 import { installSkills, type LocalSkillSource } from '../skills/install-skills.js'
@@ -54,7 +55,7 @@ import {
   type ManagedCredentialScope
 } from './git-injection.js'
 import { GitTransportError, LocalGitRunner, type GitRunner } from './git-runner.js'
-import { localWorkspaceFs, type WorkspaceFs, type WorkspacePlacement } from './workspace-fs.js'
+import { localWorkspaceFs, type WorkspaceFs } from './workspace-fs.js'
 import { githubSubmoduleRepo, gitmoduleRepos } from './gitmodules.js'
 import {
   PRIMARY_CHECKOUT_DIR,
@@ -231,13 +232,7 @@ const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
 /** The ref every review fetch writes and verifies, so probing this ONE answers "is this a daemon-owned review snapshot" without listing the ref root. */
 const reviewHeadRefFor = (id: string): string => `refs/agentconnect/reviews/${id}/head`
 
-// The per-daemon execution plane every workspace operation resolves through: where an agent's git
-// runs, how a path this process cannot see gets emptied, whether workspaces live in sandboxes at
-// all, and the clone single-flight that coalesces concurrent sessions.
-//
-// Instance state, not module state, because a process can hold more than one daemon — the test
-// suite routinely does, and a k8s daemon and a local one disagree on every field here. While these
-// were module-level bindings the second daemon in a process silently inherited the first's plane.
+// Instance state, not module state: a process can hold more than one daemon (the test suite routinely does), and a k8s daemon and a local one place every scope differently.
 export class WorkspaceManager {
   // Single-flight clone lock. Two concurrent sessions (especially multiple agents sharing one repo
   // checkout) must not race into the same dir — the second awaits the first's in-flight clone.
@@ -248,55 +243,42 @@ export class WorkspaceManager {
   private readonly secondaryInFlight = new Map<string, Promise<SecondaryWorkspaceRoot | undefined>>()
   /** Secondary roots prepared for an agent's current sessions — what the synchronous hand-out reads. */
   private readonly readyRoots = new Map<string, SecondaryWorkspaceRoot[]>()
-  private gitRunnerResolver: WorkspaceGitRunnerResolver | undefined
-  private fsResolver: WorkspaceFsResolver | undefined
-  private pathClearer: WorkspacePathClearer | undefined
-  /** Pool only: retire the session pods of an agent whose workspace was replaced — their clones describe the old repository (§11) — sparing the one leaf named. */
-  private sessionsDiscarder: ((agentId: string, exceptLeaf?: string) => Promise<void>) | undefined
-  private workspacesLiveInSandboxes = false
+  private planeResolver: PlaneResolver | undefined
 
-  setGitRunnerResolver(resolver: WorkspaceGitRunnerResolver | undefined): void {
-    this.gitRunnerResolver = resolver
+  /** Where each scope's workspace is placed; every question below asks it, and no resolver or no plane means this daemon's own host and disk. */
+  setPlaneResolver(resolver: PlaneResolver | undefined): void {
+    this.planeResolver = resolver
   }
 
-  setFsResolver(resolver: WorkspaceFsResolver | undefined): void {
-    this.fsResolver = resolver
+  private planeFor(scope: PlaneScope): ExecutionPlane | undefined {
+    return this.planeResolver?.(scope)
   }
 
-  setPathClearer(clearer: WorkspacePathClearer | undefined): void {
-    this.pathClearer = clearer
-  }
-
-  setSessionsDiscarder(discarder: ((agentId: string, exceptLeaf?: string) => Promise<void>) | undefined): void {
-    this.sessionsDiscarder = discarder
-  }
-
-  setSandboxMode(enabled: boolean): void {
-    this.workspacesLiveInSandboxes = enabled
-  }
-
-  get sandboxMode(): boolean {
-    return this.workspacesLiveInSandboxes
+  /** Whether this scope's workspace is off this daemon's disk, its paths in the plane's coordinates — not "a sandbox is in use" (a microsandbox VM mounts this disk), and never a bound channel's answer, which is "no" for a cluster agent that has no pod yet. */
+  offDisk(scope: PlaneScope): boolean {
+    return this.planeFor(scope)?.workspacesOffDisk ?? false
   }
 
   /** The agent's own runner; undefined means its workspace is reachable locally. */
   resolveGitRunner(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
-    return this.gitRunnerResolver?.(agentId, cwd, abort)
+    return this.planeFor({ agentId, path: cwd })?.gitRunnerFor(agentId, cwd, abort)
   }
 
   /** The filesystem this agent's workspace files live in — this daemon's own when nothing claims it. */
   fsFor(agentId: string): WorkspaceFs {
-    return this.fsResolver?.(agentId)?.fs ?? localWorkspaceFs
+    return this.planeFor({ agentId })?.workspaceFsFor(agentId)?.fs ?? localWorkspaceFs
   }
 
   /** The mount this agent's workspace paths are composed in; undefined ⇒ this daemon's own disk. */
   sandboxMountFor(agentId: string): string | undefined {
-    return this.fsResolver?.(agentId)?.mount
+    return this.planeFor({ agentId })?.workspaceFsFor(agentId)?.mount
   }
 
-  /** The clearer's error message, or undefined when it succeeded or none is registered. */
+  /** The plane's error message, or undefined when it emptied the path or has no clearer for it. */
   async clearPath(agentId: string, root: string): Promise<string | undefined> {
-    return await this.pathClearer?.(agentId, root).catch((err: unknown) => (err as Error).message)
+    return await this.planeFor({ agentId, path: root })
+      ?.clearPath?.(agentId, root)
+      .catch((err: unknown) => (err as Error).message)
   }
 
   // The key is the cwd for a local workspace, where sharing a path means sharing a checkout and
@@ -345,9 +327,8 @@ export class WorkspaceManager {
   /** Tell Git the bundles we just wrote are ours, so the retention GC never reads them as the
    *  user's untracked work and pins this worktree forever (see workspace/git-exclude.ts). */
   private async excludeInstalledSkills(agent: Agent, acpCwd: string, owned: string[]): Promise<void> {
-    // Cluster bundles live on the pod OUTSIDE the checkout and never dirty a worktree; worse, the
-    // shim would answer rev-parse with pod paths this local write would then create on daemon disk.
-    if (this.sandboxMode) return
+    // Off-disk bundles live OUTSIDE the checkout and never dirty a worktree; worse, the shim would answer rev-parse with its own paths, which this local write would then create on daemon disk.
+    if (this.offDisk({ agentId: agent.id, path: acpCwd })) return
     try {
       const git = this.runnerFor(agent.id, acpCwd).withEnv(workspaceGitLocalEnv())
       const [commonDir = '', checkoutRoot = ''] = (await git.raw(['rev-parse', '--git-common-dir', '--show-toplevel']))
@@ -939,7 +920,7 @@ export class WorkspaceManager {
   consoleWorkspaceGitRunner(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner | undefined {
     const remote = this.resolveGitRunner(agentId, cwd, abort)
     if (remote) return remote
-    if (this.sandboxMode) return undefined
+    if (this.offDisk({ agentId, path: cwd })) return undefined
     return new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
   }
 
@@ -1111,7 +1092,7 @@ export class WorkspaceManager {
 
   /** Repoint each session's primary clone at the canonical origin, the way the primary just was; a clone that refuses (an origin off the managed host, a locked config) is reported by its leaf, not thrown, so one session cannot hold the rename of the rest. */
   private async convergeSessionCloneOrigins(agent: Agent): Promise<string[]> {
-    if (this.sandboxMode) return []
+    if (this.offDisk({ agentId: agent.id })) return []
     const root = this.primaryRoot(agent)
     const unconverged: string[] = []
     for (const { leaf, path } of sessionDirsIn(this.agentRootFor(agent))) {
@@ -1309,7 +1290,7 @@ export class WorkspaceManager {
   /** `<agentDir>/sessions/<leaf>` — the directory a confined session owns, whether or not it exists yet (§11); the leaf is the session key's, the same one its host's policy directory takes. */
   sessionDir(agent: Agent, sessionKey: string): string {
     // On a pool it is on the session's OWN pod, under the mount the install's pods share; the leaf routes it there.
-    const root = this.sandboxMode
+    const root = this.offDisk({ agentId: agent.id, sessionKey })
       ? (this.sandboxMountFor(agent.id) ?? DEFAULT_SHIM_WORKSPACE_ROOT)
       : this.agentRootFor(agent)
     return sessionDirIn(root, sessionKeyDirName(sessionKey))
@@ -1318,7 +1299,7 @@ export class WorkspaceManager {
   /** The session's own directory when it HAS one on this disk, else undefined — the disk, not the request, decides a session's tier, so reads and preparation cannot disagree. */
   confinedSessionDir(agent: Agent, sessionKey: string): string | undefined {
     // A pool member is always the confined tier (§11): every isolated session has its own pod and directory, so the policy answers where no disk can be asked.
-    if (this.sandboxMode) return this.sessionDir(agent, sessionKey)
+    if (this.offDisk({ agentId: agent.id, sessionKey })) return this.sessionDir(agent, sessionKey)
     return confinedSessionDirIn(this.agentRootFor(agent), sessionKey)
   }
 
@@ -1329,7 +1310,7 @@ export class WorkspaceManager {
    * empty `worktrees/<id>` stub counts as neither (see {@link hasSessionWorktreeIn}).
    */
   sessionTierOnDisk(agent: Agent, sessionKey: string): 'confined' | 'worktree' | undefined {
-    if (this.sandboxMode) return undefined
+    if (this.offDisk({ agentId: agent.id, sessionKey })) return undefined
     if (this.confinedSessionDir(agent, sessionKey) !== undefined) return 'confined'
     return hasSessionWorktreeIn(this.agentRootFor(agent), this.sessionWorktreeId(sessionKey)) ? 'worktree' : undefined
   }
@@ -1395,7 +1376,7 @@ export class WorkspaceManager {
     if ((agent.workspace.additionalRepos ?? []).length > 0) return true
     // A session directory (§11) may hold clones of roots whose rows are gone; it is judged the same way.
     return (
-      this.sandboxMode ||
+      this.offDisk({ agentId: agent.id }) ||
       secondarySubtreesIn(this.agentRootFor(agent)).length > 0 ||
       hasSessionsDirIn(this.agentRootFor(agent))
     )
@@ -1882,12 +1863,9 @@ export class WorkspaceManager {
     return this.withSkills(agent, this.resolveAcpCwd(cwd, agentDir), opts)
   }
 
-  /** The post-clone skills step, which only this daemon's own disk has: a pod's runtime gets its
-   *  skills from the launch phase, so installing them here would write on the wrong filesystem.
-   *  Asked of the DAEMON, not of the agent's mount — a channel that dropped mid-preparation must not
-   *  turn "the pod owns this" into "write it here". */
+  /** The post-clone skills step, which only a cwd on this daemon's disk has (an off-disk runtime gets its skills at launch); asked of the cwd's placement, not of the agent's mount, so a channel that dropped mid-preparation cannot turn "the pod owns this" into "write it here". */
   private async withLocalSkills(agent: Agent, acpCwd: string, opts: PrepareWorkspaceOptions): Promise<string> {
-    return this.sandboxMode ? acpCwd : await this.withSkills(agent, acpCwd, opts)
+    return this.offDisk({ agentId: agent.id, path: acpCwd }) ? acpCwd : await this.withSkills(agent, acpCwd, opts)
   }
 
   /** The ACP cwd inside one prepared root: validated against this disk locally, composed lexically on
@@ -2246,7 +2224,7 @@ export class WorkspaceManager {
     request?: ClusterSessionScope,
     repoScope?: string
   ): string | undefined {
-    if (local === undefined || !this.sandboxMode) return local
+    if (local === undefined || !this.offDisk({ agentId: agent.id, sessionKey: request?.sessionKey })) return local
     // A secondary root's location already came from the mount-aware roots, so it needs no translation.
     if (repoScope !== undefined) return local
     return this.clusterSessionRootAt(agent, runtimeRoot, request)
@@ -2390,7 +2368,7 @@ export class WorkspaceManager {
     confined: PrepareSessionWorkspaceRequest | undefined
   ): Promise<void> {
     const ownLeaf = confined ? sessionKeyDirName(confined.sessionKey) : undefined
-    await this.sessionsDiscarder?.(agent.id, ownLeaf)
+    await this.planeFor({ agentId: agent.id })?.discardSessions(agent.id, ownLeaf)
     if (confined) await this.requireEmptiedSandboxPath(agent.id, this.sessionDir(agent, confined.sessionKey))
   }
 
@@ -2628,7 +2606,7 @@ export class WorkspaceManager {
    * the working directory (decision 5), which has no `agentDir` of its own.
    */
   private async widenedCwdRoot(agent: Agent, cwd: string, request?: SessionRootScope): Promise<string | undefined> {
-    if (this.sandboxMode) {
+    if (this.offDisk({ agentId: agent.id, path: cwd })) {
       if (agent.workspace.mode !== 'git-repo') return undefined
       if ((await this.sessionCwdSubtreeName(agent, request)) !== undefined) return undefined
       // `cwd` is in the POD's coordinates, which this daemon cannot `realpathSync` — the path exists
@@ -2781,22 +2759,8 @@ export class WorkspaceManager {
       if (reconcileMaterialization) this.restoreWorkspaceMaterialization(agent, previousMaterialization)
     }
 
-    // A cluster agent's checkout is on its pod volume, so this function has nothing local to do — and
-    // the one case that would need to do something, replacing an existing checkout, cannot be done
-    // from here at all: it needs a staged clone beside the target, `renameSync` for an atomic swap,
-    // `readdirSync` to prove the destination is still empty, and a rollback that restores the previous
-    // tree. The shim offers none of those, and this runs BEFORE the CP has acknowledged the edit, so
-    // anything destructive here would have to survive a rollback that cannot restore it.
-    //
-    // So activation records the intent and returns. `prepareClusterWorkspace` carries it out on the
-    // volume — after the acknowledgement, inside a bound sandbox, where a failed clone is retried like
-    // any other and an empty checkout is the recovery state, not a lost one.
-    //
-    // The marker is deliberately NOT advanced. For a cluster agent it means "the volume held this",
-    // and writing the TARGET here would say it about a volume nothing has inspected — which cluster
-    // preparation then reads back as proof of the repository, in a circle. Seeding at detach is a
-    // different thing and stays: it names the definition the agent has been RUNNING on.
-    if (this.sandboxMode) {
+    // An off-disk checkout cannot be replaced from here — the shim offers no staged clone, atomic rename or rollback, and this runs BEFORE the CP acknowledges the edit — so activation only records the intent for `prepareClusterWorkspace` to carry out, and leaves the marker alone: advancing it would attest a volume nothing has inspected.
+    if (this.offDisk({ agentId: agent.id })) {
       // Set, never taken back — not by the else branch of this condition, and not by the rollback
       // below, which is why there is nothing to roll back. `ensureHostAsync` runs before the ACK, so
       // preparation may already be replacing the volume when this activation is rejected, and no
@@ -3021,41 +2985,8 @@ class UntrustedGithubWorkspaceOriginError extends Error {
   }
 }
 
-// Resolves where one agent's git runs. Per-agent because a cluster workspace's runner is bound to
-// that agent's own sandbox channel; undefined means local, so self-hosting needs no registration.
-export type WorkspaceGitRunnerResolver = (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
-
-/**
- * Resolves WHERE one agent's workspace files are — the filesystem twin of the runner resolver above.
- *
- * Per agent for the same reason, and it answers with the mount as well as the filesystem because the
- * two are one fact: a manager that knew which filesystem to ask but not which coordinates to ask in
- * would compose this daemon's paths and send them to a pod that has none of them.
- */
-export type WorkspaceFsResolver = (agentId: string) => WorkspacePlacement | undefined
-
 // Every git operation here routes through this: a direct gitFor still passes locally and then runs
 // a cluster agent's git on the wrong filesystem.
-
-/**
- * Empties a directory in the filesystem that agent's work happens in; undefined ⇒ this daemon's.
- *
- * Registered like the git runner above, and for the same reason: the one destructive path a cluster
- * workspace needs (a partial clone) cannot be an `rmSync`, because the directory is on a volume this
- * process cannot see.
- */
-export type WorkspacePathClearer = (agentId: string, root: string) => Promise<string | undefined>
-
-/**
- * Whether this daemon places workspaces in sandbox pods at all.
- *
- * Deliberately NOT `resolveGitRunner(id) !== undefined`: that answers per agent and is
- * false before a channel binds, so an operation guarded by it would take the local path for a
- * cluster agent that simply has no pod yet — and clone onto the daemon's disk.
- */
-
-/** The same answer for callers OUTSIDE this module — a seam that would otherwise `stat` a workspace
- *  path that names a filesystem this process cannot see. */
 
 /** Empty a path belonging to a cluster agent. A daemon with no clearer registered has no sandbox to
  *  reach, so there is nothing to empty — the local path never calls this. */

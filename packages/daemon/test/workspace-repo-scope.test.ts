@@ -11,6 +11,7 @@ import { createWorkspaceScope, type WorkspaceScopeSession } from '../src/cp/work
 import { workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
+import { wireTestPlane } from './workspace-plane-support.js'
 
 /**
  * The console's `repo` scope (multi-repository-workspaces.md): every workspace read and git
@@ -414,8 +415,7 @@ describe.skipIf(process.platform === 'win32')('a cluster daemon addresses a seco
       `${POD_SECONDARY}/.materialization.json`,
       JSON.stringify({ repoId: AUTHORIZED_ID, repoFullName: AUTHORIZED, branch: 'pod-trunk' })
     )
-    workspaces.setSandboxMode(true)
-    workspaces.setFsResolver(() => ({ fs: pod, mount: POD_ROOT }))
+    wireTestPlane(workspaces, { workspacesOffDisk: true, workspaceFsFor: () => ({ fs: pod, mount: POD_ROOT }) })
     const podScope = createWorkspaceScope({
       workspaces,
       agentOf: (id) => (id === AGENT ? agent : undefined),
@@ -438,8 +438,7 @@ describe.skipIf(process.platform === 'win32')('a cluster daemon addresses a seco
       // The primary still resolves to the sandbox checkout, untouched by the repo scope.
       await expect(podScope.location(AGENT)).resolves.toBeDefined()
     } finally {
-      workspaces.setFsResolver(undefined)
-      workspaces.setSandboxMode(false)
+      workspaces.setPlaneResolver(undefined)
     }
   })
 })

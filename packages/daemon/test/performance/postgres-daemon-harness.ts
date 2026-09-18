@@ -203,6 +203,7 @@ export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntime
     },
     withSandbox: async <T>(_agentId: string, work: () => Promise<T>) => work(),
     probeRuntimes: async () => ({ runtimes: [{ id: RUNTIME_ID, version: 'test', models: [] }] }),
+    workspacesOffDisk: true,
     spawnFor: () => ({ driver }),
     gitRunnerFor: () => undefined,
     workspaceFilesFor: () => undefined,

@@ -6,6 +6,7 @@ import { WorkspaceManager, type WorkspaceRoot } from '../src/workspace/workspace
 import { daemonGitCredentialTarget, initGitInjection } from '../src/workspace/git-injection.js'
 import { GITCRED_CAPABILITY_ENV } from '../src/gitcred/env.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
+import { wireTestPlane } from './workspace-plane-support.js'
 
 // Every daemon-run git that REACHES A REMOTE has to carry the credential-helper pointer, not just the
 // helper's env: `workspaceGitConfigPairs` resets `credential.helper` at command scope, which clears the
@@ -92,11 +93,11 @@ function expectHelperAfterReset(env: Record<string, string>): void {
 describe('daemon git that reaches a remote', () => {
   it('carries the credential helper on a review fetch — the exact checkout a formal review runs on', async () => {
     const recorded: Record<string, string>[] = []
-    workspaces.setGitRunnerResolver(() => recordingRunner(recorded))
+    wireTestPlane(workspaces, { gitRunnerFor: () => recordingRunner(recorded) })
     try {
       await expect(workspaces.fetchReviewRevisionIn('bot-1', rootFor(true), 'wt-1', REVIEW)).rejects.toThrow()
     } finally {
-      workspaces.setGitRunnerResolver(undefined)
+      workspaces.setPlaneResolver(undefined)
     }
     expectHelperAfterReset(envsOf(recorded))
     expect(envsOf(recorded)[GITCRED_CAPABILITY_ENV]).toBe('cap-bot-1')
@@ -104,23 +105,23 @@ describe('daemon git that reaches a remote', () => {
 
   it('carries the credential helper on a root pull', async () => {
     const recorded: Record<string, string>[] = []
-    workspaces.setGitRunnerResolver(() => recordingRunner(recorded))
+    wireTestPlane(workspaces, { gitRunnerFor: () => recordingRunner(recorded) })
     try {
       // pullRoot degrades on failure rather than throwing — the env it built is the assertion.
       await workspaces.pullRoot('bot-1', rootFor(true), '/tmp/does-not-matter')
     } finally {
-      workspaces.setGitRunnerResolver(undefined)
+      workspaces.setPlaneResolver(undefined)
     }
     expectHelperAfterReset(envsOf(recorded))
   })
 
   it('leaves an anonymous root anonymous — no helper, no capability', async () => {
     const recorded: Record<string, string>[] = []
-    workspaces.setGitRunnerResolver(() => recordingRunner(recorded))
+    wireTestPlane(workspaces, { gitRunnerFor: () => recordingRunner(recorded) })
     try {
       await workspaces.pullRoot('bot-1', rootFor(false), '/tmp/does-not-matter')
     } finally {
-      workspaces.setGitRunnerResolver(undefined)
+      workspaces.setPlaneResolver(undefined)
     }
     const env = envsOf(recorded)
     expect(configPairs(env).some(([key]) => key === HELPER)).toBe(false)

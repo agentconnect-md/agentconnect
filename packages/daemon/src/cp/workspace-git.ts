@@ -357,7 +357,7 @@ export function createWorkspaceGit(
         ...(n?.deletions !== undefined ? { deletions: n.deletions } : {})
       }
     })
-    const [lastCommit, lastFetchAt] = await Promise.all([headCommit(git), fetchHeadMtime(workspaces, root)])
+    const [lastCommit, lastFetchAt] = await Promise.all([headCommit(git), fetchHeadMtime(workspaces, agentId, root)])
     return {
       agentId,
       isRepo: true,
@@ -468,11 +468,10 @@ export function createWorkspaceGit(
       const counted = await git.readBounded(['diff', ...scope, '--numstat', '-z', ...pathspec], METADATA_OUTPUT_BUDGET)
       const rows = parseNumstatZ(counted.out.toString('utf8'))
       if (rows.length === 0) {
-        // No change in this scope: the path either exists (unchanged, or untracked —
-        // `git diff` never shows an untracked file) or it does not. Both are DATA.
-        // `canonical` is null for EVERY path in a sandbox workspace, so git answers there instead —
-        // the difference between "no changes" and "no such file".
-        const exists = workspaces.sandboxMode ? await pathExists(git, rel) : canonical !== null
+        // No change in this scope: the path exists (unchanged, or untracked, which `git diff` never shows) or it does not, and both are DATA; `canonical` is null for EVERY path of an off-disk root, so git answers there instead.
+        const exists = workspaces.offDisk({ agentId: req.agentId, path: root })
+          ? await pathExists(git, rel)
+          : canonical !== null
         return { agentId: req.agentId, path: req.path, isRepo: true, exists }
       }
       // git itself reported `-` `-` for every row ⇒ nothing textual to render. A
@@ -1054,12 +1053,9 @@ async function headCommit(git: GitRunner): Promise<WorkspaceGitCommit | null> {
   }
 }
 
-/** When the checkout last fetched/pulled, from `.git/FETCH_HEAD`'s mtime (git
- *  rewrites it on every fetch/pull). Null if it has never fetched — and null for a
- *  sandbox workspace, whose mtime no git subcommand reports and whose path names a
- *  filesystem this process cannot see. Restoring it needs a shim stat, not an argv. */
-async function fetchHeadMtime(workspaces: WorkspaceManager, root: string): Promise<string | null> {
-  if (workspaces.sandboxMode) return null
+/** When the checkout last fetched/pulled, from `.git/FETCH_HEAD`'s mtime; null if it never fetched, and null for an off-disk root, whose mtime no git subcommand reports — restoring it needs a shim stat, not an argv. */
+async function fetchHeadMtime(workspaces: WorkspaceManager, agentId: string, root: string): Promise<string | null> {
+  if (workspaces.offDisk({ agentId, path: root })) return null
   try {
     const st = await fs.stat(join(root, '.git', 'FETCH_HEAD'))
     return st.mtime.toISOString()

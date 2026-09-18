@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { WorkspaceManager, type WorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
+import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
+import type { ExecutionPlane } from '../src/execution/plane.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
@@ -13,6 +14,7 @@ import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import { gitFor } from '../src/workspace/git-injection.js'
 import { localWorkspaceFs } from '../src/workspace/workspace-fs.js'
 import type { Agent } from '../src/agents/agent-schema.js'
+import { wireTestPlane } from './workspace-plane-support.js'
 
 // The resolver seam that lets a cluster workspace run git on its sandbox pod instead of this disk.
 // Its value is completeness: one site left on gitFor passes every local test, then reports a clean
@@ -21,9 +23,7 @@ import type { Agent } from '../src/agents/agent-schema.js'
 const roots: string[] = []
 
 afterEach(() => {
-  workspaces.setGitRunnerResolver(undefined)
-  workspaces.setFsResolver(undefined)
-  workspaces.setSandboxMode(false)
+  workspaces.setPlaneResolver(undefined)
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -112,13 +112,13 @@ function clusterAgent(id: string, path: string): Agent {
 }
 
 function recording(): {
-  resolver: WorkspaceGitRunnerResolver
+  resolver: ExecutionPlane['gitRunnerFor']
   calls: Array<{ agentId: string; cwd?: string }>
   argv: string[][]
 } {
   const calls: Array<{ agentId: string; cwd?: string }> = []
   const argv: string[][] = []
-  const resolver: WorkspaceGitRunnerResolver = (agentId, cwd, abort) => {
+  const resolver: ExecutionPlane['gitRunnerFor'] = (agentId, cwd, abort) => {
     calls.push({ agentId, ...(cwd === undefined ? {} : { cwd }) })
     const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
     const wrap = (runner: GitRunner): GitRunner => {
@@ -156,7 +156,7 @@ describe('workspace-manager git runner seam', () => {
   it('routes worktree removal through the resolver, with the agent it belongs to', async () => {
     const { agent, worktree } = agentWithWorktree('session-1')
     const { resolver, calls, argv } = recording()
-    workspaces.setGitRunnerResolver(resolver)
+    wireTestPlane(workspaces, { gitRunnerFor: resolver })
 
     const outcome = await workspaces.removeSessionWorktree(agent, 'session-1')
 
@@ -178,7 +178,7 @@ describe('workspace-manager git runner seam', () => {
     const { agent, worktree } = agentWithWorktree('session-2')
     writeFileSync(join(worktree, 'dirty.txt'), 'x\n')
     const { resolver } = recording()
-    workspaces.setGitRunnerResolver(resolver)
+    wireTestPlane(workspaces, { gitRunnerFor: resolver })
 
     // The decision must come from the runner's answer, not from this daemon's own disk.
     expect(await workspaces.removeSessionWorktree(agent, 'session-2')).toEqual({ outcome: 'retained', reason: 'dirty' })
@@ -188,8 +188,10 @@ describe('workspace-manager git runner seam', () => {
   it('cannot be bypassed: a refusing resolver stops the operation instead of falling back', async () => {
     const { agent, worktree } = agentWithWorktree('session-3')
     // A site still reaching git directly would succeed despite the seam refusing everything.
-    workspaces.setGitRunnerResolver(() => {
-      throw new Error('seam refused')
+    wireTestPlane(workspaces, {
+      gitRunnerFor: () => {
+        throw new Error('seam refused')
+      }
     })
     const outcome = await workspaces.removeSessionWorktree(agent, 'session-3')
     expect(outcome.outcome).toBe('failed')
@@ -209,7 +211,6 @@ describe('workspace-manager git runner seam', () => {
     // agent, so coalescing hands one agent the other's clone — and it looks like success.
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'ac-seam-clone-')))
     roots.push(home)
-    if (remote) workspaces.setFsResolver(() => ({ mount: home, fs: localWorkspaceFs }))
     const shared = join(home, 'checkout')
     const cloned: string[] = []
     let release!: () => void
@@ -217,19 +218,22 @@ describe('workspace-manager git runner seam', () => {
       release = resolve
     })
     // Clone is intercepted, so nothing reaches the network; the point is who asks and how often.
-    workspaces.setGitRunnerResolver((agentId) => {
-      const runner = {
-        withEnv: () => runner,
-        raw: async () => '',
-        clone: async () => {
-          cloned.push(agentId)
-          await blocked
-        },
-        pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
-        status: async () => ({ current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
-        log: async () => []
-      } as unknown as GitRunner
-      return runner
+    wireTestPlane(workspaces, {
+      ...(remote ? { workspaceFsFor: () => ({ mount: home, fs: localWorkspaceFs }) } : {}),
+      gitRunnerFor: (agentId) => {
+        const runner = {
+          withEnv: () => runner,
+          raw: async () => '',
+          clone: async () => {
+            cloned.push(agentId)
+            await blocked
+          },
+          pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
+          status: async () => ({ current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
+          log: async () => []
+        } as unknown as GitRunner
+        return runner
+      }
     })
 
     const first = workspaces.prefetchWorkspace(clusterAgent('bot-one', shared))
@@ -292,25 +296,25 @@ describe.skipIf(process.platform === 'win32')('consoleWorkspaceRoot', () => {
   })
 
   it('is the POD checkout under --k8s, never the daemon path the runtime cannot see', () => {
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     const local = '/var/lib/agentconnect/agents/bot/workspace'
     expect(workspaces.consoleWorkspaceRoot(agentAt(local), local, '/agent')).toBe('/agent/repo')
   })
 
   it('falls back to the legacy mount when the bound shim reported no root', () => {
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     expect(workspaces.consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws', undefined)).toBe('/agent/repo')
   })
 
   it('is the mounted volume itself for a from-scratch workspace', () => {
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     expect(workspaces.consoleWorkspaceRoot(agentAt('/local/ws', { mode: 'from-scratch' }), '/local/ws', '/agent')).toBe(
       '/agent'
     )
   })
 
   it('stops at the CHECKOUT root, not the runtime cwd, when a working subdirectory is configured', () => {
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     // The distinction is the local path's: it has always addressed `workspace.path` (the clone root)
     // while the ACP cwd went one level in. Routing the console through `clusterWorkspaceCwd` instead
     // put every agentDir-configured cluster agent on "not a git checkout" — `isRepo` accepts only an
@@ -326,14 +330,14 @@ describe.skipIf(process.platform === 'win32')('consoleWorkspaceRoot', () => {
   })
 
   it('keeps an absent workspace absent, so a shared-workspace sessionId stays refused', () => {
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     // The local resolver answers undefined for a sessionId naming a session that is NOT isolated.
     // Turning that into the shared checkout would answer a question about a worktree that has none.
     expect(workspaces.consoleWorkspaceRoot(agentAt('/local/ws'), undefined, '/agent')).toBeUndefined()
   })
 
   it('names the session clone on its own pod, never the shared checkout (§11)', () => {
-    workspaces.setSandboxMode(true)
+    wireTestPlane(workspaces, { workspacesOffDisk: true })
     // The console addresses the repository the session stands in, and for an isolated pool session that
     // is the clone in its own directory — naming the shared checkout would answer about a different tree.
     const agent = agentAt('/local/ws')

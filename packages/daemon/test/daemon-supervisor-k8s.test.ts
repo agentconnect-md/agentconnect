@@ -41,6 +41,7 @@ function daemon(opts: { k8s?: boolean; supervisor?: string; requestExit?: (code:
             ({
               driver: {} as never,
               listener: { listeningPort: () => 0 } as never,
+              workspacesOffDisk: true,
               gitRunnerFor: () => undefined,
               stop: async () => {}
             }) as never

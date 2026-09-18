@@ -39,12 +39,8 @@ export function createLocalSkillsReader(
       // a listing of this daemon's disk.
       const files = filesFor(req.agentId)
       if (!files) {
-        // In sandbox mode an absent handle means the pod is UNBOUND, not that the workspace is local:
-        // `cwd` is already in pod coordinates, so `existsSync`/`listLocalSkills` would read whatever
-        // sits at that path on this daemon's filesystem. Unreachable is reported as unmaterialized —
-        // the wire has no third answer here, and the two other seams refuse with `sandbox-unavailable`
-        // because theirs does.
-        if (workspaces.sandboxMode) return { materialized: false, skills: [] }
+        // Off this disk an absent handle means the pod is UNBOUND, not that the workspace is local: `cwd` is in pod coordinates, so `existsSync`/`listLocalSkills` would read whatever sits there on this daemon's filesystem — reported as unmaterialized, the wire having no third answer here.
+        if (workspaces.offDisk({ agentId: req.agentId, path: cwd })) return { materialized: false, skills: [] }
         if (!existsSync(cwd)) return { materialized: false, skills: [] }
         return { materialized: true, skills: await listLocalSkills(cwd, stateDir) }
       }

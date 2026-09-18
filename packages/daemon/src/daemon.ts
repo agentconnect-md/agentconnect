@@ -2114,12 +2114,8 @@ export class Daemon {
         this.dataPlane = undefined
         throw error
       }
-      // Workspace git, files and session retirement then run where the workspace is; an agent with no bound channel answers undefined and keeps its local behaviour.
+      // Workspace git, files, path clearing and session retirement then run where the workspace is; an agent with no bound channel answers undefined for those, yet its workspace still reads as off this disk, which decides what operations exist at all: an in-place conversion has no pod-side rollback.
       wireWorkspacePlane(this.workspaces, this.k8sPlane)
-      // And the one destructive operation a cluster workspace needs: a partial clone sits on a volume no `rmSync` here can reach.
-      this.workspaces.setPathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
-      // And the mode itself, which decides what workspace operations exist at all: an in-place conversion has no pod-side rollback.
-      this.workspaces.setSandboxMode(true)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
     }
   }
@@ -4089,6 +4085,8 @@ export class Daemon {
     }),
     gitRunnerFor: (agentId, cwd, abort) => this.microsandboxGit(agentId, cwd, abort),
     workspaceFsFor: (agentId) => this.microsandboxWorkspaceFs(agentId),
+    // A VM mounts directories of this host, so its workspace files stay on this daemon's disk, at this daemon's paths.
+    workspacesOffDisk: false,
     discardSessions: async (agentId, exceptLeaf) => {
       if (!this.microsandbox) return
       for (const id of await this.microsandbox.environmentIds()) {
@@ -12279,7 +12277,7 @@ export class Daemon {
         const location = await scope.location(agent.id, scopeSessionId, repo)
         if (!location) continue
         try {
-          const path = this.workspaces.sandboxMode
+          const path = this.workspaces.offDisk({ agentId: agent.id, path: location.root })
             ? location.root
             : this.workspaces.canonicalWorkspacePath(agent.id, location.root)
           roots.push({ path, ...(repo === undefined ? {} : { repo }) })
@@ -17736,10 +17734,10 @@ export class Daemon {
     for (const agent of [...this.agents.values()]) {
       if (this.draining) break
       if (!this.servesAgent(agent.id)) continue
-      // On a cluster the subtrees are on the pod's volume, so an agent whose sandbox is not already
-      // bound is skipped: retiring a root is never worth waking a suspended pod, and the next pass
-      // that finds one bound sweeps it.
-      if (this.workspaces.sandboxMode && this.workspaces.sandboxMountFor(agent.id) === undefined) continue
+      // Off this disk the subtrees are on the pod's volume, so an agent whose sandbox is not already bound is skipped: retiring a root is never worth waking a suspended pod, and the next pass that finds one bound sweeps it.
+      if (this.workspaces.offDisk({ agentId: agent.id }) && this.workspaces.sandboxMountFor(agent.id) === undefined) {
+        continue
+      }
       // Retiring old roots must not create or wake an idle VM merely to inspect its workspace.
       if (
         this.usesMicrosandbox(agent) &&
@@ -20283,10 +20281,7 @@ export class Daemon {
     await this.k8sPlane?.stop().catch(() => undefined)
     await this.readiness?.stop().catch(() => undefined)
     this.readiness = undefined
-    this.workspaces.setGitRunnerResolver(undefined)
-    this.workspaces.setFsResolver(undefined)
-    this.workspaces.setPathClearer(undefined)
-    this.workspaces.setSandboxMode(false)
+    this.workspaces.setPlaneResolver(undefined)
     await Promise.allSettled(hostStarts)
     // Shutdown backstop: dream extractions reclaim their own tombstone when the
     // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop

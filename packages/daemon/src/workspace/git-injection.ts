@@ -500,13 +500,7 @@ let preWarm: ((agentId: string, reason: 'clone' | 'pull') => Promise<void>) | un
 let capabilityFor: ((agentId: string) => string) | undefined
 
 export function initGitInjection(opts: {
-  /**
-   * Resolves the filesystem an agent's git runs in.
-   *
-   * It has to answer with the SAME predicate `setWorkspaceGitRunnerResolver` uses, or the
-   * environment and the execution disagree: a remote runner running with daemon-local pointers is
-   * exactly the bug this seam exists to remove.
-   */
+  /** Resolves the filesystem an agent's git runs in, on the SAME predicate the execution plane's `gitRunnerFor` answers with — a remote runner running with daemon-local pointers is exactly the bug this seam exists to remove. */
   targetFor: (agentId: string) => GitCredentialTarget
   /**
    * This daemon's OWN filesystem, for git the daemon itself runs regardless of where the agent's

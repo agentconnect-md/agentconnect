@@ -427,6 +427,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     withSandbox: (subject, work) => driver.withSandbox(subject as SandboxSubject, work),
     probeRuntimes,
+    // A workspace here is on a pod's volume, in the pod's coordinates, whether or not a channel to it is bound.
+    workspacesOffDisk: true,
     // The driver claims the pod a host key names, so only a confined session's host hands it one; every other host shares the agent's pod (§11).
     spawnFor: ({ hostKey, confined }) => ({ driver, ...(confined() ? { hostKey } : {}) }),
     gitRunnerFor: (agentId, cwd, abort) => {

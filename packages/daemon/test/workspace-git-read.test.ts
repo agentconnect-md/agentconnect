@@ -12,6 +12,7 @@ import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
 import { LocalGitRunner } from '../src/workspace/git-runner.js'
+import { wireTestPlane } from './workspace-plane-support.js'
 
 // The seam's git reads against a REAL repository: the mocked-simple-git suite
 // (workspace-git.test.ts) can prove the mapping, only actual `git` output can prove
@@ -393,13 +394,13 @@ describe('createWorkspaceGit.log against a real repo', () => {
     const nowhere = join(base, 'no-daemon-checkout')
     mkdirSync(nowhere, { recursive: true })
 
-    workspaces.setGitRunnerResolver(() => answering as never)
+    wireTestPlane(workspaces, { gitRunnerFor: () => answering as never })
     try {
       const status = await createWorkspaceGit(workspaces, async () => nowhere).status(AGENT)
       expect(status.isRepo).toBe(true)
       expect(seen.some((args) => args.includes('--show-prefix'))).toBe(true)
     } finally {
-      workspaces.setGitRunnerResolver(undefined)
+      workspaces.setPlaneResolver(undefined)
     }
   })
 
@@ -469,17 +470,15 @@ describe.skipIf(process.platform === 'win32')('createWorkspaceGit against a work
   let clusterSeam: ReturnType<typeof createWorkspaceGit>
 
   beforeAll(() => {
-    workspaces.setSandboxMode(true)
-    workspaces.setGitRunnerResolver(
-      (_agentId, _cwd, abort) => new LocalGitRunner(gitFor(repo, abort), repo, (e) => gitFor(repo, abort).env(e))
-    )
+    wireTestPlane(workspaces, {
+      workspacesOffDisk: true,
+      gitRunnerFor: (_agentId, _cwd, abort) =>
+        new LocalGitRunner(gitFor(repo, abort), repo, (e) => gitFor(repo, abort).env(e))
+    })
     clusterSeam = createWorkspaceGit(workspaces, async (agentId) => (agentId === AGENT ? POD_ROOT : undefined))
   })
 
-  afterAll(() => {
-    workspaces.setSandboxMode(false)
-    workspaces.setGitRunnerResolver(undefined)
-  })
+  afterAll(() => workspaces.setPlaneResolver(undefined))
 
   it('reads the checkout at all — this is what answered isRepo:false over a real repository', async () => {
     const s = await clusterSeam.status(AGENT)

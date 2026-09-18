@@ -69,21 +69,11 @@ export function createWorkspaceReader(
     return location
   }
 
-  /**
-   * The filesystem this request runs on, resolved ONCE and returned so the caller holds it.
-   *
-   * The reachability refusal lives HERE rather than beside it, because the two cannot be separate
-   * steps: the shim re-dials at half its credential TTL, so a resolver probed to prove a channel
-   * exists and then probed again to use it can answer differently across those two calls — and the
-   * second answer would be `localWorkspaceFiles` against a path in the POD's coordinates. A read
-   * would report an empty workspace; a create would `mkdir -p` that pod path on this daemon's disk
-   * and publish the file into it. So sandbox mode has no fallback at all: one resolution, and its
-   * absence is the refusal.
-   */
-  function filesOf(agentId: string): WorkspaceFiles {
+  /** The filesystem this request runs on, resolved ONCE and held by the caller: the shim re-dials at half its credential TTL, so probing for a channel and resolving again to use it can answer `localWorkspaceFiles` against a root in the POD's coordinates — an off-disk root therefore has no fallback, and the one resolution's absence is the refusal. */
+  function filesOf(agentId: string, root: string): WorkspaceFiles {
     const remote = filesFor(agentId)
     if (remote) return remote
-    if (workspaces.sandboxMode) {
+    if (workspaces.offDisk({ agentId, path: root })) {
       throw new WorkspaceViolationError(
         `agent "${agentId}" has no running sandbox, so its workspace cannot be reached`,
         'sandbox-unavailable'
@@ -95,12 +85,12 @@ export function createWorkspaceReader(
   return {
     async list(req) {
       const root = (await locationFor(req.agentId, req.sessionId, req.repo)).root
-      return filesOf(req.agentId).list(root, req)
+      return filesOf(req.agentId, root).list(root, req)
     },
 
     async read(req) {
       const root = (await locationFor(req.agentId, req.sessionId, req.repo)).root
-      return filesOf(req.agentId).read(root, req)
+      return filesOf(req.agentId, root).read(root, req)
     },
 
     async write(req) {
@@ -119,7 +109,7 @@ export function createWorkspaceReader(
         // Re-read inside the coordinator, as before: the agent's configuration can change while a
         // write waits for quiescence, and the mode that governs is the one at mutation time.
         const location = await locationFor(req.agentId)
-        return filesOf(req.agentId).write(location.root, location.scratch, req)
+        return filesOf(req.agentId, location.root).write(location.root, location.scratch, req)
       })
     },
 
@@ -133,7 +123,7 @@ export function createWorkspaceReader(
 
       return coordinateWrite(req.agentId, async () => {
         const location = await locationFor(req.agentId)
-        return filesOf(req.agentId).delete(location.root, location.scratch, req)
+        return filesOf(req.agentId, location.root).delete(location.root, location.scratch, req)
       })
     }
   }

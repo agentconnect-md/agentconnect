@@ -19,6 +19,7 @@ import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
 import { LocalGitRunner } from '../src/workspace/git-runner.js'
+import { wireTestPlane } from './workspace-plane-support.js'
 
 // Real git against real checkouts, no simple-git mock: the write half is a set of claims about what
 // `git add` / `reset` / `commit` / `push` actually do to an index and a remote, and a mocked runner
@@ -186,8 +187,7 @@ const githubTarget = (branch = 'main') => ({
 })
 
 afterEach(() => {
-  workspaces.setSandboxMode(false)
-  workspaces.setGitRunnerResolver(undefined)
+  workspaces.setPlaneResolver(undefined)
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -195,14 +195,14 @@ describe('workspace git stage / unstage (real repo, real index)', () => {
   it('reads a diff, stages and commits through the real sandbox handler with the existing guards', async () => {
     const dir = repo()
     const handle = createExecHandler({ workspaceRoot: dir })
-    workspaces.setSandboxMode(true)
-    workspaces.setGitRunnerResolver(
-      () =>
+    wireTestPlane(workspaces, {
+      workspacesOffDisk: true,
+      gitRunnerFor: () =>
         new ShimGitRunner(
           { request: (capability, payload, options) => handle(capability, payload, options?.abort) },
           dir
         )
-    )
+    })
     const seam = createWorkspaceGit(
       workspaces,
       async () => dir,
@@ -492,7 +492,7 @@ describe('workspace git push (real repo; local bare remote through the runner se
   it('pushes the branch, then advances origin/<branch> so the commits stop reading as unpushed', async () => {
     const { dir, bare, origin } = repoWithRemote()
     const calls: Call[] = []
-    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls, origin, bare))
+    wireTestPlane(workspaces, { gitRunnerFor: (_agentId, cwd) => new SeamRunner(cwd ?? dir, calls, origin, bare) })
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     const seam = createWorkspaceGit(
       workspaces,
@@ -554,7 +554,7 @@ describe('workspace git push (real repo; local bare remote through the runner se
     git(other, ['push', '-q', 'origin', 'main'])
     const remoteHead = git(bare, ['rev-parse', 'refs/heads/main']).trim()
 
-    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, [], origin, bare))
+    wireTestPlane(workspaces, { gitRunnerFor: (_agentId, cwd) => new SeamRunner(cwd ?? dir, [], origin, bare) })
     writeFileSync(join(dir, 'tracked.txt'), 'mine\n')
     const seam = createWorkspaceGit(
       workspaces,
@@ -579,7 +579,7 @@ describe('workspace git push (real repo; local bare remote through the runner se
   it('chunks the pathspecs so one invocation stays inside the sandbox argv cap', async () => {
     const dir = repo()
     const calls: Call[] = []
-    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls))
+    wireTestPlane(workspaces, { gitRunnerFor: (_agentId, cwd) => new SeamRunner(cwd ?? dir, calls) })
     const paths = Array.from({ length: 120 }, (_, index) => `f${index}.txt`)
     for (const path of paths) writeFileSync(join(dir, path), `${path}\n`)
     const seam = createWorkspaceGit(workspaces, async () => dir)
@@ -664,7 +664,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
     // never sent. Verified against real git.
     const { dir, bare, origin } = repoWithRemote()
     const calls: Call[] = []
-    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls, origin, bare))
+    wireTestPlane(workspaces, { gitRunnerFor: (_agentId, cwd) => new SeamRunner(cwd ?? dir, calls, origin, bare) })
     // `feature` branches off main at the SAME commit and adds nothing, so `ahead(origin/main)` is
     // zero — while `origin/feature` does not exist, which means there is very much something to
     // send. A URL-only check reports "Everything is already pushed" here and creates nothing.
@@ -717,10 +717,12 @@ describe('workspace git push preconditions (data, not errors)', () => {
     const { dir } = repoWithRemote()
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     let resolutions = 0
-    workspaces.setGitRunnerResolver((_agentId, cwd) => {
-      resolutions += 1
-      if (resolutions > 1) return undefined
-      return new LocalGitRunner(gitFor(cwd ?? dir), cwd ?? dir, (env) => gitFor(cwd ?? dir).env(env))
+    wireTestPlane(workspaces, {
+      gitRunnerFor: (_agentId, cwd) => {
+        resolutions += 1
+        if (resolutions > 1) return undefined
+        return new LocalGitRunner(gitFor(cwd ?? dir), cwd ?? dir, (env) => gitFor(cwd ?? dir).env(env))
+      }
     })
     try {
       const status = await seamFor(dir).stage({ agentId: 'a', paths: ['tracked.txt'] })
@@ -728,7 +730,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
       expect(status.isRepo).toBe(true)
       expect(status.files?.map((f) => f.path)).toEqual(['tracked.txt'])
     } finally {
-      workspaces.setGitRunnerResolver(undefined)
+      workspaces.setPlaneResolver(undefined)
     }
   })
 
@@ -912,7 +914,7 @@ describe('workspace git message — the AI commit-message pass (real staged diff
     const dir = repo()
     // Every git call synchronous through the seam runner, so the only thing this test has to wait for
     // is the fake clock — a real simple-git read would still be in flight when the clock advanced.
-    workspaces.setGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, []))
+    wireTestPlane(workspaces, { gitRunnerFor: (_agentId, cwd) => new SeamRunner(cwd ?? dir, []) })
     writeFileSync(join(dir, 'tracked.txt'), 'two\n')
     let aborted = false
     const seam = createWorkspaceGit(

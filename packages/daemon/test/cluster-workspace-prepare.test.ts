@@ -14,6 +14,7 @@ import {
 import { SANDBOX_CHECKOUT_DIR } from '../src/shim/sandbox-paths.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
+import { wireTestPlane } from './workspace-plane-support.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
@@ -233,21 +234,23 @@ beforeEach(() => {
   cloneRefusals = new Set()
   discarded = []
   discardFails = false
-  // Every agent here runs in a pod, so all three seams resolve to the sandbox.
-  workspaces.setGitRunnerResolver((_agentId, cwd) => recordingRunner(cwd))
-  workspaces.setFsResolver(() => ({ fs: pod, mount: POD_ROOT }))
-  workspaces.setPathClearer(async (_agentId, root) => {
-    cleared.push(root)
-    // Emptying the checkout is precisely what makes the pod's probe stop finding one.
-    if (root === CHECKOUT) checkoutExists = false
-    if (clearFails) return 'permission denied'
-    return undefined
-  })
-  workspaces.setSandboxMode(true)
-  // The pool's `clearSessionWorktrees`: the daemon deletes the claim and its volume, so the seam is what a test can watch.
-  workspaces.setSessionsDiscarder(async (agentId, exceptLeaf) => {
-    discarded.push({ agentId, exceptLeaf })
-    if (discardFails) throw new Error('session claim delete refused')
+  // Every agent here runs in a pod, so every question of the plane resolves to the sandbox.
+  wireTestPlane(workspaces, {
+    workspacesOffDisk: true,
+    gitRunnerFor: (_agentId, cwd) => recordingRunner(cwd),
+    workspaceFsFor: () => ({ fs: pod, mount: POD_ROOT }),
+    clearPath: async (_agentId, root) => {
+      cleared.push(root)
+      // Emptying the checkout is precisely what makes the pod's probe stop finding one.
+      if (root === CHECKOUT) checkoutExists = false
+      if (clearFails) return 'permission denied'
+      return undefined
+    },
+    // The pool's `clearSessionWorktrees`: the daemon deletes the claim and its volume, so the seam is what a test can watch.
+    discardSessions: async (agentId, exceptLeaf) => {
+      discarded.push({ agentId, exceptLeaf })
+      if (discardFails) throw new Error('session claim delete refused')
+    }
   })
   initGitInjection({
     targetFor: (agentId) =>
@@ -259,13 +262,7 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
-  workspaces.setGitRunnerResolver(undefined)
-  workspaces.setFsResolver(undefined)
-  workspaces.setPathClearer(undefined)
-  workspaces.setSessionsDiscarder(undefined)
-  workspaces.setSandboxMode(false)
-})
+afterEach(() => workspaces.setPlaneResolver(undefined))
 
 describe('clusterWorkspaceCwd', () => {
   it('puts a checkout one level below the mount, away from the runtime HOME', () => {
