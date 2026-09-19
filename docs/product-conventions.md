@@ -1157,13 +1157,15 @@ nested mapping as its own table. A block that is not a readable mapping is hidde
 rather than shown as prose, and the document body still renders; the raw text stays
 visible through the preview's Code toggle. Editing always shows the file verbatim.
 
-The managed and native Memory file browser uses the same shared inline file editor,
-breadcrumb naming field, and header actions as Workspace. It must not introduce a
-separate prompt or modal flow for adding or editing files; only the persistence API
-and Memory's flat Markdown filename validation differ. File-specific capabilities
-belong in the preview summary row: managed Memory exposes `History` there today, and
-repository-backed Workspace history must reuse the same action slot and history pane
-when it is added.
+Managed and external Memory open in the entry browser, which shares the Workspace
+file browser's shell: the list pane, the preview summary row, and the header
+actions. Runtime-native Memory, whose files the runtime itself formats, keeps the
+file browser and its shared inline file editor and breadcrumb naming field. Neither
+may introduce a separate prompt or modal flow for adding or editing; only the
+persistence API and Memory's flat Markdown filename validation differ.
+Entry-specific capabilities belong in the preview summary row: the entry browser
+exposes `Edit`, `Delete`, and `History` there, and repository-backed Workspace
+history must reuse the same action slot and history pane when it is added.
 
 For a Git workspace, show the effective `read` or `write` access beside the
 repository — an anonymous checkout is always `read`, whatever preference is stored.

@@ -14,15 +14,10 @@ import { UnifiedMemoryPanel } from '@/components/console/UnifiedMemoryPanel'
 // markdown or edited through the same inline file-browser surface as Workspace.
 // The CP enforces edit permission (a 403 surfaces as an error), matching the console.
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import dynamic from 'next/dynamic'
+import { useEffect, useId, useState } from 'react'
 import {
   fetchAgentMemoryFull,
-  updateAgentMemory,
-  listAgentMemory,
   fetchAgentMemoryChannels,
-  ApiError,
-  type MemoryFileEntry,
   type ManagedMemoryHome,
   type ManagedMemoryScope,
   type MemoryChannelDto,
@@ -31,7 +26,6 @@ import {
 import { useConsoleData } from '@/lib/data-context'
 import { Spinner } from '@/components/marks'
 import { Icon, Button } from '@/components/ui'
-import { resolveMemoryMarkdownLink } from '@/components/console/memory-links'
 import {
   ExternalMemoryBindingFields,
   type ExternalMemoryBindingDraft
@@ -51,44 +45,11 @@ import {
   type MemoryProviderChoice,
   type MemorySettingsDraft
 } from '@/components/console/memory-settings'
-import {
-  FileBrowserBreadcrumb,
-  FileBrowserEditor,
-  FileBrowserEditorActions,
-  FileBrowserHistoryButton,
-  FileBrowserLayout,
-  FileBrowserPreviewSummary,
-  FileBrowserRow,
-  FileBrowserShell,
-  formatFileMtime,
-  formatFileSize,
-  type FileBrowserEditorDraft
-} from '@/components/console/FileBrowser'
-import { SANDBOX_ASLEEP_CODE } from '@/components/console/workspace-tree'
-import { useSandboxWake, type SandboxReadState } from '@/components/console/sandbox-wake'
-import {
-  MEMORY_SANDBOX_ASLEEP_NOTICE,
-  SandboxAsleepNotice,
-  SandboxStartingNotice
-} from '@/components/console/SandboxWakeNotice'
-import { RecordMemoryPanel } from '@/components/console/RecordMemoryPanel'
+import { NativeMemoryFiles } from '@/components/console/NativeMemoryFiles'
 import { DreamPanel } from '@/components/console/DreamPanel'
 import { DreamScheduleFields } from '@/components/console/DreamScheduleFields'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
-import { ManagedMemoryHistory } from '@/components/console/ManagedMemoryHistory'
-import { useIsMobile } from '@/lib/use-is-mobile'
 
-const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), {
-  ssr: false,
-  loading: () => (
-    <div className="px-[18px] py-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-      Rendering…
-    </div>
-  )
-})
-
-const INDEX = 'MEMORY.md'
-const TOPIC_RE = /^[A-Za-z0-9._-]+\.md$/ // flat file name, .md
 const SCOPE_HELP =
   'Agent scope shares one memory across everyone who talks to this agent. Channel scope gives each channel (DMs and webchat included) its own memory folder, so different channels never mix. Dreaming is turned off under channel scope.'
 
@@ -286,30 +247,11 @@ export function MemoryPanel({
   poolPlaced?: boolean
 }) {
   const { updateAgent } = useConsoleData()
-  const isMobile = useIsMobile()
-  const [files, setFiles] = useState<MemoryFileEntry[]>([])
-  const [listLoading, setListLoading] = useState(true)
-  const [listError, setListError] = useState<string | null>(null)
-  // The refusal's machine code, not just its message: a sleeping sandbox and an offline daemon are both 503.
-  const [listErrorCode, setListErrorCode] = useState<string | null>(null)
-  const [selected, setSelected] = useState(INDEX)
-  const [content, setContent] = useState('')
-  const [loadedMtime, setLoadedMtime] = useState<string | null>(null)
-  const [fileExists, setFileExists] = useState<boolean | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [errorCode, setErrorCode] = useState<string | null>(null)
-  const [historyOpen, setHistoryOpen] = useState(false)
   // Channel memory viewer (#653): the channels with their own folder, and which one
   // is being viewed. `undefined` = the shared agent-level base. Only meaningful when
   // the persisted scope is `channel`.
   const [channels, setChannels] = useState<MemoryChannelDto[]>([])
   const [selectedChannel, setSelectedChannel] = useState<string | undefined>(undefined)
-  const loadRequest = useRef(0)
-  const listRequest = useRef(0)
-
-  const [editor, setEditor] = useState<FileBrowserEditorDraft | null>(null)
-  const [mobileListSignal, setMobileListSignal] = useState(0)
 
   // Existing-agent memory settings are one explicit draft. The content below
   // continues to reflect `persistedSettings` until Save succeeds, so selecting a
@@ -520,119 +462,9 @@ export function MemoryPanel({
     }
   })()
 
-  // Load the file list once (and refresh it after a create/save).
-  const loadList = useCallback(async () => {
-    const request = ++listRequest.current
-    setListLoading(true)
-    setListError(null)
-    setListErrorCode(null)
-    try {
-      const { files } = await listAgentMemory(agentId, selectedChannel)
-      if (request !== listRequest.current) return
-      setFiles(files)
-    } catch (e) {
-      if (request !== listRequest.current) return
-      setListErrorCode(e instanceof ApiError ? (e.code ?? null) : null)
-      setListError(
-        e instanceof ApiError && e.status === 503
-          ? "Couldn't list memory — the owning daemon may be offline."
-          : e instanceof Error
-            ? e.message
-            : String(e)
-      )
-    } finally {
-      if (request === listRequest.current) setListLoading(false)
-    }
-  }, [agentId, selectedChannel])
-
-  // Load one file's content WHOLE (paging every slice) so the editor holds the full
-  // file — a partial read would let Save clobber the tail. The index is fetched via
-  // ?path omitted.
-  const loadFile = useCallback(
-    async (name: string) => {
-      const request = ++loadRequest.current
-      setLoading(true)
-      setError(null)
-      setErrorCode(null)
-      setEditor(null)
-      setHistoryOpen(false)
-      setContent('')
-      setLoadedMtime(null)
-      setFileExists(null)
-      try {
-        const mem = await fetchAgentMemoryFull(agentId, name === INDEX ? undefined : name, selectedChannel)
-        if (request !== loadRequest.current) return
-        setContent(mem.content)
-        setLoadedMtime(mem.mtime)
-        setFileExists(mem.exists)
-      } catch (e) {
-        if (request !== loadRequest.current) return
-        setErrorCode(e instanceof ApiError ? (e.code ?? null) : null)
-        setError(
-          e instanceof ApiError && e.status === 503
-            ? "Couldn't read the file — the owning daemon may be offline."
-            : e instanceof Error
-              ? e.message
-              : String(e)
-        )
-      } finally {
-        if (request === loadRequest.current) setLoading(false)
-      }
-    },
-    [agentId, selectedChannel]
-  )
-
-  // Only the managed directory lives on the sandbox volume: a runtime-native, external or off backend reads nothing
-  // from a pod, so it reports `ready` and can never press a wake.
-  const managedMemory = persistedProvider === 'managed'
-  // A `control-plane` home is read through the daemon's connection, never from the pod: no wake on open for it.
-  const sandboxedMemory = sandboxed && managedMemory && persistedSettings.home !== 'control-plane'
-  const readState: SandboxReadState = !managedMemory
-    ? 'ready'
-    : listErrorCode === SANDBOX_ASLEEP_CODE || errorCode === SANDBOX_ASLEEP_CODE
-      ? 'asleep'
-      : listLoading || loading
-        ? 'pending'
-        : listError
-          ? 'failed'
-          : 'ready'
-  // The poll re-issues both reads the panel is showing. Read through a ref so the callback stays stable across selections.
-  const selectedRef = useRef(selected)
-  useEffect(() => {
-    selectedRef.current = selected
-  }, [selected])
-  const retryRead = useCallback(() => {
-    void loadList()
-    void loadFile(selectedRef.current)
-  }, [loadFile, loadList])
-  const wake = useSandboxWake(agentId, readState, retryRead, { sandboxed: sandboxedMemory })
-  // The asleep story outranks the offline one on either pane: the memory is fine, just behind a pod that is not running.
-  const asleepRead = readState === 'asleep'
-  const startable = sandboxedMemory || asleepRead
-
-  useEffect(() => {
-    loadRequest.current += 1
-    listRequest.current += 1
-    setFiles([])
-    setSelected(INDEX)
-    setContent('')
-    setEditor(null)
-    setHistoryOpen(false)
-    setError(null)
-    setErrorCode(null)
-    if (persistedProvider === 'none' || persistedProvider === 'external') {
-      setListLoading(false)
-      setLoading(false)
-      return
-    }
-    void loadList()
-    void loadFile(INDEX)
-    return () => {
-      loadRequest.current += 1
-      listRequest.current += 1
-    }
-  }, [loadList, loadFile, persistedProvider, persistedSettings.home, homeMigrationPending])
-
+  // Only a managed tree with a `daemon` home lives on the sandbox volume; a `control-plane` home is read through the
+  // daemon's connection and a native/external/off backend reads nothing from a pod, so none of those wake it.
+  const sandboxedMemory = sandboxed && persistedProvider === 'managed' && persistedSettings.home !== 'control-plane'
   // A home change (the forward copy clearing, or the forced return) swaps the tree underneath, so nothing cached survives it.
   // Under channel scope, load the list of channels that have their own memory folder
   // so the viewer can offer a channel selector. Always reset the selection first —
@@ -656,235 +488,6 @@ export function MemoryPanel({
       live = false
     }
   }, [agentId, persistedProvider, persistedSettings.scope, persistedSettings.home, homeMigrationPending])
-
-  const select = (name: string) => {
-    if (name === selected) {
-      if (error) void loadFile(name)
-      return
-    }
-    setSelected(name)
-    void loadFile(name)
-  }
-
-  const resolveMemoryLink = (href: string) => resolveMemoryMarkdownLink(href, select)
-
-  const startCreate = () => {
-    setHistoryOpen(false)
-    setEditor({
-      target: '',
-      directory: '',
-      name: '',
-      content: '',
-      mtime: null,
-      loading: false,
-      saving: false,
-      error: null
-    })
-  }
-
-  const startEdit = () => {
-    setHistoryOpen(false)
-    setEditor({
-      target: selected,
-      directory: '',
-      name: selected,
-      content,
-      mtime: loadedMtime,
-      loading: false,
-      saving: false,
-      error: null
-    })
-  }
-
-  const closeEditor = () => {
-    if (!editor?.saving) setEditor(null)
-  }
-
-  const backFromEditor = () => {
-    if (editor?.saving) return
-    setEditor(null)
-    setMobileListSignal((signal) => signal + 1)
-  }
-
-  const save = async () => {
-    if (!editor || editor.saving || editor.loading) return
-    const creating = editor.target === ''
-    const target = creating ? editor.name.trim() : editor.target
-    if (creating && (!TOPIC_RE.test(target) || target === INDEX)) {
-      setEditor({ ...editor, error: 'Use a flat .md file name, e.g. "deploys.md".' })
-      return
-    }
-    const savingEditor = { ...editor, saving: true, error: null }
-    setEditor(savingEditor)
-    try {
-      const res = await updateAgentMemory(
-        agentId,
-        savingEditor.content,
-        target === INDEX ? undefined : target,
-        creating ? undefined : savingEditor.mtime,
-        selectedChannel
-      )
-      setSelected(target)
-      setContent(savingEditor.content)
-      setLoadedMtime(res.mtime) // track the new mtime for the next edit
-      setFileExists(true)
-      setEditor(null)
-      await loadList() // a brand-new topic now shows in the list
-    } catch (e) {
-      setEditor((current) =>
-        current?.target === savingEditor.target
-          ? {
-              ...current,
-              saving: false,
-              error:
-                e instanceof ApiError && e.status === 409
-                  ? 'This file changed since you opened it (the agent may have updated it). Reload before saving.'
-                  : e instanceof Error
-                    ? e.message
-                    : String(e)
-            }
-          : current
-      )
-    }
-  }
-
-  const renderFileTree = (openPreview: () => void) => (
-    <>
-      {listLoading && (
-        <div className="flex justify-center py-4">
-          <Spinner size={18} />
-        </div>
-      )}
-      {!listLoading &&
-        listError &&
-        (wake.phase === 'starting' ? (
-          <SandboxStartingNotice compact />
-        ) : (
-          <SandboxAsleepNotice
-            wake={wake}
-            startable={startable}
-            compact
-            notice={
-              asleepRead ? (
-                <div className="px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
-                  {MEMORY_SANDBOX_ASLEEP_NOTICE}
-                </div>
-              ) : (
-                <div className="flex flex-col items-start gap-2 px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--red-600)">
-                  <span>{listError}</span>
-                  <button type="button" className="lnk text-[12px]" onClick={() => void loadList()}>
-                    Retry
-                  </button>
-                </div>
-              )
-            }
-          />
-        ))}
-      {!listLoading && !listError && files.length === 0 && (
-        <div className="px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-          No memory yet.
-        </div>
-      )}
-      {!listLoading &&
-        files.map((file) => (
-          <FileBrowserRow
-            key={file.name}
-            icon={file.name === INDEX ? 'book-bookmark' : 'file-text'}
-            name={file.name}
-            selected={selected === file.name}
-            onClick={() => {
-              select(file.name)
-              openPreview()
-            }}
-          />
-        ))}
-      {!listLoading && !files.some((file) => file.name === selected) && (
-        <FileBrowserRow
-          icon={selected === INDEX ? 'book-bookmark' : fileExists === false ? 'file-plus' : 'file-text'}
-          name={selected}
-          selected
-          onClick={() => {
-            select(selected)
-            openPreview()
-          }}
-        />
-      )}
-    </>
-  )
-
-  const selectedFile = files.find((file) => file.name === selected)
-  const previewMeta = [
-    formatFileSize(selectedFile?.size ?? null),
-    selectedFile?.mtime ? `edited ${formatFileMtime(selectedFile.mtime)}` : ''
-  ]
-    .filter(Boolean)
-    .join(' · ')
-
-  const renderPreview = (onBack?: () => void) => (
-    <>
-      <FileBrowserPreviewSummary
-        meta={previewMeta}
-        onBack={onBack}
-        actions={
-          persistedProvider === 'managed' && !loading && !error && fileExists === true ? (
-            <FileBrowserHistoryButton active={historyOpen} onClick={() => setHistoryOpen((open) => !open)} />
-          ) : undefined
-        }
-      />
-
-      {historyOpen && persistedProvider === 'managed' && fileExists === true ? (
-        <ManagedMemoryHistory
-          key={`${agentId}:${selected}:${selectedChannel ?? ''}`}
-          agentId={agentId}
-          path={selected}
-          channelKey={selectedChannel}
-        />
-      ) : loading ? (
-        <div className="flex items-center justify-center py-10">
-          <Spinner />
-        </div>
-      ) : error ? (
-        wake.phase === 'starting' ? (
-          <SandboxStartingNotice />
-        ) : (
-          <SandboxAsleepNotice
-            wake={wake}
-            startable={startable}
-            notice={
-              asleepRead ? (
-                <div className="px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-                  {MEMORY_SANDBOX_ASLEEP_NOTICE}
-                </div>
-              ) : (
-                <div className="flex flex-col items-start gap-3 px-4 py-6 font-sans text-[13px] font-normal leading-normal text-(--red-600)">
-                  <span>{error}</span>
-                  <Button variant="secondary" size="xs" onClick={() => void loadFile(selected)}>
-                    Retry
-                  </Button>
-                </div>
-              )
-            }
-          />
-        )
-      ) : content.trim() ? (
-        <div className="max-h-[520px] overflow-auto px-[18px] py-4">
-          <MarkdownView content={content} resolveLink={resolveMemoryLink} />
-        </div>
-      ) : (
-        <div className="px-4 py-6 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-          {fileExists === false
-            ? canEdit
-              ? 'This file does not exist. You can create it here.'
-              : 'This file does not exist.'
-            : `${
-                selected === INDEX
-                  ? 'No memory index yet. The agent maintains its memory itself as it works'
-                  : 'This file is empty'
-              }${canEdit ? ', or you can edit it here.' : '.'}`}
-        </div>
-      )}
-    </>
-  )
 
   return (
     <div className="p-4 desktop:p-0">
@@ -1203,17 +806,9 @@ export function MemoryPanel({
           key={`${agentId}:${persistedSettings.external.connectionId}`}
           agentId={agentId}
           canEdit={canEdit}
-          legacyLabel="Records"
-        >
-          {(viewSwitch) => (
-            <RecordMemoryPanel
-              key={`${agentId}:${persistedSettings.external.connectionId}`}
-              agentId={agentId}
-              canEdit={canEdit}
-              headerStart={viewSwitch}
-            />
-          )}
-        </UnifiedMemoryPanel>
+        />
+      ) : persistedProvider === 'native' ? (
+        <NativeMemoryFiles key={agentId} agentId={agentId} canEdit={canEdit} />
       ) : persistedProvider === 'none' ? (
         <div className="rounded-(--radius-lg) border border-(--border-subtle) p-5 text-[13px] text-(--text-secondary)">
           Persistent memory is disabled for this agent. Existing memory remains stored but is not loaded.
@@ -1242,87 +837,16 @@ export function MemoryPanel({
             </div>
           ) : null}
           <UnifiedMemoryPanel
-            key={`${agentId}:${persistedSettings.home}:${selectedChannel}`}
+            key={`${agentId}:${persistedSettings.home}:${homeMigrationPending}:${selectedChannel}`}
             agentId={agentId}
             channelKey={selectedChannel}
             canEdit={canEdit}
-            legacyLabel="Files"
             sandboxed={sandboxedMemory}
             overview={{
               read: () => fetchAgentMemoryFull(agentId, undefined, selectedChannel),
               readTopic: (file) => fetchAgentMemoryFull(agentId, file, selectedChannel)
             }}
-            onOpenLegacy={async () => {
-              await Promise.all([loadList(), loadFile(selected)])
-            }}
-          >
-            {(viewSwitch) => (
-              <FileBrowserShell
-                title={
-                  <FileBrowserBreadcrumb
-                    root="Memory"
-                    path={editor?.target ?? selected}
-                    creating={editor?.target === ''}
-                    draftName={editor?.name ?? ''}
-                    onDraftNameChange={(name) =>
-                      setEditor((current) => (current?.target === '' ? { ...current, name, error: null } : current))
-                    }
-                    onBack={isMobile && editor ? backFromEditor : undefined}
-                    disabled={editor?.saving}
-                    nested={false}
-                    ariaLabel="Memory file path"
-                    inputAriaLabel="New memory file name"
-                  />
-                }
-                headerEnd={
-                  <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-                    {viewSwitch}
-                    {editor ? (
-                      <FileBrowserEditorActions
-                        saving={editor.saving}
-                        onCancel={closeEditor}
-                        onSave={() => void save()}
-                        disabled={editor.loading || (!editor.target && !editor.name.trim())}
-                      />
-                    ) : canEdit ? (
-                      <>
-                        <Button variant="secondary" size="xs" className="flex-none" onClick={startCreate}>
-                          <Icon name="file-plus" size={13} />
-                          Add file
-                        </Button>
-                        {!loading && !error && fileExists !== null ? (
-                          <Button variant="secondary" size="xs" className="flex-none" onClick={startEdit}>
-                            <Icon name="pencil" size={13} />
-                            Edit
-                          </Button>
-                        ) : null}
-                      </>
-                    ) : null}
-                  </div>
-                }
-              >
-                <FileBrowserLayout
-                  resetKey={`${agentId}:${mobileListSignal}`}
-                  previewOpen={editor !== null}
-                  tree={renderFileTree}
-                  preview={
-                    editor
-                      ? () => (
-                          <FileBrowserEditor
-                            draft={editor}
-                            onContentChange={(content) =>
-                              setEditor((current) => (current ? { ...current, content, error: null } : current))
-                            }
-                            onCancel={closeEditor}
-                            onSubmit={() => void save()}
-                          />
-                        )
-                      : renderPreview
-                  }
-                />
-              </FileBrowserShell>
-            )}
-          </UnifiedMemoryPanel>
+          />
           {/* Dreaming is managed-only and is secondary to the live memory
               content, so it sits below the browser. Only render it when the
               persisted policy is on; otherwise its trigger would be noise. */}

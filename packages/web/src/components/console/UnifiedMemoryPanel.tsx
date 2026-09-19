@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import type {
   MemoryEntryCapabilities,
@@ -46,16 +46,10 @@ const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), 
   loading: () => <p className="text-(--text-tertiary)">Rendering…</p>
 })
 
-type MemoryView = 'entries' | 'legacy'
 interface Props {
   agentId: string
   channelKey?: string
   canEdit: boolean
-  // The retained raw view (files or records); it receives the view switch so the switch sits in its own header.
-  children: (viewSwitch: ReactNode) => ReactNode
-  // What the retained view is called in the switch: "Files" for a managed directory, "Records" for a plugin.
-  legacyLabel?: string
-  onOpenLegacy?: () => Promise<void>
   // The managed tree sits on a pool sandbox volume: a read refused as asleep presses the wake, like the file browser.
   sandboxed?: boolean
   // The generated overview (MEMORY.md), read through the compatibility route and shown read-only as a pinned row.
@@ -94,41 +88,6 @@ function linkedRef(document: MemoryEntryContent, name: string): string | undefin
   const label = name.replace(/\.md$/, '')
   return [...(document.links ?? []), ...(document.backlinks ?? [])].find((edge) => edge.ref && edge.label === label)
     ?.ref
-}
-function ViewSwitch({
-  view,
-  legacyLabel,
-  disabled,
-  onChange
-}: {
-  view: MemoryView
-  legacyLabel: string
-  disabled?: boolean
-  onChange: (view: MemoryView) => void
-}) {
-  const cls = (on: boolean) => (on ? 'pill on px-[10px] py-[3px] text-[12px]' : 'pill px-[10px] py-[3px] text-[12px]')
-  return (
-    <div className="pillbar flex-none" role="group" aria-label="Memory view">
-      <button
-        type="button"
-        className={cls(view === 'entries')}
-        aria-pressed={view === 'entries'}
-        disabled={disabled}
-        onClick={() => onChange('entries')}
-      >
-        Entries
-      </button>
-      <button
-        type="button"
-        className={cls(view === 'legacy')}
-        aria-pressed={view === 'legacy'}
-        disabled={disabled}
-        onClick={() => onChange('legacy')}
-      >
-        {legacyLabel}
-      </button>
-    </div>
-  )
 }
 // A topic keeps its mono name like a file; a nameless record shows its opening text instead.
 function EntryRow({
@@ -188,20 +147,12 @@ function EntryRow({
     </button>
   )
 }
-function Entries({
-  agentId,
-  channelKey,
-  canEdit,
-  children,
-  legacyLabel = 'Files',
-  onOpenLegacy,
-  sandboxed = false,
-  overview
-}: Props) {
+function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: Props) {
   const generation = useRef(0)
   const detailRequest = useRef(0)
   const [capabilities, setCapabilities] = useState<MemoryEntryCapabilities | null>(null)
-  const [legacy, setLegacy] = useState(false)
+  // The peer serves no entry view (an older daemon, or a provider without one): the card says so instead of browsing.
+  const [unsupported, setUnsupported] = useState(false)
   const [entries, setEntries] = useState<MemoryEntrySummary[]>([])
   const [cursor, setCursor] = useState<string>()
   const [query, setQuery] = useState('')
@@ -241,6 +192,7 @@ function Entries({
       setReading(false)
       setBusy(true)
       setPaging(false)
+      setUnsupported(false)
       setError(undefined)
       setErrorCode(undefined)
       setHits(null)
@@ -249,7 +201,7 @@ function Entries({
         const caps = await describeAgentMemoryEntries(agentId, channelKey)
         if (id !== generation.current) return
         if (!caps.operations.includes('list') || !caps.operations.includes('get')) {
-          setLegacy(true)
+          setUnsupported(true)
           return
         }
         setCapabilities(caps)
@@ -266,7 +218,7 @@ function Entries({
       } catch (err) {
         if (id !== generation.current) return
         if (err instanceof ApiError && (err.status === 404 || err.status === 501 || err.code === 'UNSUPPORTED'))
-          setLegacy(true)
+          setUnsupported(true)
         else {
           setErrorCode(err instanceof ApiError ? err.code : undefined)
           setError(errorMessage(err))
@@ -397,26 +349,6 @@ function Entries({
       setSaving(false)
     }
   }
-  async function openLegacy() {
-    const id = generation.current
-    setBusy(true)
-    try {
-      await onOpenLegacy?.()
-      if (id === generation.current) setLegacy(true)
-    } catch (err) {
-      if (id === generation.current) setError(errorMessage(err))
-    } finally {
-      if (id === generation.current) setBusy(false)
-    }
-  }
-  function switchView(view: MemoryView) {
-    if (view === (legacy ? 'legacy' : 'entries')) return
-    if (view === 'legacy') void openLegacy()
-    else {
-      setLegacy(false)
-      void reload()
-    }
-  }
   function startCreate() {
     setMode('create')
     setDocument(null)
@@ -478,17 +410,6 @@ function Entries({
   const asleep = readState === 'asleep'
   const asleepView = asleep || (wake.phase === 'starting' && !!error)
   const startable = sandboxed || asleep
-  // An old peer has no entry view at all, so there is nothing to switch back to.
-  if (legacy)
-    return (
-      <>
-        {children(
-          capabilities ? (
-            <ViewSwitch view="legacy" legacyLabel={legacyLabel} disabled={busy} onChange={switchView} />
-          ) : null
-        )}
-      </>
-    )
   const rowsLocked = saving || (!!mode && !blocked)
   const selectedEntry = document?.entry
   const previewMeta =
@@ -864,14 +785,6 @@ function Entries({
       title={<span aria-label="Memory entries">Memory</span>}
       headerEnd={
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-          {capabilities ? (
-            <ViewSwitch
-              view="entries"
-              legacyLabel={legacyLabel}
-              disabled={busy || saving || !!mode}
-              onChange={switchView}
-            />
-          ) : null}
           <Button
             variant="secondary"
             size="xs"
@@ -954,17 +867,30 @@ function Entries({
           {error}
         </div>
       ) : null}
-      <FileBrowserLayout
-        resetKey={`${agentId}:${channelKey ?? ''}`}
-        previewOpen={!!mode}
-        tree={renderTree}
-        preview={reading || mode || document || overviewOpen ? renderPreview : null}
-        emptyPreview={
-          <div className="flex flex-1 items-center justify-center px-4 py-10 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            Select a memory to read it.
-          </div>
-        }
-      />
+      {unsupported ? (
+        <div
+          role="status"
+          className="flex flex-col items-start gap-1 px-[18px] py-6 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)"
+        >
+          <span className="font-semibold text-(--text-primary)">Memory cannot be browsed from here yet.</span>
+          <span>
+            This agent’s daemon does not serve the memory entry interface. Upgrade it, then refresh; the agent’s memory
+            itself is unaffected.
+          </span>
+        </div>
+      ) : (
+        <FileBrowserLayout
+          resetKey={`${agentId}:${channelKey ?? ''}`}
+          previewOpen={!!mode}
+          tree={renderTree}
+          preview={reading || mode || document || overviewOpen ? renderPreview : null}
+          emptyPreview={
+            <div className="flex flex-1 items-center justify-center px-4 py-10 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+              Select a memory to read it.
+            </div>
+          }
+        />
+      )}
     </FileBrowserShell>
   )
 }

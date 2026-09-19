@@ -83,19 +83,8 @@ afterEach(async () => {
   host.remove()
   vi.unstubAllGlobals()
 })
-async function render(channelKey = 'one', canEdit = true, onOpenLegacy?: () => Promise<void>) {
-  await act(async () =>
-    root.render(
-      <UnifiedMemoryPanel agentId="agent" channelKey={channelKey} canEdit={canEdit} {...{ onOpenLegacy }}>
-        {(viewSwitch) => (
-          <div>
-            {viewSwitch}
-            <span>Legacy memory tools</span>
-          </div>
-        )}
-      </UnifiedMemoryPanel>
-    )
-  )
+async function render(channelKey = 'one', canEdit = true) {
+  await act(async () => root.render(<UnifiedMemoryPanel agentId="agent" channelKey={channelKey} canEdit={canEdit} />))
 }
 async function click(text: string) {
   const button = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes(text))
@@ -169,9 +158,14 @@ it('falls back for an old peer and pages lists explicitly', async () => {
   await render()
   await click('Load more')
   expect(api.listAgentMemoryEntries).toHaveBeenLastCalledWith('agent', 'one', 'next')
+  // An older daemon has no entry view; the card says so instead of browsing, and Refresh stays for after the upgrade.
   vi.mocked(api.describeAgentMemoryEntries).mockRejectedValueOnce(new api.ApiError('old', 501, 'UNSUPPORTED'))
   await render('two')
-  expect(host.textContent).toContain('Legacy memory tools')
+  expect(host.textContent).toContain('does not serve the memory entry interface')
+  expect(host.textContent).not.toContain('Select a memory')
+  vi.mocked(api.describeAgentMemoryEntries).mockResolvedValue({ ...caps, operations: ['search'] })
+  await click('Refresh')
+  expect(host.textContent).toContain('does not serve the memory entry interface')
 })
 it('requires deletion confirmation and submits the selected revision', async () => {
   vi.mocked(api.deleteAgentMemoryEntry).mockResolvedValue({ operationId: 'op', state: 'completed' })
@@ -216,16 +210,6 @@ it('recovers an unconfirmed first create only after an explicit complete empty r
   await click('Refresh')
   expect(save().disabled).toBe(false)
   expect(api.createAgentMemoryEntry).toHaveBeenCalledTimes(1)
-})
-it('refreshes retained tools when switching from a successful entry create', async () => {
-  const refresh = vi.fn(async () => {})
-  vi.mocked(api.createAgentMemoryEntry).mockResolvedValue({ state: 'completed', operationId: 'op' })
-  await render('one', true, refresh)
-  await click('New memory')
-  await click('Save memory')
-  await click('Files')
-  expect(refresh).toHaveBeenCalledTimes(1)
-  expect(host.textContent).toContain('Legacy memory tools')
 })
 it('searches only when advertised, shows what a hit can prove, and opens a hit like an entry', async () => {
   await render()
@@ -320,17 +304,8 @@ it('offers history only when advertised and pages the entry change log by ref', 
   expect(host.textContent).not.toContain('Updated')
 })
 
-it('ignores a click on the already-active view and recovers paging after a refresh', async () => {
-  const refresh = vi.fn(async () => {})
-  await render('one', true, refresh)
-  await click('Entries')
-  expect(refresh).not.toHaveBeenCalled()
-  expect(api.describeAgentMemoryEntries).toHaveBeenCalledTimes(1)
-  await click('Files')
-  expect(refresh).toHaveBeenCalledTimes(1)
-  await click('Files')
-  expect(refresh).toHaveBeenCalledTimes(1)
-  await click('Entries')
+it('recovers paging after a refresh outdates a pending page request', async () => {
+  await render()
   let resolvePage!: (value: Awaited<ReturnType<typeof api.listAgentMemoryEntries>>) => void
   vi.mocked(api.listAgentMemoryEntries)
     .mockResolvedValueOnce({ entries: [entry], consistency: 'live', order: 'topic', nextCursor: 'next' })
@@ -364,7 +339,6 @@ it('wakes a sleeping sandbox instead of reporting a generic failure', async () =
   expect(api.wakeAgent).toHaveBeenCalledWith('agent')
   expect(host.textContent).toContain('Starting')
   expect(host.textContent).not.toContain('temporarily unavailable')
-  expect(host.textContent).not.toContain('Legacy memory tools')
 })
 
 it('pins the overview when given, labels a hand-written one, and follows its links by filename, read-only', async () => {
@@ -383,13 +357,7 @@ it('pins the overview when given, labels a hand-written one, and follows its lin
         resolveTopic = r
       })
   )
-  await act(async () =>
-    root.render(
-      <UnifiedMemoryPanel agentId="agent" canEdit overview={{ read, readTopic }}>
-        {() => null}
-      </UnifiedMemoryPanel>
-    )
-  )
+  await act(async () => root.render(<UnifiedMemoryPanel agentId="agent" canEdit overview={{ read, readTopic }} />))
   expect(host.textContent).toContain('MEMORY.md')
   await click('MEMORY.md')
   expect(read).toHaveBeenCalledTimes(1)

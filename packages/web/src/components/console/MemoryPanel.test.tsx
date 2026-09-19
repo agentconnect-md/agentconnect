@@ -1,24 +1,39 @@
 // @vitest-environment happy-dom
 
-import { act, type ReactNode } from 'react'
+import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   updateAgent: vi.fn(),
+  // How many entry browsers have mounted: a home or migration change must remount it so it reads again.
+  entryMounts: 0,
   isMobile: false,
   // What the wake answers; the panel presses it once when a memory read refuses as a sleeping sandbox.
   wake: 'starting' as 'running' | 'starting' | 'unsupported'
 }))
 
-vi.mock('@/components/console/UnifiedMemoryPanel', () => ({
-  UnifiedMemoryPanel: ({
-    children,
-    onOpenLegacy
-  }: {
-    children: (viewSwitch: ReactNode) => ReactNode
-    onOpenLegacy?: () => Promise<void>
-  }) => children(<button onClick={() => void onOpenLegacy?.()}>Open retained memory tools</button>)
+vi.mock('@/components/console/UnifiedMemoryPanel', async () => {
+  const { useEffect } = await import('react')
+  return {
+    UnifiedMemoryPanel: (props: { channelKey?: string; sandboxed?: boolean; overview?: unknown }) => {
+      useEffect(() => {
+        mocks.entryMounts += 1
+      }, [])
+      return (
+        <div
+          data-testid="entries-memory-view"
+          data-sandboxed={String(props.sandboxed ?? '')}
+          data-channel={props.channelKey ?? ''}
+          data-overview={props.overview ? 'yes' : 'no'}
+        />
+      )
+    }
+  }
+})
+
+vi.mock('@/components/console/NativeMemoryFiles', () => ({
+  NativeMemoryFiles: () => <div data-testid="native-memory-view" />
 }))
 
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
@@ -59,32 +74,10 @@ vi.mock('@/components/console/ExternalMemoryBindingFields', () => ({
   ExternalMemoryBindingFields: () => null
 }))
 
-vi.mock('@/components/console/FileBrowser', async () => {
-  const actual = await vi.importActual<typeof import('@/components/console/FileBrowser')>(
-    '@/components/console/FileBrowser'
-  )
-  return {
-    ...actual,
-    FileBrowserShell: (props: { title: ReactNode; headerEnd?: ReactNode; children: ReactNode }) => (
-      <div data-testid="file-memory-view">
-        <actual.FileBrowserShell {...props} />
-      </div>
-    )
-  }
-})
-
 vi.mock('@/lib/use-is-mobile', () => ({ useIsMobile: () => mocks.isMobile }))
-
-vi.mock('@/components/console/RecordMemoryPanel', () => ({
-  RecordMemoryPanel: () => <div data-testid="record-memory-view" />
-}))
 
 vi.mock('@/components/console/DreamPanel', () => ({
   DreamPanel: () => <div data-testid="dream-memory-view" />
-}))
-
-vi.mock('@/components/console/ManagedMemoryHistory', () => ({
-  ManagedMemoryHistory: () => <div data-testid="memory-file-history" />
 }))
 
 import {
@@ -106,6 +99,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 beforeEach(() => {
   mocks.updateAgent.mockReset().mockResolvedValue(undefined)
+  mocks.entryMounts = 0
   mocks.isMobile = false
   mocks.wake = 'starting'
   vi.mocked(wakeAgent)
@@ -164,115 +158,6 @@ const changeValue = async (element: HTMLInputElement | HTMLTextAreaElement, valu
     element.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
-
-describe('MemoryPanel file editor', () => {
-  it('places History in the shared file summary row', async () => {
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
-
-    await act(async () => {
-      root?.render(
-        <MemoryPanel
-          agentId="22222222-2222-4222-8222-222222222222"
-          canEdit
-          memoryProvider="managed"
-          autoDistill={false}
-        />
-      )
-      await Promise.resolve()
-    })
-
-    const history = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.trim() === 'History'
-    )
-    const summary = history?.closest('.h-\\[37px\\]')
-    expect(summary?.textContent).toContain('9 B')
-    expect(summary?.querySelector('button')).toBe(history)
-    expect(container.querySelector('[data-testid="memory-file-history"]')).toBeNull()
-
-    await act(async () => history?.click())
-    expect(container.querySelector('[data-testid="memory-file-history"]')).not.toBeNull()
-  })
-
-  it('uses the shared inline add flow instead of a browser prompt', async () => {
-    const prompt = vi.fn(() => 'legacy.md')
-    vi.stubGlobal('prompt', prompt)
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
-
-    await act(async () => {
-      root?.render(
-        <MemoryPanel
-          agentId="22222222-2222-4222-8222-222222222222"
-          canEdit
-          memoryProvider="managed"
-          autoDistill={false}
-        />
-      )
-      await Promise.resolve()
-    })
-
-    await clickButton(container, 'Add file')
-    expect(prompt).not.toHaveBeenCalled()
-
-    const name = container.querySelector<HTMLInputElement>('input[aria-label="New memory file name"]')
-    const content = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="New file content"]')
-    expect(name?.closest('.cardhead')).not.toBeNull()
-    expect(content?.closest('.card')).not.toBeNull()
-
-    await changeValue(name!, 'deploys.md')
-    await changeValue(content!, '# Deploys')
-    await clickButton(container, 'Save changes')
-
-    expect(updateAgentMemory).toHaveBeenCalledWith(
-      '22222222-2222-4222-8222-222222222222',
-      '# Deploys',
-      'deploys.md',
-      undefined,
-      undefined // channelKey — agent scope
-    )
-  })
-
-  it('returns mobile editing to the file list only from the breadcrumb back action', async () => {
-    mocks.isMobile = true
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
-
-    await act(async () => {
-      root?.render(
-        <MemoryPanel
-          agentId="22222222-2222-4222-8222-222222222222"
-          canEdit
-          memoryProvider="managed"
-          autoDistill={false}
-        />
-      )
-      await Promise.resolve()
-    })
-
-    const memory = container.querySelector<HTMLElement>('[data-testid="file-memory-view"]')!
-    const tree = memory.querySelector<HTMLElement>('[data-file-browser-pane="tree"]')!
-    const preview = memory.querySelector<HTMLElement>('[data-file-browser-pane="preview"]')!
-    await clickButton(tree, 'MEMORY.md')
-    expect(tree.classList.contains('hidden')).toBe(true)
-    expect(preview.classList.contains('flex')).toBe(true)
-
-    await clickButton(memory, 'Edit')
-    await clickButton(memory, 'Cancel')
-    expect(tree.classList.contains('hidden')).toBe(true)
-    expect(preview.classList.contains('flex')).toBe(true)
-
-    await clickButton(memory, 'Edit')
-    const back = memory.querySelector<HTMLButtonElement>('button[aria-label="Back to files"]')
-    expect(back).not.toBeNull()
-    await act(async () => back?.click())
-    expect(tree.classList.contains('block')).toBe(true)
-    expect(preview.classList.contains('hidden')).toBe(true)
-  })
-})
 
 describe('MemoryPanel settings draft', () => {
   it('defaults managed memory to daily auto-adopting dreaming and lets users opt out', async () => {
@@ -394,7 +279,7 @@ describe('MemoryPanel settings draft', () => {
     expect(container.textContent).toContain('Auto-accept on')
     expect(container.textContent).toContain('Skill mining on')
     expect(container.textContent).toContain('Agent scope')
-    expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="entries-memory-view"]')).not.toBeNull()
 
     await openSettings(container)
     expect(container.querySelector('[data-memory-provider="managed"]')).not.toBeNull()
@@ -480,15 +365,13 @@ describe('MemoryPanel settings draft', () => {
     expect(selector).not.toBeNull()
     expect([...selector!.options].map((o) => o.textContent)).toEqual(['Agent (shared)', 'C1', 'C2'])
 
-    vi.mocked(listAgentMemory).mockClear()
-    vi.mocked(fetchAgentMemoryFull).mockClear()
     await act(async () => {
       selector!.value = 'slack-C2-def'
       selector!.dispatchEvent(new Event('change', { bubbles: true }))
     })
-    // Reads for the newly selected channel carry its channelKey.
-    expect(listAgentMemory).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', 'slack-C2-def')
-    expect(fetchAgentMemoryFull).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', undefined, 'slack-C2-def')
+    // The entry browser is remounted on the selected channel's key.
+    const entries = container.querySelector('[data-testid="entries-memory-view"]')
+    expect(entries?.getAttribute('data-channel')).toBe('slack-C2-def')
   })
 
   it('hides the persisted memory session while a different backend is selected but unsaved', async () => {
@@ -507,13 +390,13 @@ describe('MemoryPanel settings draft', () => {
       )
     })
 
-    expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="entries-memory-view"]')).not.toBeNull()
     await openSettings(container)
     await act(async () => {
       container?.querySelector<HTMLButtonElement>('[data-memory-provider="external"]')?.click()
     })
 
-    expect(container.querySelector('[data-testid="file-memory-view"]')).toBeNull()
+    expect(container.querySelector('[data-testid="entries-memory-view"]')).toBeNull()
     expect(container.querySelector('[data-testid="record-memory-view"]')).toBeNull()
     expect(container.textContent).toContain('Save memory settings to switch to External and view its memory.')
 
@@ -522,7 +405,7 @@ describe('MemoryPanel settings draft', () => {
     )
     await act(async () => cancelButton?.click())
 
-    expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="entries-memory-view"]')).not.toBeNull()
     // Cancelling also collapses the form back to the summary bar.
     expect(container.querySelector('[data-memory-provider="external"]')).toBeNull()
   })
@@ -626,7 +509,7 @@ describe('MemoryPanel settings draft', () => {
       )
     })
 
-    const memory = container.querySelector('[data-testid="file-memory-view"]')
+    const memory = container.querySelector('[data-testid="entries-memory-view"]')
     const dreaming = container.querySelector('[data-testid="dream-memory-view"]')
     expect(memory).not.toBeNull()
     expect(dreaming).not.toBeNull()
@@ -727,121 +610,51 @@ describe('MemoryPanel settings draft', () => {
 
 // A cluster agent's managed memory lives on its sandbox volume (#1078), so the memory reads refuse with the same
 // asleep code the workspace reads do — and the panel answers it the way the Files surfaces do: one wake, then a poll.
-describe('MemoryPanel sandbox wake', () => {
+describe('MemoryPanel memory views', () => {
   const AGENT = '22222222-2222-4222-8222-222222222222'
-  const asleep = () => new ApiError('sandbox not running', 503, 'WORKSPACE_SANDBOX_UNAVAILABLE')
 
-  const refuse = (error: () => Error) => {
-    vi.mocked(listAgentMemory).mockImplementation(() => Promise.reject(error()))
-    vi.mocked(fetchAgentMemoryFull).mockImplementation(() => Promise.reject(error()))
-  }
-
-  const mount = async (
-    props: { sandboxed?: boolean; memoryProvider?: string; memoryHome?: 'daemon' | 'control-plane' } = {}
-  ) => {
+  const mount = async (props: Partial<Parameters<typeof MemoryPanel>[0]> = {}) => {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
     await act(async () => {
-      root?.render(
-        <MemoryPanel
-          agentId={AGENT}
-          canEdit
-          memoryProvider={props.memoryProvider ?? 'managed'}
-          memoryHome={props.memoryHome}
-          autoDistill={false}
-          sandboxed={props.sandboxed}
-        />
-      )
+      root?.render(<MemoryPanel agentId={AGENT} canEdit memoryProvider="managed" autoDistill={false} {...props} />)
       await Promise.resolve()
     })
-    // The wake's own round trip, then the render it settles.
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+    return container
   }
+  const entries = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-testid="entries-memory-view"]')
 
-  const text = () => container?.textContent ?? ''
-  const startButton = () =>
-    Array.from(container?.querySelectorAll<HTMLButtonElement>('button') ?? []).find(
-      (button) => button.textContent?.trim() === 'Start'
-    )
-
-  it('presses the wake once and says so calmly while the read is polled — never an error', async () => {
-    refuse(asleep)
-    mocks.wake = 'starting'
-    await mount()
-
-    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(wakeAgent)).toHaveBeenCalledWith(AGENT)
-    expect(text()).toContain('Starting the agent’s sandbox')
-    expect(text()).not.toContain('may be offline')
-    expect(text()).not.toContain('its pod is not running')
+  it('lets the entry browser wake the sandbox only for a managed tree that lives on it', async () => {
+    let host = await mount({ sandboxed: true })
+    expect(entries(host)?.getAttribute('data-sandboxed')).toBe('true')
+    expect(entries(host)?.getAttribute('data-overview')).toBe('yes')
+    await act(async () => root?.unmount())
+    container?.remove()
+    // A `control-plane` home is read through the daemon's connection; the pod has nothing to do with it.
+    host = await mount({ sandboxed: true, memoryHome: 'control-plane' })
+    expect(entries(host)?.getAttribute('data-sandboxed')).toBe('false')
   })
 
-  it('leaves a daemon with nothing to wake on the terminal copy, without a Start button', async () => {
-    refuse(asleep)
-    mocks.wake = 'unsupported'
-    await mount()
-
-    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
-    expect(text()).toContain('Memory is not available right now')
-    expect(text()).toContain('its memory comes back with it')
-    expect(text()).not.toContain('may be offline')
-    expect(startButton()).toBeUndefined()
-  })
-
-  it('offers Start on the terminal copy, and pressing it wakes again', async () => {
-    // A refused press ends the attempt at once, which is the terminal state without waiting out the poll bound.
-    refuse(asleep)
-    vi.mocked(wakeAgent).mockImplementation(() => Promise.reject(new ApiError('forbidden', 403)))
-    await mount()
-
-    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
-    expect(text()).toContain('Memory is not available right now')
-    const start = startButton()
-    expect(start).toBeTruthy()
-
-    await act(async () => {
-      start?.click()
-      await Promise.resolve()
+  it('shows external memory through the entry browser alone', async () => {
+    const host = await mount({
+      sandboxed: true,
+      memoryProvider: 'external',
+      memoryConnectionId: CONNECTION_ID,
+      memoryRecall: recallPolicy(),
+      memoryCaptureMode: 'manual'
     })
-    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(2)
+    expect(entries(host)).not.toBeNull()
+    expect(entries(host)?.getAttribute('data-sandboxed')).toBe('')
+    expect(entries(host)?.getAttribute('data-overview')).toBe('no')
+    expect(host.querySelector('[data-testid="native-memory-view"]')).toBeNull()
   })
 
-  it('keeps the offline story for a 503 without the code, and presses nothing', async () => {
-    refuse(() => new ApiError('daemon offline', 503))
-    await mount()
-
-    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
-    expect(text()).toContain('the owning daemon may be offline')
-    expect(text()).not.toContain('its pod is not running')
-    expect(startButton()).toBeUndefined()
-  })
-
-  it('wakes a sandboxed agent on open, before any read has refused', async () => {
-    await mount({ sandboxed: true })
-
-    expect(vi.mocked(wakeAgent)).toHaveBeenCalledTimes(1)
-    // The reads answered, so nothing is left on screen to explain.
-    expect(text()).not.toContain('Starting the agent’s sandbox')
-    expect(text()).not.toContain('Memory is not available right now')
-  })
-
-  it('never presses for a sandboxed agent whose memory home is the Control Plane', async () => {
-    // The tree is read through the daemon's Control Plane connection; the pod has nothing to do with it.
-    await mount({ sandboxed: true, memoryHome: 'control-plane' })
-
-    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
-    expect(startButton()).toBeUndefined()
-  })
-
-  it('never presses for a backend that does not live on the sandbox volume', async () => {
-    // Runtime-native memory is the runtime's own store, so a sandboxed agent's Memory tab starts no pod for it.
-    await mount({ sandboxed: true, memoryProvider: 'native' })
-
-    expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
+  it('keeps the runtime file browser for native memory, which has no entry view', async () => {
+    const host = await mount({ memoryProvider: 'native', memoryDreaming: { enabled: true } })
+    expect(host.querySelector('[data-testid="native-memory-view"]')).not.toBeNull()
+    expect(entries(host)).toBeNull()
+    expect(host.querySelector('[data-testid="dream-memory-view"]')).toBeNull()
   })
 })
 
@@ -966,8 +779,7 @@ describe('MemoryPanel memory home', () => {
 
   it('drops the cached browser and reads again once the home has changed underneath it', async () => {
     const host = await mount({ memoryHome: 'control-plane' })
-    const lists = vi.mocked(listAgentMemory).mock.calls.length
-    const reads = vi.mocked(fetchAgentMemoryFull).mock.calls.length
+    const mounts = mocks.entryMounts
     await openSettings(host)
     await clickButton(host, 'Move memory back to the daemon')
     await act(async () => dialogButton(host, 'Move')?.click())
@@ -977,14 +789,12 @@ describe('MemoryPanel memory home', () => {
         <MemoryPanel agentId={AGENT_ID} canEdit memoryProvider="managed" autoDistill={false} memoryHome="daemon" />
       )
     })
-    expect(vi.mocked(listAgentMemory).mock.calls.length).toBeGreaterThan(lists)
-    expect(vi.mocked(fetchAgentMemoryFull).mock.calls.length).toBeGreaterThan(reads)
+    expect(mocks.entryMounts).toBeGreaterThan(mounts)
   })
 
   it('retries the reads when the pending copy clears', async () => {
     const host = await mount({ memoryHome: 'control-plane', memoryHomeMigration: 'pending' })
-    const lists = vi.mocked(listAgentMemory).mock.calls.length
-    const reads = vi.mocked(fetchAgentMemoryFull).mock.calls.length
+    const mounts = mocks.entryMounts
     await act(async () => {
       root?.render(
         <MemoryPanel
@@ -997,8 +807,7 @@ describe('MemoryPanel memory home', () => {
       )
     })
     expect(host.querySelector('[data-memory-home-status]')).toBeNull()
-    expect(vi.mocked(listAgentMemory).mock.calls.length).toBeGreaterThan(lists)
-    expect(vi.mocked(fetchAgentMemoryFull).mock.calls.length).toBeGreaterThan(reads)
+    expect(mocks.entryMounts).toBeGreaterThan(mounts)
   })
 
   it('lists the channel folders again once a copy that refused the read has cleared', async () => {
@@ -1024,28 +833,4 @@ describe('MemoryPanel memory home', () => {
     expect(vi.mocked(fetchAgentMemoryChannels).mock.calls.length).toBeGreaterThan(before)
     expect(container?.textContent).toContain('general')
   })
-})
-
-it('refreshes retained file listing and preview before opening its tools', async () => {
-  container = document.createElement('div')
-  document.body.append(container)
-  root = createRoot(container)
-  await act(async () =>
-    root?.render(
-      <MemoryPanel
-        agentId="22222222-2222-4222-8222-222222222222"
-        canEdit
-        memoryProvider="managed"
-        autoDistill={false}
-      />
-    )
-  )
-  const before = vi.mocked(fetchAgentMemoryFull).mock.calls.length
-  vi.mocked(listAgentMemory).mockResolvedValue({
-    exists: true,
-    files: [{ name: 'new-entry.md', size: 12, mtime: '2026-09-10T00:00:00Z' }]
-  })
-  await clickButton(container, 'Open retained memory tools')
-  expect(container.textContent).toContain('new-entry.md')
-  expect(vi.mocked(fetchAgentMemoryFull).mock.calls.length).toBeGreaterThan(before)
 })

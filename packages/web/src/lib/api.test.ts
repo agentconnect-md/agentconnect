@@ -7,8 +7,6 @@ import {
   disconnectLinearWorkspace,
   leaveIntegrationConversation,
   reconnectLinearWorkspace,
-  createMemoryRecord,
-  deleteMemoryRecord,
   deleteOrgIcon,
   fetchAllGithubRepos,
   fetchConversations,
@@ -16,14 +14,10 @@ import {
   fetchSessionFacets,
   fetchGithubRepoRoster,
   fetchMySessionIdentity,
-  fetchMemoryAdminSurface,
   fmtCountCompact,
   invalidateGithubRepoRosterCache,
   createSkillSource,
   putSessionVisibility,
-  listMemoryRecordHistory,
-  listMemoryFileHistory,
-  listMemoryRecords,
   listOrganizationKnowledge,
   listOrganizationKnowledgeRevisions,
   listManagedSkills,
@@ -35,10 +29,8 @@ import {
   setOrganizationKnowledgeArchived,
   reviewOrganizationSuggestion,
   mintWebchatToken,
-  searchMemoryRecords,
   setApiOrgId,
   updateGithubHook,
-  updateMemoryRecord,
   uploadMyProfilePicture,
   uploadOrgIcon,
   usageWindow,
@@ -566,88 +558,6 @@ describe('GitHub installation repositories', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(12)
     expect(maxActiveRequests).toBe(4)
-  })
-})
-
-describe('external-memory record API', () => {
-  afterEach(() => {
-    setApiOrgId(null)
-    vi.unstubAllGlobals()
-  })
-
-  it('uses record-shaped routes and preserves cursor, metadata, and optimistic version', async () => {
-    const record = {
-      id: 'record-1',
-      text: 'deploy in sea',
-      scope: { kind: 'agent', key: 'ac:agent:agent-1' },
-      version: 'v1'
-    }
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input)
-      const body = path.endsWith('/memory/surface')
-        ? { shape: 'records', capabilities: ['recall', 'list', 'update'] }
-        : path.endsWith('/search')
-          ? { records: [record], nextCursor: null }
-          : path.endsWith('/history')
-            ? { events: [{ id: 'event-1', event: 'update', at: '2026-07-16T00:00:00.000Z', record }], nextCursor: null }
-            : init?.method === 'DELETE'
-              ? { id: 'record-1', deleted: true }
-              : init?.method === 'POST' || init?.method === 'PUT'
-                ? { record }
-                : { records: [record], nextCursor: 'next' }
-      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    setApiOrgId('org-1')
-
-    await fetchMemoryAdminSurface('agent-1')
-    await listMemoryRecords('agent-1', { cursor: 'first', limit: 10 })
-    await searchMemoryRecords('agent-1', 'deploy safely', { topK: 3, maxBytes: 4096 })
-    await createMemoryRecord('agent-1', { text: 'ship', metadata: { source: 'console' } })
-    await updateMemoryRecord('agent-1', 'record-1', { text: 'ship safely', version: 'v1' })
-    await deleteMemoryRecord('agent-1', 'record-1', 'v2')
-    await listMemoryRecordHistory('agent-1', 'record-1', { limit: 5 })
-
-    const calls = fetchMock.mock.calls.map(([input, init]) => ({
-      path: String(input),
-      method: init?.method ?? 'GET',
-      init
-    }))
-    expect(calls[1]?.path).toContain('/memory/records?cursor=first&limit=10')
-    expect(calls[2]).toMatchObject({ path: expect.stringContaining('/memory/records/search'), method: 'POST' })
-    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({ query: 'deploy safely', topK: 3, maxBytes: 4096 })
-    expect(JSON.parse(String(calls[3]?.init?.body))).toEqual({ text: 'ship', metadata: { source: 'console' } })
-    expect(JSON.parse(String(calls[4]?.init?.body))).toEqual({ text: 'ship safely', version: 'v1' })
-    expect(calls[5]).toMatchObject({ method: 'DELETE' })
-    expect(calls[5]?.path).toContain('/record-1')
-    expect(JSON.parse(String(calls[5]?.init?.body))).toEqual({ version: 'v2' })
-    expect(calls[6]?.path).toContain('/record-1/history?limit=5')
-  })
-})
-
-describe('managed-memory history API', () => {
-  afterEach(() => {
-    setApiOrgId(null)
-    vi.unstubAllGlobals()
-  })
-
-  it('encodes the selected file and opaque pagination cursor', async () => {
-    const cursor = '11111111-1111-4111-8111-111111111111'
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL) =>
-        new Response(JSON.stringify({ events: [], nextCursor: null }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' }
-        })
-    )
-    vi.stubGlobal('fetch', fetchMock)
-    setApiOrgId('org-1')
-
-    await listMemoryFileHistory('agent-1', 'release notes.md', { cursor, limit: 5 })
-
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
-      `/orgs/org-1/agents/agent-1/memory/history?path=release+notes.md&cursor=${cursor}&limit=5`
-    )
   })
 })
 

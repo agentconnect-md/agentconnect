@@ -1,6 +1,6 @@
 # Design: Unified Memory Operations and Context
 
-**Status:** Implementation in progress. Common reads, bounded search, console history, conditional managed mutations, external record mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh and compatibility retirement remain pending. This design does not change the plugin ABI by itself.
+**Status:** Implementation in progress. Common reads, bounded search, console history, conditional managed mutations, external record mutations, model/admin projections, and the common console are implemented. Bounded catalog delivery on supported session creation/native resume is implemented; continuously live session refresh remains pending. The console's compatibility views are retired except the runtime-native file browser; the legacy file/record tools and routes remain for old clients and the console's overview read. This design does not change the plugin ABI by itself.
 
 **Related:** [Memory evolution](memory-evolution.md), [managed memory](memory-system-plan.md), [Dream](memory-dreaming.md), [product conventions](../product-conventions.md).
 
@@ -343,7 +343,7 @@ Local sources inspected at the baseline above:
 - `packages/daemon/src/memory-plugin/client.ts`, `packages/protocol/src/memory-plugin.ts`: reviewed capability projection, scope/budget validation, plugin v1 limitations.
 - `packages/daemon/src/cp/memory-reader.ts`, `packages/protocol/src/frames/memory.ts`, CP agent routes: file/record wire split and limits.
 - `packages/protocol/src/frames/memory-connection.ts`: external agent-only binding; channel/Dream restrictions.
-- `packages/web/src/components/console/{MemoryPanel,RecordMemoryPanel}.tsx`: split presentation.
+- `packages/web/src/components/console/{MemoryPanel,UnifiedMemoryPanel,NativeMemoryFiles}.tsx`: the settings card, the common entry browser, and the runtime-native file browser.
 - `docs/designs/memory-evolution.md`: existing rationale, future M-8 home, explicit lossy data-migration distinction.
 - `docs/product-conventions.md`: privacy, backend selection, editing and prompt provenance.
 
@@ -436,21 +436,24 @@ The console UI and catalog-refresh integration are subsequent slices.
 
 ### Unified console entry browser
 
-The Memory panel now defaults to a capability-driven entry browser for providers
-that support list/get. Managed and external views share the same paged list and
-complete-content reader, rendered in the console's file-browser shell: a list of
-named topics or nameless records with their last edit, and a preview pane whose
-header carries size, edit time, inheritance and the entry actions. The existing
-settings, channel selector, and Dream panel remain in place. Unsupported/older
-peers use the existing view; an Entries / Files (or Records) switch in the card
-header keeps the raw view reachable during rollout. The entry browser now covers
-what used to need that view: a read that refuses as a sleeping sandbox presses the
-same wake the file browser does (the daemon lets an unreachable home escape the
-in-band entry error so the Control Plane answers 503 with the wake code), the
-generated overview is a pinned read-only row served through the compatibility
-index route and labelled generated or hand-written, and a record's metadata is
-listed under its text. What still keeps the switch is the compatibility window for
-daemons without the entry features; retiring it is a release decision.
+The Memory panel shows the capability-driven entry browser for managed and
+external memory, rendered in the console's file-browser shell: a list of named
+topics or nameless records with their last edit, and a preview pane whose header
+carries size, edit time, inheritance and the entry actions (edit, delete, history).
+The existing settings, channel selector, and Dream panel remain in place. A read
+that refuses as a sleeping sandbox presses the same wake the workspace browser does
+(the daemon lets an unreachable home escape the in-band entry error so the Control
+Plane answers 503 with the wake code); the generated overview is a pinned read-only
+row served through the compatibility index route and labelled generated or
+hand-written, whose links open the named file the same read-only way; and a
+record's metadata is listed under its text.
+
+The retained file and record views are gone from the console. Runtime-native
+memory keeps its own file browser (`NativeMemoryFiles`), because the runtime owns
+those files' format and they have no entry projection by design. A daemon that
+does not serve the entry interface gets a notice asking for an upgrade rather than
+a fallback view; the legacy file/record routes stay for old clients and for the
+overview read.
 
 The editor loads every content slice before enabling edits, rejecting missing,
 repeated, changed-revision, or oversized continuation chains. Reads are bounded to
