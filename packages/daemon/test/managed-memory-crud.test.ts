@@ -347,6 +347,65 @@ describe('common managed entry mutations', () => {
     expect((await base.readFile('memory/topic.md'))!.content).toContain('first')
   })
 
+  it('reports a failure after dispatch as unconfirmed, and one the port refuses before publishing by its own code', async () => {
+    const f = await fixture()
+    const base = new LocalMemoryFs(f.fs.root)
+    let lostReply = false
+    let breakIndex = false
+    const local: MemoryFs = {
+      key: base.key,
+      root: base.root,
+      subdir: base.subdir.bind(base),
+      readFile: base.readFile.bind(base),
+      // A shim or older peer can apply the commit and lose the reply: the write lands, the caller sees an error.
+      writeFile: async (rel, content, options) => {
+        const stat = await base.writeFile(rel, content, options)
+        if (lostReply && rel === 'memory/topic.md') throw new Error('channel closed before the reply')
+        return stat
+      },
+      // The index regeneration lists the directory after the file already changed.
+      readdir: async (rel) => {
+        if (breakIndex) throw new Error('listing failed')
+        return base.readdir(rel)
+      },
+      mkdir: base.mkdir.bind(base),
+      rename: base.rename.bind(base),
+      rm: base.rm.bind(base),
+      rmIfMatch: base.rmIfMatch.bind(base),
+      utimes: base.utimes.bind(base)
+    }
+    const api = await createMemoryEntryService({
+      provider: new ManagedMemoryProvider(() => localMemoryHome(local)),
+      store: f.db,
+      scope: { agentId: 'agent' },
+      canRead: () => true,
+      write: { source: 'console', canWrite: () => true }
+    })
+    const created = await api.create({ label: 'topic', text: 'first' })
+    lostReply = true
+    await expect(api.update({ ref: created.entry!.ref, text: 'second' })).rejects.toMatchObject({
+      code: 'AMBIGUOUS_WRITE'
+    })
+    lostReply = false
+    expect((await base.readFile('memory/topic.md'))!.content).toContain('second')
+    // The revision the caller held is stale now, so a replay with it is refused instead of clobbering the write.
+    await expect(
+      api.update({ ref: created.entry!.ref, revision: created.entry!.revision, text: 'replay' })
+    ).rejects.toMatchObject({ code: 'CONFLICT' })
+    const fresh = (await api.get({ ref: created.entry!.ref }))!.entry
+    breakIndex = true
+    await expect(api.update({ ref: fresh.ref, revision: fresh.revision, text: 'third' })).rejects.toMatchObject({
+      code: 'AMBIGUOUS_WRITE'
+    })
+    breakIndex = false
+    expect((await base.readFile('memory/topic.md'))!.content).toContain('third')
+    // A precondition the port itself refuses is proven unapplied, on either side of the dispatch.
+    await expect(api.update({ ref: fresh.ref, revision: fresh.revision, text: 'stale' })).rejects.toMatchObject({
+      code: 'CONFLICT'
+    })
+    await expect(api.create({ label: '../escape', text: 'x' })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' })
+  })
+
   it('advertises delete on a native-writable home only when it can verify the file before removing it', async () => {
     const f = await fixture()
     const base = new LocalMemoryFs(f.fs.root)

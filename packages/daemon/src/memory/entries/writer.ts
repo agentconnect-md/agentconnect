@@ -121,15 +121,19 @@ export async function mutateManagedMemoryEntryOnFilesystem(
     throw new MemoryEntriesError('INVALID_ARGUMENT', 'expected a topic Markdown filename, not the generated index')
   const path = `${MEMORY_DIRNAME}/${topic}`
   return withMemoryDirLock(fs, async () => {
+    // Once the port has been asked to publish, a failure no longer proves the tree unchanged: the port may have applied
+    // the change and lost its reply, or the file changed and what follows it (log, index, receipt) failed. Those are
+    // reported as unconfirmed and never replayed; a refusal the port proves before publishing keeps its own code.
+    let dispatched = false
     try {
       const current = await fs.readFile(path)
       const content = prepareEntryMutation(current, mutation, topic, now)
+      if (content === null && !fs.rmIfMatch)
+        throw new MemoryEntriesError('UNSUPPORTED', 'this memory home cannot delete an entry conditionally')
       let file: MemoryTransactionReceipt['files'][number]
+      dispatched = true
       if (content === null) {
-        // Removal keeps the fence too: only a home that can verify the file before unlinking advertises delete.
-        if (!fs.rmIfMatch)
-          throw new MemoryEntriesError('UNSUPPORTED', 'this memory home cannot delete an entry conditionally')
-        await fs.rmIfMatch(path, current!.mtime)
+        await fs.rmIfMatch!(path, current!.mtime)
         file = { path: topic, revision: null, mtime: null }
       } else {
         const stat = await fs.writeFile(path, content, current ? { ifMatchMtime: current.mtime } : { ifAbsent: true })
@@ -154,11 +158,19 @@ export async function mutateManagedMemoryEntryOnFilesystem(
       }
     } catch (error) {
       if (error instanceof MemoryEntriesError) throw error
+      // A port refuses these before it publishes anything, whichever side of the dispatch they surface on.
       if (error instanceof MemoryConflictError) throw new MemoryEntriesError('CONFLICT', error.message)
       if (error instanceof MemoryTooLargeError) throw new MemoryEntriesError('TOO_LARGE', error.message)
       if (error instanceof MemoryPathError) throw new MemoryEntriesError('INVALID_ARGUMENT', error.message)
-      if (error instanceof MemoryHomeUnavailableError) throw new MemoryEntriesError('UNAVAILABLE', error.message)
-      throw new MemoryEntriesError('UNAVAILABLE', 'memory mutation could not be prepared')
+      if (!dispatched) {
+        if (error instanceof MemoryHomeUnavailableError) throw new MemoryEntriesError('UNAVAILABLE', error.message)
+        throw new MemoryEntriesError('UNAVAILABLE', 'memory mutation could not be prepared')
+      }
+      recordExternalMemoryMutation(fs, 'console')
+      throw new MemoryEntriesError(
+        'AMBIGUOUS_WRITE',
+        'memory mutation outcome is unconfirmed; read current state before retrying'
+      )
     }
   })
 }
