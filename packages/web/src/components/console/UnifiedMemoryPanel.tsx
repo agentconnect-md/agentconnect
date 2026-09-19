@@ -185,6 +185,15 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
     setOverviewBusy(false)
     setOverviewTopicBusy(false)
   }
+  // A describe that answered and a list that then refused leave nothing usable: drop the capabilities with the view.
+  const markUnsupported = useCallback(() => {
+    setUnsupported(true)
+    setCapabilities(null)
+    setMode(null)
+    setDraft('')
+    setDocument(null)
+    setSelectedRef(undefined)
+  }, [])
   const reload = useCallback(
     async (reconcileEmpty = false) => {
       const id = ++generation.current
@@ -201,7 +210,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
         const caps = await describeAgentMemoryEntries(agentId, channelKey)
         if (id !== generation.current) return
         if (!caps.operations.includes('list') || !caps.operations.includes('get')) {
-          setUnsupported(true)
+          markUnsupported()
           return
         }
         setCapabilities(caps)
@@ -218,7 +227,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
       } catch (err) {
         if (id !== generation.current) return
         if (err instanceof ApiError && (err.status === 404 || err.status === 501 || err.code === 'UNSUPPORTED'))
-          setUnsupported(true)
+          markUnsupported()
         else {
           setErrorCode(err instanceof ApiError ? err.code : undefined)
           setError(errorMessage(err))
@@ -227,7 +236,7 @@ function Entries({ agentId, channelKey, canEdit, sandboxed = false, overview }: 
         if (id === generation.current) setBusy(false)
       }
     },
-    [agentId, channelKey]
+    [agentId, channelKey, markUnsupported]
   )
   useEffect(() => {
     void reload()

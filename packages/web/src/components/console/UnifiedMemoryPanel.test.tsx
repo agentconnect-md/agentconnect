@@ -404,3 +404,16 @@ it('shows a record’s metadata under its text', async () => {
   expect(host.textContent).toContain('slack')
   expect(host.textContent).toContain('["ops","rpc"]')
 })
+
+it('drops stale capabilities when the list refuses the interface after a describe answered', async () => {
+  vi.mocked(api.describeAgentMemoryEntries).mockResolvedValue({ ...caps, operations: [...caps.operations, 'search'] })
+  vi.mocked(api.listAgentMemoryEntries).mockRejectedValueOnce(new api.ApiError('old', 501, 'UNSUPPORTED'))
+  await render()
+  expect(host.textContent).toContain('does not serve the memory entry interface')
+  expect(host.textContent).not.toContain('New memory')
+  expect(host.querySelector('input[aria-label="Search memory"]')).toBeNull()
+  expect([...host.querySelectorAll('button')].find((b) => b.textContent?.includes('Refresh'))?.disabled).toBe(false)
+  await click('Refresh')
+  expect(host.textContent).not.toContain('does not serve the memory entry interface')
+  expect(host.textContent).toContain('New memory')
+})
