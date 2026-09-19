@@ -99,8 +99,9 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
   ) {
     if (roots.length < 1 || roots.length > 2) throw new Error('managed memory requires one root or an overlay')
     this.identity = memoryDigest(['managed', bindingGeneration, roots.map((root) => root.key)])
-    // Every writable home serves conditional mutations: a transactional home in one commit, any other under the
-    // per-directory lock with the filesystem's own guard (writer.ts), where delete needs a verified removal too.
+    // Every writable home serves the mutations, but only a transactional home may call them conditional: any other
+    // gets the compatibility writer's last-write-wins (writer.ts), with delete only where the port verifies before it
+    // unlinks. Exact create (an exclusive publish) and exact edit (one literal match) hold on both.
     if (writeContext) {
       const root = roots[0]!
       const transactional = !!(root.atomicTransaction && root.stageTransactionFile && root.captureStatus)
@@ -114,7 +115,7 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
           'update',
           ...(transactional || root.rmIfMatch ? (['delete'] as const) : [])
         ],
-        writeConsistency: 'conditional',
+        writeConsistency: transactional ? 'conditional' : 'last-write-wins',
         exactCreate: true,
         exactEdit: true
       }
@@ -323,7 +324,8 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
       | Omit<Extract<MemoryEntryUpdateRequest, { edit: unknown }>, 'ref'>
   ) {
     this.writableCoordinate(coordinate)
-    if (!request.revision) throw new MemoryEntriesError('INVALID_ARGUMENT', 'managed update requires a revision')
+    if (!request.revision && this.capabilities.writeConsistency === 'conditional')
+      throw new MemoryEntriesError('INVALID_ARGUMENT', 'managed update requires a revision')
     if (request.metadata !== undefined)
       throw new MemoryEntriesError('UNSUPPORTED', 'managed metadata belongs in Markdown frontmatter')
     return this.mutate(
@@ -336,7 +338,8 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
 
   async delete(coordinate: EntryCoordinate, request: { revision?: string }) {
     this.writableCoordinate(coordinate)
-    if (!request.revision) throw new MemoryEntriesError('INVALID_ARGUMENT', 'managed delete requires a revision')
+    if (!request.revision && this.capabilities.writeConsistency === 'conditional')
+      throw new MemoryEntriesError('INVALID_ARGUMENT', 'managed delete requires a revision')
     return this.mutate(coordinate.id, { operation: 'delete', revision: request.revision })
   }
 

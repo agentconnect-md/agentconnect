@@ -247,7 +247,7 @@ describe('common managed entry mutations', () => {
     ).rejects.toMatchObject({ code: 'TOO_LARGE' })
     expect(f.commits).toHaveLength(1)
   })
-  it('serves the same conditional mutations on a native-writable filesystem through the compatibility writer', async () => {
+  it('serves last-write-wins mutations on a native-writable filesystem through the compatibility writer', async () => {
     const f = await fixture()
     const local = new LocalMemoryFs(f.fs.root)
     const api = await createMemoryEntryService({
@@ -257,9 +257,10 @@ describe('common managed entry mutations', () => {
       canRead: () => true,
       write: { source: 'console', canWrite: () => true }
     })
+    // Not conditional: the check is the writer's own, strong against daemon-side writers, best-effort otherwise.
     expect(await api.describe()).toMatchObject({
       operations: ['list', 'get', 'search', 'create', 'update', 'delete', 'history'],
-      writeConsistency: 'conditional',
+      writeConsistency: 'last-write-wins',
       exactCreate: true,
       exactEdit: true
     })
@@ -280,17 +281,18 @@ describe('common managed entry mutations', () => {
     await expect(
       api.update({ ref: updated.entry!.ref, revision: created.entry!.revision, text: 'stale' })
     ).rejects.toMatchObject({ code: 'CONFLICT', currentRevision: updated.entry!.revision })
-    // The sidecar carries the add and the update; no transaction, so the log follows the write rather than joining it.
-    const log = await api.history({ ref: updated.entry!.ref, limit: 5 })
-    expect(log.events.map((event) => event.kind)).toEqual(['update', 'create'])
+    // As advertised, a write without a revision simply lands.
+    const blind = await api.update({ ref: updated.entry!.ref, text: 'Replaced without a revision' })
+    expect((await local.readFile('memory/topic.md'))!.content).toContain('Replaced without a revision')
+    // The sidecar carries every write; no transaction, so the log follows the write rather than joining it.
+    const log = await api.history({ ref: blind.entry!.ref, limit: 5 })
+    expect(log.events.map((event) => event.kind)).toEqual(['update', 'update', 'create'])
     expect(log.events[0]!.source).toBe('console')
-    const removed = await api.delete({ ref: updated.entry!.ref, revision: updated.entry!.revision })
-    expect(removed.deletedRef).toBe(updated.entry!.ref)
+    const removed = await api.delete({ ref: blind.entry!.ref, revision: blind.entry!.revision })
+    expect(removed.deletedRef).toBe(blind.entry!.ref)
     expect(await local.readFile('memory/topic.md')).toBeNull()
     expect((await local.readFile('memory/MEMORY.md'))!.content).not.toContain('[topic]')
-    await expect(
-      api.update({ ref: updated.entry!.ref, revision: updated.entry!.revision, text: 'revive' })
-    ).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(api.update({ ref: blind.entry!.ref, text: 'revive' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(f.commits).toHaveLength(0)
   })
 

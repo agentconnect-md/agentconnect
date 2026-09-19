@@ -25,11 +25,12 @@ import { normalizeMemoryHeader, stampMemoryHeader } from '../frontmatter.js'
 import { MemoryEntriesError } from './contract.js'
 import { memoryDigest } from './service.js'
 
+// A revision is required by a conditional home and optional on a last-write-wins one, where it is checked when given.
 export type ManagedEntryMutation =
   | { operation: 'create'; text: string }
-  | { operation: 'update'; revision: string; text: string; edit?: never }
-  | { operation: 'update'; revision: string; text?: never; edit: { oldText: string; newText: string } }
-  | { operation: 'delete'; revision: string }
+  | { operation: 'update'; revision?: string; text: string; edit?: never }
+  | { operation: 'update'; revision?: string; text?: never; edit: { oldText: string; newText: string } }
+  | { operation: 'delete'; revision?: string }
 
 // The same publication authority as compatibility writes; caller resolves scope and assigns provenance before entry.
 export async function mutateManagedMemoryEntry(
@@ -80,7 +81,7 @@ function prepareEntryMutation(
     if (current) throw new MemoryEntriesError('CONFLICT', 'memory entry already exists', memoryDigest(current.content))
   } else {
     if (!current) throw new MemoryEntriesError('NOT_FOUND', 'memory entry does not exist')
-    if (mutation.revision !== memoryDigest(current.content))
+    if (mutation.revision !== undefined && mutation.revision !== memoryDigest(current.content))
       throw new MemoryEntriesError(
         'CONFLICT',
         'memory entry revision changed; read it again before editing',
@@ -102,11 +103,12 @@ function prepareEntryMutation(
   return content
 }
 
-// A home without the transaction primitive: the compatibility writer's own guarantees, projected as an entry mutation.
-// The precondition is checked and the one file replaced under the per-directory lock every daemon-side writer takes,
-// with the filesystem's own absent/mtime guard against an out-of-band edit or removal; the index and the change log follow as the
-// compatibility writer's do, not in the same commit. The receipt is minted here and kept nowhere, so a lost answer is
-// never replayed. Nothing here stands in for `atomicTransaction`; a home that has it takes the other path.
+// A home without the transaction primitive: the compatibility writer's own guarantees, projected as an entry mutation
+// and advertised as last-write-wins. A supplied revision is checked under the per-directory lock every daemon-side
+// writer takes, and the replace or unlink carries the filesystem's absent/mtime guard, so a stale daemon-side write is
+// refused and an out-of-band one is caught on a best-effort basis, never with the home authority's atomic check. The
+// index and the change log follow, not in the same commit; the receipt is minted here and kept nowhere, so a lost
+// answer is never replayed. Nothing here stands in for `atomicTransaction`; a home that has it takes the other path.
 export async function mutateManagedMemoryEntryOnFilesystem(
   fs: MemoryFs,
   topic: string,
