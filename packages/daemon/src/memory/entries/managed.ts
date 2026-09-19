@@ -99,12 +99,21 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
   ) {
     if (roots.length < 1 || roots.length > 2) throw new Error('managed memory requires one root or an overlay')
     this.identity = memoryDigest(['managed', bindingGeneration, roots.map((root) => root.key)])
-    // Every writable home serves the same conditional operations: a transactional home in one commit, any other under
-    // the per-directory lock with the filesystem's own guard (writer.ts); the caller's binding decides whether at all.
+    // Every writable home serves conditional mutations: a transactional home in one commit, any other under the
+    // per-directory lock with the filesystem's own guard (writer.ts), where delete needs a verified removal too.
     if (writeContext) {
+      const root = roots[0]!
+      const transactional = !!(root.atomicTransaction && root.stageTransactionFile && root.captureStatus)
       this.capabilities = {
         ...this.capabilities,
-        operations: ['list', 'get', 'search', 'create', 'update', 'delete'],
+        operations: [
+          'list',
+          'get',
+          'search',
+          'create',
+          'update',
+          ...(transactional || root.rmIfMatch ? (['delete'] as const) : [])
+        ],
         writeConsistency: 'conditional',
         exactCreate: true,
         exactEdit: true

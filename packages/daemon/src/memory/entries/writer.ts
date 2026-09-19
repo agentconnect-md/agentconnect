@@ -104,7 +104,7 @@ function prepareEntryMutation(
 
 // A home without the transaction primitive: the compatibility writer's own guarantees, projected as an entry mutation.
 // The precondition is checked and the one file replaced under the per-directory lock every daemon-side writer takes,
-// with the filesystem's own absent/mtime guard against an out-of-band edit; the index and the change log follow as the
+// with the filesystem's own absent/mtime guard against an out-of-band edit or removal; the index and the change log follow as the
 // compatibility writer's do, not in the same commit. The receipt is minted here and kept nowhere, so a lost answer is
 // never replayed. Nothing here stands in for `atomicTransaction`; a home that has it takes the other path.
 export async function mutateManagedMemoryEntryOnFilesystem(
@@ -124,7 +124,10 @@ export async function mutateManagedMemoryEntryOnFilesystem(
       const content = prepareEntryMutation(current, mutation, topic, now)
       let file: MemoryTransactionReceipt['files'][number]
       if (content === null) {
-        await fs.rm(path)
+        // Removal keeps the fence too: only a home that can verify the file before unlinking advertises delete.
+        if (!fs.rmIfMatch)
+          throw new MemoryEntriesError('UNSUPPORTED', 'this memory home cannot delete an entry conditionally')
+        await fs.rmIfMatch(path, current!.mtime)
         file = { path: topic, revision: null, mtime: null }
       } else {
         const stat = await fs.writeFile(path, content, current ? { ifMatchMtime: current.mtime } : { ifAbsent: true })

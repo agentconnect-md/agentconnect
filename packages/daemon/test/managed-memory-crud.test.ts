@@ -297,20 +297,16 @@ describe('common managed entry mutations', () => {
   it('refuses a filesystem write when the file changed under the lock, and never touches the index for it', async () => {
     const f = await fixture()
     const base = new LocalMemoryFs(f.fs.root)
-    // An out-of-band editor lands between the precondition read and the replace: the mtime guard refuses the replace.
+    // An out-of-band editor lands right after every read of the topic while armed, so whichever read the writer takes
+    // as its precondition is stale by the time it replaces or unlinks: the mtime guard must refuse.
     let intrude: (() => Promise<void>) | undefined
     const local: MemoryFs = {
-      ...base,
       key: base.key,
       root: base.root,
       subdir: base.subdir.bind(base),
       readFile: async (rel, encoding) => {
         const file = await base.readFile(rel, encoding)
-        if (intrude && rel === 'memory/topic.md') {
-          const run = intrude
-          intrude = undefined
-          await run()
-        }
+        if (intrude && rel === 'memory/topic.md') await intrude()
         return file
       },
       writeFile: base.writeFile.bind(base),
@@ -318,6 +314,7 @@ describe('common managed entry mutations', () => {
       mkdir: base.mkdir.bind(base),
       rename: base.rename.bind(base),
       rm: base.rm.bind(base),
+      rmIfMatch: base.rmIfMatch.bind(base),
       utimes: base.utimes.bind(base)
     }
     const api = await createMemoryEntryService({
@@ -328,14 +325,55 @@ describe('common managed entry mutations', () => {
       write: { source: 'tool', canWrite: () => true }
     })
     const created = await api.create({ label: 'topic', text: 'first' })
-    intrude = async () => {
+    // Each intrusion leaves a distinct mtime, so a guard that compared against the previous intrusion would still miss.
+    let intrusions = 0
+    const replaceUnderneath = async () => {
       await base.writeFile('memory/topic.md', (await base.readFile('memory/topic.md'))!.content)
-      await base.utimes('memory/topic.md', '2020-01-01T00:00:00.000Z')
+      await base.utimes('memory/topic.md', new Date(Date.UTC(2020, 0, 1, 0, 0, ++intrusions)).toISOString())
     }
+    intrude = replaceUnderneath
     await expect(
       api.update({ ref: created.entry!.ref, revision: created.entry!.revision, text: 'second' })
     ).rejects.toMatchObject({ code: 'CONFLICT' })
+    intrude = undefined
     expect((await base.readFile('memory/topic.md'))!.content).not.toContain('second')
+    // The same gap before a delete: the newer file stays, and the mutation is refused rather than reported complete.
+    const fresh = (await api.get({ ref: created.entry!.ref }))!.entry
+    intrude = replaceUnderneath
+    await expect(api.delete({ ref: fresh.ref, revision: fresh.revision })).rejects.toMatchObject({ code: 'CONFLICT' })
+    intrude = undefined
+    expect((await base.readFile('memory/topic.md'))!.content).toContain('first')
+  })
+
+  it('advertises delete on a native-writable home only when it can verify the file before removing it', async () => {
+    const f = await fixture()
+    const base = new LocalMemoryFs(f.fs.root)
+    // A home whose port cannot check the file before unlinking (a shim or an older peer): create and update, no delete.
+    const unverified: MemoryFs = {
+      key: base.key,
+      root: base.root,
+      subdir: base.subdir.bind(base),
+      readFile: base.readFile.bind(base),
+      writeFile: base.writeFile.bind(base),
+      readdir: base.readdir.bind(base),
+      mkdir: base.mkdir.bind(base),
+      rename: base.rename.bind(base),
+      rm: base.rm.bind(base),
+      utimes: base.utimes.bind(base)
+    }
+    const api = await createMemoryEntryService({
+      provider: new ManagedMemoryProvider(() => localMemoryHome(unverified)),
+      store: f.db,
+      scope: { agentId: 'agent' },
+      canRead: () => true,
+      write: { source: 'console', canWrite: () => true }
+    })
+    expect((await api.describe()).operations).toEqual(['list', 'get', 'search', 'create', 'update', 'history'])
+    const created = await api.create({ label: 'topic', text: 'kept' })
+    await expect(api.delete({ ref: created.entry!.ref, revision: created.entry!.revision })).rejects.toMatchObject({
+      code: 'UNSUPPORTED'
+    })
+    expect((await base.readFile('memory/topic.md'))!.content).toContain('kept')
   })
 
   it('keeps channel overlay rules on a native-writable filesystem', async () => {

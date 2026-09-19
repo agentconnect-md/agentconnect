@@ -125,6 +125,8 @@ export interface MemoryFs {
   rename(from: string, to: string): Promise<boolean>
   /** Recursive and forced: absence is fine. */
   rm(rel: string): Promise<void>
+  /** Remove one file only while it is still the version whose mtime the caller read; absent where the port cannot verify before unlinking, and conditional delete is not advertised there. */
+  readonly rmIfMatch?: ((rel: string, ifMatchMtime: string) => Promise<void>) | undefined
   /** Best-effort: set a file's mtime (kept for files a store swap left byte-for-byte unchanged). */
   utimes(rel: string, mtime: string): Promise<void>
 }
@@ -426,6 +428,24 @@ export class LocalMemoryFs implements MemoryFs {
     const parent = await walkContained(this.root, parts, false)
     if (parent === null) return
     await fsp.rm(join(parent, name), { recursive: true, force: true })
+  }
+
+  // The removal counterpart of a conditional replace: the regular file is re-read right before the unlink and must still
+  // carry the mtime the caller saw; a link, a directory, or an absent target is a conflict, never a removal.
+  readonly rmIfMatch = async (rel: string, ifMatchMtime: string): Promise<void> => {
+    const { parts, name } = this.leaf(rel)
+    const parent = await walkContained(this.root, parts, false)
+    const target = parent === null ? null : join(parent, name)
+    let stat: Stats | undefined
+    try {
+      if (target) stat = await fsp.lstat(target)
+    } catch (err) {
+      if (!isErrno(err, 'ENOENT')) throw err
+    }
+    if (!target || !stat?.isFile() || stat.mtime.toISOString() !== ifMatchMtime)
+      throw new MemoryConflictError('the memory file changed since it was read; reload and retry')
+    if ((await fsp.realpath(parent!)) !== parent) await rejectEscape(parent!, false)
+    await fsp.unlink(target)
   }
 
   async utimes(rel: string, mtime: string): Promise<void> {
