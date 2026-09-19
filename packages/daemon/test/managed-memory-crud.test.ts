@@ -247,7 +247,7 @@ describe('common managed entry mutations', () => {
     ).rejects.toMatchObject({ code: 'TOO_LARGE' })
     expect(f.commits).toHaveLength(1)
   })
-  it('does not advertise conditional writes on a native-writable filesystem even for an authorized caller', async () => {
+  it('serves the same conditional mutations on a native-writable filesystem through the compatibility writer', async () => {
     const f = await fixture()
     const local = new LocalMemoryFs(f.fs.root)
     const api = await createMemoryEntryService({
@@ -257,9 +257,110 @@ describe('common managed entry mutations', () => {
       canRead: () => true,
       write: { source: 'console', canWrite: () => true }
     })
-    expect((await api.describe()).operations).toEqual(['list', 'get', 'search', 'history'])
-    await expect(api.create({ label: 'topic', text: 'new' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    expect(await api.describe()).toMatchObject({
+      operations: ['list', 'get', 'search', 'create', 'update', 'delete', 'history'],
+      writeConsistency: 'conditional',
+      exactCreate: true,
+      exactEdit: true
+    })
+    const created = await api.create({ label: 'topic', text: '---\ndescription: deployment\n---\n\nOriginal' })
+    expect(created.state).toBe('completed')
+    const stored = (await local.readFile('memory/topic.md'))!.content
+    expect(stored).toContain('name: topic')
+    expect(stored).toContain('Original')
+    expect((await local.readFile('memory/MEMORY.md'))!.content).toContain('[topic](topic.md) — deployment')
+    expect((await api.get({ ref: created.entry!.ref }))!.entry.revision).toBe(created.entry!.revision)
+    await expect(api.create({ label: 'topic', text: 'again' })).rejects.toMatchObject({ code: 'CONFLICT' })
+    const updated = await api.update({
+      ref: created.entry!.ref,
+      revision: created.entry!.revision,
+      edit: { oldText: 'Original', newText: 'Corrected' }
+    })
+    expect((await local.readFile('memory/topic.md'))!.content).toContain('Corrected')
+    await expect(
+      api.update({ ref: updated.entry!.ref, revision: created.entry!.revision, text: 'stale' })
+    ).rejects.toMatchObject({ code: 'CONFLICT', currentRevision: updated.entry!.revision })
+    // The sidecar carries the add and the update; no transaction, so the log follows the write rather than joining it.
+    const log = await api.history({ ref: updated.entry!.ref, limit: 5 })
+    expect(log.events.map((event) => event.kind)).toEqual(['update', 'create'])
+    expect(log.events[0]!.source).toBe('console')
+    const removed = await api.delete({ ref: updated.entry!.ref, revision: updated.entry!.revision })
+    expect(removed.deletedRef).toBe(updated.entry!.ref)
     expect(await local.readFile('memory/topic.md')).toBeNull()
+    expect((await local.readFile('memory/MEMORY.md'))!.content).not.toContain('[topic]')
+    await expect(
+      api.update({ ref: updated.entry!.ref, revision: updated.entry!.revision, text: 'revive' })
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect(f.commits).toHaveLength(0)
+  })
+
+  it('refuses a filesystem write when the file changed under the lock, and never touches the index for it', async () => {
+    const f = await fixture()
+    const base = new LocalMemoryFs(f.fs.root)
+    // An out-of-band editor lands between the precondition read and the replace: the mtime guard refuses the replace.
+    let intrude: (() => Promise<void>) | undefined
+    const local: MemoryFs = {
+      ...base,
+      key: base.key,
+      root: base.root,
+      subdir: base.subdir.bind(base),
+      readFile: async (rel, encoding) => {
+        const file = await base.readFile(rel, encoding)
+        if (intrude && rel === 'memory/topic.md') {
+          const run = intrude
+          intrude = undefined
+          await run()
+        }
+        return file
+      },
+      writeFile: base.writeFile.bind(base),
+      readdir: base.readdir.bind(base),
+      mkdir: base.mkdir.bind(base),
+      rename: base.rename.bind(base),
+      rm: base.rm.bind(base),
+      utimes: base.utimes.bind(base)
+    }
+    const api = await createMemoryEntryService({
+      provider: new ManagedMemoryProvider(() => localMemoryHome(local)),
+      store: f.db,
+      scope: { agentId: 'agent' },
+      canRead: () => true,
+      write: { source: 'tool', canWrite: () => true }
+    })
+    const created = await api.create({ label: 'topic', text: 'first' })
+    intrude = async () => {
+      await base.writeFile('memory/topic.md', (await base.readFile('memory/topic.md'))!.content)
+      await base.utimes('memory/topic.md', '2020-01-01T00:00:00.000Z')
+    }
+    await expect(
+      api.update({ ref: created.entry!.ref, revision: created.entry!.revision, text: 'second' })
+    ).rejects.toMatchObject({ code: 'CONFLICT' })
+    expect((await base.readFile('memory/topic.md'))!.content).not.toContain('second')
+  })
+
+  it('keeps channel overlay rules on a native-writable filesystem', async () => {
+    const f = await fixture()
+    const local = new LocalMemoryFs(f.fs.root)
+    const provider = new ManagedMemoryProvider(() => localMemoryHome(local))
+    const service = (channelKey?: string) =>
+      createMemoryEntryService({
+        provider,
+        store: f.db,
+        scope: { agentId: 'agent', channelKey },
+        canRead: () => true,
+        write: { source: 'tool', canWrite: () => true }
+      })
+    const base = await service()
+    await base.create({ label: 'topic', text: 'base' })
+    const channel = await service(memoryChannelKey('room'))
+    const inherited = (await channel.list()).entries[0]!
+    await expect(
+      channel.update({ ref: inherited.ref, revision: inherited.revision, text: 'damage' })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    const override = await channel.create({ label: 'topic', text: 'channel' })
+    expect((await local.readFile('memory/topic.md'))!.content).toContain('base')
+    await channel.delete({ ref: override.entry!.ref, revision: override.entry!.revision })
+    expect((await channel.list()).entries[0]!.origin).toBe('inherited')
   })
 })
 

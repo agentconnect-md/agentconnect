@@ -1,4 +1,5 @@
-import { mutateManagedMemoryEntry, type ManagedEntryMutation } from './writer.js'
+import { mutateManagedMemoryEntry, mutateManagedMemoryEntryOnFilesystem, type ManagedEntryMutation } from './writer.js'
+import { sidecarMemoryHistory } from '../home.js'
 import type { MemoryWriteSource } from '../store.js'
 import { randomUUID } from 'node:crypto'
 import type {
@@ -98,7 +99,9 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
   ) {
     if (roots.length < 1 || roots.length > 2) throw new Error('managed memory requires one root or an overlay')
     this.identity = memoryDigest(['managed', bindingGeneration, roots.map((root) => root.key)])
-    if (writeContext && roots[0]!.atomicTransaction && roots[0]!.stageTransactionFile && roots[0]!.captureStatus) {
+    // Every writable home serves the same conditional operations: a transactional home in one commit, any other under
+    // the per-directory lock with the filesystem's own guard (writer.ts); the caller's binding decides whether at all.
+    if (writeContext) {
       this.capabilities = {
         ...this.capabilities,
         operations: ['list', 'get', 'search', 'create', 'update', 'delete'],
@@ -336,7 +339,17 @@ export class ManagedMemoryEntries implements MemoryEntriesView {
   private async mutate(topic: string, mutation: ManagedEntryMutation) {
     if (!this.writeContext || !this.capabilities.operations.includes(mutation.operation))
       throw new MemoryEntriesError('UNSUPPORTED', 'memory entry mutations are unavailable')
-    const result = await mutateManagedMemoryEntry(this.roots[0]!, topic, mutation, this.writeContext)
+    const root = this.roots[0]!
+    const result =
+      root.atomicTransaction && root.stageTransactionFile && root.captureStatus
+        ? await mutateManagedMemoryEntry(root, topic, mutation, this.writeContext)
+        : await mutateManagedMemoryEntryOnFilesystem(
+            root,
+            topic,
+            mutation,
+            this.writeContext,
+            this.historyFor?.(root) ?? sidecarMemoryHistory(root)
+          )
     const file = result.receipt.files.find((entry) => entry.path === topic)!
     const header = result.content === null ? undefined : parseMemoryFrontmatter(result.content).header
     return {
