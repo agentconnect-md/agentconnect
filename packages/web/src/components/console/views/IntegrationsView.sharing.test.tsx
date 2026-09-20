@@ -35,6 +35,7 @@ vi.mock('@/lib/data-context', () => ({
     refresh: vi.fn(),
     deleteIntegration: vi.fn(),
     setBotShareable: vi.fn(),
+    setBotJoinPublicChannels: vi.fn(),
     setChannelAgent: vi.fn()
   })
 }))
@@ -97,6 +98,32 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
+})
+
+// The join-public-channels switch is Slack's module fragment (`RowSettings`), rendered only
+// in the EXPANDED row and only on the platform whose manifest declares `publicChannelJoin`.
+describe('the join-public-channels switch', () => {
+  const JOIN = '[role="switch"][aria-label="Join public channels on demand"]'
+
+  it('appears in an expanded Slack row, reflecting the bot’s flag', async () => {
+    mocks.bots = [bot({ id: 'sl-2', platform: 'slack', joinPublicChannels: false })]
+    const row = await botRow('Slack', 'sl-2')
+    expect(host.querySelector(JOIN)).toBeNull()
+
+    await act(async () => row.click())
+    const toggle = host.querySelector<HTMLButtonElement>(JOIN)
+    expect(toggle).not.toBeNull()
+    expect(toggle?.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('renders none for a Linear workspace', async () => {
+    mocks.bots = [
+      bot({ id: 'ws-2', platform: 'linear', name: 'Example Workspace', workspaceName: 'Example Workspace' })
+    ]
+    const row = await botRow('Linear', 'ws-2')
+    await act(async () => row.click())
+    expect(host.querySelector(JOIN)).toBeNull()
+  })
 })
 
 describe('the Sharable cell', () => {

@@ -334,6 +334,31 @@ describe('SlackConnection joins a public channel on demand', () => {
     expect(history).toHaveBeenCalledTimes(2)
   })
 
+  it('does not join while the bot’s switch is off, and picks up a live flip', async () => {
+    const history = vi.fn(async () => {
+      throw notInChannel()
+    })
+    const join = vi.fn(async () => ({ ok: true }))
+    const conn = new SlackConnection(
+      {
+        ...deps(),
+        group: { appToken: 'xapp-1', botToken: 'xoxb-a', integrations: [], joinPublicChannels: false }
+      } as any,
+      () => appWith({ conversations: { history, join } })
+    )
+
+    // Off: the refusal surfaces as it always did, and nothing is joined.
+    await expect(conn.getChannelHistory('C1')).rejects.toThrow('not_in_channel')
+    expect(join).not.toHaveBeenCalled()
+
+    // The reconciler flips the LIVE connection when the operator turns it on.
+    conn.setJoinPublicChannels(true)
+    history.mockReset()
+    history.mockRejectedValueOnce(notInChannel()).mockResolvedValueOnce({ messages: [] })
+    await expect(conn.getChannelHistory('C1')).resolves.toMatchObject({ messages: [] })
+    expect(join).toHaveBeenCalledWith({ channel: 'C1' })
+  })
+
   it('joins before re-posting a message and a thread read', async () => {
     const postMessage = vi.fn().mockRejectedValueOnce(notInChannel()).mockResolvedValueOnce({ ts: '100.2' })
     const replies = vi

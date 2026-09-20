@@ -10,7 +10,7 @@
 // effects and a context of their own.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Icon } from '@/components/ui'
+import { Icon, Toggle } from '@/components/ui'
 import { ApiError, type BotDto, type SlackBotRefreshDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import type { WebBotSettingsFragments } from '../contract'
@@ -362,8 +362,62 @@ function SlackDeleteNotice({ bot }: { bot: BotDto }) {
   )
 }
 
+/**
+ * The bot's "join public channels on demand" switch (`PATCH /bots/:id` `joinPublicChannels`).
+ * On, the daemon enters any PUBLIC channel the first time an agent reads or posts there
+ * (`conversations.join`, `channels:join`) instead of waiting for an invite; off, the bot
+ * reaches only the channels it was added to. Private channels are invitation-only either
+ * way. Slack alone declares `publicChannelJoin`, so only its rows render this.
+ */
+function SlackRowSettings({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
+  const { setBotJoinPublicChannels } = useConsoleData()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const enabled = bot.joinPublicChannels !== false
+  const flip = async (next: boolean) => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await setBotJoinPublicChannels(bot.id, next)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="mb-3 flex items-start justify-between gap-3 rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-2">
+      <div className="min-w-0">
+        <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
+          Join public channels on demand
+        </div>
+        <div className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+          {enabled
+            ? 'Agents can read and post in any public channel; the bot joins one the first time it is needed. Private channels still need an invite.'
+            : 'Agents reach only the channels this bot was added to.'}
+        </div>
+        {error && (
+          <div className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">{error}</div>
+        )}
+      </div>
+      <Toggle
+        checked={enabled}
+        disabled={!canWrite || busy}
+        onChange={(next) => void flip(next)}
+        ariaLabel="Join public channels on demand"
+      />
+    </div>
+  )
+}
+
 export const slackSettingsFragments: WebBotSettingsFragments = {
-  botCard: { RowBadges: SlackRowBadges, RowLinks: SlackRowLinks, DeleteNotice: SlackDeleteNotice },
+  botCard: {
+    RowBadges: SlackRowBadges,
+    RowLinks: SlackRowLinks,
+    RowSettings: SlackRowSettings,
+    DeleteNotice: SlackDeleteNotice
+  },
   lifecycleActions: {
     CardProvider: SlackBotCardProvider,
     RowActions: SlackRowActions,

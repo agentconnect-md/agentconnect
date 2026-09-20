@@ -281,8 +281,9 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'posts inside that conversation rather than at the root. This is how a status update reaches a discussion ' +
       'you are not answering, such as the other channels the same request was crossposted to. Everyone already in ' +
       'that thread hears it. Never use it for the thread you are in now — that is your ordinary reply.\n' +
-      'On Slack, `channel` may name any PUBLIC channel (the bot joins it on first use); a private channel is ' +
-      'reachable only as the conversation you were invoked in, and this refuses any other.\n' +
+      'On Slack, `channel` may name any PUBLIC channel (the bot joins it on first use, unless an operator switched ' +
+      'that off for this bot); a private channel is reachable only as the conversation you were invoked in, and ' +
+      'this refuses any other.\n' +
       '- attachment (with `toUser` or `channel`) — forward an image this conversation received: ' +
       '`{"channel":"<channel id>","attachment":"<file name>","message":"..."}`. The name is the one in the ' +
       '`[attached: …]` marker. This is the only way a RECEIVED image reaches another platform; for an image you ' +
@@ -408,7 +409,8 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
             description:
               'Read one bounded page of messages from a channel on this platform: the channel bound to this ' +
               'conversation by default, or the one `channel` names. On Slack any PUBLIC channel can be read — the ' +
-              'bot joins it on first use — while a private channel or DM is readable only as the conversation you ' +
+              'bot joins it on first use, unless an operator switched that off for this bot — while a private ' +
+              'channel or DM is readable only as the conversation you ' +
               'were invoked in. Results are newest-first; pass nextCursor as cursor to continue with older ' +
               'messages. This returns channel messages, not replies inside a thread: each carries `threadTs` and ' +
               '`replyCount`, and `getThreadHistory` opens one.',
@@ -510,7 +512,8 @@ function buildThreadHistoryTool(offered: boolean, integrationId: SchemaProp): To
         'Read one thread in full — its root message and every reply. Use it to catch up on a discussion you are not ' +
         'part of: `getChannelHistory` reports each message’s `threadTs` and `replyCount`, and this opens one of ' +
         'them. `thread` is the root message’s id (Slack thread_ts). Any PUBLIC channel is readable (the bot joins ' +
-        'it on first use); a private channel or DM only as the conversation you were invoked in. Results are ' +
+        'it on first use, unless an operator switched that off for this bot); a private channel or DM only as the ' +
+        'conversation you were invoked in. Results are ' +
         'oldest-first; `truncated` is true when the thread is longer than `limit`. Your own status chrome is ' +
         'filtered out.',
       inputSchema: obj(
@@ -721,7 +724,8 @@ function buildSearchTool(enabled: boolean): ToolDescriptor[] {
         'The name is the first limit: private channels and DMs are never searched, INCLUDING the conversation you ' +
         'are in right now, so this cannot look through the discussion you are having. Two more follow from it. ' +
         'Hits may sit in channels you were never added to — they are public, so `getThreadHistory` opens any of ' +
-        'them (the bot joins the channel on first use). And the ' +
+        'them (the bot joins the channel on first use, unless an operator switched that off; then answer from the ' +
+        'hit’s own text and permalink). And the ' +
         'search is authorized by the message that started this turn, so a scheduled run, a turn another agent ' +
         'woke, or a channel message that did not address you cannot search, and will say so. Page with `cursor`. ' +
         'Slack does not permit these results to be stored or copied, so AgentConnect keeps none of them in ' +

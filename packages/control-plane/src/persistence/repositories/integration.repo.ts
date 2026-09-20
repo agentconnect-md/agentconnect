@@ -10,7 +10,7 @@
  * routes/protocol/daemon.
  */
 import type { Platform, FeishuRegion } from '@agentconnect.md/protocol'
-import type { Bot, Integration, IntegrationChannel, User } from '../../generated/prisma/client.js'
+import type { Bot, Integration, IntegrationChannel, Prisma, User } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { BotExternalIdentityTaken, BotMissing, BotStillShared } from '../errors.js'
 import type {
@@ -270,16 +270,26 @@ export class PgBotRepo implements BotRepo {
       // (a 409 carrying the foreign bot's occupancy) instead of the missing-row
       // 404 the tenancy fence owes (org-scoped-data-layer.md §3).
       const locked = await tx.$queryRaw<
-        { id: string }[]
-      >`SELECT id FROM bot WHERE id = ${id} AND "orgId" = ${orgId} FOR UPDATE`
+        { id: string; platformConfig: unknown }[]
+      >`SELECT id, "platformConfig" FROM bot WHERE id = ${id} AND "orgId" = ${orgId} FOR UPDATE`
       if (locked.length === 0) throw new BotMissing(id)
       if (patch.shareable === false) {
         const active = await tx.integration.count({ where: { botId: id, status: 'active' } })
         if (active > 1) throw new BotStillShared(active)
       }
+      // The flag lives in the generic bag, so it is merged over the LOCKED row's copy: a
+      // blind write would drop the platform's own identity metadata stored beside it.
+      const bag = (locked[0]!.platformConfig as Record<string, unknown> | null) ?? {}
+      const platformConfig =
+        patch.joinPublicChannels !== undefined
+          ? ({ ...bag, joinPublicChannels: patch.joinPublicChannels } as Prisma.InputJsonObject)
+          : undefined
       await tx.bot.update({
         where: { id, orgId },
-        data: { ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}) }
+        data: {
+          ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}),
+          ...(platformConfig !== undefined ? { platformConfig } : {})
+        }
       })
     })
   }

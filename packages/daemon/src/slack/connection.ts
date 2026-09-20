@@ -178,6 +178,10 @@ export interface ConsolidatedGroup {
   botToken: string
   /** Public Slack app id (A…) used only to build the OAuth permission-update URL. */
   appId?: string
+  /** The operator's switch for {@link SlackConnection.joiningOnRefusal}: may this bot enter a
+   *  PUBLIC channel on first use? Per bot, so every integration of the group agrees; absent
+   *  (a hand-authored group, an older control plane) ⇒ true. */
+  joinPublicChannels?: boolean
   integrations: { agentId: string; integrationId: string }[]
 }
 
@@ -350,6 +354,7 @@ export function consolidate(agents: Agent[]): Map<string, ConsolidatedGroup> {
         integrations: []
       }
       if (!g.appId && appId) g.appId = appId
+      if (slack.joinPublicChannels === false) g.joinPublicChannels = false
       g.integrations.push({ agentId: a.id, integrationId: int.id })
       groups.set(k, g)
     }
@@ -390,6 +395,7 @@ export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGrou
         integrations: []
       }
       if (!g.appId && slack.appId) g.appId = slack.appId
+      if (slack.joinPublicChannels === false) g.joinPublicChannels = false
       g.integrations.push({ agentId: a.id, integrationId: int.id })
       groups.set(k, g)
     }
@@ -1356,12 +1362,19 @@ export class SlackConnection implements PlatformConnection {
    * answers `method_not_supported_for_channel_type` or `channel_not_found`), so a private
    * conversation stays reachable only where the bot was invited, and the ORIGINAL refusal is what
    * the caller sees then. The retry is exactly one: a refusal that survives the join is real.
+   *
+   * The operator may switch this off per bot (`joinPublicChannels`, the console's bot row);
+   * then the refusal surfaces as it always did, and the bot reaches only what it was invited to.
    */
   private async joiningOnRefusal<T>(channel: string, call: () => Promise<T>): Promise<T> {
     try {
       return await call()
     } catch (err) {
       if (slackApiErrorCode(err) !== 'not_in_channel') throw err
+      if (this.deps.group.joinPublicChannels === false) {
+        this.deps.log?.debug(`slack: not joining ${channel} — joining public channels is switched off for this bot`)
+        throw err
+      }
       try {
         await this.app.client.conversations.join({ channel })
       } catch (joinErr) {
@@ -1371,6 +1384,12 @@ export class SlackConnection implements PlatformConnection {
       this.deps.log?.info(`slack: joined public channel ${channel} on demand`)
       return await call()
     }
+  }
+
+  /** Apply a changed operator switch to this LIVE connection: the reconciler keys a
+   *  connection by its tokens, so a flag flip must reach the open one rather than open another. */
+  setJoinPublicChannels(enabled: boolean): void {
+    this.deps.group.joinPublicChannels = enabled
   }
 
   /** Shared chat.postMessage boundary with optional per-message identity. Whenever the

@@ -428,6 +428,8 @@ export class ConnectionReconciler {
     for (const group of groups.values()) {
       const existing = this.slackPool.find(slackSocketKey(group))
       if (existing) {
+        // The bot-level switches travel with the desired group; the open socket is kept.
+        existing.setJoinPublicChannels(group.joinPublicChannels !== false)
         // Already-open appToken: bind any integrationId not yet pointing at this conn
         // (tier 1). Covers both a brand-new integrationId AND one that was re-pointed
         // from a different appToken onto this already-open one — without the
@@ -523,6 +525,8 @@ export class ConnectionReconciler {
           continue
         }
       }
+      // A reused client picks up a flipped bot-level switch here; a new one carried it in its group.
+      conn.setJoinPublicChannels(group.joinPublicChannels !== false)
       for (const { integrationId } of group.integrations) {
         if (this.host.bindings().slack.get(integrationId) !== conn) bound = true
         this.host.bindSlack(integrationId, conn, conn.botUserId)

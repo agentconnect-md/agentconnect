@@ -66,6 +66,10 @@ export const IntegrationSlackConfig = z.object({
   // switch control is suppressed. Defaults false (every direct bot decodes as
   // non-shareable).
   shareable: z.boolean().default(false),
+  // Operator switch (`Bot.platformConfig.joinPublicChannels`, `PATCH /bots/:id`): may the
+  // daemon enter a PUBLIC channel on first use (`conversations.join`) instead of waiting to
+  // be invited? Defaults true — an older control plane sends no field.
+  joinPublicChannels: z.boolean().default(true),
   botUserId: z.string().optional() // lazily resolved via auth.test; may be seeded by CP
 })
 export type IntegrationSlackConfig = z.infer<typeof IntegrationSlackConfig>

@@ -925,6 +925,7 @@ export interface BotDto {
   // callbacks. Only a Slack http bot may be shared. Missing (older CP) ⇒ socket.
   transport: 'socket' | 'http'
   shareable: boolean // shared-bot opt-in — when true it may serve many agents at once
+  joinPublicChannels?: boolean // Slack: the bot may enter a PUBLIC channel on first use; missing (older CP) ⇒ true
   inUseByAgentId: string | null // classic-bot occupancy; ALWAYS null for a shareable bot
   agentIds: string[] // every agent currently installed on the bot (a shared bot may have many)
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
@@ -4378,8 +4379,11 @@ export async function leaveIntegrationConversation(
 }
 
 /** Flip a bot's shared-bot opt-in (PATCH /bots/:id). */
-export async function updateBot(id: string, shareable: boolean): Promise<BotDto> {
-  return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, { shareable })
+export async function updateBot(
+  id: string,
+  patch: { shareable?: boolean; joinPublicChannels?: boolean }
+): Promise<BotDto> {
+  return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, patch)
 }
 
 /** Sync one user-managed Slack app's manifest and re-check the scopes granted to

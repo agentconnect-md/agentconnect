@@ -1226,6 +1226,18 @@ public channel of the workspace (`conversations.list`) plus the private channels
 an agent can find the id of a channel it was never added to; the console's membership snapshot
 stays `listBotChannels`. Platforms that declare nothing keep their previous reach.
 
+The join is an **operator switch**, per bot: `Bot.platformConfig.joinPublicChannels` (the
+generic bag, so no migration), flipped by `PATCH /bots/:id` and rendered by the Slack module's
+`RowSettings` fragment in the console's expanded bot row. The control plane refuses the flag
+on any platform whose §5 manifest does not declare `publicChannelJoin` (Slack alone does), and
+re-projects the bot's integration specs on a flip — `syncBot` for an HTTP bot, an
+`integration/upsert` per socket integration — so the flag rides `IntegrationSlackConfig`
+(default true for an older control plane) into the daemon's consolidated group. The reconciler
+keys a Slack connection by its tokens, so it applies a flipped flag to the LIVE connection
+rather than opening another. Off, `joiningOnRefusal` rethrows the platform's own
+`not_in_channel` and the bot reaches only what it was invited to; the reach gate above is
+unchanged, and workspace search (`searchPublicMessages`) never depended on membership.
+
 The orchestration triple `startOrchestration` / `getOrchestration` /
 `cancelOrchestration` is **retired from the injected tool surface**: its send half
 duplicated `sendMessage` (fan-out to N workers is N `sendMessage` calls with

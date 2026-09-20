@@ -464,6 +464,13 @@ export interface WebBotSettingsFragments {
      *  Lark console per region (:71-74, :1338-1345). */
     RowLinks?: ComponentType<{ bot: BotDto }>
     /**
+     * Bot-level settings the module owns, rendered at the top of the EXPANDED row
+     * (above the channel roster) — Slack's "join public channels on demand" switch.
+     * The host renders none for a platform that declares none, which is how the
+     * control stays off every row where the server would refuse it.
+     */
+    RowSettings?: ComponentType<{ bot: BotDto; canWrite: boolean }>
+    /**
      * The delete dialog's "what AgentConnect cannot delete for you" block —
      * the provider sentence plus its deep link (DeleteBotModal.tsx:51-71).
      * A member of its own rather than a reuse of {@link RowLinks}: the row
