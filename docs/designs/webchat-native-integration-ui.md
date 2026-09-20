@@ -183,6 +183,22 @@ The report carries its KIND alongside its sentence, because the card's own copy 
 card that could not deliver a report says so, and "your changes are saved" under "Creating the agent
 failed" would be the one thing worse than saying nothing.
 
+NOTHING OPENS ITSELF. The Console holds one dialog at a time, so a card that opened on arrival
+could only ever be refused when a second one arrived in the same turn — and a refusal with the
+card's one automatic opening already spent is a flow that stops with no one told why. A card is
+therefore an invitation: it carries its own state in its title, `Waiting` until the reader
+submits it and `Done` after, and it opens on their click. A done card still opens again. The one
+exception is a REMOUNT, below: a dialog already on screen is not an interruption, it is the form
+the reader is already filling in.
+
+A card the reader has scrolled past is the other half of that. `PendingActions` holds what the
+transcript is waiting on — a native card nobody opened, and an in-band elicitation nobody
+answered, which are the same thing to a reader and the same thing to the agent — and pins a
+banner above the transcript naming the first one that is OFF SCREEN. On screen it says nothing:
+a pointer to a card in the middle of the viewport is chrome people learn to ignore. The
+scroller is the viewport it measures against, not the window, because the transcript is its own
+overflow region.
+
 Reporting back does NOT need a live card, and this is the one place a native dialog parts
 company with a sandboxed frame. The app bridge (`app_rpc`) is the authorization model for
 agent-authored HTML: a frame may not name its own sender, so everything it can reach is looked

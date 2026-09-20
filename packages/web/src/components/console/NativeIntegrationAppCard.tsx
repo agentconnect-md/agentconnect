@@ -4,19 +4,18 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { NativeMcpUi, nativeUiTitle } from '@agentconnect.md/protocol/mcp-app'
 import { Button } from '@/components/ui'
 import { useOptionalModal } from './ModalProvider'
+import { usePendingAction } from './PendingActions'
 import type { McpAppCardProps } from './McpAppCard'
 
-const opened = new Set<string>()
 // Cards whose dialog was open when the card itself unmounted, and WHEN. A turn's React key changes
 // when its live steps become persisted rows, which remounts the card under a form the reader is
-// filling in — so the remount puts the dialog back instead of leaving a bare button. The window is
-// what keeps that from also reopening a dialog the reader walked away from: a remount lands in the
+// filling in — so the remount puts the dialog back instead of discarding it. The window is what
+// keeps that from also reopening a dialog the reader walked away from: a remount lands in the
 // commit that unmounted it, while navigating away and coming back cannot.
 const reopening = new Map<string, number>()
 const REOPEN_WINDOW_MS = 250
-/** Reports this browser has delivered, so a SECOND TAB does not open a dialog over a form already
- *  submitted — `sessionStorage` is per tab. Presentational only: it suppresses the automatic
- *  opening and names the outcome, and the card's own button still opens the form again. */
+/** Reports this browser has delivered, so a SECOND TAB shows the card as done rather than as still
+ *  waiting. Presentational only: the card's own button still opens the form again. */
 const reportedKey = (appId: string): string => `ac.native-ui.reported.${appId}`
 function readReported(appId: string): string {
   try {
@@ -31,15 +30,19 @@ export function NativeIntegrationAppCard({ step, onReport }: McpAppCardProps) {
   const app = step.app!
   const parsed = NativeMcpUi.safeParse(app.nativeUi)
   const ui = parsed.success ? parsed.data : undefined
+  const title = ui ? nativeUiTitle(ui) : 'Configuration'
   const [summary, setSummary] = useState(() => readReported(app.appId))
   const [error, setError] = useState('')
   const opening = useRef(false)
   // Opening needs no MCP bridge: a native dialog runs on the reader's own Console session, which is
   // why the daemon keeps a native card reopenable from its recorded intent across a disconnect.
   const openable = !!ui && !!modal
-  // Reporting needs no bridge either — the outcome goes in as an ordinary turn, the same frame the
-  // composer sends — so a card the daemon has stopped serving still tells the agent what happened.
-  const live = !!onReport && !app.outcome && openable
+  const settled = !!app.outcome
+  const done = !!summary || app.outcome === 'completed'
+  // What the agent is actually blocked on. A history view waits on nobody: it could open the form,
+  // but it has no way to tell anyone what came of it.
+  const waiting = !done && !settled && openable && !!onReport
+  const holdRef = usePendingAction(`app:${app.appId}`, title, waiting)
   // Read at callback time, not closure-capture time: a dialog outlives the render that opened it,
   // and — because the transcript re-keys turns — it outlives this component instance too.
   const report = useRef<McpAppCardProps['onReport']>(undefined)
@@ -58,14 +61,12 @@ export function NativeIntegrationAppCard({ step, onReport }: McpAppCardProps) {
     [modal, app.appId]
   )
   // A card going inert closes the dialog it opened — but only on the TRANSITION: re-reading a card
-  // that settled long ago must not shut a dialog the reader deliberately reopened from it. A
-  // completed one is left alone, so a saved form keeps its own final reveal step.
-  const settled = !!app.outcome
+  // that settled long ago must not shut a dialog the reader deliberately reopened from it.
   const inert = settled && app.outcome !== 'completed'
   const wasInert = useRef(inert)
   useEffect(() => {
-    // Only a dialog THIS card still owns: a form that already reported may be holding its own
-    // final reveal step, and the settlement that reported it must not shut that.
+    // Only a dialog THIS card still owns: a form that already reported may be holding its own final
+    // reveal step, and the settlement that reported it must not shut that.
     if (inert && !wasInert.current && dialogOpen.current) {
       dialogOpen.current = false
       modal?.closeNativeIntegration?.(app.appId)
@@ -75,16 +76,15 @@ export function NativeIntegrationAppCard({ step, onReport }: McpAppCardProps) {
   const open = useCallback(async () => {
     if (!ui || !modal || opening.current) return
     opening.current = true
-    // Per-open deduplication, held in the CLOSURE rather than on the instance: the dialog belongs
-    // to the reader, not to the render that opened it. One dialog reports once, and reopening it
-    // may report again.
-    let done = false
+    // Per-open deduplication, held in the CLOSURE rather than on the instance: the dialog belongs to
+    // the reader, not to the render that opened it. One dialog reports once, a reopened one again.
+    let submitted = false
     try {
       const shown = modal.openNativeIntegration(
         ui,
         (message, outcome) => {
-          if (done) return
-          done = true
+          if (submitted) return
+          submitted = true
           dialogOpen.current = false
           setSummary(message)
           // A REFUSED submit reports through this same callback, so the copy asks the report what it
@@ -111,13 +111,13 @@ export function NativeIntegrationAppCard({ step, onReport }: McpAppCardProps) {
             )
             return
           }
-          // NOT a settlement. Accepting a turn is not delivering one — it may still be queued
-          // behind a running turn, where the reader can cancel it — so the card stays open for the
+          // NOT a settlement. Accepting a turn is not delivering one — it may still be queued behind
+          // a running turn, where the reader can cancel it — so the card stays openable for the
           // submit it may still owe, and only this browser's view of it is recorded.
           try {
             localStorage.setItem(reportedKey(app.appId), message)
           } catch {
-            /* A tab that cannot record it simply opens the dialog once more; nothing is lost. */
+            /* A tab that cannot record it simply shows the card as waiting; nothing is lost. */
           }
         },
         app.appId
@@ -132,36 +132,41 @@ export function NativeIntegrationAppCard({ step, onReport }: McpAppCardProps) {
     }
   }, [ui, modal, app.appId])
 
-  // Only a LIVE card opens itself — a reload must not throw a dialog over a conversation the reader
-  // came back to read. A settled one waits behind its button.
+  // NOTHING opens itself. A card is an invitation the reader accepts, and that is what makes a turn
+  // raising two of them harmless: the Console holds one dialog at a time, so an automatic second
+  // open could only ever be refused and then forgotten, which is exactly how a flow stalled. The
+  // banner is what finds a card the reader has scrolled past; the button is what opens it. The one
+  // exception is the remount above — a dialog already on screen is not an interruption, it is the
+  // form they are already filling in.
   useEffect(() => {
-    if (!live || summary) return
-    // A remount under an open dialog is not a second auto-open: it is the same one, continued.
     const offered = reopening.get(app.appId)
-    const resumed = offered !== undefined && Date.now() - offered < REOPEN_WINDOW_MS
     reopening.delete(app.appId)
-    if (opened.has(app.appId) && !resumed) return
-    opened.add(app.appId)
-    if (opened.size > 1000) opened.delete(opened.values().next().value!)
-    const key = `ac.native-ui.${app.appId}`
-    try {
-      if (sessionStorage.getItem(key) && !resumed) return
-      sessionStorage.setItem(key, 'opened')
-    } catch {
-      /* In-memory deduplication still covers reconnects when storage is unavailable. */
-    }
+    if (offered === undefined || Date.now() - offered >= REOPEN_WINDOW_MS) return
     void open()
-  }, [app.appId, live, summary, open])
+  }, [app.appId, open])
 
   return (
-    <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) p-4">
-      <div className="font-sans text-[14px] font-semibold leading-normal">
-        {ui ? nativeUiTitle(ui) : 'Configuration'}
+    <div
+      ref={holdRef}
+      data-native-app-status={done ? 'done' : waiting ? 'waiting' : 'inert'}
+      className="rounded-md border border-(--border-subtle) bg-(--surface-card) p-4"
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0 flex-1 truncate font-sans text-[14px] font-semibold leading-normal">{title}</div>
+        {(done || waiting) && (
+          <span
+            className={`badge flex-none ${
+              done ? 'bg-(--surface-sunken) text-(--text-secondary)' : 'bg-(--status-paused-soft) text-(--amber-500)'
+            }`}
+          >
+            {done ? 'Done' : 'Waiting'}
+          </span>
+        )}
       </div>
       <p className="mt-2 text-[13px] text-(--text-secondary)">
         {summary ||
-          (live
-            ? 'Complete configuration in the dialog.'
+          (waiting
+            ? 'Open the dialog to complete this configuration.'
             : openable
               ? 'Open this configuration again whenever you need it.'
               : 'This configuration interface is no longer available.')}
@@ -172,8 +177,8 @@ export function NativeIntegrationAppCard({ step, onReport }: McpAppCardProps) {
         </p>
       )}
       {openable && (
-        <Button variant="secondary" className="mt-2" onClick={open}>
-          {summary || settled ? 'Open again' : 'Open configuration'}
+        <Button variant={waiting ? 'primary' : 'secondary'} className="mt-2" onClick={open}>
+          {done || settled ? 'Open again' : 'Open configuration'}
         </Button>
       )}
     </div>

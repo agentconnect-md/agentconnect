@@ -22,6 +22,7 @@ import { agentLabel, poolLabel } from '@/lib/data'
 import { detailCrumb, type CrumbSlot } from '@/lib/crumb'
 import { PlaygroundProvider } from './PlaygroundProvider'
 import { ModalProvider, useModal } from './ModalProvider'
+import { PendingActionsProvider } from './PendingActions'
 import ConnectAiModal from './ConnectAiModal'
 import GettingStarted, { openGettingStarted } from './GettingStarted'
 import { GlobalSearch } from './GlobalSearch'
@@ -167,7 +168,12 @@ export default function ConsoleShell({ children }: { children: ReactNode }) {
         <ConsoleDataProvider>
           <PlaygroundProvider>
             <ModalProvider>
-              <ShellChrome>{children}</ShellChrome>
+              {/* What the transcript is waiting on the reader for. Mounted beside the dialog host
+              for the same reason: the cards that register live under a route, the banner that
+              names them is the route's own chrome, and one registry outlives both. */}
+              <PendingActionsProvider>
+                <ShellChrome>{children}</ShellChrome>
+              </PendingActionsProvider>
             </ModalProvider>
           </PlaygroundProvider>
         </ConsoleDataProvider>

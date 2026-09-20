@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
+import { PendingActionsBanner, usePendingAction } from '@/components/console/PendingActions'
 import { selfConversationPath } from '@/lib/conversation-addressing'
 import { assembleConversationLineage, type ConversationLineage } from '@/lib/conversation-lineage'
 import { encodeConversationKey } from '@/lib/conversation-key'
@@ -1113,6 +1114,15 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
   const [others, setOthers] = useState<Record<string, boolean>>(() => formOthers(fields))
   // Minimizing is a UI fold, never an answer: the ask stays live and open, just out of the way.
   const [minimized, setMinimized] = useState(false)
+  // An unanswered question stops the agent exactly as an unopened configuration card does, so the
+  // banner treats the two alike. `onAnswer` absent ⇒ this reader cannot answer it here, and a
+  // pointer to a card they cannot act on would be a nag with no action behind it. Read off `step`
+  // and placed above every early return below — the narrowed locals come after one.
+  const holdRef = usePendingAction(
+    `elicit:${step.elicit?.requestId ?? ''}`,
+    (step.text.split('\n', 1)[0] ?? step.text).slice(0, 80) || 'A question',
+    !!step.elicit && !step.elicit.outcome && !!onAnswer
+  )
   const elicit = step.elicit
   const multi = elicit?.multi
   const consentUrl = elicit?.url
@@ -1154,6 +1164,7 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
       : undefined
   return (
     <div
+      ref={holdRef}
       className={`overflow-hidden rounded-md border border-l-2 border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs) ${edge}`}
     >
       <div className="flex min-w-0 items-start gap-[9px] px-[14px] py-[11px]">
@@ -4952,6 +4963,10 @@ export default function SessionDetailView() {
 
           {!isLive && approvalCard('mx-4 mt-4 max-desktop:rounded-lg desktop:mx-0 desktop:mt-0 desktop:mb-4')}
         </div>
+        {/* WAITING BANNER — between the fixed chrome and the scroller, so it pins to the top of the
+        chat area without being a sticky child of the pane (which stays free to be virtualized). It
+        draws only when what it names is off screen, so it costs nothing while the card is in view. */}
+        {!viewerOpen && <PendingActionsBanner />}
         {/* SCROLL PANE — the transcript/viewer ONLY (all chrome is above, in the header). Full-width
         so the scrollbar rides the page edge via the −mr/pr bleed; nothing sticky scrolls inside it,
         so it is ready to host a virtualized turn list. useStickToBottom pins this element. */}
