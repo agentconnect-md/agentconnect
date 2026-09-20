@@ -39,7 +39,8 @@ import type {
   CodeHostReviewState,
   CodeHostProvider,
   HookKind,
-  PullRequestFeedbackSignal
+  PullRequestFeedbackSignal,
+  SessionStayedHomeReason
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -185,6 +186,8 @@ export interface DaemonRecord {
   /** Last reported `Heartbeat.load` {cpu,mem,agents}; null before the first beat. */
   load: unknown
   activeSessions: number
+  /** Last reported `Heartbeat.hostedSessions`, or a relayed prepare's `liveCount`; null before either. */
+  hostedSessions: number | null
   degradedScopes: string[]
   lastSeenAt: Date | null
   unreachableAt: Date | null
@@ -231,6 +234,8 @@ export interface DaemonRepo {
   /** Replace the daemon-level MCP-server list (`facts/daemon-runtimes.mcpServers`) wholesale. */
   setMcpServers(daemonId: DaemonId, servers: FactsMcpServer[]): Promise<void>
   touchHeartbeat(daemonId: DaemonId, hb: Heartbeat, at: Date): Promise<void>
+  /** Refresh the hosted-session count between beats, from a relayed `executor/prepare` reply; a missing row is a no-op. */
+  setHostedSessions(daemonId: DaemonId, hostedSessions: number): Promise<void>
   markUnreachable(daemonId: DaemonId, at: Date): Promise<void>
   /** Set the console-assigned display name (a human edit — stamps last-modified
    *  audit). `byUserId` is the editing WebUI principal (absent under devAuth).
@@ -1091,6 +1096,9 @@ export interface EventSessionInput {
   permissionMode?: string
   outputMode?: string
   workspaceIsolation?: 'shared' | 'session'
+  // Birth verdict (session-executors.md §7): whichever of the two is reported replaces the other.
+  executorDaemonId?: DaemonId
+  stayedHomeReason?: SessionStayedHomeReason
   // The daemon that reported the milestone — stamped by the WS handler from the
   // authenticated connection, never taken from the frame payload.
   daemonId?: DaemonId
@@ -6875,6 +6883,8 @@ export interface MemberSetRecord {
   id: string
   orgId: string | null
   name: string
+  /** The group's consent to spread its agents' sessions across members (session-executors.md §10). */
+  spreadSessions: boolean
 }
 
 export interface MemberSetRepo {
@@ -6907,6 +6917,8 @@ export interface MemberSetRepo {
   createForOrg(orgId: string, name: string): Promise<MemberSetRecord>
   /** Rename one of an org's sets. Null ⇒ no such set in that org. */
   renameForOrg(orgId: string, setId: string, name: string): Promise<MemberSetRecord | null>
+  /** Turn one of an org's sets' session spreading on or off. Null ⇒ no such set in that org. */
+  setSpreadSessionsForOrg(orgId: string, setId: string, enabled: boolean): Promise<MemberSetRecord | null>
   /** Drop one of an org's sets. Refused while anything still points at it: throws
    *  `MemberSetInUse` when it has members or `set`-placed agents. False ⇒ no such set. */
   deleteForOrg(orgId: string, setId: string): Promise<boolean>

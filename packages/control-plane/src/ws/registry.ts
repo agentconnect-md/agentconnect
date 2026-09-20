@@ -11,7 +11,7 @@
  * (not the concrete `DaemonConnection`) so this module has no cycle with
  * `ws/connection.ts`.
  */
-import type { ControlExt, RegisterReq } from '@agentconnect.md/protocol'
+import type { ControlExt, ExecutorPrepareResult, RegisterReq } from '@agentconnect.md/protocol'
 import { EventEmitter, once } from 'node:events'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
 import type { RequestOpts } from './correlator.js'
@@ -59,6 +59,8 @@ export interface DaemonConnState {
   orgByCron?: Map<string, string>
   orgByMcpServer?: Map<string, string>
   orgByMemoryConnection?: Map<string, string>
+  /** `executor/prepare` relays in flight to THIS daemon, by launch, so a resent request joins its relay instead of opening a second. */
+  executorPrepares?: Map<string, Promise<ExecutorPrepareResult>>
 }
 
 /** A request was dispatched, but its daemon connection closed before a reply. */

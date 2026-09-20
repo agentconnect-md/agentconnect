@@ -38,6 +38,7 @@ import { handleCronReport } from './cron-report.js'
 import { handleDutyRelease } from './duty-release.js'
 import { handleDutyClaim } from './duty-claim.js'
 import { handleDutyFetch } from './duty-fetch.js'
+import { handleExecutorCandidates, handleExecutorPrepare } from './executor.js'
 import { handleAgentExists } from './agent-exists.js'
 import { handleHookReport } from './hook-report.js'
 import { handleChannelAgents } from './channel-agents.js'
@@ -94,6 +95,8 @@ export class FrameRouter {
       'duty/release': handleDutyRelease,
       'duty/claim': handleDutyClaim,
       'duty/fetch': handleDutyFetch,
+      'executor/candidates': handleExecutorCandidates,
+      'executor/prepare': handleExecutorPrepare,
       'agent/exists': handleAgentExists,
       'hook/report': handleHookReport,
       'hook/start': handleHookStart,
@@ -162,6 +165,8 @@ export {
   handleCodeHostReviewResult,
   handleChannelAgents,
   handleChildSessionStatus,
+  handleExecutorCandidates,
+  handleExecutorPrepare,
   handleEventSession,
   handleEventSessionSync,
   handleSessionActivity,

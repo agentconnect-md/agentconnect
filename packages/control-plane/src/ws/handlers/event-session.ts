@@ -205,6 +205,12 @@ async function recordEventSession(
     ...(p.permissionMode !== undefined ? { permissionMode: p.permissionMode } : {}),
     ...(p.outputMode !== undefined ? { outputMode: p.outputMode } : {}),
     ...(p.workspaceIsolation !== undefined ? { workspaceIsolation: p.workspaceIsolation } : {}),
+    // One verdict: a report naming an executor drops any reason it also carried.
+    ...(p.executorDaemonId !== undefined
+      ? { executorDaemonId: DaemonId(p.executorDaemonId) }
+      : p.stayedHomeReason !== undefined
+        ? { stayedHomeReason: p.stayedHomeReason }
+        : {}),
     ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
     ...(p.transportScope !== undefined ? { transportScope: p.transportScope } : {}),
     ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),

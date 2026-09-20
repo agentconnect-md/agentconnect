@@ -102,6 +102,13 @@ export async function assertDaemonNotInSet(
   if (row && row.orgId === null) throw new DaemonPlacementInSet(agentId, daemonId)
 }
 
+const toRecord = (row: MemberSetRecord): MemberSetRecord => ({
+  id: row.id,
+  orgId: row.orgId,
+  name: row.name,
+  spreadSessions: row.spreadSessions
+})
+
 export class PgMemberSetRepo implements MemberSetRepo {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -112,7 +119,7 @@ export class PgMemberSetRepo implements MemberSetRepo {
 
   async get(setId: string): Promise<MemberSetRecord | null> {
     const row = await this.prisma.memberSet.findUnique({ where: { id: setId } })
-    return row ? { id: row.id, orgId: row.orgId, name: row.name } : null
+    return row ? toRecord(row) : null
   }
 
   async setIdOf(daemonId: DaemonId): Promise<string | null> {
@@ -122,7 +129,7 @@ export class PgMemberSetRepo implements MemberSetRepo {
 
   async setOf(daemonId: DaemonId): Promise<MemberSetRecord | null> {
     const row = await this.prisma.memberSetMember.findUnique({ where: { daemonId }, select: { set: true } })
-    return row ? { id: row.set.id, orgId: row.set.orgId, name: row.set.name } : null
+    return row ? toRecord(row.set) : null
   }
 
   async memberIdsOf(setId: string): Promise<string[]> {
@@ -173,7 +180,7 @@ export class PgMemberSetRepo implements MemberSetRepo {
 
   async listForOrg(orgId: string): Promise<MemberSetRecord[]> {
     const rows = await this.prisma.memberSet.findMany({ where: { orgId }, orderBy: { name: 'asc' } })
-    return rows.map((r) => ({ id: r.id, orgId: r.orgId, name: r.name }))
+    return rows.map(toRecord)
   }
 
   async agentCountsOf(setIds: readonly string[]): Promise<Map<string, number>> {
@@ -188,12 +195,21 @@ export class PgMemberSetRepo implements MemberSetRepo {
 
   async createForOrg(orgId: string, name: string): Promise<MemberSetRecord> {
     const row = await this.prisma.memberSet.create({ data: { id: randomUUID(), orgId, name } })
-    return { id: row.id, orgId: row.orgId, name: row.name }
+    return toRecord(row)
   }
 
   async renameForOrg(orgId: string, setId: string, name: string): Promise<MemberSetRecord | null> {
     const { count } = await this.prisma.memberSet.updateMany({ where: { id: setId, orgId }, data: { name } })
-    return count === 0 ? null : { id: setId, orgId, name }
+    return count === 0 ? null : this.get(setId)
+  }
+
+  async setSpreadSessionsForOrg(orgId: string, setId: string, enabled: boolean): Promise<MemberSetRecord | null> {
+    // The org rides the write, so another org's set, or the org-less pool, matches nothing.
+    const { count } = await this.prisma.memberSet.updateMany({
+      where: { id: setId, orgId },
+      data: { spreadSessions: enabled }
+    })
+    return count === 0 ? null : this.get(setId)
   }
 
   async deleteForOrg(orgId: string, setId: string): Promise<boolean> {

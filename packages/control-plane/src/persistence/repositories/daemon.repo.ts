@@ -53,6 +53,7 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
     health: d.health as HealthState,
     load: d.load,
     activeSessions: d.activeSessions,
+    hostedSessions: d.hostedSessions,
     degradedScopes: d.degradedScopes,
     lastSeenAt: d.lastSeenAt,
     unreachableAt: d.unreachableAt,
@@ -230,10 +231,17 @@ export class PgDaemonRepo implements DaemonRepo {
         load: hb.load as Prisma.InputJsonValue,
         health: hb.health,
         activeSessions: hb.activeSessions,
+        // Absent on a daemon that predates the field: the stored count stays what it was.
+        ...(hb.hostedSessions !== undefined ? { hostedSessions: hb.hostedSessions } : {}),
         degradedScopes: hb.degradedScopes,
         lastSeenAt: at
       }
     })
+  }
+
+  async setHostedSessions(daemonId: DaemonId, hostedSessions: number): Promise<void> {
+    // updateMany: a member retired while its prepare was in flight is no error.
+    await this.db.daemon.updateMany({ where: { id: daemonId }, data: { hostedSessions } })
   }
 
   async markUnreachable(daemonId: DaemonId, at: Date): Promise<void> {

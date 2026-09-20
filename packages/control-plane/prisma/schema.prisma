@@ -441,6 +441,7 @@ model Daemon {
   health         HealthState  @default(ok)
   load           Json?        @db.JsonB // Heartbeat.load {cpu,mem,agents}
   activeSessions Int          @default(0)
+  hostedSessions Int? // Heartbeat.hostedSessions, refreshed from a relayed prepare's liveCount; null ⇒ never reported
   degradedScopes String[]     @default([]) // Heartbeat.degradedScopes
   lastSeenAt     DateTime?    @db.Timestamptz(6) // drives watchdog
   unreachableAt  DateTime?    @db.Timestamptz(6) // reassignGrace clock origin
@@ -713,6 +714,8 @@ model MemberSet {
   id        String   @id @db.Uuid
   orgId     String? // NULL = cross-org (the install-wide pool), never "unassigned"
   name      String
+  /// The group admin's consent to spread its agents' sessions across members (session-executors.md §10); each machine's `sandbox.share` is the other half.
+  spreadSessions Boolean @default(false)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   org      Org?              @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -1189,6 +1192,9 @@ model SessionMeta {
   // reported it; `session` identifies a daemon-local worktree eligible for the
   // authorized Workspace viewer.
   workspaceIsolation  WorkspaceIsolation?
+  // Birth verdict (session-executors.md §7): the executing daemon, or the SessionStayedHomeReason slug; at most one is set, both null ⇒ never reported.
+  executorDaemonId    String?             @db.Uuid
+  stayedHomeReason    String?
   activityState       ActivityState       @default(idle)
   // ── session visibility (docs/designs/session-visibility.md §3) ──
   orgId               String // denormalized from agent.orgId at ingest so the org-wide list predicate/index never joins agent

@@ -300,11 +300,16 @@ export const MemberSetDto = z.object({
   memberDaemonIds: z.array(z.string().uuid()),
   /** Agents placed on this set. The console shows the same count on the install-wide pool and on
    *  a cluster, so a set that cannot answer it cannot be presented beside them. */
-  agentCount: z.number().int()
+  agentCount: z.number().int(),
+  /** Whether the set's agents may run their sessions on members other than their holder. Off by default; each machine's own `sandbox.share` is the other consent. */
+  spreadSessions: z.boolean()
 })
 export const MemberSetListDto = z.array(MemberSetDto)
 
 export const MemberSetBody = z.object({ name: z.string().trim().min(1).max(64) })
+
+/** `PUT …/member-sets/:id/spread-sessions` — the set's session-spreading switch. */
+export const MemberSetSpreadSessionsBody = z.object({ enabled: z.boolean() })
 
 /** `…/member-sets/:id/members/:daemonId` — the enrolment target. */
 export const MemberSetMemberParams = z.object({ id: z.string(), daemonId: z.string() })

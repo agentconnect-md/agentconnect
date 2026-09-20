@@ -254,6 +254,30 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect((await repo.getUnscoped(SessionId(SESSION)))?.model).toBeNull()
   })
 
+  it('records the birth verdict as one fact: the half a report carries replaces the other', async () => {
+    await fixtures()
+    const repo = new PgSessionRepo(prisma)
+    const verdict = async () => {
+      const row = await prisma.sessionMeta.findUniqueOrThrow({ where: { id: SESSION } })
+      return { executorDaemonId: row.executorDaemonId, stayedHomeReason: row.stayedHomeReason }
+    }
+
+    // A daemon that predates the fields reports neither, and the row says so.
+    await repo.recordMilestone(ev('start'))
+    expect(await verdict()).toEqual({ executorDaemonId: null, stayedHomeReason: null })
+
+    await repo.recordMilestone(ev('plan', { executorDaemonId: DaemonId(OTHER_DAEMON) }))
+    await repo.recordMilestone(ev('plan')) // a refresh that carries neither half moves nothing
+    expect(await verdict()).toEqual({ executorDaemonId: OTHER_DAEMON, stayedHomeReason: null })
+
+    // Its executor was lost and the session came home: the reason replaces the machine.
+    await repo.recordMilestone(ev('plan', { stayedHomeReason: 'holder_least_loaded' }))
+    expect(await verdict()).toEqual({ executorDaemonId: null, stayedHomeReason: 'holder_least_loaded' })
+
+    await repo.recordMilestone(ev('end', { executorDaemonId: DaemonId(DAEMON) }))
+    expect(await verdict()).toEqual({ executorDaemonId: DAEMON, stayedHomeReason: null })
+  })
+
   it('advances phase on subsequent milestones (upsert on sessionId)', async () => {
     await fixtures()
     const repo = new PgSessionRepo(prisma)

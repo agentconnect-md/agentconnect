@@ -246,6 +246,8 @@ export interface DaemonView {
   sessionEpoch: bigint
   maxAgents: number
   activeSessions: number
+  /** Session environments live on the machine, whoever holds the session; null until the daemon reports one. */
+  hostedSessions: number | null
   lastSeenAt: Date | null
   createdAt: Date
   /** WebUI user who provisioned the daemon; null for CLI/self-registered. */
@@ -303,6 +305,8 @@ export interface DaemonRegistry {
    *  reached READY (called post-reconcile, cli-daemon-split.md §7). Best-effort. */
   settleLifecycleOpOnReady(daemonId: DaemonId): Promise<void>
   recordHeartbeat(daemonId: DaemonId, hb: Heartbeat): Promise<void>
+  /** Refresh a member's hosted-session count from the `liveCount` of an `executor/prepare` reply the CP relayed. */
+  recordHostedSessions(daemonId: DaemonId, hostedSessions: number): Promise<void>
   recordRuntimeProfile(daemonId: DaemonId, f: FactsRuntimeProfile): Promise<void>
   /** Reconcile the daemon's runtime list AND its MCP-server snapshot to the
    *  `facts/daemon-runtimes` frame (both replace semantics — stale rows pruned,

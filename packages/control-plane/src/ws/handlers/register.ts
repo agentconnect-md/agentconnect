@@ -26,6 +26,7 @@ import {
   GITCRED_PROVIDER_V2_FEATURE,
   GITEA_V1_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
+  SESSION_EXECUTORS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
@@ -131,7 +132,9 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       AGENT_MEMORY_STORE_V1_FEATURE,
       AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
       MEMORY_TRANSACTION_V1_FEATURE,
-      MEMORY_CAPTURE_FENCE_V1_FEATURE
+      MEMORY_CAPTURE_FENCE_V1_FEATURE,
+      // session-executors.md §6: this CP serves `executor/candidates` and relays `executor/prepare`; a holder must not send either before seeing this.
+      SESSION_EXECUTORS_V1_FEATURE
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)

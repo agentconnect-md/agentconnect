@@ -14,6 +14,7 @@ import { buildHttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { poolSetId } from '../fakes/member-set.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd1111111-1111-4111-8111-111111111111'
@@ -25,6 +26,7 @@ interface SetBody {
   name: string
   memberDaemonIds: string[]
   agentCount: number
+  spreadSessions: boolean
 }
 
 describe('member sets — CRUD is org-fenced (real Postgres)', () => {
@@ -67,9 +69,83 @@ describe('member sets — CRUD is org-fenced (real Postgres)', () => {
       await seedAgent(prisma, AGENT, { setId: set.setId })
 
       const listed = (await app.inject({ method: 'GET', url: `${ORG}/member-sets` })).json() as SetBody[]
-      expect(listed).toEqual([{ setId: set.setId, name: 'lab', memberDaemonIds: [], agentCount: 1 }])
+      expect(listed).toEqual([
+        { setId: set.setId, name: 'lab', memberDaemonIds: [], agentCount: 1, spreadSessions: false }
+      ])
     } finally {
       await close()
+    }
+  })
+
+  it('spreads sessions only once someone turns the switch on, and a rename leaves it alone', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const set = (
+        await app.inject({ method: 'POST', url: `${ORG}/member-sets`, payload: { name: 'lab' } })
+      ).json() as SetBody
+      // The group admin's consent is explicit: a new set spreads nothing.
+      expect(set.spreadSessions).toBe(false)
+
+      const url = `${ORG}/member-sets/${set.setId}/spread-sessions`
+      const on = await app.inject({ method: 'PUT', url, payload: { enabled: true } })
+      expect(on.statusCode).toBe(200)
+      expect(on.json() as SetBody).toMatchObject({ setId: set.setId, spreadSessions: true })
+
+      const renamed = await app.inject({
+        method: 'PATCH',
+        url: `${ORG}/member-sets/${set.setId}`,
+        payload: { name: 'x' }
+      })
+      expect(renamed.json() as SetBody).toMatchObject({ name: 'x', spreadSessions: true })
+      const listed = (await app.inject({ method: 'GET', url: `${ORG}/member-sets` })).json() as SetBody[]
+      expect(listed.map((s) => s.spreadSessions)).toEqual([true])
+
+      const off = await app.inject({ method: 'PUT', url, payload: { enabled: false } })
+      expect((off.json() as SetBody).spreadSessions).toBe(false)
+      expect((await app.inject({ method: 'PUT', url, payload: { enabled: 'yes' } })).statusCode).toBe(400)
+    } finally {
+      await close()
+    }
+  })
+
+  it('keeps the switch off the install-wide pool, another organization’s set, and a viewer’s hands', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    const other = await prisma.org.create({ data: { slug: `mset-${randomUUID().slice(0, 8)}` } })
+    const theirs = await prisma.memberSet.create({ data: { id: randomUUID(), orgId: other.id, name: 'theirs' } })
+    const pool = await poolSetId(prisma)
+    try {
+      for (const setId of [pool, theirs.id, randomUUID()]) {
+        const refused = await app.inject({
+          method: 'PUT',
+          url: `${ORG}/member-sets/${setId}/spread-sessions`,
+          payload: { enabled: true }
+        })
+        expect([setId, refused.statusCode]).toEqual([setId, 404])
+      }
+      expect(await prisma.memberSet.count({ where: { spreadSessions: true } })).toBe(0)
+    } finally {
+      await close()
+    }
+
+    // The same fence as renaming the set: a viewer reads the switch and cannot move it.
+    const users = new PgUserRepo(prisma)
+    const email = `mset-viewer-${randomUUID()}@example.test`
+    const { userId } = await users.provisionOidcUser({ oidcSubject: email, email, emailVerified: true })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'viewer')
+    const mine = await prisma.memberSet.create({ data: { id: randomUUID(), orgId: DEFAULT_ORG_ID, name: 'mine' } })
+    const viewer = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId })
+    try {
+      const refused = await viewer.app.inject({
+        method: 'PUT',
+        url: `${ORG}/member-sets/${mine.id}/spread-sessions`,
+        payload: { enabled: true }
+      })
+      expect(refused.statusCode).toBe(403)
+      expect(await prisma.memberSet.findUniqueOrThrow({ where: { id: mine.id } })).toMatchObject({
+        spreadSessions: false
+      })
+    } finally {
+      await viewer.close()
     }
   })
 

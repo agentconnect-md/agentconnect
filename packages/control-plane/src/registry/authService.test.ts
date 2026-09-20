@@ -50,7 +50,7 @@ function makeEpoch(bump: () => Promise<{ sessionEpoch: bigint }>): EpochService 
 
 /** The pool, as the ledger's one org-less set. `auth/ok` announces it, and it is the whole
  *  reason the daemon on the other end enforces duty leases at all (daemon-groups.md §3). */
-const POOL_SET = { id: '9f11e5e7-0000-4000-8000-000000000001', orgId: null, name: 'Cloud' }
+const POOL_SET = { id: '9f11e5e7-0000-4000-8000-000000000001', orgId: null, name: 'Cloud', spreadSessions: false }
 const memberSets = { setOf: async () => POOL_SET }
 
 function svc(

@@ -45,6 +45,7 @@ import {
   MemberSetDto,
   MemberSetListDto,
   MemberSetMemberParams,
+  MemberSetSpreadSessionsBody,
   IdParam,
   ErrorDto
 } from '../dto/index.js'
@@ -59,23 +60,30 @@ function conflict(reply: FastifyReply, message: string): FastifyReply {
 
 export function memberSetRoutes(deps: HttpDeps) {
   /** One set plus its members and what is placed on it — the only projection these routes return. */
-  const toDto = async (set: { id: string; name: string }) => {
+  const toDto = async (set: { id: string; name: string; spreadSessions: boolean }) => {
     const [memberDaemonIds, agentCounts] = await Promise.all([
       deps.repos.memberSet.memberIdsOf(set.id),
       deps.repos.memberSet.agentCountsOf([set.id])
     ])
-    return { setId: set.id, name: set.name, memberDaemonIds, agentCount: agentCounts.get(set.id) ?? 0 }
+    return {
+      setId: set.id,
+      name: set.name,
+      memberDaemonIds,
+      agentCount: agentCounts.get(set.id) ?? 0,
+      spreadSessions: set.spreadSessions
+    }
   }
 
   /** The list read, batched: one membership query and one count query for every set at once. */
-  const toDtoList = async (sets: { id: string; name: string }[]) => {
+  const toDtoList = async (sets: { id: string; name: string; spreadSessions: boolean }[]) => {
     const agentCounts = await deps.repos.memberSet.agentCountsOf(sets.map((s) => s.id))
     return Promise.all(
       sets.map(async (set) => ({
         setId: set.id,
         name: set.name,
         memberDaemonIds: await deps.repos.memberSet.memberIdsOf(set.id),
-        agentCount: agentCounts.get(set.id) ?? 0
+        agentCount: agentCounts.get(set.id) ?? 0,
+        spreadSessions: set.spreadSessions
       }))
     )
   }
@@ -140,6 +148,27 @@ export function memberSetRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return reply
         const set = await deps.repos.memberSet.renameForOrg(orgOf(req), req.params.id, req.body.name)
+        return set ? toDto(set) : notFound(reply)
+      }
+    )
+
+    r.put(
+      '/member-sets/:id/spread-sessions',
+      {
+        schema: {
+          tags: [Tag.MemberSets],
+          summary: 'Spread sessions across a member set',
+          description:
+            'Turn the set’s session spreading on or off. On, an agent placed on the set may run its isolated sessions — with its repositories, provider credentials and agent secrets — on members other than the one holding it, provided that machine’s owner has opted it in with `sandbox.share`. Off (the default), every session runs on its holder. Every member-set response carries the current value as `spreadSessions`.',
+          operationId: 'setMemberSetSpreadSessions',
+          params: IdParam,
+          body: MemberSetSpreadSessionsBody,
+          response: { 200: MemberSetDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return reply
+        const set = await deps.repos.memberSet.setSpreadSessionsForOrg(orgOf(req), req.params.id, req.body.enabled)
         return set ? toDto(set) : notFound(reply)
       }
     )

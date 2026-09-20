@@ -93,6 +93,7 @@ function toView(d: DaemonRecord, profiles: RuntimeProfileRecord[]): DaemonView {
     sessionEpoch: d.sessionEpoch,
     maxAgents: d.maxAgents,
     activeSessions: d.activeSessions,
+    hostedSessions: d.hostedSessions,
     lastSeenAt: d.lastSeenAt,
     createdAt: d.createdAt,
     createdBy: d.createdBy,
@@ -174,6 +175,10 @@ export class DaemonRegistryService implements DaemonRegistry {
 
   async recordHeartbeat(daemonId: DaemonId, hb: Heartbeat): Promise<void> {
     await this.daemons.touchHeartbeat(daemonId, hb, new Date(this.clock.now()))
+  }
+
+  async recordHostedSessions(daemonId: DaemonId, hostedSessions: number): Promise<void> {
+    await this.daemons.setHostedSessions(daemonId, hostedSessions)
   }
 
   async recordRuntimeProfile(daemonId: DaemonId, f: FactsRuntimeProfile): Promise<void> {

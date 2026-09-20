@@ -926,7 +926,8 @@ export class PgSessionRepo implements SessionRepo {
         "thread", "tenantScope", "phase", "link", "summary", "title", "status",
         "lastActivityAt", "triggeredBy", "channelName", "triggeredByName", "hookKind",
         "threadUrl", "runtime", "model", "effort", "fastMode",
-        "permissionMode", "outputMode", "daemonId", "contentSetId", "workspaceIsolation", "orgId", "visibility",
+        "permissionMode", "outputMode", "daemonId", "contentSetId", "workspaceIsolation",
+        "executorDaemonId", "stayedHomeReason", "orgId", "visibility",
         "ownerIdentity", "visibilitySource", "externalProvider",
         "externalScopeId", "externalResolution", "legacyUnresolved",
         "classifiedPolicyRev", "startedAt", "endedAt", "updatedAt"
@@ -953,6 +954,7 @@ export class PgSessionRepo implements SessionRepo {
           WHERE msm."daemonId" = ${ev.daemonId ?? null}::uuid AND ms."orgId" IS NULL
         ),
         ${ev.workspaceIsolation ?? null}::"WorkspaceIsolation",
+        ${ev.executorDaemonId ?? null}::uuid, ${ev.stayedHomeReason ?? null},
         ${orgId},
         ${cls.visibility}::"SessionVisibility", ${cls.ownerIdentity},
         ${cls.source}::"VisibilitySource", ${cls.externalProvider},
@@ -1022,6 +1024,17 @@ export class PgSessionRepo implements SessionRepo {
           EXCLUDED."workspaceIsolation",
           "session_meta"."workspaceIsolation"
         ),
+        -- One verdict in two columns: the half a report carries replaces the other; a report with neither leaves both.
+        "executorDaemonId" = CASE
+          WHEN EXCLUDED."executorDaemonId" IS NOT NULL THEN EXCLUDED."executorDaemonId"
+          WHEN EXCLUDED."stayedHomeReason" IS NOT NULL THEN NULL
+          ELSE "session_meta"."executorDaemonId"
+        END,
+        "stayedHomeReason" = CASE
+          WHEN EXCLUDED."executorDaemonId" IS NOT NULL THEN NULL
+          WHEN EXCLUDED."stayedHomeReason" IS NOT NULL THEN EXCLUDED."stayedHomeReason"
+          ELSE "session_meta"."stayedHomeReason"
+        END,
         "endedAt" = COALESCE(EXCLUDED."endedAt", "session_meta"."endedAt"),
         "updatedAt" = CURRENT_TIMESTAMP
       WHERE "session_meta"."agentId" = EXCLUDED."agentId"
