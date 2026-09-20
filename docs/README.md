@@ -70,6 +70,7 @@ the picture it draws.
 - [session-concept.md](designs/session-concept.md) — What a session is.
 - [send-message-routing-rework.md](designs/send-message-routing-rework.md) — The `sendMessage` routing ladder.
 - [activation-parity.md](designs/activation-parity.md) — Consistent activation semantics across surfaces.
+- [channel-session-mode.md](designs/channel-session-mode.md) — The per-conversation session mode: whether a message opens a new session or appends to the conversation's one session.
 - [turn-final-context-refresh.md](designs/turn-final-context-refresh.md) — Turn-final context refresh and answer regeneration on IM turns.
 - [transcript-full-tool-body.md](designs/transcript-full-tool-body.md) — Complete tool-call bodies in transcripts.
 - [agent-authored-attachments.md](designs/agent-authored-attachments.md) — Outbound agent-authored files across platforms.
