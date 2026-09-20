@@ -1310,8 +1310,6 @@ export class Daemon {
   private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
   private cpAgents?: CpAgentRegistry
   private cpIntegrations?: CpIntegrationRegistry
-  // Remember observed removals while asynchronous admissions and replay settle.
-  private removedIntegrationIds = new Map<string, Set<string>>()
   private botUserIds: Record<string, string> = {}
   private cpRouting?: CpRoutingLayer
   // Daemon-side cache of the bot-agnostic collaboration snapshot (agent-collaboration
@@ -2625,6 +2623,11 @@ export class Daemon {
   /** Phase 16 — the local (or data-plane) store plus the one rule table every row retention runs from. */
   private async openStoreAndRetention(root: string): Promise<void> {
     this.store = this.dataPlane?.store ?? (await LocalStore.open(statePath(root)))
+    for (const agent of this.agents.values()) {
+      for (const integration of agent.integrations) {
+        await this.store.setIntegrationRemoved(agent.id, integration.id, false)
+      }
+    }
     await this.hydrateMicrosandboxSessions()
     this.store.setTranscriptMutationListener((mutation) => this.scheduleSessionActivity(mutation))
     // Every table's row retention, from one rule table. This member owns the cache rows it
@@ -3736,20 +3739,16 @@ export class Daemon {
         this.permissions.disableChatPermissionSurfaces(a.id)
       }
       await this.applyMemoryHomeBinding(previous, a as LoadedAgent)
-      // ALWAYS publish fresh config first, so live reads — output.mode (per dispatch),
-      // per-session cwd/tools, routing (mergedRules reads this.agents) — see the new config.
-      this.agents.set(a.id, a as LoadedAgent)
+      const removed = change.integrations
+        ? (previous?.integrations ?? []).filter((old) => !a.integrations.some((current) => current.id === old.id))
+        : []
+      // Persist removal before publishing the roster so a crash cannot resurrect unfinished cleanup.
       if (change.integrations) {
-        const removed = this.removedIntegrationIds.get(a.id) ?? new Set<string>()
-        this.removedIntegrationIds.set(a.id, removed)
-        for (const integration of a.integrations) removed.delete(integration.id)
-        for (const integration of previous?.integrations ?? []) {
-          if (!a.integrations.some((current) => current.id === integration.id)) {
-            removed.add(integration.id)
-            await this.interruptAgentTurns(a.id, 'stop', 'terminal', integration.id)
-          }
-        }
+        for (const integration of removed) await this.store.setIntegrationRemoved(a.id, integration.id, true)
+        for (const integration of a.integrations) await this.store.setIntegrationRemoved(a.id, integration.id, false)
       }
+      this.agents.set(a.id, a as LoadedAgent)
+      for (const integration of removed) await this.interruptAgentTurns(a.id, 'stop', 'terminal', integration.id)
       if (previous?.allowRuntimeChangesInChat === true && !a.allowRuntimeChangesInChat) {
         await this.restoreConfiguredRuntimeSettings(a as LoadedAgent)
       }
@@ -3822,7 +3821,7 @@ export class Daemon {
       if (change.integrations) connectionsDirty = true
     }
     for (const a of toStart) {
-      for (const integration of a.integrations) this.removedIntegrationIds.get(a.id)?.delete(integration.id)
+      for (const integration of a.integrations) await this.store.setIntegrationRemoved(a.id, integration.id, false)
       await this.applyMemoryHomeBinding(undefined, a as LoadedAgent)
       this.agents.set(a.id, a as LoadedAgent)
       // Rows may have been retained while this daemon did not own the agent. Adding it
@@ -11379,7 +11378,10 @@ export class Daemon {
   private async dispatchGateReason(entry: QueueEntry): Promise<TurnInterruptReason | undefined> {
     if (entry.cancelledReason) return entry.cancelledReason
     if (this.paused(entry.agentId)) return 'pause'
-    if (entry.integrationId !== undefined && this.removedIntegrationIds.get(entry.agentId)?.has(entry.integrationId)) {
+    if (
+      entry.integrationId !== undefined &&
+      (await this.store.isIntegrationRemoved(entry.agentId, entry.integrationId))
+    ) {
       return 'stop'
     }
     if (await this.isLoopGuardOpen(entry.msg, entry.hookContext !== undefined)) return 'loop protection'

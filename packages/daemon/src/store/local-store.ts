@@ -924,7 +924,7 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 18
+const SCHEMA_VERSION = 19
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1102,7 +1102,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
     `),
   async (db) => {
     await db.exec(MEMORY_CONTINUATION_SCHEMA)
-  }
+  },
+  // New integration tombstones are created by the shared CREATE block below.
+  async () => undefined
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1294,6 +1296,12 @@ export class LocalStore {
         PRIMARY KEY (agentId, sessionId)
       );
       CREATE INDEX IF NOT EXISTS session_purges_fifo ON session_purges (purgedAt);
+      -- Removal tombstones survive unfinished cancellation and daemon restart.
+      CREATE TABLE IF NOT EXISTS removed_integrations (
+        agentId TEXT NOT NULL,
+        integrationId TEXT NOT NULL,
+        PRIMARY KEY (agentId, integrationId)
+      );
       -- Minted durable tenant scopes for platforms that expose none (§2).
       CREATE TABLE IF NOT EXISTS tenant_scopes (
         integrationId TEXT PRIMARY KEY,
@@ -5490,6 +5498,21 @@ export class LocalStore {
     return (await this.db
       .prepare('SELECT * FROM inbox ORDER BY sessionKey ASC, enqueuedAt ASC')
       .all()) as unknown as InboxRow[]
+  }
+
+  async setIntegrationRemoved(agentId: string, integrationId: string, removed: boolean): Promise<void> {
+    const sql = removed
+      ? 'INSERT INTO removed_integrations (agentId, integrationId) VALUES (?, ?) ON CONFLICT DO NOTHING'
+      : 'DELETE FROM removed_integrations WHERE agentId = ? AND integrationId = ?'
+    await this.db.prepare(sql).run(agentId, integrationId)
+  }
+
+  async isIntegrationRemoved(agentId: string, integrationId: string): Promise<boolean> {
+    return (
+      (await this.db
+        .prepare('SELECT 1 FROM removed_integrations WHERE agentId = ? AND integrationId = ?')
+        .get(agentId, integrationId)) !== undefined
+    )
   }
 
   // Purge ordinary turns in scope; live hook owners and unacknowledged reports retain their completion path.

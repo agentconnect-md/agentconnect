@@ -126,7 +126,7 @@ describe('P4 serial gate', () => {
             config: { botToken: 'shared-test-bot-token' }
           })
         }
-        await daemon.reconcile()
+        await (daemon as any).flushReconcile()
         const scope = (daemon as any).transportScopeForIntegrationIds(['int-removed'])
         expect(scope).toBe((daemon as any).transportScopeForIntegrationIds(['int-kept']))
         const key = `slack:C1:T1:bot-a:${scope}`
@@ -137,7 +137,7 @@ describe('P4 serial gate', () => {
         await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(2), WAIT)
 
         apply.applyIntegrationRemove('int-removed')
-        await daemon.reconcile()
+        await (daemon as any).flushReconcile()
         await expect(removed).resolves.toBeNull()
         expect((daemon as any).serialQueue.get(key).map((entry: any) => entry.integrationId)).toEqual(['int-kept'])
         expect(

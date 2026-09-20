@@ -961,6 +961,7 @@ describe('§7.5 the turn holds its egress transport', () => {
         stop: vi.fn(async () => releaseBlocked())
       }
       const { daemon, root, store, turnSettled } = await boot({ host: () => host })
+      let running = daemon
       await (daemon as any).watcher.close()
       ;(daemon as any).watcher = undefined
       try {
@@ -980,7 +981,7 @@ describe('§7.5 the turn holds its egress transport', () => {
           })
         }
         writeFileSync(file, JSON.stringify({ ...config, integrations: [] }))
-        await daemon.reconcile()
+        await (daemon as any).flushReconcile()
         ;(daemon as any).lnConnByIntegration.set(INTEGRATION, conn)
 
         await im(daemon, delivery())
@@ -993,7 +994,7 @@ describe('§7.5 the turn holds its egress transport', () => {
         expect((daemon as any).serialQueue.size).toBe(1)
 
         apply.applyIntegrationRemove(INTEGRATION)
-        await daemon.reconcile()
+        await (daemon as any).flushReconcile()
         expect((daemon as any).serialQueue.size).toBe(0)
         expect((await store.listInboxBySessionKeyFifo()).map((entry: any) => entry.id)).toEqual(['kept-backlog'])
         if (stage === 'prompt') expect(host.cancel).toHaveBeenCalledWith('acp-1')
@@ -1004,15 +1005,16 @@ describe('§7.5 the turn holds its egress transport', () => {
         expect(host.prompt).toHaveBeenCalledTimes(stage === 'prompt' ? 1 : 0)
         expect(host.stop).not.toHaveBeenCalled()
 
-        // A persisted admission racing removal is rejected by the same startup gate on replay.
+        // A crash leaving an admitted row behind must not resurrect it after restart.
         await store.appendInbox({ ...row, id: 'stale-backlog' })
-        await (daemon as any).replayInbox()
-        await turnSettled()
+        await daemon.stop()
+        running = new Daemon({ root, hostFactory: () => host as any })
+        await running.start()
+        await vi.waitFor(async () => expect(await (running as any).store.listInboxBySessionKeyFifo()).toEqual([]))
         expect(host.prompt).toHaveBeenCalledTimes(stage === 'prompt' ? 1 : 0)
-        expect(await store.listInboxBySessionKeyFifo()).toEqual([])
       } finally {
         releaseBlocked()
-        await daemon.stop()
+        await running.stop()
       }
     }
   )
