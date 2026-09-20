@@ -519,6 +519,23 @@ function actorOf(body: BlockActionArgs['body']): InteractionActor | undefined {
 
 /** The Slack surface `SlackConnection` drives. Exported so a caller can supply its own — see
  *  {@link SlackAppFactory}. */
+/** `assistant.search.context`'s answer — the shape the daemon reads, nothing more. */
+type SlackSearchContextResponse = {
+  results?: {
+    messages?: {
+      channel_id?: string
+      channel_name?: string
+      message_ts?: string
+      content?: string
+      author_name?: string
+      author_user_id?: string
+      is_author_bot?: boolean
+      permalink?: string
+    }[]
+  }
+  response_metadata?: { next_cursor?: string }
+}
+
 export type AppLike = {
   message: (handler: (args: { message: unknown }) => Promise<void> | void) => void
   event: (type: string, handler: (args: { event: unknown }) => Promise<void> | void) => void
@@ -681,25 +698,11 @@ export type AppLike = {
     }
     // The Data Access API — the ONLY workspace search a bot token can make, and only with the
     // ephemeral `action_token` from the message that triggered the turn (`search:read.*`).
-    assistant: {
-      search: {
-        context: (a: unknown) => Promise<{
-          results?: {
-            messages?: {
-              channel_id?: string
-              channel_name?: string
-              message_ts?: string
-              content?: string
-              author_name?: string
-              author_user_id?: string
-              is_author_bot?: boolean
-              permalink?: string
-            }[]
-          }
-          response_metadata?: { next_cursor?: string }
-        }>
-      }
-    }
+    // `assistant.search.context` has no binding in `@slack/web-api` (8.1.x exposes only
+    // `assistant.threads.*`), so it goes through the client's generic `apiCall`: a dotted
+    // member access would throw `TypeError` before Slack was ever asked, which surfaced as a
+    // code-less "searching messages failed".
+    apiCall: (method: 'assistant.search.context', a: unknown) => Promise<SlackSearchContextResponse>
   }
   init?: () => Promise<void>
   start: () => Promise<void>
@@ -2592,7 +2595,7 @@ export class SlackConnection implements PlatformConnection {
       )
     }
     try {
-      const res = await this.app.client.assistant.search.context({
+      const res = await this.app.client.apiCall('assistant.search.context', {
         query,
         action_token: actionToken,
         ...(options.limit !== undefined ? { limit: options.limit } : {}),

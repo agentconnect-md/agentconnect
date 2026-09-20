@@ -82,7 +82,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           items: { list: async () => ({ items: [] }), create: async () => ({ item: {} }), update: ok }
         },
         agents: { sessions: { setStatus: ok, rename: ok } },
-        assistant: { search: { context: async () => ({ results: { messages: [] } }) } }
+        apiCall: async () => ({ results: { messages: [] } })
       },
       start: async () => {},
       stop: async () => {}

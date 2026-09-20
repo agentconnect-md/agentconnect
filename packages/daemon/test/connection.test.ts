@@ -335,7 +335,7 @@ describe('SlackConnection joins a public channel on demand', () => {
   })
 
   it('does not join while the bot’s switch is off, and picks up a live flip', async () => {
-    const history = vi.fn(async () => {
+    const history = vi.fn(async (): Promise<{ messages: unknown[] }> => {
       throw notInChannel()
     })
     const join = vi.fn(async () => ({ ok: true }))

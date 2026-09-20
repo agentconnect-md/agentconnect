@@ -18,10 +18,21 @@ const deps = () => ({
 
 const slackError = (code: string) => Object.assign(new Error(code), { data: { error: code } })
 
-type ClientOverrides = Record<string, Record<string, unknown>>
+/** A method group to merge over the defaults, or a top-level client function such as `apiCall`. */
+type ClientOverrides = Record<string, Record<string, unknown> | ((...args: never[]) => unknown)>
+
+/** `assistant.search.context` has no SDK binding, so the adapter reaches it through the client's
+ *  generic `apiCall(method, args)`; these tests assert on the ARGS, so the fake pins the method
+ *  name and hands the args on. */
+function searchCall(context: (args: unknown) => Promise<unknown>) {
+  return (method: string, args: unknown) => {
+    expect(method).toBe('assistant.search.context')
+    return context(args)
+  }
+}
 
 function connWith(overrides: ClientOverrides = {}) {
-  const client: Record<string, Record<string, unknown>> = {
+  const client: Record<string, unknown> = {
     auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
     chat: {
       postMessage: async () => ({}),
@@ -42,7 +53,8 @@ function connWith(overrides: ClientOverrides = {}) {
       sections: { lookup: async () => ({ sections: [] }) }
     }
   }
-  for (const [group, members] of Object.entries(overrides)) client[group] = { ...client[group], ...members }
+  for (const [group, members] of Object.entries(overrides))
+    client[group] = typeof members === 'function' ? members : { ...(client[group] as object), ...members }
   const app = {
     message() {},
     event() {},
@@ -438,7 +450,7 @@ describe('SlackConnection.searchPublicMessages', () => {
       },
       response_metadata: { next_cursor: 'page-2' }
     }))
-    const conn = connWith({ assistant: { search: { context } } })
+    const conn = connWith({ apiCall: searchCall(context) })
     conn.rememberInboundSearchToken('slack:C1:99.9', 'xoxa-action')
 
     const res = await conn.searchPublicMessages('what shipped', { channel: 'C1', limit: 5 }, 'slack:C1:99.9')
@@ -476,7 +488,7 @@ describe('SlackConnection.searchPublicMessages', () => {
   it('asks for public channels only, whatever conversation it was called from', async () => {
     for (const channel of ['D1', 'G1', 'C2', 'C3']) {
       const context = vi.fn(async () => ({ results: { messages: [] } }))
-      const conn = connWith({ assistant: { search: { context } } })
+      const conn = connWith({ apiCall: searchCall(context) })
       conn.rememberInboundSearchToken('m-1', 'xoxa-action')
       await conn.searchPublicMessages('q', { channel }, 'm-1')
       expect(context).toHaveBeenCalledWith(expect.objectContaining({ channel_types: ['public_channel'] }))
@@ -487,7 +499,7 @@ describe('SlackConnection.searchPublicMessages', () => {
   // structurally cannot search. The refusal has to say that, not read as an outage.
   it('refuses, naming the cause, when the turn has no originating message', async () => {
     const context = vi.fn()
-    const conn = connWith({ assistant: { search: { context } } })
+    const conn = connWith({ apiCall: searchCall(context) })
 
     await expect(conn.searchPublicMessages('q', {}, undefined)).rejects.toThrow(/this turn has none/)
     await expect(conn.searchPublicMessages('q', {}, 'slack:C1:never-seen')).rejects.toThrow(/this turn has none/)
@@ -496,13 +508,9 @@ describe('SlackConnection.searchPublicMessages', () => {
 
   it('surfaces Slack’s own code on a refusal', async () => {
     const conn = connWith({
-      assistant: {
-        search: {
-          context: async () => {
-            throw slackError('missing_scope')
-          }
-        }
-      }
+      apiCall: searchCall(async () => {
+        throw slackError('missing_scope')
+      })
     })
     conn.rememberInboundSearchToken('m-1', 'xoxa-action')
     await expect(conn.searchPublicMessages('q', {}, 'm-1')).rejects.toThrow(
