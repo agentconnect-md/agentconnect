@@ -1197,11 +1197,34 @@ column's TYPE, and Slack publishes no schema endpoint for a list. So the columns
 from the rows a read returns and handed back with them — the read is not a convenience before
 the write, it is the only source of the ids and types the write needs.
 
-Three scopes in that same change have NO caller and say so: `channels:join`, `team:read`, and
+Three scopes in that same change had NO caller and said so: `channels:join`, `team:read`, and
 `users:read.email`. That is a deliberate exception to the scope-arrives-with-its-feature rule,
 taken because one list means every scope addition costs a reinstall of every installation —
 batching the ones already in view is one reinstall instead of three. The exception is worth
 making once, with the reason recorded, and is not a precedent for declaring scopes speculatively.
+`channels:join` has since found its caller (channel reach, below); the two directory reads still wait.
+
+**Channel reach.** Slack requires bot membership for `conversations.history` / `.replies` and
+`chat.postMessage` even in a public channel, and a bot is a member only of the channels a human
+added it to — so for a long time `getChannelHistory` read the session's own channel only and
+`getThreadHistory` / `sendMessage` failed with `not_in_channel` anywhere else. Two pieces change
+that, and their split is the point. The **connection** joins a PUBLIC channel on demand
+(`joiningOnRefusal` in `slack/connection.ts`: a call refused with `not_in_channel` is retried
+exactly once after `conversations.join`, `channels:join`; the join cannot enter a private channel,
+DM or group DM, so there the original refusal surfaces). The **ops layer** decides what a tool may
+reach beyond the session's own conversation (`mcp/ops/channel-reach.ts`), on a platform that
+declares `publicChannelReach` in `read-ports.ts`: a public channel is open, while a private
+channel, DM or group DM is reachable only when it IS the conversation the agent was invoked in.
+Membership is not consent — a bot invited into a private channel for one purpose must not make
+that channel readable from every other conversation the same agent is in. The gate reads the
+platform's own description (`conversations.info`) rather than the id's shape, and lets a
+conversation the platform will not describe through to the platform's own, more precise refusal.
+It sits in front of `getChannelHistory` (which gained `channel` / `integrationId` like
+`getThreadHistory`), `getThreadHistory`, and every `channel` form of `sendMessage`; the `toUser`
+DM form names a user, not a channel, and is not gated. Slack's `listChannels` enumerates every
+public channel of the workspace (`conversations.list`) plus the private channels the bot is in, so
+an agent can find the id of a channel it was never added to; the console's membership snapshot
+stays `listBotChannels`. Platforms that declare nothing keep their previous reach.
 
 The orchestration triple `startOrchestration` / `getOrchestration` /
 `cancelOrchestration` is **retired from the injected tool surface**: its send half
