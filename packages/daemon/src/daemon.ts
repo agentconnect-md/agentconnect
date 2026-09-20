@@ -1310,6 +1310,8 @@ export class Daemon {
   private channelSnapshots = new Map<string, { channels: IntegrationChannel[]; authoritative: boolean }>()
   private cpAgents?: CpAgentRegistry
   private cpIntegrations?: CpIntegrationRegistry
+  // Remember observed removals while asynchronous admissions and replay settle.
+  private removedIntegrationIds = new Map<string, Set<string>>()
   private botUserIds: Record<string, string> = {}
   private cpRouting?: CpRoutingLayer
   // Daemon-side cache of the bot-agnostic collaboration snapshot (agent-collaboration
@@ -3738,8 +3740,12 @@ export class Daemon {
       // per-session cwd/tools, routing (mergedRules reads this.agents) — see the new config.
       this.agents.set(a.id, a as LoadedAgent)
       if (change.integrations) {
+        const removed = this.removedIntegrationIds.get(a.id) ?? new Set<string>()
+        this.removedIntegrationIds.set(a.id, removed)
+        for (const integration of a.integrations) removed.delete(integration.id)
         for (const integration of previous?.integrations ?? []) {
           if (!a.integrations.some((current) => current.id === integration.id)) {
+            removed.add(integration.id)
             await this.interruptAgentTurns(a.id, 'stop', 'terminal', integration.id)
           }
         }
@@ -3816,6 +3822,7 @@ export class Daemon {
       if (change.integrations) connectionsDirty = true
     }
     for (const a of toStart) {
+      for (const integration of a.integrations) this.removedIntegrationIds.get(a.id)?.delete(integration.id)
       await this.applyMemoryHomeBinding(undefined, a as LoadedAgent)
       this.agents.set(a.id, a as LoadedAgent)
       // Rows may have been retained while this daemon did not own the agent. Adding it
@@ -11372,10 +11379,7 @@ export class Daemon {
   private async dispatchGateReason(entry: QueueEntry): Promise<TurnInterruptReason | undefined> {
     if (entry.cancelledReason) return entry.cancelledReason
     if (this.paused(entry.agentId)) return 'pause'
-    if (
-      entry.integrationId !== undefined &&
-      !this.agents.get(entry.agentId)?.integrations.some((integration) => integration.id === entry.integrationId)
-    ) {
+    if (entry.integrationId !== undefined && this.removedIntegrationIds.get(entry.agentId)?.has(entry.integrationId)) {
       return 'stop'
     }
     if (await this.isLoopGuardOpen(entry.msg, entry.hookContext !== undefined)) return 'loop protection'
@@ -13740,13 +13744,7 @@ export class Daemon {
 
   // ── §7.3 force-cancel backstop ──────────────────────────────────────────────
 
-  /** Interrupt a session by its LOGICAL sessionKey (shared by pause, `!stop`, `!cancel`,
-   *  and webchat cancel): settle+drop anything queued behind it in the serial gate, then — if
-   *  a turn is actually in flight (ACP session live) — release any unanswered cards, mark
-   *  it `cancelling`, send ACP `session/cancel`, and arm the force backstop. Works for a
-   *  queued-but-not-yet-started or cold session too (§6.9 #390): draining the queue is
-   *  enough, no ACP id required. Muting is the CALLER's concern — `!stop` mutes,
-   *  `!cancel`/webchat-cancel do not. */
+  // Interrupt matching active/cold and queued work by logical session key; callers own muting.
   private async interruptTurn(
     agentId: string,
     key: string,
@@ -13755,6 +13753,7 @@ export class Daemon {
     opts: {
       dropQueued?: boolean
       preserveQueued?: boolean
+      integrationId?: string
       allowSameKeyAdmissions?: boolean
       allowReviewLane?: string
       /** Duty handoff: stop running the work here, but leave its durable rows for the successor. */
@@ -13765,24 +13764,36 @@ export class Daemon {
       only?: Pending
     } = {}
   ): Promise<void> {
+    const matches = (entry: QueueEntry): boolean =>
+      opts.integrationId === undefined || entry.integrationId === opts.integrationId
+    const head = this.activeGateEntries.get(key)
+    const activeEntry = head && matches(head) ? head : undefined
     const exact = (): boolean =>
-      !opts.only ||
-      (acpSessionId !== undefined &&
-        this.pending.get(pendingTurnKey(this.sessionOwnerKey(agentId, key), acpSessionId)) === opts.only)
-    // The target already unwound and the ACP id now belongs to a successor: nothing here is ours to interrupt.
-    if (!exact()) return
-    // The force-cancel fallback is host-wide. Hold NEW admissions until this exact
-    // dispatch is gone so a quick retry cannot be killed by the old turn's backstop.
-    this.beginSafetyDrain(
-      agentId,
-      reason,
-      [key],
-      opts.allowSameKeyAdmissions ? [key] : undefined,
-      opts.allowReviewLane ? [opts.allowReviewLane] : undefined
-    )
-    // Latch the current head even during the cold pre-Pending window. A quick reset
-    // must not let pre-interrupt work resume once sessions.handle() returns.
-    const activeEntry = this.activeGateEntries.get(key)
+      (!opts.only ||
+        this.pending.get(pendingTurnKey(this.sessionOwnerKey(agentId, key), opts.only.acpSessionId)) === opts.only) &&
+      (opts.integrationId === undefined ||
+        (activeEntry !== undefined && this.activeGateEntries.get(key) === activeEntry))
+    // A scoped removal must never cancel a retained head or a successor that reuses its ACP id.
+    if (opts.only && !exact()) return
+    if (opts.integrationId === undefined || activeEntry) {
+      this.beginSafetyDrain(
+        agentId,
+        reason,
+        [key],
+        opts.allowSameKeyAdmissions ? [key] : undefined,
+        opts.allowReviewLane ? [opts.allowReviewLane] : undefined
+      )
+    }
+    // Detach only matching followers before any await can advance the queue.
+    const buffered = this.serialQueue.get(key) ?? []
+    const queued = opts.preserveQueued ? [] : buffered.filter(matches)
+    if (queued.length > 0) {
+      const retained = buffered.filter((entry) => !matches(entry))
+      if (retained.length > 0) this.serialQueue.set(key, retained)
+      else this.serialQueue.delete(key)
+      for (const entry of queued) entry.cancelledReason ??= reason
+    }
+    // Latch the current head even during the cold pre-Pending window.
     if (activeEntry) {
       activeEntry.cancelledReason ??= reason
       activeEntry.closeStartup?.()
@@ -13793,12 +13804,8 @@ export class Daemon {
         await this.removeInbox(activeEntry, opts.handoffInbox)
       }
     }
-    // Drop everything buffered behind this turn first (one unified queue) and settle each
-    // waiter's own promise, so `!cancel`/`!stop` doesn't leave queued dispatch() promises
-    // hanging and the drained queue can't later chain onto the cancelled turn.
-    const queued = this.serialQueue.get(key)
-    if (!opts.preserveQueued && queued && queued.length > 0) {
-      this.serialQueue.delete(key)
+    // Settle each detached follower without disturbing retained work sharing the session key.
+    if (queued.length > 0) {
       for (const e of queued) {
         this.terminateQueuedSink(e, opts.dropQueued ? undefined : reason)
         if (e.hookContext) {
@@ -13817,14 +13824,17 @@ export class Daemon {
         else e.reject(new FailStopError(key))
       }
     }
+    if (!exact()) return
     const live = acpSessionId
       ? this.pending.get(pendingTurnKey(this.sessionOwnerKey(agentId, key), acpSessionId))
       : [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
     const liveSessionId = acpSessionId ?? live?.acpSessionId
-    // Re-checked after the awaits above; the target's own Pending was suppressed before they began.
+    if (opts.integrationId !== undefined && live) opts.only ??= live
+    // Pin the selected Pending before any further await can hand its ACP id to a successor.
     if (!exact()) return
     if (live) {
       await this.settleStatusBar(live)
+      if (!exact()) return
       live.outputSuppressed ??= reason
       this.clearIdle(live)
       // Platform suppression teardown (§7.3): Feishu stops its stream timer and
@@ -13872,7 +13882,9 @@ export class Daemon {
     // Everything from here is keyed by session id, which a successor turn reuses: recheck after every await.
     if (!exact()) return
     await this.permissions.releaseElicits(live.hostKey, liveSessionId)
+    if (!exact()) return
     await this.permissions.releaseChatPermissions(live.hostKey, liveSessionId)
+    if (!exact()) return
     await this.permissions.releaseEditorPermissions(live.hostKey, liveSessionId)
     if (!exact()) return
     // §7.3 idle→cancelling: send session/cancel, then arm a force backstop. The turn's
@@ -13945,13 +13957,13 @@ export class Daemon {
     }
     for (const [key, queued] of this.serialQueue) {
       if (queued.some(matches) && !targets.has(key)) {
-        targets.set(key, (await this.store.getSession(key))?.acpSessionId ?? undefined)
+        targets.set(key, undefined)
       }
     }
     if (targets.size > 0)
       this.log.info(`${reason}: interrupting ${targets.size} active session(s) for agent "${agentId}"`)
     for (const [key, acpSessionId] of targets) {
-      await this.interruptTurn(agentId, key, reason, acpSessionId, { dropQueued: true, handoffInbox })
+      await this.interruptTurn(agentId, key, reason, acpSessionId, { dropQueued: true, handoffInbox, integrationId })
     }
   }
 

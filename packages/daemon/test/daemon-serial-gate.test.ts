@@ -110,6 +110,58 @@ async function boot(host: any) {
 const seam = (d: Daemon) => (d as any).cpConfigApply()
 
 describe('P4 serial gate', () => {
+  it.each(['int-removed', 'int-kept'])(
+    'removing an integration preserves shared-session work with %s active',
+    async (activeIntegration) => {
+      const g = gatedHost()
+      const daemon = await boot(g.host)
+      try {
+        const apply = seam(daemon)
+        for (const integrationId of ['int-removed', 'int-kept']) {
+          apply.applyIntegrationUpsert({
+            integrationId,
+            agentId: 'bot-a',
+            platform: 'slack',
+            core: { mode: 'shared', bindRules: [{ match: { kind: 'mention' } }] },
+            config: { botToken: 'shared-test-bot-token' }
+          })
+        }
+        await daemon.reconcile()
+        const scope = (daemon as any).transportScopeForIntegrationIds(['int-removed'])
+        expect(scope).toBe((daemon as any).transportScopeForIntegrationIds(['int-kept']))
+        const key = `slack:C1:T1:bot-a:${scope}`
+        const active = (daemon as any).dispatch('bot-a', msg('100', 'active'), activeIntegration)
+        await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
+        const removed = (daemon as any).dispatch('bot-a', msg('200', 'removed follower'), 'int-removed')
+        const kept = (daemon as any).dispatch('bot-a', msg('300', 'kept follower'), 'int-kept')
+        await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(2), WAIT)
+
+        apply.applyIntegrationRemove('int-removed')
+        await daemon.reconcile()
+        await expect(removed).resolves.toBeNull()
+        expect((daemon as any).serialQueue.get(key).map((entry: any) => entry.integrationId)).toEqual(['int-kept'])
+        expect(
+          (await (daemon as any).store.listInboxBySessionKeyFifo()).every(
+            (entry: any) => entry.integrationId === 'int-kept'
+          )
+        ).toBe(true)
+        if (activeIntegration === 'int-removed') expect(g.host.cancel).toHaveBeenCalledExactlyOnceWith('acp-1')
+        else expect(g.host.cancel).not.toHaveBeenCalled()
+
+        g.releaseOne()
+        await active
+        await vi.waitFor(() => expect(g.started).toHaveLength(2), WAIT)
+        expect(g.started[1]).toContain('kept follower')
+        g.releaseOne()
+        await expect(kept).resolves.toBe('acp-1')
+        expect(g.host.stop).not.toHaveBeenCalled()
+      } finally {
+        g.releaseAll()
+        await daemon.stop()
+      }
+    }
+  )
+
   it('two concurrent dispatch for the same sessionKey: the second is queued, does not enter handle() concurrently, does not overwrite pending', async () => {
     const g = gatedHost()
     const daemon = await boot(g.host)
