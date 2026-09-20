@@ -1159,22 +1159,18 @@ describe('CpClient dispatch', () => {
     expect(rep.corr).toBe(f.id)
   })
 
+  const PREPARE = {
+    agentId: CRON_AGENT_ID,
+    sessionKey: 'slack:C1:1700000000.000100',
+    executorDaemonId: DAEMON_ID,
+    generation: 7,
+    strategy: 'host'
+  }
+
   // It advertises `session-executors-v1`, so a relayed prepare must be ANSWERED: an ignored frame costs the Control Plane its whole relay budget.
   it('refuses a relayed executor/prepare at once while it has no executor facet', async () => {
     const { t } = await readyClient()
-    const f = JSON.parse(
-      frame(
-        'executor/prepare',
-        {
-          agentId: CRON_AGENT_ID,
-          sessionKey: 'slack:C1:1700000000.000100',
-          executorDaemonId: DAEMON_ID,
-          generation: 7,
-          strategy: 'host'
-        },
-        { epoch: 5 }
-      )
-    )
+    const f = JSON.parse(frame('executor/prepare', PREPARE, { epoch: 5 }))
     t.pushInbound(JSON.stringify(f))
     await tick()
     const rep = JSON.parse(t.sent[0]!)
@@ -1183,6 +1179,81 @@ describe('CpClient dispatch', () => {
       f.id,
       { status: 'refused', reason: 'facet_off' }
     ])
+  })
+
+  it("hands a relayed executor/prepare to the executor facet and returns its answer as it came, the pipe's key included", async () => {
+    const ready = {
+      status: 'ready',
+      endpoint: { host: '192.0.2.10', port: 40123 },
+      psk: 'test-only-pipe-key',
+      runtimeRoot: '/home/agent/workspace/hs/0a1b2c3d4e5f',
+      liveCount: 1
+    }
+    const executorPrepare = vi.fn(async () => ready)
+    const lines: string[] = []
+    const keep = (line: string): void => void lines.push(line)
+    const { t } = await readyClient({
+      executorPrepare: executorPrepare as never,
+      log: { trace: keep, debug: keep, info: keep, warn: keep, error: keep }
+    })
+    const f = JSON.parse(frame('executor/prepare', PREPARE, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(executorPrepare).toHaveBeenCalledWith(PREPARE)
+    const rep = JSON.parse(t.sent[0]!)
+    expect([rep.type, rep.corr, rep.payload]).toEqual(['executor/prepare/result', f.id, ready])
+    // The key rides the reply and nothing else.
+    expect(lines.filter((line) => line.includes(ready.psk))).toEqual([])
+  })
+
+  it('answers a preparation that failed with a retryable error, so the holder retires that launch', async () => {
+    const { t } = await readyClient({
+      executorPrepare: (async () => Promise.reject(new Error('host shim startup timed out'))) as never
+    })
+    const f = JSON.parse(frame('executor/prepare', PREPARE, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const rep = JSON.parse(t.sent[0]!)
+    expect([rep.type, rep.corr]).toEqual(['error', f.id])
+    expect(rep.payload).toMatchObject({ code: 'INTERNAL', retryable: true })
+  })
+})
+
+describe('CpClient executor facts (session-executors.md §6)', () => {
+  it('sends hostedSessions on the heartbeat only while the executor facet reports a count', async () => {
+    const facet: { hosted?: number } = {}
+    const { t, clock } = await readyClient({ hostedSessions: () => facet.hosted })
+    clock.advance(15000)
+    expect(JSON.parse(t.sent[0]!).payload).not.toHaveProperty('hostedSessions')
+    facet.hosted = 3
+    clock.advance(15000)
+    const hb = JSON.parse(t.sent[1]!)
+    // Beside `activeSessions`, which keeps its own meaning.
+    expect([hb.payload.hostedSessions, hb.payload.activeSessions]).toEqual([3, 2])
+  })
+
+  it("publishes the control connection's local address, unmapped, as where a peer reaches this machine", async () => {
+    const { t, client } = await readyClient()
+    expect(client.localAddress()).toBeUndefined()
+    ;(t as unknown as { localAddress: string }).localAddress = '::ffff:192.0.2.10'
+    expect(client.localAddress()).toBe('192.0.2.10')
+    ;(t as unknown as { localAddress: string }).localAddress = '2001:db8::10'
+    expect(client.localAddress()).toBe('2001:db8::10')
+  })
+
+  it('asks agent/exists install-wide, and throws rather than answer "gone" when the Control Plane cannot be asked', async () => {
+    const legacy = await readyClient()
+    await expect(legacy.client.agentsExist([CRON_AGENT_ID])).rejects.toThrow('does not answer agent/exists')
+    expect(legacy.t.sent).toHaveLength(0)
+
+    const { t, client } = await readyClient({}, ['agent-exists-v1'], 'frame')
+    const asking = client.agentsExist([CRON_AGENT_ID, DAEMON_ID])
+    await tick()
+    const req = JSON.parse(t.sent[0]!)
+    expect(req).toMatchObject({ type: 'agent/exists', payload: { agentIds: [CRON_AGENT_ID, DAEMON_ID] } })
+    expect(req.orgId).toBeUndefined()
+    t.pushInbound(JSON.stringify(buildEnvelope('agent/exists/ok', { existing: [CRON_AGENT_ID] }, { corr: req.id })))
+    expect([...(await asking)]).toEqual([CRON_AGENT_ID])
   })
 })
 

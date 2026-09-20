@@ -109,11 +109,16 @@ const refused = (reason: ExecutorPrepareRefusal): ExecutorPrepareResult => ({ st
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 /** Seed a session HOME the way the local confined tier does, for every runtime this machine admits: the `prepare` names none. */
-export function seedSessionHome(home: string, runtimes: Record<string, RuntimeDef>, log: Pick<Logger, 'warn'>): void {
+export function seedSessionHome(
+  home: string,
+  runtimes: Record<string, RuntimeDef>,
+  log: Pick<Logger, 'warn'>,
+  hostEnv: NodeJS.ProcessEnv = process.env
+): void {
   for (const [runtimeId, runtime] of Object.entries(runtimes)) {
     try {
-      const credentials = prepareSharedRuntimeCredentials({ runtimeId, runtime })
-      prepareRuntimeHome(runtimeId, home, process.env, home, credentials?.seedExclusions)
+      const credentials = prepareSharedRuntimeCredentials({ runtimeId, runtime, hostEnv })
+      prepareRuntimeHome(runtimeId, home, hostEnv, home, credentials?.seedExclusions)
       credentials?.preparePrivateHome(home)
     } catch (error) {
       // One runtime's conflicting sign-in must not cost a session that runs another.
@@ -433,11 +438,12 @@ class Facet implements ExecutorFacet {
       const self = this.deps.daemonId()
       for (const env of candidates) {
         const applied = { agentId: env.agentId, generation: env.generation, preparedAt: env.preparedAt }
+        // Asked even for an agent that is gone: a store that cannot answer retains everything, not only what it would have vouched for.
+        if (!keysOf.has(env.agentId)) keysOf.set(env.agentId, await sessions.keysForAgent(env.agentId))
         if (!known.has(env.agentId)) {
           orphans.push({ env, applied, why: 'the control plane no longer knows its agent' })
           continue
         }
-        if (!keysOf.has(env.agentId)) keysOf.set(env.agentId, await sessions.keysForAgent(env.agentId))
         const sessionKey = keysOf.get(env.agentId)!.find((key) => sessionKeyDirName(key) === env.leaf)
         if (sessionKey === undefined) {
           orphans.push({ env, applied, why: 'the shared store no longer lists its session' })

@@ -22,7 +22,8 @@ Control Plane does not carry ACP or provider request traffic.
 ## 1. Configuration and ownership
 
 The daemon-owned `sandbox` object in `~/.agentconnect/config.json` defaults to
-`{ "backend": "srt", "env": {}, "mounts": [] }`. The minimal configuration is:
+`{ "backend": "srt", "env": {}, "mounts": [], "share": false }`. The minimal
+configuration is:
 
 ```json
 {
@@ -79,6 +80,7 @@ settings.
 | `sandbox.microsandbox.image`   | Implemented: optional, non-empty OCI override. Release builds default to their bundled shared-image reference; development builds require an explicit image. No Kubernetes image lookup is used.                                                                                                                                            |
 | `cpus`, `memoryMiB`, `diskGiB` | Per-VM CPU allocation, memory limit, and capacity of each writable disk; defaults are `2`, `2048`, and `10`. New VMs have a root upper disk and a Docker data disk, plus one disk when overlay mounts are configured, each capped by `diskGiB`. All are sparse; host capacity planning remains the operator's responsibility.               |
 | `sandbox.mounts`               | Operator-owned filesystem mappings, default `[]`, with `source`, `target`, and `mode` (`readonly` by default, or `writable` / `overlay`). SRT requires equal normalized host paths; microsandbox accepts absolute guest targets and `~/` relative to the session HOME. Workspace, HOME, and runtime state remain automatically provisioned. |
+| `sandbox.share`                | Implemented: default `false`. `true` lets this machine host isolated sessions for the other members of its daemon group, under this machine's runtime sign-in, and opens one TLS-PSK port for them. Read at start; `config/push` cannot set it. See [Sharing a machine with its group](#sharing-a-machine-with-its-group).                  |
 
 ### Shared mounts and manual conversion
 
@@ -925,8 +927,9 @@ Lifecycle and configuration-reuse rules are documented
 strategy: the same shim, started as a plain child process of the daemon with no
 sandbox around it, which [architecture.md](architecture.md) §9.1 already treats
 as an operator's choice. `startHostShim` (`execution/host-shim.ts`) is that
-launcher. Nothing calls it in production yet; no listener, protocol field, or
-configuration key comes with it.
+launcher. Its one production caller is the executor facet
+([below](#sharing-a-machine-with-its-group)); the launcher itself opens no
+network listener.
 
 - **Linux only.** Elsewhere it refuses with the reason the design gives: the
   shim's console read path is fd-bound and its helper locations are image-fixed.
@@ -974,16 +977,132 @@ configuration key comes with it.
   have no counterpart in an installation; the launcher reports them in
   `missingHelpers` rather than naming a path that is not there.
 
-The launcher returns the socket path, the runtime root, the workspace root, the
-identity token, the missing helpers, an exit promise and `stop`. The daemon-side
-authors of sandbox paths (`sandboxGitCredentialTarget`, `buildSandboxMcpServers`)
-accept that runtime root, so the git-credential socket variable, the Git config
-location and `AC_MCP_ENDPOINT` move with it; the default is the image's layout.
+The launcher returns the socket path, the runtime root, the helper root, the
+workspace root, the identity token, the missing helpers, an exit promise and
+`stop`. The daemon-side authors of sandbox paths (`sandboxGitCredentialTarget`,
+`buildSandboxMcpServers`) accept that runtime root, so the git-credential socket
+variable, the Git config location and `AC_MCP_ENDPOINT` move with it; the default
+is the image's layout.
 
 `effectiveStrategies` (`execution/strategies.ts`) is the effective strategy
 table: `host` and `microsandbox`, each available or unavailable with a reason.
-`microsandbox` reads the probe behind `sandboxUnavailable`. Nothing reports the
-table over the wire yet.
+`microsandbox` reads the probe behind `sandboxUnavailable`. The executor facet
+reports its own reading of the table at registration.
+
+### Sharing a machine with its group
+
+`sandbox.share` switches on the executor facet
+([session-executors.md](session-executors.md) §3, §6, §7, §10): this daemon hosts
+`session`-isolated sessions for the other members of its daemon group. It is the
+**machine owner's** consent, so it lives in this machine's config file, is read
+once at start, and is not among the keys `config/push` may set. Off, which is the
+default, the daemon is exactly what it was: no listener, no executor facts at
+registration, no `hostedSessions` on the heartbeat, and a relayed
+`executor/prepare` answered `facet_off`. The code is `execution/executor-facet.ts`
+and `execution/executor-pipe.ts`; `daemon.ts` only wires it.
+
+```json
+{ "sandbox": { "share": true } }
+```
+
+**What it lends.** CPU and disk, and — the part that is easy to miss — this
+machine's **runtime sign-in**: a session placed here runs under whatever runtime
+login or API-key configuration this machine has. Each launch that starts the shim
+seeds the session's `home` from it with the local confined tier's own preparers
+(`prepareRuntimeHome`, `prepareSharedRuntimeCredentials`), for every runtime the
+machine admits, because a `prepare` names no runtime: a shared login is linked to
+the machine's own file, other runtimes' small config and credential files are
+copied once, and files already in the session's `home` always win. Provider
+credentials and agent secrets still come from the session's holder, over the
+encrypted pipe. One gap is open: a preparer that answers with an environment
+variable rather than a file in HOME (the Claude secure-storage directory) has no
+channel to a `host` runtime yet, so that sign-in is not usable on an executor
+until one exists.
+
+**When the facet is on.** Only when `share` is true, the effective strategy table
+has an available entry, and the listener is bound. This version prepares the
+`host` strategy alone, so the facet is on only on Linux, and it reports
+`microsandbox` as unavailable to holders until it can prepare one. A machine that
+shares but can run no strategy, or cannot bind, starts with the facet dark and
+logs why.
+
+**What it opens.** One TCP listener on every interface, on an ephemeral port that
+registration publishes as `capabilities.executor.endpoint`. Nothing fixes the port
+because nothing needs to know it in advance; the cost is that a host firewall
+filtering inbound LAN traffic has no fixed port to allow. The published address is
+the local address the Control Plane connection leaves from, which on a LAN is the
+interface the machine's peers reach it on; a multi-homed machine where that is
+wrong has no override yet. On that port:
+
+- TLS 1.3 with a pre-shared key and no certificate, the suite pinned to
+  `TLS_AES_128_GCM_SHA256` on both ends (a callback-supplied key is bound to
+  SHA-256, so a peer that prefers another suite fails instead of falling back).
+  The PSK identity is the session's leaf. The key is 32 random bytes, minted per
+  launch, held in memory only, returned once in the `prepare` reply the Control
+  Plane relays, and never logged or written to disk.
+- Nothing is served before a handshake succeeds under the key of an environment
+  that is live on this machine. An unknown identity is answered with a key nobody
+  holds, so it fails exactly as a wrong key does and the listener does not reveal
+  which sessions it hosts. A handshake has ten seconds; the sockets waiting for one
+  are capped at twice the session capacity (at least eight) and one more is dropped
+  unread; refusals are logged as a count once a minute, never as an identity, an
+  address or a key.
+- After the handshake the socket is piped byte for byte to that session's shim
+  unix socket, and the facet parses nothing. A `prepare` can therefore only arrive
+  on the Control Plane connection. One pipe per environment: a newly admitted dial
+  closes the one before it.
+
+**Preparing an environment.** A relayed `executor/prepare` reserves a slot against
+`limits.maxConcurrentSessions` — counting preparations in flight and this machine's
+own isolated sessions, and refusing only a `prepare`, never the machine's own
+births — and answers `full` with the live count when it cannot. It then applies the
+launch's binding generation, the highest of which is kept on disk beside the
+environment (`<daemonRoot>/sessions/<leaf>.json`, written durably before anything
+else happens):
+
+- _The generation already applied_ joins the preparation in flight or returns the
+  same reply — the same key, nothing rotated, no pipe closed. Once that launch is
+  gone (the environment stopped for idleness, its shim exited, or the daemon
+  restarted) the answer is `launch_retired`, never a second key.
+- _A higher generation_ is a new launch: `<daemonRoot>/sessions/<leaf>/{workspace,repos,home}`
+  is created or attached, the shim is started if it is not running, a fresh key is
+  minted, and the pipe admitted under the old key is closed. Environment starts are
+  serialized, as VM starts are.
+- _A lower generation_ is `stale_generation` and changes nothing.
+
+An environment is bound to the agent it was created for: a `prepare` that names
+another agent is refused, because the Control Plane vouched only for the agent the
+request names. `microsandbox` is `strategy_unavailable`, and a draining daemon
+answers `draining`.
+
+**Idle stop.** An environment with no admitted pipe for sixty seconds — two of the
+holder dialer's capped reconnect delays, so a blip it is still retrying through is
+not read as idle — has its shim stopped. Its slot is freed, its key and cached
+reply are dropped, and its directory and applied generation stay.
+
+**Orphan reconcile.** Every ten minutes the facet sweeps its on-disk inventory,
+which is labelled by agent id and session leaf and nothing else, against the two
+authorities the pool's reconciler uses: the Control Plane's `agent/exists` and the
+**shared** data-plane store's session rows. It discards an environment whose agent
+is gone, whose session key the store no longer lists, or whose row names another
+executor — only when it is older than ten minutes, has no live shim and no admitted
+pipe, and was not re-prepared since the lookups. It never judges dirtiness, and it
+retains everything when either authority cannot answer. A daemon that mounts no
+shared data plane can answer for no session, so it retains every environment and
+says so at start; the shared store is a prerequisite of sharing
+([daemon-groups.md](daemon-groups.md) §5). The sweep also runs with `share` off, so
+what an earlier run left is still collected.
+
+**Shutdown.** Hosted environments join the daemon's existing shutdown drain and
+add no phase: once it starts, `prepare` is refused, environments with a connected
+holder get `limits.shutdownDrainMs`, and then every shim is stopped (which runs its
+marked-process sweep). A machine hosting nothing spends nothing. Directories stay;
+keys die with the process, so a holder's next launch sends a new `prepare`.
+
+**Withdrawing consent.** `share` is read at start. Switched off, the machine is
+nobody's candidate, creates nothing and opens no port, so an environment that
+already exists here cannot be attached either until `share` is on again; it stays
+on disk until its session retires.
 
 ## 4. Delivery and acceptance
 

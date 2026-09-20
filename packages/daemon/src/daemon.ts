@@ -3515,12 +3515,10 @@ export class Daemon {
       ownSessions: () => [...this.hosts.keys()].filter((key) => hostKeySessionKey(key) !== undefined).length,
       draining: () => this.draining,
       endpointHost: () => this.cpClient?.localAddress(),
-      seedHome: (home) =>
-        seedSessionHome(
-          home,
-          Object.fromEntries(this.admittedRuntimeIds().map((id) => [id, this.runtimes[id]!])),
-          this.log
-        ),
+      seedHome: (home) => {
+        this.refreshAdmittedRuntimes()
+        seedSessionHome(home, this.runtimes, this.log)
+      },
       agentsExist: async (agentIds) => {
         if (!this.cpClient) throw new Error('no control plane connection')
         return this.cpClient.agentsExist(agentIds)

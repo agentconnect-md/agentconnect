@@ -47,42 +47,45 @@ export interface PipeListener {
 
 export async function startPipeListener(options: PipeListenerOptions): Promise<PipeListener> {
   const claims = new WeakMap<TLSSocket, { identity: string; key: Buffer }>()
-  const pipes = new Map<string, () => void>()
+  const pipes = new Map<string, (replaced?: boolean) => void>()
   const sockets = new Set<Socket>()
   let admitted = 0
   let refused = 0
   let report: NodeJS.Timeout | undefined
-  // A count and nothing else: an unauthenticated peer chooses the identity and the address a line would name.
+  let stopping = false
+  // A count and nothing else, once a minute: an unauthenticated peer chooses the identity and the address a line would name.
+  const reportRefusals = (): void => {
+    if (report) clearTimeout(report)
+    report = undefined
+    if (refused > 0) options.log.warn(`executor: refused ${refused} dial(s) that did not present a live session's key`)
+    refused = 0
+  }
   const refuse = (): void => {
+    // The handshakes this listener cuts short by stopping are not refusals.
+    if (stopping) return
     refused += 1
-    report ??= setTimeout(() => {
-      options.log.warn(`executor: refused ${refused} dial(s) that did not present a live session's key`)
-      refused = 0
-      report = undefined
-    }, REFUSAL_REPORT_MS)
+    report ??= setTimeout(reportRefusals, REFUSAL_REPORT_MS)
     report.unref()
   }
 
   const admit = (identity: string, socket: TLSSocket, socketPath: string): void => {
+    // One pipe per environment: the one before goes first, so neither a half-dead socket nor a deposed holder sits in the shim's single slot.
+    pipes.get(identity)?.(true)
     admitted += 1
     let open = true
-    let upstream: Socket | undefined
-    const close = (): void => {
+    const upstream = connect(socketPath)
+    const close = (replaced = false): void => {
       if (!open) return
       open = false
       admitted -= 1
       socket.destroy()
-      upstream?.destroy()
-      if (pipes.get(identity) !== close) return
-      pipes.delete(identity)
-      options.onPipe(identity, false)
+      upstream.destroy()
+      if (pipes.get(identity) === close) pipes.delete(identity)
+      // A replacement is not an idle moment: the dial that took over reports the pipe open.
+      if (!replaced) options.onPipe(identity, false)
     }
-    // One pipe per environment: the one before goes first, so neither a half-dead socket nor a deposed holder sits in the shim's single slot.
-    const previous = pipes.get(identity)
     pipes.set(identity, close)
-    previous?.()
-    upstream = connect(socketPath)
-    for (const end of [socket, upstream]) end.on('error', close).once('close', close)
+    for (const end of [socket, upstream]) end.on('error', () => close()).once('close', () => close())
     socket.setNoDelay(true)
     socket.setKeepAlive(true, KEEPALIVE_IDLE_MS)
     socket.pipe(upstream)
@@ -102,15 +105,19 @@ export async function startPipeListener(options: PipeListenerOptions): Promise<P
     }
   })
   server.on('connection', (raw: Socket) => {
+    // Past the cap a socket is dropped unread; the handshake it never had is counted below, as every other refusal is.
     if (sockets.size - admitted >= options.maxPending()) {
-      refuse()
       raw.destroy()
       return
     }
     sockets.add(raw)
     raw.once('close', () => sockets.delete(raw))
   })
-  server.on('tlsClientError', refuse)
+  // A bare tls.Server only reports a failed or timed-out handshake; closing the socket is the listener's to do, or it waits forever.
+  server.on('tlsClientError', (_error, socket: TLSSocket) => {
+    refuse()
+    socket.destroy()
+  })
   server.on('secureConnection', (socket: TLSSocket) => {
     const claim = claims.get(socket)
     const admission = claim && options.admission(claim.identity)
@@ -137,9 +144,10 @@ export async function startPipeListener(options: PipeListenerOptions): Promise<P
     pipeCount: () => pipes.size,
     close: (identity) => pipes.get(identity)?.(),
     stop: async () => {
-      if (report) clearTimeout(report)
+      stopping = true
       for (const raw of sockets) raw.destroy()
       await new Promise<void>((resolve) => server.close(() => resolve()))
+      reportRefusals()
     }
   }
 }
