@@ -184,16 +184,38 @@ The current coordinate therefore lives in its own reservation row, keyed
   the value it proposed. This is exactly the shape `mintOutwardId` already uses to mint a
   session's outward identity, and its reasoning transfers: the reservation "lands in its
   own table, never in a half-built `sessions` row".
-- **Advance** (`!new`) — a compare-and-set from the coordinate the caller read to the newly
-  minted one. A caller that loses the CAS re-reads and retries, so two simultaneous `!new`
-  commands advance the conversation exactly once rather than twice.
+- **Advance** (`!new`) — a compare-and-set from the coordinate the caller read to a newly
+  minted one. **A caller that loses the CAS does not retry the advance.** It re-reads,
+  sees a coordinate minted after its own read, and concludes that the rotation it wanted
+  has already happened — so two `!new` commands issued simultaneously advance the
+  conversation once, while two issued in sequence advance it twice, which is what each
+  pair of users meant. Retrying would advance a second time and leave an orphan coordinate
+  nobody ever posts into.
 
 Both are portable across the two stores this runs on: `postgres-dialect.ts` rewrites
 `INSERT OR IGNORE` to `ON CONFLICT DO NOTHING`, and a single-row CAS is an ordinary
 conditional `UPDATE` in both dialects.
 
+**A reservation can outlive what it names.** Retention deletes session rows and leaves
+transcript rows behind (§6.3), so a reservation that survived its session would hand the
+next message a coordinate whose transcript is still on disk — reintroducing exactly the
+inheritance §3.2 chose a timestamp to prevent. Two rules close that, and they are
+deliberately redundant because they fail in opposite directions:
+
+- **Retention clears the reservation it purges.** When the GC deletes the session a
+  reservation names, it clears that reservation in the same transaction, conditionally on
+  the reservation still naming the purged coordinate — a reservation advanced by a
+  concurrent `!new` is left alone.
+- **Resolve treats a reservation with no session as stale.** A reservation names a real
+  coordinate: `!new` writes a bare session row at it, and the first message writes one
+  too. So a resolve that finds a reservation with no session row at its coordinate
+  advances it by the same CAS rather than joining it. This is the safety net for every
+  path that removes a session without going through the GC.
+
 The reservation row is also what makes the coordinate resolvable **before** admission
-without reading the sessions table at all, which is what §3.1 requires.
+without reading the sessions table at all, which is what §3.1 requires — the staleness
+check above is the one read of the sessions table, and it happens only on the resolve that
+finds a reservation, not on every message.
 
 ### 3.4 Decided semantics
 
@@ -317,10 +339,14 @@ per-agent coordinate buys is that `!new` stays a per-agent command like every ot
   (`COMPACTION_DROP_RATIO`), with nothing acting on usage approaching the limit. An
   `append` session's context degrades as the runtime compacts it, and `!new` is the reset.
   No daemon-side warning and no automatic rotation.
-- **Retention applies unchanged.** Retention GC deletes sessions idle past the configured
-  window (default 7 days), taking the ACP session id and the worktree. An actively used
-  `append` session is never a candidate; a conversation quiet past the window loses its
-  session and the next message mints a fresh coordinate, per §3.2.
+- **Retention clears the reservation with the session.** Retention GC deletes sessions
+  idle past the configured window (default 7 days), taking the ACP session id and the
+  worktree, and leaves transcript rows behind. For an `append` conversation it also clears
+  the reservation row naming the purged coordinate, in the same transaction and
+  conditionally on it still naming that coordinate (§3.3) — otherwise the next message
+  would rejoin a coordinate whose session is gone but whose transcript is not. An actively
+  used `append` session is never a GC candidate; a conversation quiet past the window loses
+  its session and the next message mints a fresh coordinate.
 - **Unaffected.** Activation is untouched — an agent still does not respond to another
   bot's message unless mentioned, and the trigger, gating, and mute fences all key on
   `channel`, never on the thread coordinate. Memory scope is already per channel.
@@ -471,9 +497,14 @@ It is bounded as part of this work, not after it.
   transcript row uses; a clock moved backwards still mints above the current maximum.
 - `packages/daemon`, concurrency — two messages arriving together into a conversation with
   no append session resolve to ONE coordinate, enter one inbox lane, and claim one serial
-  gate; two simultaneous `!new` commands advance the conversation once; a `!new` racing an
-  in-flight message does not split the conversation across two coordinates. Run against
+  gate; two simultaneous `!new` commands advance the conversation once and the CAS loser
+  performs no second advance, while two sequential ones advance it twice; a `!new` racing
+  an in-flight message does not split the conversation across two coordinates. Run against
   both store dialects, since the reservation's atomicity is what is under test.
+- `packages/daemon`, reservation lifetime — retention purging an append session clears the
+  reservation naming it, but leaves one a concurrent `!new` has already advanced; a resolve
+  that finds a reservation whose coordinate has no session row advances instead of joining
+  it, so the next message never inherits the surviving transcript of a purged coordinate.
 - `packages/daemon`, `!new` — `parseCommand` recognizes both prefixes and the Telegram
   `@botname` suffix; in `append` the next message lands on the new coordinate while the
   retired session's row and transcript survive; in `createNew` the session keeps its key
