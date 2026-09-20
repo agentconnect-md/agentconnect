@@ -1,7 +1,7 @@
 import { RESERVED_MCP_SERVER_NAME } from '@agentconnect.md/protocol'
 import { existsSync, realpathSync } from 'node:fs'
 import { canonicalNodeExecArgv } from '../runtimes/node-exec-argv.js'
-import { SANDBOX_TUNNEL_PATHS } from '../shim/sandbox-paths.js'
+import { shimPaths } from '../shim/sandbox-paths.js'
 
 /** The stdio MCP-server spec we hand to ACP's `session/new` (`McpServerStdio`). */
 export interface McpStdioServer {
@@ -46,6 +46,8 @@ export function buildMcpServers(opts: {
 export function buildSandboxMcpServers(opts: {
   bridge: { command: string; args: string[] }
   token: string
+  /** The sandbox's runtime root when it is not the image's fixed one; the shim binds the `mcp` socket under it. */
+  runtimeRoot?: string
 }): McpStdioServer[] {
   return [
     {
@@ -53,7 +55,7 @@ export function buildSandboxMcpServers(opts: {
       command: opts.bridge.command,
       args: [...opts.bridge.args],
       env: [
-        { name: 'AC_MCP_ENDPOINT', value: SANDBOX_TUNNEL_PATHS.mcp },
+        { name: 'AC_MCP_ENDPOINT', value: shimPaths(opts.runtimeRoot).tunnels.mcp },
         { name: 'AC_MCP_TOKEN', value: opts.token }
       ]
     }

@@ -54,8 +54,7 @@ import {
   stripHostPathPrefix,
   type ManagedCredentialHost
 } from '../gitcred/managed-hosts.js'
-import { SANDBOX_GIT_CONFIG_DIR, SANDBOX_GIT_CREDENTIAL_HELPER } from '../shim/sandbox-paths.js'
-import { SANDBOX_TUNNEL_PATHS } from '../shim/tunnel.js'
+import { shimPaths } from '../shim/sandbox-paths.js'
 
 /**
  * simple-git ≥3.36 vulnerability-checks argv AND any child env passed via
@@ -529,13 +528,14 @@ export function daemonGitCredentialTarget(opts: { shimPath: string; runDir: stri
   }
 }
 
-/** A sandbox pod: the image's fixed helper path, and the socket the shim tunnels to the daemon. */
-export function sandboxGitCredentialTarget(): GitCredentialTarget {
+/** A sandbox: the image's fixed helper path, and the Git config and tunnel socket under its runtime root (default: the image's). */
+export function sandboxGitCredentialTarget(runtimeRoot?: string): GitCredentialTarget {
+  const paths = shimPaths(runtimeRoot)
   return {
     kind: 'sandbox',
-    helper: SANDBOX_GIT_CREDENTIAL_HELPER,
-    configDir: SANDBOX_GIT_CONFIG_DIR,
-    socketPath: SANDBOX_TUNNEL_PATHS.gitcred
+    helper: paths.gitCredentialHelper,
+    configDir: paths.gitConfigDir,
+    socketPath: paths.tunnels.gitcred
   }
 }
 

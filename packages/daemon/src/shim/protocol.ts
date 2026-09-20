@@ -29,6 +29,15 @@ export const DEFAULT_SHIM_WORKSPACE_ROOT = '/agent'
 /** Root of the shim's own runtime files (tunnel sockets, Git config, skill staging); unset keeps the image's fixed layout. */
 export const SHIM_RUNTIME_ROOT_ENV = 'AC_SHIM_RUNTIME_ROOT'
 
+/** Root of the helper entries (bridge, watchers, credential helper); unset keeps the image's fixed layout. */
+export const SHIM_HELPER_ROOT_ENV = 'AC_SHIM_HELPER_ROOT'
+
+/** A unix socket to accept the daemon on instead of a TCP port: a host shim authenticates nobody, and any local user can reach loopback. */
+export const SHIM_LISTEN_SOCKET_ENV = 'AC_SHIM_SOCKET'
+
+/** `1` when the driving daemon is on this machine and sends each runtime's whole environment, so the shim adds no pod fill-in. */
+export const SHIM_COMPLETE_ENV_FLAG = 'AC_SHIM_COMPLETE_ENV'
+
 /** `cluster-skills-v2` admits the widened skill manifest; a v1-only shim still gets the narrow one. */
 export const ShimFeatureSchema = z.enum(['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>

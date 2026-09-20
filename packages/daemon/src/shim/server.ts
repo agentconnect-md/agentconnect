@@ -50,6 +50,19 @@ export class ShimServer {
   constructor(private readonly deps: ShimServerDeps = {}) {}
 
   async start(port: number, host = '0.0.0.0'): Promise<number> {
+    await this.listen({ port, host }, `${host}:${port}`)
+    this.port = (this.server!.address() as { port: number }).port
+    this.deps.log?.info(`shim: listening on ${host}:${this.port}${SHIM_WS_PATH}`)
+    return this.port
+  }
+
+  /** Accept the daemon on a unix socket instead: a host shim authenticates nobody, and every local user can reach a loopback port. */
+  async startOnSocket(path: string): Promise<void> {
+    await this.listen({ path }, path)
+    this.deps.log?.info(`shim: listening on ${path}${SHIM_WS_PATH}`)
+  }
+
+  private async listen(where: { port: number; host: string } | { path: string }, label: string): Promise<void> {
     const server = createServer((_req, res) => {
       res.statusCode = 404
       res.end()
@@ -107,18 +120,15 @@ export class ShimServer {
     })
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
-      server.listen(port, host, () => {
+      server.listen(where, () => {
         server.removeListener('error', reject)
         resolve()
       })
     })
     // The bind-failure listener is gone by now, and a post-listen accept error is fatal unheard.
-    server.on('error', (err) => this.deps.log?.warn(`shim: accept socket error: ${err.message}`))
+    server.on('error', (err) => this.deps.log?.warn(`shim: accept socket error on ${label}: ${err.message}`))
     this.server = server
     this.wss = wss
-    this.port = (server.address() as { port: number }).port
-    this.deps.log?.info(`shim: listening on ${host}:${this.port}${SHIM_WS_PATH}`)
-    return this.port
   }
 
   /** Supply the next accepted daemon socket to the existing sandbox channel FSM. */

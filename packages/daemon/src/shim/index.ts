@@ -4,16 +4,9 @@ import { readFileSync } from 'node:fs'
 import { runSandboxRuntimeProvider } from '../acp/sandbox-runtime-provider.js'
 import { ShimClient } from './client.js'
 import { createAutoMergeHandler } from './auto-merge-handler.js'
+import { shimEntryOptions } from './entry-options.js'
 import { createExecHandler } from './exec-handler.js'
 import { resolveCommandInPath } from './path-resolve.js'
-import {
-  DEFAULT_SHIM_LISTEN_PORT,
-  DEFAULT_SHIM_WORKSPACE_ROOT,
-  SHIM_LISTEN_PORT_ENV,
-  SHIM_RUNTIME_ROOT_ENV,
-  SHIM_WORKSPACE_ROOT_ENV
-} from './protocol.js'
-import { shimPaths } from './sandbox-paths.js'
 import { ShimServer } from './server.js'
 import { TunnelHost } from './tunnel-host.js'
 
@@ -35,14 +28,14 @@ async function main(): Promise<number> {
   if (localIdentity !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(localIdentity)) {
     throw new Error('invalid sandbox identity')
   }
-  const port = Number(process.env[SHIM_LISTEN_PORT_ENV] ?? DEFAULT_SHIM_LISTEN_PORT)
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    log.warn(`${SHIM_LISTEN_PORT_ENV} is not a valid port`)
+  let options: ReturnType<typeof shimEntryOptions>
+  try {
+    options = shimEntryOptions(process.env)
+  } catch (error) {
+    log.warn((error as Error).message)
     return 2
   }
-  const workspaceRoot = process.env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT
-  // Unset (every image today) derives exactly the fixed layout; `||` so an empty value cannot root paths at '/'.
-  const paths = shimPaths(process.env[SHIM_RUNTIME_ROOT_ENV]?.trim() || undefined)
+  const { workspaceRoot, paths } = options
   const exec = createExecHandler({ workspaceRoot, paths, log })
   // Watchers own long-lived processes and stay outside the git-only exec inventory.
   const automerge = createAutoMergeHandler({ paths, log })
@@ -61,8 +54,7 @@ async function main(): Promise<number> {
     resolveCommand: resolveCommandInPath,
     // Image-accepted provider config (AC_CLAUDE_*/AC_CODEX_* → the runtime's BASE_URL/API_KEY).
     podEnv: process.env,
-    // A shim handed its identity on stdin was started by the daemon that drives it, on this machine: that daemon's launch environment is whole.
-    completeEnv: localIdentity !== undefined,
+    completeEnv: options.completeEnv,
     // Serves materialize and git exec, and ENFORCES the declared inventory here rather than
     // trusting that the daemon sent only permitted subcommands; tunnels are served separately
     // because they own long-lived sockets rather than answering one request.
@@ -77,13 +69,16 @@ async function main(): Promise<number> {
     features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'],
     log
   })
-  await server.start(port, localIdentity ? '127.0.0.1' : undefined)
+  if ('socketPath' in options.listen) await server.startOnSocket(options.listen.socketPath)
+  else await server.start(options.listen.port, localIdentity ? '127.0.0.1' : undefined)
   if (localIdentity) process.stdout.write('ready\n')
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
       tunnels.close()
       client.stop()
-      void server.stop().finally(() => process.exit(0))
+      // On a host no pod or VM teardown follows this exit, so the runtimes are ended here; elsewhere it does, and they are left to it.
+      const runtimes = 'socketPath' in options.listen ? client.closeStreams(5_000) : Promise.resolve()
+      void runtimes.then(() => server.stop()).finally(() => process.exit(0))
     })
   }
   await client.start()

@@ -395,6 +395,7 @@ import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from '
 import { runtimeCredentialsConfigured } from './runtimes/runtime-credential-discovery.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { wireWorkspacePlane, type ExecutionPlane, type PlaneLaunch } from './execution/plane.js'
+import { effectiveStrategies } from './execution/strategies.js'
 import {
   declaredRuntimeCatalog,
   loadK8sRuntimeTable,
@@ -5359,6 +5360,16 @@ export class Daemon {
     if (this.cfg.sandbox.backend !== 'microsandbox' || this.microsandbox) return undefined
     // Bounded before publishing: the log keeps the whole failure, while an over-long optional diagnostic would fail the register schema and strand the daemon.
     return boundedDiagnostic(this.microsandboxFailure ?? '') || 'microsandbox is not initialized'
+  }
+
+  /** What this machine can execute a session with right now, over the same probe `sandboxUnavailable` reports. */
+  executionStrategies(): ReturnType<typeof effectiveStrategies> {
+    return effectiveStrategies({
+      microsandbox: {
+        configured: this.cfg.sandbox.backend === 'microsandbox',
+        unavailable: this.sandboxUnavailableReason()
+      }
+    })
   }
 
   private registrationFeatures(): string[] {

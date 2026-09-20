@@ -254,7 +254,10 @@ describe('microsandbox shim', () => {
     expect(stage!.args.join(' ')).toContain("os.chmod('/run/agentconnect', 0o700)")
     expect(JSON.parse(stage!.stdin)).toMatchObject({ user: 'agent', files: { 'index.js': expect.any(String) } })
     expect(run).toMatchObject({ args: ['/run/agentconnect-shim-fake/index.js', '--identity-stdin'], user: 'agent' })
-    expect(run!.env).toEqual(expect.arrayContaining(['AC_SHIM_WORKSPACE_ROOT=/workspace', 'AC_SHIM_PORT=8085']))
+    // The complete environment is this starter's own claim; arriving on stdin no longer implies it.
+    expect(run!.env).toEqual(
+      expect.arrayContaining(['AC_SHIM_WORKSPACE_ROOT=/workspace', 'AC_SHIM_PORT=8085', 'AC_SHIM_COMPLETE_ENV=1'])
+    )
     expect(run!.stdin).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(shim.session.generation).toBe(7)
     const granted = (['acp', 'tunnel', 'read', 'skills', 'exec', 'materialize', 'automerge', 'probe'] as const).filter(

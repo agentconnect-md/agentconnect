@@ -598,10 +598,12 @@ resolves the command and its executable hints in the guest, starts the runtime a
 the image's ordinary user in its own process group, relays its stdio as numbered
 frames, and reports its exit. The driver sends the image's environment beneath
 the launch environment and names the workspace root as the working directory, as
-a direct guest exec did. A shim handed its identity on stdin was started by the
-daemon that drives it, so it treats that environment as whole and adds none of
-the fill-ins a pod template supplies: no provider variables, no Codex auth
-request composed from an inherited key, no DeepSeek preset. Stop closes the
+a direct guest exec did. The VM starter sets `AC_SHIM_COMPLETE_ENV=1`, because
+the daemon that drives the VM is on the same machine, so the shim treats that
+environment as whole and adds none of the fill-ins a pod template supplies: no
+provider variables, no Codex auth request composed from an inherited key, no
+DeepSeek preset. The flag is the starter's own claim and is not implied by an
+identity that arrived on stdin. Stop closes the
 runtime's stdin, signals its process
 group, and escalates to a kill past the deadline. A lost shim ends every runtime
 on it at once and fences the VM, so the host is rebuilt on the next turn; a
@@ -916,6 +918,59 @@ added for them.
 The inspected SDK does not provide general pause/resume of running process state.
 Lifecycle and configuration-reuse rules are documented
 [upstream](https://docs.microsandbox.dev/sandboxes/lifecycle).
+
+### Host-strategy shim launcher
+
+[session-executors.md](session-executors.md) §5 names `host` as an execution
+strategy: the same shim, started as a plain child process of the daemon with no
+sandbox around it, which [architecture.md](architecture.md) §9.1 already treats
+as an operator's choice. `startHostShim` (`execution/host-shim.ts`) is that
+launcher. Nothing calls it in production yet; no listener, protocol field, or
+configuration key comes with it.
+
+- **Linux only.** Elsewhere it refuses with the reason the design gives: the
+  shim's console read path is fd-bound and its helper locations are image-fixed.
+- **A short per-session runtime root**, `<daemonRoot>/hs/<12 hex>`, mode `0700`.
+  It sits beside the sessions and not under a session HOME because every socket
+  beneath it must fit the AF_UNIX path budget; a daemon root too long for that is
+  refused. The shim receives it as `AC_SHIM_RUNTIME_ROOT`, so its tunnel sockets,
+  Git config and skill staging are per session and two sessions on one machine
+  cannot replace each other's endpoints.
+- **A unix socket, never TCP.** The shim proves itself to whoever dials it and
+  authenticates nobody
+  ([cluster-spawn-and-shim.md](cluster-spawn-and-shim.md) §3). A pod's network
+  policy or a VM's guest loopback decides who can dial there; on a host, a
+  loopback port is reachable by every local user and by a sandboxed agent on the
+  same machine. `AC_SHIM_SOCKET` makes the shim listen on
+  `<runtimeRoot>/shim.sock` and nowhere else.
+- **Identity on stdin**, as for the VM, and a workspace root
+  `<daemonRoot>/sessions/<leaf>` with `workspace`, `repos` and `home` created
+  `0700`. The shim's HOME is that `home`; of the daemon's environment it inherits
+  only `PATH`, `LANG`, `LC_ALL` and `TZ`, so a provider key in the daemon's
+  environment does not reach a runtime through the pod fill-ins.
+- **No complete environment.** The holder that drives a host shim may be another
+  machine, whose environment describes that machine. The shim therefore fills
+  HOME and the other machine facts itself, exactly as a pod does.
+- **Its own process group.** Stop signals the group, the shim ends the runtimes
+  it started before exiting (no pod or VM teardown follows on a host), a kill
+  follows past the deadline, and the runtime root is removed. The workspace stays.
+- **Helpers from the daemon's installation.** `AC_SHIM_HELPER_ROOT` is the
+  directory that holds `shim/index.js`, which resolves the MCP bridge, the
+  merge-when-ready watcher and the `gh` token entry from the daemon's own bundle.
+  The git-credential wrapper, the `gh` wrapper directory and the DeepSeek preset
+  have no counterpart in an installation; the launcher reports them in
+  `missingHelpers` rather than naming a path that is not there.
+
+The launcher returns the socket path, the runtime root, the workspace root, the
+identity token, the missing helpers, an exit promise and `stop`. The daemon-side
+authors of sandbox paths (`sandboxGitCredentialTarget`, `buildSandboxMcpServers`)
+accept that runtime root, so the git-credential socket variable, the Git config
+location and `AC_MCP_ENDPOINT` move with it; the default is the image's layout.
+
+`effectiveStrategies` (`execution/strategies.ts`) is the effective strategy
+table: `host` and `microsandbox`, each available or unavailable with a reason.
+`microsandbox` reads the probe behind `sandboxUnavailable`. Nothing reports the
+table over the wire yet.
 
 ## 4. Delivery and acceptance
 

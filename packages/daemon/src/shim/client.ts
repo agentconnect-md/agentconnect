@@ -171,6 +171,11 @@ export class ShimClient {
     this.channel = undefined
   }
 
+  /** End every runtime this shim started, escalating past the deadline; for a shim whose exit no sandbox teardown follows. */
+  async closeStreams(deadlineMs: number): Promise<void> {
+    await Promise.all([...this.acpStreams.values()].map((runner) => runner.close(deadlineMs)))
+  }
+
   /**
    * Resolve when the channel needs rebuilding: the socket closed, or the credential is
    * close enough to expiry to renew. Renewing at half the lifetime leaves a full half as

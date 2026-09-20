@@ -11,7 +11,12 @@ import { ShimDialer } from '../shim/dialer.js'
 import { ShimSession } from '../shim/session.js'
 import { ClusterSkillClient } from '../shim/skill-client.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT, SANDBOX_SKILL_STAGING_DIR } from '../shim/sandbox-paths.js'
-import { DEFAULT_SHIM_LISTEN_PORT, SHIM_LISTEN_PORT_ENV, SHIM_WORKSPACE_ROOT_ENV } from '../shim/protocol.js'
+import {
+  DEFAULT_SHIM_LISTEN_PORT,
+  SHIM_COMPLETE_ENV_FLAG,
+  SHIM_LISTEN_PORT_ENV,
+  SHIM_WORKSPACE_ROOT_ENV
+} from '../shim/protocol.js'
 import { TunnelNameSchema, type TunnelName } from '../shim/tunnel.js'
 import { TunnelProxy } from '../shim/tunnel-proxy.js'
 import { openExecStream, MICROSANDBOX_NODE, type MicrosandboxExecStream } from './exec.js'
@@ -201,7 +206,9 @@ export async function startMicrosandboxShim(input: {
       cwd: '/',
       env: {
         [SHIM_WORKSPACE_ROOT_ENV]: input.workspaceRoot,
-        [SHIM_LISTEN_PORT_ENV]: String(DEFAULT_SHIM_LISTEN_PORT)
+        [SHIM_LISTEN_PORT_ENV]: String(DEFAULT_SHIM_LISTEN_PORT),
+        // This daemon drives the VM from the same machine and sends each runtime's whole environment.
+        [SHIM_COMPLETE_ENV_FLAG]: '1'
       }
     })
     let resolve!: () => void
