@@ -477,6 +477,10 @@ export class VirtualSlackConnection implements PlatformConnection {
 
   async leaveChannel(_channel: string): Promise<void> {}
 
+  /** The reconciler's per-bot join switch. The Arena's rooms are the world's, with no membership
+   *  to join, so there is nothing for the flag to change here. */
+  setJoinPublicChannels(_enabled: boolean): void {}
+
   async getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }> {
     return this.world.profile(user) ?? { id: user }
   }
