@@ -104,6 +104,36 @@ describe('the waiting banner', () => {
     expect(banner()?.textContent).toContain('(+1 more)')
   })
 
+  // The live-to-persisted transition remounts the card under the SAME action key: React detaches
+  // the old ref and attaches the new one in one commit, so the key list nets out identical. A
+  // snapshot that tracked only keys left the observer on the detached node and quietly stopped
+  // counting a card that is still waiting.
+  it('follows the node when a waiting card is remounted under the same key', async () => {
+    const render = (instance: number) =>
+      act(() => {
+        root.render(
+          <PendingActionsProvider>
+            <PendingActionsBanner />
+            <Waiter key={instance} id="a" label="Create agent" waiting />
+          </PendingActionsProvider>
+        )
+      })
+    await render(1)
+    visible([])
+    expect(banner()).not.toBeNull()
+    const before = element.querySelector('[data-waiter="a"]')
+    await render(2)
+    const after = element.querySelector('[data-waiter="a"]')
+    expect(after).not.toBe(before)
+    visible([])
+    expect(banner()?.textContent).toContain('Create agent is waiting for your action')
+    // And the banner's button now reaches the node that is actually on the page.
+    const scrollIntoView = vi.fn()
+    ;(after as HTMLElement).scrollIntoView = scrollIntoView
+    act(() => banner()!.click())
+    expect(scrollIntoView).toHaveBeenCalled()
+  })
+
   it('drops an item the moment it stops waiting', async () => {
     const render = (waiting: boolean) =>
       act(() => {

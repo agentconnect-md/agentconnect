@@ -9,20 +9,23 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Icon } from '@/components/ui'
 
 interface Pending {
+  key: string
   /** What the banner calls it — a card title, a question's first line. */
   label: string
   el: HTMLElement
 }
 
 interface Registry {
-  /** Register (or update) one waiting item; the returned callback ref holds the node it scrolls to. */
-  hold: (key: string, label: string) => (el: HTMLElement | null) => void
-  /** Stop waiting on one item — answered, opened, or gone. */
-  release: (key: string) => void
+  /** Register (or update) one waiting item under the node the banner scrolls to. */
+  hold: (key: string, label: string, el: HTMLElement) => void
+  /** Stop waiting on one item — answered, opened, or gone — IF `el` still holds the slot. A
+   *  remount hands the same key to a new node, and the old instance tears down afterwards: an
+   *  unconditional release would then drop the live card instead of the dead one. */
+  release: (key: string, el: HTMLElement) => void
 }
 
 const Ctx = createContext<Registry | null>(null)
-const Waiting = createContext<{ keys: string[]; items: Map<string, Pending> } | null>(null)
+const Waiting = createContext<Pending[] | null>(null)
 
 /**
  * Registration is a REF CALLBACK rather than an effect, because the node is what the banner
@@ -31,36 +34,48 @@ const Waiting = createContext<{ keys: string[]; items: Map<string, Pending> } | 
  */
 export function PendingActionsProvider({ children }: { children: ReactNode }) {
   const items = useRef(new Map<string, Pending>())
-  const [keys, setKeys] = useState<string[]>([])
+  const [entries, setEntries] = useState<Pending[]>([])
   // Order is the transcript's own: a banner that named the second question while the first is
   // still unanswered would send the reader to the wrong card.
+  //
+  // The published snapshot carries the NODES, not just the keys, and the bail-out compares all
+  // three fields — because a remount swaps the element under an unchanged key. React detaches the
+  // old ref and attaches the new one in the same commit, so the key list nets out identical; a
+  // snapshot that only tracked keys would leave the banner observing a detached node and silently
+  // stop counting a card that is still waiting.
   const resync = useCallback(() => {
-    setKeys((current) => {
-      const next = [...items.current.entries()]
-        .sort(([, a], [, b]) => (a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
-        .map(([key]) => key)
-      return next.length === current.length && next.every((key, i) => key === current[i]) ? current : next
+    setEntries((current) => {
+      const next = [...items.current.values()].sort((a, b) =>
+        a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+      )
+      const same =
+        next.length === current.length &&
+        next.every((entry, i) => {
+          const was = current[i]!
+          return entry.key === was.key && entry.label === was.label && entry.el === was.el
+        })
+      return same ? current : next
     })
   }, [])
   const hold = useCallback(
-    (key: string, label: string) => (el: HTMLElement | null) => {
-      if (el) items.current.set(key, { label, el })
-      else items.current.delete(key)
+    (key: string, label: string, el: HTMLElement) => {
+      items.current.set(key, { key, label, el })
       resync()
     },
     [resync]
   )
   const release = useCallback(
-    (key: string) => {
-      if (items.current.delete(key)) resync()
+    (key: string, el: HTMLElement) => {
+      if (items.current.get(key)?.el !== el) return
+      items.current.delete(key)
+      resync()
     },
     [resync]
   )
   const registry = useMemo<Registry>(() => ({ hold, release }), [hold, release])
-  const waiting = useMemo(() => ({ keys, items: items.current }), [keys])
   return (
     <Ctx.Provider value={registry}>
-      <Waiting.Provider value={waiting}>{children}</Waiting.Provider>
+      <Waiting.Provider value={entries}>{children}</Waiting.Provider>
     </Ctx.Provider>
   )
 }
@@ -78,12 +93,32 @@ export function usePendingAction(
   const registry = useContext(Ctx)
   const hold = registry?.hold
   const release = registry?.release
-  useEffect(() => {
-    if (waiting) return
-    release?.(key)
-  }, [waiting, key, release])
-  useEffect(() => () => release?.(key), [key, release])
-  return waiting && hold ? hold(key, label) : undefined
+  // The node this instance put in the registry. Held so every release names it: the teardown of a
+  // remounted card runs AFTER its replacement has claimed the key, and a release that only named
+  // the key would drop the card still on the page.
+  const mine = useRef<HTMLElement | null>(null)
+  const attach = useCallback(
+    (el: HTMLElement | null) => {
+      if (el) {
+        mine.current = el
+        hold?.(key, label, el)
+        return
+      }
+      if (mine.current) release?.(key, mine.current)
+      mine.current = null
+    },
+    [key, label, hold, release]
+  )
+  // Ceasing to wait detaches the ref, which releases through `attach` above; this covers the
+  // unmount, where React never calls the ref again.
+  useEffect(
+    () => () => {
+      if (mine.current) release?.(key, mine.current)
+      mine.current = null
+    },
+    [key, release]
+  )
+  return waiting && hold ? attach : undefined
 }
 
 /**
@@ -92,33 +127,28 @@ export function usePendingAction(
  * the kind of chrome people learn to ignore.
  */
 export function PendingActionsBanner({ className = '' }: { className?: string }) {
-  const waiting = useContext(Waiting)
-  const keys = waiting?.keys
-  const items = waiting?.items
-  const [hidden, setHidden] = useState<string[]>([])
+  const entries = useContext(Waiting)
+  const [hidden, setHidden] = useState<Pending[]>([])
   useEffect(() => {
-    if (!keys?.length || !items) {
+    if (!entries?.length) {
       setHidden([])
       return
     }
-    const nodes = keys.map((key) => items.get(key)?.el).filter((el): el is HTMLElement => !!el)
-    if (!nodes.length) return
     // The scroll pane is the viewport that matters, not the window: the transcript is its own
     // overflow region, and a card scrolled out of THAT is out of sight whatever the page is doing.
-    const root = nodes[0]!.closest('[data-transcript-scroll]')
+    const root = entries[0]!.el.closest('[data-transcript-scroll]')
     const seen = new Map<HTMLElement, boolean>()
     const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) seen.set(entry.target as HTMLElement, entry.isIntersecting)
-        setHidden(keys.filter((key) => seen.get(items.get(key)?.el as HTMLElement) === false))
+      (records) => {
+        for (const record of records) seen.set(record.target as HTMLElement, record.isIntersecting)
+        setHidden(entries.filter((entry) => seen.get(entry.el) === false))
       },
       { root: root ?? null, threshold: 0 }
     )
-    for (const node of nodes) observer.observe(node)
+    for (const entry of entries) observer.observe(entry.el)
     return () => observer.disconnect()
-  }, [keys, items])
-  const first = hidden[0]
-  const item = first ? items?.get(first) : undefined
+  }, [entries])
+  const item = hidden[0]
   if (!item) return null
   const more = hidden.length - 1
   return (

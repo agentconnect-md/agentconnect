@@ -160,6 +160,30 @@ describe('native integration UI', () => {
     other.remove()
   })
 
+  // A sibling tab that was ALREADY open when this one submitted has its own component state, so it
+  // has to hear about the write — otherwise it keeps its Waiting badge and invites the reader to
+  // submit the same create twice, and nothing settles the card server-side to correct it later.
+  it('adopts a report a sibling tab delivered while it was open', async () => {
+    const value = app()
+    await act(async () => {
+      root.render(<McpAppCard step={{ app: value }} onReport={() => true} />)
+    })
+    expect(element.textContent).toContain('Waiting')
+    const key = `ac.native-ui.reported.${value.appId}`
+    localStorage.setItem(key, 'Created GitHub subscription.')
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', { key, newValue: 'Created GitHub subscription.' }))
+    })
+    expect(element.textContent).toContain('Done')
+    expect(element.textContent).toContain('Created GitHub subscription.')
+    // A whole-store clear says nothing about this card, and another card's key is not ours.
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', { key: null, newValue: null }))
+      window.dispatchEvent(new StorageEvent('storage', { key: 'ac.native-ui.reported.other', newValue: 'x' }))
+    })
+    expect(element.textContent).toContain('Created GitHub subscription.')
+  })
+
   it('records nothing when the conversation would not take the report', async () => {
     const value = app()
     await act(async () => {

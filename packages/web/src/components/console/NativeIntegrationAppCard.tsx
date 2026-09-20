@@ -49,6 +49,20 @@ export function NativeIntegrationAppCard({ step, onReport }: McpAppCardProps) {
   useEffect(() => {
     report.current = app.outcome ? undefined : onReport
   })
+  // A sibling tab that was ALREADY open when this one submitted has its own component state, and
+  // the initializer above ran long before the write. Without this it keeps its Waiting badge and
+  // its place in the banner, inviting the reader to submit the same create a second time — and
+  // since a report settles nothing server-side, no later outcome would correct it.
+  useEffect(() => {
+    const key = reportedKey(app.appId)
+    const adopt = (event: StorageEvent) => {
+      // `key === null` is a whole-store clear, which says nothing about this card.
+      if (event.key !== key || !event.newValue) return
+      setSummary((current) => current || event.newValue!)
+    }
+    window.addEventListener('storage', adopt)
+    return () => window.removeEventListener('storage', adopt)
+  }, [app.appId])
   const dialogOpen = useRef(false)
   useEffect(
     () => () => {
