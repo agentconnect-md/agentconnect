@@ -26,6 +26,7 @@ export {
   isSelfManagedGitlabHost,
   DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  EXECUTOR_PREPARE_RELAY_BUDGET_MS,
   CLOUD_DAEMON_SA_NAME,
   CP_IDENTITY_TOKEN_PATH,
   CP_SUBPROTOCOL,
@@ -52,6 +53,7 @@ export {
   AGENT_EXISTS_FEATURE,
   AGENT_PLACEMENT_FEATURE,
   APPROVAL_DM_ROUTE_V1_FEATURE,
+  SESSION_EXECUTORS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
@@ -86,6 +88,7 @@ export * from './frames/route.js'
 export * from './frames/agent.js'
 export * from './frames/cron.js'
 export * from './frames/duty.js'
+export * from './frames/executor.js'
 export * from './frames/hook.js'
 export * from './frames/codehost-note.js'
 export * from './frames/codehost-review.js'

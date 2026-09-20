@@ -3,6 +3,7 @@ import { ReportedCostAmount } from '../decimal-amount.js'
 import { SessionUsage } from './session.js'
 import { Platform } from './route.js'
 import { HeartbeatDuties } from './duty.js'
+import { SessionStayedHomeReason } from './executor.js'
 
 /**
  * Telemetry & facts (D→C) — protocol §7.
@@ -20,6 +21,8 @@ export const Heartbeat = z.object({
   }),
   health: z.enum(['ok', 'degraded']),
   activeSessions: z.number().int(),
+  // Session environments live on this machine, its own isolated sessions included, whoever holds the session (session-executors.md §6); `activeSessions` keeps its meaning.
+  hostedSessions: z.number().int().min(0).optional(),
   degradedScopes: z.array(z.string()).default([]), // e.g. expired-lease bindings (§6)
   // Duty lease exchange (k8s daemons only; frames/duty.ts). Absent ⇒ this daemon
   // does not participate in the duty ledger and the CP-side path stays dormant.
@@ -150,6 +153,9 @@ export const EventSession = z.object({
   // metadata only; it lets the console offer a link to an isolated worktree
   // without assuming the Agent's current setting still matches this session.
   workspaceIsolation: z.enum(['shared', 'session']).optional(),
+  // Birth verdict (session-executors.md §7): the daemon executing the session, or why it stayed with its holder; whichever is reported replaces the other.
+  executorDaemonId: z.string().uuid().optional(),
+  stayedHomeReason: SessionStayedHomeReason.optional(),
   ts: z.string().datetime()
 })
 export type EventSession = z.infer<typeof EventSession>
