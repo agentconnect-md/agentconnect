@@ -350,9 +350,50 @@ per-agent coordinate buys is that `!new` stays a per-agent command like every ot
   would rejoin a coordinate whose session is gone but whose transcript is not. An actively
   used `append` session is never a GC candidate; a conversation quiet past the window loses
   its session and the next message mints a fresh coordinate.
-- **Unaffected.** Activation is untouched — an agent still does not respond to another
-  bot's message unless mentioned, and the trigger, gating, and mute fences all key on
-  `channel`, never on the thread coordinate. Memory scope is already per channel.
+- **Thread affinity and peer fan-out need their own record** — see §6.4. This is the one
+  place `append` does not leave activation alone.
+- **Unaffected.** The trigger, gating, and mute fences all key on `channel`, never on a
+  thread coordinate, and an agent still does not respond to another bot's message unless
+  mentioned. Memory scope is already per channel.
+
+### 6.4 Thread affinity and peer fan-out
+
+Two routing lookups find agents by querying **session rows with the physical thread**:
+
+- `SessionManager.threadOwner(channel, thread, scope)` → `store.openSessionAgents(...)`,
+  falling back to `closedSessionAgents(...)`. This is mention-mode continuity: exactly one
+  agent owning the thread means an unmentioned follow-up still reaches it; two owners are
+  ambiguous and fall back to mention-gating.
+- `SessionManager.threadParticipants(channel, thread, scope)`, which supplies the
+  `participants` set that `conversationPeers` turns into the peer fan-out.
+
+An `append` session's row carries the synthetic coordinate, so both lookups return nothing
+for the physical thread the message actually arrived in. Two regressions follow, and the
+second is worse than a regression:
+
+- **Continuity.** A mentioned agent answers in a thread; the next reply in that thread,
+  without a mention, finds no owner and does not route. Today it does.
+- **Peer fan-out.** `threadParticipants` returns empty, so there are no peers — and peer
+  fan-out is the mechanism that delivers a message to the _second_ agent in a channel. The
+  decision in §3.4 that two agents keep separate sessions while still seeing each other
+  depends on it.
+
+The cause is the one §3.1 already names, one level up: the session row is doing two jobs.
+It is the session, and it is the record that _this agent is active in this physical
+thread_. `createNew` can conflate them because a session **is** a thread. `append` separates
+them, so the second job needs its own record:
+
+**A thread participation record**, keyed `(channel, physicalThread, agentId, transportScope)`,
+written when a message is delivered to an agent in a thread and when the agent posts into
+one. `threadOwner` and `threadParticipants` read it instead of the sessions table. Whether
+a listed agent is live or dormant — the distinction `openSessionAgents` /
+`closedSessionAgents` draws today — is then decided by resolving that agent's current
+session through its own mode, rather than by which query found the row.
+
+It is written in **both** modes, so there is one code path rather than a mode branch in the
+routing ladder. In `createNew` it carries exactly the same information as the session rows
+it replaces, which is what makes it a safe substitution to verify: the existing continuity
+and fan-out tests must pass unchanged against it before `append` uses it for anything.
 
 ## 7. `!new`
 
@@ -514,6 +555,12 @@ It is bounded as part of this work, not after it.
   retired session's row and transcript survive; in `createNew` the session keeps its key
   and workspace, loses its ACP id, and its next prompt replays nothing from before the
   command; `createNew` refuses while a turn is in flight and `append` does not.
+- `packages/daemon`, routing — the existing thread-continuity and peer fan-out suites pass
+  against the participation record in `createNew` with no change in behavior; in `append`,
+  an unmentioned follow-up in a thread a mentioned agent answered in still routes to that
+  agent, two agents in one thread remain ambiguous and fall back to mention-gating, a
+  dormant owner is still revived, and peer fan-out still reaches the second agent so §3.4's
+  mutual visibility holds.
 - `packages/web` — the row renders both controls, a platform that omits `sessionModes`
   renders only the trigger, a direct conversation renders no session-mode control, and the
   `PATCH` carries the chosen mode.
