@@ -203,11 +203,13 @@ class Facet implements ExecutorFacet {
       this.environments.set(leaf, { leaf, ...record })
     const host = deps.strategies().host
     if (!deps.share) {
-      if (this.environments.size > 0) {
+      // The default, so it is said quietly unless an earlier run left something behind.
+      const left = this.environments.size
+      if (left === 0) deps.log.debug('executor: off — sandbox.share is not set')
+      else
         deps.log.info(
-          `executor: sandbox.share is off — ${this.environments.size} environment(s) of an earlier run stay on disk until their sessions retire`
+          `executor: sandbox.share is off — ${left} environment(s) of an earlier run stay until their sessions retire`
         )
-      }
     } else if (!host.available) {
       deps.log.warn(
         `executor: sandbox.share is on but the facet stays off — no strategy can run here (host: ${host.reason})`

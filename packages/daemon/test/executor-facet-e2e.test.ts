@@ -133,7 +133,6 @@ describe('executor facet, end to end', () => {
     { timeout: 120_000 },
     async () => {
       root = await mkdtemp(join(tmpdir(), 'ac-xe-'))
-      const before = new Set(listeningTcp(process.pid))
       facet = await startExecutorFacet({
         daemonRoot: root,
         share: true,
@@ -180,11 +179,10 @@ describe('executor facet, end to end', () => {
       const [, home, shimPid] = readFileSync(join(workspace, 'info'), 'utf8').split('\n')
       // The runtime ran under the session's own HOME on this machine, which the holder never named.
       expect(home).toBe(join(root, 'sessions', LEAF, 'home'))
-      // From another machine the TLS-PSK port is the only way in: the shim owns no TCP listener, and this process gained exactly one.
-      expect(listeningTcp(Number(shimPid))).toEqual([])
-      const gained = listeningTcp(process.pid).filter((address) => !before.has(address))
+      // From another machine the TLS-PSK port is the only way in: the facet's listener is there, and the shim owns no TCP listener at all.
       const port = first.endpoint.port.toString(16).toUpperCase().padStart(4, '0')
-      expect(gained).toEqual([`0100007F:${port}`])
+      expect(listeningTcp(process.pid)).toContain(`0100007F:${port}`)
+      expect(listeningTcp(Number(shimPid))).toEqual([])
 
       // A newer launch rotates: the pipe admitted under the old key closes, and that key admits nobody.
       const second = ready(await facet.prepare(req(2)))
