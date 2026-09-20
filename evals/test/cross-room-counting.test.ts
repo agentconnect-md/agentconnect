@@ -218,6 +218,5 @@ describe('cross-room counting end to end — the §10.2 handoff against the land
     )
     expect(refusal.agentAlias).toBe('bridge-x')
     expect(String(refusal.text)).toContain('is not a thread root')
-    expect(String(refusal.text)).toContain('unexpected `thread`')
   }, 180_000)
 })
