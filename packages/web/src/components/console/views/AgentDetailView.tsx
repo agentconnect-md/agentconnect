@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
@@ -122,7 +122,7 @@ import { orderedGiteaHookRows, orderedGithubHookRows, orderedGitlabHookRows } fr
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
-import { TrustedUsersField } from '@/components/console/TrustedUsersField'
+import { TrustedUsersField, type TrustedUsersFlush } from '@/components/console/TrustedUsersField'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -384,6 +384,8 @@ export default function AgentDetailView() {
   const [reviewSettingsDraft, setReviewSettingsDraft] = useState<CodeHostReviewSettingsDraft | null>(null)
   const [reviewSettingsSaving, setReviewSettingsSaving] = useState(false)
   const [reviewSettingsError, setReviewSettingsError] = useState<string | null>(null)
+  // Save commits the trusted user the field still holds unentered, so clicking it never eats what was typed.
+  const trustedUsersFlush = useRef<TrustedUsersFlush | null>(null)
   const reviewSettingsProvider = reviewSettingsDraft?.kind ?? null
   const reviewSettingsHook = reviewSettingsDraft
     ? codeHostHooks[reviewSettingsDraft.kind].find((hook) => hook.id === reviewSettingsDraft.hookId)
@@ -479,6 +481,8 @@ export default function AgentDetailView() {
     setReviewSettingsSaving(true)
     setReviewSettingsError(null)
     try {
+      // Its own write, so it goes first and a login the host refuses keeps the dialog open on the field's error.
+      if (trustedUsersFlush.current && !(await trustedUsersFlush.current())) return
       const updated = await save()
       void mutateHooks((rows) => rows?.map((row) => (row.id === hook.id ? updated : row)), {
         revalidate: false
@@ -2696,7 +2700,11 @@ export default function AgentDetailView() {
               )}
               {/* Repository-wide, so it saves itself rather than riding the row's PUT. */}
               <div className="mt-4">
-                <TrustedUsersField hookId={reviewSettingsHook.id} provider={reviewSettingsDraft.kind} />
+                <TrustedUsersField
+                  hookId={reviewSettingsHook.id}
+                  provider={reviewSettingsDraft.kind}
+                  flushRef={trustedUsersFlush}
+                />
               </div>
               {reviewSettingsError && (
                 <div className="mt-3 flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">

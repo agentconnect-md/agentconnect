@@ -1,6 +1,6 @@
 'use client'
 
-import { useId, useState, type KeyboardEvent } from 'react'
+import { useEffect, useId, useState, type KeyboardEvent, type RefObject } from 'react'
 import useSWR from 'swr'
 import { Icon } from '@/components/ui'
 import { addTrustedActor, fetchTrustedActors, removeTrustedActor, type TrustedActorDto } from '@/lib/api'
@@ -10,11 +10,23 @@ import type { CodeHostProvider } from '@agentconnect.md/protocol/code-host'
 
 const HOST_NAME: Record<CodeHostProvider, string> = { github: 'GitHub', gitlab: 'GitLab', gitea: 'Gitea' }
 
+/** Commits the login the field still holds; false only when the host refused it, with the error already on screen. */
+export type TrustedUsersFlush = () => Promise<boolean>
+
 // "Trusted users" — the chip field a code-host row's settings dialog shows. Every chip is a user a
 // maintainer vouched for on this REPOSITORY (the list is shared by every hook row on it): they fire
 // its hooks as a role-holder would. Enter adds the typed login; the server resolves it to the host's
-// numeric id, so an unknown login is refused inline rather than stored.
-export function TrustedUsersField({ hookId, provider }: { hookId: string; provider: CodeHostProvider }) {
+// numeric id, so an unknown login is refused inline rather than stored. A login typed but never
+// entered rides the dialog's Save through `flushRef` instead of being dropped with the dialog.
+export function TrustedUsersField({
+  hookId,
+  provider,
+  flushRef
+}: {
+  hookId: string
+  provider: CodeHostProvider
+  flushRef?: RefObject<TrustedUsersFlush | null>
+}) {
   const { activeOrg } = useOrgs()
   const inputId = useId()
   const [draft, setDraft] = useState('')
@@ -24,9 +36,10 @@ export function TrustedUsersField({ hookId, provider }: { hookId: string; provid
   const { data, mutate } = useSWR(key, ([, orgId, , id]) => fetchTrustedActors(id, orgId))
   const users: TrustedActorDto[] = data ?? []
 
-  const add = async () => {
+  // Nothing to commit and a write already in flight are both "carry on"; only a refusal answers false.
+  const add = async (): Promise<boolean> => {
     const login = draft.trim().replace(/^@/, '')
-    if (!login || busy) return
+    if (!login || busy) return true
     setBusy(true)
     setError(null)
     try {
@@ -34,8 +47,10 @@ export function TrustedUsersField({ hookId, provider }: { hookId: string; provid
       // The same id re-added refreshes its login rather than growing the list.
       void mutate((rows) => [...(rows ?? []).filter((row) => row.id !== added.id), added], { revalidate: false })
       setDraft('')
+      return true
     } catch (e) {
       setError(e instanceof Error ? e.message : 'could not add this user')
+      return false
     } finally {
       setBusy(false)
     }
@@ -59,6 +74,14 @@ export function TrustedUsersField({ hookId, provider }: { hookId: string; provid
       void add()
     }
   }
+  // Reassigned every render so the holder flushes the draft on screen, not the one an earlier render closed over.
+  useEffect(() => {
+    if (!flushRef) return
+    flushRef.current = add
+    return () => {
+      flushRef.current = null
+    }
+  })
 
   return (
     <div data-trusted-users>

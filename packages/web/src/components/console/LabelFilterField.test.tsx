@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 /**
- * The chip field behind "Only with labels": Enter commits, a pasted list splits on
- * commas, Backspace on an empty input takes the last chip back, duplicates fold
- * case-insensitively (the relay matches that way), and the Control Plane's cap
+ * The chip field behind "Only with labels": Enter commits, leaving the field commits
+ * too (so the dialog's Save never eats a label typed but not entered), a pasted list
+ * splits on commas, Backspace on an empty input takes the last chip back, duplicates
+ * fold case-insensitively (the relay matches that way), and the Control Plane's cap
  * hides the input behind a note instead of letting a 21st label be typed.
  */
 import { act } from 'react'
@@ -67,6 +68,14 @@ describe('LabelFilterField', () => {
     expect(input()!.value).toBe('')
     await press('Backspace')
     expect(onChange).toHaveBeenLastCalledWith([])
+  })
+
+  it('commits what is still typed when focus leaves, so a Save click keeps it', async () => {
+    await render(['bug'])
+    await type('needs-review')
+    await act(async () => input()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+    expect(onChange).toHaveBeenLastCalledWith(['bug', 'needs-review'])
+    expect(input()!.value).toBe('')
   })
 
   it('folds a duplicate into the existing chip without a change', async () => {
