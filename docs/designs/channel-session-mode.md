@@ -91,22 +91,32 @@ The two roles `msg.thread` plays are split:
   output, and the outbound `threadKeyForPost` strategies
   (`packages/daemon/src/platforms/thread-keys.ts`). An answer is always posted where the
   message that started the turn came from, in both modes.
-- **Session coordinate** — resolved per agent, in the session layer, from
+- **Session coordinate** — resolved once per target, from
   `(agentId, msg, integrationId)`. In `createNew` it is `msg.thread ?? msg.msgId`, exactly
   as today. In `append` it is the conversation's current append coordinate (§3.2).
 
-Resolution happens where the agent is known, not at ingress. This follows the idiom the
-daemon already uses for every other per-target coordinate: the target's own transport
-scope rather than the observing connection's, the target-scoped `deliveryId`, and
-`memoryScopeFor(agentId, msg, integrationId)` in `SessionManager.handle`. Stamping the
-message instead would be wrong for the reason §2.2 gives — one object, several targets,
-and in one channel agent A may be `append` while agent B is `createNew`.
+**Where resolution happens is load-bearing.** It cannot be at ingress: §2.2's fan-out means
+one object reaches several targets, and in one channel agent A may be `append` while agent
+B is `createNew`. It also cannot be inside `SessionManager.handle`, because by then the
+session key has already been used — the durable inbox lane is keyed by it
+(`inbox_fifo (sessionKey, enqueuedAt)`) and the per-session serial gate has been claimed
+under it. A coordinate decided after admission would be a different coordinate from the one
+the message was admitted on.
+
+So it resolves in the one place that is both after routing has picked this target and
+before anything is keyed on the result: the per-target step in the fan-out, on that
+target's own copy of the message. That step already computes `sessionKey`-derived values
+per target — the target's `muteKey` and `activationKey` are built there, from the target's
+own transport scope rather than the observing connection's — so this is the same
+resolution, one field wider. The resolved coordinate is then **carried** through the inbox
+lane, the serial gate, the observer, the turn plan, and the session manager, never
+re-derived by any of them.
 
 `transcriptCoords()` therefore takes the resolved coordinate rather than deriving it, and
-every session-side consumer moves with it: the session key, the local transcript primary
-key, the thread-revision fence, the per-session serial queue, and the active-session
-recency probe. Two sites need explicit correction because they currently derive a
-coordinate of their own:
+every session-side consumer reads the carried value: the session key, the local transcript
+primary key, the thread-revision fence, the per-session serial queue, and the
+active-session recency probe. Two sites need explicit correction because they currently
+derive a coordinate of their own:
 
 - `recordObservedInbound()` (`packages/daemon/src/daemon.ts`) matches an in-flight turn
   with `p.plan.statusThread === thread`, comparing a delivery coordinate against a session
@@ -159,7 +169,33 @@ one — a platform thread id is a provider timestamp, a snowflake, or a numeric 
 never `append:`-prefixed. It follows the precedent of Telegram's continuous-DM literal
 `dm` in `thread-keys.ts`.
 
-### 3.3 Decided semantics
+### 3.3 Resolve-or-reserve is one atomic step
+
+"Find the largest, or mint one" is a read followed by a write, and two messages arriving
+together in a conversation that has no append session yet would both read nothing and both
+mint — two coordinates, two sessions, for one conversation. Deriving the maximum from
+session rows has the same race against a concurrent `!new`.
+
+The current coordinate therefore lives in its own reservation row, keyed
+`(agentId, channel, transportScope)`, and is resolved by one atomic operation:
+
+- **Resolve** — `INSERT OR IGNORE` a row carrying a freshly minted coordinate, then read
+  the row back. Every concurrent caller converges on whichever insert won; nobody trusts
+  the value it proposed. This is exactly the shape `mintOutwardId` already uses to mint a
+  session's outward identity, and its reasoning transfers: the reservation "lands in its
+  own table, never in a half-built `sessions` row".
+- **Advance** (`!new`) — a compare-and-set from the coordinate the caller read to the newly
+  minted one. A caller that loses the CAS re-reads and retries, so two simultaneous `!new`
+  commands advance the conversation exactly once rather than twice.
+
+Both are portable across the two stores this runs on: `postgres-dialect.ts` rewrites
+`INSERT OR IGNORE` to `ON CONFLICT DO NOTHING`, and a single-row CAS is an ordinary
+conditional `UPDATE` in both dialects.
+
+The reservation row is also what makes the coordinate resolvable **before** admission
+without reading the sessions table at all, which is what §3.1 requires.
+
+### 3.4 Decided semantics
 
 - **Every admitted message joins the current coordinate**, top-level or in a thread. A
   conversation in `append` has exactly one live session per agent.
@@ -225,9 +261,11 @@ with `ChannelSessionMode = z.enum(['createNew', 'append'])`.
 ### 6.1 Resolving the coordinate
 
 `integrationCore()` returns the new `sessionModes` and `integrationRouting()` exposes a
-lookup. `SessionManager.handle` resolves the coordinate for
-`(agentId, msg, integrationId)` before it computes the session key — `createNew` yields
-today's value, `append` runs the maximum-timestamp lookup of §3.2 and mints on empty.
+lookup. The per-target fan-out step resolves the coordinate for
+`(agentId, msg, integrationId)` beside the `muteKey` and `activationKey` it already builds
+there — `createNew` yields today's value, `append` performs the atomic resolve-or-reserve
+of §3.3 — and puts it on the turn plan. Admission, the inbox lane, the observer, and
+`SessionManager.handle` all read that carried value.
 
 ### 6.2 Transcript
 
@@ -291,8 +329,8 @@ per-agent coordinate buys is that `!new` stays a per-agent command like every ot
 
 ### 7.1 In `append`: mint a new coordinate
 
-`!new` mints the next coordinate (§3.2) and writes a bare session row there, so the
-maximum lookup sees it immediately. The retired session keeps its row, its outward id, its
+`!new` advances the reservation row by compare-and-set (§3.3) and writes a bare session
+row at the new coordinate, so the next message resolves to it immediately. The retired session keeps its row, its outward id, its
 CP metadata, and its transcript; the conversation simply stops adding to it, and it ages
 out through ordinary retention. Nothing is destroyed, and the successor's runtime session
 is born lazily, on the next message.
@@ -431,6 +469,11 @@ It is bounded as part of this work, not after it.
 - `packages/daemon`, minting — the maximum lookup ignores the ACP-id filter; a mint after
   every append session was retention-purged produces a coordinate that no surviving
   transcript row uses; a clock moved backwards still mints above the current maximum.
+- `packages/daemon`, concurrency — two messages arriving together into a conversation with
+  no append session resolve to ONE coordinate, enter one inbox lane, and claim one serial
+  gate; two simultaneous `!new` commands advance the conversation once; a `!new` racing an
+  in-flight message does not split the conversation across two coordinates. Run against
+  both store dialects, since the reservation's atomicity is what is under test.
 - `packages/daemon`, `!new` — `parseCommand` recognizes both prefixes and the Telegram
   `@botname` suffix; in `append` the next message lands on the new coordinate while the
   retired session's row and transcript survive; in `createNew` the session keeps its key
