@@ -1012,6 +1012,21 @@ describe('§7.5 the turn holds its egress transport', () => {
         await running.start()
         await vi.waitFor(async () => expect(await (running as any).store.listInboxBySessionKeyFifo()).toEqual([]))
         expect(host.prompt).toHaveBeenCalledTimes(stage === 'prompt' ? 1 : 0)
+
+        // Restoring a file-authored integration while stopped must reopen admission on boot.
+        await running.stop()
+        writeFileSync(file, JSON.stringify(config))
+        running = new Daemon({ root, hostFactory: () => host as any })
+        await running.start()
+        ;(running as any).lnConnByIntegration.set(INTEGRATION, {
+          ...conn,
+          postActivity: async () => {},
+          updateSession: async () => {}
+        })
+        await expect(
+          (running as any).dispatch(AGENT, delivery({ msgId: `linear:${SESSION}:restored` }).payload, INTEGRATION)
+        ).resolves.toBe('acp-1')
+        expect(host.prompt).toHaveBeenCalledTimes(stage === 'prompt' ? 2 : 1)
       } finally {
         releaseBlocked()
         await running.stop()

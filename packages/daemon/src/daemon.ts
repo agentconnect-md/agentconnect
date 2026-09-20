@@ -2623,7 +2623,7 @@ export class Daemon {
   /** Phase 16 — the local (or data-plane) store plus the one rule table every row retention runs from. */
   private async openStoreAndRetention(root: string): Promise<void> {
     this.store = this.dataPlane?.store ?? (await LocalStore.open(statePath(root)))
-    for (const agent of this.agents.values()) {
+    for (const agent of this.fileAgents.values()) {
       for (const integration of agent.integrations) {
         await this.store.setIntegrationRemoved(agent.id, integration.id, false)
       }
