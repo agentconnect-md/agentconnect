@@ -1217,8 +1217,11 @@ declares `publicChannelReach` in `read-ports.ts`: a public channel is open, whil
 channel, DM or group DM is reachable only when it IS the conversation the agent was invoked in.
 Membership is not consent — a bot invited into a private channel for one purpose must not make
 that channel readable from every other conversation the same agent is in. The gate reads the
-platform's own description (`conversations.info`) rather than the id's shape, and lets a
-conversation the platform will not describe through to the platform's own, more precise refusal.
+platform's own description (`conversations.info`) rather than the id's shape, and FAILS CLOSED
+when that description cannot be obtained — the bot may be a member of the private channel behind
+the id, so a timeout or rate limit refuses rather than admits. Only the platform's own "no such
+conversation" (`channel_not_found`) is let through, because it proves the downstream call fails
+identically and its refusal is the more precise one.
 It sits in front of `getChannelHistory` (which gained `channel` / `integrationId` like
 `getThreadHistory`), `getThreadHistory`, and every `channel` form of `sendMessage`; the `toUser`
 DM form names a user, not a channel, and is not gated. Slack's `listChannels` enumerates every

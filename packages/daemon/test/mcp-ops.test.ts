@@ -1051,17 +1051,41 @@ describe('executeTool: read tools', () => {
       expect(gw.getChannelInfo).not.toHaveBeenCalledWith('C_CURRENT')
     })
 
-    it('lets a channel the platform will not describe through to the platform’s own refusal', async () => {
+    it('lets a conversation the platform does not know through to the platform’s own refusal', async () => {
+      // `channel_not_found` proves the downstream call fails identically, so the more precise
+      // provider error is the one the agent should read.
       const gw = fakeGateway({
         getChannelInfo: vi.fn(async () => {
-          throw new Error('channel_not_found')
+          throw Object.assign(new Error('channel_not_found'), { data: { error: 'channel_not_found' } })
         }),
         getChannelHistory: vi.fn(async () => {
           throw new Error('Slack channel history failed: channel_not_found')
         })
       })
       const { deps: d } = deps(gw)
-      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_GONE' }, d)).rejects.toThrow('channel_not_found')
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_GONE' }, d)).rejects.toThrow(
+        'Slack channel history failed: channel_not_found'
+      )
+    })
+
+    it('fails closed when the conversation cannot be classified at all', async () => {
+      // A timeout or rate limit says nothing about privacy, and the bot may be a member of the
+      // private channel behind the id — so the call is refused, not admitted.
+      const gw = fakeGateway({
+        getChannelInfo: vi.fn(async () => {
+          throw new Error('ratelimited')
+        }),
+        getChannelHistory: vi.fn(async () => ({ messages: [], hasMore: false }))
+      })
+      const { deps: d } = deps(gw)
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_MAYBE' }, d)).rejects.toThrow(
+        /could not determine whether C_MAYBE is a private/
+      )
+      await expect(executeTool(ctx, 'sendMessage', { channel: 'C_MAYBE', message: 'hi' }, d)).rejects.toThrow(
+        /could not determine/
+      )
+      expect(gw.getChannelHistory).not.toHaveBeenCalled()
+      expect(gw.postMessage).not.toHaveBeenCalled()
     })
 
     it('does not gate a platform that declares no public-only reach', async () => {
