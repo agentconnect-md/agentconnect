@@ -45,6 +45,11 @@ export interface McpAppCardProps {
   /** Forward one view RPC to the daemon and resolve with its verdict. Absent ⇒ this card is
    *  read-only (a history view), and the frame is not armed at all. */
   onRpc?: (appId: string, rpc: McpAppRpc) => Promise<{ ok: true; result: unknown } | { ok: false; error: string }>
+  /** Speak one line into the conversation as an ordinary turn — what a NATIVE dialog reports its
+   *  outcome with. Deliberately not the card bridge: a form the reader is filling in outlives the
+   *  card's liveness, so gating its report on `onRpc` loses the report. False ⇒ not delivered.
+   *  Absent ⇒ this view cannot reach the conversation (a history view), and no report is offered. */
+  onReport?: (text: string) => boolean
   /** Tell the daemon the reader closed the frame. Absent ⇒ no close control is offered. */
   onClose?: (appId: string) => void
 }

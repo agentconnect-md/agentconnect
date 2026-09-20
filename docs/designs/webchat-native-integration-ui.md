@@ -67,9 +67,8 @@ the arguments the model collected — and the Console create dialog opens prefil
 agent is born when the reader presses Create, under their own Console JWT, and the card reports
 the outcome back into the conversation as an ordinary turn — `agentId` and slug on a create that
 landed, the reason on one that did not, either of which wakes the session that asked. A failure
-closes the dialog with its report: the daemon settles a card on the message it sends, so a retry
-behind a settled card could never reach the agent, and the model — which still holds the draft —
-re-proposes a corrected card instead. Nothing is queued, nothing is approved, and an agent the
+closes the dialog with its report, and the model — which still holds the draft — re-proposes a
+corrected card instead: a form the reader has already submitted is not where a retry belongs. Nothing is queued, nothing is approved, and an agent the
 reader abandoned never existed. The intent therefore carries EITHER an `agentId` (an
 editor has a subject) or a `draft` (a create dialog has none), never both.
 
@@ -175,9 +174,8 @@ A REFUSED submit reports too, and on the same channel: a save that the server re
 caller has to hear, or it waits on a thing that was never made — the agent that was not created,
 the integration that was not added, the skill or MCP server that was not installed, the
 configuration that was not saved. The report names what was attempted and the reason, and it closes
-the dialog: one card reports ONCE, because the daemon settles a card on the message it sends, so a
-retry behind a settled card could never reach the caller. The model still holds what it proposed
-and opens a corrected card, which is where a retry belongs. Validation the dialog catches on its
+the dialog: one dialog reports once, and the model still holds what it proposed and opens a
+corrected card, which is where a retry belongs. Validation the dialog catches on its
 own is not a refusal — nothing was attempted, and it stays in the dialog. Dismissing a dialog still
 reports nothing: a reader who closed it said no, and the card's own button re-opens it.
 
@@ -185,21 +183,35 @@ The report carries its KIND alongside its sentence, because the card's own copy 
 card that could not deliver a report says so, and "your changes are saved" under "Creating the agent
 failed" would be the one thing worse than saying nothing.
 
-Reporting back is what needs a live card. A settled one still opens and still saves,
-through the same Console authorization, and says plainly that the agent was not
-notified instead of dropping the note. Completion callbacks are deduplicated per
-opening, so one dialog reports once and a reopened one may report again.
+Reporting back does NOT need a live card, and this is the one place a native dialog parts
+company with a sandboxed frame. The app bridge (`app_rpc`) is the authorization model for
+agent-authored HTML: a frame may not name its own sender, so everything it can reach is looked
+up from the card the daemon itself opened — and that card is settled by the session ending, by a
+fifth card in the conversation and by the reader closing the page. A native dialog has no such
+question to answer. It is the Console's own form, running on the reader's session under their
+own JWT, so it reports the way the composer sends: an ordinary webchat turn, addressed by
+conversation and agent, with no card in the path. A dialog therefore outlives the card that
+opened it — and, because the transcript re-keys a turn when its live steps become persisted
+rows, it outlives the card COMPONENT too: the report is read at callback time, and a remount
+puts the dialog back rather than leaving a half-filled form behind a button. A view that cannot
+reach the conversation at all (a history page) says plainly that the agent was not notified
+instead of dropping the note. Completion callbacks are deduplicated per opening, so one dialog
+reports once and a reopened one may report again.
+
+Settlement is a separate frame from the report, because the daemon no longer learns of one by
+carrying the other: a delivered report closes the card with `app_close`, which is what keeps a
+fresh browser session from opening a dialog over a form that was already submitted. A report
+that was NOT delivered settles nothing — the card stays open for the retry it still owes, and a
+settlement arriving after a report never shuts a dialog holding its own final reveal step.
 
 Closing an editor without submitting does not send a completion message. A card going
 inert closes the dialog it opened, on that transition alone, so re-reading an old card
 cannot shut a dialog someone deliberately reopened; a completed card is left alone for
 its own final reveal step.
 
-Successful saves produce a bounded, non-secret summary through the existing
-`ui/message` path. The daemon dispatches it as an ordinary user turn and settles the
-configuration card as `completed` after admission. The transcript records that
-outcome and summary. UI completion callbacks are deduplicated; opening a form is
-never reported as creating an integration.
+Successful saves produce a bounded, non-secret summary, dispatched as an ordinary user
+turn on the conversation's own socket. UI completion callbacks are deduplicated; opening
+a form is never reported as creating an integration.
 
 Code-host edits preserve custom event subscriptions unless the user explicitly
 changes cadence. The dialog checks the latest configuration revision before a

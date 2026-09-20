@@ -1808,11 +1808,13 @@ function McpAppRow({
   step,
   sessionId,
   onRpc,
+  onReport,
   onClose
 }: {
   step: FmtStep
   sessionId?: string
   onRpc?: McpAppCardProps['onRpc']
+  onReport?: McpAppCardProps['onReport']
   onClose?: McpAppCardProps['onClose']
 }) {
   const [full, setFull] = useState<NonNullable<FmtStep['app']> | null>(null)
@@ -1841,7 +1843,14 @@ function McpAppRow({
   // whenever it was read, so letting it win would put a card the reader has since closed back on
   // screen, frame and all, until the next reload.
   const whole = app && full?.appId === app.appId && !app.html ? { ...step, app: mergeFetchedAppCard(app, full) } : step
-  return <McpAppCard step={whole} {...(onRpc ? { onRpc } : {})} {...(onClose ? { onClose } : {})} />
+  return (
+    <McpAppCard
+      step={whole}
+      {...(onRpc ? { onRpc } : {})}
+      {...(onReport ? { onReport } : {})}
+      {...(onClose ? { onClose } : {})}
+    />
+  )
 }
 
 // The expandable body panel for one tool row: input, output, content blocks,
@@ -3828,6 +3837,26 @@ export default function SessionDetailView() {
       ? (agentId: string | undefined, appId: string, rpc: McpAppRpc) =>
           pgAppRpc(session.id, agentId ?? session.agentId ?? '', appId, rpc, webchatConversationId)
       : undefined
+  // A native dialog's outcome is a line the CONVERSATION speaks, exactly like an approval decision
+  // (`pgNotice` below): it rides the composer's own turn frame, never the card bridge. The bridge
+  // authorizes a SANDBOXED frame — agent-authored HTML that may not name its own sender — and its
+  // card expires with the session, the four-card cap and the reader closing the page; a native
+  // dialog is the Console's own form under the reader's own JWT, so that gate buys nothing there
+  // and only loses the report. The composer never touches it: reporting is not a send, so a
+  // half-typed follow-up and a staged image stay the owner's.
+  const appReport =
+    isLive && (isPg || isWebchat)
+      ? (agentId: string | undefined, text: string): boolean => {
+          if (isContinuable) markSessionTarget(session.id)
+          return pgNotice(
+            session.id,
+            agentId ?? session.agentId ?? '',
+            text,
+            webchatConversationId,
+            isWebchat ? liveRoster : undefined
+          )
+        }
+      : undefined
   const closeApp =
     isLive && (isPg || isWebchat)
       ? (agentId: string | undefined, appId: string): void =>
@@ -5265,6 +5294,9 @@ export default function SessionDetailView() {
                                           sessionId={st.toolSessionId ?? toolSid}
                                           {...(appRpc
                                             ? { onRpc: (appId, rpc) => appRpc(turn.agentId, appId, rpc) }
+                                            : {})}
+                                          {...(appReport
+                                            ? { onReport: (text: string) => appReport(turn.agentId, text) }
                                             : {})}
                                           {...(closeApp ? { onClose: (appId) => closeApp(turn.agentId, appId) } : {})}
                                         />
