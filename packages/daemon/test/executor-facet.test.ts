@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer, type Server, type Socket } from 'node:net'
@@ -56,7 +57,10 @@ describe('executor facet', () => {
   let fail: Error | undefined
   let seeded: string[] = []
 
+  const leftovers: ChildProcess[] = []
+
   afterEach(async () => {
+    for (const child of leftovers.splice(0)) child.kill('SIGKILL')
     for (const client of clients.splice(0)) client.destroy()
     for (const facet of facets) await facet.stop()
     facets = []
@@ -333,6 +337,40 @@ describe('executor facet', () => {
       ready(await facet.prepare(req(6)))
       expect(starts).toHaveLength(2)
     })
+
+    it.skipIf(process.platform !== 'linux')(
+      'ends what a killed daemon left — its marked processes and its runtime roots — before it starts any shim',
+      async () => {
+        root = await mkdtemp(join(tmpdir(), 'ac-xf-'))
+        const mark = 'cd'.repeat(16)
+        const stale = join(root, 'hs', 'stale')
+        mkdirSync(stale, { recursive: true })
+        writeFileSync(join(stale, 'mark'), mark)
+        const idle = ['-e', 'setTimeout(() => {}, 120000)']
+        // An earlier life's shim or runtime, in a group of its own as they are.
+        const orphan = spawn(process.execPath, idle, {
+          detached: true,
+          stdio: 'ignore',
+          env: { AC_SHIM_RUNTIME_MARK: mark }
+        })
+        const bystander = spawn(process.execPath, idle, { stdio: 'ignore' })
+        leftovers.push(orphan, bystander)
+        const gone = new Promise<NodeJS.Signals | null>((resolve) =>
+          orphan.once('exit', (_c, signal) => resolve(signal))
+        )
+        let staleAtStart: boolean | undefined
+        const { facet } = await start({
+          startShim: (input) => {
+            staleAtStart = existsSync(stale)
+            return startShim(input)
+          }
+        })
+        ready(await facet.prepare(req(1)))
+        expect(staleAtStart).toBe(false)
+        expect(await gone).toBe('SIGKILL')
+        expect(bystander.exitCode ?? bystander.signalCode).toBeNull()
+      }
+    )
 
     it("never attaches one agent's environment for a holder the Control Plane vouched for another agent", async () => {
       const { facet } = await start()

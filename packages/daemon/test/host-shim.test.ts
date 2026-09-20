@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -8,7 +8,13 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ClientTransport } from '@agentconnect.md/connection'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { hostShimEnv, hostShimUnavailableReason, startHostShim, type HostShim } from '../src/execution/host-shim.js'
+import {
+  hostShimEnv,
+  hostShimUnavailableReason,
+  startHostShim,
+  sweepStaleHostShims,
+  type HostShim
+} from '../src/execution/host-shim.js'
 import { effectiveStrategies } from '../src/execution/strategies.js'
 import { ShimDialer } from '../src/shim/dialer.js'
 import { ShimSession } from '../src/shim/session.js'
@@ -26,6 +32,7 @@ const entry = {
   ],
   path: fileURLToPath(new URL('../src/shim/index.ts', import.meta.url))
 }
+const LAUNCHER = fileURLToPath(new URL('./fixtures/host-shim-launcher.ts', import.meta.url))
 
 const alive = (pid: number): boolean => {
   try {
@@ -37,7 +44,10 @@ const alive = (pid: number): boolean => {
 }
 
 /** The holder's side: a real dialer over the shim's unix socket, bound to a real session. */
-async function bind(shim: HostShim, subject: string): Promise<{ session: ShimSession; dialer: ShimDialer }> {
+async function bind(
+  shim: Pick<HostShim, 'socketPath' | 'token'>,
+  subject: string
+): Promise<{ session: ShimSession; dialer: ShimDialer }> {
   const session = new ShimSession(subject, 1, {
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (timer) => clearTimeout(timer as NodeJS.Timeout)
@@ -95,13 +105,70 @@ describe('host strategy shim launcher', () => {
   let root: string | undefined
   const started: Array<{ shim: HostShim; dialer?: ShimDialer }> = []
 
+  const launchers: ChildProcess[] = []
+  const dialers: ShimDialer[] = []
+
   afterEach(async () => {
     for (const { shim, dialer } of started.splice(0)) {
       dialer?.stop()
       await shim.stop()
     }
+    for (const dialer of dialers.splice(0)) dialer.stop()
+    for (const launcher of launchers.splice(0)) launcher.kill('SIGKILL')
+    // Whatever a failed case left running carries a mark its runtime root still names.
+    if (root) await sweepStaleHostShims(root)
     if (root) await rm(root, { recursive: true, force: true })
     root = undefined
+  })
+
+  it.skipIf(linuxOnly)(
+    'ends the shim, its runtime and what that left running once the process that started it is killed',
+    { timeout: 120_000 },
+    async () => {
+      root = await mkdtemp(join(tmpdir(), 'ac-hs-'))
+      // A launcher of its own, so the process killed is the shim's parent and not this test runner.
+      const launcher = spawn(process.execPath, [...entry.execArgv, LAUNCHER, root, 'sess-a', JSON.stringify(entry)], {
+        stdio: ['ignore', 'pipe', 'inherit']
+      })
+      launchers.push(launcher)
+      const where = await new Promise<Pick<HostShim, 'socketPath' | 'token'>>((resolve, reject) => {
+        let out = ''
+        launcher.stdout!.on('data', (chunk: Buffer) => {
+          out += chunk.toString()
+          if (out.includes('\n')) resolve(JSON.parse(out) as Pick<HostShim, 'socketPath' | 'token'>)
+        })
+        launcher.once('exit', () => reject(new Error('the launcher exited before it reported its shim')))
+      })
+      const { session, dialer } = await bind(where, 'subject-orphan')
+      dialers.push(dialer)
+      const echo = await echoThrough(session, join(root, 'sessions', 'sess-a', 'workspace'), 'hello\n')
+      const pids = [echo.shimPid, echo.pid, echo.grandchild]
+      expect(pids.filter(alive)).toEqual(pids)
+
+      // No stop, no signal to the shim: only the descriptor its parent held closes.
+      launcher.kill('SIGKILL')
+      await vi.waitFor(() => expect(pids.filter(alive)).toEqual([]), WAIT)
+    }
+  )
+
+  it.skipIf(linuxOnly)('sweeps a stale runtime root by the mark it names, and nothing else', async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-hs-'))
+    const mark = 'ab'.repeat(16)
+    const idle = ['-e', 'setTimeout(() => {}, 120000)']
+    const marked = spawn(process.execPath, idle, { stdio: 'ignore', env: { AC_SHIM_RUNTIME_MARK: mark } })
+    const bystander = spawn(process.execPath, idle, { stdio: 'ignore', env: { AC_SHIM_RUNTIME_MARK: `${mark}0` } })
+    launchers.push(marked, bystander)
+    const gone = new Promise<NodeJS.Signals | null>((resolve) =>
+      marked.once('exit', (_code, signal) => resolve(signal))
+    )
+    await mkdir(join(root, 'hs', 'stale'), { recursive: true })
+    await writeFile(join(root, 'hs', 'stale', 'mark'), mark)
+    // A root with no readable mark is only removed.
+    await mkdir(join(root, 'hs', 'unmarked'))
+    await sweepStaleHostShims(root)
+    expect(await gone).toBe('SIGKILL')
+    expect(existsSync(join(root, 'hs', 'stale')) || existsSync(join(root, 'hs', 'unmarked'))).toBe(false)
+    expect(bystander.exitCode ?? bystander.signalCode).toBeNull()
   })
 
   it.skipIf(linuxOnly)(
@@ -133,6 +200,9 @@ describe('host strategy shim launcher', () => {
       expect(echoes.map((echo) => echo.echoed)).toEqual(['hello 0\n', 'hello 1\n'])
       // No complete environment: the holder sent no HOME, and each runtime got its own session's.
       expect(echoes.map((echo) => echo.home)).toEqual(shims.map((shim) => join(shim.workspaceRoot, 'home')))
+      // The sweep for an earlier life's leftovers leaves this life's shims and their runtimes alone.
+      await sweepStaleHostShims(root)
+      expect(shims.every((shim) => existsSync(shim.socketPath))).toBe(true)
 
       // A process of this user that carries no mark, which no sweep may touch.
       const bystander = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore' })
@@ -201,7 +271,8 @@ describe('host strategy shim launcher', () => {
       AC_SHIM_RUNTIME_ROOT: '/d/hs/x',
       AC_SHIM_WORKSPACE_ROOT: '/d/sessions/s',
       AC_SHIM_HELPER_ROOT: '/d/dist',
-      AC_SHIM_RUNTIME_MARK: 'm'
+      AC_SHIM_RUNTIME_MARK: 'm',
+      AC_SHIM_PARENT_FD: '3'
     })
   })
 })

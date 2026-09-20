@@ -27,7 +27,7 @@ import type { Logger } from '../log.js'
 import { prepareSharedRuntimeCredentials } from '../runtimes/runtime-credentials.js'
 import { prepareRuntimeHome } from '../runtimes/runtime-home.js'
 import { PIPE_KEY_BYTES, startPipeListener, type PipeListener, type PipeListenerOptions } from './executor-pipe.js'
-import { startHostShim, type HostShim } from './host-shim.js'
+import { startHostShim, sweepStaleHostShims, type HostShim } from './host-shim.js'
 import type { ExecutionStrategy, StrategyAvailability } from './strategies.js'
 
 /** No admitted pipe for this long stops an environment: two of the holder dialer's capped reconnect delays, so a blip it is still retrying through never reads as idle. */
@@ -199,6 +199,11 @@ class Facet implements ExecutorFacet {
 
   async start(): Promise<void> {
     const { deps } = this
+    // Every shim start queues behind this gate, so none starts over a session an earlier life's shim still runs in.
+    this.startGate = sweepStaleHostShims(deps.daemonRoot, deps.log).catch((error: unknown) =>
+      deps.log.warn(`executor: sweeping what an earlier run left failed (${message(error)})`)
+    )
+    await this.startGate
     for (const [leaf, record] of loadRecords(this.sessionsDir, deps.log))
       this.environments.set(leaf, { leaf, ...record })
     const host = deps.strategies().host

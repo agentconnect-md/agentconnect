@@ -970,6 +970,26 @@ network listener.
   never signalled. The sweep exists for crashes, not for containment: a process
   that clears its environment and re-parents escapes it, which is the limit the
   daemon's own unsandboxed local launch already has (architecture.md §9.1).
+- **It ends with its daemon.** A `host` session's process tree ends with the
+  daemon (session-executors.md §9), and a daemon that is killed, runs out of
+  memory or crashes stops nothing itself. The launcher therefore hands the shim
+  one extra descriptor, named by `AC_SHIM_PARENT_FD`, whose other end it holds
+  and never writes. The kernel closes that end when the daemon goes, however it
+  goes; the shim reads end-of-file as that event, ends its runtimes as it does on
+  a stop, sweeps its own mark because no launcher is left to do it, and exits. It
+  is an event, not a poll, and the identity on stdin is read as before. The shim
+  watches only when it listens on `AC_SHIM_SOCKET`; pods and VMs are unchanged.
+- **A restart finishes what is left.** The launcher writes the mark to
+  `<runtimeRoot>/mark` before it starts the shim, so there is no moment at which
+  a marked process exists that a later daemon life cannot find; the facet's
+  per-session record is written before the launch and would have to be rewritten
+  after it. When the executor facet starts, and before any shim start it
+  serializes, `sweepStaleHostShims` takes every runtime root under
+  `<daemonRoot>/hs` that no live shim of this process owns, sweeps the mark it
+  names — an earlier life's shim carries it too — and removes the root. Only a
+  value shaped like a mark is looked for, and the sweep still matches it exactly
+  in `/proc/<pid>/environ` at kill time. A `prepare` therefore never starts a
+  second shim over a session directory an earlier life's shim still runs in.
 - **Helpers from the daemon's installation.** `AC_SHIM_HELPER_ROOT` is the
   directory that holds `shim/index.js`, which resolves the MCP bridge, the
   merge-when-ready watcher and the `gh` token entry from the daemon's own bundle.

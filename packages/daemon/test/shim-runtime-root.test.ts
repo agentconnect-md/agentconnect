@@ -62,6 +62,16 @@ describe('shim entry options', () => {
     expect(host.paths.mcpBridgeEntry).toBe('/d/dist/shim/mcp-bridge.js')
   })
 
+  it('watches for its daemon only on a host socket: a pod or a VM ends with its sandbox', () => {
+    expect(shimEntryOptions({ AC_SHIM_SOCKET: '/s', AC_SHIM_PARENT_FD: '3' }).parentFd).toBe(3)
+    expect(shimEntryOptions({ AC_SHIM_SOCKET: '/s' })).not.toHaveProperty('parentFd')
+    expect(shimEntryOptions({ AC_SHIM_PARENT_FD: '3' })).not.toHaveProperty('parentFd')
+    // Never a standard stream, and never a guess.
+    for (const fd of ['0', '2', 'x', '']) {
+      expect(shimEntryOptions({ AC_SHIM_SOCKET: '/s', AC_SHIM_PARENT_FD: fd })).not.toHaveProperty('parentFd')
+    }
+  })
+
   it('refuses a port that is not one, and ignores it when a socket is named', () => {
     expect(() => shimEntryOptions({ AC_SHIM_PORT: '0' })).toThrow('AC_SHIM_PORT is not a valid port')
     expect(shimEntryOptions({ AC_SHIM_PORT: '0', AC_SHIM_SOCKET: '/s' }).listen).toEqual({ socketPath: '/s' })

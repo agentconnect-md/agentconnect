@@ -41,6 +41,9 @@ export const SHIM_COMPLETE_ENV_FLAG = 'AC_SHIM_COMPLETE_ENV'
 /** A host launcher's per-shim mark, copied into every runtime's environment so a dead shim's descendants can still be found. */
 export const SHIM_RUNTIME_MARK_ENV = 'AC_SHIM_RUNTIME_MARK'
 
+/** A host launcher's inherited descriptor that reaches end-of-file when the daemon that started the shim is gone. */
+export const SHIM_PARENT_FD_ENV = 'AC_SHIM_PARENT_FD'
+
 /** `cluster-skills-v2` admits the widened skill manifest; a v1-only shim still gets the narrow one. */
 export const ShimFeatureSchema = z.enum(['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>

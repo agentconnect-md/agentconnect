@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // The persistent sandbox service shared by Kubernetes and local VMs.
 import { readFileSync } from 'node:fs'
+import { Socket } from 'node:net'
 import { runSandboxRuntimeProvider } from '../acp/sandbox-runtime-provider.js'
 import { ShimClient } from './client.js'
 import { createAutoMergeHandler } from './auto-merge-handler.js'
 import { shimEntryOptions } from './entry-options.js'
 import { createExecHandler } from './exec-handler.js'
+import { sweepMarkedUntilClear } from './marked-sweep.js'
 import { resolveCommandInPath } from './path-resolve.js'
 import { ShimServer } from './server.js'
 import { TunnelHost } from './tunnel-host.js'
@@ -73,14 +75,30 @@ async function main(): Promise<number> {
   if ('socketPath' in options.listen) await server.startOnSocket(options.listen.socketPath)
   else await server.start(options.listen.port, localIdentity ? '127.0.0.1' : undefined)
   if (localIdentity) process.stdout.write('ready\n')
-  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-    process.on(signal, () => {
-      tunnels.close()
-      client.stop()
-      // On a host no pod or VM teardown follows this exit, so the runtimes are ended here; elsewhere it does, and they are left to it.
-      const runtimes = 'socketPath' in options.listen ? client.closeStreams(5_000) : Promise.resolve()
-      void runtimes.then(() => server.stop()).finally(() => process.exit(0))
+  let leaving = false
+  const leave = (orphaned: boolean): void => {
+    if (leaving) return
+    leaving = true
+    tunnels.close()
+    client.stop()
+    // On a host no pod or VM teardown follows this exit, so the runtimes are ended here; elsewhere it does, and they are left to it.
+    const runtimes = 'socketPath' in options.listen ? client.closeStreams(5_000) : Promise.resolve()
+    // An orphan has no launcher left to sweep behind it, so it sweeps its own mark.
+    const swept = runtimes
+      .catch(() => {})
+      .then(() => (orphaned && options.runtimeMark ? sweepMarkedUntilClear(options.runtimeMark) : undefined))
+    void swept.then(() => server.stop()).finally(() => process.exit(0))
+  }
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => leave(false))
+  if (options.parentFd !== undefined) {
+    // The daemon holds the other end and never writes: this closes only when that daemon is gone, however it went.
+    const parent = new Socket({ fd: options.parentFd, readable: true, writable: false })
+    parent.on('error', () => {})
+    parent.once('close', () => {
+      log.warn('the daemon that started this shim is gone — ending its runtimes and exiting')
+      leave(true)
     })
+    parent.resume()
   }
   await client.start()
   // Bound: stay up serving daemon requests until the pod goes away.
