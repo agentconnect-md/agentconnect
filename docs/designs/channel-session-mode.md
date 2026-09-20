@@ -199,23 +199,26 @@ conditional `UPDATE` in both dialects.
 **A reservation can outlive what it names.** Retention deletes session rows and leaves
 transcript rows behind (§6.3), so a reservation that survived its session would hand the
 next message a coordinate whose transcript is still on disk — reintroducing exactly the
-inheritance §3.2 chose a timestamp to prevent. Two rules close that, and they are
-deliberately redundant because they fail in opposite directions:
+inheritance §3.2 chose a timestamp to prevent.
 
-- **Retention clears the reservation it purges.** When the GC deletes the session a
-  reservation names, it clears that reservation in the same transaction, conditionally on
-  the reservation still naming the purged coordinate — a reservation advanced by a
-  concurrent `!new` is left alone.
-- **Resolve treats a reservation with no session as stale.** A reservation names a real
-  coordinate: `!new` writes a bare session row at it, and the first message writes one
-  too. So a resolve that finds a reservation with no session row at its coordinate
-  advances it by the same CAS rather than joining it. This is the safety net for every
-  path that removes a session without going through the GC.
+The cleanup belongs at the deletion, not at the resolve. **The reservation is cleared
+inside `deleteSession`**, in the same transaction that removes the row, conditionally on
+the reservation still naming the coordinate being purged — so a reservation a concurrent
+`!new` has already advanced is left alone. That single site covers every case: the daemon
+contains exactly one `DELETE FROM sessions`, inside `deleteSession`, and its only callers
+are the retention sweep and the moved-agent purge, which share the same expiry rule.
 
-The reservation row is also what makes the coordinate resolvable **before** admission
-without reading the sessions table at all, which is what §3.1 requires — the staleness
-check above is the one read of the sessions table, and it happens only on the resolve that
-finds a reservation, not on every message.
+**Resolve must not infer staleness from a missing session row.** The tempting safety net —
+"a reservation whose coordinate has no session is stale, advance it" — is wrong, and
+breaks the very case this section opens with. A reservation is created before admission
+while its session row is written later, by the first message's turn or by `!new`; during
+that ordinary window a reservation legitimately has no session. A second concurrent
+resolver applying that rule would advance past it, splitting the two simultaneous first
+deliveries it was supposed to join, or skipping the coordinate `!new` just minted.
+
+So the reservation is authoritative on its own: a resolve reads it and nothing else, and
+never consults the sessions table. That is also what keeps the coordinate resolvable
+**before** admission, as §3.1 requires.
 
 ### 3.4 Decided semantics
 
@@ -342,7 +345,7 @@ per-agent coordinate buys is that `!new` stays a per-agent command like every ot
 - **Retention clears the reservation with the session.** Retention GC deletes sessions
   idle past the configured window (default 7 days), taking the ACP session id and the
   worktree, and leaves transcript rows behind. For an `append` conversation it also clears
-  the reservation row naming the purged coordinate, in the same transaction and
+  the reservation row naming the purged coordinate, inside `deleteSession` itself and
   conditionally on it still naming that coordinate (§3.3) — otherwise the next message
   would rejoin a coordinate whose session is gone but whose transcript is not. An actively
   used `append` session is never a GC candidate; a conversation quiet past the window loses
@@ -502,9 +505,10 @@ It is bounded as part of this work, not after it.
   an in-flight message does not split the conversation across two coordinates. Run against
   both store dialects, since the reservation's atomicity is what is under test.
 - `packages/daemon`, reservation lifetime — retention purging an append session clears the
-  reservation naming it, but leaves one a concurrent `!new` has already advanced; a resolve
-  that finds a reservation whose coordinate has no session row advances instead of joining
-  it, so the next message never inherits the surviving transcript of a purged coordinate.
+  reservation naming it, so the next message mints fresh rather than inheriting the
+  surviving transcript, but a reservation a concurrent `!new` has already advanced is left
+  alone; and a reservation whose session row has not been written yet — the ordinary window
+  between resolve and the first turn — is joined by a second resolver, not advanced past.
 - `packages/daemon`, `!new` — `parseCommand` recognizes both prefixes and the Telegram
   `@botname` suffix; in `append` the next message lands on the new coordinate while the
   retired session's row and transcript survive; in `createNew` the session keeps its key
