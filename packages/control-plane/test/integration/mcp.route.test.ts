@@ -434,7 +434,7 @@ describe('delegated webchat MCP operations', () => {
   // to org visibility publishes its transcript, and deliberately does not withdraw the owner's
   // administration tools mid-run (webchat-preset-agentconnect-mcp.md §7).
   it('keeps serving the owner’s catalog after the session is widened to org visibility', async () => {
-    const { conversationId, remoteMethod, remoteRpc, decisionPath: path, app } = await delegatedFixture()
+    const { conversationId, daemonId, remoteMethod, remoteRpc, decisionPath: path, app } = await delegatedFixture()
     await prisma.sessionMeta.update({
       where: { id: `webchat-${conversationId}` },
       data: { visibility: 'org' }
@@ -444,7 +444,7 @@ describe('delegated webchat MCP operations', () => {
     expect((await remoteRpc(2, 'listAgents', {})).statusCode).toBe(200)
 
     // The write path is fenced by the same current-session join, so it must widen with it.
-    const write = await remoteRpc(3, 'createAgent', { name: 'widened-agent', runtime: 'codex' })
+    const write = await remoteRpc(3, 'renameDaemon', { daemonId, name: 'widened-daemon' })
     expect(write.statusCode).toBe(200)
     const pending = JSON.parse(toolText(mcpMessage(write).result as unknown as ToolCallResult)) as {
       status: string
@@ -457,7 +457,7 @@ describe('delegated webchat MCP operations', () => {
       payload: { decision: 'approve' }
     })
     expect(decided.statusCode).toBe(200)
-    expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'widened-agent' } })).not.toBeNull()
+    expect((await prisma.daemon.findUnique({ where: { id: daemonId } }))?.name).toBe('widened-daemon')
   })
 
   it('refuses the handshake once the grant is revoked — no anonymous transport', async () => {

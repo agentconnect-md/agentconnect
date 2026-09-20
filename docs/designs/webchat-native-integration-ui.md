@@ -181,6 +181,10 @@ and opens a corrected card, which is where a retry belongs. Validation the dialo
 own is not a refusal — nothing was attempted, and it stays in the dialog. Dismissing a dialog still
 reports nothing: a reader who closed it said no, and the card's own button re-opens it.
 
+The report carries its KIND alongside its sentence, because the card's own copy depends on it: a
+card that could not deliver a report says so, and "your changes are saved" under "Creating the agent
+failed" would be the one thing worse than saying nothing.
+
 Reporting back is what needs a live card. A settled one still opens and still saves,
 through the same Console authorization, and says plainly that the agent was not
 notified instead of dropping the note. Completion callbacks are deduplicated per

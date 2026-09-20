@@ -11,7 +11,7 @@ import { agentLabel } from '@/lib/data'
 import { fetchAgentDto, type McpProviderCreatedDto } from '@/lib/api'
 import { CreateMcpProviderModal } from '@/components/console/McpServersCard'
 import { NativeDialogNotice } from './NativeDialogNotice'
-import { nativeFailureReport } from './native-dialog-report'
+import { nativeFailureReport, type NativeDialogReport } from './native-dialog-report'
 
 type McpSetupUi = Extract<NativeMcpUi, { resourceUri: typeof MCP_SETUP_URI }>
 
@@ -22,7 +22,7 @@ export default function McpSetupDialog({
 }: {
   ui: McpSetupUi
   onClose: () => void
-  onCompleted: (summary: string) => void
+  onCompleted: NativeDialogReport
 }) {
   const { activeOrg, myRole } = useOrgs()
   const { agents, updateAgent } = useConsoleData()

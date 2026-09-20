@@ -191,7 +191,10 @@ describe('native agent editor', () => {
       )
     })
     await act(async () => click('Fail create'))
-    expect(completed).toHaveBeenCalledWith('Creating the agent failed: An agent named “reviewer” already exists.')
+    expect(completed).toHaveBeenCalledWith(
+      'Creating the agent failed: An agent named “reviewer” already exists.',
+      'failed'
+    )
     expect(closed).toHaveBeenCalledOnce()
   })
 
@@ -218,7 +221,10 @@ describe('native agent editor', () => {
       )
     })
     await act(async () => click('Fail save'))
-    expect(completed).toHaveBeenCalledWith('Saving the configuration of agent my-agent failed: the daemon is offline')
+    expect(completed).toHaveBeenCalledWith(
+      'Saving the configuration of agent my-agent failed: the daemon is offline',
+      'failed'
+    )
     expect(closed).toHaveBeenCalledOnce()
   })
 
@@ -358,7 +364,7 @@ describe('native skill installer', () => {
       root.render(<SkillSetupDialog ui={skillUi({})} onClose={closed} onCompleted={completed} />)
     })
     await act(async () => click('Registry install fails'))
-    expect(completed).toHaveBeenCalledWith('Installing the skill failed: the registry is unreachable')
+    expect(completed).toHaveBeenCalledWith('Installing the skill failed: the registry is unreachable', 'failed')
     expect(closed).toHaveBeenCalledOnce()
   })
 
@@ -428,7 +434,7 @@ describe('native MCP installer', () => {
       root.render(<McpSetupDialog ui={mcpUi({})} onClose={closed} onCompleted={completed} />)
     })
     await act(async () => click('Add server fails'))
-    expect(completed).toHaveBeenCalledWith('Adding the MCP server failed: that name is taken')
+    expect(completed).toHaveBeenCalledWith('Adding the MCP server failed: that name is taken', 'failed')
     expect(closed).toHaveBeenCalledOnce()
   })
 

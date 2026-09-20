@@ -13,7 +13,7 @@ import { agentLabel } from '@/lib/data'
 import AddAgentModal from './AddAgentModal'
 import EditAgentModal from './EditAgentModal'
 import { NativeDialogNotice } from './NativeDialogNotice'
-import { nativeFailureReport } from './native-dialog-report'
+import { nativeFailureReport, type NativeDialogReport } from './native-dialog-report'
 
 type AgentSetupUi = Extract<NativeMcpUi, { resourceUri: typeof AGENT_SETUP_URI }>
 
@@ -24,7 +24,7 @@ export default function AgentSetupDialog({
 }: {
   ui: AgentSetupUi
   onClose: () => void
-  onCompleted: (summary: string) => void
+  onCompleted: NativeDialogReport
 }) {
   const { activeOrg } = useOrgs()
   const { agents, loading, refresh } = useConsoleData()

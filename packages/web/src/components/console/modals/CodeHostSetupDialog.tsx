@@ -15,6 +15,7 @@ import GithubCard from '@/components/console/GithubCard'
 import GitlabCard from '@/components/console/GitlabCard'
 import GiteaCard from '@/components/console/GiteaCard'
 import { NativeDialogNotice } from './NativeDialogNotice'
+import type { NativeDialogReport } from './native-dialog-report'
 
 type CodeHostUi = Extract<NativeMcpUi, { resourceUri: typeof CODE_HOST_SETUP_URI }>
 type Provider = NonNullable<CodeHostUi['intent']['provider']>
@@ -47,7 +48,7 @@ export default function CodeHostSetupDialog({
 }: {
   ui: CodeHostUi
   onClose: () => void
-  onCompleted: (summary: string) => void
+  onCompleted: NativeDialogReport
 }) {
   const { activeOrg, myRole } = useOrgs()
   const [busy, setBusy] = useState(false)

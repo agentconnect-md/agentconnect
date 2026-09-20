@@ -70,12 +70,12 @@ import AgentToolsDialog from './AgentToolsDialog'
 import SkillSetupDialog from './SkillSetupDialog'
 import McpSetupDialog from './McpSetupDialog'
 import { NativeDialogNotice } from './NativeDialogNotice'
-import { nativeFailureReport } from './native-dialog-report'
+import { nativeFailureReport, type NativeDialogReport } from './native-dialog-report'
 
 interface Props {
   ui: Extract<NativeMcpUi, { resourceUri: typeof INTEGRATION_SETUP_URI }>
   onClose: () => void
-  onCompleted: (summary: string) => void
+  onCompleted: NativeDialogReport
 }
 
 /** One presentation intent, one dialog: the `ui://` resource the tool named picks which. */
@@ -86,7 +86,7 @@ export default function NativeIntegrationDialog({
 }: {
   ui: NativeMcpUi
   onClose: () => void
-  onCompleted: (summary: string) => void
+  onCompleted: NativeDialogReport
 }) {
   const props = { onClose, onCompleted }
   switch (ui.resourceUri) {
@@ -151,7 +151,7 @@ function EditChannels({
   integration: IntegrationRow
   orgId: string
   onClose: () => void
-  onCompleted: (summary: string) => void
+  onCompleted: NativeDialogReport
 }) {
   const { refresh } = useConsoleData()
   const allowed = channelListSemantics(integration.platform).triggers

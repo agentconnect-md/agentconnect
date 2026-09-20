@@ -770,6 +770,12 @@ export default function AddAgentModal({
     setErr(null)
     // Every tile produces the same payload (git-workspace-model.md §5/§7): one
     // gitRepo address; the server derives who vouches for it.
+    // A drafted RESTRICTION survives every tile, including the free-text ones that carry no access
+    // control of their own: a proposal for read-only must not silently inherit the highest tier the
+    // target can carry. A drafted `write` is dropped there instead — those tiles show no write
+    // affordance, so nothing the reader saw agreed to it.
+    const draftedReadOnly = draft?.workspace?.access === 'read' ? { access: 'read' as const } : {}
+
     const workspace: AgentWorkspaceInput =
       wsMode === 'gitlab'
         ? {
@@ -795,7 +801,8 @@ export default function AddAgentModal({
                 gitRepo: urlInput.trim(),
                 worktree,
                 ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
+                ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                ...draftedReadOnly
               }
             : wsMode === 'github'
               ? usingPicker
@@ -813,14 +820,16 @@ export default function AddAgentModal({
                       gitRepo: publicRepo ?? ghRepo.trim(),
                       worktree,
                       ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                      ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
+                      ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                      ...draftedReadOnly
                     }
                 : {
                     mode: 'git',
                     gitRepo: repo.trim(),
                     worktree,
                     ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                    ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
+                    ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                    ...draftedReadOnly
                   }
               : { mode: 'scratch' }
     try {

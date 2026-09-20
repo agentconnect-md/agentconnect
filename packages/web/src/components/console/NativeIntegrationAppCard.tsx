@@ -54,22 +54,40 @@ export function NativeIntegrationAppCard({ step, onRpc }: McpAppCardProps) {
       if (!mounted.current) return
       const shown = modal.openNativeIntegration(
         ui,
-        (message) => {
+        (message, outcome) => {
           if (completed.current || !mounted.current) return
           completed.current = true
           setSummary(message)
-          // Saves already applied under the reader's own Console session; without a live bridge the
-          // only thing missing is the note to the agent, and saying so beats dropping it silently.
+          // A REFUSED submit reports through this same callback, so the copy asks the report what it
+          // is: telling someone their changes are saved beneath "Creating the agent failed" would be
+          // the one thing worse than saying nothing.
+          const saved = outcome !== 'failed'
+          const undelivered = saved
+            ? 'Your changes are saved. This interface is no longer live, so the agent was not notified.'
+            : 'This interface is no longer live, so the agent was not told.'
+          // A save is already applied under the reader's own Console session; without a live bridge
+          // the only thing missing is the note to the agent, and saying so beats dropping it silently.
           const notify = report.current
           if (!notify) {
-            setError('Your changes are saved. This interface is no longer live, so the agent was not notified.')
+            setError(undelivered)
             return
           }
           void notify(app.appId, { method: 'ui/message', text: message })
             .then((result) => {
-              if (!result.ok) setError(`Configuration was saved, but the agent could not be notified: ${result.error}`)
+              if (!result.ok)
+                setError(
+                  saved
+                    ? `Configuration was saved, but the agent could not be notified: ${result.error}`
+                    : `The agent could not be notified: ${result.error}`
+                )
             })
-            .catch(() => setError('Configuration was saved, but the agent could not be notified.'))
+            .catch(() =>
+              setError(
+                saved
+                  ? 'Configuration was saved, but the agent could not be notified.'
+                  : 'The agent could not be notified.'
+              )
+            )
         },
         app.appId
       )

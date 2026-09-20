@@ -15,6 +15,7 @@ import { fetchAgentDto } from '@/lib/api'
 import { AgentToolsCard } from '@/components/console/AgentToolsCard'
 import { AgentSkillsCard } from '@/components/console/AgentSkillsCard'
 import { NativeDialogNotice } from './NativeDialogNotice'
+import type { NativeDialogReport } from './native-dialog-report'
 
 type AgentToolsUi = Extract<NativeMcpUi, { resourceUri: typeof AGENT_TOOLS_URI }>
 
@@ -25,7 +26,7 @@ export default function AgentToolsDialog({
 }: {
   ui: AgentToolsUi
   onClose: () => void
-  onCompleted: (summary: string) => void
+  onCompleted: NativeDialogReport
 }) {
   const { activeOrg } = useOrgs()
   const { agents, daemons, loading } = useConsoleData()

@@ -11,6 +11,7 @@ import type { Agent, DaemonRow, IntegrationRow, MemberSetRow } from '@/lib/data'
 import type { CronDto, HookDto } from '@/lib/api'
 import { AGENT_SETUP_URI, AGENT_TOOLS_URI, nativeUiTitle, type NativeMcpUi } from '@agentconnect.md/protocol/mcp-app'
 import NativeIntegrationDialog from './modals/NativeIntegrationDialog'
+import type { NativeDialogReport } from './modals/native-dialog-report'
 import AddAgentModal from './modals/AddAgentModal'
 import AddDaemonModal from './modals/AddDaemonModal'
 import AddIntegrationModal, {
@@ -67,7 +68,7 @@ type ModalTarget =
 interface ModalOpts {
   nativeUi?: NativeMcpUi
   nativeRequestId?: string
-  onCompleted?: (summary: string) => void
+  onCompleted?: NativeDialogReport
   platform?: IntegrationPlatform
   feishuRegion?: FeishuRegion
   focusSection?: EditAgentSection
@@ -76,7 +77,7 @@ interface ModalOpts {
 }
 
 interface ModalData {
-  openNativeIntegration: (ui: NativeMcpUi, onCompleted: (summary: string) => void, requestId: string) => boolean
+  openNativeIntegration: (ui: NativeMcpUi, onCompleted: NativeDialogReport, requestId: string) => boolean
   closeNativeIntegration: (requestId: string) => void
   // `target` is the scoped dialog's subject (DaemonRow or Agent); ignored by the rest.
   openModal: (kind: ModalKind, target?: ModalTarget, opts?: ModalOpts) => void
@@ -114,7 +115,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const openNativeIntegration = useCallback(
-    (nativeUi: NativeMcpUi, onCompleted: (summary: string) => void, requestId: string) => {
+    (nativeUi: NativeMcpUi, onCompleted: NativeDialogReport, requestId: string) => {
       if (occupied.current) return false
       openModal('nativeIntegration', undefined, { nativeUi, onCompleted, nativeRequestId: requestId })
       return true

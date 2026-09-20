@@ -142,6 +142,28 @@ describe('native integration UI', () => {
     expect(onRpc).not.toHaveBeenCalled()
     expect(element.textContent).toContain('the agent was not notified')
   })
+  it('never calls a refused submit a save, even when the agent cannot be told', async () => {
+    const value = app()
+    const onRpc = vi.fn(async () => ({ ok: true as const, result: {} }))
+    await act(async () => {
+      root.render(<McpAppCard step={{ app: value }} onRpc={onRpc} />)
+    })
+    await act(async () => {
+      root.render(<McpAppCard step={{ app: { ...value, outcome: 'completed' } }} onRpc={onRpc} />)
+    })
+    await act(async () => element.querySelector('button')!.click())
+    const completed = (
+      modal.openNativeIntegration.mock.calls[1] as unknown as [
+        unknown,
+        (text: string, outcome?: 'saved' | 'failed') => void
+      ]
+    )[1]
+    await act(async () => completed('Creating the agent failed: that name is taken', 'failed'))
+    expect(element.textContent).toContain('Creating the agent failed')
+    expect(element.textContent).not.toContain('changes are saved')
+    expect(element.textContent).toContain('the agent was not told')
+  })
+
   it('reports successful completion once and never reports opening as creation', async () => {
     const onRpc = vi.fn(async () => ({ ok: true as const, result: {} }))
     await act(async () => {
