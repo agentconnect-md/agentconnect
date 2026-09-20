@@ -25,7 +25,7 @@ pool's shape with the Kubernetes-specific parts removed.
 | #   | Decision                | Outcome                                                                                                                                                                                                                                                       |
 | --- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | D1  | Unit of ownership       | Unchanged: the whole agent, held by one daemon through the duty ledger. No session-level duty.                                                                                                                                                                |
-| D2  | Where a session runs    | On the **executor facet** of a daemon in the agent's group — the holder's own machine included — chosen by the holder: the candidate hosting the fewest sessions. Only `session`-isolated sessions spread; `shared` ones stay with the primary checkout.      |
+| D2  | Where a session runs    | On the holder itself, or on the **executor facet** of another daemon in the agent's group; the holder chooses, and the candidate hosting the fewest sessions wins. Only `session`-isolated sessions spread; `shared` ones stay with the primary checkout.     |
 | D3  | What the user sees      | One concept: the daemon. The executor facet is a seam inside it, switched by one key, `sandbox.share`, default off. No separate executor component, install or role.                                                                                          |
 | D4  | The contract            | The shim protocol, exactly as the pool uses it against a session pod. ACP, exec, fs, skills and the credential and MCP tunnels all ride it. The backend behind the shim is private.                                                                           |
 | D5  | Direction               | The executor facet listens; the holder dials. Same rule as the pool: the shim never dials.                                                                                                                                                                    |
@@ -36,7 +36,7 @@ pool's shape with the Kubernetes-specific parts removed.
 | D10 | Upgrades                | The facet upgrades with the daemon through the existing CLI store and the CP-tracked `daemon/upgrade`. Hosted sessions join the daemon's existing shutdown drain; no phase is added. Environments survive as disks and directories; running processes do not. |
 | D11 | Local convergence       | Later, behind a flag: the holder's own machine becomes a loopback executor, and the direct local path retires. Not in this project.                                                                                                                           |
 | D12 | Network assumption (v1) | Group members share a LAN. No NAT traversal, no relay. The link is TLS-PSK regardless: the assumption buys reachability and latency headroom, never a plaintext link.                                                                                         |
-| D13 | The link                | Two machines share one thing: a TLS-PSK byte pipe per session, under the unchanged shim protocol. Its key is minted by the executor, relayed by the CP with the `prepare` reply, outlives dials, and is replaced only by the next `prepare`.                  |
+| D13 | The link                | Two machines share one thing: a TLS-PSK byte pipe per session, under the unchanged shim protocol. Its key is minted by the executor, relayed by the CP with the `prepare` reply, outlives dials, and is replaced only by a newer launch's `prepare`.          |
 
 ## 1. Problem
 
@@ -256,10 +256,11 @@ constants. The executor chose the root, so the root travels in the `prepare` rep
 (§6), and the holder derives those paths from it with the same `shimPaths`. The
 function's second root locates the helper entries an image bakes under
 `/opt/agentconnect`; a `host` executor has no image, so its launcher points that
-root at its own bundle and the reply names it beside the runtime root. For
-`microsandbox` both roots are the image's defaults and the reply says nothing new.
-The shim's hello does not change (§15). The wire contract is unchanged; only the
-paths move.
+root at its own bundle — the entrypoint takes only the runtime root from its
+environment today, so passing the second is the launcher's to add — and the reply
+names it beside the runtime root. For `microsandbox` both roots are the image's
+defaults and the reply says nothing new. The shim's hello does not change (§15).
+The wire contract is unchanged; only the paths move.
 
 **Configured is what a machine offers; reported is what is effective.** A strategy
 whose probe fails at startup is reported unavailable with its reason, the way the
@@ -349,7 +350,7 @@ then the machines talk to each other.
    runtimes it can authenticate. An empty answer carries its reason: the group's
    switch is off (§10), or no member shares. These are **facts, never a choice**:
    the CP ranks nothing and recommends nothing, and placement stays the holder's.
-2. **`executor/prepare {agentId, sessionKey, executorDaemonId, strategy, resources, image}`**
+2. **`executor/prepare {agentId, sessionKey, executorDaemonId, generation, strategy, resources, image}`**
    — holder → CP. The CP checks the ledger: the requester holds the agent's duty
    (`DutyLeaseService.holdsAgent`, the read that already authorizes `duty/fetch`),
    and the target is a member of the agent's set with its facet on. It then relays
@@ -360,7 +361,8 @@ then the machines talk to each other.
    own runtime sign-in (§8), starts the shim, mints a per-session pre-shared key,
    and replies `{endpoint, psk, runtimeRoot, liveCount}` — `host` adds its helper
    root (§5) — or `full`, or a refusal with its reason. The CP returns that reply to
-   the holder. `resources` and `image` matter to the `microsandbox` strategy only.
+   the holder. `generation` is the launch's binding generation (below); `resources`
+   and `image` matter to the `microsandbox` strategy only.
 3. **The holder dials the executor's listener with TLS, using that key**, with the
    session leaf as the PSK identity. TLS-PSK authenticates both ends and encrypts
    the link with no certificates (the evidence closes this section): a dialer that
@@ -381,14 +383,38 @@ then the machines talk to each other.
    are two things: the first opens the pipe and is the executor's, the second scopes
    a session and is the holder's.
 
-**`prepare` is idempotent, which is what makes it one request.** For an environment
-that already exists it attaches: it starts the shim if the environment was stopped,
-and returns a fresh key. So the same frame is session birth, the wake of an idle
-environment, recovery after an executor restart, and holder failover — the successor
-sends it, and the ledger check now names the successor. Dial and prepare are one
-request: literally §4's sentence, and on the holder literally
-`ShimEndpointProvider.resolve`. A retransmitted relay is harmless for the same
-reason.
+**`prepare` is idempotent per launch, which is what makes it one request.** Every
+launch the generic layer records already carries a binding generation, allocated per
+subject from the group's shared store before its endpoint is resolved
+(`LaunchRegistry.recordLaunch` in `remote/launch-registry.ts`), and `prepare` carries
+it. The executor applies generations monotonically per environment, and keeps the
+highest it has applied on disk beside the environment, so a restart does not forget
+it:
+
+- _A generation it has already applied_ is the same logical request: a
+  retransmission — both control connections' correlators resend an unanswered frame
+  — or `resolve` asked again for the same launch. It joins the preparation in flight
+  or returns the reply it already gave: the same key, no rotation, no pipe closed.
+  Without this a preparation slower than one acknowledgement timeout would run
+  twice, and the second run would rotate away the key the first had just returned.
+- _A higher generation_ is a new launch. For an environment that already exists it
+  attaches: it starts the shim if the environment was stopped, and mints a fresh
+  key. So the same frame is session birth, the wake of an idle environment, recovery
+  after an executor restart, and holder failover — the successor sends it, and the
+  ledger check now names the successor.
+- _A lower generation_ is refused as stale. The ledger check runs at the CP, before
+  the relayed effect, so a deposed holder's `prepare` can pass it and still arrive
+  after its successor's. It carries a generation allocated before the successor's —
+  the successor allocates only once it is granted, from the same counter — so it can
+  never rotate the successor out.
+
+Dial and prepare are one request: literally §4's sentence, and on the holder
+literally `ShimEndpointProvider.resolve`. The fence is the binding generation and
+not the duty term, for the reason the pool gives at its own edge (k8s-daemon-pool.md
+§2, §7): the term is monotonic per duty _group_ and starts again with a new group,
+so a recompute that splits an agent's component would hand its rightful holder a
+lower term and have it refused. The generation is a different monotonic counter
+over the same ordering, and it belongs to the subject.
 
 **The ordering comes free.** The holder learns the endpoint only from the
 executor's reply, so there is no window in which a holder dials an executor that has
@@ -396,7 +422,7 @@ not yet been told to expect it. The earlier rendezvous had that race by
 construction: the CP told the executor to expect a dial and handed the holder its
 secret in the same step.
 
-**The key outlives dials; only the next `prepare` replaces it.** `ShimDialer`
+**The key outlives dials; only a newer launch's `prepare` replaces it.** `ShimDialer`
 (`packages/daemon/src/shim/dialer.ts`) does not dial once. The shim closes the
 channel as `rebinding` at half the binding credential's lifetime and the dialer
 re-dials at once; a dropped socket re-dials on the `reconnect` backoff. The earlier
@@ -407,8 +433,9 @@ blip. A CP outage would then have ended each running spread session at its next
 renewal, which contradicts the invariant this architecture is built on: established
 sessions keep running while the CP is down. So the key is not consumed. It admits
 dials for as long as the environment it was minted for keeps running, a re-dial by
-the same holder costs no CP round trip, and exactly one thing replaces it: the next
-`prepare`, which only the ledger's current holder can obtain.
+the same holder costs no CP round trip, and exactly one thing replaces it: a
+`prepare` at a higher generation, which the ledger check lets only the current
+holder send and the generation rule lets only a newer launch win.
 
 Rotation is therefore also the executor-side fence. The executor closes the pipe
 admitted under the old key, and a deposed holder can neither keep its connection nor
@@ -421,16 +448,17 @@ rather than a pod's ten minutes, for the reason that change gave: a renewal prov
 nothing new on a pipe that is already authenticated, and it ends any helper stream
 with a frame in flight.
 
-**What still needs the CP, and what no longer does.** A re-dial does not. A bind
-does: birth, the wake of an environment the executor stopped (§7), a successor's
-attach, recovery after an executor restart. A CP outage therefore leaves every
-running spread session running and makes one that needs a bind wait: its turn fails
-retryably and nothing is lost, because the environment is one `prepare` away once
-the CP answers. The pool has the same shape with the Kubernetes API in the CP's
-place — a bound pod serves through an API outage, and a suspended one cannot be
-woken until it ends. When the CP cannot be reached at **birth**, the session simply
-does not spread: the holder is always its own candidate (below), and the reason is
-recorded (§7).
+**What still needs the CP, and what no longer does.** A re-dial does not, and
+neither does a second bind of the same launch, whose reply the provider keeps with
+the launch. A new launch does: birth, the wake of an environment the executor
+stopped (§7), a successor's attach, recovery after an executor restart. A CP outage
+therefore leaves every running spread session running and makes one that needs a
+new launch wait: its turn fails retryably and nothing is lost, because the
+environment is one `prepare` away once the CP answers. The pool has the same shape
+with the Kubernetes API in the CP's place — a bound pod serves through an API
+outage, and a suspended one cannot be woken until it ends. When the CP cannot be
+reached at **birth**, the session simply does not spread: the holder is always its
+own candidate (below), and the reason is recorded (§7).
 
 **What the CP sees.** The key, and control metadata: agent, session key, machines,
 strategy. It issued the secret itself in the earlier text, so the trust placed in it
@@ -596,11 +624,11 @@ each needs a named source:
 
 **A session that stays home says why.** The birth predicate's verdict is recorded
 on the session and reported with its metadata: the executor it went to, or the
-reason it did not spread — the group's switch is off, the session is `shared`, the
-agent's memory is daemon-homed, no candidate offers the strategy or can authenticate
-the runtime, every candidate was full, the Control Plane could not be asked. The
-console shows it (§10). Without it, "why is everything still running on one
-machine" has no answer an operator can find.
+reason it did not spread — the agent is not placed on a group, the group's switch is
+off, the session is `shared`, the agent's memory is daemon-homed, no candidate offers
+the strategy or can authenticate the runtime, every candidate was full, the Control
+Plane could not be asked. The console shows it (§10). Without it, "why is everything
+still running on one machine" has no answer an operator can find.
 
 **Stickiness.** A session runs where it was born for its whole life. There is no
 turn-level migration.
@@ -659,14 +687,16 @@ answer neither question and would retain every environment forever — the safe
 failure, and a full disk.
 
 **Holder failover.** The successor member claims the agent through the ledger as
-today, reads the session's executor from its row, and sends the same `prepare`. The
+today, reads the session's executor from its row, and sends the same `prepare` for
+its own launch, whose generation is higher than any its predecessor allocated. The
 ledger now names it, so the CP relays; the executor attaches, rotates the key and
-closes the deposed holder's pipe. The environment is still there — nothing on the
-executor depended on which holder was driving it — so failover costs one relayed
-request and a dial, not a re-preparation.
+closes the deposed holder's pipe, and refuses any `prepare` of the predecessor's
+that arrives late (§6). The environment is still there — nothing on the executor
+depended on which holder was driving it — so failover costs one relayed request and
+a dial, not a re-preparation.
 
-**Executor loss.** Decided lazily, at the next bind, from the answer to the
-`prepare` that bind already sends. There is no timer and no new state on the
+**Executor loss.** Decided lazily, at the next launch, from the answer to the
+`prepare` that launch already sends. There is no timer and no new state on the
 holder (§15).
 
 - _The executor answers, and the dial then fails._ The machine is up — it just
@@ -674,13 +704,13 @@ holder (§15).
   retryably and the session is **not** moved: its environment and any uncommitted
   work in it still exist.
 - _The CP cannot relay, because the executor's control connection is down._ The CP
-  answers with its own record of that daemon: unreachable, and since when
-  (`unreachableAt`, which its watchdog already keeps). Inside a grace the turn fails
-  retryably, because a machine that is rebooting comes back with its directories.
-  Past it the holder prepares the session on another candidate, records the new
-  executor on the row, and tells the user in the conversation that the previous
-  environment was lost, as it is when a pinned daemon dies. If the old machine
-  returns, its reconcile collects the orphan.
+  answers with its own record of that daemon: when it last heard from it
+  (`lastSeenAt`, the heartbeat stamp the ledger's liveness already reads). Inside a
+  grace the turn fails retryably, because a machine that is rebooting comes back
+  with its directories. Past it the holder prepares the session on another
+  candidate, records the new executor on the row, and tells the user in the
+  conversation that the previous environment was lost, as it is when a pinned
+  daemon dies. If the old machine returns, its reconcile collects the orphan.
 - _The executor refuses_ — it is full, or draining. A refusal is not a loss: the
   environment is intact, so the turn fails retryably and nothing moves.
 
@@ -755,8 +785,10 @@ resumes from them on its next turn — a VM is started from its retained disk, a
 restart is lost, which is what a daemon restart already costs. Adopting live VMs or
 detached shims across a restart would change the backend's fencing rule and is not
 in scope. The keys die with the process too: a holder that lost its pipe re-dials,
-the handshake is refused, and its next bind is a `prepare`, which starts the shim
-again and returns a fresh key under a new binding generation.
+the handshake is refused, the launch is given up as lost, and the next one sends a
+`prepare` at a new binding generation, which starts the shim again and returns a
+fresh key. The highest generation each environment has applied is on disk (§6), so
+the restart does not reopen the door to a stale `prepare`.
 
 Nothing version-sensitive is pushed from the holder. The executor runs its own shim
 bundle (§4), and the link has no protocol of its own to version: below the shim
@@ -854,7 +886,7 @@ to run, stands.
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | F1  | Protocol and CP: the executor facet, effective strategy table, endpoint and session capacity at registration and in `capabilities/update`; `hostedSessions` in the heartbeat; `executor/candidates`; the relayed `executor/prepare` with its ledger check; the group's switch on the member set; `executorDaemonId` on the CP session row and on the shared-store session row. |
 | F2a | The `host`-strategy shim launcher — the executor's own bundle as a host process with a private runtime root, a helper root and a unix-socket listener — and the daemon-side path derivation: the Git config directory, git-credential socket variable, MCP endpoint and credential helper derived from the reply's roots instead of constants (§5).                            |
-| F2b | The executor facet: `sandbox.share`, the TLS-PSK listener and the byte pipe, `prepare` handling (reservation, environment, HOME seed, key, idempotent attach and rotation), the idle stop, the orphan reconcile, and joining the shutdown drain.                                                                                                                               |
+| F2b | The executor facet: `sandbox.share`, the TLS-PSK listener and the byte pipe, `prepare` handling (reservation, environment, HOME seed, key, and the generation rule: join, attach and rotate, or refuse), the idle stop, the orphan reconcile, and joining the shutdown drain.                                                                                                  |
 | F3  | The holder: `ExecutorPlane` and its `ShimEndpointProvider`, per-session plane resolution, the birth predicate with its recorded reason, failover, the lazy loss rule; and a two-daemon, one-CP integration fixture covering holder failover, executor loss and executor restart.                                                                                               |
 | F4  | The `microsandbox` strategy: "prepare an environment" split from "spawn the runtime" in the microsandbox driver, the pipe into the guest over agentd's TCP stream, the session's state in an executor-local mount.                                                                                                                                                             |
 | F5  | Console: the group switch, per-daemon hosting and capacity, a session's executor or the reason it stayed home.                                                                                                                                                                                                                                                                 |
@@ -878,10 +910,10 @@ reused as is. The shim, at twice the size of that whole path, is reused unchange
   strategy on a trusted machine gets the same list. Proposed: yes, one list
   everywhere, widened where an operation needs it, so nothing loosens an existing
   local control.
-- **The grace in the loss rule** (§7): how long the CP must have recorded an
-  executor unreachable before a session is prepared elsewhere. Too short abandons
-  uncommitted work on a machine that was only rebooting; too long leaves a session
-  unusable. Proposed: ten minutes, a constant until someone needs a key.
+- **The grace in the loss rule** (§7): how long the CP must have gone without
+  hearing from an executor before a session is prepared elsewhere. Too short
+  abandons uncommitted work on a machine that was only rebooting; too long leaves a
+  session unusable. Proposed: ten minutes, a constant until someone needs a key.
 - **How an executor learns its own address.** Proposed: the local address of the
   socket its control connection leaves from, since on a LAN that is the interface
   its peers reach it on. A multi-homed machine where that is wrong needs an
@@ -941,10 +973,16 @@ Shapes and mechanisms considered for the design:
   guarantee from the two control connections that already exist — a per-session key
   the CP relays, not a signature it issues.
 - **Routing the data path through the CP's WebSocket.** Puts the CP on the hot path.
-  A relayed `prepare` is not that: it is one control request per bind, carrying which
-  machine, which strategy and a key — control metadata of the kind the CP already
-  stores — and no ACP frame, tunnel byte, secret or file ever follows it through the
-  CP.
+  A relayed `prepare` is not that: it is one control request per launch, carrying
+  which machine, which strategy and a key — control metadata of the kind the CP
+  already stores — and no ACP frame, tunnel byte, secret or file ever follows it
+  through the CP.
+- **The duty term as the executor's fence** against a deposed holder's late
+  `prepare`. The term is monotonic per duty group and a new group starts again, so a
+  recompute that splits an agent's component would hand its rightful holder a lower
+  term and have it refused. The pool fences its edge with the binding generation for
+  the same reason, and the generation also names the launch, which is what makes a
+  retransmitted `prepare` the same request (§6).
 - **Symmetric daemon↔daemon links** where either side may hold the agent. The
   asymmetry (holder dials, executor listens) is what keeps one holder per agent.
 - **A shared filesystem between members.** The daemon's local store is SQLite, Git
@@ -995,8 +1033,8 @@ Removed by the 2026-09-20 revision, each with the reason it went:
   (§9).
 - **A timer-driven executor-loss state machine on the holder**, with a per-session
   "environment unreachable" state. It would be run by the one party that cannot tell
-  a dead machine from a dead link, to reach a conclusion the CP's watchdog already
-  records; asking at the next bind needs no state (§7).
+  a dead machine from a dead link, to reach a conclusion the CP's own heartbeat
+  record already supports; asking at the next launch needs no state (§7).
 - **Reporting the shim's paths in its hello.** The executor chose the root and
   already replies to `prepare`, so the answer travels there and the handshake does
   not have to change (§5).
