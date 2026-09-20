@@ -476,24 +476,24 @@ describe('delegated webchat MCP operations', () => {
 
   it('executes reads directly but holds writes until the conversation owner approves', async () => {
     const fixture = await delegatedFixture()
-    const { app, hostAgentId, remoteRpc, decisionPath: path } = fixture
+    const { app, daemonId, hostAgentId, remoteRpc, decisionPath: path } = fixture
 
     const read = await remoteRpc(1, 'listAgents', {})
     expect(read.statusCode).toBe(200)
     expect(toolText(mcpMessage(read).result as unknown as ToolCallResult)).toContain(hostAgentId)
 
-    const write = await remoteRpc(2, 'createAgent', { name: 'approved-agent', runtime: 'codex' })
+    const write = await remoteRpc(2, 'renameDaemon', { daemonId, name: 'approved-daemon' })
     expect(write.statusCode).toBe(200)
     const pending = JSON.parse(toolText(mcpMessage(write).result as unknown as ToolCallResult)) as {
       status: string
       operationId: string
     }
     expect(pending.status).toBe('awaiting_confirmation')
-    expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'approved-agent' } })).toBeNull()
+    expect((await prisma.daemon.findUnique({ where: { id: daemonId } }))?.name).not.toBe('approved-daemon')
 
     const listed = await app.app.inject({ method: 'GET', url: path })
     expect(listed.statusCode).toBe(200)
-    expect(listed.json()).toMatchObject([{ operationId: pending.operationId, toolName: 'createAgent' }])
+    expect(listed.json()).toMatchObject([{ operationId: pending.operationId, toolName: 'renameDaemon' }])
     const approved = await app.app.inject({
       method: 'POST',
       url: `${path}/${pending.operationId}/decision`,
@@ -501,38 +501,51 @@ describe('delegated webchat MCP operations', () => {
     })
     expect(approved.statusCode).toBe(200)
     expect(approved.json()).toMatchObject({ operationId: pending.operationId, status: 'completed' })
-    expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'approved-agent' } })).not.toBeNull()
+    expect((await prisma.daemon.findUnique({ where: { id: daemonId } }))?.name).toBe('approved-daemon')
 
     // The caller reads the decided outcome back through the catalog rather than
     // re-issuing the write, which would enqueue a second operation.
     const read2 = await remoteRpc(3, 'getOperation', { operationId: pending.operationId })
     expect(read2.statusCode).toBe(200)
-    const operationResult = mcpMessage(read2).result as unknown as ToolCallResult
-    const settled = JSON.parse(toolText(operationResult)) as {
+    const settled = JSON.parse(toolText(mcpMessage(read2).result as unknown as ToolCallResult)) as {
       operationId: string
       toolName: string
       status: string
       result?: { statusCode?: number }
-      nativeUi?: { resourceUri: string; intent: { agentId: string; created: boolean } }
     }
-    expect(settled).toMatchObject({ operationId: pending.operationId, toolName: 'createAgent', status: 'completed' })
-    expect(settled.result?.statusCode).toBe(201)
-    // The card the direct path returns survives the approval hop: the executed tool's answer is a
-    // JSON string inside the bounded envelope, so its intent is lifted out where a reader sees it.
-    const made = await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'approved-agent' } })
-    expect(settled.nativeUi).toEqual({
+    expect(settled).toMatchObject({ operationId: pending.operationId, toolName: 'renameDaemon', status: 'completed' })
+    expect(settled.result?.statusCode).toBe(200)
+  })
+
+  it('answers a delegated createAgent with a prefilled create dialog, not an approval', async () => {
+    const fixture = await delegatedFixture()
+    const { remoteRpc } = fixture
+
+    const call = await remoteRpc(2, 'createAgent', {
+      name: 'drafted-agent',
+      runtime: 'codex',
+      workspace: { mode: 'git', gitRepo: 'acme/api', gitBranch: 'develop' }
+    })
+    expect(call.statusCode).toBe(200)
+    const result = mcpMessage(call).result as unknown as ToolCallResult
+    const card = JSON.parse(toolText(result)) as { resourceUri: string; intent: unknown }
+    expect(card).toEqual({
       resourceUri: 'ui://agentconnect/agent-setup',
       resourceVersion: 1,
       orgId: DEFAULT_ORG_ID,
-      intent: { agentId: made!.id, created: true }
+      intent: {
+        draft: {
+          name: 'drafted-agent',
+          runtime: 'codex',
+          workspace: { mode: 'git', gitRepo: 'acme/api', gitBranch: 'develop' }
+        }
+      }
     })
-    // Republished as structured content too, so finding the card never depends on how long the
-    // operation's own text answer happens to be.
-    expect((operationResult as { structuredContent?: { nativeUi?: unknown } }).structuredContent?.nativeUi).toEqual(
-      settled.nativeUi
-    )
-    // A pending operation has no result and therefore no card.
-    expect(listed.json()).toEqual([expect.not.objectContaining({ nativeUi: expect.anything() })])
+    // The card is republished as structured content, and neither an agent nor an approval exists:
+    // the reader submits the dialog under their own Console session.
+    expect((result as { structuredContent?: unknown }).structuredContent).toEqual(card)
+    expect(await prisma.agent.findFirst({ where: { orgId: DEFAULT_ORG_ID, name: 'drafted-agent' } })).toBeNull()
+    expect(await prisma.webchatMcpOperation.findFirst({ where: { toolName: 'createAgent' } })).toBeNull()
   })
 
   it('scopes the operation reads to the caller’s own conversation', async () => {

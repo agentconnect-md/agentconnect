@@ -442,10 +442,13 @@ function cleanHeaders(rows: HeaderRow[]): McpHeaderInput[] {
  *  which passes `onCreated` to attach the new provider to that agent right away. */
 export function CreateMcpProviderModal({
   onClose,
-  onCreated
+  onCreated,
+  onFailed
 }: {
   onClose: () => void
   onCreated?: (created: McpProviderCreatedDto) => void
+  /** Why a submitted registration did not land — a native card reports a refusal as well as a save. */
+  onFailed?: (message: string) => void
 }) {
   const { createMcpProvider } = useConsoleData()
   const { me } = useProfile()
@@ -490,7 +493,9 @@ export function CreateMcpProviderModal({
       onCreated?.(created)
       onClose()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      setErr(message)
+      onFailed?.(message)
       setBusy(false)
     }
   }

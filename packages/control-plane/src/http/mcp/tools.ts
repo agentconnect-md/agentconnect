@@ -19,9 +19,10 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
 import {
+  AGENT_SETUP_SECTIONS,
   AGENT_SETUP_URI,
   AGENT_TOOLS_URI,
-  AgentSetupIntent,
+  AgentSetupDraft,
   AgentToolsIntent,
   CODE_HOST_SETUP_URI,
   CodeHostSetupIntent,
@@ -68,6 +69,10 @@ export interface McpToolDef {
   /** §6.2 ✎ — mutating: requires `mcp:write` on scope-confined credentials and
    *  draws from the write rate budget (§6.5). Absent ⇒ read-only. */
   write?: true
+  /** A delegated (webchat) call of this write tool opens a PREFILLED Console form instead of asking
+   *  the owner to approve an argument list: nothing is queued, and the human submits the write
+   *  under their own Console JWT. The direct path is unaffected and still executes. */
+  delegatedForm?(ctx: McpToolCtx, args: Record<string, unknown>): RestResult
   /** §6.4 🔥 — irreversible: the schema carries a required `confirm` argument,
    *  compared against the live resource name before the call goes out. */
   destructive?: true
@@ -197,6 +202,11 @@ const AgentSlug = z
 
 const OutputMode = z.enum(['none', 'minimal', 'low', 'medium', 'high'])
 
+/** What `configureAgent` accepts — the editor intent's caller-supplied half. */
+const ConfigureAgentIntent = z
+  .object({ agentId: z.string().uuid(), section: z.enum(AGENT_SETUP_SECTIONS).optional() })
+  .strict()
+
 /** Mirrors the REST `AgentWorkspaceInputBody` (git-workspace-model.md §5): the
  *  ADDRESS is the only repository input — provenance and the rename-proof numeric
  *  id are derived server-side, never supplied here. Kept FLAT rather than a
@@ -317,10 +327,10 @@ export const MCP_TOOLS: McpToolDef[] = [
     description:
       'Open the Console agent editor on one agent, so the user can change its configuration — display name, runtime and model, behavior, placement, environment variables, secrets and sharing. Optionally open it on a section (basics, runtime, access, secrets). Never ask for a secret value in chat; it is typed into the dialog. Opening saves nothing; the user submits the form. For a single field the tool can set on its own, updateAgent is the direct path.',
     uiResourceUri: AGENT_SETUP_URI,
-    // `created` is the server's own annotation on a createAgent card, never a caller's argument.
-    schema: AgentSetupIntent.omit({ created: true }),
+    // `created` and `draft` are the server's own annotations on a createAgent card, never a caller's arguments.
+    schema: ConfigureAgentIntent,
     call: async (ctx, args) => {
-      const intent = AgentSetupIntent.omit({ created: true }).parse(args)
+      const intent = ConfigureAgentIntent.parse(args)
       const agent = await ctx.get(org(ctx, `/agents/${seg(intent.agentId)}`))
       if (agent.statusCode !== 200) return agent
       return uiIntent(ctx, AGENT_SETUP_URI, intent)
@@ -710,7 +720,7 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'createAgent',
     description:
-      'Create a new agent, optionally with its Git workspace in the same call. Env vars, secrets, memory and sharing are configured in the console; triggers are their own tools (createGithubTrigger, upsertCron).',
+      'Create a new agent, optionally with its Git workspace in the same call. Env vars, secrets, memory and sharing are configured in the console; triggers are their own tools (createGithubTrigger, upsertCron). Collect what the user wants first — from webchat this call opens the console create dialog PREFILLED with these arguments and the user submits it there, so the answer is a form to fill in, not an agent that exists yet.',
     write: true,
     schema: z
       .object({
@@ -750,6 +760,10 @@ export const MCP_TOOLS: McpToolDef[] = [
       .strict(),
     uiResourceUri: AGENT_SETUP_URI,
     uiEnvelope: true,
+    // In webchat the owner is already at a Console session, so a collected proposal opens the create
+    // dialog prefilled rather than asking them to approve an argument list they cannot edit. `pause`
+    // has no control in that dialog and is dropped with the rest of the approval hop.
+    delegatedForm: (ctx, a) => uiIntent(ctx, AGENT_SETUP_URI, { draft: AgentSetupDraft.parse(bodyOf(a, 'pause')) }),
     call: async (ctx, a) => {
       const created = await ctx.send('POST', org(ctx, '/agents'), bodyOf(a))
       if (created.statusCode < 200 || created.statusCode >= 300) return created

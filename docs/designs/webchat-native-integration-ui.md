@@ -32,9 +32,9 @@ Three further intents open the Console's other configuration surfaces the same w
 `ui://agentconnect/agent-setup` opens the agent editor on one agent — display name,
 runtime and model, behavior, placement, environment variables, secrets and sharing —
 optionally scrolled to a section. It is what `configureAgent` returns for an existing
-agent, and what `createAgent` attaches to the agent it just created, so the new agent's
-first card is its own editor. `ui://agentconnect/skill-setup` opens the Skills library's
-install dialogs: the skills.sh registry search, optionally preseeded with a name, or the
+agent, what `createAgent` attaches to the agent it just created on the direct path, and — in
+webchat — the create dialog itself, opened prefilled on the agent `createAgent` proposed.
+`ui://agentconnect/skill-setup` opens the Skills library's install dialogs: the skills.sh registry search, optionally preseeded with a name, or the
 Git import. `ui://agentconnect/mcp-setup` opens "Add MCP server". Both installers accept
 an optional `agentId` and, when the library write lands, also enable the new source or
 attach the new server on that agent; that second write is reported separately, because
@@ -54,18 +54,30 @@ None of the four carries a credential. A secret env var, an MCP header value and
 OAuth client secret are typed into the dialog under the reader's Console JWT, never into
 a tool argument that the audit log and the transcript would both keep.
 
-`createAgent` is the one write tool with a card, and it keeps its own answer: its result
-body is the created agent with the intent beside it under `nativeUi`, republished as
-structured content. Every other UI tool's whole answer still IS the intent. Readers of a
-tool result therefore accept an intent in either position.
+`createAgent` keeps its own answer on the direct path: its result body is the created agent
+with the intent beside it under `nativeUi`. Every other UI tool's whole answer IS the intent.
+Readers of a tool result therefore accept an intent in either position, and the republication
+as structured content reads the ANSWER's shape rather than the tool's name — one tool has both
+shapes, and neither may be lost.
 
-A delegated write does not execute in its own request, so its card has to survive the
-approval hop too. The executed tool's answer is stored as a JSON string inside the bounded
-operation envelope, where no reader of the operation would find it; `getOperation` therefore
-lifts a valid intent out of that string onto the operation itself. A pending operation has no
-result and so no card. Any answer carrying a card — a write tool's own, or the one
-`getOperation` lifts — is republished as structured content, so finding the intent never
-depends on how long the tool's text answer happens to be.
+In WEBCHAT `createAgent` does not write at all. The owner is already sitting at a Console
+session, so asking them to approve an argument list they cannot edit is strictly worse than
+handing them the form: a delegated call returns an `agent-setup` intent carrying a `draft` —
+the arguments the model collected — and the Console create dialog opens prefilled on it. The
+agent is born when the reader presses Create, under their own Console JWT, and the card reports
+the outcome back into the conversation as an ordinary turn — `agentId` and slug on a create that
+landed, the reason on one that did not, either of which wakes the session that asked. A failure
+closes the dialog with its report: the daemon settles a card on the message it sends, so a retry
+behind a settled card could never reach the agent, and the model — which still holds the draft —
+re-proposes a corrected card instead. Nothing is queued, nothing is approved, and an agent the
+reader abandoned never existed. The intent therefore carries EITHER an `agentId` (an
+editor has a subject) or a `draft` (a create dialog has none), never both.
+
+A delegated write that does execute does not do so in its own request, so a card it earns has
+to survive the approval hop. The executed tool's answer is stored as a JSON string inside the
+bounded operation envelope, where no reader of the operation would find it; `getOperation`
+therefore lifts a valid intent out of that string onto the operation itself. A pending
+operation has no result and so no card.
 
 GitHub, GitLab and Gitea remain code hosts, not chat platform modules. Their edit
 targets use `kind: codehost-subscription`; chat bindings use `kind: integration`.
@@ -95,6 +107,10 @@ The agent, skill, MCP and roster intents read:
 ```
 
 ```json
+{ "draft": { "name": "reviewer", "runtime": "claude", "workspace": { "mode": "git", "gitRepo": "acme/api" } } }
+```
+
+```json
 { "source": "registry", "query": "postgres", "agentId": "<uuid>" }
 ```
 
@@ -106,7 +122,8 @@ The agent, skill, MCP and roster intents read:
 { "agentId": "<uuid>", "focus": "skills" }
 ```
 
-Every UI tool is read-only: it opens an editor without submitting any changes. Each
+Every UI tool is read-only: it opens an editor without submitting any changes, and a delegated
+`createAgent` joins them — a proposal is not a write. Each
 descriptor declares its own `_meta.ui.resourceUri`, and the resource — never the
 intent's shape — selects the dialog and the card's title. The result contains a strict,
 versioned `NativeMcpUi` value with the organization id and validated intent.
@@ -153,6 +170,16 @@ disconnecting releases the old stream without expiring the card. The card's butt
 therefore offered for as long as its intent parses, including after the card closed,
 completed, was superseded or expired with its session — a configuration the reader
 cannot reach a second time is a dead end, not a boundary.
+
+A REFUSED submit reports too, and on the same channel: a save that the server rejected is news the
+caller has to hear, or it waits on a thing that was never made — the agent that was not created,
+the integration that was not added, the skill or MCP server that was not installed, the
+configuration that was not saved. The report names what was attempted and the reason, and it closes
+the dialog: one card reports ONCE, because the daemon settles a card on the message it sends, so a
+retry behind a settled card could never reach the caller. The model still holds what it proposed
+and opens a corrected card, which is where a retry belongs. Validation the dialog catches on its
+own is not a refusal — nothing was attempted, and it stays in the dialog. Dismissing a dialog still
+reports nothing: a reader who closed it said no, and the card's own button re-opens it.
 
 Reporting back is what needs a live card. A settled one still opens and still saves,
 through the same Console authorization, and says plainly that the agent was not

@@ -70,6 +70,7 @@ import AgentToolsDialog from './AgentToolsDialog'
 import SkillSetupDialog from './SkillSetupDialog'
 import McpSetupDialog from './McpSetupDialog'
 import { NativeDialogNotice } from './NativeDialogNotice'
+import { nativeFailureReport } from './native-dialog-report'
 
 interface Props {
   ui: Extract<NativeMcpUi, { resourceUri: typeof INTEGRATION_SETUP_URI }>
@@ -122,6 +123,7 @@ function IntegrationSetupDialog({ ui, onClose, onCompleted }: Props) {
         initialAgentId={intent.agentId}
         onClose={onClose}
         onCompleted={onCompleted}
+        onFailed={nativeFailureReport('Adding the integration', onCompleted, onClose)}
       />
     )
   if (intent.target.kind === 'codehost-subscription')
@@ -171,7 +173,9 @@ function EditChannels({
       onCompleted(`Updated conversation triggers for ${integration.name}.`)
       onClose()
     } catch (e) {
-      setError(`Some changes may already be saved. ${e instanceof Error ? e.message : String(e)}`)
+      const reason = `Some changes may already be saved. ${e instanceof Error ? e.message : String(e)}`
+      setError(reason)
+      nativeFailureReport(`Updating the triggers of ${integration.name}`, onCompleted, onClose)(reason)
     } finally {
       setBusy(false)
     }
@@ -357,7 +361,12 @@ function EditSubscription({ ui, onClose, onCompleted }: Props) {
       onCompleted(`Updated ${hook.kind} subscription ${name.trim()} for ${hook.repoFullName ?? hook.repoId}.`)
       onClose()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const reason = e instanceof Error ? e.message : String(e)
+      setError(reason)
+      // A stale-revision refusal is a local fix — reopening is the retry, and the caller is not told
+      // a save failed that it never saw start. Anything else is a refusal the caller must hear.
+      if (!reason.includes('Close and reopen'))
+        nativeFailureReport('Updating the subscription', onCompleted, onClose)(reason)
     } finally {
       setBusy(false)
     }

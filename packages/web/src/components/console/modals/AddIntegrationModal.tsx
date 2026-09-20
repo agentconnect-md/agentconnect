@@ -438,6 +438,7 @@ export default function AddIntegrationModal({
   initialPlatform,
   initialFeishuRegion,
   onCompleted,
+  onFailed,
   onClose
 }: {
   agent: Agent
@@ -447,6 +448,8 @@ export default function AddIntegrationModal({
   initialPlatform?: Platform
   initialFeishuRegion?: FeishuRegion
   onCompleted?: (summary: string) => void
+  /** Why a submitted create did not land — a native card must report a failure as well as a save. */
+  onFailed?: (message: string) => void
   onClose: () => void
 }) {
   const {
@@ -667,6 +670,14 @@ export default function AddIntegrationModal({
   // registration — see `WizardHost.setRegionLocked`).
   const [regionLocked, setRegionLocked] = useState(false)
   const setError = useCallback((message: string | null) => setErr(message), [])
+  // A SUBMITTED create that the server refused is news a native card must carry back, exactly like a
+  // save: the caller hears the reason instead of waiting on an integration that was never made.
+  // Validation the dialog catches on its own stays in the dialog — nothing was attempted yet.
+  const failSubmit = (e: unknown) => {
+    const message = e instanceof Error ? e.message : String(e)
+    setErr(message)
+    onFailed?.(message)
+  }
 
   // A bot integration is runnable only where the PLACEMENT reported that adapter on register — resolved as a
   // placement, since a set names no member and an id lookup found none, offering a pool agent every platform.
@@ -829,7 +840,7 @@ export default function AddIntegrationModal({
       onCompleted?.(`Created ${platform} integration for ${agent.name}.`)
       onClose()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      failSubmit(e)
       setSaving(false)
       busyRef.current = false
     }
@@ -853,7 +864,7 @@ export default function AddIntegrationModal({
       setCreatedHook(created)
       onCompleted?.(`Created webhook integration for ${agent.name}.`)
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      failSubmit(e)
     } finally {
       setSaving(false)
       busyRef.current = false
@@ -1193,7 +1204,7 @@ export default function AddIntegrationModal({
       onCompleted?.(`Created Gitea subscriptions for ${agent.name}.`)
       onClose()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      failSubmit(e)
       void mutateAgentHooks()
       setSaving(false)
       busyRef.current = false
@@ -1239,7 +1250,7 @@ export default function AddIntegrationModal({
       onCompleted?.(`Created GitLab subscriptions for ${agent.name} on ${glPicked?.projectPath ?? glProject}.`)
       onClose()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      failSubmit(e)
       void mutateAgentHooks()
       setSaving(false)
       busyRef.current = false
@@ -1315,7 +1326,7 @@ export default function AddIntegrationModal({
       onCompleted?.(`Created GitHub subscriptions for ${agent.name} on ${ghRepoPick}.`)
       onClose()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      failSubmit(e)
       void mutateAgentHooks()
       setSaving(false)
       busyRef.current = false
@@ -2597,12 +2608,14 @@ export function AddIntegrationForOrgModal({
   initialFeishuRegion,
   initialAgentId,
   onCompleted,
+  onFailed,
   onClose
 }: {
   initialPlatform?: Platform
   initialFeishuRegion?: FeishuRegion
   initialAgentId?: string
   onCompleted?: (summary: string) => void
+  onFailed?: (message: string) => void
   onClose: () => void
 }) {
   const { agents } = useConsoleData()
@@ -2647,6 +2660,7 @@ export function AddIntegrationForOrgModal({
       agentChoices={choices}
       onPickAgent={setAgentId}
       onCompleted={onCompleted}
+      onFailed={onFailed}
       initialPlatform={initialPlatform}
       initialFeishuRegion={initialFeishuRegion}
       onClose={onClose}

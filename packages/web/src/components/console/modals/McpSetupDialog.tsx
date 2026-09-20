@@ -11,6 +11,7 @@ import { agentLabel } from '@/lib/data'
 import { fetchAgentDto, type McpProviderCreatedDto } from '@/lib/api'
 import { CreateMcpProviderModal } from '@/components/console/McpServersCard'
 import { NativeDialogNotice } from './NativeDialogNotice'
+import { nativeFailureReport } from './native-dialog-report'
 
 type McpSetupUi = Extract<NativeMcpUi, { resourceUri: typeof MCP_SETUP_URI }>
 
@@ -52,5 +53,12 @@ export default function McpSetupDialog({
     }
   }
 
-  return <CreateMcpProviderModal onClose={onClose} onCreated={(provider) => void created(provider)} />
+  // A refused registration is reported too: the caller asked for a server and has to hear it has none.
+  return (
+    <CreateMcpProviderModal
+      onClose={onClose}
+      onCreated={(provider) => void created(provider)}
+      onFailed={nativeFailureReport('Adding the MCP server', onCompleted, onClose)}
+    />
+  )
 }

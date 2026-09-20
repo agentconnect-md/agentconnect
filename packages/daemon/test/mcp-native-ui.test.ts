@@ -157,6 +157,11 @@ describe('direct HTTP native UI result', () => {
         { ...ui, resourceUri: AGENT_SETUP_URI, intent: { agentId, created: true } },
         { title: 'Agent created', toolName: 'createAgent' }
       ],
+      // A delegated createAgent proposes an agent instead of reporting one: same tool, unborn subject.
+      [
+        { ...ui, resourceUri: AGENT_SETUP_URI, intent: { draft: { name: 'reviewer', runtime: 'claude' } } },
+        { title: 'Create agent', toolName: 'createAgent' }
+      ],
       [
         { ...ui, resourceUri: SKILL_SETUP_URI, intent: { source: 'registry', query: 'postgres' } },
         { title: 'Install skill', toolName: 'installSkill' }

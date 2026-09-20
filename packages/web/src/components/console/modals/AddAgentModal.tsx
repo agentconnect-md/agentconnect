@@ -34,6 +34,8 @@ import {
 } from '@/lib/data'
 import { sessionIsolationLabel } from '@/lib/session-isolation'
 import { addAgentDaemonChoice } from './add-agent-daemon-choice'
+import { addAgentDraftSeed } from './add-agent-draft'
+import type { AgentSetupDraft } from '@agentconnect.md/protocol/mcp-app'
 import {
   fetchGithubBranches,
   fetchGithubInstallations,
@@ -131,34 +133,52 @@ const RAIL_ITEM_ON =
 const RAIL_ITEM_OFF =
   'flex flex-none cursor-pointer items-center gap-[9px] rounded-sm border-0 bg-transparent px-[10px] py-[7px] text-left font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover)'
 
-export default function AddAgentModal({ onClose }: { onClose: () => void }) {
+export default function AddAgentModal({
+  draft,
+  onClose,
+  onCreated,
+  onFailed
+}: {
+  /** A `createAgent` card's proposal, seeding every field it named; the reader still submits. */
+  draft?: AgentSetupDraft
+  onClose: () => void
+  /** The agent, once it exists — how a native card reports the create it opened back to the agent. */
+  onCreated?: (agent: { id: string; name: string }) => void
+  /** Why a submitted create did not land, for the same reader — a failure the caller must hear too. */
+  onFailed?: (message: string) => void
+}) {
   const { createAgent, daemons, agents, memberSets } = useConsoleData()
+  // Read once: a draft is the form's starting point, and re-seeding on a later render would undo
+  // whatever the reader had already typed over it.
+  const [seed] = useState(() => addAgentDraftSeed(draft))
   const { me } = useProfile()
   const { activeOrg, orgPath } = useOrgs()
   const defaultAgentVisibility = activeOrg?.defaultAgentVisibility ?? 'all'
-  const [name, setName] = useState('')
-  const [displayName, setDisplayName] = useState('')
+  const [name, setName] = useState(seed.name)
+  const [displayName, setDisplayName] = useState(seed.displayName)
   // New agents default to a random glyph+color (product default — not runtime-branded).
   const [icon, setIcon] = useState<AgentIcon>(() => randomGlyphIcon())
-  const [runtime, setRuntime] = useState('') // '' = untouched; the daemon supplies the default
-  const [model, setModel] = useState('')
-  const [effort, setEffort] = useState('')
-  const [fastMode, setFastMode] = useState(false)
-  const [outputMode, setOutputMode] = useState<OutputMode>(DEFAULT_AGENT_OUTPUT_MODE)
+  const [runtime, setRuntime] = useState(seed.runtime) // '' = untouched; the daemon supplies the default
+  const [model, setModel] = useState(seed.model)
+  const [effort, setEffort] = useState(seed.effort)
+  const [fastMode, setFastMode] = useState(seed.fastMode)
+  const [outputMode, setOutputMode] = useState<OutputMode>(seed.outputMode ?? DEFAULT_AGENT_OUTPUT_MODE)
   const [showFooter, setShowFooter] = useState(true)
   const [showStatusBar, setShowStatusBar] = useState(false)
   const [memoryProvider, setMemoryProvider] = useState<MemoryProviderChoice>('managed')
   const [externalMemory, setExternalMemory] = useState<ExternalMemoryBindingDraft>(DEFAULT_EXTERNAL_MEMORY_BINDING)
-  const [permissionMode, setPermissionMode] = useState(permissionModeDefault(FALLBACK_RUNTIME_IDS[0]!))
+  const [permissionMode, setPermissionMode] = useState(
+    seed.permissionMode ?? permissionModeDefault(FALLBACK_RUNTIME_IDS[0]!)
+  )
   const [allowRuntimeChangesInChat, setAllowRuntimeChangesInChat] = useState(false)
-  const [description, setDescription] = useState('')
-  const [daemonId, setDaemonId] = useState('')
+  const [description, setDescription] = useState(seed.description)
+  const [daemonId, setDaemonId] = useState(seed.daemonValue)
   const [runInSandbox, setRunInSandbox] = useState(false)
-  const [wsMode, setWsMode] = useState<WsMode>('scratch')
-  const [repo, setRepo] = useState('')
-  const [branch, setBranch] = useState('main')
-  const [agentDir, setAgentDir] = useState('')
-  const [worktree, setWorktree] = useState(true)
+  const [wsMode, setWsMode] = useState<WsMode>(seed.wsMode)
+  const [repo, setRepo] = useState(seed.repo)
+  const [branch, setBranch] = useState(seed.branch)
+  const [agentDir, setAgentDir] = useState(seed.agentDir)
+  const [worktree, setWorktree] = useState(seed.worktree)
   // GitHub App picker state (design: the picker IS the github path once the App
   // is installed — repo options only EXIST after an install; no App on this
   // deployment ⇒ everything stays the manual free-text flow — the daemon host
@@ -170,9 +190,9 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // account→repo picker); each row remembers its owning installation so the
   // submit can point provenance at the right one.
   const [ghRepos, setGhRepos] = useState<Array<GithubRepoDto & { installationId: string }>>([])
-  const [ghRepo, setGhRepo] = useState('') // owner/repo fullName
+  const [ghRepo, setGhRepo] = useState(seed.repo) // owner/repo fullName
   const [ghBranches, setGhBranches] = useState<string[] | null>(null) // null = fetch failed → free text
-  const [ghPush, setGhPush] = useState(false) // gitAccess: write|read
+  const [ghPush, setGhPush] = useState(seed.push) // gitAccess: write|read
   // Per-user authz preflight for the picked repo (deployments with the
   // identity-assertion gate). null = unknown/loading — never blocks the UI;
   // the CP re-checks at create either way.
@@ -185,6 +205,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // the list may be incomplete, which must not read as "no repositories".
   const [ghReposFailed, setGhReposFailed] = useState(false)
   const [ghReposNonce, setGhReposNonce] = useState(0)
+  // One roster attempt has finished — what tells a drafted repository the roster does not carry it.
+  const [ghRosterSettled, setGhRosterSettled] = useState(false)
   // Design's dropdowns: .fmenu popovers with a type-to-filter search (one shared
   // query, reset on every open — mirrors the Sessions filter dropdowns).
   const [ghRepoOpen, setGhRepoOpen] = useState(false)
@@ -194,7 +216,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // The picked repository, when it is a public one no installation covers.
   const [ghManualPublicRepo, setGhManualPublicRepo] = useState<GithubRepoDto | null>(null)
   // Git URL tile: a full https/ssh address cloned anonymously (§7).
-  const [urlInput, setUrlInput] = useState('')
+  const [urlInput, setUrlInput] = useState(seed.url)
   // GitLab path: projects picked by their numeric id. One this organization has
   // not added yet is set up as part of picking it (§18.1).
   const [glProject, setGlProject] = useState('')
@@ -503,7 +525,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         setGhReposFailed(failed)
         applyRoster(repos)
       })
-      .finally(() => alive && setGhLoading(false))
+      .finally(() => {
+        if (!alive) return
+        setGhLoading(false)
+        setGhRosterSettled(true)
+      })
     return () => {
       alive = false
       ctrl.abort()
@@ -537,6 +563,15 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     if (ghReadOnly) setGhPush(false)
   }, [ghReadOnly])
 
+  // A drafted branch survives the picker resolving the repository it was drafted FOR; picking any
+  // other repository takes that repository's default, the way an ordinary pick does.
+  const draftedBranch = useRef(draft?.workspace?.gitBranch ?? '')
+  const applyPickedBranch = (fullName: string, defaultBranch: string) => {
+    const drafted = draftedBranch.current
+    draftedBranch.current = ''
+    setBranch(drafted && fullName === seed.repo ? drafted : defaultBranch)
+  }
+
   const pickSyncedGithubRepo = (r: GithubRepoDto & { installationId: string }) => {
     // Keep an exact App-backed result in the local roster after the popover
     // closes, so the selected private repository retains its installation id.
@@ -549,7 +584,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     )
     setGhManualPublicRepo(null)
     setGhRepo(r.fullName)
-    setBranch(r.defaultBranch)
+    applyPickedBranch(r.fullName, r.defaultBranch)
     setGhRepoOpen(false)
   }
 
@@ -558,7 +593,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     if (!label) return
     setGhRepo(label)
     setGhManualPublicRepo({ ...r, fullName: label })
-    setBranch(r.defaultBranch)
+    applyPickedBranch(label, r.defaultBranch)
     setGhAccess(null)
     setGhBranches(null)
     setGhBranchOpen(false)
@@ -571,6 +606,28 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     if (choice.kind === 'installed') pickSyncedGithubRepo(choice.repo)
     else pickPublicGithubRepo(choice.repo)
   }
+
+  // A drafted repository no installation carries is resolved once against public GitHub — the same
+  // answer typing it into the picker and pressing enter would give, so the card's value is visible.
+  const draftRepoToResolve = useRef(seed.repo)
+  useEffect(() => {
+    const label = draftRepoToResolve.current
+    if (!usingPicker || !label || !ghRosterSettled || picked) return
+    draftRepoToResolve.current = ''
+    let alive = true
+    const ctrl = new AbortController()
+    void fetchPublicGithubRepo(label, ctrl.signal)
+      .then((repo) => {
+        if (alive && repo) pickPublicGithubRepo(repo)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+      ctrl.abort()
+    }
+    // `pickPublicGithubRepo` is rebuilt every render and carries no state of its own, so it is not
+    // a dependency: re-running this on its identity would re-resolve the same address every render.
+  }, [usingPicker, ghRosterSettled, picked])
 
   // Repo picked → branch to its real default (never assume 'main' for synced
   // repos); a failed listing degrades to a free-text branch input. Manually
@@ -614,7 +671,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         ctrl.abort()
       }
     }
-    setBranch(picked.defaultBranch)
+    applyPickedBranch(picked.fullName, picked.defaultBranch)
     const [owner, repo] = picked.fullName.split('/')
     if (!owner || !repo) return
     let alive = true
@@ -767,7 +824,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   }
               : { mode: 'scratch' }
     try {
-      await createAgent({
+      const id = await createAgent({
         name: slug,
         ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
         icon,
@@ -815,11 +872,14 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         outboundPolicy,
         allowedTargetAgentIds: outboundPolicy === 'selected' ? allowedTargets : []
       })
+      onCreated?.({ id, name: slug })
       onClose()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       // The CP replies 409 when (org, name) is already taken.
-      setErr(msg.includes('409') ? `An agent named “${slug}” already exists.` : msg)
+      const reason = msg.includes('409') ? `An agent named “${slug}” already exists.` : msg
+      setErr(reason)
+      onFailed?.(reason)
       setBusy(false)
     }
   }

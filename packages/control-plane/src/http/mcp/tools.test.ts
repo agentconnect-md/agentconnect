@@ -234,6 +234,34 @@ describe('MCP tool registry — §6.2 invariants', () => {
     expect(tool.uiEnvelope).toBe(true)
   })
 
+  it('a delegated creation proposes the agent on a prefilled card instead of writing it', () => {
+    const tool = findTool('createAgent')!
+    const { ctx, calls } = recordingCtx()
+    const form = tool.delegatedForm!(ctx, {
+      name: 'my-agent',
+      runtime: 'claude',
+      daemonId: 'daemon-1',
+      pause: true,
+      workspace: { mode: 'git', gitRepo: 'acme/api', gitBranch: 'develop', access: 'write' }
+    })
+    expect(form.statusCode).toBe(200)
+    // Nothing was written, and `pause` — a field the dialog has no control for — is not carried.
+    expect(calls).toEqual([])
+    expect(JSON.parse(form.body)).toEqual({
+      resourceUri: 'ui://agentconnect/agent-setup',
+      resourceVersion: 1,
+      orgId: ORG_ID,
+      intent: {
+        draft: {
+          name: 'my-agent',
+          runtime: 'claude',
+          daemonId: 'daemon-1',
+          workspace: { mode: 'git', gitRepo: 'acme/api', gitBranch: 'develop', access: 'write' }
+        }
+      }
+    })
+  })
+
   it('a creation that did not answer with an agent id keeps its answer unchanged', async () => {
     const tool = findTool('createAgent')!
     const { ctx } = recordingCtx()

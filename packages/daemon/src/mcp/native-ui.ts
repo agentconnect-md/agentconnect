@@ -117,7 +117,7 @@ function toolFor(nativeUi: NativeMcpUi): string {
     case CODE_HOST_SETUP_URI:
       return 'manageCodeHosts'
     case AGENT_SETUP_URI:
-      return nativeUi.intent.created ? 'createAgent' : 'configureAgent'
+      return nativeUi.intent.draft || nativeUi.intent.created ? 'createAgent' : 'configureAgent'
     case SKILL_SETUP_URI:
       return 'installSkill'
     case MCP_SETUP_URI:

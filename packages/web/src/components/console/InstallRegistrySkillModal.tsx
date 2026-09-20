@@ -53,7 +53,8 @@ export function InstallRegistrySkillModal({
   existing,
   initialQuery,
   onClose,
-  onCreated
+  onCreated,
+  onFailed
 }: {
   /** The org's current sources — for the "already in your library" state. */
   existing: SkillSourceDto[]
@@ -62,6 +63,8 @@ export function InstallRegistrySkillModal({
   onClose: () => void
   /** Fired with the registered source, so a caller can enable it on an agent. */
   onCreated?: (created: SkillSourceDto) => void
+  /** Why a submitted install did not land — a native card reports a refusal as well as a save. */
+  onFailed?: (message: string) => void
 }) {
   const { createSkillSource } = useConsoleData()
   const { me } = useProfile()
@@ -141,7 +144,9 @@ export function InstallRegistrySkillModal({
       onCreated?.(created)
       onClose()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      setErr(message)
+      onFailed?.(message)
       setBusy(false)
     }
   }

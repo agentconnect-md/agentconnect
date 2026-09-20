@@ -30,14 +30,52 @@ export type CodeHostSetupIntent = z.infer<typeof CodeHostSetupIntent>
 export const AGENT_SETUP_URI = 'ui://agentconnect/agent-setup'
 // The groups of the Console agent editor; omitted opens on its first one.
 export const AGENT_SETUP_SECTIONS = ['basics', 'runtime', 'access', 'secrets'] as const
-export const AgentSetupIntent = z
+// What a delegated `createAgent` PROPOSES: the arguments it collected, carried to the Console create
+// dialog prefilled instead of written, so the human submits the agent under their own Console JWT.
+// Bounds mirror the tool's own — the card's byte budget is what caps a drafted string.
+export const AgentSetupDraft = z
   .object({
-    agentId: z.string().uuid(),
-    section: z.enum(AGENT_SETUP_SECTIONS).optional(),
-    // Set by `createAgent`, whose card is the new agent's own next step rather than an edit of an old one.
-    created: z.boolean().optional()
+    name: z.string().min(1).max(63),
+    displayName: z.string().min(1).optional(),
+    description: z.string().optional(),
+    runtime: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    reasoningEffort: z.string().min(1).optional(),
+    outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(),
+    fastMode: z.boolean().optional(),
+    permissionMode: z.string().min(1).optional(),
+    placementKind: z.enum(['daemon', 'pool', 'set']).optional(),
+    setId: z.string().uuid().optional(),
+    daemonId: z.string().min(1).optional(),
+    workspace: z
+      .object({
+        mode: z.enum(['scratch', 'git']),
+        gitRepo: z.string().min(1).optional(),
+        gitBranch: z.string().min(1).optional(),
+        agentDir: z.string().min(1).optional(),
+        worktree: z.boolean().optional(),
+        access: z.enum(['read', 'write']).optional()
+      })
+      .strict()
+      .optional()
   })
   .strict()
+export type AgentSetupDraft = z.infer<typeof AgentSetupDraft>
+
+export const AgentSetupIntent = z
+  .object({
+    agentId: z.string().uuid().optional(),
+    section: z.enum(AGENT_SETUP_SECTIONS).optional(),
+    // Set by a direct `createAgent`, whose card is the new agent's own next step rather than an edit of an old one.
+    created: z.boolean().optional(),
+    // Set by a delegated `createAgent`: no agent exists yet, and the dialog opens prefilled on this proposal.
+    draft: AgentSetupDraft.optional()
+  })
+  .strict()
+  // An editor needs its subject and a create dialog has none — one intent is never both.
+  .refine((intent) => (intent.agentId === undefined) !== (intent.draft === undefined), {
+    message: 'exactly one of agentId or draft'
+  })
 export type AgentSetupIntent = z.infer<typeof AgentSetupIntent>
 
 export const SKILL_SETUP_URI = 'ui://agentconnect/skill-setup'
@@ -95,7 +133,7 @@ export function nativeUiTitle(ui: NativeMcpUi): string {
     case CODE_HOST_SETUP_URI:
       return 'Code host connections'
     case AGENT_SETUP_URI:
-      return ui.intent.created ? 'Agent created' : 'Edit agent'
+      return ui.intent.draft ? 'Create agent' : ui.intent.created ? 'Agent created' : 'Edit agent'
     case SKILL_SETUP_URI:
       return 'Install skill'
     case MCP_SETUP_URI:

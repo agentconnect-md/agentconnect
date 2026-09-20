@@ -442,6 +442,10 @@ export function mcpRoutes(deps: HttpDeps) {
                   'this token is limited to read-only access (missing the mcp:write scope) — reconnect and grant write access to use write tools'
               })
             }
+          } else if (tool.write && invocationContext && tool.delegatedForm) {
+            // This write asks the owner for a prefilled form instead of an approval: nothing is
+            // queued here and nothing executes — the human submits it under their own Console JWT.
+            result = tool.delegatedForm(ctx, parsed.data)
           } else if (tool.write && invocationContext && !invocationContext.requestId) {
             result = {
               statusCode: 400,
@@ -570,9 +574,12 @@ export function mcpRoutes(deps: HttpDeps) {
         } catch {
           // A 204/202 success, or a route that answered in something other than JSON.
         }
-        // A UI tool's whole answer IS the presentation intent, so it is republished as structured content.
-        if (tool.uiResourceUri && nativeApp(tool.uiResourceUri) && !tool.uiEnvelope) {
-          return { content, structuredContent: NativeMcpUi.parse(body) }
+        // A UI tool's whole answer IS the presentation intent, so it is republished as structured
+        // content. Read off the ANSWER's own shape: a tool that carries a card beside its record on
+        // one path and hands back a bare intent on another has both shapes, and neither may be lost.
+        if (tool.uiResourceUri && nativeApp(tool.uiResourceUri)) {
+          const direct = NativeMcpUi.safeParse(body)
+          if (direct.success) return { content, structuredContent: direct.data }
         }
         // ANY answer that carries a card beside it is republished too — a write tool's own, or the
         // one `getOperation` lifts off an approved operation. A reader must not have to dig the

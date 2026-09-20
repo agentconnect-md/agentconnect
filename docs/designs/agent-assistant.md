@@ -214,6 +214,7 @@ Tools **call the CP service layer directly or reuse route-handler logic**, prese
 | `listAgents` / `getAgent`                                         | GET /agents(:id)                                              | –       |
 | `listWorkspaceFiles` / `readWorkspaceFile`                        | GET /agents/:id/workspace/files(file) (proxied, unstored)     | –       |
 | `createAgent` / `updateAgent`                                     | POST /agents · PATCH /agents/:id                              | ✎       |
+| `createAgent` (delegated / webchat)                               | opens the prefilled Console create dialog; the reader submits | –       |
 | `setAgentWorkspace`                                               | PUT /agents/:id/workspace                                     | ✎🔥     |
 | `deleteAgent`                                                     | DELETE /agents/:id                                            | ✎🔥     |
 | `listDaemons` / `renameDaemon`                                    | GET /daemons (liveness) · PATCH /daemons/:id                  | –/✎     |
@@ -243,6 +244,11 @@ The two operation reads are the delegated-webchat arm's own: they answer about
 side-effecting operations awaiting or past the conversation owner's approval
 (webchat-preset-agentconnect-mcp.md §9), are scoped to the caller's own
 conversation, and tell an external credential plainly that it has none.
+
+`createAgent` is the one write tool that behaves differently for a delegated webchat caller:
+there it writes nothing and returns the create dialog prefilled with the arguments it collected
+(webchat-native-integration-ui.md), because the owner is already at a Console session and a form
+they can edit beats an argument list they can only approve.
 
 Write tools require `mcp:write` for OAuth tokens or an unrestricted personal key. Role gates (deny all writes for viewers; reserve some operations for owner) are **not reimplemented in tools**; REST guards remain authoritative.
 

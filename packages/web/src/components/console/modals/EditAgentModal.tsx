@@ -100,6 +100,7 @@ export default function EditAgentModal({
   focusSection,
   preselectDaemonId,
   onSaved,
+  onFailed,
   onClose
 }: {
   agent: Agent
@@ -109,6 +110,8 @@ export default function EditAgentModal({
   preselectDaemonId?: string
   /** Fired once the save went through — a native MCP App card reports it back to the agent. */
   onSaved?: () => void
+  /** Why a submitted save did not land — the same card reports a refusal as well as a save. */
+  onFailed?: (message: string) => void
   onClose: () => void
 }) {
   const acpRegistry = useAcpRegistry()
@@ -700,7 +703,9 @@ export default function EditAgentModal({
       onSaved?.()
       onClose()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      setErr(message)
+      onFailed?.(message)
       setSaving(false)
     }
   }

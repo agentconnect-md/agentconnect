@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   fetchAgentDto: vi.fn(),
   loading: false,
+  addAgentProps: vi.fn(),
   editAgentProps: vi.fn(),
   toolsCardProps: vi.fn(),
   skillsCardProps: vi.fn(),
@@ -44,16 +45,41 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 vi.mock('@/lib/api', () => ({ fetchAgentDto: mocks.fetchAgentDto }))
+vi.mock('./AddAgentModal', () => ({
+  default: (props: { onCreated?: (a: { id: string; name: string }) => void; onFailed?: (m: string) => void }) => {
+    mocks.addAgentProps(props)
+    return (
+      <>
+        <button onClick={() => props.onCreated?.({ id: mocks.agentId, name: 'reviewer' })}>Create agent</button>
+        <button onClick={() => props.onFailed?.('An agent named “reviewer” already exists.')}>Fail create</button>
+      </>
+    )
+  }
+}))
 vi.mock('./EditAgentModal', () => ({
-  default: (props: { onSaved?: () => void }) => {
+  default: (props: { onSaved?: () => void; onFailed?: (m: string) => void }) => {
     mocks.editAgentProps(props)
-    return <button onClick={() => props.onSaved?.()}>Save agent</button>
+    return (
+      <>
+        <button onClick={() => props.onSaved?.()}>Save agent</button>
+        <button onClick={() => props.onFailed?.('the daemon is offline')}>Fail save</button>
+      </>
+    )
   }
 }))
 vi.mock('@/components/console/InstallRegistrySkillModal', () => ({
-  InstallRegistrySkillModal: (props: { initialQuery?: string; onCreated?: (s: unknown) => void }) => {
+  InstallRegistrySkillModal: (props: {
+    initialQuery?: string
+    onCreated?: (s: unknown) => void
+    onFailed?: (m: string) => void
+  }) => {
     mocks.registryProps(props)
-    return <button onClick={() => props.onCreated?.({ name: 'runbooks' })}>Registry install</button>
+    return (
+      <>
+        <button onClick={() => props.onCreated?.({ name: 'runbooks' })}>Registry install</button>
+        <button onClick={() => props.onFailed?.('the registry is unreachable')}>Registry install fails</button>
+      </>
+    )
   }
 }))
 vi.mock('@/components/console/SkillSourcesCard', () => ({
@@ -75,9 +101,14 @@ vi.mock('@/components/console/AgentSkillsCard', () => ({
   }
 }))
 vi.mock('@/components/console/McpServersCard', () => ({
-  CreateMcpProviderModal: (props: { onCreated?: (p: unknown) => void }) => {
+  CreateMcpProviderModal: (props: { onCreated?: (p: unknown) => void; onFailed?: (m: string) => void }) => {
     mocks.mcpProps(props)
-    return <button onClick={() => props.onCreated?.({ name: 'linear' })}>Add server</button>
+    return (
+      <>
+        <button onClick={() => props.onCreated?.({ name: 'linear' })}>Add server</button>
+        <button onClick={() => props.onFailed?.('that name is taken')}>Add server fails</button>
+      </>
+    )
   }
 }))
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -133,6 +164,62 @@ describe('native agent editor', () => {
     expect(completed).not.toHaveBeenCalled()
     await act(async () => click('Save agent'))
     expect(completed).toHaveBeenCalledWith('Saved the configuration of agent my-agent.')
+  })
+
+  it('opens the create dialog prefilled on a proposal, and reports the agent once it exists', async () => {
+    const completed = vi.fn()
+    const draft = { name: 'reviewer', runtime: 'claude' }
+    await act(async () => {
+      root.render(<AgentSetupDialog ui={agentUi({ draft })} onClose={vi.fn()} onCompleted={completed} />)
+    })
+    expect(mocks.addAgentProps).toHaveBeenCalledWith(expect.objectContaining({ draft }))
+    expect(mocks.editAgentProps).not.toHaveBeenCalled()
+    // Nothing is looked up for an agent that does not exist yet.
+    expect(mocks.refresh).not.toHaveBeenCalled()
+    expect(completed).not.toHaveBeenCalled()
+    // The id is what the agent's next step needs, so it rides back into the conversation.
+    await act(async () => click('Create agent'))
+    expect(completed).toHaveBeenCalledWith(`Created agent reviewer (agentId ${mocks.agentId}).`)
+  })
+
+  it('reports a create that did not land and closes, because one card reports once', async () => {
+    const completed = vi.fn()
+    const closed = vi.fn()
+    await act(async () => {
+      root.render(
+        <AgentSetupDialog ui={agentUi({ draft: { name: 'reviewer' } })} onClose={closed} onCompleted={completed} />
+      )
+    })
+    await act(async () => click('Fail create'))
+    expect(completed).toHaveBeenCalledWith('Creating the agent failed: An agent named “reviewer” already exists.')
+    expect(closed).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a proposal that belongs to another organization', async () => {
+    await act(async () => {
+      root.render(
+        <AgentSetupDialog
+          ui={{ ...agentUi({ draft: { name: 'reviewer' } }), orgId: 'other' }}
+          onClose={vi.fn()}
+          onCompleted={vi.fn()}
+        />
+      )
+    })
+    expect(element.textContent).toContain('another organization')
+    expect(mocks.addAgentProps).not.toHaveBeenCalled()
+  })
+
+  it('reports a save the server refused, so the caller is not told a change landed', async () => {
+    const completed = vi.fn()
+    const closed = vi.fn()
+    await act(async () => {
+      root.render(
+        <AgentSetupDialog ui={agentUi({ agentId: mocks.agentId })} onClose={closed} onCompleted={completed} />
+      )
+    })
+    await act(async () => click('Fail save'))
+    expect(completed).toHaveBeenCalledWith('Saving the configuration of agent my-agent failed: the daemon is offline')
+    expect(closed).toHaveBeenCalledOnce()
   })
 
   it('waits for the console data instead of calling a still-unloaded agent missing', async () => {
@@ -264,6 +351,17 @@ describe('native skill installer', () => {
     expect(mocks.updateAgent).not.toHaveBeenCalled()
   })
 
+  it('reports an install the registry refused', async () => {
+    const completed = vi.fn()
+    const closed = vi.fn()
+    await act(async () => {
+      root.render(<SkillSetupDialog ui={skillUi({})} onClose={closed} onCompleted={completed} />)
+    })
+    await act(async () => click('Registry install fails'))
+    expect(completed).toHaveBeenCalledWith('Installing the skill failed: the registry is unreachable')
+    expect(closed).toHaveBeenCalledOnce()
+  })
+
   it('opens the Git import when the intent asks for it', async () => {
     await act(async () => {
       root.render(<SkillSetupDialog ui={skillUi({ source: 'git' })} onClose={vi.fn()} onCompleted={vi.fn()} />)
@@ -321,6 +419,17 @@ describe('native MCP installer', () => {
     await act(async () => click('Add server'))
     expect(mocks.updateAgent).toHaveBeenCalledWith(mocks.agentId, { mcpServers: ['docs', 'linear'] })
     expect(completed).toHaveBeenCalledWith(expect.stringContaining('attached it to my-agent'))
+  })
+
+  it('reports a registration the server refused', async () => {
+    const completed = vi.fn()
+    const closed = vi.fn()
+    await act(async () => {
+      root.render(<McpSetupDialog ui={mcpUi({})} onClose={closed} onCompleted={completed} />)
+    })
+    await act(async () => click('Add server fails'))
+    expect(completed).toHaveBeenCalledWith('Adding the MCP server failed: that name is taken')
+    expect(closed).toHaveBeenCalledOnce()
   })
 
   it('adds the server alone when no agent was named, and touches no agent', async () => {

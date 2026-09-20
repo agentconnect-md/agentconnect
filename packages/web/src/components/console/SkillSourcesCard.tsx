@@ -287,10 +287,13 @@ function SourceTile({
  *  which passes `onCreated` to enable the new source on that agent right away. */
 export function CreateSkillSourceModal({
   onClose,
-  onCreated
+  onCreated,
+  onFailed
 }: {
   onClose: () => void
   onCreated?: (created: SkillSourceDto) => void
+  /** Why a submitted import did not land — a native card reports a refusal as well as a save. */
+  onFailed?: (message: string) => void
 }) {
   const { createSkillSource } = useConsoleData()
   const { me } = useProfile()
@@ -333,7 +336,9 @@ export function CreateSkillSourceModal({
       onCreated?.(created)
       onClose()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      setErr(message)
+      onFailed?.(message)
       setBusy(false)
     }
   }
