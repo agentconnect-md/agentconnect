@@ -668,11 +668,12 @@ describe('executeTool: sendMessage (channel post)', () => {
 
     it('does not interrogate the platform where the answer cannot change the key', async () => {
       // Slack and Discord key the same way for DMs and channels, so no send pays for a
-      // lookup it does not need.
-      const getChannelInfo = vi.fn(async (id: string) => ({ id, isIm: true }))
+      // lookup it does not need. The ONE Slack lookup here is the reach gate describing a
+      // channel other than the session's own (channel-reach.ts), not a key classification.
+      const getChannelInfo = vi.fn(async (id: string) => ({ id }))
       const slack = tgDeps({}, { getChannelInfo })
       await executeTool(ctx, 'sendMessage', { channel: 'C_X', message: 'hi' }, slack.d)
-      expect(getChannelInfo).not.toHaveBeenCalled()
+      expect(getChannelInfo).toHaveBeenCalledTimes(1)
     })
 
     it('falls back to a non-DM key when the platform lookup fails', async () => {
@@ -992,8 +993,91 @@ describe('executeTool: read tools', () => {
       nextCursor: 'next-page'
     })
 
-    await executeTool(ctx, 'getChannelHistory', { channel: 'C_OTHER' }, d)
-    expect(getChannelHistory).toHaveBeenLastCalledWith('C_CURRENT', {})
+    // Another channel by `channel`: a public one is read (the connection joins it on demand).
+    const other = (await executeTool(ctx, 'getChannelHistory', { channel: 'C_OTHER' }, d)) as Record<string, unknown>
+    expect(getChannelHistory).toHaveBeenLastCalledWith('C_OTHER', {})
+    expect(other).toMatchObject({ channel: 'C_OTHER' })
+  })
+
+  // channel-reach.ts: on Slack a tool reaches any PUBLIC channel, and a private channel, DM or
+  // group DM only as the conversation the session was started in. Membership is not consent.
+  describe('channel reach beyond the current conversation', () => {
+    const reply = { sender: 'U1', ts: '100.1', text: 'hello', isBot: false, chrome: false, attachments: [] }
+    const describing = (kinds: Record<string, { isPrivate?: boolean; isIm?: boolean }>) =>
+      fakeGateway({
+        getChannelInfo: vi.fn(async (id: string) => ({ id, name: 'x', ...(kinds[id] ?? {}) })),
+        getChannelHistory: vi.fn(async () => ({ messages: [], hasMore: false })),
+        getThreadReplies: vi.fn(async () => [reply])
+      })
+
+    it('refuses a private channel the session was not started in, on every cross-channel tool', async () => {
+      const gw = describing({ G_PRIVATE: { isPrivate: true } })
+      const { deps: d } = deps(gw)
+      const refused = /private Slack conversation/
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'G_PRIVATE' }, d)).rejects.toThrow(refused)
+      await expect(executeTool(ctx, 'getThreadHistory', { channel: 'G_PRIVATE', thread: '1' }, d)).rejects.toThrow(
+        refused
+      )
+      await expect(executeTool(ctx, 'sendMessage', { channel: 'G_PRIVATE', message: 'hi' }, d)).rejects.toThrow(refused)
+      await expect(
+        executeTool(ctx, 'sendMessage', { toUser: ['U1'], channel: 'G_PRIVATE', message: 'hi' }, d)
+      ).rejects.toThrow(refused)
+      await expect(
+        executeTool(ctx, 'sendMessage', { toAgent: 'peer-1', channel: 'G_PRIVATE', message: 'hi' }, d)
+      ).rejects.toThrow(refused)
+      expect(gw.getChannelHistory).not.toHaveBeenCalled()
+      expect(gw.getThreadReplies).not.toHaveBeenCalled()
+      expect(gw.postMessage).not.toHaveBeenCalled()
+    })
+
+    it('refuses a direct message the session was not started in', async () => {
+      const gw = describing({ D_OTHER: { isIm: true } })
+      const { deps: d } = deps(gw)
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'D_OTHER' }, d)).rejects.toThrow(
+        /private Slack conversation/
+      )
+    })
+
+    it('reads and posts in a public channel, and in its own private conversation without asking', async () => {
+      const gw = describing({ C_CURRENT: { isPrivate: true } })
+      const { deps: d } = deps(gw)
+      await executeTool(ctx, 'getChannelHistory', { channel: 'C_PUBLIC' }, d)
+      expect(gw.getChannelHistory).toHaveBeenCalledWith('C_PUBLIC', {})
+      await executeTool(ctx, 'sendMessage', { channel: 'C_PUBLIC', message: 'yo' }, d)
+      expect(gw.postMessage).toHaveBeenCalledWith('C_PUBLIC', 'yo', undefined, authorIdentity)
+      // The session's own conversation is never described: being invoked there IS the consent.
+      await executeTool(ctx, 'getChannelHistory', {}, d)
+      expect(gw.getChannelHistory).toHaveBeenLastCalledWith('C_CURRENT', {})
+      expect(gw.getChannelInfo).not.toHaveBeenCalledWith('C_CURRENT')
+    })
+
+    it('lets a channel the platform will not describe through to the platform’s own refusal', async () => {
+      const gw = fakeGateway({
+        getChannelInfo: vi.fn(async () => {
+          throw new Error('channel_not_found')
+        }),
+        getChannelHistory: vi.fn(async () => {
+          throw new Error('Slack channel history failed: channel_not_found')
+        })
+      })
+      const { deps: d } = deps(gw)
+      await expect(executeTool(ctx, 'getChannelHistory', { channel: 'C_GONE' }, d)).rejects.toThrow('channel_not_found')
+    })
+
+    it('does not gate a platform that declares no public-only reach', async () => {
+      const tgSession: SessionContext = {
+        ...ctx,
+        platform: 'telegram',
+        integrationId: 'int-tg',
+        channel: '-100123',
+        thread: 'tg:100',
+        integrations: [{ id: 'int-tg', platform: 'telegram' }]
+      }
+      const gw = describing({ '-100999': { isPrivate: true } })
+      const { deps: d } = deps(gw)
+      await executeTool(tgSession, 'sendMessage', { channel: '-100999', message: 'hi' }, d)
+      expect(gw.postMessage).toHaveBeenCalledWith('-100999', 'hi', undefined, authorIdentity)
+    })
   })
 
   it('routes a read to another connected platform via the `platform` arg', async () => {

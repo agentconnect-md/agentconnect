@@ -200,7 +200,14 @@ describe('toolsForIntegrations', () => {
       (tool) => tool.name === 'getChannelHistory'
     )!
     const historyProps = props(historyTool)
-    expect(Object.keys(historyProps).sort()).toEqual(['cursor', 'latest', 'limit', 'oldest'])
+    expect(Object.keys(historyProps).sort()).toEqual([
+      'channel',
+      'cursor',
+      'integrationId',
+      'latest',
+      'limit',
+      'oldest'
+    ])
     expect(props(readTool([slackInt, telegramInt], 'listKnownUsers'))).not.toHaveProperty('integrationId')
   })
 

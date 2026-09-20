@@ -585,9 +585,16 @@ export type AppLike = {
         }
       }>
       members: (a: unknown) => Promise<{ members?: string[] }>
-      // The one WRITE call this adapter makes against a conversation — see leaveChannel.
+      // The two WRITE calls this adapter makes against a conversation — see leaveChannel and
+      // joiningOnRefusal (`conversations.join`, `channels:join`, public channels only).
       leave: (a: unknown) => Promise<unknown>
-      list: (a: unknown) => Promise<{ channels?: { id?: string; name?: string; is_private?: boolean }[] }>
+      join: (a: unknown) => Promise<unknown>
+      // conversations.list — the WORKSPACE's channels (`channels:read`), member or not; the
+      // membership snapshot is users.conversations below.
+      list: (a: unknown) => Promise<{
+        channels?: { id?: string; name?: string; is_private?: boolean }[]
+        response_metadata?: { next_cursor?: string }
+      }>
       replies: (a: unknown) => Promise<{
         messages?: {
           user?: string
@@ -1334,7 +1341,36 @@ export class SlackConnection implements PlatformConnection {
         return undefined
       }
     }
-    return this.app.client.chat.postMessage(payload)
+    return this.joiningOnRefusal(channel, () => this.app.client.chat.postMessage(payload))
+  }
+
+  /**
+   * Run one call against a conversation and, when Slack refuses it with `not_in_channel`, join
+   * the channel (`conversations.join`, scope `channels:join`) and run it once more.
+   *
+   * Slack requires membership for `conversations.history` / `.replies` and `chat.postMessage`
+   * even in a PUBLIC channel, and the bot is a member only of the channels a human added it to.
+   * Joining on demand is what lets an agent read or answer any public channel of the workspace
+   * without an operator inviting the bot everywhere first — Slack announces the join in the
+   * channel, once. `conversations.join` cannot enter a private channel, a DM or a group DM (Slack
+   * answers `method_not_supported_for_channel_type` or `channel_not_found`), so a private
+   * conversation stays reachable only where the bot was invited, and the ORIGINAL refusal is what
+   * the caller sees then. The retry is exactly one: a refusal that survives the join is real.
+   */
+  private async joiningOnRefusal<T>(channel: string, call: () => Promise<T>): Promise<T> {
+    try {
+      return await call()
+    } catch (err) {
+      if (slackApiErrorCode(err) !== 'not_in_channel') throw err
+      try {
+        await this.app.client.conversations.join({ channel })
+      } catch (joinErr) {
+        this.deps.log?.debug(`slack: could not join ${channel}: ${slackApiErrorCode(joinErr) ?? 'unknown'}`)
+        throw err
+      }
+      this.deps.log?.info(`slack: joined public channel ${channel} on demand`)
+      return await call()
+    }
   }
 
   /** Shared chat.postMessage boundary with optional per-message identity. Whenever the
@@ -1935,20 +1971,22 @@ export class SlackConnection implements PlatformConnection {
     let cursor: string | undefined
     try {
       do {
-        const res = await this.app.client.conversations.replies({
-          channel,
-          ts: threadTs,
-          limit: 200,
-          // Slack otherwise returns only metadata.event_type and omits the payload
-          // that carries the stable agent author id.
-          include_all_metadata: true,
-          ...(window?.oldest ? { oldest: window.oldest } : {}),
-          ...(window?.latest ? { latest: window.latest } : {}),
-          // `oldest` is the already-delivered watermark; exclude it. `latest` is a
-          // wall-clock cutoff rather than a real message ts, so excluding it is inert.
-          ...(window?.oldest || window?.latest ? { inclusive: false } : {}),
-          ...(cursor ? { cursor } : {})
-        })
+        const res = await this.joiningOnRefusal(channel, () =>
+          this.app.client.conversations.replies({
+            channel,
+            ts: threadTs,
+            limit: 200,
+            // Slack otherwise returns only metadata.event_type and omits the payload
+            // that carries the stable agent author id.
+            include_all_metadata: true,
+            ...(window?.oldest ? { oldest: window.oldest } : {}),
+            ...(window?.latest ? { latest: window.latest } : {}),
+            // `oldest` is the already-delivered watermark; exclude it. `latest` is a
+            // wall-clock cutoff rather than a real message ts, so excluding it is inert.
+            ...(window?.oldest || window?.latest ? { inclusive: false } : {}),
+            ...(cursor ? { cursor } : {})
+          })
+        )
         const messages = res.messages ?? []
         for (let index = 0; index < messages.length; index += 1) {
           const m = messages[index]!
@@ -2010,14 +2048,16 @@ export class SlackConnection implements PlatformConnection {
     )
     const hasTimeBounds = Boolean(options.oldest || options.latest)
     try {
-      const res = await this.app.client.conversations.history({
-        channel,
-        limit,
-        ...(options.cursor ? { cursor: options.cursor } : {}),
-        ...(options.oldest ? { oldest: options.oldest } : {}),
-        ...(options.latest ? { latest: options.latest } : {}),
-        ...(hasTimeBounds ? { inclusive: true } : {})
-      })
+      const res = await this.joiningOnRefusal(channel, () =>
+        this.app.client.conversations.history({
+          channel,
+          limit,
+          ...(options.cursor ? { cursor: options.cursor } : {}),
+          ...(options.oldest ? { oldest: options.oldest } : {}),
+          ...(options.latest ? { latest: options.latest } : {}),
+          ...(hasTimeBounds ? { inclusive: true } : {})
+        })
+      )
       const nextCursor = res.response_metadata?.next_cursor?.trim() || undefined
       const messages = (res.messages ?? []).flatMap((m) => {
         if (!m.ts) return []
@@ -2219,7 +2259,11 @@ export class SlackConnection implements PlatformConnection {
    *  A lost response is one such outcome; so is Slack answering with a partial-success code. */
   private async completeShare(payload: Record<string, unknown>): Promise<void> {
     try {
-      await this.app.client.files.completeUploadExternal(payload)
+      // `not_in_channel` is a pre-publication refusal (nothing is shared yet), so the retry
+      // after the join cannot double-post.
+      await this.joiningOnRefusal(String(payload.channel_id), () =>
+        this.app.client.files.completeUploadExternal(payload)
+      )
     } catch (err) {
       const code = slackApiErrorCode(err)
       if (code === undefined || COMPLETION_MAY_HAVE_LANDED.has(code)) {
@@ -2410,10 +2454,28 @@ export class SlackConnection implements PlatformConnection {
     return out
   }
 
+  /**
+   * The conversations an agent may address: every PUBLIC channel of the workspace
+   * (`conversations.list`, `channels:read`), member or not — {@link joiningOnRefusal} enters one
+   * on first use — plus the PRIVATE channels this bot was invited to. The console's membership
+   * snapshot stays {@link listBotChannels}; this is the agent-facing `listChannels` only.
+   */
   async listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]> {
-    const channels = await this.listBotChannels()
-    if (!channels) throw new Error('failed to list Slack channels for bot membership')
-    return channels
+    const members = await this.listBotChannels()
+    if (!members) throw new Error('failed to list Slack channels for bot membership')
+    const out: { id: string; name?: string; isPrivate?: boolean }[] = []
+    let cursor: string | undefined
+    do {
+      const res = await this.app.client.conversations.list({
+        types: 'public_channel',
+        exclude_archived: true,
+        limit: 1000,
+        ...(cursor ? { cursor } : {})
+      })
+      for (const c of res.channels ?? []) if (c.id) out.push({ id: c.id, ...(c.name ? { name: c.name } : {}) })
+      cursor = res.response_metadata?.next_cursor || undefined
+    } while (cursor)
+    return [...out, ...members.filter((c) => c.isPrivate)]
   }
 
   /**

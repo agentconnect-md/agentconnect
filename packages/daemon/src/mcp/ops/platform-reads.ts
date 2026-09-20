@@ -13,6 +13,7 @@ import {
 } from './gateway.js'
 import type { AskDeps } from '../ask.js'
 import { optionalBoundedInt, optionalString, parseArgs, requiredString } from './args.js'
+import { assertChannelReachable } from './channel-reach.js'
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
@@ -39,8 +40,10 @@ export const GET_USER_PROFILE_ARGS = z.object({
   user: requiredString('user')
 })
 
-/** `getChannelHistory` arguments; the channel is always the current context channel. */
+/** `getChannelHistory` arguments; `channel` defaults to the current one on the same platform. */
 export const GET_CHANNEL_HISTORY_ARGS = z.object({
+  integrationId: optionalString('integrationId'),
+  channel: optionalString('channel'),
   cursor: optionalString('cursor'),
   limit: optionalBoundedInt('limit', 1, 200),
   oldest: optionalString('oldest'),
@@ -324,25 +327,35 @@ export async function getUserProfile(
   return { platform, ...(await gw.getUserProfile(parsed.user)) }
 }
 
-/** Read one bounded page from the current session's channel only. */
+/** Read one bounded page of a channel: this session's own by default, or another one the
+ *  reach gate admits ({@link assertChannelReachable}) — on Slack, any public channel. */
 export async function getChannelHistory(
   ctx: SessionContext,
   args: Record<string, unknown>,
   deps: PlatformReadDeps
 ): Promise<unknown> {
   const parsed = parseArgs(GET_CHANNEL_HISTORY_ARGS, args)
-  const gw = ctx.integrationId ? deps.gatewayFor(ctx.integrationId) : undefined
-  if (!gw) throw new Error(`no live platform connection for integration ${ctx.integrationId ?? '(none)'}`)
+  const platform = ctx.platform
+  const { gw, sameConvo } = resolveGatewayForPlatform(
+    ctx,
+    deps,
+    platform,
+    parsed.integrationId,
+    askOnlyWithChannel(parsed.channel, 'read this channel')
+  )
+  const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
+  if (!channel) throw new Error(`channel is required to read history on ${platform} (another bot than this session's)`)
   if (!gw.getChannelHistory) throw new Error('channel history is unavailable on this connection')
-  const page = await gw.getChannelHistory(ctx.channel, {
+  await assertChannelReachable(ctx, gw, platform, channel, 'getChannelHistory')
+  const page = await gw.getChannelHistory(channel, {
     ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
     ...(parsed.limit !== undefined ? { limit: parsed.limit } : {}),
     ...(parsed.oldest ? { oldest: parsed.oldest } : {}),
     ...(parsed.latest ? { latest: parsed.latest } : {})
   })
   return {
-    platform: ctx.platform,
-    channel: ctx.channel,
+    platform,
+    channel,
     messages: page.messages,
     hasMore: page.hasMore,
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
@@ -393,6 +406,7 @@ export async function getThreadHistory(
   if (!channel) throw new Error(`channel is required to read a thread on ${platform} (another bot than this session's)`)
   if (!gw.getThreadReplies)
     throw new Error(`thread history is unavailable on this ${platformLabel(platform)} connection`)
+  await assertChannelReachable(ctx, gw, platform, channel, 'getThreadHistory')
   const readState = { truncated: false }
   const messages = await gw.getThreadReplies(channel, parsed.thread, parsed.limit ?? DEFAULT_THREAD_HISTORY_LIMIT, {
     ...(parsed.oldest ? { oldest: parsed.oldest } : {}),

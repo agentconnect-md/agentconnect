@@ -115,6 +115,11 @@ export interface PlatformReadPorts {
   readonly conversationCreate?: boolean
   /** `scheduleMessage`: the platform accepts a message for later delivery. */
   readonly scheduledMessages?: boolean
+  /** Cross-conversation reach is PUBLIC-ONLY: the connection enters any public channel on
+   *  demand, so `getChannelHistory`, `getThreadHistory` and `sendMessage` may name one — while
+   *  a private channel, DM or group DM is reachable only as the session's own conversation
+   *  (`mcp/ops/channel-reach.ts`). */
+  readonly publicChannelReach?: boolean
   /** `createCanvas` / `readCanvas` / `updateCanvas`: a platform-hosted rich-text page. */
   readonly canvas?: boolean
   /** `listBookmarks` / `addBookmark` / `removeBookmark`: the platform pins links in a channel. */
@@ -155,6 +160,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       reactions: true,
       conversationCreate: true,
       publicMessageSearch: true,
+      publicChannelReach: true,
       scheduledMessages: true,
       canvas: true,
       bookmarks: true,
@@ -229,6 +235,12 @@ export function directMessagePlatformFor(sessionPlatform: string): string {
   if (offersDirectMessages(sessionPlatform)) return sessionPlatform
   for (const decl of READ_PORTS.values()) if (decl.openDirectMessage) return decl.platform
   return sessionPlatform
+}
+
+/** Does `platform` confine what a tool may reach beyond the session's own conversation to
+ *  PUBLIC channels? Undeclared ⇒ no gate: the bot reaches whatever it is already in. */
+export function reachesPublicChannelsOnly(platform: string): boolean {
+  return READ_PORTS.get(platform)?.publicChannelReach === true
 }
 
 /** The DM-capable platforms, rendered for an error message ("Slack",
