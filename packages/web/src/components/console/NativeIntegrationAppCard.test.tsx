@@ -24,6 +24,7 @@ const app = (): NonNullable<SessionStep['app']> => ({
   }
 })
 beforeEach(() => {
+  localStorage.clear()
   modal.openNativeIntegration.mockClear()
   modal.closeNativeIntegration.mockClear()
   element = document.createElement('div')
@@ -190,23 +191,35 @@ describe('native integration UI', () => {
     expect(element.textContent).not.toContain('could not be notified')
   })
 
-  it('settles the card once its report has landed, and leaves it alone when it has not', async () => {
-    const onClose = vi.fn()
+  // Accepting a turn is not delivering one — it can still be queued where the reader may cancel it
+  // — so a delivered report settles nothing. It only stops ANOTHER TAB, which has its own
+  // `sessionStorage`, from opening a dialog over a form that was already submitted.
+  it('records a delivered report for other tabs without settling the card', async () => {
+    const value = app()
     await act(async () => {
-      root.render(<McpAppCard step={{ app: app() }} onReport={() => true} onClose={onClose} />)
+      root.render(<McpAppCard step={{ app: value }} onReport={() => true} />)
     })
     const landed = (modal.openNativeIntegration.mock.calls[0] as unknown as [unknown, (text: string) => void])[1]
     await act(async () => landed('Created GitHub subscription.'))
-    expect(onClose).toHaveBeenCalledTimes(1)
-    onClose.mockClear()
+    vi.resetModules()
+    const { McpAppCard: OtherTab } = await import('./McpAppCard')
     modal.openNativeIntegration.mockClear()
     root = createRoot(document.body.appendChild(document.createElement('div')))
     await act(async () => {
-      root.render(<McpAppCard step={{ app: app() }} onReport={() => false} onClose={onClose} />)
+      root.render(<OtherTab step={{ app: { ...value } }} onReport={() => true} />)
+    })
+    expect(modal.openNativeIntegration).not.toHaveBeenCalled()
+    expect(element.textContent).toContain('Created GitHub subscription.')
+  })
+
+  it('records nothing when the conversation would not take the report', async () => {
+    const value = app()
+    await act(async () => {
+      root.render(<McpAppCard step={{ app: value }} onReport={() => false} />)
     })
     const dropped = (modal.openNativeIntegration.mock.calls[0] as unknown as [unknown, (text: string) => void])[1]
     await act(async () => dropped('Created GitHub subscription.'))
-    expect(onClose).not.toHaveBeenCalled()
+    expect(localStorage.getItem(`ac.native-ui.reported.${value.appId}`)).toBeNull()
   })
 
   // A settlement arriving after the dialog reported must not shut the reveal step that dialog kept.
@@ -223,9 +236,33 @@ describe('native integration UI', () => {
     expect(modal.closeNativeIntegration).not.toHaveBeenCalled()
   })
 
-  // A reader who left says nothing: the unmount is not a remount, so nothing is put back and the
-  // next reader of this conversation does not find a dialog waiting for them.
-  it('does not reopen a dialog the reader walked away from', async () => {
+  // Navigating away unmounts the card with its dialog still open, exactly as a remount does — but
+  // coming back later is not the same commit, and the reader who left is not asking for the form
+  // to be thrown at them again.
+  it('does not reopen a dialog the reader navigated away from', async () => {
+    vi.useFakeTimers()
+    try {
+      const value = app()
+      const onReport = vi.fn(() => true)
+      await act(async () => {
+        root.render(<McpAppCard step={{ app: value }} onReport={onReport} />)
+      })
+      expect(modal.openNativeIntegration).toHaveBeenCalledTimes(1)
+      act(() => root.unmount())
+      vi.advanceTimersByTime(60_000)
+      root = createRoot(element)
+      await act(async () => {
+        root.render(<McpAppCard step={{ app: { ...value } }} onReport={onReport} />)
+      })
+      expect(modal.openNativeIntegration).toHaveBeenCalledTimes(1)
+      expect(element.textContent).toContain('Open configuration')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A reader who already submitted says nothing either: the dialog reported and closed itself.
+  it('does not reopen a dialog that already reported', async () => {
     const value = app()
     const onReport = vi.fn(() => true)
     await act(async () => {

@@ -198,11 +198,14 @@ reach the conversation at all (a history page) says plainly that the agent was n
 instead of dropping the note. Completion callbacks are deduplicated per opening, so one dialog
 reports once and a reopened one may report again.
 
-Settlement is a separate frame from the report, because the daemon no longer learns of one by
-carrying the other: a delivered report closes the card with `app_close`, which is what keeps a
-fresh browser session from opening a dialog over a form that was already submitted. A report
-that was NOT delivered settles nothing — the card stays open for the retry it still owes, and a
-settlement arriving after a report never shuts a dialog holding its own final reveal step.
+A report SETTLES NOTHING, and the reason is worth stating because the obvious alternative is
+wrong: accepting a turn is not delivering one. The conversation takes a turn synchronously and
+may hold it — queued behind a running turn, where the reader can still cancel it — so a card
+settled on that acceptance would be a card that reports once, silently, into a message that
+never went. The card therefore stays open for the submit it may still owe. What a delivered
+report does record is local and presentational: this browser has submitted this form, so a
+SECOND TAB (which has its own `sessionStorage`) does not open a dialog over it. A settlement
+arriving from elsewhere after a report never shuts a dialog holding its own final reveal step.
 
 Closing an editor without submitting does not send a completion message. A card going
 inert closes the dialog it opened, on that transition alone, so re-reading an old card

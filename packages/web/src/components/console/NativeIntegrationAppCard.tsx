@@ -7,17 +7,31 @@ import { useOptionalModal } from './ModalProvider'
 import type { McpAppCardProps } from './McpAppCard'
 
 const opened = new Set<string>()
-// Cards whose dialog was open when the card itself unmounted. A turn's React key changes when its
-// live steps become persisted rows, which remounts the card under a form the reader is filling in
-// — so the remount puts the dialog back instead of leaving the reader with a bare button.
-const reopening = new Set<string>()
+// Cards whose dialog was open when the card itself unmounted, and WHEN. A turn's React key changes
+// when its live steps become persisted rows, which remounts the card under a form the reader is
+// filling in — so the remount puts the dialog back instead of leaving a bare button. The window is
+// what keeps that from also reopening a dialog the reader walked away from: a remount lands in the
+// commit that unmounted it, while navigating away and coming back cannot.
+const reopening = new Map<string, number>()
+const REOPEN_WINDOW_MS = 250
+/** Reports this browser has delivered, so a SECOND TAB does not open a dialog over a form already
+ *  submitted — `sessionStorage` is per tab. Presentational only: it suppresses the automatic
+ *  opening and names the outcome, and the card's own button still opens the form again. */
+const reportedKey = (appId: string): string => `ac.native-ui.reported.${appId}`
+function readReported(appId: string): string {
+  try {
+    return localStorage.getItem(reportedKey(appId)) ?? ''
+  } catch {
+    return ''
+  }
+}
 
-export function NativeIntegrationAppCard({ step, onReport, onClose }: McpAppCardProps) {
+export function NativeIntegrationAppCard({ step, onReport }: McpAppCardProps) {
   const modal = useOptionalModal()
   const app = step.app!
   const parsed = NativeMcpUi.safeParse(app.nativeUi)
   const ui = parsed.success ? parsed.data : undefined
-  const [summary, setSummary] = useState('')
+  const [summary, setSummary] = useState(() => readReported(app.appId))
   const [error, setError] = useState('')
   const opening = useRef(false)
   // Opening needs no MCP bridge: a native dialog runs on the reader's own Console session, which is
@@ -29,18 +43,16 @@ export function NativeIntegrationAppCard({ step, onReport, onClose }: McpAppCard
   // Read at callback time, not closure-capture time: a dialog outlives the render that opened it,
   // and — because the transcript re-keys turns — it outlives this component instance too.
   const report = useRef<McpAppCardProps['onReport']>(undefined)
-  const close = useRef<McpAppCardProps['onClose']>(undefined)
   useEffect(() => {
     report.current = app.outcome ? undefined : onReport
-    close.current = onClose
   })
   const dialogOpen = useRef(false)
   useEffect(
     () => () => {
       if (!dialogOpen.current) return
-      // Put it back on the other side of the remount. Cleared by the reopen, so an unmount that is
-      // really the reader leaving still closes the dialog and leaves nothing armed behind it.
-      reopening.add(app.appId)
+      // Offer it back to whatever mounts next, within the window above. An unmount that is really
+      // the reader leaving still closes the dialog and leaves nothing armed behind it.
+      reopening.set(app.appId, Date.now())
       modal?.closeNativeIntegration?.(app.appId)
     },
     [modal, app.appId]
@@ -99,10 +111,14 @@ export function NativeIntegrationAppCard({ step, onReport, onClose }: McpAppCard
             )
             return
           }
-          // The report has landed, so the card is done: settling it is what stops a fresh browser
-          // session from opening a dialog over a form that was already submitted. It is a separate
-          // frame from the report now — the daemon no longer learns of one by carrying the other.
-          close.current?.(app.appId)
+          // NOT a settlement. Accepting a turn is not delivering one — it may still be queued
+          // behind a running turn, where the reader can cancel it — so the card stays open for the
+          // submit it may still owe, and only this browser's view of it is recorded.
+          try {
+            localStorage.setItem(reportedKey(app.appId), message)
+          } catch {
+            /* A tab that cannot record it simply opens the dialog once more; nothing is lost. */
+          }
         },
         app.appId
       )
@@ -119,9 +135,11 @@ export function NativeIntegrationAppCard({ step, onReport, onClose }: McpAppCard
   // Only a LIVE card opens itself — a reload must not throw a dialog over a conversation the reader
   // came back to read. A settled one waits behind its button.
   useEffect(() => {
-    if (!live) return
+    if (!live || summary) return
     // A remount under an open dialog is not a second auto-open: it is the same one, continued.
-    const resumed = reopening.delete(app.appId)
+    const offered = reopening.get(app.appId)
+    const resumed = offered !== undefined && Date.now() - offered < REOPEN_WINDOW_MS
+    reopening.delete(app.appId)
     if (opened.has(app.appId) && !resumed) return
     opened.add(app.appId)
     if (opened.size > 1000) opened.delete(opened.values().next().value!)
@@ -133,7 +151,7 @@ export function NativeIntegrationAppCard({ step, onReport, onClose }: McpAppCard
       /* In-memory deduplication still covers reconnects when storage is unavailable. */
     }
     void open()
-  }, [app.appId, live, open])
+  }, [app.appId, live, summary, open])
 
   return (
     <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) p-4">
