@@ -97,7 +97,7 @@ export interface CpClientRegistrationHost {
   registrationFeatures(): string[]
   /** Set only when a configured sandbox is unusable; the CP keeps the `sandbox` capability either way. */
   sandboxUnavailable(): string | undefined
-  /** The executor facet (session-executors.md §6); undefined before it starts and while it is dark, and then nothing new is sent. */
+  /** The executor facet (session-executors.md §6); while it is dark it reports nothing, and then nothing new is sent. */
   executorFacet(): ExecutorFacet | undefined
   admittedRuntimeIds(): string[]
   reportedRuntimeIds(): string[]
@@ -334,7 +334,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     }),
     activeSessions: () => host.activeSessions(),
     hostedSessions: () => host.executorFacet()?.hostedSessions(),
-    // The facet's only way in. Read per frame: the facet starts after this literal is built.
+    // The facet's only way in: its listener parses nothing, so a `prepare` reaches it over this connection or not at all.
     executorPrepare: (req) =>
       host.executorFacet()?.prepare(req) ?? Promise.resolve({ status: 'refused', reason: 'facet_off' }),
     orgForAgent: (agentId) => host.cpAgents()?.orgForAgent(agentId) ?? host.cpCollab().orgForAgent(agentId),

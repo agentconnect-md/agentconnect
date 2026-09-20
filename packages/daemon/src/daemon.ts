@@ -1978,12 +1978,12 @@ export class Daemon {
     await this.startMcpControlServer(root, cfg)
     this.buildSessionRuntime(cfg)
     this.buildSchedulers()
+    await this.startExecutorFacet(root, cfg)
     const startControlPlane = await this.connectControlPlane(root)
     await this.openPlatformConnections(agents)
     await this.registerAgentCrons(agents)
     this.watchAgentConfigs()
     await this.replayDurableWork()
-    await this.startExecutorFacet(root, cfg)
     this.armTimersAndReadiness(root, startControlPlane)
   }
 
@@ -3411,6 +3411,42 @@ export class Daemon {
     })
   }
 
+  /** Between phases 25 and 26 — the executor facet, bound BEFORE either CP connect so registration carries its facts; dark unless `sandbox.share` (session-executors.md §10). */
+  private async startExecutorFacet(root: string, cfg: Config): Promise<void> {
+    this.executorFacet = await startExecutorFacet({
+      daemonRoot: root,
+      share: cfg.sandbox.share,
+      strategies: () => this.executionStrategies(),
+      capacity: () => this.cfg.limits.maxConcurrentSessions,
+      ownSessions: () => [...this.hosts.keys()].filter((key) => hostKeySessionKey(key) !== undefined).length,
+      draining: () => this.draining,
+      endpointHost: () => this.cpClient?.localAddress?.(),
+      seedHome: (home) => {
+        this.refreshAdmittedRuntimes()
+        seedSessionHome(home, this.runtimes, this.log)
+      },
+      agentsExist: async (agentIds) => {
+        if (!this.cpClient) throw new Error('no control plane connection')
+        return this.cpClient.agentsExist(agentIds)
+      },
+      // Only the SHARED store answers for a session another member holds; this daemon's own SQLite knows none of them.
+      ...(this.dataPlane
+        ? {
+            sessions: {
+              keysForAgent: (agentId) => this.store.sessionKeysForAgent(agentId),
+              executorOf: async (key) => {
+                const verdict = await this.store.getSessionExecutor(key)
+                return verdict && 'executorDaemonId' in verdict ? verdict : undefined
+              }
+            }
+          }
+        : {}),
+      daemonId: () => this.cfg.daemonId,
+      log: this.log,
+      clock: this.clock
+    })
+  }
+
   /** Phase 26 — under --k8s the CP organization registry MUST arrive before ingress opens; otherwise the connect is deferred to the last phase. */
   private async connectControlPlane(root: string): Promise<(root: string) => Promise<void> | undefined> {
     this.botUserIds = {}
@@ -3505,44 +3541,7 @@ export class Daemon {
     if (this.dreamOperationsAllowed()) await this.dreamRunner().initialize()
   }
 
-  /** Phase 31 — the executor facet, bound BEFORE the deferred CP connect so registration carries its facts; dark unless `sandbox.share` (session-executors.md §10). */
-  private async startExecutorFacet(root: string, cfg: Config): Promise<void> {
-    this.executorFacet = await startExecutorFacet({
-      daemonRoot: root,
-      share: cfg.sandbox.share,
-      strategies: () => this.executionStrategies(),
-      capacity: () => this.cfg.limits.maxConcurrentSessions,
-      ownSessions: () => [...this.hosts.keys()].filter((key) => hostKeySessionKey(key) !== undefined).length,
-      draining: () => this.draining,
-      endpointHost: () => this.cpClient?.localAddress(),
-      seedHome: (home) => {
-        this.refreshAdmittedRuntimes()
-        seedSessionHome(home, this.runtimes, this.log)
-      },
-      agentsExist: async (agentIds) => {
-        if (!this.cpClient) throw new Error('no control plane connection')
-        return this.cpClient.agentsExist(agentIds)
-      },
-      // Only the SHARED store answers for a session another member holds; this daemon's own SQLite knows none of them.
-      ...(this.dataPlane
-        ? {
-            sessions: {
-              keysForAgent: (agentId) => this.store.sessionKeysForAgent(agentId),
-              executorOf: async (key) => {
-                const verdict = await this.store.getSessionExecutor(key)
-                return verdict && 'executorDaemonId' in verdict ? verdict : undefined
-              }
-            }
-          }
-        : {}),
-      daemonId: () => this.cfg.daemonId,
-      log: this.log
-    })
-    // Under --k8s the CP connect came first, so the facts ride a refresh instead of the register.
-    this.cpClient?.updateCapabilities()
-  }
-
-  /** Phase 32 — curated admission, the deferred CP connect, the periodic sweeps, and only then: ready. */
+  /** Phase 31 — curated admission, the deferred CP connect, the periodic sweeps, and only then: ready. */
   private armTimersAndReadiness(root: string, startControlPlane: (root: string) => Promise<void> | undefined): void {
     // Curated admission belongs to local runtime resolution, not CP readiness.
     // Start it even when the control plane is disabled or still unreachable.

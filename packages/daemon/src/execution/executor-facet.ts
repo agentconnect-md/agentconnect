@@ -417,9 +417,11 @@ class Facet implements ExecutorFacet {
   private armReconcile(): void {
     this.reconcileTimer = this.clock.setTimeout(() => {
       this.reconcileTimer = undefined
-      void this.reconcile().finally(() => {
-        if (!this.stopped) this.armReconcile()
-      })
+      void this.reconcile()
+        .catch((error: unknown) => this.deps.log.warn(`executor: the orphan reconcile failed (${message(error)})`))
+        .finally(() => {
+          if (!this.stopped) this.armReconcile()
+        })
     }, ORPHAN_GRACE_MS)
   }
 
