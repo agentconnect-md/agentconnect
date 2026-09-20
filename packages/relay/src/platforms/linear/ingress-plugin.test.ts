@@ -4,7 +4,7 @@ import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
 import { linearIngressPlugin } from './ingress-plugin.js'
 import { LINEAR_CONTEXT_BUDGET_BYTES, type LinearAdapterExt } from './http-ingest.js'
 import type { RelayIngressHost } from '../contract.js'
-import { sessionKeyOf, toBotAssignment } from '../../bot-arbitration.js'
+import { arbitrate, sessionKeyOf, toBotAssignment } from '../../bot-arbitration.js'
 import type { BotAssignment, RouteTarget } from '../../bot-arbitration.js'
 
 const NOW = 1_788_249_909_143
@@ -312,6 +312,30 @@ describe('linear ingress plugin — dedup identity', () => {
 })
 
 describe('linear ingress plugin — normalized message', () => {
+  it.each([
+    { comment: 'This thread is for an agent session with helperbot.', explicit: false },
+    { comment: 'helper please review this', explicit: true }
+  ])('routes the delegation using member input: $comment', async ({ comment, explicit }) => {
+    const helper: RouteTarget = {
+      ...ROUTE,
+      agentId: '77777777-7777-4777-8777-777777777777',
+      integrationId: '88888888-8888-4888-8888-888888888888'
+    }
+    const routing = assignment({
+      ownerAsDefault: true,
+      members: [{ daemonId: ROUTE.daemonId, agentIds: [helper.agentId, ROUTE.agentId] }],
+      routes: [{ ...helper, match: { kind: 'keyword', value: 'helper' } }],
+      conversationDefaults: [{ channel: TEAM_ID, ...ROUTE }],
+      defaultAgentId: helper.agentId,
+      defaultDaemonId: helper.daemonId
+    })
+    const event = createdEvent()
+    ;(event.agentSession as Record<string, unknown>).comment = { body: comment }
+    const { forwarded } = await run(host(), event)
+
+    expect(arbitrate(routing, forwarded!, new Map())).toEqual(explicit ? helper : ROUTE)
+  })
+
   it('maps a created event onto TEAM/session coordinates with the adapter bag', async () => {
     const h = host()
     const { forwarded } = await run(h, createdEvent())

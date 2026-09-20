@@ -202,15 +202,16 @@ function budgetContext(
   }
 }
 
-// The member's instruction must be readable as TEXT, never only inside the fenced prompt
-// context (§6.3): the follow-up body verbatim, else the delegation line the session opened with.
+// Keep the member's instruction in text so routing and the daemon see the same input.
 function instructionText(event: LinearAgentSessionEvent): string {
-  // Tolerant reader: live deliveries nest the prompt under `content`, the docs name a top-level
-  // `body`. Either wire shape must yield the instruction, so read both rather than picking one.
+  // Prompt activities may carry their body directly or under content.
   const activity = event.agentActivity
   if (event.action === 'prompted') return activity?.content?.body ?? activity?.body ?? ''
   const session = event.agentSession
-  return session.comment?.body?.trim() || session.issue?.title || session.summary || ''
+  const comment = session.comment?.body?.trim()
+  // Linear's automatic app-name comment must not select an agent's keyword route.
+  if (comment && !/^This thread is for an agent session with .+\.$/i.test(comment)) return comment
+  return session.issue?.title || session.summary || ''
 }
 
 // The human who delegated, mentioned, or replied. An unattributed session falls back to its own
