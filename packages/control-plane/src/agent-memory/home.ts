@@ -1,5 +1,5 @@
 // The CP's rules for a managed binding's `home` (memory-evolution.md §3.2.1, §6): resolved on create, one way on
-// update (`daemon` → `control-plane` flags a migration), back only by force, and mandated on the install-wide pool.
+// update (`daemon` → `control-plane` flags a migration), back only by force, and mandated on every member set.
 import type {
   AgentMemoryBinding,
   ExternalMemoryBinding,
@@ -25,14 +25,14 @@ export function memoryHomedInControlPlane(memory: AgentMemoryBinding | null | un
   return managedMemoryHomeOf(memory) === 'control-plane'
 }
 
-export const POOL_REFUSES_DAEMON_HOME =
-  'the managed pool keeps agent memory in the Control Plane; set memory.home to control-plane or leave it unset'
+export const SET_REFUSES_DAEMON_HOME =
+  'an agent placed on a group or the managed pool keeps its memory in the Control Plane; set memory.home to control-plane or leave it unset'
 export const REVERSE_NEEDS_FORCE =
   'moving memory back from the Control Plane to the daemon keeps nothing; send force: true to confirm'
-export const POOL_MOVE_NEEDS_CP_HOME =
-  'this agent keeps its memory on the daemon it runs on; switch its memory home to Control Plane in the agent’s Memory tab, wait for the migration to finish, then move it onto the managed pool'
+export const SET_MOVE_NEEDS_CP_HOME =
+  'this agent keeps its memory on the daemon it runs on; switch its memory home to Control Plane in the agent’s Memory tab, wait for the migration to finish, then move it onto the group or the managed pool'
 
-export type MemoryBindingRefusal = { refused: 'pool-daemon-home' | 'reverse-needs-force'; message: string }
+export type MemoryBindingRefusal = { refused: 'set-daemon-home' | 'reverse-needs-force'; message: string }
 
 /** A refusal raised from inside the row-locked write, where the resolution is authoritative; routes answer 409. */
 export class MemoryHomeRefusedError extends Error {
@@ -45,37 +45,44 @@ export class MemoryHomeRefusedError extends Error {
   }
 }
 
-/** What a caller hands the row-locked write: the submitted binding and the two facts the resolution needs. A function
- *  receives the binding as it is under the lock, for a caller whose patch depends on it (the boot-time pool flip). */
+/** What the row-locked write takes: the binding, or a function of the locked one (the boot-time flip), plus `onSet` and `force`. */
 export interface MemoryHomeUpdate {
   input: MemoryBindingInput | null | ((current: AgentMemoryBinding | null) => MemoryBindingInput | null)
-  onPool: boolean
+  onSet: boolean
   force: boolean
 }
 
-/** The binding to store for a new agent, or why it is refused. `onPool` ⇒ the placement is the install-wide pool. */
+/** The binding to store for a new agent, or why it is refused. `onSet` ⇒ placed on a member set: a group or the pool. */
 export function resolveMemoryBindingOnCreate(
   input: MemoryBindingInput | undefined,
-  onPool: boolean
+  onSet: boolean
 ): { memory: AgentMemoryBinding | undefined } | MemoryBindingRefusal {
   if (input === undefined) {
-    return { memory: onPool ? { provider: 'managed', home: 'control-plane' } : undefined }
+    return { memory: onSet ? { provider: 'managed', home: 'control-plane' } : undefined }
   }
   if (input.provider !== 'managed') return { memory: input }
-  if (onPool) {
-    if (input.home === 'daemon') return { refused: 'pool-daemon-home', message: POOL_REFUSES_DAEMON_HOME }
+  if (onSet) {
+    if (input.home === 'daemon') return { refused: 'set-daemon-home', message: SET_REFUSES_DAEMON_HOME }
     return { memory: { ...input, home: 'control-plane' } }
   }
   return { memory: { ...input, home: input.home ?? 'daemon' } }
 }
 
-/** The managed binding homed in the Control Plane: the current policy fields kept, `home` set, the CP-owned flag dropped.
- *  The boot-time pool flip patches with it (and the update rule flags the migration); an unplaced agent placed on the
- *  pool stores it as is — resolved as on create, since there is no tree to migrate. */
+/** The managed binding homed in the Control Plane, policy kept and the CP-owned flag dropped: the boot-time flip's patch, and what an unplaced agent landing on a set stores. */
 export function managedBindingHomedInControlPlane(current: AgentMemoryBinding | null): ManagedMemoryBinding {
   if (current?.provider !== 'managed') return { provider: 'managed', home: 'control-plane' }
   const { home: _home, homeMigration: _flag, ...policy } = current
   return { ...policy, home: 'control-plane' }
+}
+
+/** A move onto a member set with a `daemon` home: refused for a placed agent (its tree cannot follow), switched with the placement for an unplaced one (no tree). */
+export function resolveMemoryHomeOnMove(
+  current: AgentMemoryBinding | null,
+  ontoSet: boolean,
+  unplaced: boolean
+): 'keep' | 'switch' | 'refuse' {
+  if (!ontoSet || managedMemoryHomeOf(current) !== 'daemon') return 'keep'
+  return unplaced ? 'switch' : 'refuse'
 }
 
 export type MemoryBindingUpdate =
@@ -88,7 +95,7 @@ export type MemoryBindingUpdate =
 export function resolveMemoryBindingOnUpdate(
   current: AgentMemoryBinding | null,
   patch: MemoryBindingInput | null | undefined,
-  onPool: boolean,
+  onSet: boolean,
   force: boolean
 ): MemoryBindingUpdate {
   if (patch === undefined) return { kind: 'unchanged' }
@@ -97,15 +104,15 @@ export function resolveMemoryBindingOnUpdate(
   const currentHome = managedMemoryHomeOf(current)
   const base: Omit<ManagedMemoryBinding, 'home' | 'homeMigration'> = patch ?? { provider: 'managed' }
   const requested = patch?.home
-  // Switching back to managed resolves as on create and never migrates; so does the managed default on the pool.
+  // Switching back to managed resolves as on create and never migrates; so does the managed default on a set.
   if (currentHome === null) {
-    const resolved = resolveMemoryBindingOnCreate(patch ?? undefined, onPool)
+    const resolved = resolveMemoryBindingOnCreate(patch ?? undefined, onSet)
     if ('refused' in resolved) return { kind: 'refused', ...resolved }
     return { kind: 'write', memory: resolved.memory ?? null, dropHome: false }
   }
   const target = requested ?? currentHome
-  if (onPool && target === 'daemon') {
-    return { kind: 'refused', refused: 'pool-daemon-home', message: POOL_REFUSES_DAEMON_HOME }
+  if (onSet && target === 'daemon') {
+    return { kind: 'refused', refused: 'set-daemon-home', message: SET_REFUSES_DAEMON_HOME }
   }
   if (target === currentHome) {
     const pending = current?.provider === 'managed' && current.homeMigration === 'pending'

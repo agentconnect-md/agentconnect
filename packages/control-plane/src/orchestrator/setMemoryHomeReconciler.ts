@@ -1,16 +1,16 @@
-// The rollout flip (memory-evolution.md §3.2.1): a pool-placed agent with a `daemon` home is moved to `control-plane`.
+// The rollout flip (memory-evolution.md §3.2.1): a set-placed agent (a group's or the pool's) with a `daemon` home is moved to `control-plane`.
 import type { AgentMemoryBinding } from '@agentconnect.md/protocol'
 import { managedBindingHomedInControlPlane, managedMemoryHomeOf } from '../agent-memory/home.js'
 import { DaemonId } from '../domain/ids.js'
 import type { AgentRepo, MemberSetRepo } from '../persistence/ports.js'
 import type { AgentDelivery } from './agentDelivery.js'
 
-export interface PoolMemoryHomeLog {
+export interface SetMemoryHomeLog {
   info(obj: unknown, msg?: string): void
   warn(obj: unknown, msg?: string): void
 }
 
-export interface PoolMemoryHomeSummary {
+export interface SetMemoryHomeSummary {
   flipped: number
   already: number
   skipped: number
@@ -32,25 +32,24 @@ class NothingToFlip extends Error {
   }
 }
 
-export class PoolMemoryHomeReconciler {
+export class SetMemoryHomeReconciler {
   constructor(
     private readonly deps: {
-      agents: Pick<AgentRepo, 'listForSet' | 'listForDaemon' | 'update'>
+      agents: Pick<AgentRepo, 'listSetPlaced' | 'listForDaemon' | 'update'>
       memberSets: Pick<MemberSetRepo, 'crossOrgSetId' | 'memberIdsOf'>
       delivery: Pick<AgentDelivery, 'upsert'>
-      log: PoolMemoryHomeLog
+      log: SetMemoryHomeLog
     }
   ) {}
 
-  /** One pass over the pool's agents. Per-agent failures are logged and retried on the next boot. */
-  async run(): Promise<PoolMemoryHomeSummary> {
-    const summary: PoolMemoryHomeSummary = { flipped: 0, already: 0, skipped: 0, failed: 0 }
+  /** One pass over every set-placed agent. Per-agent failures are logged and retried on the next boot. */
+  async run(): Promise<SetMemoryHomeSummary> {
+    const summary: SetMemoryHomeSummary = { flipped: 0, already: 0, skipped: 0, failed: 0 }
+    // Beside the set placements, a legacy row pinned to a pool member; a pin to a group's member stays a pinned agent.
     const pool = await this.deps.memberSets.crossOrgSetId()
-    if (!pool) return summary
-    // On the pool: placed on the org-less set, or pinned to a machine that is one of its members (a legacy row).
-    const members = await this.deps.memberSets.memberIdsOf(pool)
+    const members = pool ? await this.deps.memberSets.memberIdsOf(pool) : []
     const pinned = await Promise.all(members.map((daemonId) => this.deps.agents.listForDaemon(DaemonId(daemonId))))
-    for (const agent of [...(await this.deps.agents.listForSet(pool)), ...pinned.flat()]) {
+    for (const agent of [...(await this.deps.agents.listSetPlaced()), ...pinned.flat()]) {
       // The scan is the cheap filter; the verdict that counts is taken again under the row lock below.
       const scanned = verdict(agent.memory)
       if (scanned !== 'flip') {
@@ -71,14 +70,14 @@ export class PoolMemoryHomeReconciler {
                 if (now !== 'flip') throw new NothingToFlip(now)
                 return managedBindingHomedInControlPlane(locked)
               },
-              onPool: true,
+              onSet: true,
               force: false
             }
           }
         )
         // Pushed like a PATCH, so the holding member learns of the flip now; an offline one re-syncs on reconnect.
         await this.deps.delivery.upsert(flipped, (err, daemonId) =>
-          this.deps.log.warn({ err, agentId: agent.id, daemonId }, 'pool-memory-home: agent/upsert failed')
+          this.deps.log.warn({ err, agentId: agent.id, daemonId }, 'set-memory-home: agent/upsert failed')
         )
         summary.flipped++
       } catch (err) {
@@ -87,10 +86,10 @@ export class PoolMemoryHomeReconciler {
           continue
         }
         summary.failed++
-        this.deps.log.warn({ err, agentId: agent.id }, 'pool-memory-home: flip failed — will retry next boot')
+        this.deps.log.warn({ err, agentId: agent.id }, 'set-memory-home: flip failed — will retry next boot')
       }
     }
-    this.deps.log.info(summary, 'pool-memory-home: pass complete')
+    this.deps.log.info(summary, 'set-memory-home: pass complete')
     return summary
   }
 }

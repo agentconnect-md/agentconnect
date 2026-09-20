@@ -212,6 +212,7 @@ agent through every move and needs no execution unit to be up for a read or a wr
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `daemon` · local daemon (default) | `<agent-root>` on the daemon's disk (`memory/`, `channels/`, `memory-dreams/`, `memory-backups/` beneath it)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Always                                                                                                                                                                                                                                                                      |
 | `daemon` · cluster (`--k8s`)      | **Not served.** The CP rejects the binding for an agent placed on the install-wide pool and flips every existing one at boot (a placed daemon-home agent is refused a move onto the pool until its home is switched; an unplaced one has no tree to lose, so placing it on the pool switches its home in the same write, without a migration), so a `--k8s` member only ever sees it as a stale boot-window binding: it answers the home as unavailable (`pool-daemon-home`) until the CP's flip arrives, and the agent runs without memory rather than not at all. The former sandbox-volume home (`<workspace mount>/.agentconnect/memory`, #1078 option A) survives as the pool's dream-staging root (below) and as the source of the one-time copy | Never as a home — the store refuses with `MemoryHomeUnavailableError` (`pool-daemon-home`), the session starts without standing context and warns, the memory tools answer the same, and distillation waits in the outbox until the flipped binding resolves to the CP tree |
+| `daemon` · placed on a group      | **Not accepted.** The CP applies the pool's rule to every member set — the binding is refused on create and edit, a placed daemon-home agent is refused the move onto the group, an unplaced one is switched in the move's own write, and every existing one is flipped at boot — so a group's member sees it only as a stale boot-window binding. Unlike a `--k8s` member it does not refuse to serve it: a self-hosted member upgrades independently of the CP and cannot tell from what it receives whether the CP enforces the rule, so failing closed could leave a group's memory unreachable until the CP caught up. The tree it keeps writing is the one the flip's migration then copies                                                      | Until the flip arrives, as the local-daemon row above; afterwards as the `control-plane` row below                                                                                                                                                                          |
 | `control-plane` · any placement   | The live store only — the `agent_memory_file` table in the CP database, one row per file keyed `(agentId, path)`, org-fenced, the same layout beneath a virtual root. Dream staging and the change log stay off it (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | While the daemon's CP connection is READY; otherwise every read and write refuses with `MemoryHomeUnavailableError` — one resolution, no fallback to the member's disk, the same shape `MemorySandboxUnavailableError` had                                                  |
 
 **Why the CP is allowed to hold it.** #1078 kept agent memory out of the CP on the
@@ -221,8 +222,17 @@ source archive) and it must not be the reason a pod has to stay up. Organization
 knowledge and managed-skill archives are already CP-persisted: the line the CP keeps
 is transcripts, ACP update streams, attachment bytes and workspace content — the
 unbounded, streaming kinds — not curated, size-capped Markdown. `control-plane` is
-opt-in for self-hosted agents and mandatory on the pool, where the member's root is
-an `emptyDir` and the only other durable place was a volume that a pod had to hold.
+opt-in for an agent pinned to one self-hosted daemon and mandatory for every agent
+placed on a member set — one of the organization's groups as much as the install-wide
+pool. On the pool the member's root is an `emptyDir` and the only other durable place
+was a volume that a pod had to hold. On a group any member may serve the agent: its duty
+moves on failover, and with session executors
+([session-executors.md](session-executors.md) §7) a session may run on another member, so
+a tree on one member's disk would be stranded or split. The rule is decided from the
+placement alone and enforced where a placement or a binding is written — create, edit
+and move (below) — so nothing downstream has to ask where a group agent's memory is.
+Bindings of any other provider are outside it, and no data-plane database is involved:
+the `control-plane` home is rows in the CP's own database.
 
 **What the home does not carry: drafts and the change log.** `control-plane` moves the
 live store — `memory/`, `channels/`, and `memory-backups/`, the one retained pre-adoption
@@ -355,15 +365,18 @@ and `memory-backups/` move under `<agent dir>/memory-archive-<timestamp>/` besid
 them, and `memory-dreams/` stays, since staging belongs to the host. The daemon records the
 last home it applied per agent in its local store, so a return that happens while it is
 offline is still archived on its next start rather than served again. The console offers the
-selector one way and the forced return behind its own confirmation; on the pool there
-is no return at all, since `daemon` is refused there. `daemon` stays the default for
-now; making `control-plane` the default is a later decision, not this one.
+selector one way and the forced return behind its own confirmation; on a member set —
+a group or the pool — there is no return at all, since `daemon` is refused there.
+`daemon` stays the default for a pinned agent for now; making `control-plane` the
+default there too is a later decision, not this one.
 
 **Moves.** A `control-plane` agent's memory is not daemon-local any more, so the
 hard-cutover move carries it by doing nothing: the target reads the same rows. A
-`daemon`-home agent moving onto the install-wide pool is rejected until its home is
-switched; between two self-hosted daemons it keeps today's behavior (memory stays in
-the source archive).
+`daemon`-home agent moving onto a member set — a group or the install-wide pool — is
+rejected until its home is switched and the migration has finished (an unplaced one has
+no tree, so the move's own write switches it); pinned from one self-hosted daemon to
+another — a group's member included — it keeps today's behavior (memory stays in the
+source archive).
 
 **Degradation.** With the CP connection down, a `control-plane` agent starts a new
 session with no standing context and a warning, memory tools answer an unavailable
@@ -382,6 +395,16 @@ sandbox volume through the shim: it binds the pod, copies whatever the volume ho
 (an empty tree, if the sandbox was reclaimed in between) and reports completion the
 same way. Native (runtime) memory follows the runtime's HOME on the pod and is
 unaffected.
+
+The same pass covers the organization's groups: every agent placed on any member set is
+flipped, and an agent pinned to a machine — a group's member included — is left alone.
+For a group the source is the holding member's own disk: the member that holds the
+agent's duty when the flip reaches it copies the tree under its agent root and reports
+completion, the console showing the home as moving until then. Nothing is deleted — the
+source tree stays where it was — but only the holder's tree is copied, so a tree an
+earlier holder wrote before a failover stays on that member's disk, outside the agent's
+memory, exactly as it was before the flip. There is no way back on a group; for an agent
+later pinned to one machine the return is the forced one above, which keeps nothing.
 
 ### 3.3 external — General Memory Plugin
 
@@ -884,10 +907,11 @@ type MemoryConfig =
     }
 ```
 
-- `home` (§3.2.1) defaults to `daemon`. The CP writes the resolved value on create so
-  a later placement change never flips it implicitly; an agent placed on the
-  install-wide pool must carry `control-plane`, and the console fixes the selector
-  there. `home` migrates one way only, `daemon` → `control-plane` (§3.2.1); the
+- `home` (§3.2.1) defaults to `daemon` for an agent pinned to one daemon. The CP writes
+  the resolved value on create so a later placement change never flips it implicitly;
+  an agent placed on a member set — one of the organization's groups or the
+  install-wide pool — defaults to and must carry `control-plane`, and the console
+  fixes the selector there. `home` migrates one way only, `daemon` → `control-plane` (§3.2.1); the
   reverse is accepted only as a forced change (`force: true` on the edit, 409 without
   it) and keeps no memory. An edit that omits `home` keeps the current one, and
   `homeMigration` is CP-owned and read-only: set by the forward switch, cleared by the
@@ -969,7 +993,7 @@ invariant in
 | **M-5C · record product surface (complete)**             | Core entry tools + provider-aware record REST/frames/console, with CRUD/history driven by capability.                                                                                                                                                                                                                                                                                                                                          | ⚠️ Same as above                                                           | None                         |
 | **M-5D · dialect/runtime expansion (complete)**          | Mem0 OSS adapter; operator-installed stdio host + daemon-private secret lease.                                                                                                                                                                                                                                                                                                                                                                 | OSS/local depends on deployment                                            | stdio host                   |
 | **M-6 · shared scope (through data plane)**              | Depends on shared-bot relay; `memory-sync` payload; managed shared-scope sync + conflict semantics; external reuses canonical shared policy.                                                                                                                                                                                                                                                                                                   | ✅ / explicit external egress                                              | Reuse relay                  |
-| **M-8 · `home: control-plane` (complete)**               | Binding `home` (default `daemon`); `agent_memory_file` + change-log table in the CP behind `memory/store` / `memory/history/append` over the shim op set; `CpMemoryFs` + `CpMemoryHistorySink`; one-way `daemon` → `control-plane` migration with `memory/home/migrated`, forced return keeps nothing; pool agents flipped at CP boot and a pool member never serves a `daemon` home; dream staging stays beside the extraction host (§3.2.1). | Curated Markdown in the CP by explicit binding; default stays daemon-local | CP table                     |
+| **M-8 · `home: control-plane` (complete)**               | Binding `home` (default `daemon`); `agent_memory_file` + change-log table in the CP behind `memory/store` / `memory/history/append` over the shim op set; `CpMemoryFs` + `CpMemoryHistorySink`; one-way `daemon` → `control-plane` migration with `memory/home/migrated`, forced return keeps nothing; group and pool agents flipped at CP boot; a pool member never serves `daemon`; dream staging stays beside the extraction host (§3.2.1). | Curated Markdown in the CP by explicit binding; default stays daemon-local | CP table                     |
 | **M-7 · optional retrieval upgrade**                     | BM25 over Markdown; leave vector seam.                                                                                                                                                                                                                                                                                                                                                                                                         | ✅                                                                         | None for BM25; vectors later |
 
 The plugin profile remains backend-agnostic, and the Mem0 implementation stays

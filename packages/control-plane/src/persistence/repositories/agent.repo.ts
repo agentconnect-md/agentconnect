@@ -639,12 +639,12 @@ export class PgAgentRepo implements AgentRepo {
       // The managed home is decided here, against the locked binding (memory-evolution.md §3.2.1): a completion
       // `memory/home/migrated` recorded since the caller read the agent is what this write sees, not the caller's copy.
       if (opts?.memoryHome) {
-        const { input, onPool, force } = opts.memoryHome
+        const { input, onSet, force } = opts.memoryHome
         const locked = cur?.memory ?? null
         const change = resolveMemoryBindingOnUpdate(
           locked,
           typeof input === 'function' ? input(locked) : input,
-          onPool,
+          onSet,
           force
         )
         if (change.kind === 'refused') throw new MemoryHomeRefusedError(change.refused, change.message)
@@ -1036,7 +1036,7 @@ export class PgAgentRepo implements AgentRepo {
         if (target.kind === 'set') await assertAgentMayUseSet(tx, { id: agentId, orgId: current.orgId }, target.setId)
         if (target.kind === 'daemon') await assertDaemonNotInSet(tx, agentId, target.daemonId)
         // The home is resolved from the bag under the lock the read above took, never from the caller's snapshot.
-        const overrides = opts?.memoryHome ? await this.poolHomedOverrides(tx, agentId) : undefined
+        const overrides = opts?.memoryHome ? await this.cpHomedOverrides(tx, agentId) : undefined
         const a = await tx.agent.update({
           where: {
             id: agentId,
@@ -1068,12 +1068,8 @@ export class PgAgentRepo implements AgentRepo {
     }
   }
 
-  /** The locked row's overrides with a daemon memory home switched to the Control Plane, no migration flagged — an
-   *  unplaced agent has no tree to copy. Any other binding is left exactly as stored (undefined ⇒ no write). */
-  private async poolHomedOverrides(
-    tx: Prisma.TransactionClient,
-    agentId: string
-  ): Promise<RuntimeOverrides | undefined> {
+  /** The locked row's overrides with a daemon memory home switched to the Control Plane, unflagged (an unplaced agent has no tree); undefined ⇒ no write. */
+  private async cpHomedOverrides(tx: Prisma.TransactionClient, agentId: string): Promise<RuntimeOverrides | undefined> {
     const row = await tx.agent.findUniqueOrThrow({ where: { id: agentId }, select: { runtimeOverrides: true } })
     const current = (row.runtimeOverrides as RuntimeOverrides | null) ?? {}
     if (managedMemoryHomeOf(current.memory) !== 'daemon') return undefined
@@ -1165,9 +1161,9 @@ export class PgAgentRepo implements AgentRepo {
     return rows.map(toRecord)
   }
 
-  async listForSet(setId: string): Promise<AgentRecord[]> {
+  async listSetPlaced(): Promise<AgentRecord[]> {
     const rows = await this.db.agent.findMany({
-      where: { setId, placementKind: 'set' },
+      where: { setId: { not: null }, placementKind: 'set' },
       orderBy: { createdAt: 'asc' },
       include: withUsers
     })

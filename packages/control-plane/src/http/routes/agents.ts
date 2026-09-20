@@ -110,11 +110,11 @@ import { parseSkillRef, redactSourceCredentials } from '../../orchestrator/skill
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from '../../orchestrator/memoryConnection.js'
 import {
   MemoryHomeRefusedError,
-  POOL_MOVE_NEEDS_CP_HOME,
-  managedMemoryHomeOf,
+  SET_MOVE_NEEDS_CP_HOME,
   memoryHomedInControlPlane,
   resolveMemoryBindingOnCreate,
-  resolveMemoryBindingOnUpdate
+  resolveMemoryBindingOnUpdate,
+  resolveMemoryHomeOnMove
 } from '../../agent-memory/home.js'
 import { memoryHistoryRoot, toHistoryEvent } from '../../agent-memory/history.js'
 import { memoryHomeUnavailable, SANDBOX_UNAVAILABLE_CODE } from '../../agent-memory/unavailable.js'
@@ -432,17 +432,15 @@ async function resolveTargetSetId(
   return set && (set.orgId === null || set.orgId === orgId) ? set.id : null
 }
 
-/** Whether a placement lands on the install-wide pool: the org-less set itself, or a machine that is a member of it.
- *  The pool keeps agent memory in the Control Plane (memory-evolution.md §3.2.1), so the memory rules read this. */
-async function placedOnInstallPool(
+/** Whether a placement keeps managed memory in the Control Plane (memory-evolution.md §3.2.1): any member set, or a legacy pin to a pool member. */
+async function placedOnMemberSet(
   deps: HttpDeps,
   target: { setId?: string | null; daemonId?: string | null }
 ): Promise<boolean> {
+  if (target.setId) return true
+  if (!target.daemonId) return false
   const pool = await deps.repos.memberSet.crossOrgSetId()
-  if (!pool) return false
-  if (target.setId) return target.setId === pool
-  if (target.daemonId) return (await deps.repos.memberSet.setIdOf(DaemonId(target.daemonId))) === pool
-  return false
+  return pool !== null && (await deps.repos.memberSet.setIdOf(DaemonId(target.daemonId))) === pool
 }
 
 /** The write-time placement invariants (daemon-groups.md §2, §3) are asserted inside the
@@ -1778,7 +1776,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Create an agent',
           description:
-            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding. A managed memory binding is stored with its resolved home: an agent placed on the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon.',
+            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon.',
           operationId: 'createAgent',
           body: CreateAgentBody,
           querystring: z.object({ connect: z.stringbool().default(false) }),
@@ -1922,7 +1920,7 @@ export function agentRoutes(deps: HttpDeps) {
         // The memory home is resolved here, once, so a later placement change never flips it (§3.2.1).
         const resolvedMemory = resolveMemoryBindingOnCreate(
           req.body.memory,
-          await placedOnInstallPool(deps, { setId: targetSetId, daemonId: wantsSet ? undefined : req.body.daemonId })
+          await placedOnMemberSet(deps, { setId: targetSetId, daemonId: wantsSet ? undefined : req.body.daemonId })
         )
         if ('refused' in resolvedMemory) return conflict(resolvedMemory.message)
         const memory = resolvedMemory.memory
@@ -2384,7 +2382,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Update an agent',
           description:
-            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent on the managed pool cannot name the daemon home.',
+            'Edit the agent spec or widen an existing GitHub workspace from read to write access; the change hot-syncs the owning daemon’s replica and rides the next register/launch. A managed memory binding without a home keeps the current one. Switching the home from daemon to control-plane is accepted and flags a migration the owning daemon completes; the reverse is refused with 409 unless force is set, and then drops every memory file and change-log record the Control Plane holds for the agent. An agent placed on a group or the managed pool cannot name the daemon home.',
           operationId: 'updateAgent',
           params: IdParam,
           body: UpdateAgentBody,
@@ -2534,14 +2532,11 @@ export function agentRoutes(deps: HttpDeps) {
               })
             }
           }
-          // The memory home rules (memory-evolution.md §3.2.1): an absent home keeps the current one, the forward
-          // switch flags the migration, the reverse needs `force` and drops the CP tree, the pool refuses `daemon`.
-          // This pass is the friendly refusal and names the target for the external check; the authoritative
-          // resolution runs again inside the row-locked write (`opts.memoryHome`), against the binding as it is then.
-          const onPool = await placedOnInstallPool(deps, { setId: existing.setId, daemonId: existing.daemonId })
+          // The memory home rules (§3.2.1; a member set refuses `daemon`): the friendly refusal here, the authoritative one in the row-locked write (`opts.memoryHome`).
+          const onSet = await placedOnMemberSet(deps, { setId: existing.setId, daemonId: existing.daemonId })
           const force = req.body.force === true
-          const memoryHome = req.body.memory !== undefined ? { input: req.body.memory, onPool, force } : undefined
-          const memoryChange = resolveMemoryBindingOnUpdate(existing.memory, req.body.memory, onPool, force)
+          const memoryHome = req.body.memory !== undefined ? { input: req.body.memory, onSet, force } : undefined
+          const memoryChange = resolveMemoryBindingOnUpdate(existing.memory, req.body.memory, onSet, force)
           if (memoryChange.kind === 'refused') {
             return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: memoryChange.message })
           }
@@ -2891,7 +2886,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Move an agent to another daemon',
           description:
-            'Hard-cut an agent over to another READY daemon. Active source turns are cancelled without a final reply, and subsequent messages start fresh on the target; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated or replayed; managed memory follows the agent only when its home is the Control Plane, and an agent whose memory home is the daemon is refused a move onto the managed pool (409) until the home is switched — except an unplaced agent, which has no tree to lose and is switched to the Control Plane home in the move itself.',
+            'Hard-cut an agent over to another READY daemon. Active source turns are cancelled without a final reply, and subsequent messages start fresh on the target; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated or replayed; managed memory follows the agent only when its home is the Control Plane, and an agent whose memory home is the daemon is refused a move onto a group or the managed pool (409) until the home is switched — except an unplaced agent, which has no tree to lose and is switched to the Control Plane home in the move itself.',
           operationId: 'moveAgentDaemon',
           params: IdParam,
           body: SetAgentDaemonBody,
@@ -2956,18 +2951,14 @@ export function agentRoutes(deps: HttpDeps) {
           ? placement.kind === 'set' && placement.setId === targetSetId
           : placement.kind === 'daemon' && placement.daemonId === req.body.daemonId
 
-        // A daemon-home tree stays in the source archive; the pool has nowhere to keep one (memory-evolution.md §3.2.1).
-        // A same-target repair is not a move onto the pool, so an agent already there is not refused its retry. An
-        // unplaced agent has no tree anywhere, so its home is switched to the Control Plane in the move's own write.
-        const daemonHomeOntoPool =
+        // A daemon-home tree cannot follow onto a member set (§3.2.1); a same-target retry is no move, and an unplaced agent has no tree, so the move's write switches its home.
+        const ontoSet =
           !samePlacementTarget &&
-          managedMemoryHomeOf(existing.memory) === 'daemon' &&
-          (await placedOnInstallPool(deps, {
-            setId: targetSetId,
-            daemonId: targetSetId ? undefined : req.body.daemonId
-          }))
-        if (daemonHomeOntoPool && placement.kind !== 'unplaced') return conflict(POOL_MOVE_NEEDS_CP_HOME)
-        const moveOpts: AgentMoveOpts | undefined = daemonHomeOntoPool ? { memoryHome: 'control-plane' } : undefined
+          (await placedOnMemberSet(deps, { setId: targetSetId, daemonId: targetSetId ? undefined : req.body.daemonId }))
+        const homeOnMove = resolveMemoryHomeOnMove(existing.memory, ontoSet, placement.kind === 'unplaced')
+        if (homeOnMove === 'refuse') return conflict(SET_MOVE_NEEDS_CP_HOME)
+        const moveOpts: AgentMoveOpts | undefined =
+          homeOnMove === 'switch' ? { memoryHome: 'control-plane' } : undefined
 
         // The org registry rows the agent enables — read once for every candidate's facts check
         // below, then staged on the target.

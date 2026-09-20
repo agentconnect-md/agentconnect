@@ -1,6 +1,7 @@
-// The boot-time memory-home flip (memory-evolution.md §3.2.1 "Rollout"): pool-placed agents, and only those, move home.
+// The boot-time memory-home flip (memory-evolution.md §3.2.1 "Rollout"): set-placed agents, and only those, move home.
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import type { Ack, AgentActivate, AgentDetach, AgentUpsert, McpServerSpec } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedDutyGroup } from '../fixtures/seed.js'
@@ -8,7 +9,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { poolSetId, seedPoolMember } from '../fakes/member-set.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
-import { PoolMemoryHomeReconciler } from '../../src/orchestrator/poolMemoryHomeReconciler.js'
+import { SetMemoryHomeReconciler } from '../../src/orchestrator/setMemoryHomeReconciler.js'
 
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const MEMBER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
@@ -48,12 +49,12 @@ const live: DaemonLiveness = {
 const logs: unknown[] = []
 const log = { info: (obj: unknown) => void logs.push(obj), warn: () => {} }
 
-function harness(): { reconciler: PoolMemoryHomeReconciler; spy: ControlSpy } {
+function harness(): { reconciler: SetMemoryHomeReconciler; spy: ControlSpy } {
   const spy = new ControlSpy()
   running = buildHttpApp(prisma, undefined, live, spy as unknown as ControlSender)
   const { repos, agentDelivery } = running.deps
   return {
-    reconciler: new PoolMemoryHomeReconciler({
+    reconciler: new SetMemoryHomeReconciler({
       agents: repos.agent,
       memberSets: repos.memberSet,
       delivery: agentDelivery,
@@ -67,20 +68,32 @@ const row = (agentId: string) => prisma.agent.findUniqueOrThrow({ where: { id: a
 const storedMemory = async (agentId: string) =>
   ((await row(agentId)).runtimeOverrides as { memory?: unknown } | null)?.memory ?? null
 
-/** An agent on the pool set, or pinned to a machine; `memory` is what its row already carries. */
+/** An agent on the pool set, on a group, or pinned to a machine; `memory` is what its row already carries. */
 async function seed(
   memory: Record<string, unknown> | null,
-  placement: { pool: true } | { daemonId: string }
+  placement: { pool: true } | { setId: string } | { daemonId: string }
 ): Promise<string> {
   const agentId = randomUUID()
-  await seedAgent(prisma, agentId, {
-    ...('pool' in placement ? { setId: await poolSetId(prisma) } : { daemonId: placement.daemonId }),
-    ...(memory ? { runtimeOverrides: { memory } } : {})
-  })
+  const target =
+    'pool' in placement
+      ? { setId: await poolSetId(prisma) }
+      : 'setId' in placement
+        ? { setId: placement.setId }
+        : placement
+  await seedAgent(prisma, agentId, { ...target, ...(memory ? { runtimeOverrides: { memory } } : {}) })
   return agentId
 }
 
-describe('PoolMemoryHomeReconciler', () => {
+/** One of the org's groups with `SOURCE` as its member. */
+async function seedGroup(): Promise<string> {
+  await seedDaemon(prisma, SOURCE, { capabilities: CAPS })
+  const setId = randomUUID()
+  await prisma.memberSet.create({ data: { id: setId, orgId: DEFAULT_ORG_ID, name: 'lab' } })
+  await prisma.memberSetMember.create({ data: { setId, daemonId: SOURCE } })
+  return setId
+}
+
+describe('SetMemoryHomeReconciler', () => {
   it('a pool agent with no binding is flipped to the Control Plane, flagged for migration, and pushed to its holder', async () => {
     await seedPoolMember(prisma, MEMBER)
     const agentId = await seed(null, { pool: true })
@@ -95,6 +108,25 @@ describe('PoolMemoryHomeReconciler', () => {
     expect(spy.upserts).toEqual([{ daemonId: MEMBER, agentId, memory: PENDING }])
   })
 
+  it('flips an agent placed on one of the org’s groups and leaves the agent pinned to that group’s member alone', async () => {
+    const setId = await seedGroup()
+    const grouped = await seed({ ...DAEMON_HOME, scope: 'channel' }, { setId })
+    const groupedBare = await seed(null, { setId })
+    const external = await seed(EXTERNAL, { setId })
+    const pinned = await seed(DAEMON_HOME, { daemonId: SOURCE })
+    await seedDutyGroup(prisma, randomUUID(), SOURCE, [grouped, groupedBare, external], { confirmed: true })
+    const { reconciler, spy } = harness()
+
+    expect(await reconciler.run()).toEqual({ flipped: 2, already: 0, skipped: 1, failed: 0 })
+    expect(await storedMemory(grouped)).toEqual({ ...PENDING, scope: 'channel' })
+    expect(await storedMemory(groupedBare)).toEqual(PENDING)
+    expect(await storedMemory(external)).toEqual(EXTERNAL)
+    expect(await storedMemory(pinned)).toEqual(DAEMON_HOME)
+    expect(spy.upserts.map((u) => [u.daemonId, u.agentId]).sort()).toEqual(
+      [grouped, groupedBare].map((id) => [SOURCE, id]).sort()
+    )
+  })
+
   it('a legacy agent pinned to a pool member keeps its managed policy and is pushed to that member', async () => {
     await seedPoolMember(prisma, MEMBER)
     const agentId = await seed({ ...DAEMON_HOME, autoDistill: false }, { daemonId: MEMBER })
@@ -105,7 +137,7 @@ describe('PoolMemoryHomeReconciler', () => {
     expect(spy.upserts.map((u) => u.daemonId)).toEqual([MEMBER])
   })
 
-  it('leaves alone what has no daemon home to move: already homed, non-managed, or not on the pool', async () => {
+  it('leaves alone what has no daemon home to move: already homed, non-managed, or pinned to a machine', async () => {
     await seedDaemon(prisma, SOURCE, { capabilities: CAPS })
     await seedPoolMember(prisma, MEMBER)
     const homed = await seed(CP, { pool: true })
@@ -151,7 +183,7 @@ describe('PoolMemoryHomeReconciler', () => {
         return repos.agent.update(...args)
       }
     })
-    const reconciler = new PoolMemoryHomeReconciler({
+    const reconciler = new SetMemoryHomeReconciler({
       agents,
       memberSets: repos.memberSet,
       delivery: agentDelivery,

@@ -95,11 +95,13 @@ reassign rather than a plain move.
 Both paths preserve the Agent identity and its centrally managed settings. Neither
 copies daemon-local workspace, transcripts, or attachments. Managed memory follows the
 agent only when its home is the Control Plane (`memory.home: control-plane`); a
-daemon-home tree stays in the source archive, and a move onto the managed pool is
-refused until the home is switched to the Control Plane (the only direction that
-carries memory; forcing it back starts the agent empty). An unplaced agent has no
-tree to lose, so placing it on the pool switches its home to the Control Plane in the
-same write, without a migration. A source that later
+daemon-home tree stays in the source archive, and a move onto a group or the managed
+pool is refused until the home is switched to the Control Plane (the only direction
+that carries memory; forcing it back starts the agent empty). An agent placed on a
+group or the pool always keeps managed memory in the Control Plane, because any member
+may serve it; an agent pinned to one daemon keeps the daemon default. An unplaced agent
+has no tree to lose, so placing it on a group or the pool switches its home to the
+Control Plane in the same write, without a migration. A source that later
 reconnects after a force reassign is told to detach the stale local copy during
 placement reconciliation.
 

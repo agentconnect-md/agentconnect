@@ -117,7 +117,7 @@ function MemoryScopeField({
   )
 }
 
-const HOME_POOL_REASON = 'Agents on the managed pool keep their memory in the Control Plane.'
+const HOME_SET_REASON = 'Agents on a group or the managed pool keep their memory in the Control Plane.'
 const HOME_PENDING_STATUS = 'Moving memory to the Control Plane…'
 const HOME_CONTROL_PLANE_FIXED =
   'Memory in the Control Plane stays there; moving it back is a separate, forced action below.'
@@ -127,23 +127,23 @@ function MemoryHomeField({
   home,
   persistedHome,
   canEdit,
-  poolPlaced,
+  memberSetPlaced,
   pending,
   onChange
 }: {
   home: ManagedMemoryHome
   persistedHome: ManagedMemoryHome
   canEdit: boolean
-  poolPlaced: boolean
+  memberSetPlaced: boolean
   pending: boolean
   onChange: (next: ManagedMemoryHome) => void
 }) {
   const options = MEMORY_HOME_OPTIONS.filter(
-    (option) => option.value !== 'daemon' || (persistedHome === 'daemon' && !poolPlaced)
+    (option) => option.value !== 'daemon' || (persistedHome === 'daemon' && !memberSetPlaced)
   )
-  const editable = canEdit && !poolPlaced && !pending
-  const reason = poolPlaced
-    ? HOME_POOL_REASON
+  const editable = canEdit && !memberSetPlaced && !pending
+  const reason = memberSetPlaced
+    ? HOME_SET_REASON
     : pending
       ? HOME_PENDING_STATUS
       : persistedHome === 'control-plane'
@@ -192,7 +192,7 @@ function settingsFromProps(input: {
   autoDistill: boolean
   memoryScope?: ManagedMemoryScope
   memoryHome?: ManagedMemoryHome
-  poolPlaced?: boolean
+  memberSetPlaced?: boolean
   memoryDreaming?: MemoryDreamingConfig
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
@@ -202,8 +202,8 @@ function settingsFromProps(input: {
     provider: input.memoryProvider,
     autoDistill: input.autoDistill,
     scope: input.memoryScope,
-    // The pool refuses `daemon`, so a pool-placed agent's draft is pinned to the only home it may carry.
-    home: input.poolPlaced ? 'control-plane' : input.memoryHome,
+    // A member set refuses `daemon`, so a set-placed agent’s draft is pinned to the only home it may carry.
+    home: input.memberSetPlaced ? 'control-plane' : input.memoryHome,
     dreaming: input.memoryDreaming,
     connectionId: input.memoryConnectionId,
     recall: input.memoryRecall,
@@ -225,7 +225,7 @@ export function MemoryPanel({
   memoryCaptureMode,
   sessionBasePath,
   sandboxed = false,
-  poolPlaced = false
+  memberSetPlaced = false
 }: {
   agentId: string
   canEdit: boolean
@@ -243,8 +243,8 @@ export function MemoryPanel({
   sessionBasePath?: string
   /** The agent runs in a cluster sandbox: its managed memory is readable only through a running pod, so opening the tab wakes it rather than waiting for the read to refuse. */
   sandboxed?: boolean
-  /** Placed on the install-wide pool, where the home is fixed to `control-plane` and there is no way back. */
-  poolPlaced?: boolean
+  /** Placed on a member set (a group or the pool), where the home is fixed to `control-plane` and there is no way back. */
+  memberSetPlaced?: boolean
 }) {
   const { updateAgent } = useConsoleData()
   // Channel memory viewer (#653): the channels with their own folder, and which one
@@ -261,7 +261,7 @@ export function MemoryPanel({
     autoDistill,
     memoryScope,
     memoryHome,
-    poolPlaced,
+    memberSetPlaced,
     memoryDreaming,
     memoryConnectionId,
     memoryRecall,
@@ -298,7 +298,7 @@ export function MemoryPanel({
       autoDistill,
       memoryScope,
       memoryHome,
-      poolPlaced,
+      memberSetPlaced,
       memoryDreaming,
       memoryConnectionId,
       memoryRecall,
@@ -315,7 +315,7 @@ export function MemoryPanel({
     autoDistill,
     memoryScope,
     memoryHome,
-    poolPlaced,
+    memberSetPlaced,
     memoryDreaming?.enabled,
     memoryDreaming?.sessionWindow,
     memoryDreaming?.schedule,
@@ -578,7 +578,7 @@ export function MemoryPanel({
                 home={settings.home}
                 persistedHome={persistedSettings.home}
                 canEdit={canEdit && !savingProvider}
-                poolPlaced={poolPlaced}
+                memberSetPlaced={memberSetPlaced}
                 pending={homeMigrationPending}
                 onChange={(next) => {
                   setSettings((current) => ({ ...current, home: next }))
@@ -758,7 +758,7 @@ export function MemoryPanel({
             {canEdit &&
             persistedProvider === 'managed' &&
             persistedSettings.home === 'control-plane' &&
-            !poolPlaced &&
+            !memberSetPlaced &&
             !homeMigrationPending ? (
               <div className="flex flex-col gap-2 rounded-md border border-(--status-error-soft) px-3 py-3 desktop:flex-row desktop:items-center desktop:justify-between">
                 <div className="flex min-w-0 flex-col gap-[3px]">

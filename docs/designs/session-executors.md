@@ -506,9 +506,9 @@ not chosen; it buys NAT traversal, which v1 does not need.
    whatever the daemons say; off at a machine means that machine is nobody's
    candidate.
 2. **The birth predicate decides eligibility** (§7): the session is
-   `session`-isolated, the agent's memory does not pin it to the holder, and some
-   candidate's effective table matches the agent's ask and can authenticate the
-   session's runtime.
+   `session`-isolated, and some candidate's effective table matches the agent's ask
+   and can authenticate the session's runtime. Memory is not part of it: a group's
+   agents keep managed memory in the Control Plane by the placement rule.
 3. **One rule selects.** The holder is itself a candidate, and the session goes to
    the candidate hosting the fewest sessions; a tie goes to the holder, which costs
    no link. There is no placement policy key. An earlier draft had a `spread` and a
@@ -612,17 +612,18 @@ companion pod for three agent-scoped things; a remote session has no companion, 
 each needs a named source:
 
 - _Managed memory._ Locally the runtime's memory root is a mount of the holder's
-  scope directory, which cannot cross machines. So the birth predicate refuses
-  exactly one case: an agent whose memory is **managed and daemon-homed**
-  (`provider: managed` with `home: daemon`). An agent whose managed memory lives in
-  the Control Plane (`home: control-plane`, the rule the pool already mandates)
-  spreads, read and written by the holder over its control connection. An agent
-  with no managed memory has nothing on the holder's disk to be cut off from, and
-  spreads too; the earlier text required `control-plane` of every agent, which
-  would have refused agents that have no managed tree at all. Because `home`
-  defaults to `daemon`, the refusal is the common case for a managed-memory agent,
-  so it must not be silent (below). Runtime-native state stays in the per-session
-  HOME on the executor, as it does for every confined session.
+  scope directory, which cannot cross machines, so a managed tree on the holder's
+  disk could not follow a spread session. That is settled at placement, not at
+  birth: every agent placed on a group keeps its managed memory in the Control
+  Plane (`home: control-plane`, [memory-evolution.md](memory-evolution.md) §3.2.1 —
+  refused otherwise on create, edit and move, and existing agents are flipped at
+  Control Plane boot), read and written by the holder over its control connection.
+  The birth predicate therefore has no memory condition: an agent with no managed
+  memory has nothing on the holder's disk to be cut off from, and a managed one is
+  never daemon-homed on a group. The only remnant is a binding the boot-time flip has
+  not reached yet, which is why the wire keeps a stay-home reason for it.
+  Runtime-native state stays in the per-session HOME on the executor, as it does for
+  every confined session.
 - _Merge-when-ready._ On a self-hosted daemon the watcher runs in the holder process
   for local sessions; it does the same for a spread session, holding nothing on the
   executor.
@@ -632,7 +633,7 @@ each needs a named source:
 **A session that stays home says why.** The birth predicate's verdict is recorded
 on the session and reported with its metadata: the executor it went to, or the
 reason it did not spread — the agent is not placed on a group, the group's switch is
-off, the session is `shared`, the agent's memory is daemon-homed, no candidate offers
+off, the session is `shared`, no candidate offers
 the strategy or can authenticate the runtime, every candidate was full, the Control
 Plane could not be asked. The console shows it (§10). Without it, "why is everything
 still running on one machine" has no answer an operator can find.

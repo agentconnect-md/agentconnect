@@ -843,7 +843,7 @@ export interface AgentUpdateOpts {
 }
 
 export interface AgentMoveOpts {
-  /** Switch a `daemon` managed home to the Control Plane with the placement — an unplaced agent landing on the pool. */
+  /** Switch a `daemon` managed home to the Control Plane with the placement — an unplaced agent landing on a member set. */
   memoryHome?: 'control-plane'
 }
 
@@ -985,8 +985,8 @@ export interface AgentRepo {
   /** Agents placed on a specific daemon — the reconcile roster (`register/ok.agents`).
    *  A daemon only ever receives the specs of the agents it owns (1 agent : 1 machine). */
   listForDaemon(daemonId: DaemonId): Promise<AgentRecord[]>
-  /** Agents placed on a set — unscoped, for the boot-time pass that walks the install-wide pool. */
-  listForSet(setId: string): Promise<AgentRecord[]>
+  /** Agents placed on any member set — unscoped, for the boot-time memory-home pass. */
+  listSetPlaced(): Promise<AgentRecord[]>
   /** Unscoped batch read by id — the duty half of the reconcile roster, whose
    *  agents are named by the ledger rather than by placement. */
   listByIds(agentIds: readonly AgentId[]): Promise<AgentRecord[]>

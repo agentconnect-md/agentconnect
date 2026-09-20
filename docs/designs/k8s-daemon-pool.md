@@ -1179,9 +1179,11 @@ The pool mandates that home — the CP rejects `home: daemon` for an agent place
 the install-wide pool and a `--k8s` member fails such an activation closed. A placed
 daemon-home agent is refused a move onto the pool until its home is switched; an
 unplaced one has no tree to lose, so placing it on the pool switches its home to the
-Control Plane in the same write, without a migration. Local
-daemons keep the tree under the agent dir by default and may opt into the same
-home; the two are one code path over a file-system port.
+Control Plane in the same write, without a migration. The CP applies the same rule
+to every member set, so an agent placed on one of an organization's groups keeps
+its memory in the Control Plane too ([daemon-groups.md](daemon-groups.md) §5). An
+agent pinned to one local daemon keeps the tree under the agent dir by default and
+may opt into the same home; the two are one code path over a file-system port.
 
 ## 12. Capacity (D14) and upgrades (D12)
 

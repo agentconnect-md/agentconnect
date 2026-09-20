@@ -4,7 +4,8 @@ import {
   managedMemoryHomeOf,
   memoryHomedInControlPlane,
   resolveMemoryBindingOnCreate,
-  resolveMemoryBindingOnUpdate
+  resolveMemoryBindingOnUpdate,
+  resolveMemoryHomeOnMove
 } from './home.js'
 
 const cp = { provider: 'managed', home: 'control-plane' } as const
@@ -35,7 +36,7 @@ describe('resolveMemoryBindingOnCreate', () => {
   })
 
   it('refuses an explicit daemon home on the pool', () => {
-    expect(resolveMemoryBindingOnCreate(daemon, true)).toMatchObject({ refused: 'pool-daemon-home' })
+    expect(resolveMemoryBindingOnCreate(daemon, true)).toMatchObject({ refused: 'set-daemon-home' })
   })
 })
 
@@ -93,9 +94,9 @@ describe('resolveMemoryBindingOnUpdate', () => {
   })
 
   it('never lets a pool agent name the daemon home, force or not', () => {
-    expect(resolveMemoryBindingOnUpdate(cp, daemon, true, true)).toMatchObject({ refused: 'pool-daemon-home' })
+    expect(resolveMemoryBindingOnUpdate(cp, daemon, true, true)).toMatchObject({ refused: 'set-daemon-home' })
     expect(resolveMemoryBindingOnUpdate({ provider: 'native' }, daemon, true, false)).toMatchObject({
-      refused: 'pool-daemon-home'
+      refused: 'set-daemon-home'
     })
     expect(resolveMemoryBindingOnUpdate({ provider: 'native' }, null, true, false)).toEqual({
       kind: 'write',
@@ -118,6 +119,64 @@ describe('resolveMemoryBindingOnUpdate', () => {
       memory: daemon,
       dropHome: false
     })
+  })
+})
+
+// The rule reads one fact, "placed on a member set": a group and the pool are the same input, a pinned agent is not.
+describe.each([
+  { placement: 'pinned', onSet: false },
+  { placement: 'group', onSet: true },
+  { placement: 'pool', onSet: true }
+])('the home rule for a $placement agent', ({ onSet }) => {
+  const native = { provider: 'native' } as const
+
+  it('create: a managed binding defaults to the Control Plane on a set and to the daemon when pinned', () => {
+    expect(resolveMemoryBindingOnCreate(undefined, onSet)).toEqual({ memory: onSet ? cp : undefined })
+    expect(resolveMemoryBindingOnCreate({ provider: 'managed' }, onSet)).toEqual({ memory: onSet ? cp : daemon })
+    expect(resolveMemoryBindingOnCreate(cp, onSet)).toEqual({ memory: cp })
+    const explicit = resolveMemoryBindingOnCreate(daemon, onSet)
+    expect(explicit).toEqual(onSet ? expect.objectContaining({ refused: 'set-daemon-home' }) : { memory: daemon })
+    if ('refused' in explicit) expect(explicit.message).toMatch(/group or the managed pool/)
+    expect(resolveMemoryBindingOnCreate(native, onSet)).toEqual({ memory: native })
+  })
+
+  it('update: the daemon home is refused on a set even with force; the forward switch and its flag are the same everywhere', () => {
+    expect(resolveMemoryBindingOnUpdate(daemon, cp, onSet, false)).toEqual({
+      kind: 'write',
+      memory: pendingCp,
+      dropHome: false
+    })
+    const back = resolveMemoryBindingOnUpdate(cp, daemon, onSet, true)
+    expect(back).toEqual(
+      onSet
+        ? expect.objectContaining({ kind: 'refused', refused: 'set-daemon-home' })
+        : { kind: 'write', memory: daemon, dropHome: true }
+    )
+    // A stale daemon binding on a set is not re-stored by a save that names no home.
+    expect(resolveMemoryBindingOnUpdate(daemon, { provider: 'managed', autoDistill: false }, onSet, false).kind).toBe(
+      onSet ? 'refused' : 'write'
+    )
+    expect(resolveMemoryBindingOnUpdate(cp, native, onSet, false)).toEqual({
+      kind: 'write',
+      memory: native,
+      dropHome: false
+    })
+    expect(resolveMemoryBindingOnUpdate(native, { provider: 'managed' }, onSet, false)).toEqual({
+      kind: 'write',
+      memory: onSet ? cp : daemon,
+      dropHome: false
+    })
+  })
+
+  it('move: only a daemon home landing on a set is touched — refused when placed, switched when unplaced', () => {
+    for (const binding of [null, daemon]) {
+      expect(resolveMemoryHomeOnMove(binding, onSet, false)).toBe(onSet ? 'refuse' : 'keep')
+      expect(resolveMemoryHomeOnMove(binding, onSet, true)).toBe(onSet ? 'switch' : 'keep')
+    }
+    for (const binding of [cp, pendingCp, native, { provider: 'none' } as const]) {
+      expect(resolveMemoryHomeOnMove(binding, onSet, false)).toBe('keep')
+      expect(resolveMemoryHomeOnMove(binding, onSet, true)).toBe('keep')
+    }
   })
 })
 

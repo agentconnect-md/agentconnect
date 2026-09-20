@@ -35,12 +35,13 @@ import type { AgentMemoryHistoryInput } from '../../src/persistence/ports.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgAgentConfigWriter } from '../../src/persistence/repositories/agent-config.writer.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
-import { MemoryHomeRefusedError, POOL_MOVE_NEEDS_CP_HOME } from '../../src/agent-memory/home.js'
+import { MemoryHomeRefusedError, SET_MOVE_NEEDS_CP_HOME } from '../../src/agent-memory/home.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const SOURCE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const MEMBER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const GROUP_MEMBER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const CAPS = { platforms: ['slack'], runtimes: ['Claude Code'], acp: true, features: ['agent-move-v1'] }
 
 const CP = { provider: 'managed', home: 'control-plane' }
@@ -77,7 +78,17 @@ class ControlSpy {
 }
 
 const live: DaemonLiveness = {
-  get: (id) => ([SOURCE, MEMBER].includes(id) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined)
+  get: (id) =>
+    [SOURCE, MEMBER, GROUP_MEMBER].includes(id) ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined
+}
+
+/** One of the org's groups with one READY self-hosted member. */
+async function seedGroup(): Promise<string> {
+  await seedDaemon(prisma, GROUP_MEMBER, { capabilities: CAPS })
+  const setId = randomUUID()
+  await prisma.memberSet.create({ data: { id: setId, orgId: DEFAULT_ORG_ID, name: 'lab' } })
+  await prisma.memberSetMember.create({ data: { setId, daemonId: GROUP_MEMBER } })
+  return setId
 }
 
 /** One install-wide pool member: org-less, Pod-bound, enrolled — what `upsertOnAuth` writes for a real Pod. */
@@ -116,10 +127,14 @@ async function seedUnplaced(memory: Record<string, unknown> | null): Promise<str
   return agentId
 }
 
-async function seedHomed(memory: Record<string, unknown> | null, opts: { pool?: boolean } = {}): Promise<string> {
+async function seedHomed(
+  memory: Record<string, unknown> | null,
+  opts: { pool?: boolean; setId?: string; daemonId?: string } = {}
+): Promise<string> {
   const agentId = randomUUID()
+  const setId = opts.pool ? await poolSetId(prisma) : opts.setId
   await seedAgent(prisma, agentId, {
-    ...(opts.pool ? { setId: await poolSetId(prisma) } : { daemonId: SOURCE }),
+    ...(setId ? { setId } : { daemonId: opts.daemonId ?? SOURCE }),
     ...(memory ? { runtimeOverrides: { memory } } : {})
   })
   return agentId
@@ -161,6 +176,43 @@ describe('POST /agents — the memory home is resolved on create', () => {
 
     const flagged = await create({ name: 'flagged', runtime: 'Claude Code', memory: PENDING })
     expect(flagged.statusCode).toBe(400)
+  })
+
+  it('an agent placed on one of the org’s groups resolves like the pool: Control Plane by default, daemon refused', async () => {
+    const setId = await seedGroup()
+    const bare = await create({ name: 'grouped-bare', runtime: 'Claude Code', placementKind: 'set', setId })
+    expect(bare.statusCode, bare.body).toBe(201)
+    expect(bare.json().memory).toEqual(CP)
+    expect(await storedMemory(bare.json().id)).toEqual(CP)
+
+    const refused = await create({
+      name: 'grouped-daemon',
+      runtime: 'Claude Code',
+      placementKind: 'set',
+      setId,
+      memory: DAEMON_HOME
+    })
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json().message).toContain('group')
+    expect(await prisma.agent.findFirst({ where: { name: 'grouped-daemon' } })).toBeNull()
+
+    // A provider without a managed tree is stored as given; an agent pinned to the group's member stays a pinned agent.
+    const native = await create({
+      name: 'grouped-native',
+      runtime: 'Claude Code',
+      placementKind: 'set',
+      setId,
+      memory: { provider: 'native' }
+    })
+    expect(native.json().memory).toEqual({ provider: 'native' })
+    const pinned = await create({
+      name: 'pinned-to-member',
+      runtime: 'Claude Code',
+      daemonId: GROUP_MEMBER,
+      memory: { provider: 'managed' }
+    })
+    expect(pinned.statusCode, pinned.body).toBe(201)
+    expect(pinned.json().memory).toEqual(DAEMON_HOME)
   })
 
   it('a self-hosted agent stores the given home or daemon, and no binding stays the managed default', async () => {
@@ -289,6 +341,34 @@ describe('PATCH /agents/:id — the home moves one way and comes back only by fo
   })
 })
 
+describe('PATCH /agents/:id — a group’s agent follows the pool’s rule, an agent pinned to its member does not', () => {
+  it('refuses the daemon home on a group, force or not, and still flags the forward switch of a stale daemon binding', async () => {
+    const setId = await seedGroup()
+    const homed = await seedHomed(CP, { setId })
+    expect((await patch(homed, { memory: DAEMON_HOME })).statusCode).toBe(409)
+    const forced = await patch(homed, { memory: DAEMON_HOME, force: true })
+    expect(forced.statusCode).toBe(409)
+    expect(forced.json().message).toContain('group')
+    expect((await patch(homed, { memory: null })).json().memory).toEqual(CP)
+
+    // A row the boot-time flip has not reached yet: a bare save is refused rather than re-storing `daemon`.
+    const stale = await seedHomed(DAEMON_HOME, { setId })
+    expect((await patch(stale, { memory: { provider: 'managed', autoDistill: false } })).statusCode).toBe(409)
+    const switched = await patch(stale, { memory: { provider: 'managed', home: 'control-plane' } })
+    expect(switched.json().memory).toEqual(PENDING)
+    // A provider without a managed tree is never part of the rule.
+    expect((await patch(stale, { memory: { provider: 'native' } })).json().memory).toEqual({ provider: 'native' })
+  })
+
+  it('an agent pinned to a group’s member keeps the daemon default and the forced way back', async () => {
+    await seedGroup()
+    const pinned = await seedHomed(null, { daemonId: GROUP_MEMBER })
+    expect((await patch(pinned, { memory: { provider: 'managed' } })).json().memory).toEqual(DAEMON_HOME)
+    expect((await patch(pinned, { memory: CP })).json().memory).toEqual(PENDING)
+    expect((await patch(pinned, { memory: DAEMON_HOME, force: true })).json().memory).toEqual(DAEMON_HOME)
+  })
+})
+
 describe('the home is resolved against the locked binding, not the caller’s earlier read', () => {
   const repo = () => new PgAgentRepo(prisma)
   const writer = () => new PgAgentConfigWriter(prisma, new PlaintextSecretCipher())
@@ -304,7 +384,7 @@ describe('the home is resolved against the locked binding, not the caller’s ea
       agentId,
       { memory: { provider: 'managed', autoDistill: false, home: 'control-plane' } },
       undefined,
-      { memoryHome: { input: { provider: 'managed', autoDistill: false }, onPool: false, force: false } }
+      { memoryHome: { input: { provider: 'managed', autoDistill: false }, onSet: false, force: false } }
     )
     expect(saved.memory).toEqual({ provider: 'managed', autoDistill: false, home: 'control-plane' })
     expect(await storedMemory(agentId)).toEqual({ provider: 'managed', autoDistill: false, home: 'control-plane' })
@@ -317,7 +397,7 @@ describe('the home is resolved against the locked binding, not the caller’s ea
     await repo().update(DEF_ORG, agentId, { memory: { provider: 'managed', home: 'control-plane' } })
     await expect(
       writer().update(DEF_ORG, agentId, { memory: DAEMON_HOME as never }, undefined, {
-        memoryHome: { input: DAEMON_HOME as never, onPool: false, force: false }
+        memoryHome: { input: DAEMON_HOME as never, onSet: false, force: false }
       })
     ).rejects.toBeInstanceOf(MemoryHomeRefusedError)
     expect(await storedMemory(agentId)).toEqual(CP)
@@ -334,7 +414,7 @@ describe('PUT /agents/:id/daemon — a daemon-home agent moves onto the pool onl
     const agentId = await seedHomed(null)
     const onto = await ontoPool(agentId)
     expect(onto.statusCode).toBe(409)
-    expect(onto.json().message).toBe(POOL_MOVE_NEEDS_CP_HOME)
+    expect(onto.json().message).toBe(SET_MOVE_NEEDS_CP_HOME)
     expect(onto.json().message).toContain('Memory tab')
     const pinned = await running!.app.inject({
       method: 'PUT',
@@ -342,12 +422,38 @@ describe('PUT /agents/:id/daemon — a daemon-home agent moves onto the pool onl
       payload: { daemonId: MEMBER }
     })
     expect(pinned.statusCode).toBe(409)
-    expect(pinned.json().message).toBe(POOL_MOVE_NEEDS_CP_HOME)
+    expect(pinned.json().message).toBe(SET_MOVE_NEEDS_CP_HOME)
     expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
       placementKind: 'daemon',
       daemonId: SOURCE
     })
     expect(await storedMemory(agentId)).toBeNull()
+  })
+
+  it('refuses a placed daemon-home agent a move onto a group, but not a pin to that group’s member', async () => {
+    await seedDaemon(prisma, SOURCE, { capabilities: CAPS })
+    const setId = await seedGroup()
+    const agentId = await seedHomed(DAEMON_HOME)
+    const onto = await ontoPool(agentId, { placementKind: 'set', setId })
+    expect(onto.statusCode).toBe(409)
+    expect(onto.json().message).toBe(SET_MOVE_NEEDS_CP_HOME)
+    expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
+      placementKind: 'daemon',
+      daemonId: SOURCE
+    })
+    const pinned = await ontoPool(agentId, { daemonId: GROUP_MEMBER })
+    expect(pinned.statusCode, pinned.body).toBe(200)
+    expect(await storedMemory(agentId)).toEqual(DAEMON_HOME)
+  })
+
+  it('an unplaced agent lands on a group with the home switched and nothing migrating', async () => {
+    const setId = await seedGroup()
+    const agentId = await seedUnplaced({ ...DAEMON_HOME, autoDistill: false })
+    const res = await ontoPool(agentId, { placementKind: 'set', setId })
+    expect(res.statusCode, res.body).toBe(200)
+    const expected = { provider: 'managed', autoDistill: false, home: 'control-plane' }
+    expect(res.json()).toMatchObject({ placementKind: 'set', setId, memory: expected })
+    expect(await storedMemory(agentId)).toEqual(expected)
   })
 
   it('an unplaced agent with an explicit daemon home lands with the home switched, its policy kept, nothing migrating', async () => {

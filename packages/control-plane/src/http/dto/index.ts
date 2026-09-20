@@ -665,8 +665,7 @@ export const CreateAgentBody = z.object({
   mcpServers: McpServerNamesBody.optional(),
   skills: SkillEnableBody.optional(),
   managedSkills: ManagedSkillEnableBody.optional(),
-  // Memory backend; absent ⇒ managed default. The CP resolves `home`: the managed pool gets `control-plane`
-  // (an explicit `daemon` there is refused), anywhere else the given value or `daemon`.
+  // Memory backend; absent ⇒ managed default. The CP resolves `home`: `control-plane` on a member set (`daemon` refused), else the given value or `daemon`.
   memory: MemoryConfigInputBody.optional(),
   // Placement at create. `set` uses `setId`; `daemon` (the default) uses `daemonId`. `pool` is
   // accepted API sugar for "the org-less set" and is resolved to it at the edge.

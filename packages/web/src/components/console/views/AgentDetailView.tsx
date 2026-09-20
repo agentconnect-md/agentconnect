@@ -18,6 +18,7 @@ import {
   flattenFiles,
   isGitWorkspace,
   isPoolPlacementKind,
+  isSetPlacementKind,
   MOCK_MODE,
   MOCK_PREFIX,
   runtimeLabel,
@@ -2596,7 +2597,7 @@ export default function AgentDetailView() {
           memoryCaptureMode={da.memoryCaptureMode}
           sessionBasePath={orgPath('/sessions')}
           sandboxed={isPoolPlacementKind(da.placementKind)}
-          poolPlaced={isPoolPlacementKind(da.placementKind, da.setId, orgSetIds)}
+          memberSetPlaced={isSetPlacementKind(da.placementKind)}
         />
       )}
 

@@ -290,6 +290,18 @@ These are the operator's, not the code's:
 - **A member's platform credentials.** Bots are org-scoped and ride the bundle, so a
   group member gets them on install; nothing per-machine is needed.
 
+Managed agent memory is deliberately not on that list. An agent placed on a group keeps
+its managed memory in the Control Plane (`memory.home: control-plane`,
+[memory-evolution.md](memory-evolution.md) §3.2.1), exactly as a pool agent does: any
+member may hold its duty, so a tree on one member's disk would be stranded by the first
+failover. The Control Plane resolves that home when an agent is created on a group,
+refuses `daemon` there, refuses a daemon-home agent the move onto a group until its home
+is switched, and flips existing group agents at boot, after which the member holding
+each one copies its tree. An agent pinned to one machine is unaffected and keeps
+`daemon` as its default, a group's member included, and so is any agent whose memory
+provider is not `managed`. No data-plane database is involved: that home is rows in the
+Control Plane's own database.
+
 ## 6. Sequencing and size
 
 Two PRs, after #982 lands (it did, as #995 — it and this both edit `dutyEnforced()`).

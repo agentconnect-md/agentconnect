@@ -230,7 +230,7 @@ import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './orchestrator/dutyLease.
 import { registerPoolMetrics } from './observability/pool-metrics.js'
 import { registerOrgMetrics } from './observability/org-metrics.js'
 import { AgentDelivery } from './orchestrator/agentDelivery.js'
-import { PoolMemoryHomeReconciler } from './orchestrator/poolMemoryHomeReconciler.js'
+import { SetMemoryHomeReconciler } from './orchestrator/setMemoryHomeReconciler.js'
 import { AgentRoutingConverger } from './orchestrator/agentRouting.js'
 import { PlacementResolver, type ResolvableAgent } from './orchestrator/placementResolver.js'
 import { DutyRecomputeSweep } from './orchestrator/dutyRecompute.js'
@@ -1932,7 +1932,7 @@ export function buildContainer(
   const presetBackfill = config.PRESET_AGENTS_ENABLED ? new PresetAgentBackfill(prisma, http.log) : undefined
 
   // The memory-home rollout flip (memory-evolution.md §3.2.1): one idempotent pass per boot, armed by startBackground().
-  const poolMemoryHome = new PoolMemoryHomeReconciler({
+  const setMemoryHome = new SetMemoryHomeReconciler({
     agents: repos.agent,
     memberSets: repos.memberSet,
     delivery: agentDelivery,
@@ -2637,7 +2637,7 @@ export function buildContainer(
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
       void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
-      void poolMemoryHome.run().catch((err) => http.log.error({ err }, 'pool-memory-home: pass failed'))
+      void setMemoryHome.run().catch((err) => http.log.error({ err }, 'set-memory-home: pass failed'))
     },
     async shutdown() {
       cronRunReaper.stop()

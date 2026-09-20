@@ -751,16 +751,16 @@ describe('MemoryPanel memory home', () => {
     expect(dialog(host)?.querySelector('[role="alert"]')?.textContent).toContain('requires force')
   })
 
-  it('fixes the home to control-plane on the pool, with a reason and no way back', async () => {
-    const host = await mount({ poolPlaced: true })
+  it('fixes the home to control-plane on a group or the pool, with a reason and no way back', async () => {
+    const host = await mount({ memberSetPlaced: true })
     await openSettings(host)
     expect(homePill(host, 'daemon')).toBeNull()
     expect(homePill(host, 'control-plane')?.disabled).toBe(true)
     expect(homePill(host, 'control-plane')?.getAttribute('aria-pressed')).toBe('true')
-    expect(host.querySelector('[data-memory-home-reason]')?.textContent).toContain('managed pool')
+    expect(host.querySelector('[data-memory-home-reason]')?.textContent).toContain('a group or the managed pool')
     expect(host.textContent).not.toContain('Move memory back to the daemon')
 
-    // A pool agent's binding always carries the only home it may have, even when the DTO predates the field.
+    // A set-placed agent's binding always carries the only home it may have, even when the DTO predates the field.
     const autoDistill = host.querySelector<HTMLInputElement>('input[type="checkbox"]')
     await act(async () => autoDistill?.click())
     await clickButton(host, 'Save memory settings')
