@@ -106,6 +106,9 @@ async function ask<T>(stub: InMemoryDaemonStub, type: 'executor/candidates' | 'e
 
 const relayed = (stub: InMemoryDaemonStub) => stub.sent.filter((f) => f.type === 'executor/prepare')
 
+/** Everything in `value` as one searchable string; rows carry BigInt epochs and ids, which plain JSON refuses. */
+const dump = (value: unknown): string => JSON.stringify(value, (_key, v) => (typeof v === 'bigint' ? String(v) : v))
+
 describe('executor facts — what registration and the heartbeat persist (real Postgres)', () => {
   it('advertises the feature, stores the facts on the daemon record, and replaces them on capabilities/update', async () => {
     const h = buildWsHarness(prisma)
@@ -295,7 +298,7 @@ describe('executor/prepare — checked against the ledger, then relayed (real Po
     const frame = await executor.expectFrame('executor/prepare')
     expect(frame.payload).toEqual({ ...PREPARE, resources: { cpus: 2 }, image: 'registry.example.test/rt:1' })
     // Fenced on the EXECUTOR's epoch and scoped to the agent's org, like every other C→D request.
-    expect(frame.epoch).toBe(h.deps.connReg.get(EXECUTOR)!.sessionEpoch)
+    expect([frame.epoch, frame.orgId]).toEqual([h.deps.connReg.get(EXECUTOR)!.sessionEpoch, DEFAULT_ORG_ID])
     executor.reply(frame.id, 'executor/prepare/result', READY)
     await holder.settled()
 
@@ -304,9 +307,12 @@ describe('executor/prepare — checked against the ledger, then relayed (real Po
     expect((await prisma.daemon.findUniqueOrThrow({ where: { id: EXECUTOR } })).hostedSessions).toBe(4)
 
     // The key went to the holder and nowhere else the CP writes.
-    expect(JSON.stringify(log)).not.toContain(PSK)
-    expect(JSON.stringify(await prisma.auditEvent.findMany())).not.toContain(PSK)
-    expect(JSON.stringify(await prisma.daemon.findMany())).not.toContain(PSK)
+    expect(dump(log)).not.toContain(PSK)
+    expect(dump(await prisma.auditEvent.findMany())).not.toContain(PSK)
+    // Sanity for the check itself: the rows ARE searchable, so an absent key means absent.
+    const daemons = dump(await prisma.daemon.findMany())
+    expect(daemons).toContain(EXECUTOR)
+    expect(daemons).not.toContain(PSK)
   })
 
   it('returns full and an executor’s own refusal as they came, refreshing the count when one is carried', async () => {

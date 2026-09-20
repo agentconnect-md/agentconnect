@@ -1229,7 +1229,6 @@ export class LocalStore {
         -- carries them, not just the one dispatch that knew the message.
         conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
         platformStanding TEXT,
-        -- session-executors.md §7: the birth verdict, at most one of the two set.
         executorDaemonId TEXT, stayedHomeReason TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the

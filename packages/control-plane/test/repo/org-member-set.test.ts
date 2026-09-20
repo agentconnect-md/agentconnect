@@ -192,9 +192,19 @@ describe('org set lifecycle (real Postgres)', () => {
     const created = await repo.createForOrg(DEFAULT_ORG_ID, 'group-g')
     const other = await otherOrg()
 
-    expect(await repo.listForOrg(DEFAULT_ORG_ID)).toEqual([{ id: created.id, orgId: DEFAULT_ORG_ID, name: 'group-g' }])
+    // A new set spreads nothing: the group admin's consent is explicit (session-executors.md §10).
+    expect(await repo.listForOrg(DEFAULT_ORG_ID)).toEqual([
+      { id: created.id, orgId: DEFAULT_ORG_ID, name: 'group-g', spreadSessions: false }
+    ])
     expect(await repo.renameForOrg(other.orgId, created.id, 'stolen')).toBeNull()
     expect(await repo.renameForOrg(DEFAULT_ORG_ID, created.id, 'group-g2')).toMatchObject({ name: 'group-g2' })
+    // The switch rides the same org fence as the name, and the org-less pool belongs to nobody.
+    expect(await repo.setSpreadSessionsForOrg(other.orgId, created.id, true)).toBeNull()
+    expect(await repo.setSpreadSessionsForOrg(DEFAULT_ORG_ID, (await repo.crossOrgSetId())!, true)).toBeNull()
+    expect(await repo.setSpreadSessionsForOrg(DEFAULT_ORG_ID, created.id, true)).toMatchObject({
+      name: 'group-g2',
+      spreadSessions: true
+    })
     expect(await repo.deleteForOrg(other.orgId, created.id)).toBe(false)
     expect(await repo.deleteForOrg(DEFAULT_ORG_ID, created.id)).toBe(true)
   })
@@ -219,7 +229,12 @@ describe('org set lifecycle (real Postgres)', () => {
     const setId = (await repo.createForOrg(DEFAULT_ORG_ID, 'group-g')).id
     await repo.enroll(setId, DaemonId(MEMBER_G))
 
-    expect(await repo.setOf(DaemonId(MEMBER_G))).toEqual({ id: setId, orgId: DEFAULT_ORG_ID, name: 'group-g' })
+    expect(await repo.setOf(DaemonId(MEMBER_G))).toEqual({
+      id: setId,
+      orgId: DEFAULT_ORG_ID,
+      name: 'group-g',
+      spreadSessions: false
+    })
     expect(await repo.setOf(DaemonId(POOL_MEMBER))).toBeNull()
   })
 

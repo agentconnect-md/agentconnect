@@ -69,6 +69,22 @@ describe('LocalStore session executor', () => {
     await store.close()
   })
 
+  // The SQLite in the pinned Node drops a LAST column by cutting back to the nearest comma BYTE, so a comment holding one there corrupts the table; a newer SQLite hides that.
+  it.skipIf(usingPostgresStore())(
+    'keeps nothing but whitespace between each column and the comma before it',
+    async () => {
+      const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-ddl-')), 'local.sqlite')
+      await (await LocalStore.open(path)).close()
+      const db = new DatabaseSync(path)
+      const { sql } = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'sessions'").get() as { sql: string }
+      db.close()
+      for (const column of ['executorDaemonId', 'stayedHomeReason']) {
+        const at = sql.indexOf(column)
+        expect([column, sql.slice(sql.lastIndexOf(',', at) + 1, at).trim()]).toEqual([column, ''])
+      }
+    }
+  )
+
   // An established store is upgraded in place: the step that adds the columns must be reachable, not only the CREATE block.
   it.skipIf(usingPostgresStore())('adds both columns to a v19 store, leaving its sessions unplaced', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v19-')), 'local.sqlite')
